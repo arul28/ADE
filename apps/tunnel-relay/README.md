@@ -208,7 +208,13 @@ in the dashboard (Workers → **ade-tunnel-relay** → Logs) and stream live via
 `npx wrangler tail ade-tunnel-relay`. Only lifecycle/rejection events are
 logged — never per-frame, so a busy tunnel stays cheap: `host_registered`,
 `connect_rejected` (`reason: host_offline | too_many | bridge_rejected`), `auth_failed`
-(`role: host | pipe`). Cost is already gated by design (signed upgrades, one
+(`role: host | pipe`), `cloudflare_transient` (a Durable Object restarting under
+Cloudflare: "storage is no longer accessible", "instance is no longer active",
+"internal error; reference = …"). The Worker retries such a failure once on a
+fresh stub when the request can be sent twice (a `GET`, a prewarm, a claim),
+never for a WebSocket upgrade or an MCP call, and otherwise answers `503` with
+`Retry-After: 5`; the brain and the phone reconnect on a failed upgrade with
+their usual backoff (`src/cloudflareTransient.ts`). Cost is already gated by design (signed upgrades, one
 control socket per machine, the max-tunnels cap, and the idle sweep above), so
 no request-budget limiter is needed here — unlike `apps/push-relay`, whose
 request-driven surface carries the in-worker spend cap.

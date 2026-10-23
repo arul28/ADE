@@ -31,6 +31,9 @@ import {
   useActivitySettings,
 } from "./ActivitySettingsControls";
 import { AiFeaturesSection } from "./AiFeaturesSection";
+import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
+import { isStandaloneSettings } from "./settingsManifest";
+import { Button } from "../ui/Button";
 import "./NotificationsSection.css";
 
 /**
@@ -91,8 +94,7 @@ function timeValueToMinutes(value: string, fallback: number): number {
 
 export function NotificationsSection() {
   const model = useActivitySettings();
-  const { account, loading, signedOut, updateAccount } = model;
-  const busy = loading || signedOut;
+  const { account, busy, signedOut, updateAccount } = model;
 
   const setEventPolicy = (kind: AttentionEventKind, policy: AttentionDeliveryPolicy) => {
     updateAccount({ eventPolicies: { ...account.eventPolicies, [kind]: policy } });
@@ -171,6 +173,11 @@ export function NotificationsSection() {
               <div role="alert" className="ade-nt-note" data-tone="error">
                 <Info size={15} />
                 {model.error}
+                {model.loadFailed ? (
+                  <Button variant="ghost" size="sm" onClick={model.retryLoad}>
+                    Try again
+                  </Button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -315,7 +322,15 @@ export function NotificationsSection() {
               )}
             />
             <ActivityPrivacySection model={model} />
-            <AiFeaturesSection />
+            {isStandaloneSettings() ? (
+              <ProjectSettingsNotice
+                group="Scheduled work"
+                title="Scheduled work"
+                detail="Scheduled work is saved in each project, with its jobs and its pause."
+              />
+            ) : (
+              <AiFeaturesSection />
+            )}
           </div>
         </div>
       </ModernPage>

@@ -31,6 +31,7 @@ export const IPC = {
   storageRunMaintenanceNow: "ade.storage.runMaintenanceNow",
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",
+  storageDeletedLaneChatsSummary: "ade.storage.deletedLaneChatsSummary",
   archiveList: "ade.archive.list",
   archiveSummary: "ade.archive.summary",
   archiveRestore: "ade.archive.restore",
@@ -103,6 +104,10 @@ export const IPC = {
   attentionGetPreferences: "ade.attention.getPreferences",
   attentionPutPreferences: "ade.attention.putPreferences",
   attentionPutMachinePreferences: "ade.attention.putMachinePreferences",
+  attentionSetSessionMuted: "ade.attention.setSessionMuted",
+  /** main -> focused window: an agent's message to show as a toast. */
+  attentionAlert: "ade.attention.alert",
+  attentionOpenAlert: "ade.attention.openAlert",
   attentionOpenItem: "ade.attention.openItem",
   analyticsCapture: "ade.analytics.capture",
   analyticsGetStatus: "ade.analytics.getStatus",
@@ -683,9 +688,13 @@ export const IPC = {
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
   builtInBrowserAgentAccessGet: "ade.builtInBrowser.agentAccess.get",
   builtInBrowserAgentAccessSetMode: "ade.builtInBrowser.agentAccess.setMode",
+  builtInBrowserAgentAccessSetEnabled: "ade.builtInBrowser.agentAccess.setEnabled",
   builtInBrowserAgentAccessAnswer: "ade.builtInBrowser.agentAccess.answer",
   builtInBrowserAgentAccessRevoke: "ade.builtInBrowser.agentAccess.revoke",
   builtInBrowserAgentAccessEvent: "ade.builtInBrowser.agentAccess.event",
+  builtInBrowserSettingsGet: "ade.builtInBrowser.settings.get",
+  builtInBrowserSettingsSet: "ade.builtInBrowser.settings.set",
+  builtInBrowserSettingsEvent: "ade.builtInBrowser.settings.event",
   /**
    * Login import. Trusted-renderer-only, like the profile diagnostics and
    * permission administration above it: importing a browser's cookies hands
@@ -765,7 +774,6 @@ export const IPC = {
   providerInstancesList: "ade.providerInstances.list",
   providerInstancesCreate: "ade.providerInstances.create",
   providerInstancesRemove: "ade.providerInstances.remove",
-  providerInstancesRename: "ade.providerInstances.rename",
   providerInstancesSetDefault: "ade.providerInstances.setDefault",
   providerInstancesSetAccent: "ade.providerInstances.setAccent",
   providerInstancesDismissReplaced: "ade.providerInstances.dismissReplaced",

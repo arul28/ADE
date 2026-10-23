@@ -477,6 +477,28 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "ADE browser",
   },
+  {
+    id: "general.browser-settings",
+    label: "Tabs and downloads",
+    // No "browser" here on purpose: the access entry already owns that word in
+    // search, and a second match reordered the command palette's thread results.
+    keywords: ["tabs", "tab limit", "downloads", "download folder", "save", "directory"],
+    tab: "behaviour",
+    anchor: "browser-settings",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
+  {
+    id: "general.browser-auto-grant",
+    label: "Agents and site permissions",
+    keywords: ["camera", "microphone", "location", "geolocation", "permission", "auto", "approve"],
+    tab: "behaviour",
+    anchor: "browser-auto-grant",
+    scope: "machine",
+    web: "hidden",
+    group: "ADE browser",
+  },
 
   // ── Project → Location ───────────────────────────────────────────────────
   {
@@ -710,7 +732,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
     tab: "chat",
     anchor: "claude-mods",
-    scope: "account",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Claude mods",
@@ -1011,7 +1034,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["background work", "jobs", "cron", "wakeup", "loop", "schedule", "pause"],
     tab: "notifications",
     anchor: "scheduled-work",
-    scope: "account",
+    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    scope: "machine-repo",
     web: "hidden",
     group: "Scheduled work",
   },
@@ -1073,6 +1097,36 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Storage",
   },
   {
+    id: "storage.chat-history",
+    label: "Chat & terminal history",
+    keywords: ["compress", "gzip", "transcripts", "old chats", "archived chats", "settled chats", "cold storage", "shrink", "db compression", "history size"],
+    tab: "storage",
+    anchor: "storage-chat-history",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Storage",
+  },
+  {
+    id: "storage.deleted-lane-chats",
+    label: "Chats from deleted lanes",
+    keywords: ["deleted chats", "leftover chats", "orphaned transcripts", "remove old chats", "where are my chats", "jsonl", "transcripts folder", "lost chats", "reminder"],
+    tab: "storage",
+    anchor: "storage-deleted-chats",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Storage",
+  },
+  {
+    id: "storage.provider-history",
+    label: "Provider history on this machine",
+    keywords: ["claude sessions", "codex sessions", ".claude", ".codex", "opencode", "droid", "cursor", "copilot", "grok", "session files", "cleanupPeriodDays", "provider storage", "agent history size"],
+    tab: "storage",
+    anchor: "storage-provider-history",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Storage",
+  },
+  {
     id: "archive.items",
     label: "Archived lanes, chats, and shells",
     keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
@@ -1085,7 +1139,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "storage.cleanups",
     label: "Cleanup history",
-    keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed"],
+    keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed", "storage doctor", "search index", "vacuum", "duplicate transcripts", "database size"],
     tab: "storage",
     anchor: "storage-cleanups",
     scope: "machine-repo",
@@ -1559,6 +1613,15 @@ let standaloneSettingsResolver: (() => boolean) | null = null;
 
 export function setStandaloneSettingsResolver(resolve: () => boolean): void {
   standaloneSettingsResolver = resolve;
+}
+
+/**
+ * Whether Settings is open with no project. A page that mixes this computer's
+ * settings with ones saved in a project reads this to leave the project cards
+ * out: with no project there is nothing to load them from or save them to.
+ */
+export function isStandaloneSettings(): boolean {
+  return standaloneSettingsResolver?.() ?? false;
 }
 
 /** Uninstall a standalone resolver, but only if it is still the installed one. */

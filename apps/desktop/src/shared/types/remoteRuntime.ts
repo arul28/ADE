@@ -221,7 +221,19 @@ export type RemoteRuntimeConnectionRoute = {
 };
 
 export type RemoteRuntimeConnectErrorInfo = {
-  kind: "disk_full" | "ssh_auth" | "unsupported_os" | "auth_required" | "generic";
+  /**
+   * `unreachable`: nothing answered at the address (refused, no route, timed
+   * out). `ssh_auth` and `host_key` need the person to fix something, so ADE
+   * stops retrying them until Try again or an edit to the machine.
+   */
+  kind:
+    | "disk_full"
+    | "ssh_auth"
+    | "host_key"
+    | "unreachable"
+    | "unsupported_os"
+    | "auth_required"
+    | "generic";
   message: string;
   detail?: string;
   freeBytes?: number;
@@ -296,7 +308,18 @@ export type RemoteRuntimeConnectionStatus = {
   lastErrorInfo?: RemoteRuntimeConnectErrorInfo | null;
   lastAttemptedAt: number | null;
   connectedAt: number | null;
+  /**
+   * `disconnected` when the person disconnected this machine, or another ADE
+   * on this computer took the connection. Calls to it are refused until
+   * Connect. A machine that waits for a fix (SSH sign-in refused, host key not
+   * trusted) says so in `lastErrorInfo` instead.
+   */
+  reconnectBlocked?: "disconnected" | null;
 };
+
+/** What a call to a machine the person disconnected is told. */
+export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
+  "Remote machine was manually disconnected. Connect again to use this remote project.";
 
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;

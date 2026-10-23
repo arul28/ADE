@@ -2184,6 +2184,21 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       // start a recording without the service knowing anything about video.
       expect(noted.map((entry) => entry.kind)).toEqual(["tap", "type"]);
       expect(noted[0]).toMatchObject({ laneId: "lane-a", udid: "device-1", x: 100, y: 240 });
+
+      // Which picture the points are on. An agent measures on a screenshot
+      // (screen space; the helper turns it onto a turned framebuffer), a
+      // viewer has already mapped its click onto the framebuffer it draws.
+      expect(helper.sent[0]).toMatchObject({ phase: "begin", space: "screen" });
+      helper.sent.length = 0;
+      await service.tap({ deviceUdid: "device-1", x: 100, y: 240, laneId: "lane-a", source: "user" });
+      expect(helper.sent.map((command) => command.space)).toEqual(["frame", "frame"]);
+
+      // `down` reveals what is below: a positive delta, the helper's wheel
+      // convention (it swipes the finger up).
+      helper.sent.length = 0;
+      await service.scroll({ deviceUdid: "device-1", direction: "down", laneId: "lane-a" });
+      expect(helper.sent.at(-1)).toMatchObject({ type: "scroll", deltaX: 0, space: "screen" });
+      expect(Number(helper.sent.at(-1)!.deltaY)).toBeGreaterThan(0);
     } finally {
       service.dispose();
       restoreHelper();
@@ -2518,7 +2533,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
         deviceUdid: "device-1",
         laneId: "lane-a",
       });
-      expect(helper.sent).toEqual([
+      expect(helper.sent.filter((command) => command.type === "orientation")).toEqual([
         expect.objectContaining({ type: "orientation", udid: "device-1", value: 4 }),
       ]);
       expect(rotated).toMatchObject({
@@ -2596,6 +2611,92 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       restoreHooks();
       platformSpy.mockRestore();
+    }
+  });
+
+  /*
+   * An iPhone Duo is judged from what the guest says its live panel shows,
+   * never from the framebuffer read (which names the cover whatever is on,
+   * and the inner panel's framebuffer never changes shape).
+   */
+  it("judges a foldable's rotation from its live panel, including a half turn that lands late", async () => {
+    vi.useFakeTimers();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-duo-rotate-`);
+    const run = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    // The fake Duo: how it is held (CoreDevice's names), the live panel, and
+    // the picture the app on it shows, which can lag the turn.
+    const physical: Record<number, string> = { 1: "portrait", 2: "pud", 3: "landscape-left", 4: "landscape-right" };
+    const innerPicture: Record<string, string> = {
+      portrait: "landscape_left", "landscape-right": "portrait_upside_down", pud: "landscape_right", "landscape-left": "portrait",
+    };
+    const duo = { held: "portrait", screenId: 3, picture: "landscape_left", adopts: true, lagReads: 0 };
+    let pending: string | null = null;
+    const helper = fakeSimHelper({
+      onSend: (command) => {
+        if (command.type === "orientation") {
+          duo.held = physical[command.value as number]!;
+          if (duo.adopts) pending = duo.screenId === 3 ? innerPicture[duo.held]! : duo.picture;
+          return { applied: true };
+        }
+        if (command.type === "posture-get") {
+          if (pending && duo.lagReads-- <= 0) {
+            duo.picture = pending;
+            pending = null;
+          }
+          return {
+            supported: true,
+            angle: duo.screenId === 3 ? 180 : 0,
+            orientation: duo.held,
+            activeScreenId: duo.screenId,
+            displays: [{ screenId: duo.screenId, active: true, orientation: duo.picture }],
+          };
+        }
+        return {};
+      },
+    });
+    const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    const rotate = async (orientation: "portrait" | "portrait-upside-down" | "landscape-left" | "landscape-right") => {
+      const answer = service.rotate({ orientation, deviceUdid: "device-1", laneId: "lane-a" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      return answer;
+    };
+
+    try {
+      // Held portrait the inner picture runs wide; landscape-left turns it.
+      const turned = await rotate("landscape-left");
+      expect(turned).toMatchObject({ applied: true, verification: "rotated", reason: null });
+      expect(turned.posture?.displayOrientation).toBe("portrait-upside-down");
+
+      // The other landscape keeps the picture's axis and lands a few reads
+      // late: the answer waits for it rather than reporting the old picture.
+      duo.lagReads = 3;
+      const halfTurn = await rotate("landscape-right");
+      expect(halfTurn).toMatchObject({ applied: true, verification: "rotated" });
+      expect(halfTurn.posture?.displayOrientation).toBe("portrait");
+
+      // On the cover an app that keeps portrait refuses a landscape turn.
+      Object.assign(duo, { screenId: 1, held: "portrait", picture: "portrait", adopts: false, lagReads: 0 });
+      const refused = await rotate("landscape-left");
+      expect(refused).toMatchObject({ applied: false, verification: "not-adopted", reason: "APPLE_ROTATE_NOT_ADOPTED" });
+      expect(refused.detail).toMatch(/cover/i);
+
+      // None of it read the framebuffer, which cannot see either panel turn.
+      expect(run.mock.calls.some(([, commandArgs]) => (commandArgs as string[]).includes("screenshot"))).toBe(false);
+    } finally {
+      service.dispose();
+      restoreHelper();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 
@@ -2758,6 +2859,7 @@ describe("iosSimulatorService boot contract", () => {
       { name: "iPhone 17", udid: "device-2", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17" },
     ];
     const calls: string[] = [];
+    let created = 0;
     const run = vi.fn(async (command: string, commandArgs: string[]) => {
       const joined = `${command} ${commandArgs.join(" ")}`;
       calls.push(joined);
@@ -2778,8 +2880,11 @@ describe("iosSimulatorService boot contract", () => {
         }] }), stderr: "" };
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "create") {
-        devices.push({ name: commandArgs[2] ?? "ADE · lane", udid: "device-created", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: commandArgs[3] ?? "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
-        return { stdout: "device-created\n", stderr: "" };
+        // The first device made is `device-created`; later ones are numbered.
+        created += 1;
+        const udid = created === 1 ? "device-created" : `device-created-${created}`;
+        devices.push({ name: commandArgs[2] ?? "ADE · lane", udid, state: "Shutdown", isAvailable: true, deviceTypeIdentifier: commandArgs[3] ?? "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
+        return { stdout: `${udid}\n`, stderr: "" };
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "shutdown") {
         options.onShutdown?.(commandArgs[2] ?? "");
@@ -3516,6 +3621,48 @@ describe("iosSimulatorService boot contract", () => {
       const deleteAt = calls.indexOf("xcrun simctl delete device-created");
       expect(deleteAt).toBeGreaterThan(shutdownAt);
       expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an agent drives its lane's extra device by --device, never another lane's, and lane-only verbs refuse it", async () => {
+    const { service, calls, helper, dispose } = setup();
+    try {
+      const own = await service.deviceCreate({ laneId: "lane-a" });
+      const extra = await service.deviceCreate({ laneId: "lane-a", deviceType: "iPhone 17", extra: true });
+      const otherLanes = await service.deviceCreate({ laneId: "lane-b", extra: true });
+      expect([own.udid, extra.udid, otherLanes.udid]).toEqual(["device-created", "device-created-2", "device-created-3"]);
+      // An extra comes up booted; it is never the lane's own device.
+      expect(extra.extra).toBe(true);
+      expect(calls).toContain("xcrun simctl boot device-created-2");
+      expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane?.udid).toBe("device-created");
+
+      // Named by udid or by name, input lands on the extra.
+      await service.tap({ laneId: "lane-a", deviceUdid: extra.udid, x: 1, y: 1, agentCaller: true } as never);
+      await service.tap({ laneId: "lane-a", deviceUdid: extra.name, x: 1, y: 1, agentCaller: true } as never);
+      expect(helper.sent.filter((command) => command.type === "touch").map((command) => command.udid))
+        .toEqual(["device-created-2", "device-created-2", "device-created-2", "device-created-2"]);
+      // Another lane's extra is foreign.
+      await expect(service.tap({ laneId: "lane-a", deviceUdid: otherLanes.udid, x: 1, y: 1, agentCaller: true } as never))
+        .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
+      // The lane's live view, stop and recordings stay on its own device.
+      for (const refused of [
+        () => service.startStream({ laneId: "lane-a", deviceUdid: extra.udid, agentCaller: true } as never),
+        () => service.deviceStop({ laneId: "lane-a", udid: extra.udid, agentCaller: true } as never),
+        () => service.recordStart({ laneId: "lane-a", deviceUdid: extra.udid, agentCaller: true } as never),
+      ]) {
+        await expect(refused()).rejects.toThrow(/APPLE_DEVICE_IS_EXTRA/);
+      }
+      expect(calls).not.toContain("xcrun simctl shutdown device-created-2");
+
+      // device-delete --device deletes the extra and leaves the lane's own device.
+      await service.deviceDelete({ laneId: "lane-a", udid: extra.udid, ignoreOwnership: true });
+      expect(calls).toContain("xcrun simctl delete device-created-2");
+      expect(calls).not.toContain("xcrun simctl delete device-created");
+      const after = await service.deviceList({ laneId: "lane-a", installed: false });
+      expect(after.lane?.udid).toBe("device-created");
+      expect(after.extras).toEqual([]);
     } finally {
       dispose();
     }

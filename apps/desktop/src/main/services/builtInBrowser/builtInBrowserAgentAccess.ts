@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { pathKey } from "../shared/pathCompare";
 import {
+  BUILT_IN_BROWSER_AGENTS_DISABLED_CODE,
   BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE,
   BUILT_IN_BROWSER_APPROVAL_BLOCKED_CODE,
   BUILT_IN_BROWSER_APPROVAL_PENDING_CODE,
@@ -32,6 +33,8 @@ type AgentIdentity = {
   laneId?: string | null;
   chatSessionId?: string | null;
   projectRoot?: string | null;
+  /** An outside AI app, identified by the runtime even without a chat. */
+  agentCaller?: boolean | null;
 };
 
 /** Names a person recognises for the agent asking: its chat title and lane name. */
@@ -41,8 +44,10 @@ export type BuiltInBrowserAgentDescription = {
   projectRoot?: string | null;
 };
 
-/** What is saved: the setting and the grants. Prompts are never saved. */
+/** What is saved: the switch, the mode and the grants. Prompts are never saved. */
 export type BuiltInBrowserAgentAccessPersisted = {
+  /** Missing in older files, which predate the switch and meant "on". */
+  enabled: boolean;
   mode: BuiltInBrowserAgentAccessMode;
   laneGrants: BuiltInBrowserAgentLaneGrant[];
   chatGrants: BuiltInBrowserAgentChatGrant[];
@@ -66,6 +71,24 @@ export class BuiltInBrowserApprovalPendingError extends Error {
       + "The prompt is still open in ADE; run the same command again to keep waiting.",
     );
     this.name = "BuiltInBrowserApprovalPendingError";
+  }
+}
+
+/**
+ * The master switch is off.
+ *
+ * Distinct from a Block: nothing was asked, so there is no prompt to answer and
+ * no point retrying. The person can turn agents back on in Settings.
+ */
+export class BuiltInBrowserAgentsDisabledError extends Error {
+  readonly code = BUILT_IN_BROWSER_AGENTS_DISABLED_CODE;
+
+  constructor() {
+    super(
+      `${BUILT_IN_BROWSER_AGENTS_DISABLED_CODE}: the user turned off agent use of the ADE browser in Settings. `
+      + "Do not retry; ask the user to turn it back on if the browser is needed.",
+    );
+    this.name = "BuiltInBrowserAgentsDisabledError";
   }
 }
 
@@ -139,6 +162,9 @@ export function createBuiltInBrowserAgentAccessController(args: {
       return null;
     }
   })();
+  // Older files have no `enabled`, and the switch is on by default: only an
+  // explicit `false` turns agents off.
+  let enabled = loaded?.enabled !== false;
   let mode: BuiltInBrowserAgentAccessMode = loaded?.mode != null
     ? normalizeBuiltInBrowserAgentAccessMode(loaded.mode)
     : args.initialMode ?? BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE;
@@ -155,6 +181,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
   const laneOffered = (prompt: BuiltInBrowserAgentAccessPrompt): boolean => Boolean(prompt.laneId);
 
   const snapshot = (): BuiltInBrowserAgentAccessSnapshot => ({
+    enabled,
     mode,
     laneGrants: laneGrants.map((grant) => ({ ...grant })),
     chatGrants: chatGrants.map((grant) => ({ ...grant })),
@@ -173,7 +200,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
 
   const persist = (): void => {
     try {
-      args.store?.write({ mode, laneGrants, chatGrants });
+      args.store?.write({ enabled, mode, laneGrants, chatGrants });
     } catch (error) {
       logger()?.warn("built_in_browser.agent_access_persist_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -193,6 +220,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
   };
 
   const covers = (identity: AgentIdentity): boolean => {
+    if (!enabled) return false;
     if (mode === "all") return true;
     const chatSessionId = normalizedString(identity.chatSessionId);
     const laneId = normalizedString(identity.laneId);
@@ -214,6 +242,10 @@ export function createBuiltInBrowserAgentAccessController(args: {
 
   const subjectFor = (identity: AgentIdentity): "chat" | "lane" =>
     normalizedString(identity.chatSessionId) ? "chat" : "lane";
+
+  /** The set the switch and the grants are about: an agent, however identified. */
+  const isAgentCaller = (identity: AgentIdentity): boolean =>
+    identity.agentCaller === true || Boolean(promptKeyFor(identity));
 
   const closePrompt = (entry: PromptEntry, granted: boolean, decision: string): void => {
     if (prompts.get(entry.key) !== entry) return;
@@ -308,7 +340,16 @@ export function createBuiltInBrowserAgentAccessController(args: {
   ): Promise<{ origin: string | null; required: boolean; granted: boolean }> => {
     const origin = browserOrigin(url);
     const key = promptKeyFor(identity);
-    if (!key || mode === "all") return { origin, required: false, granted: true };
+    // No lane and no chat is the person at their own browser: the switch and
+    // the grants are about agents, so a human is never gated by them.
+    // No key and no agent stamp is the person at their own browser.
+    if (!key && identity.agentCaller !== true) return { origin, required: false, granted: true };
+    // The switch is the person's answer already: never raise a prompt behind
+    // it, and never let it read as "not required".
+    if (!enabled) return { origin, required: true, granted: false };
+    // An outside AI app has no chat to ask about; the setting decides.
+    if (!key) return { origin, required: true, granted: mode === "all" };
+    if (mode === "all") return { origin, required: false, granted: true };
     if (covers(identity)) return { origin, required: true, granted: true };
     const blockedAt = recentBlocksForWaiters.get(key);
     if (blockedAt != null) {
@@ -341,7 +382,11 @@ export function createBuiltInBrowserAgentAccessController(args: {
   };
 
   const assertUrlAccessSync = (_url: string | null | undefined, identity: AgentIdentity): void => {
-    if (!promptKeyFor(identity) || covers(identity)) return;
+    // A human has no lane/chat identity and is not an outside AI app; the
+    // switch never applies to them.
+    if (!isAgentCaller(identity)) return;
+    if (!enabled) throw new BuiltInBrowserAgentsDisabledError();
+    if (covers(identity)) return;
     const subject = subjectFor(identity);
     throw new Error(
       `The user has not allowed this ${subject} to use the ADE browser yet. `
@@ -381,6 +426,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
         options: { waitBudgetMs?: number | null } = {},
       ): Promise<void> {
         const scoped = withDefaults(identity);
+        if (isAgentCaller(scoped) && !enabled) throw new BuiltInBrowserAgentsDisabledError();
         const result = await authorizeUrl(url, scoped, reason, options);
         if (result.granted) return;
         throw new BuiltInBrowserApprovalBlockedError(subjectFor(scoped));
@@ -422,6 +468,23 @@ export function createBuiltInBrowserAgentAccessController(args: {
     /** The same gate, with `projectRoot` filled in for callers that did not name one. */
     forProjectRoot: (projectRoot: string | null) => gate({ projectRoot: normalizedString(projectRoot) }),
     getSnapshot: snapshot,
+    /**
+     * The master switch. Turning it off refuses every agent call and closes
+     * open prompts, which are moot while nothing can answer them.
+     */
+    setEnabled(next: boolean): BuiltInBrowserAgentAccessSnapshot {
+      const normalized = next === true;
+      if (normalized !== enabled) {
+        enabled = normalized;
+        persist();
+        logger()?.info("built_in_browser.agent_access_enabled_changed", { enabled });
+        if (!enabled) {
+          for (const entry of [...prompts.values()]) closePrompt(entry, false, "disabled");
+        }
+        emitChange();
+      }
+      return snapshot();
+    },
     setMode(next: BuiltInBrowserAgentAccessMode): BuiltInBrowserAgentAccessSnapshot {
       const normalized = normalizeBuiltInBrowserAgentAccessMode(next);
       if (normalized !== mode) {

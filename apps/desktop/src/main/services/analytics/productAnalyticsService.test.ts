@@ -1982,7 +1982,7 @@ describe("product analytics producers", () => {
       outcome: "watched",
     })).not.toHaveProperty("outcome");
 
-    // The Apple panel's facts: six closed outcomes, and nothing about the
+    // The Apple panel's facts: its closed outcomes, and nothing about the
     // runtime, the device, the pose, or the lane crosses with them.
     for (const outcome of APPLE_DEVICE_ANALYTICS_OUTCOMES) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

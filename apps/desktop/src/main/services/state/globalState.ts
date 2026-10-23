@@ -14,6 +14,7 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentChatGrant,
   BuiltInBrowserAgentLaneGrant,
+  BuiltInBrowserSettingsPersisted,
 } from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
@@ -137,10 +138,13 @@ export type GlobalState = {
    * Absent: every agent may use it (the default).
    */
   builtInBrowserAgentAccess?: {
+    enabled?: boolean;
     mode?: BuiltInBrowserAgentAccessMode;
     laneGrants?: BuiltInBrowserAgentLaneGrant[];
     chatGrants?: BuiltInBrowserAgentChatGrant[];
   };
+  /** Machine-wide browser settings: tab limit, download folder, auto-grants. */
+  builtInBrowserSettings?: BuiltInBrowserSettingsPersisted;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

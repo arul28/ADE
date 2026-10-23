@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { takeWorkDraftLaneRequest, WORK_DRAFT_LANE_REQUESTED_EVENT } from "../../lib/workDraft";
+import {
+  takeWorkDraftLaneRequest,
+  WORK_DRAFT_LANE_REQUESTED_EVENT,
+  type WorkDraftLaneRequest,
+} from "../../lib/workDraft";
 
 /**
  * Runs `onRequest` when a "New chat in this lane" request for this project is
@@ -13,7 +17,7 @@ export function useWorkDraftLaneRequest({
 }: {
   ready: boolean;
   projectStateKey: string | null;
-  onRequest: () => void;
+  onRequest: (request: WorkDraftLaneRequest) => void;
 }): void {
   const onRequestRef = useRef(onRequest);
   onRequestRef.current = onRequest;
@@ -28,6 +32,7 @@ export function useWorkDraftLaneRequest({
   }, [ready]);
   useEffect(() => {
     if (!ready) return;
-    if (takeWorkDraftLaneRequest(projectStateKey)) onRequestRef.current();
+    const request = takeWorkDraftLaneRequest(projectStateKey);
+    if (request) onRequestRef.current(request);
   }, [projectStateKey, ready, requestTick]);
 }

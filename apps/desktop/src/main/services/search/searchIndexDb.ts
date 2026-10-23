@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import type { MaintenanceStepResult } from "../../../shared/types/storage";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 
 // Anchor createRequire to a synthetic CJS file so builtin resolution follows
@@ -165,6 +166,9 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
 
   const create = (): DatabaseSyncType => {
     const db = openWithFts5();
+    // Before the first table: deletes then hand pages back in small steps
+    // (`compactSearchIndex`) instead of leaving the file at its peak size.
+    db.exec("PRAGMA auto_vacuum = INCREMENTAL");
     db.exec(DDL);
     db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schemaVersion', ?)").run(
       String(SEARCH_INDEX_SCHEMA_VERSION)
@@ -262,4 +266,65 @@ export function clearSearchIndex(db: DatabaseSyncType): void {
   db.exec("DELETE FROM docs");
   db.exec("DELETE FROM sources");
   db.exec("DELETE FROM meta WHERE key <> 'schemaVersion'");
+}
+
+/** Free pages above this share of the file, and at least this many bytes, are worth a rebuild. */
+const SEARCH_INDEX_COMPACT_MIN_FREE_FRACTION = 0.25;
+const SEARCH_INDEX_COMPACT_MIN_FREE_BYTES = 16 * 1024 * 1024;
+const SEARCH_INDEX_INCREMENTAL_CHUNK_PAGES = 2_000;
+const SEARCH_INDEX_INCREMENTAL_MAX_CHUNKS = 25;
+
+function indexFileBytes(dbPath: string): number {
+  let total = 0;
+  for (const suffix of ["", "-wal"]) {
+    try {
+      total += fs.statSync(`${dbPath}${suffix}`).size;
+    } catch {
+      // absent
+    }
+  }
+  return total;
+}
+
+/**
+ * Hand the index's free pages back to the disk. Re-indexing deletes and
+ * re-inserts rows, and an index built before incremental auto-vacuum keeps
+ * every freed page: one measured index was 384 MB with 92% of its pages free.
+ * A file in that state is rebuilt once (`VACUUM`, which also switches on
+ * incremental auto-vacuum); after that each call frees a bounded number of
+ * pages, so the blocking rebuild never runs again.
+ */
+export function compactSearchIndex(index: SearchIndexDb): MaintenanceStepResult {
+  const pragma = (name: string): number => {
+    const row = index.db.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined;
+    return Number(row ? Object.values(row)[0] : 0) || 0;
+  };
+  const before = indexFileBytes(index.path);
+  const pageSize = pragma("page_size");
+  const pageCount = pragma("page_count");
+  const freeBefore = pragma("freelist_count");
+  let freed = 0;
+  if (pragma("auto_vacuum") === 2) {
+    if (freeBefore === 0) return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "nothing_due" };
+    let free = freeBefore;
+    for (let chunk = 0; chunk < SEARCH_INDEX_INCREMENTAL_MAX_CHUNKS && free > 0; chunk += 1) {
+      index.db.exec(`PRAGMA incremental_vacuum(${SEARCH_INDEX_INCREMENTAL_CHUNK_PAGES})`);
+      free = pragma("freelist_count");
+    }
+    freed = freeBefore - free;
+  } else {
+    const freeFraction = pageCount > 0 ? freeBefore / pageCount : 0;
+    if (freeFraction < SEARCH_INDEX_COMPACT_MIN_FREE_FRACTION || freeBefore * pageSize < SEARCH_INDEX_COMPACT_MIN_FREE_BYTES) {
+      return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "below_threshold" };
+    }
+    index.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+    index.db.exec("VACUUM");
+    freed = freeBefore;
+  }
+  index.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+  return {
+    itemsAffected: Math.max(0, freed),
+    bytesReclaimed: Math.max(0, before - indexFileBytes(index.path)),
+    skippedReason: null,
+  };
 }

@@ -1288,6 +1288,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// Settings the user changed that the host holds until this chat's background
+  /// work ends (`reasoningEffort`, `fastMode`): applying them restarts the agent
+  /// process, which would stop that work. Live only; older hosts omit it.
+  var pendingSettingsAfterBackground: [String]? = nil
   /// Work the live turn still has open (commands, tools, foreground subagents,
   /// pending approvals). Present, zero included, while a turn is live; an older
   /// host omits it, which means unknown, never zero.
@@ -1385,6 +1389,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
       && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
@@ -2422,6 +2427,11 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// (`status: "cross_machine_handoff_arrived"`). Desktop reads it for a
   /// banner and never draws it as a row; neither does the phone.
   case crossMachineHandoffArrived = "cross_machine_handoff_arrived"
+  /// "Notified you: <title>" — the agent sent the user a message (`ade notify`).
+  /// The host sends `noticeKind: "info"` with `status: "user_notified"` and the
+  /// message body as a string `detail`. Promoted so the timeline can keep it
+  /// visible as one bell line instead of folding it with routine info notices.
+  case userNotified = "user_notified"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2465,6 +2475,7 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.resetCreditAvailable.rawValue: return .resetCreditAvailable
   case AgentChatNoticeKind.crossMachineHandoffState.rawValue: return .crossMachineHandoffState
   case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
+  case AgentChatNoticeKind.userNotified.rawValue: return .userNotified
   default: return nil
   }
 }

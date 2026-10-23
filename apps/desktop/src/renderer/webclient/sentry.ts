@@ -32,11 +32,22 @@ export function initWebClientSentry(): void {
     tracePropagationTargets: [],
     dataCollection: SENTRY_DATA_COLLECTION,
     // A desktop-only member called on web is expected, not a crash.
-    beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) ? null : hooks.beforeSend(event)),
+    // A page the browser translated has had its text nodes swapped under
+    // React, which then fails to insert or remove them: not ADE's DOM.
+    beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)
+      ? null
+      : hooks.beforeSend(event)),
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
   Sentry.setTags({ process: "web-client", surface: "web-client" });
+}
+
+function isTranslationDomError(error: unknown): boolean {
+  return error instanceof Error
+    && error.name === "NotFoundError"
+    && /\b(?:insertBefore|removeChild)\b/.test(error.message)
+    && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement.className);
 }

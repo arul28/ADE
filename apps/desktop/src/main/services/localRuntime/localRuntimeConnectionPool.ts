@@ -53,6 +53,7 @@ import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/servic
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { readProcessStartTimeMs } from "../processes/processStartTime";
+import { askOlderBrainToShutDown, decideOlderBrainRetirement } from "./olderBrainRetirement";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import {
   LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE,
@@ -69,6 +70,7 @@ import {
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
+import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
@@ -176,6 +178,12 @@ const LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS = RUNTIME_SERVICE_START_WA
  * exactly as it did before — so a wedged runtime still costs a bounded delay.
  */
 const LOCAL_RUNTIME_DRAIN_TIMEOUT_MS = 2_000;
+
+/**
+ * The pool's own "used after quit started" invariant (disposed, or admission
+ * closed), told apart from errors the runtime returns.
+ */
+class LocalRuntimePoolClosedError extends Error {}
 /**
  * How long quit gives this desktop's own brain to exit after it is asked to
  * shut down, on Windows, before the brain is force-killed. The request and the
@@ -333,6 +341,8 @@ function coalescedLocalRuntimeActionKey(
     arg: stableActionValue(request.arg),
     args: stableActionValue(request.args),
     argsList: stableActionValue(request.argsList),
+    // A call the desktop reports must not share a promise with one it does not.
+    callerReportsFailure: isInCapturedIpcCall(),
   });
 }
 
@@ -1173,6 +1183,11 @@ export class LocalRuntimeConnectionPool {
   private appFallbackStoppedForInstall: AppFallbackReason | null = null;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
+  /** The last incompatible brain the primary-socket probe met; see `retireOlderPrimaryBrain`. */
+  private lastPrimaryProbeMismatch: { socketPath: string; error: LocalRuntimeCompatibilityError } | null = null;
+  /** Pids this desktop already asked to shut down. Each brain is asked once. */
+  private readonly retiredOlderBrainPids = new Set<number>();
+  private readonly loggedOlderBrainRefusals = new Set<string>();
   private lastIsolatedServiceRepairMs = 0;
   // How many opportunistic service repairs have run since the machine service
   // last answered compatibly, and when the last one started. Together they are
@@ -1200,6 +1215,8 @@ export class LocalRuntimeConnectionPool {
   /** Logs a brain update's window once, not on every connect attempt inside it. */
   private loggedBrainUpdateWindow = false;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
+  /** Every action call still running, coalesced or not, for `drain()`. */
+  private readonly inFlightActionCalls = new Set<Promise<unknown>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private readonly projectRegistrationsByRoot = new Map<string, {
     acceptsMatchingWaiters: boolean;
@@ -1987,12 +2004,12 @@ export class LocalRuntimeConnectionPool {
           rootPath: normalizedRoot,
           socketPath: entry.socketPath,
           attempt,
-          willRetry: attempt < 2,
+          willRetry: attempt < 2 && !this.isShuttingDown(),
           error: error.message,
         });
         this.resetActiveConnection(entry);
         lastError = error;
-        if (attempt < 2) continue;
+        if (attempt < 2 && !this.isShuttingDown()) continue;
         throw error;
       }
 
@@ -2016,12 +2033,12 @@ export class LocalRuntimeConnectionPool {
           rootPath: normalizedRoot,
           socketPath: entry.socketPath,
           attempt,
-          willRetry: attempt < 2,
+          willRetry: attempt < 2 && !this.isShuttingDown(),
           error: projectError.message,
         });
         this.resetActiveConnection(entry);
         lastError = projectError;
-        if (attempt < 2) continue;
+        if (attempt < 2 && !this.isShuttingDown()) continue;
         throw projectError;
       }
     }
@@ -2095,11 +2112,15 @@ export class LocalRuntimeConnectionPool {
     );
   }
 
-  async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {
+  async syncStatusForRoot(
+    rootPath: string,
+    args: SyncGetStatusArgs = {},
+    options: { timeoutMs?: number } = {},
+  ): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.getStatus", {
       includeTransferReadiness: args.includeTransferReadiness === true,
       forceTransferReadiness: args.forceTransferReadiness === true,
-    });
+    }, options);
   }
 
   async refreshSyncDiscoveryForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
@@ -2165,13 +2186,20 @@ export class LocalRuntimeConnectionPool {
   async callAttention<T>(
     action: string,
     args: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     // An Attention snapshot poll that inherits the ten-minute runtime budget
     // pins the renderer on "syncing" long after the account stream has wedged.
+    // Callers behind an IPC timer pass what is left of their own budget.
+    const timeoutMs = options.timeoutMs !== undefined
+      && Number.isFinite(options.timeoutMs)
+      && options.timeoutMs > 0
+      ? Math.min(LOCAL_RUNTIME_SYNC_TIMEOUT_MS, Math.trunc(options.timeoutMs))
+      : LOCAL_RUNTIME_SYNC_TIMEOUT_MS;
     return await this.callSync<T>(
       "attention.call",
       { action, args },
-      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+      { timeoutMs },
     );
   }
 
@@ -2179,13 +2207,31 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
+    // A call that arrives after quit starts is a caller bug and keeps the
+    // invariant error. A call admitted before that ends with the connection
+    // the quit closed under it, which is what really happened to it.
+    this.assertNotDisposed();
+    try {
+      return await this.callActionForRootAdmitted(rootPath, request);
+    } catch (error) {
+      if (error instanceof LocalRuntimePoolClosedError) {
+        throw new Error("Remote ADE service connection closed because ADE is quitting.");
+      }
+      throw error;
+    }
+  }
+
+  private async callActionForRootAdmitted(
+    rootPath: string,
+    request: RemoteRuntimeActionRequest,
+  ): Promise<RemoteRuntimeActionResult> {
     const coalescedKey = coalescedLocalRuntimeActionKey(rootPath, request);
-    if (!coalescedKey) return await this.callActionForRootUncoalesced(rootPath, request);
+    if (!coalescedKey) return await this.trackInFlightAction(this.callActionForRootUncoalesced(rootPath, request));
 
     const existing = this.coalescedActionCalls.get(coalescedKey);
     if (existing) return await existing;
 
-    const actionCall = this.callActionForRootUncoalesced(rootPath, request)
+    const actionCall = this.trackInFlightAction(this.callActionForRootUncoalesced(rootPath, request))
       .finally(() => {
         if (this.coalescedActionCalls.get(coalescedKey) === actionCall) {
           this.coalescedActionCalls.delete(coalescedKey);
@@ -2193,6 +2239,24 @@ export class LocalRuntimeConnectionPool {
       });
     this.coalescedActionCalls.set(coalescedKey, actionCall);
     return await actionCall;
+  }
+
+  private trackInFlightAction<T>(call: Promise<T>): Promise<T> {
+    this.inFlightActionCalls.add(call);
+    const forget = (): void => {
+      this.inFlightActionCalls.delete(call);
+    };
+    call.then(forget, forget);
+    return call;
+  }
+
+  /**
+   * Quit has started: admission is closed or the pool is gone. A connection
+   * that drops now drops because of the quit, so a retry could only reach a
+   * pool that refuses it.
+   */
+  private isShuttingDown(): boolean {
+    return this.disposed || this.stopping;
   }
 
   private async callActionForRootUncoalesced(
@@ -2229,6 +2293,7 @@ export class LocalRuntimeConnectionPool {
           {
             projectId: project.projectId,
             name: "run_ade_action",
+            ...callerReportsFailureParam(),
             arguments: {
               domain: request.domain,
               action: request.action,
@@ -2276,16 +2341,20 @@ export class LocalRuntimeConnectionPool {
             socketPath: entry.socketPath,
             totalMs,
             attempt,
-            willRetry: attempt < maxAttempts,
+            willRetry: attempt < maxAttempts && !this.isShuttingDown(),
           });
           this.resetActiveConnection(entry);
         }
       }
 
       if (callError) {
+        // During quit the dropped connection is the answer: it reaches the
+        // caller as "connection closed", not as the disposed pool a retry
+        // would run into (ADE-DESKTOP-2P/1D/2Z).
         if (
           isLocalRuntimeConnectionDropped(callError) &&
-          attempt < maxAttempts
+          attempt < maxAttempts &&
+          !this.isShuttingDown()
         ) {
           lastError = callError;
           continue;
@@ -2324,6 +2393,7 @@ export class LocalRuntimeConnectionPool {
     const value = await entry.client.call("ade/actions/call", {
       projectId: project.projectId,
       name: "list_ade_actions",
+      ...callerReportsFailureParam(),
       arguments: { domain: "all" },
     }, { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS });
     return normalizeAdeActionRegistry(value);
@@ -2340,6 +2410,7 @@ export class LocalRuntimeConnectionPool {
       {
         projectId: project.projectId,
         name: "stream_events",
+        ...callerReportsFailureParam(),
         arguments: {
           cursor: clampCursor(request.cursor),
           limit: clampLimit(request.limit),
@@ -2458,13 +2529,15 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     method: string,
     params: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
+    // The transport clock starts here, after registration and connect.
     return await entry.client.call(method, {
       ...params,
       projectId: project.projectId,
-    }, { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
+    }, { timeoutMs: options.timeoutMs ?? LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
   }
 
   /**
@@ -2490,7 +2563,10 @@ export class LocalRuntimeConnectionPool {
     for (const registration of this.projectRegistrationsByRoot.values()) {
       inFlight.push(registration.promise);
     }
-    for (const call of this.coalescedActionCalls.values()) {
+    // Uncoalesced calls too: a status poll the renderer sent just before its
+    // window closed is still in flight, and settling it here is what keeps
+    // it from meeting the teardown.
+    for (const call of this.inFlightActionCalls) {
       inFlight.push(call);
     }
     if (inFlight.length === 0) return;
@@ -2639,10 +2715,10 @@ export class LocalRuntimeConnectionPool {
 
   private assertNotDisposed(): void {
     if (this.disposed) {
-      throw new Error("Local runtime connection pool is disposed.");
+      throw new LocalRuntimePoolClosedError("Local runtime connection pool is disposed.");
     }
     if (this.stopping) {
-      throw new Error("Local runtime connection pool is stopping.");
+      throw new LocalRuntimePoolClosedError("Local runtime connection pool is stopping.");
     }
   }
 
@@ -3460,7 +3536,9 @@ export class LocalRuntimeConnectionPool {
       this.markIsolatedMode(false, { notify: entry != null });
       return;
     }
+    this.lastPrimaryProbeMismatch = null;
     if (!(await this.probeCompatibleRuntime(primarySocketPath))) {
+      await this.retireOlderPrimaryBrain(primarySocketPath);
       if (this.versionSkewStatus.state === "runtime_newer") {
         this.logger.info("local_runtime.isolated_recovery_waiting_for_desktop_update", {
           primarySocketPath,
@@ -3494,6 +3572,62 @@ export class LocalRuntimeConnectionPool {
       this.ownedRuntimeSocketPath = null;
     }
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  /**
+   * Ask an older brain that holds the machine socket to shut down, so the
+   * installed service can start the current one. The guards and the reason
+   * live in `olderBrainRetirement.ts`; this reads the pool's state for them.
+   * Each brain is asked at most once per session.
+   */
+  private async retireOlderPrimaryBrain(primarySocketPath: string): Promise<void> {
+    const mismatch = this.lastPrimaryProbeMismatch;
+    this.lastPrimaryProbeMismatch = null;
+    if (!mismatch || mismatch.socketPath !== primarySocketPath) return;
+    const { error } = mismatch;
+    const logFields = {
+      socketPath: primarySocketPath,
+      runtimePid: error.pid,
+      runtimeVersion: error.runtimeVersion,
+      runtimeDefaultRole: error.runtimeDefaultRole,
+      appVersion: this.appVersion,
+    };
+    const refuse = (reason: string): void => {
+      // The recovery tick runs every 20 s; one line per brain and reason.
+      const logKey = `${error.pid ?? "none"}:${reason}`;
+      if (this.loggedOlderBrainRefusals.has(logKey)) return;
+      this.loggedOlderBrainRefusals.add(logKey);
+      this.logger.info("local_runtime.older_brain_left_running", { ...logFields, reason });
+    };
+    const quitOrUpdateRefusal = (): string | null => {
+      if (this.disposed || this.stopping) return "quitting";
+      return this.isUpdateWindowActive() ? "update_in_progress" : null;
+    };
+    const decision = decideOlderBrainRetirement({
+      skewState: error.skewState,
+      runtimeVersion: error.runtimeVersion,
+      appVersion: this.appVersion,
+      pid: error.pid,
+      preferServiceRepair: this.options.preferServiceRepair === true,
+      serviceInstalled: this.serviceInstallStatus.state === "installed",
+      quitting: this.disposed || this.stopping,
+      updateInProgress: this.isUpdateWindowActive(),
+      ownPids: [this.ownedRuntimeChild?.pid, this.activeRuntimePid],
+      alreadyAsked: (pid) => this.retiredOlderBrainPids.has(pid),
+      isAlive: isRuntimePidAlive,
+    }, compareRuntimeVersionStrings);
+    if (decision.action === "skip") return;
+    if (decision.action === "refuse") return refuse(decision.reason);
+    // Recorded before the ancestry lookup, which reads the whole process table
+    // (PowerShell on Windows): it must not repeat on every tick.
+    this.retiredOlderBrainPids.add(decision.pid);
+    const result = await askOlderBrainToShutDown({
+      pid: decision.pid,
+      socketPath: primarySocketPath,
+      recheck: quitOrUpdateRefusal,
+    });
+    if (!result.requested) return refuse(result.reason);
+    this.logger.warn("local_runtime.older_brain_shutdown_requested", logFields);
   }
 
   private async retryServiceInstallForIsolatedRecovery(): Promise<void> {
@@ -3530,8 +3664,11 @@ export class LocalRuntimeConnectionPool {
       client = new RuntimeRpcClient(transport);
       const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.localProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
-      return this.runtimeCompatibilityError(socketPath, runtimeInfo) == null;
+      const error = this.runtimeCompatibilityError(socketPath, runtimeInfo);
+      this.lastPrimaryProbeMismatch = error ? { socketPath, error } : null;
+      return error == null;
     } catch {
+      this.lastPrimaryProbeMismatch = null;
       return false;
     } finally {
       if (client) closeRuntimeClient(client);

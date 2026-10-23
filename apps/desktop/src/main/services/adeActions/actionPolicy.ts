@@ -335,6 +335,10 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   jira: ["connect"],
   // A token gives an outside AI app this computer.
   remote_mcp: ["createToken"],
+  // The clipboard routinely holds passwords and one-time codes from a password
+  // manager. Reading it is fine for the person's own agent; a read-only MCP
+  // connection must not be able to pull it into a transcript.
+  built_in_browser: ["readClipboard"],
 };
 
 /**
@@ -699,6 +703,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSessionCapabilities",
     "getSessionSummary",
     "getTurnStatus",
+    // The questions/approvals a chat is blocked on, so `ade chat respond` can
+    // find the item and its options (`chat.respondToInput` answers it).
+    "listPendingInputs",
     "getSlashCommands",
     "getTurnFileDiff",
     "getParallelLaunchState",
@@ -1096,6 +1103,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",
+    "getUsageLimits",
     "getUsageSnapshot",
     "noteQuotaDemand",
     "refreshHistory",
@@ -1107,7 +1115,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
-  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "runMaintenanceNow"],
   project_health: ["fix", "getReport"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],

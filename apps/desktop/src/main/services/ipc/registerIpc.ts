@@ -76,14 +76,16 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { resolveWithinAllowedDirs } from "./allowedRendererPath";
+import { PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE, resolveWithinAllowedDirs } from "./allowedRendererPath";
 import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
+  AttentionPreferences,
+  AttentionSnapshot,
 } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
-import { buildMachineOnlySyncSnapshot } from "../sync/machineOnlySyncSnapshot";
+import { createSyncStatusReaders } from "../sync/syncStatusReaders";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
@@ -1000,6 +1002,10 @@ import {
   isBuiltInBrowserNoTabError,
 } from "../builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
+  parseBuiltInBrowserSettingsPatch,
+} from "../../../shared/types/builtInBrowser";
 import { createRemoteRequestClaims } from "../builtInBrowser/remoteRequestClaims";
 import { runRemoteAgentBrowserCall } from "../builtInBrowser/builtInBrowserRemoteCalls";
 import {
@@ -1050,7 +1056,6 @@ import type { createLinearCredentialService } from "../cto/linearCredentialServi
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import {
-  LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
@@ -1065,6 +1070,7 @@ import type { ProjectHealthService } from "../../../../../ade-cli/src/services/p
 import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -1862,9 +1868,12 @@ function buildPrAiDisplayText(context: PrAiResolutionContext): string {
 }
 
 function getAllowedDirs(getCtx: () => AppContext): string[] {
-  const projectRoot = getCtx().project.rootPath;
+  // A window with no project open has a blank root. Leave it out: resolving ""
+  // gives the process's working directory, which is "/" on a Mac opened from
+  // Finder and would allow every path on the disk.
+  const projectRoot = getCtx().project?.rootPath?.trim() ?? "";
   return [
-    projectRoot,
+    ...(projectRoot ? [projectRoot] : []),
     app.getPath("downloads"),
     app.getPath("documents"),
     app.getPath("temp"),
@@ -1927,6 +1936,10 @@ export function registerIpc({
   retryCaptureGesture,
   captureGestureNow,
   openAttentionItem,
+  onAttentionAccountSnapshot,
+  onAttentionPreferences,
+  onAttentionSessionMuted,
+  openDesktopAlert,
   getCurrentAccountOwnerId,
   accountAttentionClient,
   attemptedProjectRoots,
@@ -2005,6 +2018,12 @@ export function registerIpc({
   retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   captureGestureNow?: () => boolean;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
+  /** Account Activity snapshots and preferences, for desktop notifications. */
+  onAttentionAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
+  onAttentionPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  onAttentionSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
+  /** Open what a toasted desktop alert points at, by its item id. */
+  openDesktopAlert?: (itemId: unknown) => void;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
     PushRelayClient,
@@ -2014,6 +2033,7 @@ export function registerIpc({
     | "getAttentionPreferences"
     | "putAttentionPreferences"
     | "putActivityMachinePreferences"
+    | "setAttentionSessionMuted"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -2066,6 +2086,9 @@ export function registerIpc({
     localRuntimeConnectionPool,
     accountAttentionClient,
     getCurrentAccountOwnerId: resolveCurrentAttentionAccountOwnerId,
+    onAccountSnapshot: onAttentionAccountSnapshot,
+    onPreferences: onAttentionPreferences,
+    onSessionMuted: onAttentionSessionMuted,
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -2806,6 +2829,8 @@ export function registerIpc({
         bounds: { x: 0, y: 0, width: 0, height: 0 },
         activeTabId: null,
         tabs: [],
+        tabCount: 0,
+        tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
         url: null,
         title: null,
         isLoading: false,
@@ -2816,6 +2841,7 @@ export function registerIpc({
         ownerLaneId: null,
         ownerChatSessionId: null,
         ownerClaimedAt: null,
+        ownerLastActiveAt: null,
         ownerLeaseExpiresAt: null,
       };
     }
@@ -3565,6 +3591,24 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.attentionSetSessionMuted,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { accountOwnerId?: unknown; sessionId?: unknown; muted?: unknown }
+        : {};
+      return attentionAccountCoordinator.setSessionMuted(
+        request.sessionId,
+        request.muted,
+        request.accountOwnerId,
+      );
+    },
+  );
+
+  ipcMain.handle(IPC.attentionOpenAlert, async (_event, itemId: unknown) => {
+    openDesktopAlert?.(itemId);
+  });
+
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const item = parseAttentionItem(input);
     if (!item) throw new Error("Invalid Activity item.");
@@ -3862,7 +3906,11 @@ export function registerIpc({
         inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
       }
     }
-    return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+    if (path.isAbsolute(inputPath)) return path.resolve(inputPath);
+    // A relative path names a file in the project. With no project open there
+    // is nothing to resolve it against (not the process's working directory).
+    if (!projectRoot?.trim()) throw new Error(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    return path.resolve(projectRoot, inputPath);
   };
 
   const resolveAllowedRendererPath = (rawPath: string): string => {
@@ -4342,6 +4390,11 @@ export function registerIpc({
   ipcMain.handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.runMaintenanceNow();
+  });
+
+  ipcMain.handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.deletedLaneChatsSummary();
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (
@@ -6324,103 +6377,20 @@ export function registerIpc({
     return await ctx.cloudAgentsService.archive(arg);
   });
 
-  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const params = {
-      includeTransferReadiness: arg?.includeTransferReadiness === true,
-      forceTransferReadiness: arg?.forceTransferReadiness === true,
-    };
-    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
-      event,
-      "sync.getStatus",
-      params,
-      (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
-    );
-    if (runtimeStatus.handled) return runtimeStatus.result;
-    return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
-      service.getStatus({
-        includeTransferReadiness: arg?.includeTransferReadiness,
-        forceTransferReadiness: arg?.forceTransferReadiness,
-      }),
-    );
-  });
-
-  // A degraded local runtime stays degraded for as long as it takes a human to
-  // fix it, and every renderer read logs the same sentence. Report the edge into
-  // a reason, then at most once a minute while it persists — same shape as the
-  // account publisher's warnOnce. A recovered read clears the latch, so the next
-  // outage is reported immediately.
-  const LOCAL_STATUS_DEGRADED_WARN_INTERVAL_MS = 60_000;
-  let lastDegradedWarnReason: string | null = null;
-  let lastDegradedWarnAtMs = 0;
-  const warnLocalStatusDegraded = (reason: string): void => {
-    const nowMs = Date.now();
-    const suppressed =
-      lastDegradedWarnReason === reason
-      && nowMs - lastDegradedWarnAtMs < LOCAL_STATUS_DEGRADED_WARN_INTERVAL_MS;
-    if (suppressed) return;
-    lastDegradedWarnReason = reason;
-    lastDegradedWarnAtMs = nowMs;
-    getCtx().logger.warn("sync.local_status_degraded", { error: reason });
-  };
-
-  /**
-   * `work`'s value, or a rejection once `timeoutMs` pass.
-   *
-   * The timer never keeps the process alive, and both handlers are attached up
-   * front so a rejection arriving after the deadline — the runtime call the
-   * deadline abandoned is still in flight — is handled here rather than
-   * surfacing as an unhandled one.
-   */
-  const withDeadline = <T>(work: Promise<T>, timeoutMs: number): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`The background service did not answer within ${timeoutMs}ms.`)),
-        Math.max(1, timeoutMs),
-      );
-      timer.unref?.();
-      work.then(resolve, reject).finally(() => clearTimeout(timer));
-    });
-
-  const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const params = {
-      includeTransferReadiness: arg?.includeTransferReadiness === true,
-      forceTransferReadiness: arg?.forceTransferReadiness === true,
-    };
-    if (localRuntimeConnectionPool) {
-      try {
-        // Machine-level call: intentionally bypasses the window's local/remote
-        // project binding so Connections can always describe this computer.
-        // The transport budget starts once connect() has returned, so it bounds
-        // only the read; the handler's overall cap covers the connect in front
-        // of it. See LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS and
-        // LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS.
-        const snapshot = await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
+  const syncStatusReaders = createSyncStatusReaders({
+    getLogger: () => getCtx().logger,
+    readMachineFromRuntime: localRuntimeConnectionPool
+      // The transport budget starts once connect() has returned, so it bounds
+      // only the read; the readers' overall cap covers the connect in front of
+      // it. See LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS.
+      ? (params) => localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
           "sync.getStatus",
           params,
           { timeoutMs: LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS },
-        );
-        lastDegradedWarnReason = null;
-        return snapshot;
-      } catch (error) {
-        if (!isSyncServiceUnavailableError(error)) {
-          // This is the ONLY source for the This-Machine card, and the card is
-          // mostly about identity — the machine's name, platform and whether it
-          // is reachable — which the desktop can answer without the background
-          // service. Rejecting here blanked the whole card behind "Couldn't
-          // load connection details" whenever the local runtime was down.
-          // Answer with a machine-only snapshot whose routes are honestly all
-          // down and whose blocking text carries the real reason instead.
-          warnLocalStatusDegraded(error instanceof Error ? error.message : String(error));
-          return buildMachineOnlySyncSnapshot(error);
-        }
-      }
-    }
-    try {
-      return await (await requireSyncService()).getStatus(params);
-    } catch (error) {
-      return buildMachineOnlySyncSnapshot(error);
-    }
-  };
+        )
+      : null,
+    readMachineFromService: async (params) => await (await requireSyncService()).getStatus(params),
+  });
 
   // The account directory refusing to register THIS computer is the state a
   // revoked machine sits in, and the local status read is where the desktop can
@@ -6445,23 +6415,35 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    // A status read that does not answer in time is not an error the renderer
-    // can do anything with: it feeds a connection indicator, and both "you are
-    // connected" and "you are not" would be invented. Answer with the same
-    // synthesized machine-only snapshot this path already returns for a runtime
-    // it cannot reach — its `degradedReason` says outright that this is not a
-    // reading of the machine, which is what the renderer's shared reader keys
-    // its backoff on — so the deadline lands the renderer in a state it already
-    // understands instead of the opaque IPC timeout that used to win this race.
-    const snapshot = await withDeadline(
-      readLocalSyncStatus(arg),
-      LOCAL_RUNTIME_SYNC_STATUS_OVERALL_TIMEOUT_MS,
-    ).catch((error: unknown) => {
-      warnLocalStatusDegraded(error instanceof Error ? error.message : String(error));
-      return buildMachineOnlySyncSnapshot(error);
-    });
+    const snapshot = await syncStatusReaders.readMachine(arg);
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
+  });
+
+  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const rootKey = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
+    return await syncStatusReaders.readProject(rootKey, arg, async (params) => {
+      const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+        event,
+        "sync.getStatus",
+        params,
+        // Same read budget as the machine read: the transport clock starts
+        // after the project is registered and connected, so a cold start never
+        // spends it, and it expires inside the readers' overall cap.
+        (pool, rootPath) => pool.syncStatusForRoot(rootPath, params, {
+          timeoutMs: LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
+        }),
+      );
+      if (runtimeStatus.handled) return runtimeStatus.result;
+      // The in-process service reads an absent `includeTransferReadiness` as
+      // "include it", unlike the runtime, so it gets the caller's own values.
+      return await callSyncOrBrain<SyncRoleSnapshot>("sync.getStatus", params, (service) =>
+        service.getStatus({
+          includeTransferReadiness: arg?.includeTransferReadiness,
+          forceTransferReadiness: arg?.forceTransferReadiness,
+        }),
+      );
+    });
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
@@ -7182,10 +7164,6 @@ export function registerIpc({
     const result = await removeProviderAccount(id);
     captureProviderAccount("account_removed", "completed", provider);
     return result;
-  });
-
-  ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
-    return getMachineProviderInstanceStore().rename(providerInstanceId(arg), providerInstanceArgs(arg).label);
   });
 
   ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
@@ -10846,6 +10824,25 @@ export function registerIpc({
     return ensureBuiltInBrowser().getAgentAccess();
   });
 
+  ipcMain.handle(IPC.builtInBrowserAgentAccessSetEnabled, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetEnabled, { windowMs: 10_000, max: 20 });
+    const enabled = isRecord(arg) ? arg.enabled : arg;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${IPC.builtInBrowserAgentAccessSetEnabled}: enabled must be a boolean.`);
+    }
+    return ensureBuiltInBrowser().setAgentAccessEnabled(enabled);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsGet, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsGet, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().getBrowserSettings();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsSet, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().updateBrowserSettings(parseBuiltInBrowserSettingsPatch(arg));
+  });
+
   ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetMode, { windowMs: 10_000, max: 20 });
     const mode = isRecord(arg) ? arg.mode : arg;
@@ -14217,6 +14214,20 @@ export function registerIpc({
 
   return {
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
+    /**
+     * The user opened this item from a desktop notification: mark it seen on
+     * the account, so the phone (waiting out desktop-first) stays quiet.
+     */
+    async markAttentionItemSeen(itemId: string, alertFingerprint?: string | null): Promise<void> {
+      await attentionAccountCoordinator.acknowledge({
+        itemIds: [itemId],
+        // Fenced to the alert the notification showed, so clicking an old one
+        // cannot mark a newer question on the same chat as seen.
+        ...(alertFingerprint ? { alertFingerprints: { [itemId]: alertFingerprint } } : {}),
+        seenAt: new Date().toISOString(),
+        expectedAccountOwnerId: resolveCurrentAttentionAccountOwnerId(),
+      });
+    },
     /** The account machine directory, for the in-process `@mac:` mention path. */
     listAccountMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,

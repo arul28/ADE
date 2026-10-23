@@ -15,10 +15,13 @@ import {
   type PushRegistrationStore,
   type StoredAttentionAcknowledgment,
   type StoredRemoteAttentionAcknowledgment,
+  type StoredUserMessage,
 } from "./pushRegistrationStore";
 import {
   createPushRelayClient,
+  PUSH_RELAY_FOREGROUND_DEADLINE_MS,
   PushRelayMachineRevokedError,
+  PushRelayUnreachableError,
 } from "./pushRelayClient";
 import {
   activityAlertFingerprint,
@@ -165,6 +168,7 @@ describe("createPushPublisherService flush", () => {
       remoteAttentionAcknowledgments?: StoredRemoteAttentionAcknowledgment[];
       machineRevokedAt?: string | null;
       machineName?: string | (() => string);
+      userMessages?: StoredUserMessage[];
     } = {},
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
@@ -191,6 +195,7 @@ describe("createPushPublisherService flush", () => {
       itemId: string,
     ) => `${accountOwnerId ?? ""}\u0000${itemId}`;
     let machineRevokedAt: string | null = options.machineRevokedAt ?? null;
+    let userMessages = [...(options.userMessages ?? [])];
     const store = {
       hasRegisteredDevices: () => true,
       getOrCreateIdentity: () => ({ machineKey: "a".repeat(40), machineSecret: "secret" }),
@@ -331,6 +336,10 @@ describe("createPushPublisherService flush", () => {
           accountOwnerId: value.accountOwnerId,
           revisions: { ...value.revisions },
         };
+      },
+      listUserMessages: () => [...userMessages],
+      setUserMessages: (messages: StoredUserMessage[]) => {
+        userMessages = [...messages];
       },
     };
     const relayClient = {
@@ -1010,6 +1019,56 @@ describe("createPushPublisherService flush", () => {
     expect(
       payloads.every((payload) => Buffer.byteLength(JSON.stringify(payload), "utf8") < 256 * 1024),
     ).toBe(true);
+    publisher.dispose();
+  });
+
+  it("keeps the messages the relay already holds in a restart's first reconcile", async () => {
+    const machineKey = "a".repeat(40);
+    const sentAt = "2026-07-05T11:59:00.000Z";
+    const storedMessage = (id: string): StoredUserMessage => ({
+      id,
+      sessionId: "s-1",
+      scopeKey: "scope-1",
+      title: "Deploy finished",
+      body: "The deploy finished.",
+      chatTitle: "Deploy chat",
+      laneId: null,
+      laneName: null,
+      provider: "Codex",
+      model: "gpt-5",
+      sentAt,
+      expiresAt: "2026-07-06T12:00:00.000Z",
+    });
+    const published = storedMessage("published-message");
+    const unsent = storedMessage("never-published-message");
+    const { publisher, publishAttention } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot: vi.fn().mockResolvedValue([]) },
+      // The persisted revision proves the relay accepted this message before.
+      lastPublishedRevisionById: {
+        [`message:${machineKey}:${published.id}`]: Date.parse(published.sentAt),
+      },
+      userMessages: [published, unsent],
+    });
+    publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+      features: ["message"],
+    });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+
+    const [reconcile] = publishAttention.mock.calls[0];
+    expect(reconcile.mode).toBe("reconcile");
+    const ids = reconcile.items.map((item: { id: string }) => item.id);
+    // A reconcile is authoritative: dropping a held message here would let the
+    // relay tombstone it, and the message can never be republished.
+    expect(ids).toContain(`message:${machineKey}:${published.id}`);
+    // A message the relay never saw waits for the feature list instead.
+    expect(ids).not.toContain(`message:${machineKey}:${unsent.id}`);
     publisher.dispose();
   });
 
@@ -3754,7 +3813,7 @@ describe("createPushRelayClient", () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(
-      "https://relay.test/attention/account/snapshot?since=12&streamId=account-a",
+      "https://relay.test/attention/account/snapshot?since=12&streamId=account-a&include=message",
     );
     expect(init.headers.authorization).toBe("Bearer account-access-token");
   });
@@ -4034,11 +4093,80 @@ describe("createPushRelayClient", () => {
       streamId: "account-a",
     });
 
-    expect(getAccountAccessToken).toHaveBeenNthCalledWith(1, undefined);
-    expect(getAccountAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(
+      1,
+      expect.not.objectContaining({ forceRefresh: true }),
+    );
+    expect(getAccountAccessToken).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ forceRefresh: true }),
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer cached-access-token");
     expect(fetchMock.mock.calls[1][1].headers.authorization).toBe("Bearer fresh-access-token");
+  });
+
+  it.each([
+    {
+      name: "a token wait that never ends",
+      // The brain's token broker had its own 30s budget and ignored ours.
+      token: () => new Promise<string | null>(() => {}),
+      fetch: undefined,
+      code: "timeout",
+      message: /did not answer in time/,
+    },
+    {
+      name: "a token wait that gives up as null at the deadline",
+      // The real token helper swallows its own abort into null; that must not
+      // read as "signed out".
+      token: (options?: { signal?: AbortSignal }) => new Promise<string | null>((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(null));
+      }),
+      fetch: undefined,
+      code: "timeout",
+      message: /did not answer in time/,
+    },
+    {
+      name: "a TLS handshake the network cut",
+      token: async () => "access-token",
+      fetch: async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(
+            new Error("Client network socket disconnected before secure TLS connection was established"),
+            { code: "ECONNRESET" },
+          ),
+        });
+      },
+      code: "ECONNRESET",
+      // The words Sentry's expected-outcome list keys on, not a bare reset.
+      message: /\(TLS handshake cut off\)/,
+    },
+  ])("reports $name as an unreachable relay inside one deadline", async ({ token, fetch, code, message }) => {
+    if (fetch) fetchMock.mockImplementation(fetch);
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: token,
+      getAccountUserId: () => "account-a",
+    });
+
+    const settled = vi.fn();
+    const report = client.reportAttentionPresence({
+      deviceId: "desktop-1",
+      deviceName: "Mac",
+      platform: "macOS",
+      appForeground: true,
+      ambientSurfaceVisible: false,
+      visibleItemIds: [],
+      observedAt: "2026-07-05T00:00:00.000Z",
+    });
+    void report.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(PUSH_RELAY_FOREGROUND_DEADLINE_MS);
+
+    expect(settled).toHaveBeenCalledTimes(1);
+    await expect(report).rejects.toBeInstanceOf(PushRelayUnreachableError);
+    await expect(report).rejects.toMatchObject({ code, message: expect.stringMatching(message) });
   });
 
   it("rejects an account snapshot response that resolves after the account changes", async () => {

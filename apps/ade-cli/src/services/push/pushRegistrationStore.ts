@@ -32,6 +32,54 @@ export type StoredRemoteAttentionAcknowledgment = {
   updatedAt: string;
 };
 
+/**
+ * A message an agent sent the user from a chat (`ade notify`). Kept until it
+ * expires so a brain restart neither drops it from Activity (the first publish
+ * after a restart is a reconcile, which removes whatever the machine no longer
+ * claims) nor forgets the per-chat limits.
+ */
+export type StoredUserMessage = {
+  id: string;
+  sessionId: string;
+  /** The attached publisher scope (the project's id on this machine). */
+  scopeKey: string;
+  title: string;
+  body: string | null;
+  chatTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  provider: string | null;
+  model: string | null;
+  sentAt: string;
+  expiresAt: string;
+};
+
+/**
+ * A machine keeps its newest 50 messages; an older one leaves Activity for
+ * good once 50 newer ones exist (or after 24 hours). Bounded so a busy day of
+ * messages cannot crowd chats out of the machine's Activity roster. Mirrors
+ * `USER_MESSAGES_KEPT` in the publisher.
+ */
+const USER_MESSAGE_MAX = 50;
+
+function isStoredUserMessage(value: unknown): value is StoredUserMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Record<string, unknown>;
+  const optionalString = (field: unknown) => field === null || typeof field === "string";
+  return typeof message.id === "string" && message.id.trim().length > 0
+    && typeof message.sessionId === "string" && message.sessionId.trim().length > 0
+    && typeof message.scopeKey === "string" && message.scopeKey.trim().length > 0
+    && typeof message.title === "string" && message.title.trim().length > 0
+    && optionalString(message.body)
+    && optionalString(message.chatTitle)
+    && optionalString(message.laneId)
+    && optionalString(message.laneName)
+    && optionalString(message.provider)
+    && optionalString(message.model)
+    && typeof message.sentAt === "string" && !Number.isNaN(Date.parse(message.sentAt))
+    && typeof message.expiresAt === "string" && !Number.isNaN(Date.parse(message.expiresAt));
+}
+
 type PushRegistrationFile = {
   version: 1;
   /** Unguessable machine key claimed on the relay (32 hex chars). */
@@ -76,6 +124,8 @@ type PushRegistrationFile = {
    * Durable so a brain restart doesn't resume hammering a revoked endpoint.
    */
   machineRevokedAt: string | null;
+  /** Agent messages still inside their Activity lifetime, oldest first. */
+  userMessages: StoredUserMessage[];
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
@@ -163,6 +213,7 @@ function createEmptyFile(): PushRegistrationFile {
     previousMachineKeys: [],
     identityRecoveryError: null,
     machineRevokedAt: null,
+    userMessages: [],
     lastPublishAt: null,
     lastPublishError: null,
     lastRelayContactAt: null,
@@ -370,6 +421,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         && !Number.isNaN(Date.parse(parsed.machineRevokedAt))
         ? parsed.machineRevokedAt
         : null,
+      userMessages: (Array.isArray(parsed.userMessages) ? parsed.userMessages : [])
+        .filter(isStoredUserMessage)
+        .slice(-USER_MESSAGE_MAX),
       lastPublishAt: parsed.lastPublishAt ?? null,
       lastPublishError: parsed.lastPublishError ?? null,
       lastRelayContactAt: parsed.lastRelayContactAt ?? null,
@@ -745,6 +799,23 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         lastPublishedRevisionAccountOwnerId: accountOwnerId,
         lastPublishedRevisionById: revisions,
       });
+    },
+
+    listUserMessages(): StoredUserMessage[] {
+      return [...load().userMessages];
+    },
+
+    /** Replace the stored messages (already pruned by the caller), oldest first. */
+    setUserMessages(messages: StoredUserMessage[]): void {
+      const file = load();
+      const next = messages.filter(isStoredUserMessage).slice(-USER_MESSAGE_MAX);
+      if (
+        next.length === file.userMessages.length
+        && next.every((message, index) => message.id === file.userMessages[index]?.id)
+      ) {
+        return;
+      }
+      write({ ...file, userMessages: next });
     },
 
     hasRegisteredDevices(): boolean {

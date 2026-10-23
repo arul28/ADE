@@ -190,6 +190,7 @@ import {
   mentionChipMarkSvg,
   type ComposerAtChipKind,
 } from "./mentionChipMark";
+import { ComposerMachineChipPopover } from "./MachineChipCard";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -216,7 +217,7 @@ import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle, type ComposerPrSuggestion } from "./ChatCommandMenu";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
-import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { canOpenInAdeBrowser, openUrlInAdeBrowser, openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
@@ -3081,6 +3082,10 @@ function AgentChatComposerImpl({
   const attachmentTrayRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<HTMLDivElement | null>(null);
+  const [machineChipPopover, setMachineChipPopover] = useState<{ machineKey: string; anchor: HTMLElement } | null>(null);
+  useEffect(() => {
+    setMachineChipPopover(null);
+  }, [draft]);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
   // Which DOM node the editor was last seeded into. The editor has two homes —
@@ -7257,7 +7262,9 @@ function AgentChatComposerImpl({
     pin: modelRuntimePin,
     ownerBinding: composerMachineBinding,
     modelChosen: modelPickedByHandFor === handPickKey || chatHasMessages,
-    hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset),
+    // The hint reads Smart decisions and the project's settings, which a
+    // personal chat has none of (and with no project open, nothing to ask).
+    hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset) || !projectChatPane,
     effortPickedByHand,
     onModelChange,
     onReasoningEffortChange,
@@ -8325,6 +8332,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   // A parallel slot carries a model, not a preset, so a Custom
                   // pick here would be silently dropped at launch.
@@ -8377,6 +8385,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   listsHarnessPresets={listsHarnessPresets}
                   {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
@@ -8941,6 +8950,15 @@ function AgentChatComposerImpl({
                   }}
                   onClick={(event) => {
                     const target = event.target as HTMLElement | null;
+                    const machineChip = target?.closest?.<HTMLElement>("[data-composer-chip-kind='machine']");
+                    const machineToken = machineChip?.dataset.composerChipText;
+                    if (machineChip && machineToken) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const machineKey = machineToken.slice(machineToken.indexOf(":") + 1);
+                      setMachineChipPopover({ machineKey, anchor: machineChip });
+                      return;
+                    }
                     const attachmentChip = target?.closest?.<HTMLElement>(COMPOSER_ATTACHMENT_CHIP_SELECTOR);
                     if (attachmentChip?.dataset.composerAttachmentPath) {
                       event.preventDefault();
@@ -9016,6 +9034,13 @@ function AgentChatComposerImpl({
                     }
                   }}
                 />
+                {machineChipPopover?.anchor.isConnected ? (
+                  <ComposerMachineChipPopover
+                    machineKey={machineChipPopover.machineKey}
+                    anchor={machineChipPopover.anchor}
+                    onClose={() => setMachineChipPopover(null)}
+                  />
+                ) : null}
               </div>
             ) : (
               <div className="relative">
@@ -9125,6 +9150,7 @@ function AgentChatComposerImpl({
                 anchor={selectedSmartLinkNode}
                 onClose={() => setSelectedSmartLinkNode(null)}
                 onRemove={removeSmartLinkNode}
+                onOpen={(url) => openLinkFromUi(url, null, { runtimePin: composerMachineBinding })}
               />
             ) : null}
             {attachmentChipPeek?.anchor.isConnected && peekAttachment ? (

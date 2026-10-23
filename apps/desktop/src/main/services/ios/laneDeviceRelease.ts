@@ -4,8 +4,10 @@ import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { parseSimctlDevices } from "./appleSimulatorCatalog";
 import {
   anotherLaneHoldsUdid,
+  forgetLaneAppleExtraDevice,
   forgetLaneDeviceRow,
   readLaneAppleDeviceRecord,
+  readLaneAppleExtraDevices,
   writeAdeInstalledBundleIds,
   type LaneDeviceStore,
 } from "./laneDeviceRows";
@@ -238,6 +240,58 @@ export async function endLaneDeviceRow(input: {
 }
 
 /**
+ * Delete a lane's extra devices (`device-create --extra`). Each is ADE's, so
+ * each is deleted whole; a row goes only once its device is gone, so a failed
+ * delete is retried by the cleanup pass. A store without the table has none.
+ */
+export async function endLaneExtraDevices(input: {
+  store: Pick<LaneDeviceStore, "all" | "run">;
+  laneId: string;
+  run: RunCommand;
+  powerOff: (udid: string) => Promise<unknown>;
+  logger: ReleaseLogger;
+}): Promise<{ deleted: string[]; failed: string[] }> {
+  const result = { deleted: [] as string[], failed: [] as string[] };
+  let extras: AppleLaneDevice[];
+  try {
+    extras = readLaneAppleExtraDevices(input.store, input.laneId);
+  } catch (error) {
+    input.logger.warn?.("lane.end.apple_extra_device_read_failed", {
+      laneId: input.laneId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return result;
+  }
+  for (const device of extras) {
+    if (process.platform === "darwin") {
+      try {
+        await deleteAppleSimulator(device.udid, { run: input.run, powerOff: input.powerOff });
+      } catch (error) {
+        input.logger.warn?.("lane.end.apple_extra_device_delete_failed", {
+          laneId: device.laneId,
+          udid: device.udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        result.failed.push(device.udid);
+        continue;
+      }
+    }
+    try {
+      forgetLaneAppleExtraDevice(input.store, input.laneId, device.udid);
+      result.deleted.push(device.udid);
+    } catch (error) {
+      input.logger.warn?.("lane.end.apple_extra_device_forget_failed", {
+        laneId: device.laneId,
+        udid: device.udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      result.failed.push(device.udid);
+    }
+  }
+  return result;
+}
+
+/**
  * Everything a lane that is archived or deleted owns on the Apple side.
  *
  * - The device: see `endLaneDeviceOnDisk`. On archive AND on delete; an
@@ -255,7 +309,8 @@ export async function endLaneDeviceRow(input: {
 export async function releaseLaneAppleDevice(input: {
   laneId: string;
   projectRoot: string;
-  store: Pick<LaneDeviceStore, "get" | "run">;
+  /** `all` reads the lane's extra devices; a store without it has none to end. */
+  store: Pick<LaneDeviceStore, "get" | "run"> & Partial<Pick<LaneDeviceStore, "all">>;
   run: RunCommand;
   removeDirectory: (directory: string) => Promise<void>;
   /** Default true. False on archive, which keeps the lane's recordings. */
@@ -284,6 +339,17 @@ export async function releaseLaneAppleDevice(input: {
   if (ended?.deleted) result.deletedUdid = ended.device.udid;
   else if (ended && !isAdeOwnedLaneDevice(ended.device.origin)) result.detachedUdid = ended.device.udid;
 
+  const store = input.store;
+  const extras = store.all
+    ? await endLaneExtraDevices({
+      store: { all: store.all.bind(store), run: store.run.bind(store) },
+      laneId,
+      run: input.run,
+      powerOff: bareSimulatorPowerOff(input.run),
+      logger: input.logger,
+    })
+    : { deleted: [], failed: [] };
+
   for (const directory of input.derivedDataDirectories ?? []) {
     try {
       await input.removeDirectory(directory);
@@ -303,8 +369,13 @@ export async function releaseLaneAppleDevice(input: {
     }
   }
 
-  if (result.deletedUdid || result.detachedUdid || result.removedRecordings || result.removedDerivedData) {
-    input.logger.info("lane.end.apple_device_released", { laneId, ...result });
+  if (result.deletedUdid || result.detachedUdid || extras.deleted.length || extras.failed.length || result.removedRecordings || result.removedDerivedData) {
+    input.logger.info("lane.end.apple_device_released", {
+      laneId,
+      ...result,
+      ...(extras.deleted.length ? { deletedExtraUdids: extras.deleted } : {}),
+      ...(extras.failed.length ? { extraDeleteFailedUdids: extras.failed } : {}),
+    });
   }
   return result;
 }

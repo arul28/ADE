@@ -38,6 +38,7 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { createMacDesktopBridge } from "./macDesktopPreload";
+import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
@@ -91,6 +92,7 @@ import {
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
+  type AttentionDesktopAlert,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
@@ -163,6 +165,7 @@ import type {
 } from "../shared/types/archive";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -204,7 +207,6 @@ import type {
   ProviderInstanceRefreshArgs,
   ProviderInstanceRemoveArgs,
   ProviderInstanceRemoveResult,
-  ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
   ProviderInstanceDismissReplacedArgs,
   ProviderLoginRefArgs,
@@ -1014,6 +1016,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleDevicePosture,
   AppleDuoAppStoreScreenshotsResult,
+  AppleRenderProofResult,
   AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
@@ -1074,6 +1077,7 @@ import type {
   MacDesktopWindow,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAppState,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
@@ -1157,6 +1161,8 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
+  BuiltInBrowserSettings,
+  BuiltInBrowserSettingsPatch,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -1904,14 +1910,26 @@ async function callRemoteProjectActionIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding(guardBinding);
-  const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+  const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
-  })) as RemoteRuntimeActionResult;
+  });
   checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
+
+const remoteTargetGate = createRemoteTargetGate({
+  ipcRenderer,
+  onReconnected: (targetId) => {
+    // The event pump parked while the bound machine was disconnected picks up
+    // where it stopped.
+    const binding = currentProjectBinding;
+    if (binding?.kind === "remote" && binding.targetId === targetId) {
+      resumeRemoteRuntimeEventPollAfterReconnect();
+    }
+  },
+});
 
 function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
@@ -2263,11 +2281,11 @@ async function callPinnedRuntimeAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<T> {
   if (pin.kind === "remote") {
-    const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+    const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
       request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
+    });
     return response.result as T;
   }
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -2789,12 +2807,12 @@ async function callRemoteProjectSyncIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding();
-  const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
+  const result = await remoteTargetGate.invoke<T>(IPC.remoteRuntimeCallSync, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
-  })) as T;
+  });
   checkAfterInvoke();
   return { handled: true, result };
 }
@@ -3250,6 +3268,8 @@ const subscribeLocalCursorAuthStatusEvents =
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
+/** The pump stopped because the bound machine was disconnected by the person. */
+let remoteRuntimeEventPollParked = false;
 let remoteRuntimeEventCursor = 0;
 let remoteRuntimeEventBindingKey: string | null = null;
 // The binding the pump is currently subscribed to, kept alongside its key so a
@@ -3413,9 +3433,16 @@ function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
   }, delayMs);
 }
 
+function resumeRemoteRuntimeEventPollAfterReconnect(): void {
+  if (!remoteRuntimeEventPollParked) return;
+  remoteRuntimeEventPollParked = false;
+  scheduleRemoteRuntimeEventPoll(0);
+}
+
 async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
+  remoteRuntimeEventPollParked = false;
   let nextDelayMs: number | null = null;
   let pollingBindingKey: string | null = null;
   let pollingGeneration = projectBindingGeneration;
@@ -3452,6 +3479,20 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
     pollingBindingKey = binding.key;
     pollingGeneration = projectBindingGeneration;
+    if (binding.kind === "remote" && await remoteTargetGate.isDisconnected(binding.targetId)) {
+      if (
+        currentProjectBinding?.key !== pollingBindingKey ||
+        projectBindingGeneration !== pollingGeneration
+      ) {
+        // The window switched projects during the read; poll the new one.
+        nextDelayMs = 0;
+        return;
+      }
+      // Parked, not failed: polling every 2s cannot reach a machine the person
+      // disconnected. A snapshot that shows it connected again resumes it.
+      remoteRuntimeEventPollParked = true;
+      return;
+    }
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
@@ -4886,6 +4927,10 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "runMaintenanceNow", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageRunMaintenanceNow),
       ),
+    deletedLaneChatsSummary: async (pin?: OpenProjectBinding | null): Promise<DeletedLaneChatsSummary> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "storage", "deletedLaneChatsSummary", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.storageDeletedLaneChatsSummary),
+      ),
     cleanupPreview: async (
       targets: StorageCleanupTarget[],
       pin?: OpenProjectBinding | null,
@@ -5367,7 +5412,7 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeActionRequest,
     ): Promise<RemoteRuntimeActionResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeCallAction, id, {
         id,
         projectId,
         request,
@@ -5377,7 +5422,7 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeStreamEventsRequest = {},
     ): Promise<RemoteRuntimeStreamEventsResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeStreamEvents, id, {
         id,
         projectId,
         request,
@@ -6502,7 +6547,7 @@ const adeBridge = {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
       const binding = await getRemoteProjectBinding({ fresh: true });
       if (binding) {
-        return ipcRenderer.invoke(IPC.remoteRuntimeListActionRegistry, {
+        return remoteTargetGate.invoke(IPC.remoteRuntimeListActionRegistry, binding.targetId, {
           id: binding.targetId,
           projectId: binding.projectId,
         });
@@ -6543,7 +6588,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.attentionAcknowledge, args),
     reportPresence: async (presence: AttentionPresence): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionReportPresence, presence),
-    getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences> =>
+    getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences | null> =>
       ipcRenderer.invoke(IPC.attentionGetPreferences, { accountOwnerId }),
     putPreferences: async (
       accountOwnerId: string,
@@ -6563,8 +6608,26 @@ const adeBridge = {
         machineKey,
         preferences,
       }),
+    setSessionMuted: async (
+      accountOwnerId: string,
+      sessionId: string,
+      muted: boolean,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionSetSessionMuted, {
+        accountOwnerId,
+        sessionId,
+        muted,
+      }),
     openItem: async (item: AttentionItem): Promise<void> => {
       await ipcRenderer.invoke(IPC.attentionOpenItem, item);
+    },
+    onAlert: (cb: (alert: AttentionDesktopAlert) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AttentionDesktopAlert) => cb(payload);
+      ipcRenderer.on(IPC.attentionAlert, listener);
+      return () => ipcRenderer.removeListener(IPC.attentionAlert, listener);
+    },
+    openAlert: async (alert: AttentionDesktopAlert): Promise<void> => {
+      await ipcRenderer.invoke(IPC.attentionOpenAlert, alert.itemId);
     },
   },
   captureGesture: {
@@ -9793,7 +9856,7 @@ const adeBridge = {
     attachRenderProof: (
       args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ proofArtifactId: string | null }> =>
+    ): Promise<AppleRenderProofResult> =>
       callIosSimulatorMutation(pin, "attachRenderProof", args, IPC.iosSimulatorAttachRenderProof),
     /** Apple's app-resizability agent skill from the owning machine's Xcode, into the lane's `.agents/skills`. */
     addDuoSkill: (
@@ -9805,7 +9868,7 @@ const adeBridge = {
     renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
       callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderAck", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderAck, args)),
     renderComplete: (
-      args: { requestId: string; filed: number; error: string | null },
+      args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: boolean }> =>
       callIosSimulatorActionOr<{ ok: boolean }>(pin, "renderComplete", { args }, () => ipcRenderer.invoke(IPC.iosSimulatorRenderComplete, args)),
@@ -9930,7 +9993,7 @@ const adeBridge = {
     ): Promise<{ ok: true }> =>
       callIosSimulatorMutation(pin, "openUrl", args, IPC.iosSimulatorOpenUrl),
     relaunchApp: (
-      args: IosSimulatorAppLifecycleArgs,
+      args: IosSimulatorRelaunchArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorAppState> =>
       callIosSimulatorMutation(pin, "relaunchApp", args, IPC.iosSimulatorRelaunchApp),
@@ -9965,7 +10028,7 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.iosSimulatorGetAppState, args),
       ),
     getForegroundApp: async (
-      args: { deviceUdid?: string | null; laneId?: string | null } = {},
+      args: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorForegroundApp> =>
       callIosSimulatorActionOr(
@@ -10403,11 +10466,26 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // Machine-wide browser settings (tab limit, download folder, standing
+    // permission grants). Human-only, like agentAccess: no `pin` overload.
+    browserSettings: {
+      get: async (): Promise<BuiltInBrowserSettings> =>
+        ipcRenderer.invoke(IPC.builtInBrowserSettingsGet),
+      set: async (patch: BuiltInBrowserSettingsPatch): Promise<BuiltInBrowserSettings> =>
+        ipcRenderer.invoke(IPC.builtInBrowserSettingsSet, patch),
+      onChange: (cb: (settings: BuiltInBrowserSettings) => void): (() => void) => {
+        const listener = (_event: unknown, settings: BuiltInBrowserSettings) => cb(settings);
+        ipcRenderer.on(IPC.builtInBrowserSettingsEvent, listener);
+        return () => ipcRenderer.removeListener(IPC.builtInBrowserSettingsEvent, listener);
+      },
+    },
     // "Agents can use the ADE browser". Machine-local and human-only: no `pin`
     // overload, because the answer belongs to the person at this machine.
     agentAccess: {
       get: async (): Promise<BuiltInBrowserAgentAccessSnapshot> =>
         ipcRenderer.invoke(IPC.builtInBrowserAgentAccessGet),
+      setEnabled: async (enabled: boolean): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessSetEnabled, { enabled }),
       setMode: async (mode: BuiltInBrowserAgentAccessMode): Promise<BuiltInBrowserAgentAccessSnapshot> =>
         ipcRenderer.invoke(IPC.builtInBrowserAgentAccessSetMode, { mode }),
       answer: async (
@@ -11075,17 +11153,6 @@ const adeBridge = {
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesRemove, args),
       ),
-    rename: async (
-      args: ProviderInstanceRenameArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<ProviderInstance> =>
-      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
-        pin,
-        "provider_instances",
-        "rename",
-        { args: { ...args } },
-        () => ipcRenderer.invoke(IPC.providerInstancesRename, args),
-      ).then(normalizeProviderInstanceResult),
     setDefault: async (
       args: ProviderInstanceSetDefaultArgs,
       pin?: OpenProjectBinding | null,

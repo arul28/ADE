@@ -36,9 +36,21 @@ export type AnnouncementPageDef = {
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
-    id: "ade-tips",
+    id: "iphone-duo",
     revision: 1,
-    title: "Meet ADE Tips",
-    Page: lazy(() => import("./pages/AdeTipsAnnouncement")),
+    title: "iPhone Duo in the simulator",
+    Page: lazy(() => import("./pages/IphoneDuoAnnouncement")),
+  },
+  {
+    id: "phone-simulator-stream",
+    revision: 1,
+    title: "The simulator on your iPhone",
+    Page: lazy(() => import("./pages/PhoneSimulatorAnnouncement")),
+  },
+  {
+    id: "windows-desktop",
+    revision: 1,
+    title: "Windows desktop from any machine",
+    Page: lazy(() => import("./pages/WindowsDesktopAnnouncement")),
   },
 ];

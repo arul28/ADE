@@ -24,6 +24,8 @@ ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
 ade chat message <id> --machine "Mac mini" --kind auto --text "also run the UI tests"
 ade apple screenshot --machine "Mac mini" --lane <lane there>
 ade apple proof --machine "Mac mini" --lane <lane there> --caption "Login works"
+ade usage limits --machine "Mac mini" --text      # that machine's accounts and what is left
+ade usage limits --all-machines --text            # every machine's accounts in one table
 ```
 
 `--machine` takes a machine key or an unambiguous display name. On the other
@@ -37,6 +39,18 @@ sent: name a lane there with `--lane` (from `ade lanes list --machine …`), or 
 An offline machine fails at once with when it was last seen; nothing is queued.
 `--all-machines` never fails for one machine: an offline or refusing machine is
 one row saying so.
+
+Provider quota belongs to the machine, not a project, so `usage limits` and
+`usage snapshot` run in this repository's checkout there when it has one and
+otherwise in the project that machine opened most recently (the `anyProject`
+scope). A machine with no project open in ADE says so. A host older than
+`usage.getUsageLimits` answers with its full snapshot, and the CLI cuts it down
+to the same report.
+
+`--machine` and `--all-machines` work only on the commands above (`chat`,
+`lanes`, `projects`, `usage`, `apple`, `mac-desktop`, `app-control`, and their
+aliases). Any other command refuses them rather than quietly answering for this
+machine; `drafts` and `machines` keep their own `--machine` flag.
 
 ## Moving a chat to another machine
 

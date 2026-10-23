@@ -1378,7 +1378,7 @@ struct WorkSessionDestinationView: View {
       sessionIdCopied: sessionIdCopied,
       sessionDeepLinkCopied: sessionDeepLinkCopied,
       sessionId: session.id,
-      sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
+      sessionMuted: pushNotificationService.isSessionMuted(session.id),
       showsProof: !personalChat,
       showsPinAction: !personalChat
         || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
@@ -1552,6 +1552,12 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// The chat column is type-erased in two places on purpose
+  /// (`chatColumnBody`, `chatColumnPresentations`). Written as one chain, its
+  /// ~40 modifiers are a single nested generic type, and the Swift runtime
+  /// builds its metadata on the main thread the first time a chat opens:
+  /// seconds on a phone (Sentry ADE-IOS-R/S). `AnyView` breaks the chain into
+  /// small types; the identity of each piece is stable.
   var body: some View {
     Group {
       if let duoPane {
@@ -1599,8 +1605,8 @@ struct WorkSessionDestinationView: View {
   /// The chat as it has always been: header chrome, transcript, composer, and
   /// the sheets those surfaces present. A wide display only changes where it
   /// sits, never what it is.
-  private var chatColumnBody: some View {
-    sessionDestinationRoot
+  private var chatColumnPresentations: some View {
+    AnyView(sessionDestinationRoot)
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
         mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
@@ -1663,6 +1669,13 @@ struct WorkSessionDestinationView: View {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
+  }
+
+  /// Type-erased in two places on purpose (see `body`): written as one chain,
+  /// these ~40 modifiers are one nested generic type whose metadata the Swift
+  /// runtime builds on the main thread the first time a chat opens.
+  private var chatColumnBody: some View {
+    AnyView(chatColumnPresentations)
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
@@ -1676,6 +1689,10 @@ struct WorkSessionDestinationView: View {
         // durable resume point when the host has one) goes out before the
         // summary/artifact loads below.
         openThreadSubscriptionIfNeeded()
+        // The reader is in the chat now; its alerts in Notification Center
+        // have done their job.
+        let openedSessionId = sessionId
+        Task { await PushNotificationService.shared.removeDeliveredNotifications(sessionId: openedSessionId) }
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
         switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {

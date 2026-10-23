@@ -60,6 +60,11 @@ import {
 } from "./services/deeplinks/protocolHandler";
 import { buildDeeplink } from "../shared/deeplinks";
 import {
+  createDesktopAlertPresenter,
+  readDesktopAlertEvent,
+  type DesktopAlert,
+} from "./services/attention/desktopAlertPresenter";
+import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
   ownerNavigationFailureCopy,
@@ -181,14 +186,14 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
 import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
-import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { createAgentChatService, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
@@ -258,6 +263,7 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
+  AttentionPreferences,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -2022,6 +2028,16 @@ app.whenReady().then(async () => {
       },
     },
     onAgentAccessChange: (snapshot) => broadcast(IPC.builtInBrowserAgentAccessEvent, snapshot),
+    // Tab limit, download folder and standing permission grants. Same file,
+    // same read-modify-write as the agent-access block above.
+    browserSettingsStore: {
+      read: () => readGlobalState(globalStatePath).builtInBrowserSettings ?? null,
+      write: (next) => {
+        const current = readGlobalState(globalStatePath);
+        writeGlobalState(globalStatePath, { ...current, builtInBrowserSettings: next });
+      },
+    },
+    onBrowserSettingsChange: (settings) => broadcast(IPC.builtInBrowserSettingsEvent, settings),
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can
@@ -5507,6 +5523,10 @@ app.whenReady().then(async () => {
           productAnalyticsService.capture(input);
         },
         captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+        // Smart balance sees the chats this machine owns: running chats burn
+        // now, open-but-idle chats reserve room. The chat service owns the
+        // lifecycle; balance owns the weights.
+        listProviderAccountChatLoad: listMachineProviderAccountChatLoad,
       },
     });
     const storageInsightsService = createStorageInsightsService({
@@ -5520,6 +5540,10 @@ app.whenReady().then(async () => {
         || ptyService.isTranscriptPathActive(filePath)
         || iosSimulatorService.isBuildPathActive(filePath),
       projectId,
+      // The index file is held open by the search service; it compacts on request.
+      compactSearchIndex: () =>
+        searchServiceHolder.current?.compactIndex()
+        ?? { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" },
       laneService,
       projectConfigService,
       releaseLaneRuntimeResources: (laneId) => {
@@ -6603,6 +6627,111 @@ app.whenReady().then(async () => {
    * The brain exposes usage per project scope, so the bridge borrows any booted
    * scope; every scope is fed by the same machine-level poller.
    */
+  /**
+   * Desktop notifications for agents that need the user, failed, reached a
+   * goal, or sent the user a message. Fed by this computer's brain (below, on
+   * the machine event bridge) and by the account snapshots windows poll (for
+   * chats on other machines). See `desktopAlertPresenter.ts`.
+   */
+  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
+  /** Electron drops a click on a notification nothing references any more. */
+  const liveDesktopAlertNotifications = new Set<Notification>();
+  let desktopAlertClickOwner: string | null | undefined;
+  /**
+   * Alerts a window was asked to toast, by item id. The toast's Open sends
+   * back only the id, and main opens what it recorded, so a window cannot
+   * name an arbitrary chat or item to open or mark seen.
+   */
+  const toastedDesktopAlerts = new Map<string, { alert: DesktopAlert; ownerId: string | null }>();
+  const rememberToastedDesktopAlert = (alert: DesktopAlert): void => {
+    toastedDesktopAlerts.delete(alert.itemId);
+    toastedDesktopAlerts.set(alert.itemId, { alert, ownerId: readAccountOwnerId() });
+    while (toastedDesktopAlerts.size > 32) {
+      const oldest = toastedDesktopAlerts.keys().next();
+      if (oldest.done) break;
+      toastedDesktopAlerts.delete(oldest.value);
+    }
+  };
+  /**
+   * `ownerId` is the account signed in when the alert was shown. Opening an
+   * old alert after a switch does nothing: its chat and item ids belong to the
+   * account that showed it, so handing them to the new account's renderer
+   * would open the wrong thing (and the same item id can exist under the new
+   * account).
+   */
+  const openDesktopAlert = (alert: DesktopAlert, ownerId: string | null): void => {
+    if (ownerId !== readAccountOwnerId()) return;
+    // Opening it is seeing it: the phone, still waiting out desktop-first,
+    // stays quiet. Best effort; a failure only means the phone gets it later.
+    void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
+      logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (alert.item) {
+      void navigateFromAttentionItem(alert.item, attentionItemNavigationRequest(alert.item))
+        .catch((error) => logMachineEvent("warn", "attention.desktop_alert_open_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return;
+    }
+    handleDeeplinkUrl(
+      buildDeeplink({ kind: "session", sessionId: alert.sessionId }, { form: "ade" }),
+      "notification:attention",
+      dispatchOrQueueAppNavigationRequest,
+    );
+  };
+  const desktopAlertPresenter = createDesktopAlertPresenter({
+    isSupported: () => Notification.isSupported(),
+    isAppFocused: () => Boolean(BrowserWindow.getFocusedWindow()),
+    getDeviceId: () => ipcBridge?.getLocalMachineIdentity().deviceId ?? null,
+    getAccountOwnerId: () => readAccountOwnerId(),
+    getPreferences: () => {
+      const ownerId = readAccountOwnerId();
+      return ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
+        ? attentionPreferencesForAlerts.preferences
+        : null;
+    },
+    show: (alert, onClick) => {
+      try {
+        const ownerId = readAccountOwnerId();
+        const notification = new Notification({ title: alert.title, ...(alert.body ? { body: alert.body } : {}) });
+        liveDesktopAlertNotifications.add(notification);
+        const release = () => liveDesktopAlertNotifications.delete(notification);
+        notification.on("click", () => {
+          release();
+          // `open` runs synchronously inside onClick and reads this, so the
+          // account the notification was shown under travels with the click.
+          desktopAlertClickOwner = ownerId;
+          try {
+            onClick();
+          } finally {
+            desktopAlertClickOwner = undefined;
+          }
+        });
+        notification.on("close", release);
+        notification.show();
+        // A notification the user never touches still has to let go.
+        setTimeout(release, 10 * 60_000).unref?.();
+      } catch (error) {
+        logMachineEvent("warn", "attention.desktop_alert_failed", {
+          kind: alert.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    toastInFocusedWindow: (alert) => {
+      const focused = BrowserWindow.getFocusedWindow();
+      if (!focused || focused.isDestroyed()) return;
+      rememberToastedDesktopAlert(alert);
+      focused.webContents.send(IPC.attentionAlert, alert);
+    },
+    open: (alert) => openDesktopAlert(
+      alert,
+      desktopAlertClickOwner !== undefined ? desktopAlertClickOwner : readAccountOwnerId(),
+    ),
+  });
+
   let machineUsageEventRoot: string | null = null;
   let machineUsageEventCleanup: (() => void) | null = null;
   let machineUsageEventRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -6680,6 +6809,11 @@ app.whenReady().then(async () => {
         { category: "runtime", replay: false },
         (event) => {
           if (machineUsageEventRoot !== root) return;
+          if (event.payload?.type === "attention_alert") {
+            const alert = readDesktopAlertEvent(event.payload);
+            if (alert) desktopAlertPresenter.presentLocal(alert);
+            return;
+          }
           if (event.payload?.type !== "usage") return;
           const snapshot = event.payload.snapshot;
           if (!isUsageSnapshot(snapshot)) return;
@@ -9661,10 +9795,29 @@ app.whenReady().then(async () => {
     }),
   });
 
+  // Keep-awake is machine-level in the brain, so Settings reaches it with no
+  // project open through the machine method. Two brains cannot answer it:
+  // - One that does not manage keep-awake (a dev brain on its own socket, an
+  //   embedded one). Its projects cannot either, so this app's own service
+  //   does the work (the IPC handler's fallback for a not-callable action).
+  // - One from before the method, which takes it for a project method and asks
+  //   for a project id. It answers through any project it has; with none,
+  //   this app's own service does the work.
   const keepAwakeAction = async (action: string, args?: Record<string, unknown>): Promise<unknown> => {
+    try {
+      return await localRuntimePool.callSync("keepAwake.call", { action, args: args ?? {} });
+    } catch (error) {
+      // A brain without the service answers "not callable", which sends the
+      // IPC handler to this app's own service.
+      if (isUnsupportedAdeActionError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/Method keepAwake\.call requires params\.projectId/.test(message)) throw error;
+    }
     const projects = await localRuntimePool.projects();
     const rootPath = projects[0]?.rootPath;
-    if (!rootPath) throw new Error("Keep-awake settings need a project connected to this machine's brain.");
+    if (!rootPath) {
+      throw codedError("This machine's brain can't manage keep-awake without a project.", ACTION_NOT_CALLABLE_CODE);
+    }
     const response = await localRuntimePool.callActionForRoot(rootPath, {
       domain: "keep_awake",
       action,
@@ -9804,6 +9957,28 @@ app.whenReady().then(async () => {
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
     openAttentionItem: async (item: AttentionItem) => {
       await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
+    },
+    onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
+    onAttentionPreferences: (ownerId, preferences) => {
+      attentionPreferencesForAlerts = { ownerId, preferences };
+      desktopAlertPresenter.preferencesLoaded();
+    },
+    onAttentionSessionMuted: (ownerId, sessionId, muted) => {
+      const cached = attentionPreferencesForAlerts;
+      if (!cached || cached.ownerId !== ownerId) return;
+      const others = cached.preferences.mutedSessionIds.filter((id) => id !== sessionId);
+      attentionPreferencesForAlerts = {
+        ownerId,
+        preferences: {
+          ...cached.preferences,
+          mutedSessionIds: muted ? [...others, sessionId] : others,
+        },
+      };
+    },
+    openDesktopAlert: (itemId) => {
+      const record = typeof itemId === "string" ? toastedDesktopAlerts.get(itemId) : undefined;
+      if (!record) throw new Error("That notification is no longer available. Open the chat from Activity.");
+      openDesktopAlert(record.alert, record.ownerId);
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

@@ -13,7 +13,7 @@ import {
   createAccountMigrationRunner,
   type AccountMigrationContext,
 } from "../../../../desktop/src/main/services/account/accountMigrationRunner";
-import type { AccountAuthService } from "./accountAuthService";
+import type { AccountAccessTokenOptions, AccountAuthService } from "./accountAuthService";
 import {
   createAccountSettingsStore,
   getSharedAccountSettingsStore,
@@ -44,7 +44,7 @@ export type AccountRuntimeLifecycleOptions = {
   receiptDir: string;
   logger: Logger;
   accountAuthService: Pick<AccountAuthService, "getStatus" | "onSignedIn" | "onSignedOut">;
-  getAccountAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
+  getAccountAccessToken: (options?: AccountAccessTokenOptions) => Promise<string | null>;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   teardown: { push(release: () => void): void };
   relay?: AccountSettingsRelay & AccountVaultRelay;

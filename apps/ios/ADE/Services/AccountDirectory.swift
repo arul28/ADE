@@ -630,6 +630,9 @@ struct AccountAttentionRelayClient {
        !streamId.isEmpty {
       queryItems.append(URLQueryItem(name: "streamId", value: streamId))
     }
+    // Item kinds beyond agent and pull_request are opt-in: the relay leaves
+    // them out for older builds, whose decoders would file them as agents.
+    queryItems.append(URLQueryItem(name: "include", value: "message"))
     components?.queryItems = queryItems
     guard let url = components?.url else { throw RelayError.invalidSnapshot }
     let data = try await perform(
@@ -772,6 +775,62 @@ struct AccountAttentionRelayClient {
       body: body,
       refreshToken: refreshToken
     )
+  }
+
+  /// The account-wide per-chat mute list (`preferences.mutedSessionIds`).
+  /// An account with no saved preferences has an empty list.
+  func fetchMutedSessionIds(
+    baseURL: URL,
+    token: String,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws -> [String] {
+    let data = try await perform(
+      url: endpoint(baseURL, "preferences"),
+      method: "GET",
+      token: token,
+      body: nil,
+      refreshToken: refreshToken
+    )
+    return try Self.mutedSessionIds(fromPreferencesResponse: data)
+  }
+
+  /// Mutes or unmutes one chat on every device. This route is the only writer
+  /// of the account list; a whole-document save leaves it alone. Returns the
+  /// list as the relay holds it after the change.
+  func setSessionMuted(
+    baseURL: URL,
+    token: String,
+    sessionId: String,
+    muted: Bool,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws -> [String] {
+    let normalized = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { throw RelayError.transport }
+    let body = try JSONSerialization.data(withJSONObject: ["muted": muted])
+    let url = endpoint(baseURL, "preferences")
+      .appendingPathComponent("sessions")
+      .appendingPathComponent(normalized)
+    let data = try await perform(
+      url: url,
+      method: "PATCH",
+      token: token,
+      body: body,
+      refreshToken: refreshToken
+    )
+    return try Self.mutedSessionIds(fromPreferencesResponse: data)
+  }
+
+  private static func mutedSessionIds(fromPreferencesResponse data: Data) throws -> [String] {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      throw RelayError.invalidSnapshot
+    }
+    let preferences = object["preferences"] as? [String: Any]
+    let list = preferences?["mutedSessionIds"] as? [Any] ?? []
+    return list.compactMap { entry in
+      guard let id = (entry as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !id.isEmpty else { return nil }
+      return id
+    }
   }
 
   func registerDevice(

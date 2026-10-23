@@ -18,7 +18,7 @@
 
 import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
 
-export type AppleDuoStanceId = "open" | "laptop" | "tent" | "closed";
+export type AppleDuoStanceId = "open" | "laptop" | "book" | "tent" | "closed";
 
 export type AppleDuoPose = {
   /** Interior hinge angle in degrees: 0 = folded shut, 180 = flat. */
@@ -55,6 +55,9 @@ export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
   // The simulator's own preset angles (APPLE_DEVICE_POSE_TARGETS): drawn at
   // anything else, the hinge jumped when the simulator's report landed.
   { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: true },
+  // Book is Laptop's angle held upright: the simulator tells them apart by
+  // how the phone is held, not by the hinge.
+  { id: "book", label: "Book", angle: APPLE_DEVICE_POSE_TARGETS.book.angle, lowerFlat: false },
   { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle, lowerFlat: false },
   { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, lowerFlat: false },
 ];
@@ -78,23 +81,26 @@ export function appleDuoPoseForAngle(angle: number, lowerFlat = false): AppleDuo
 }
 
 /**
- * Which named posture this angle is nearest to.
+ * The named posture the phone is in, from what the simulator reports.
  *
- * Used only to light the checked item in the stance menu; a custom angle still
- * reads as the closest label, which is the honest thing to show when the
- * slider sits between two presets.
+ * Tent is its own Table Mode. Otherwise the angle picks the nearest of
+ * Closed, the 90° fold and Open (a custom angle reads as its closest label),
+ * and how the phone is held tells the two 90° poses apart: sideways is a
+ * laptop, upright a book. Without a report of the hold, the 90° fold reads as
+ * Laptop.
  */
-export function nearestAppleDuoStance(angle: number): AppleDuoStanceId {
-  let best: AppleDuoStance = APPLE_DUO_STANCES[0]!;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const stance of APPLE_DUO_STANCES) {
-    const distance = Math.abs(stance.angle - angle);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = stance;
-    }
-  }
-  return best.id;
+export function appleDuoStanceFor(input: {
+  angle: number;
+  held: "portrait" | "landscape" | null;
+  tableMode: boolean;
+}): AppleDuoStanceId {
+  if (input.tableMode) return "tent";
+  const angle = clampAppleDuoAngle(input.angle);
+  const fold = APPLE_DEVICE_POSE_TARGETS.laptop.angle;
+  const toFold = Math.abs(angle - fold);
+  if (toFold > Math.abs(angle - APPLE_DEVICE_POSE_TARGETS.open.angle)) return "open";
+  if (toFold > Math.abs(angle - APPLE_DEVICE_POSE_TARGETS.closed.angle)) return "closed";
+  return input.held === "portrait" ? "book" : "laptop";
 }
 
 /**

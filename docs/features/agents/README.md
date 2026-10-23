@@ -173,6 +173,10 @@ Each ADE-launched session receives the canonical root through
   extra-skill-root option ADE can set without writing a provider config home,
   so they use the catalog plus the provider-independent
   `ade skill list --text` / `ade skill show <name> --text` activation path.
+  That path lists the project's skills (`.agents`, `.claude`, `.ade`,
+  `.cursor`, `.codex` from the working folder up), the person's own, and
+  ADE's, each labelled `[project]`, `[user]` or `[bundled]`
+  (`agentSkillCatalogService.ts`).
 
 Every root ADE advertises is checked against the disk first
 (`adePromptAgentSkillRoots`). The prompt-facing list is capped, so an

@@ -7,6 +7,7 @@ import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulato
 import {
   AppleDevice3DView,
   type AppleDevice3DFailure,
+  type AppleDevice3DViewProps,
   type AppleDeviceDuoProps,
   type AppleDeviceRenderer,
   type AppleDeviceFamily,
@@ -76,6 +77,8 @@ export type AppleDeviceStageProps = {
    * to, so the HOST falls back to the flat view and says so once.
    */
   onThreeUnavailable?: ((reason: AppleDevice3DFailure) => void) | undefined;
+  /** The 3D presenter has a real body on screen, so a render can be taken. */
+  onThreeReady?: AppleDevice3DViewProps["onReady"];
   /**
    * Drawn inside the screen box in flat mode — the live inspect overlay.
    *
@@ -139,6 +142,7 @@ export function AppleDeviceStage({
   onFrame,
   frameVersion,
   onThreeUnavailable,
+  onThreeReady,
   renderScreenOverlay,
   children,
   className,
@@ -235,6 +239,7 @@ export function AppleDeviceStage({
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
           onDeviceKey={onDeviceKey}
+          onReady={onThreeReady}
           onUnavailable={onThreeUnavailable}
           renderScreenOverlay={renderScreenOverlay}
         />

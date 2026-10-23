@@ -51,6 +51,7 @@ import type {
   AppleDeviceCleanupResult,
   AppleDevicePosture,
   AppleDuoAppStoreScreenshotsResult,
+  AppleRenderProofResult,
   AppleAddDuoSkillResult,
   AppleDuoModelResult,
   AppleSetPostureArgs,
@@ -168,7 +169,6 @@ import type {
   ProviderInstanceRefreshArgs,
   ProviderInstanceRemoveArgs,
   ProviderInstanceRemoveResult,
-  ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
   ProviderInstanceDismissReplacedArgs,
   ProviderLoginRefArgs,
@@ -937,6 +937,7 @@ import type {
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAppState,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
@@ -1014,6 +1015,8 @@ import type {
   BuiltInBrowserAgentAccessMode,
   BuiltInBrowserAgentAccessRevokeArgs,
   BuiltInBrowserAgentAccessSnapshot,
+  BuiltInBrowserSettings,
+  BuiltInBrowserSettingsPatch,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -1120,6 +1123,7 @@ import type {
 } from "../shared/types/archive";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -1355,6 +1359,7 @@ declare global {
         getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
+        deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
@@ -2044,8 +2049,9 @@ declare global {
         reportPresence: (
           presence: import("../shared/types").AttentionPresence,
         ) => Promise<void>;
+        /** `null` = the account service is unreachable right now; keep the current preferences. */
         getPreferences: (accountOwnerId: string) => Promise<
-          import("../shared/types").AttentionPreferences
+          import("../shared/types").AttentionPreferences | null
         >;
         putPreferences: (
           accountOwnerId: string,
@@ -2056,9 +2062,26 @@ declare global {
           machineKey: string,
           preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
         ) => Promise<void>;
+        /**
+         * Mute one chat's notifications on every device. Account-scoped, so it
+         * takes no pin: the chat's machine is not involved.
+         */
+        setSessionMuted?: (
+          accountOwnerId: string,
+          sessionId: string,
+          muted: boolean,
+        ) => Promise<void>;
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
+        /**
+         * An agent's message to show as a toast in this (focused) window. Desktop
+         * only: the hosted web client has no main process to raise it.
+         */
+        onAlert?: (
+          cb: (alert: import("../shared/types").AttentionDesktopAlert) => void,
+        ) => () => void;
+        openAlert?: (alert: import("../shared/types").AttentionDesktopAlert) => Promise<void>;
       };
       /**
        * The global capture gesture. Optional on the whole namespace, like
@@ -3196,7 +3219,7 @@ declare global {
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
         renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
         renderComplete: (
-          args: { requestId: string; filed: number; error: string | null },
+          args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (
@@ -3206,7 +3229,7 @@ declare global {
         attachRenderProof: (
           args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
           pin?: OpenProjectBinding | null,
-        ) => Promise<{ proofArtifactId: string | null }>;
+        ) => Promise<AppleRenderProofResult>;
         addDuoSkill: (
           args?: { laneId?: string | null; chatSessionId?: string | null },
           pin?: OpenProjectBinding | null,
@@ -3288,7 +3311,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         relaunchApp: (
-          args: IosSimulatorAppLifecycleArgs,
+          args: IosSimulatorRelaunchArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
         terminateApp: (
@@ -3312,7 +3335,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
         getForegroundApp: (
-          args?: { deviceUdid?: string | null; laneId?: string | null },
+          args?: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null },
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorForegroundApp>;
         startEventLog: (
@@ -3685,8 +3708,14 @@ declare global {
          * "Agents can use the ADE browser": the setting, the saved lane and
          * chat grants, and the open prompts. Machine-local and human-only.
          */
+        browserSettings: {
+          get: () => Promise<BuiltInBrowserSettings>;
+          set: (patch: BuiltInBrowserSettingsPatch) => Promise<BuiltInBrowserSettings>;
+          onChange: (cb: (settings: BuiltInBrowserSettings) => void) => () => void;
+        };
         agentAccess: {
           get: () => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          setEnabled: (enabled: boolean) => Promise<BuiltInBrowserAgentAccessSnapshot>;
           setMode: (mode: BuiltInBrowserAgentAccessMode) => Promise<BuiltInBrowserAgentAccessSnapshot>;
           answer: (
             promptId: string,
@@ -3977,10 +4006,6 @@ declare global {
           args: ProviderInstanceRemoveArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstanceRemoveResult>;
-        rename: (
-          args: ProviderInstanceRenameArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<ProviderInstance>;
         setDefault: (
           args: ProviderInstanceSetDefaultArgs,
           pin?: OpenProjectBinding | null,

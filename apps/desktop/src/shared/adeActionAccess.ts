@@ -168,7 +168,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
       "getContextUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
       "getCodexRealtimeState", "getCodexGoal", "listClaudeOutputStyles",
-      "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "getSlashCommands",
+      "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "listPendingInputs", "getSlashCommands",
       "getTurnFileDiff", "getParallelLaunchState", "waitFor", "listWaits", "getLaunch",
       "listLaunches", "listScheduledWork", "getScheduledWorkState", "listInterruptedChats",
       "listClaudePlugins", "listCodexPlugins", "listClaudeSessions", "listSessions",
@@ -406,7 +406,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getAdeUsageStats", "getCostBreakdown", "getModelCatalog", "getModelDetail", "getModelPriceOverrides",
       "getModelRoutes", "getModelSheet", "getRouterEfficiency", "getRouterShadowSummary", "getTurnUsageSummary",
-      "getUsageSnapshot",
+      "getUsageLimits", "getUsageSnapshot",
     ],
     write: [
       "applyAccountRollups", "consumeResetCredit", "forceRefresh", "noteQuotaDemand",
@@ -424,7 +424,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   storage: {
     read: [
-      "cleanupPreview", "getSnapshot",
+      "cleanupPreview", "deletedLaneChatsSummary", "getSnapshot",
     ],
     write: [
       "cleanup", "compressNow", "runMaintenanceNow",
@@ -528,10 +528,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
       "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
       "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
-      "runtimeList", "getPosture", "getDuoModel",
+      "runtimeList", "getPosture", "getDuoModel", "deviceLeaseStatus",
     ],
     write: [
-      "claim", "attachToChatSession", "deviceCreate", "deviceAttach", "deviceStart",
+      "claim", "attachToChatSession", "deviceLease", "deviceLeaseRelease", "deviceCreate", "deviceAttach", "deviceStart",
       "deviceStop", "deviceDetach", "deviceDelete", "deviceCleanup", "runTests", "startStream",
       "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
       "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
@@ -574,6 +574,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   built_in_browser: {
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
+      "listDownloads", "waitForDownload", "readClipboard",
     ],
     write: [
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
@@ -582,7 +583,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
-      "selectOption", "uploadFile", "startRecording", "stopRecording", "noteDemoStep",
+      "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",
       "acknowledgeRemoteRequest", "replyRemoteCall", "attachUserBrowser", "detachUserBrowser",
     ],
   },
@@ -659,6 +660,12 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "chat.markCrossMachineHandoff",
   "file.refreshGitDecorations",
   "lane.portGetLease",
+  // Single-flighted and throttled on the host; a second run is a no-op sync.
+  "pr.reconcileOnFocus",
+  // Clears a marker; clearing it again leaves it cleared.
+  "session.clearWokeMarker",
+  // Publishes which tool a desktop has open; the same publish twice is a no-op.
+  "work_tools.setActiveTool",
 ]);
 
 // Reads that are never run again: they wait on purpose, call a model, or walk

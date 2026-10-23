@@ -32,6 +32,7 @@ import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
 import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
+import { BrowserAutoGrantSection, BrowserSettingsSection } from "./BrowserSettingsSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { ProvidersSection } from "./ProvidersSection";
@@ -372,6 +373,18 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <BrowserAgentAccessSection />,
       machine: "local",
       title: "ADE browser access",
+    },
+    {
+      entryIds: ["general.browser-settings"],
+      render: () => <BrowserSettingsSection />,
+      machine: "local",
+      title: "Browser behaviour",
+    },
+    {
+      entryIds: ["general.browser-auto-grant"],
+      render: () => <BrowserAutoGrantSection />,
+      machine: "local",
+      title: "Agents and permissions",
     },
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],

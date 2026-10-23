@@ -8,6 +8,7 @@ import { resolveCurrentCliEntry } from "../lib/cliDelegation";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
+import { pendingSettingsAfterBackgroundShortLabel } from "../../../desktop/src/shared/chatTurnStatus";
 import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
@@ -5888,6 +5889,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     contextTokens: compactFirstState.offer.contextTokens,
     estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
   } : null, [compactFirstState]);
+  // An effort / fast-mode change the host holds until the chat's background
+  // work ends (desktop shows the same "Effort pending" chip in the composer).
+  const activePendingSettings = activeSession?.pendingSettingsAfterBackground;
+  const footerPendingSettingsLabel = useMemo(
+    () => activePendingSettings?.length ? pendingSettingsAfterBackgroundShortLabel(activePendingSettings) : null,
+    [activePendingSettings],
+  );
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
@@ -8204,6 +8212,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     let cancelled = false;
     const query = range.query.trim().toLowerCase();
+    const mcpFilterQuery = /^(?:mcp|servers?)(?:\s|:|$)/i.test(query);
+    const colonMcpQuery = /^(mcp|servers?):\s*(.*)$/i.exec(query);
+    const mcpSearchText = colonMcpQuery
+      ? `${colonMcpQuery[1]}${colonMcpQuery[2] ? ` ${colonMcpQuery[2]}` : ""}`
+      : mcpFilterQuery ? query : query ? `mcp ${query}` : "mcp";
+    const suggestionRankQuery = query.replace(/^(?:mcp|servers?)(?:\s+|:)?/i, "").trim();
     const fileQuery = composerFileSearchQuery(range.query).toLowerCase();
     const matchesMentionQuery = (suggestion: MentionSuggestion): boolean => {
       if (!query) return true;
@@ -8264,7 +8278,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const localCandidates = query ? local : local.slice(0, localBudget);
       const ranked = rankMentionSuggestions(
         [...localCandidates, ...remote, ...attachedSuggestions()],
-        query,
+        suggestionRankQuery,
       );
       const next = modelsFirst
         ? [...modelSuggestions, ...ranked].slice(0, MENTION_MAX_ROWS)
@@ -8319,7 +8333,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               return safePrs;
             })
             .catch(() => []);
-        const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
+        const [files, commits, prs, mcpMentions] = await Promise.all([
+          filesPromise,
+          commitsPromise,
+          prsPromise,
+          conn.action<{ suggestions?: Array<{ kind: string; id: string; title: string; subtitle?: string }> }>(
+            "chat",
+            "listMentionSuggestions",
+            { query: mcpSearchText, ...(activeSession?.sessionId ? { excludeSessionId: activeSession.sessionId } : {}) },
+          ).catch(() => ({ suggestions: [] })),
+        ]);
+        remote.push(...(mcpMentions.suggestions ?? [])
+          .filter((row) => row.kind === "mcp")
+          .map((row) => ({
+            kind: "mcp" as const,
+            label: row.title,
+            insertText: `@mcp:${row.id}`,
+            detail: row.subtitle ?? "MCP server reference",
+          })));
         remote.push(...files.map((file) => {
           // A folder is a POINTER, not an attachment: it has no bytes to
           // upload, and the desktop composer deliberately inserts a chip and
@@ -17802,6 +17833,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       footerX += width;
     }
+    // The pending-settings label sits between reasoning and permission, so the
+    // cells after it move right by its width.
+    if (footerPendingSettingsLabel) footerX += 2 + footerPendingSettingsLabel.length;
     const permissionLabel = permissionSummary(modelState);
     if (permissionLabel) {
       footerX += 2;
@@ -18432,6 +18466,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     liveAgentCount,
     mentionSuggestions,
     modelState,
+    footerPendingSettingsLabel,
     modelCatalog,
     modelWizardInput,
     modelWizardView,
@@ -18910,6 +18945,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           multiViewMap={footerMultiViewMap}
           workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
           compactFirst={compactFirstFooter}
+          pendingSettingsLabel={footerPendingSettingsLabel}
         />
           </Box>
           {rightPaneVisible ? (

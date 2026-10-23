@@ -87,7 +87,7 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
@@ -3270,6 +3270,8 @@ export async function createAdeRuntime(args: {
         ptyService,
         projectName: project.displayName,
         projectRoot,
+        // The desktop app pops a notification from this; see desktopAlertPresenter.
+        onDesktopAlert: (alert) => pushEvent("runtime", { type: "attention_alert", alert }),
         subscribePrNotifications: (cb) => {
           pushPrNotificationSubscribers.add(cb);
           return () => pushPrNotificationSubscribers.delete(cb);
@@ -3338,6 +3340,10 @@ export async function createAdeRuntime(args: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
           modelRouter,
+          // Provider quota is machine-wide, so balance unions every live chat
+          // service on this machine, not only this project's. A host with no
+          // chat service (headless CLI) leaves the registry empty.
+          listProviderAccountChatLoad: listMachineProviderAccountChatLoad,
         },
       }),
       {
@@ -3403,6 +3409,10 @@ export async function createAdeRuntime(args: {
         || ptyService.isTranscriptPathActive(filePath)
         || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
       projectId,
+      // The index file is held open by the search service; it compacts on request.
+      compactSearchIndex: () =>
+        searchServiceHolder.current?.compactIndex()
+        ?? { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" },
       laneService,
       projectConfigService,
       releaseLaneRuntimeResources: (laneId) => {

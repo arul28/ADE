@@ -228,6 +228,8 @@ export class PersonalChatScope {
       pushEvents: true,
       mcpServers: true,
       updateMcpServers: true,
+      mcpToolFilters: true,
+      deferredMcpUpdates: true,
     };
   }
 
@@ -699,12 +701,22 @@ export class PersonalChatScope {
           : await saveFileTempAttachment(projectAttachmentsDir(runtime.projectRoot), args);
         break;
       case "getImageDataUrl": {
-        const attachmentsRoot = await fs.promises.realpath(
-          projectAttachmentsDir(runtime.projectRoot),
+        // The images a personal chat shows: its attachments, and the pictures
+        // its agent saved and viewed in its own workspace or artifact store.
+        // Nothing else on the machine.
+        // A relative name is one the agent used in its own workspace.
+        const requestedPath = await fs.promises.realpath(
+          path.resolve(runtime.workspaceRoot, requiredString(args.path, "path")),
         );
-        const requestedPath = await fs.promises.realpath(requiredString(args.path, "path"));
-        if (requestedPath !== attachmentsRoot && !requestedPath.startsWith(`${attachmentsRoot}${path.sep}`)) {
-          throw new Error("Personal chat attachment path is outside the attachment store.");
+        const roots = await Promise.all([
+          projectAttachmentsDir(runtime.projectRoot),
+          resolveAdeLayout(runtime.projectRoot).artifactsDir,
+          runtime.workspaceRoot,
+        ].map((root) => fs.promises.realpath(root).catch(() => null)));
+        const inside = roots.some((root) =>
+          root !== null && (requestedPath === root || requestedPath.startsWith(`${root}${path.sep}`)));
+        if (!inside) {
+          throw new Error("Personal chat image path is outside the attachment store and the chat's workspace.");
         }
         result = await readImageFileAsDataUrl(requestedPath, { logger: runtime.logger });
         break;

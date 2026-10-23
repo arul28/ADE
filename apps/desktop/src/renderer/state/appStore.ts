@@ -3147,10 +3147,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
     const [snapshot, aiStatus] = await Promise.all([
-      getProjectConfigCached({ projectRoot }),
+      // With no project open there is no project config to read: the mode
+      // then follows the configured providers alone.
+      projectRoot ? getProjectConfigCached({ projectRoot }) : Promise.resolve(null),
       getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
-    const configMode = snapshot.effective.providerMode ?? "guest";
+    const configMode = snapshot?.effective.providerMode ?? "guest";
     // Auto-elevate to subscription if any AI provider is configured
     const hasProvider = hasConfiguredAiProvider(aiStatus);
     set({ providerMode: configMode === "subscription" || hasProvider ? "subscription" : "guest" });

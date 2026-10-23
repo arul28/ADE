@@ -74,7 +74,26 @@ The picker offers the runtime (when there is more than one) and the model;
 `device-create --runtime --device-type` does the same from the CLI. Only
 installed runtimes — `APPLE_NO_INSTALLED_SIMULATORS` when none exist,
 `APPLE_RUNTIME_NOT_INSTALLED` when the one named is not there. A lane may
-instead `device-attach` an installed simulator the user names.
+instead `device-attach` an installed simulator the user names. A model named
+with no runtime gets the newest installed runtime that runs it: iOS 27.1 runs
+only the iPhone Duo, so `--device-type "iPad Pro 11-inch (M5)"` lands on 27.0.
+
+### Extra devices
+
+A lane may hold up to two EXTRA devices beside its own
+(`APPLE_LANE_EXTRA_DEVICE_LIMIT`), for a second model in the same piece of work:
+an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty ADE
+device named `ADE · <lane> · <model>`) and boots it. Extras are their own
+local-only table, `lane_apple_extra_devices` (keyed by udid), and their marker
+says `extra: true`, so a lost row is re-adopted as an extra, never as the lane's
+own device. They are reached only by name: `--device <udid|name>` on any command
+an agent may send runs that command on the extra (booted first, and its use
+noted for idle power-off); without `--device` everything still drives the lane's
+own device, and the pane never streams an extra. The cleanup pass treats them as
+held, idle power-off turns them off like any ADE device, and the lane's end
+(archive or delete) deletes them with the lane's own. `device-delete --device
+<udid>` deletes one now. The picker lists them with the held devices, never as
+free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
 
 ### Runtimes and Xcode
 
@@ -371,22 +390,77 @@ the service republishes the stream's pixel and point sizes on each switch, and
 a restarted capture re-applies the panel. Input on a Duo goes through
 CoreDevice's digitizer and keyboard services to touchscreen `0x100 + screenId`:
 the legacy Indigo inner target is disconnected and can abort `backboardd`.
-The flat view draws the inner panel a quarter turn on
-(`APPLE_DUO_INNER_ORIENTATION`).
+Both views draw the live panel the way the guest says its picture sits
+(the posture's `displayOrientation`, from CoreDevice's display list), so a
+panel turned by the phone or kept by an app is drawn upright either way;
+`APPLE_DUO_INNER_ORIENTATION` (a quarter turn on) is only the fallback.
+
+**Turning.** The legacy GSEvent rotation never reaches the Duo's inner panel,
+so on a hinged device the helper's `orientation` command sends CoreDevice's
+`orientation-picker-control` instead (leaving Tent's Table Mode first). Held
+`portrait` the inner picture is landscape; the inner display takes all four
+orientations, the cover's Home Screen only portrait. `rotate` on a Duo is
+verified from the guest's report of the live panel, not the framebuffer read
+the rigid path uses (that always names the cover, and the inner panel's
+framebuffer never changes shape); the answer carries the posture. The rail's
+orientation control shows how the phone is held (CoreDevice names the
+device's orientation, the control the interface's, so the landscapes swap).
+The posture watcher also reports a change of the live panel's turn.
+
+The orientation names are how the PHONE is held, so on the inner display they
+read backwards to anyone who means the picture: held portrait (open, book) the
+picture is wide (2853x2007), held landscape (laptop) it is tall (2007x2853).
+The CLI's `rotate`, `fold` and `posture` print `picture inner display,
+tall|wide` (`appleDuoPictureShape`), `held` in `rotate`'s names rather than
+CoreDevice's swapped ones, and a note when the hold asked for gives the
+opposite shape. A raw `fold --angle` keeps the hold, so `fold laptop` then
+`fold --angle 180` is the tall, flat-open screen.
+
+**Accessibility.** The guest answers hit-tests only on the display that is on:
+the inner panel is display 3, and a grid probe sent to display 0 there finds
+nothing, which left `snapshot` and `tap-element` with only what the tree walk
+reaches (no sidebar rows, no toolbar items hidden in groups). The helper's
+`ax-describe` asks the live panel's display (`DevicePosture.accessibilityDisplay`)
+and turns each grid point by that panel's picture turn before its coverage
+check, because the probe space is the app frame while element frames are the
+picture's (measured on the iPhone Duo, iOS 27.1; see `VENDORED.md`).
 
 **3D.** Apple's own `V68.usdz` is read from the owning machine's Xcode
 (`getDuoModel`, never bundled) and parsed by serve-sim's vendored loader
 (`renderer/components/apple/vendor/serve-sim`). `appleV68DuoBody.ts` is a
 *physical* body: each panel maps its framebuffer itself, the live stream goes to
 the panel that is on, the closed phone turns its cover to the camera, landscape
-poses (laptop) turn the phone, and the camera refits on each fold. Taps send the
+poses (laptop) turn the phone, and the camera refits on each fold. It also
+stands the way the pose sits on a table (`appleDuoStandTilt`): held sideways
+and folded, the lower half lies flat and the screen stands, seen from a
+little above (fading in from flat to 120° so a hinge drag moves smoothly); a
+tent stands hinge up with the cover facing out, also from a little above.
+Picking a preset resets the view to that framing. Taps send the
 live panel's framebuffer point. The drawn body (`appleDuoScene.ts`) remains the
 fallback when the model is missing.
 
-**Controls.** The hinge bar under the device (`AppleDuoHingeBar`): a
-continuous slider that previews on drag and folds on release, with the
-simulator's reported angle and live panel beside it. The rail's Duo menu:
-presets, ±15° steps, and **App Store screenshots** (both
+**Controls.** The Duo's own dock (`AppleDuoDock`) is a band under the device,
+outside the rail and never over the picture, shown only for a foldable. Left,
+**Hinge** in 3D: a continuous slider that previews on drag and folds on
+release (detent labels hide in a narrow pane); in flat, where there is no
+body to fold, **Screen**: Cover folds the phone shut, Inner unfolds it flat,
+both by angle, keeping how it is held. Right, **Orientation**: the four ways
+to hold the phone, each drawn as the screen it gives (the inner panel runs
+wide with the phone upright), the pressed one being how the simulator says it
+is held. A quiet
+readout (angle, live screen, wide or tall) follows when the pane is wide. On a
+Duo the rail drops its Orientation menu; every other device keeps it. A turn
+the app on screen does not follow (`APPLE_ROTATE_NOT_ADOPTED`) is an info
+toast, not the error strip, on every device. The angle alone
+cannot tell Laptop from Book (both 90°); how the phone is held does, so the
+menu's checked posture comes from the angle, the held orientation and Table
+Mode (`appleDuoStanceFor`); a phone lying face down counts as Tent, since
+nothing else lays it down. A helper that did not set the pose itself reads
+how the phone is held from CoreDevice's device-state stream, always releases
+Table Mode before a turn, and stands a face-down phone up before a raw angle.
+The posture hook reads once more 1.5 s after a first read that does not know
+how the phone is held. The rail's Duo menu: presets (Open, Laptop, Book,
+Tent, Closed), ±15° steps, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
 app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
 within 4°; arrow keys stay exact. The 3D body eases into every pose (hinge,
@@ -419,13 +493,37 @@ contact sheet; a 6 s WebM turntable. For a Duo each chosen pose folds the real
 simulator (`setPosture` answers once it has landed on the pose's panel) before
 the shot. Each image and the video go to `attachRenderProof` on the device's
 own machine, which files them to the chat's and lane's proof drawer there, so a
-window pinned to another machine files where the chat lives.
+window pinned to another machine files where the chat lives. The answer names
+that chat and the file, so the toast says where the renders went ("this
+chat's proof drawer", the chat that holds the device, or the lane's proof)
+with **Open proof** (when it is the chat on screen) and, on the device's own
+machine, **Show in Finder**. `ade apple render` prints a `cite:` line per
+proof: the service credits each render filed for the lane while the request
+is open to it.
 
-`ade apple render` asks for the same thing from the CLI. The service emits
-`apple.render.request`; the first open pane for the lane to `renderAck` it
-takes the job (a pane whose video stalled reconnects first), renders, and
-answers `renderComplete` with the count filed. No pane acking within 5 s is a
-clear "open the Apple pane" error: rendering needs the desktop renderer.
+`ade apple render` asks for the same thing from the CLI, and needs no pane:
+only an ADE desktop window with the project open, on the device's machine or
+bound to it (a project on another machine must be that window's front tab: a
+parked remote tab does not hear the request). The service emits `apple.render.request` (with the asking chat)
+to every such window, and the first `renderAck` takes the job:
+
+- A live Apple pane for the lane acks at once (a pane whose video stalled
+  reconnects first) and renders in its own 3D view, as before.
+- Otherwise every project surface's `AppleRenderHost` waits 1.5 s, so a pane
+  anywhere wins, then acks with that surface's own binding as the pin (an ack
+  only succeeds on the machine that asked). The winner loads
+  `AppleRenderHostJob` on demand, reads the lane's device, streams it into a
+  3D view mounted far off screen (absolute, left of the page, no pointer
+  events, not focusable; never `display: none`, which stops WebGL), renders
+  through the pane's own `renderAppleDeviceToProof`, and unmounts, which hands
+  the stream lease back. Idle, the host is one event callback: no stream, no
+  WebGL, no timer.
+
+Either way the job answers `renderComplete` with the count filed or the
+reason it failed (the lane has no device, the device is off, the picture never
+came up, the window closed mid-render). The host never boots a device. No ack
+within 7.5 s means no desktop window took it, and the error says so:
+rendering needs a desktop renderer.
 
 ## Agent discovery
 
@@ -481,14 +579,17 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/main/services/ios/appleDeviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
-| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoHingeBar.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the hinge bar under the device, and Apple's physical Duo body. |
+| `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
+| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
 | `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
 | `apps/desktop/src/renderer/components/apple/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the device picker. |
 | `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
+| `apps/desktop/src/renderer/components/apple/AppleRenderHost.tsx`, `AppleRenderHostJob.tsx`, `useAppleRenderRequests.ts` | `ade apple render`: the pane's render and broker handshake, the shared render body, and the per-project host that renders off screen when no pane takes the request. |
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
 | `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
@@ -550,8 +651,14 @@ ade --socket apple start [--udid <udid>|--runtime <r> --device-type <t>|--create
 ade --socket apple stop [--force] --text
 ade --socket apple device-detach [--force] --text
 ade --socket apple show [--floating] --text
-ade --socket apple scroll --x <x> --y <y> --dy <delta> --text
-ade --socket apple foreground --text
+ade --socket apple scroll down [--anchor-x <x> --anchor-y <y>] [--amount <n>] --text
+ade --socket apple foreground [--wait <seconds>] --text
+ade --socket apple screenshot [--out <path>] [--no-proof] --text
+ade --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text
+ade --socket apple relaunch --bundle-id <id> [-- <app args>] --text
+ade --socket apple lease [--wait <s>] [--ttl <s>] [--holder <name>] --text
+ade --socket apple lease release --token <t> --text
+ade --socket apple lease status --text
 
 ade --socket apple frame [--out <path>] --text
 ade --socket apple button home --text
@@ -560,6 +667,30 @@ ade --socket apple rotate landscape-left --text
 ade --socket apple type "reddit" --submit --text
 ade --socket apple key return --text
 ```
+
+`screenshot` reads no accessibility tree, so it prints no `elements` line
+(`snapshot` does). It files the shot as proof and prints its `cite:` line; a later
+`proof attach` of the same bytes is refused as `PROOF_DUPLICATE` and that
+refusal names the earlier proof's `cite:` line. `--no-proof` takes a scratch
+shot that files nothing, for a validation loop.
+
+`launch` builds `Debug` unless `--configuration` names another (an app whose
+Debug and Release reach different backends needs the one under test), and
+says which it built. Everything after `--` goes to the app as launch
+arguments, for `launch` and `relaunch` alike (`--launch-arg=<v>` adds one at a
+time; the `=` lets a value start with a dash).
+
+`foreground --wait` keeps asking for up to that many seconds (default 10,
+max 30) until an app is in front: right after a launch the accessibility tree
+still names none.
+
+`lease` is a turn on the lane's device for agents that share it (a
+coordinator and its subagents). It queues: `--wait` stands in line, `release`
+hands the device to the next holder, and a lease nobody renews lapses after
+`--ttl`. It is advisory: no command checks it, so the pane and an agent that
+never asked are not blocked. `status` and a busy answer name the holder but
+never its token. The lane's device hint (`laneAppleDeviceDirective.ts`) tells every
+agent in the lane to take one before a run of builds, folds and shots.
 
 `type --submit` presses Return after the text, so a search or form submits.
 With `--submit` and no text, it presses Return alone. `key` presses one named
@@ -596,7 +727,8 @@ own orientation), `APPLE_ROTATE_SEND_FAILED` (the helper never delivered the
 event) or `APPLE_ROTATE_UNMEASURABLE` (the screen could not be read, so nothing
 is claimed). `verification: already-on-axis` means the screen was already on
 that axis — a 180-degree turn inside one axis leaves the pixel geometry
-identical and is deliberately not claimed.
+identical and is deliberately not claimed. An iPhone Duo is
+verified from its posture instead (see Foldable mode).
 
 ### Auto-record contract
 
@@ -682,7 +814,8 @@ forwarded.
 | `permission` (`privacy`) | `setPermission` | positional `<grant\|revoke\|reset> <service>`, `--bundle-id`, `--device` |
 | `push` | `sendPushNotification` | `--bundle-id`, `--title`, `--body`, `--payload`, `--device` |
 | `open-url` | `openUrl` | positional url or `--url`, `--device` |
-| `relaunch` | `relaunchApp` | `--bundle-id`, `--device` |
+| `relaunch` | `relaunchApp` | `--bundle-id`, `--launch-arg=<v>`, `-- <app args>`, `--device` |
+| `lease` | `deviceLease`, `deviceLeaseRelease` (`release`), `deviceLeaseStatus` (`status`) | `--wait`, `--ttl`, `--holder`, `--token`, `--lane` |
 | `terminate` (`kill-app`) | `terminateApp` | `--bundle-id`, `--device` |
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
@@ -696,6 +829,16 @@ forwarded.
 | `wait-for-element` (`wait-for`) | `waitForElement` | the same element query, plus `--timeout-ms`, `--gone` |
 | `assert-visible` (`assert`) | `assertVisible` | the same element query |
 | `proof-bundle` | `captureProofBundle` | `--out`, `--caption`, `--no-elements`, `--log-rows`, `--device`, `--lane`, `--project` |
+
+Input coordinates are what the agent sees: a screenshot's and the
+accessibility tree's points, upright. When the picture sits turned on the
+framebuffer (any device held landscape, and the iPhone Duo's inner display
+always, since it is mounted a quarter turn), the helper turns an agent's
+`tap`, `drag`, `swipe` and `scroll` onto the framebuffer before it sends them
+(`space: "screen"` on the helper's touch and scroll commands, read from the
+live display's orientation at each gesture's start). A viewer (the pane, a
+remote window, the phone) maps clicks onto the framebuffer it draws turned,
+so its input (`source: "user"`) goes as is.
 
 `--text` is the one flag that reads two ways. A bare `--text` selects ADE's
 human-readable output. `--text <value>` is the element query's substring
@@ -882,3 +1025,8 @@ recording. With no `outDir` the bundle lands in
 | `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` | Re-run `ade --socket apple apps --text`. |
 | `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `ade --socket apple shutdown --force --text`. |
 | `IOS_SIMULATOR_LANE_NOT_RESOLVED` | Pass `--project-root`. |
+| `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT` | `--out` must be inside the build root (the lane worktree); a relative path resolves there. |
+| `APPLE_EXTRA_DEVICE_LIMIT` | The lane holds two extra devices. `device-delete --device <udid>` one first. |
+| `APPLE_DEVICE_IS_EXTRA` | That simulator is a lane's extra device; drive it with `--device`, do not attach it. |
+| Push banners on screenshots | The simulator is signed in and paired, so it gets the machine's real pushes. Capture on an unpaired device (a fresh lane or extra device) or sign the app out. |
+| Several agents on one device | Take turns with `apple lease` (the lane device hint tells every agent about it). |

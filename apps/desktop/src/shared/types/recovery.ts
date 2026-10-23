@@ -41,6 +41,11 @@ export type AdeLastFailureReport = {
   detail?: string;
   at: string;
   projectRoot?: string;
+  /**
+   * The endpoint of the brain that failed, for a brain failure. Absent on
+   * records written before it existed and on non-brain failures.
+   */
+  socketPath?: string;
   component: "brain_startup" | "project_db_open" | "sync_host" | "desktop_repair";
   count: number;
   firstAt: string;

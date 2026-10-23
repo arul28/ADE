@@ -36,6 +36,8 @@ export type AppleDeviceMarker = {
    * lane, and deletes it after the grace period unless a lane picks it again.
    */
   detachedAt?: string | null;
+  /** One of the lane's extra devices: a lost row is given back as an extra, never as the lane's own device. */
+  extra?: boolean;
 };
 
 export function appleDeviceMarkerPath(dataRoot: string, udid: string): string {
@@ -53,6 +55,7 @@ export function readAppleDeviceMarker(dataRoot: string, udid: string): AppleDevi
       name: typeof raw.name === "string" ? raw.name : "",
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : "",
       detachedAt: typeof raw.detachedAt === "string" ? raw.detachedAt : null,
+      ...(raw.extra === true ? { extra: true } : {}),
     };
   } catch {
     return null;
@@ -141,8 +144,11 @@ export function appleMarkerProjectHolds(
   let db: ReturnType<typeof openDatabase> | null = null;
   try {
     db = openDatabase(dbPath);
+    // A lane's extra device lives in its own table; only a marker that says
+    // so asks it, so a database from before extras is never read for one.
+    const table = marker.extra ? "lane_apple_extra_devices" : "lane_apple_devices";
     const row = db.prepare(
-      `select 1 as one from lane_apple_devices d
+      `select 1 as one from ${table} d
          join lanes l on l.id = d.lane_id
         where d.udid = ? and coalesce(l.status, '') != 'archived'
         limit 1`,

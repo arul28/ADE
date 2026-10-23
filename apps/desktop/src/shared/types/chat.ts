@@ -516,6 +516,13 @@ export type SpawnCompletedNotice = {
 };
 
 /**
+ * `system_notice.status` of the line a chat shows when its agent sent the user
+ * a message (`ade notify` from that chat). `message` is "Notified you: <title>",
+ * `detail` the body.
+ */
+export const USER_NOTIFIED_NOTICE_STATUS = "user_notified";
+
+/**
  * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
  * completion, in EITHER wording: the current sentence, and the pre-rename
  * `Peer "<title>" turn finished` that persisted transcripts still hold and are
@@ -603,7 +610,11 @@ export type AgentChatHostContinuationMetadata = {
     /** A chat wait the agent armed fired (`chat.armWait`). */
     | "chat_wait"
     /** A background job the agent was waiting on ended. */
-    | "background_work_ended";
+    | "background_work_ended"
+    /** Background work the agent was waiting on was lost with its agent process. */
+    | "background_work_lost"
+    /** A subagent is blocked on a question; ADE relays it to the parent agent. */
+    | "subagent_question";
 };
 
 export type AgentChatContinuityRecovery = {
@@ -1301,6 +1312,8 @@ export type AgentChatBoardMoveMetadata = {
 };
 
 export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Identifies the outside app that sent this person-side message through ADE MCP. */
+  remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
   scheduledWake?: AgentChatScheduledWakeMetadata;
   /** Rides a `subagent` completion delivery so the renderer can render its
@@ -3274,6 +3287,15 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   strictMcpConfig?: boolean;
   /** What the provider could actually honor. Absent when no MCP was requested. */
   mcpCapability?: AgentChatMcpCapability;
+  /**
+   * True while an `updateSession({ mcpServers })` that arrived mid-turn waits
+   * for the turn to end. `mcpServers` and `mcpCapability` still describe the
+   * servers the running turn has; the queued ones replace them at the turn
+   * boundary. Absent otherwise. In memory only: a runtime restart drops the
+   * queued update, and the host re-sends its servers as it does after any
+   * restart.
+   */
+  mcpServersPending?: boolean;
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   autoContinueAtUsageLimit?: boolean;
@@ -3383,6 +3405,12 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   activeBackgroundTaskCount?: number;
   /** The same live work split into working vs monitoring (`classifyBackgroundWorkKind`). */
   backgroundWork?: SessionBackgroundWork;
+  /**
+   * Settings the user changed that wait for the chat's background work: applying
+   * them restarts the agent process, which would stop that work. They apply on
+   * the first turn after the work ends. Live only; absent when nothing waits.
+   */
+  pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   /**
    * ISO instant this session's live background work began — the anchor for the
    * "Background work ×N 2h" elapsed. Omitted when the runtime cannot say
@@ -3892,10 +3920,22 @@ export type AgentChatModelCatalogArgs = {
  * config (Claude SDK `mcpServers`, Codex `config.mcp_servers`, Cursor inline
  * servers, Droid server list, OpenCode `mcp`). Keep it to the fields every
  * adapter can actually express — a field only one provider honors belongs on
- * that provider's own args, not here.
+ * that provider's own args, not here. The per-server tool filters are the one
+ * exception, and they are refused at create/update on a provider that cannot
+ * enforce them (`CALLER_MCP_SUPPORT[provider].toolFilters`), never ignored.
  */
+export type AgentChatMcpToolFilter = {
+  /**
+   * Only these tools of the server reach the model. Bare tool names as the
+   * server lists them (`search`, not `mcp__docs__search`). Never empty.
+   */
+  allowedTools?: string[];
+  /** These tools of the server never reach the model. Bare tool names. */
+  disallowedTools?: string[];
+};
+
 export type AgentChatMcpServerConfig =
-  | {
+  | ({
     type: "http" | "sse";
     url: string;
     headers?: Record<string, string>;
@@ -3911,13 +3951,13 @@ export type AgentChatMcpServerConfig =
      * `system_notice`). Ignored on input when `headers` is present.
      */
     headerNames?: string[];
-  }
-  | {
+  } & AgentChatMcpToolFilter)
+  | ({
     type: "stdio";
     command: string;
     args?: string[];
     env?: Record<string, string>;
-  };
+  } & AgentChatMcpToolFilter);
 
 /**
  * Honest report of what a provider did with a caller's MCP request. `level` and
@@ -5503,6 +5543,9 @@ export type AgentChatSteerResult = {
   queued: boolean;
   reason?: "queue_full";
 };
+
+/** A chat setting whose change is held while background work runs. */
+export type AgentChatPendingSettingAfterBackground = "reasoningEffort" | "fastMode";
 
 export type AgentChatMessageSessionKind =
   | "auto"

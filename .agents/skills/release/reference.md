@@ -496,7 +496,10 @@ none of it can fail or block a release:
 - **Web client and Workers** (`deploy-web.yml`): release
   `ade@<git describe>`, maps uploaded to `ade-web` / `ade-workers`, and the
   web client's maps deleted before the Pages deploy.
-- **iOS** (TestFlight workflow): dSYMs uploaded to `ade-ios` after the bump.
+- **iOS** (`ios-testflight.sh` and the TestFlight workflow, both through
+  `scripts/release-tools/upload-ios-dsyms.sh`): dSYMs uploaded to `ade-ios`
+  after the archive. Run by hand, the token comes from `SENTRY_AUTH_TOKEN` or
+  the ADE project secret of that name.
 
 All of it needs the `SENTRY_AUTH_TOKEN` repository secret (a Sentry
 organization token, set 2026-10-13). Without it each step logs one "skipping"

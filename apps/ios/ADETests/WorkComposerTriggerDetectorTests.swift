@@ -564,6 +564,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .browserTab: return "browser_tab"
     case .adeLink: return "ade_link"
     case .machine: return "machine"
+    case .mcp: return "mcp"
     case .image: return "image"
     }
   }

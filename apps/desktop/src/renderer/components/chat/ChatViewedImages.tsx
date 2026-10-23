@@ -11,6 +11,7 @@ import { imageViewLocalPath, imageViewName, isDataUri } from "../../../shared/ch
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { MediaLightbox } from "../ui/MediaLightbox";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatImageReader } from "./agentChatApi";
 import type { CodexImageViewRenderEvent } from "./chatTranscriptRows";
 
 type ViewedImageRead = { src: string | null; failed: boolean };
@@ -25,14 +26,19 @@ function useViewedImageSrc(view: CodexImageViewRenderEvent): ViewedImageRead {
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
+  // A personal chat reads its pictures through its own API.
+  const reader = useChatImageReader();
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
   const inline = isDataUri(view.url) ? view.url!.trim() : null;
   const path = inline ? null : imageViewLocalPath(view);
   const [read, setRead] = useState<ViewedImageRead & { path: string } | null>(null);
   useEffect(() => {
     if (!path) return undefined;
     let cancelled = false;
-    // An agent can rewrite the file it viewed at the same path: read it fresh.
-    readAttachmentImageDataUrl(path, pinRef.current, { cache: false })
+    // An agent can rewrite the file it viewed at the same path, so each view
+    // reads its own copy; a remount of the same view reuses it.
+    readAttachmentImageDataUrl(path, pinRef.current, { version: view.itemId, reader: readerRef.current })
       .then(({ dataUrl }) => {
         if (!cancelled) setRead({ path, src: isDataUri(dataUrl) ? dataUrl : null, failed: !isDataUri(dataUrl) });
       })
@@ -42,7 +48,7 @@ function useViewedImageSrc(view: CodexImageViewRenderEvent): ViewedImageRead {
     return () => {
       cancelled = true;
     };
-  }, [path, pinKey]);
+  }, [path, pinKey, view.itemId]);
   if (inline) return { src: inline, failed: false };
   if (!path) return { src: null, failed: true };
   // A new path must not keep showing the previous picture while it loads.

@@ -4,6 +4,7 @@ import type {
 } from "../../../desktop/src/shared/types/attention";
 import {
   ATTENTION_CONTRACT_VERSION,
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   attentionDestinationDeepLink,
 } from "../../../desktop/src/shared/types/attention";
 import { activityBoardColumn } from "../../../desktop/src/shared/attention/activityBoardColumn";
@@ -181,6 +182,7 @@ async function machineFallback(
   const snapshot = await callAttention<AttentionSnapshot>(
     connection,
     "getMachineSnapshot",
+    { include: ATTENTION_SNAPSHOT_INCLUDE_MESSAGES },
   );
   return {
     ...snapshot,
@@ -445,6 +447,13 @@ export function activityItemElapsed(item: AttentionItem, nowMs = Date.now()): st
 }
 
 export function activityItemContext(item: AttentionItem): string {
+  // A message reads as what it says, then which chat sent it.
+  if (item.kind === "message") {
+    const body = item.preview.trim() !== item.title.trim() ? item.preview : null;
+    return [body, item.detail]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join(" · ");
+  }
   return [activityWaitingReasonLabel(item), item.project.name, item.laneName, item.machine.name]
     .filter((value): value is string => Boolean(value?.trim()))
     .join(" · ");

@@ -16,7 +16,7 @@ Every hand-typed step in past releases is where the mistakes came from.
 |---|---|
 | `bash scripts/release-tools/scope.sh` | What each tier needs to ship, and `main`'s `ci-pass` |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
-| `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → wait → groups → tag. Resumable; retries every App Store Connect call |
+| `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun |
 
 `reference.md` in this folder is the long form: incident history, the full
 Cloudflare account checklist, and recovery detail. Read the section named below

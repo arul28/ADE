@@ -16,6 +16,7 @@ import {
   useWebMachines,
   type WebWorkspaceContextValue,
 } from "./WebWorkspaceContext";
+import { flashRowHighlight } from "../../lib/flashRowHighlight";
 import { WEB_MACHINE_SESSION_LIMIT } from "./WebMachineSessionManager";
 import {
   WEB_MACHINE_DOT_COLOR,
@@ -159,11 +160,37 @@ export function WebConnectionsChip() {
    * not need a handle on the chip, and the chip stays the only thing that knows
    * how to render machines.
    */
+  const [focusMachineRequest, setFocusMachineRequest] = useState<{ machineKey: string; id: number } | null>(null);
+  const focusMachineRequestIdRef = useRef(0);
+  const focusedMachineRequestRef = useRef<number | null>(null);
   useEffect(() => {
-    const onOpenRequest = () => setOpen(true);
+    const onOpenRequest = (event: Event) => {
+      // A machine chip's "Open in Connections" names the machine to show.
+      const machineId = (event as CustomEvent<{ machineId?: string } | undefined>).detail?.machineId;
+      const machineKey = machineId?.trim() || null;
+      setFocusMachineRequest(machineKey ? { machineKey, id: ++focusMachineRequestIdRef.current } : null);
+      setOpen(true);
+    };
     window.addEventListener(WEB_OPEN_CONNECTIONS_EVENT, onOpenRequest);
     return () => window.removeEventListener(WEB_OPEN_CONNECTIONS_EVENT, onOpenRequest);
   }, []);
+
+  useEffect(() => {
+    // The rows render only once the popover has measured its anchor.
+    if (!open || !anchor || !focusMachineRequest) return;
+    if (focusedMachineRequestRef.current === focusMachineRequest.id) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(focusMachineRequest.machineKey)}"]`);
+    if (!row) return;
+    focusedMachineRequestRef.current = focusMachineRequest.id;
+    const stopHighlight = flashRowHighlight(row, { block: "nearest" });
+    const timer = window.setTimeout(() => {
+      setFocusMachineRequest((current) => current?.id === focusMachineRequest.id ? null : current);
+    }, 1400);
+    return () => {
+      window.clearTimeout(timer);
+      stopHighlight();
+    };
+  }, [anchor, focusMachineRequest, machines, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -383,6 +410,7 @@ function WebMachineRow({
   return (
     <div
       data-ade-web-machine-row={machine.key}
+      data-account-machine-key={machine.accountMachine?.machineKey ?? undefined}
       className="ade-web-machine-row px-1.5 py-1.5"
       style={{ borderRadius: 10 }}
     >

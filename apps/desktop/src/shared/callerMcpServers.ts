@@ -4,6 +4,7 @@ import type {
   AgentChatProvider,
 } from "./types/chat";
 import type { ShippedProvider } from "./providers";
+import { claudeMcpToolName } from "./mcpApp";
 
 /**
  * Caller-injected MCP servers.
@@ -50,6 +51,14 @@ export type CallerMcpSupport = {
    * to prevent.
    */
   unsupportedTransports?: readonly AgentChatMcpServerConfig["type"][];
+  /**
+   * Which per-server tool filters (`allowedTools` / `disallowedTools`) this
+   * provider can enforce, and how. A filter the provider cannot enforce is
+   * refused at create/update (`callerMcpDeliveryProblem`), never dropped: an
+   * embedder that hid a destructive tool and got it back anyway is worse off
+   * than one told no. Absent means neither is supported.
+   */
+  toolFilters?: { allowedTools: boolean; disallowedTools: boolean; mechanism: string };
 };
 
 /**
@@ -73,6 +82,14 @@ export const CALLER_MCP_SUPPORT = {
     mechanism: "Agent SDK option strictMcpConfig",
     residual: null,
     delivery: "Agent SDK option mcpServers (programmatic, additive to the user's own config)",
+    // `disallowedTools` removes a tool from the model's context. There is no
+    // matching "only these" switch for one server: hiding every tool not
+    // named needs the server's tool list, which ADE does not have at launch.
+    toolFilters: {
+      allowedTools: false,
+      disallowedTools: true,
+      mechanism: "Agent SDK option disallowedTools: mcp__<server>__<tool>",
+    },
   },
   codex: {
     level: "best-effort",
@@ -87,6 +104,11 @@ export const CALLER_MCP_SUPPORT = {
     // and the `url` form is streamable HTTP. There is no `sse` variant, so an
     // SSE server would be dialed as HTTP.
     unsupportedTransports: ["sse"],
+    toolFilters: {
+      allowedTools: true,
+      disallowedTools: true,
+      mechanism: "thread config overlay: mcp_servers.<name>.enabled_tools / disabled_tools",
+    },
   },
   cursor: {
     level: "best-effort",
@@ -196,10 +218,13 @@ export function callerMcpUnsupportedTransport(
  * `provider`: the provider has no MCP surface; `mechanism` is its table text
  * (null for a provider missing from the table). `transport`: the provider
  * accepts servers but has no client for the transport the named ones speak.
+ * `toolFilter`: the named servers carry a tool filter (`allowedTools` or
+ * `disallowedTools`) this provider cannot enforce.
  */
 export type CallerMcpDeliveryProblem =
   | { kind: "provider"; mechanism: string | null }
-  | { kind: "transport"; transport: string; names: string[] };
+  | { kind: "transport"; transport: string; names: string[] }
+  | { kind: "toolFilter"; filter: "allowedTools" | "disallowedTools"; names: string[] };
 
 export function callerMcpDeliveryProblem(
   provider: AgentChatProvider | string,
@@ -210,7 +235,62 @@ export function callerMcpDeliveryProblem(
     return { kind: "provider", mechanism: callerMcpSupport(provider)?.mechanism ?? null };
   }
   const unsupported = callerMcpUnsupportedTransport(provider, servers);
-  return unsupported ? { kind: "transport", ...unsupported } : null;
+  if (unsupported) return { kind: "transport", ...unsupported };
+  return callerMcpUnsupportedToolFilter(provider, servers);
+}
+
+/** The caller servers whose tool filter this provider cannot enforce, or null. */
+function callerMcpUnsupportedToolFilter(
+  provider: AgentChatProvider | string,
+  servers: CallerMcpServers,
+): CallerMcpDeliveryProblem | null {
+  const support = callerMcpSupport(provider)?.toolFilters;
+  for (const filter of ["allowedTools", "disallowedTools"] as const) {
+    if (support?.[filter]) continue;
+    const names = Object.entries(servers)
+      .filter(([, config]) => (config[filter]?.length ?? 0) > 0)
+      .map(([name]) => name);
+    if (names.length) return { kind: "toolFilter", filter, names };
+  }
+  return null;
+}
+
+/**
+ * The one sentence for a delivery problem, so create, update and a model
+ * switch name the gap the same way. Each caller adds its own prefix and
+ * advice around it.
+ */
+export function describeCallerMcpDeliveryProblem(
+  provider: AgentChatProvider | string,
+  problem: CallerMcpDeliveryProblem,
+): string {
+  switch (problem.kind) {
+    case "provider":
+      return `provider '${provider}' cannot accept injected MCP servers: ${problem.mechanism ?? "no MCP support"}.`;
+    case "transport":
+      return `provider '${provider}' has no '${problem.transport}' MCP transport, so `
+        + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`;
+    case "toolFilter": {
+      const servers = problem.names.map((name) => `'${name}'`).join(", ");
+      const supported = CALLER_MCP_CAPABLE_PROVIDERS.filter((name) => callerMcpSupport(name)?.toolFilters?.[problem.filter]);
+      const hint = problem.filter === "allowedTools" && callerMcpSupport(provider)?.toolFilters?.disallowedTools
+        ? " List the tools to hide in disallowedTools instead."
+        : "";
+      return `provider '${provider}' cannot enforce ${problem.filter} on MCP ${problem.names.length > 1 ? "servers" : "server"} `
+        + `${servers}.${hint} Providers that can: ${supported.length ? supported.join(", ") : "none"}.`;
+    }
+    default: {
+      const unhandled: never = problem;
+      return String(unhandled);
+    }
+  }
+}
+
+/** Whether any server carries an `allowedTools` or `disallowedTools` filter. */
+export function callerMcpServersHaveToolFilters(servers: CallerMcpServers | null | undefined): boolean {
+  return Object.values(servers ?? {}).some(
+    (config) => (config.allowedTools?.length ?? 0) > 0 || (config.disallowedTools?.length ?? 0) > 0,
+  );
 }
 
 /**
@@ -229,6 +309,7 @@ export function callerMcpCapabilityFor(
   return resolveCallerMcpCapability(provider, {
     hasServers: servers != null,
     strictRequested: strict === true,
+    hasToolFilters: callerMcpServersHaveToolFilters(servers),
   });
 }
 
@@ -264,7 +345,11 @@ export function resolveCallerMcpCapability(
   provider: AgentChatProvider | string,
   // An object, not two positional booleans: adjacent same-typed parameters swap
   // silently, and the swap type-checks.
-  { hasServers, strictRequested }: { hasServers: boolean; strictRequested: boolean },
+  {
+    hasServers,
+    strictRequested,
+    hasToolFilters = false,
+  }: { hasServers: boolean; strictRequested: boolean; hasToolFilters?: boolean },
 ): AgentChatMcpCapability {
   const support = callerMcpSupport(provider);
   // A provider missing from the table is a provider added without a decision
@@ -285,6 +370,9 @@ export function resolveCallerMcpCapability(
   const delivered = support.level !== "unsupported";
   const mechanism = [
     ...(hasServers ? [support.delivery] : []),
+    // Only reached for a filter the provider can enforce: create and update
+    // refuse the others before a report is made.
+    ...(hasServers && hasToolFilters && support.toolFilters ? [`tool filters via ${support.toolFilters.mechanism}`] : []),
     // Strict-mode text is a claim about withholding the user's config. Emitting
     // it for a caller that never asked for strict mode described an enforcement
     // ADE is not performing.
@@ -563,6 +651,56 @@ function normalizeHeaderNames(value: unknown): string[] | null {
   return out.length ? out : null;
 }
 
+/** Ceiling on one server's tool filter list. */
+export const MAX_CALLER_MCP_TOOL_FILTER_ENTRIES = 256;
+const TOOL_NAME_MAX_LENGTH = 128;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
+/**
+ * One tool filter list: bare tool names, trimmed, deduplicated (tool names
+ * are case-sensitive, so `Search` and `search` are two tools). Absent input
+ * reads as no filter; anything else that is not a list of names is a problem.
+ * An empty `allowedTools` is refused rather than read as "allow nothing": a
+ * server whose every tool is hidden should not be injected at all, and an
+ * empty list built by mistake would otherwise silently blank it.
+ */
+function readToolFilter(
+  serverName: string,
+  field: "allowedTools" | "disallowedTools",
+  value: unknown,
+): { ok: true; names: string[] | null } | { ok: false; problem: string } {
+  if (value === undefined || value === null) return { ok: true, names: null };
+  if (!Array.isArray(value)) {
+    return { ok: false, problem: `server '${serverName}' has ${field} that is not an array of tool names` };
+  }
+  if (value.length > MAX_CALLER_MCP_TOOL_FILTER_ENTRIES) {
+    return {
+      ok: false,
+      problem: `server '${serverName}' lists ${value.length} ${field}, more than ${MAX_CALLER_MCP_TOOL_FILTER_ENTRIES}`,
+    };
+  }
+  const names: string[] = [];
+  for (const entry of value) {
+    const name = typeof entry === "string" ? entry.trim() : "";
+    if (!name || name.length > TOOL_NAME_MAX_LENGTH || CONTROL_CHARACTER.test(name)) {
+      return {
+        ok: false,
+        problem: `server '${serverName}' has ${field} entries that are not tool names `
+          + `(1-${TOOL_NAME_MAX_LENGTH} characters, no control characters)`,
+      };
+    }
+    if (!names.includes(name)) names.push(name);
+  }
+  if (!names.length && field === "allowedTools") {
+    return {
+      ok: false,
+      problem: `server '${serverName}' has an empty allowedTools; leave the server out instead of allowing none of its tools`,
+    };
+  }
+  return { ok: true, names: names.length ? names : null };
+}
+
 /**
  * Validates and normalizes one caller-supplied server in a single pass: either
  * the config ADE will hand a provider verbatim, or the reason it cannot.
@@ -590,6 +728,16 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
     return { ok: false, problem: `server '${name}' must be an object` };
   }
   const record = value as Record<string, unknown>;
+  const allowed = readToolFilter(name, "allowedTools", record.allowedTools);
+  if (!allowed.ok) return allowed;
+  const disallowed = readToolFilter(name, "disallowedTools", record.disallowedTools);
+  if (!disallowed.ok) return disallowed;
+  // Tool names are not credentials, so they are kept everywhere the server
+  // is: the durable record, the summary, the SDK's thread store.
+  const toolFilter = {
+    ...(allowed.names ? { allowedTools: allowed.names } : {}),
+    ...(disallowed.names ? { disallowedTools: disallowed.names } : {}),
+  };
   const type = typeof record.type === "string" ? record.type.trim().toLowerCase() : "";
   if (type === "http" || type === "sse") {
     const url = typeof record.url === "string" ? record.url.trim() : "";
@@ -621,6 +769,7 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
         url,
         ...(headers ? { headers } : {}),
         ...(headerNames ? { headerNames } : {}),
+        ...toolFilter,
       },
     };
   }
@@ -641,6 +790,7 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
         command,
         ...(args?.length ? { args } : {}),
         ...(env ? { env } : {}),
+        ...toolFilter,
       },
     };
   }
@@ -755,16 +905,24 @@ export function callerMcpServersToCodexConfig(
 ): Record<string, Record<string, unknown>> {
   const out: Record<string, Record<string, unknown>> = {};
   for (const [name, config] of Object.entries(servers)) {
+    // Codex's own per-server filters: `enabled_tools` is the allow list and
+    // `disabled_tools` is applied after it, so a tool in both stays off.
+    const toolFilter = {
+      ...(config.allowedTools?.length ? { enabled_tools: config.allowedTools } : {}),
+      ...(config.disallowedTools?.length ? { disabled_tools: config.disallowedTools } : {}),
+    };
     out[name] = config.type === "stdio"
       ? {
         command: config.command,
         ...(config.args?.length ? { args: config.args } : {}),
         ...(config.env ? { env: config.env } : {}),
+        ...toolFilter,
         enabled: true,
       }
       : {
         url: config.url,
         ...(config.headers ? { http_headers: config.headers } : {}),
+        ...toolFilter,
         enabled: true,
       };
   }
@@ -787,14 +945,34 @@ export function callerMcpServersToInlineRecord(
 ): Record<string, AgentChatMcpServerConfig> {
   const out: Record<string, AgentChatMcpServerConfig> = {};
   for (const [name, config] of Object.entries(servers)) {
-    // `headerNames` is ADE's own bookkeeping for withheld credentials, not a
-    // transport field; a provider schema that validates strictly would reject it.
-    if (config.type === "stdio" || config.headerNames === undefined) {
-      out[name] = config;
+    // `headerNames` is ADE's own bookkeeping for withheld credentials, and the
+    // tool filters are applied by the adapter (Claude's `disallowedTools`,
+    // see `callerMcpClaudeDisallowedTools`); neither is a transport field, and
+    // a provider schema that validates strictly would reject them.
+    const { allowedTools: _allowed, disallowedTools: _disallowed, ...rest } = config;
+    if (rest.type === "stdio" || rest.headerNames === undefined) {
+      out[name] = rest;
       continue;
     }
-    const { headerNames: _headerNames, ...transport } = config;
+    const { headerNames: _headerNames, ...transport } = rest;
     out[name] = transport;
+  }
+  return out;
+}
+
+/**
+ * The Claude `disallowedTools` entries for the caller servers' deny lists:
+ * `mcp__<server>__<tool>`, the name Claude Code gives an MCP tool. The Agent
+ * SDK removes each from the model's context. `allowedTools` has no Claude
+ * form and is refused before launch (`CALLER_MCP_SUPPORT.claude.toolFilters`).
+ */
+export function callerMcpClaudeDisallowedTools(servers: CallerMcpServers | null | undefined): string[] {
+  const out: string[] = [];
+  for (const [name, config] of Object.entries(servers ?? {})) {
+    for (const tool of config.disallowedTools ?? []) {
+      const entry = claudeMcpToolName(name, tool);
+      if (!out.includes(entry)) out.push(entry);
+    }
   }
   return out;
 }
@@ -971,8 +1149,11 @@ export function redactCallerMcpText(
   if (servers) {
     const secrets = new Set<string>();
     for (const config of Object.values(servers)) {
-      if (config.type === "stdio" || !config.headers) continue;
-      for (const value of Object.values(config.headers)) {
+      // A stdio server's secrets ride in its environment, an http one's in
+      // its headers; a failing server can echo either back in its error.
+      const values = config.type === "stdio" ? config.env : config.headers;
+      if (!values) continue;
+      for (const value of Object.values(values)) {
         const trimmed = value.trim();
         if (trimmed.length >= 4) secrets.add(trimmed);
         // `Bearer abc…`: the token alone may be echoed without its scheme.

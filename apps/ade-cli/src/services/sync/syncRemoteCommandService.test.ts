@@ -3695,7 +3695,7 @@ describe("web-reachable settings and lane-risk commands", () => {
       await run("setSettings", { provider: "claude", settings: { smartBalance: true } });
 
       const listed = await run("list", { provider: "claude" });
-      expect(listed.instances.find((instance: any) => instance.isDefault)?.label).toBe("Work");
+      expect(listed.instances.find((instance: any) => instance.isDefault)?.label).toBe("work");
       await expect(run("getSettings", { provider: "claude" })).resolves.toMatchObject({ settings: { smartBalance: true } });
 
       // The default cannot be removed; the base login takes the default back first.

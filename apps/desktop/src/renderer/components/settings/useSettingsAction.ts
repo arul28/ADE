@@ -34,7 +34,7 @@ export function useSettingsAction(): SettingsAction {
     try {
       return await work();
     } catch (err) {
-      if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      if (mountedRef.current) setError(settingsErrorMessage(err));
       return undefined;
     } finally {
       if (mountedRef.current) {
@@ -47,4 +47,15 @@ export function useSettingsAction(): SettingsAction {
   }, []);
 
   return { busy: running.length ? running[running.length - 1] : null, error, run };
+}
+
+/**
+ * Electron prefixes an IPC rejection with `Error invoking remote method 'x':`.
+ * The person needs the sentence after it ("The download folder is not writable").
+ */
+export function settingsErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/, "")
+    .replace(/^Error:\s*/, "");
 }

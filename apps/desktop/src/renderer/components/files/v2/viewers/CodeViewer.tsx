@@ -3,7 +3,7 @@ import type * as Monaco from "monaco-editor";
 import { claimAppMenuCommands } from "../../../../lib/appMenuCommands";
 import { findScopeOwnsTarget, isLiveFindScope, trackFindTargets } from "../../../../lib/findScope";
 import { resolveLanguageId } from "../../filePresentation";
-import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
+import { adeMonacoTheme, loadMonaco } from "../../../../lib/monacoLoader";
 import { applyMonacoTheme } from "../../../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
 import { takePendingReveal } from "../pendingReveals";

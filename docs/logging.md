@@ -50,11 +50,13 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 - every error toast (`showToast` with `tone: "error"`), as the log event `toast.<start of title>` (`toastGroupKey`, so a lane or file name in the title does not make one event name per name), with the title and message cut to 300 characters. The failure behind a toast already opened its own issue, with a stack;
 - a provider going `auth-failed` (signed out is the user's state);
-- expected outcomes of an IPC call or brain action (`EXPECTED_OUTCOME_PATTERNS` in `shared/sentry/expectedFailure.ts`): a lane, chat, worktree or screenshot that no longer exists, a project runtime still connecting, a brain restarting for an update, a project mid-move or mid-switch, a paired machine that is asleep, slow, not sharing the project or whose link dropped, no network (`fetch failed` whose causes are network errors to a non-loopback address; a local service that stops answering is still an issue), a dirty worktree, nothing to commit, a missing base branch or a folder that is not a repository, a provider or GitHub login that lost access, a GitHub 5xx, a Codex thread another process is writing, and the answers an agent gets when it drives a browser, desktop or PR wrongly (a bad selector, no matching element, no screen yet, a declined consent card, a debug port nothing listens on, a review thread from another PR). They are logged as `ipc.expected.<action>` or `runtime_action.expected.<action>`, and every process's `beforeSend` drops an event whose own error is one of them, whatever path it took (a crash that only quotes one as its cause is kept). Add a pattern there only once Sentry shows a message is a state the user can be in rather than a defect.
+- expected outcomes of an IPC call or brain action (`EXPECTED_OUTCOME_PATTERNS`, and `EXPECTED_OUTCOME_CODES` for errors that carry their code, in `shared/sentry/expectedFailure.ts`): a lane, chat, worktree or screenshot that no longer exists, a project runtime still connecting, a brain restarting for an update, a project mid-move or mid-switch, a paired machine that is asleep, slow, not sharing the project or whose link dropped, no network (`fetch failed` whose causes are network errors to a non-loopback address; a local service that stops answering is still an issue), a dirty worktree, nothing to commit, a missing base branch or a folder that is not a repository, a provider or GitHub login that lost access, a GitHub 5xx, a Codex thread another process is writing, and the answers an agent gets when it drives a browser, desktop or PR wrongly (a bad selector, no matching element, no screen yet, a declined consent card, a debug port nothing listens on, a review thread from another PR). It also holds sign-ins the user fixes in Settings (GitHub, Jira, SSH, Windows), a remote machine the user disconnected, ADE quitting mid-call, a full disk or process table, a chat waiting on the user, and a Mac with no Xcode. They are logged as `ipc.expected.<action>` or `runtime_action.expected.<action>`, and every process's `beforeSend` drops an event whose own error is one of them, whatever path it took (a crash that only quotes one as its cause is kept). Add a pattern there only once Sentry shows a message is a state the user can be in rather than a defect.
+- a failed brain action the caller already has the answer to. The brain logs it as `runtime_action.agent.<action>` when an agent's `ade` call failed with anything but a defect (a TypeError and the other JavaScript runtime errors, a database failure, or a machine out of files, memory or I/O stay issues), and as `runtime_action.desktop.<action>` when a desktop window made the call: the desktop reports that failure itself, with its IPC channel (`main/sentry/ipcCallScope.ts`). Calls the desktop's main process makes on its own are still reported by the brain.
+- an IPC timeout whose deadline passed while the computer slept (Electron reported a wake-up after the call's deadline). Its timer ran late and nothing hung; it is logged as `ipc.expected.<channel>` with its duration.
 
-**Quota.** The Developer plan allows 5,000 errors a month for the whole organization and has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour, so they never compete with ordinary errors; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The web client also drops `AdeUnavailableError`, the rejection of a desktop-only `window.ade` member called on web (`webclient/sentry.ts`). The Workers group Cloudflare's own D1 and Durable Object storage failures into one issue per kind (each carries a fresh `reference`), and drop Durable Object resets caused by a deploy. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS tags every event with the display layout (`display.family`, `display.edge_bar`, `display.fold`, set by `CrashReporting.setDisplayLayout` on change only, with one `layout` breadcrumb), so an iPhone Duo crash names its posture without an event of its own. iOS keeps session replay for errors only, fully masked, and drops a non-fatal app hang whose main thread was idle in its run loop (the app was suspended, not blocked); a hang with real work on the stack is kept, however long it claims to be.
+**Quota.** The Developer plan allows 5,000 errors a month for the whole organization and has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour, so they never compete with ordinary errors; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The web client also drops `AdeUnavailableError`, the rejection of a desktop-only `window.ade` member called on web (`webclient/sentry.ts`). The Workers group Cloudflare's own D1 and Durable Object failures into one issue per kind (each carries a fresh `reference`; the kinds live in each Worker's `src/cloudflareTransient.ts`), and drop Durable Object resets caused by a deploy. A request that hits one is retried where that is safe and otherwise answered `503` with `Retry-After`, logged as `cloudflare_transient` and not sent to Sentry. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS tags every event with the display layout (`display.family`, `display.edge_bar`, `display.fold`, set by `CrashReporting.setDisplayLayout` on change only, with one `layout` breadcrumb), so an iPhone Duo crash names its posture without an event of its own. iOS keeps session replay for errors only, fully masked, and drops an app hang (fatal or not) whose main thread was idle in its run loop (the app was suspended, not blocked), judged on library names and in-app flags because the phone sends no function names; a hang with real work on the stack is kept, however long it claims to be. iOS does not report hangs that did not fully block the main thread; MetricKit reports those from the system.
 
-**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `web`, `worker-<name>`). iOS keeps `<bundle id>@<version>+<build>`. Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `web`, `worker-<name>`). iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs (run by `ios-testflight.sh` and the TestFlight workflow). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
 
 **Instrumenting new code.** Use `captureError(error, context)` and `captureProblem(message, context)` from `apps/desktop/src/shared/sentry/capture.ts` (Swift: `CrashReporting.capture`). They are no-ops where Sentry is not running, so never guard them. Set a `fingerprint` that names the failure (`["provider", provider, kind]`) so repeats are one issue and one budget. Tags are low-cardinality labels (provider, channel, action); detail goes in `extra`. A caught error the app recovers from silently is still a failure: report it, or log it with `logger.warn` or `logger.error` so the bridge does. Never pass user content, and never raise the budget to fit a noisy call site; fix the noise.
 
@@ -158,6 +160,26 @@ update window and repair throttle: `local_runtime.update_window_started` /
 was held back during an update transaction and carry no paths or versions
 beyond the bounded fields already in `local-runtime.jsonl`; none is a PostHog
 event.
+
+When isolated recovery finds a strictly older brain on the machine socket
+(`olderBrainRetirement.ts`), the pool writes
+`local_runtime.older_brain_shutdown_requested` (warn) after it asks that brain
+to shut down, or `local_runtime.older_brain_left_running` (info, once per pid
+and reason) with the coarse `reason` it left the brain alone. Both carry the
+socket path, the brain's pid, version and role, and the app version. A
+connection that quit drops logs `local_runtime.action_connection_dropped` with
+`willRetry: false`. None is a PostHog event: these are background lifecycle
+mechanics with no user action behind them.
+
+Shutdown and startup races write local lines only. The sync service logs
+`sync.role_refresh_failed` (warn) for a role refresh nobody awaited, and logs
+nothing when a dispose closed the database under a status snapshot or a role
+refresh. The PR watch logs `prs.watch_evaluate_failed` (warn) for a background
+pass that failed outside a single watch. A runtime teardown step that fails,
+including an async `dispose` that rejects after the drain, is
+`runtime.teardown_step_failed` (warn). A project open that waited for a sibling
+process's write lock during the CRR conversion logs `db.crr_conversion_settled`
+(info, `attempt`). None is a PostHog event.
 
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
@@ -444,8 +466,11 @@ or off, `token_created` and `connection_removed` from Settings (`desktop`) or
 `ade mcp` (`api`), and `app_connected` when an app finishes signing in
 (`api`). Each is deduplicated per action and outcome for an hour, so the worst
 case is five events a day inside the existing `ade_feature_used` ceilings. The
-commands connected apps run are never captured; they are counted only in the
-local activity log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows.
+commands connected apps run are never captured, typed tools, prompts and the
+`ade://commands` resource included; they are counted only in the local activity
+log (`<ade home>/remote-mcp/activity.jsonl`) that Settings shows. A skill folder
+the prompts list cannot read, and a failed read of the command catalog, log
+`remote_mcp.skill_unreadable` / `remote_mcp.catalog_failed` warnings.
 
 Making a private webhook URL records `automations/webhook_url_created` where
 the URL is made: the desktop's IPC handler (`desktop`) or the
@@ -1011,12 +1036,15 @@ itself) with `feature: "work"`, `action: "apple_device"`, and a closed
 `xcodebuild -downloadPlatform` finished), `runtime_removed` (a remove or prune
 deleted at least one runtime), `duo_folded` (a fold the simulator applied),
 `duo_app_store_shots` (the App Store Duo set was taken), `device_rendered` (a
-3D render was filed as proof), or `duo_skill_added` (Apple's
-`app-resizability` skill was copied into a lane). A failed, refused or
+3D render was filed as proof), `duo_skill_added` (Apple's
+`app-resizability` skill was copied into a lane), `device_leased` (an
+agent took a turn on a lane's device with `ade apple lease`; a renewal or a
+busy answer is not one), or `extra_device_created` (a lane added a second
+device beside its own with `ade apple device-create --extra`). A failed, refused or
 no-op call emits nothing. Nothing finer crosses the boundary: no runtime or
 Xcode version, device, udid, pose, angle, lane, chat, or image. A per-outcome
 `work_apple_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most six accepted events per installation per UTC day, inside the
+to at most eight accepted events per installation per UTC day, inside the
 existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 200-event ceiling; no ceiling was raised. A hinge drag sends one fold when it
 settles, never per frame. The dashboard spec is untouched: no card asks this
@@ -1447,6 +1475,17 @@ one-hour deduplication key bounds a looping automation to at most 72 accepted
 events per installation per UTC day, inside the existing `ade_feature_used`
 140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
 was raised. The dashboard spec is deliberately untouched: no card asks this yet.
+
+`ade notify` run inside a chat takes that chat's own route
+(`sendNotifyAsChatMessage` in `apps/ade-cli/src/services/push/chatMessageNotify.ts`)
+and records the same event, `feature: "attention"`,
+`action: "notification_sent"`, `surface: "api"`, `outcome: "completed"`, once the
+message is stored as this machine's Activity message; the phone receives it only
+when the machine is signed in to an account. A repeat of the same words inside
+the ten-minute window, and the per-chat or per-machine hourly limit, send
+nothing and emit nothing. The title, body, chat title, ids and counts never
+cross the boundary, and the existing per-outcome deduplication and ceilings
+apply unchanged.
 
 ### The capture gesture
 

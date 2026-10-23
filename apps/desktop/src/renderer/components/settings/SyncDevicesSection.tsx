@@ -57,6 +57,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import type { SyncConnections } from "./useSyncConnections";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { isDegradedSyncSnapshot } from "../../lib/localSyncStatusReader";
 
 export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
@@ -345,10 +346,19 @@ export function ThisMacCard({
       // it is sent only while the project still follows another machine. A read
       // that fails stops nothing, and says so: it is not "no longer follows".
       let readError: string | null = null;
-      const current = await window.ade.sync.getStatus().catch((err: unknown) => {
-        readError = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
-        return null;
-      });
+      const current = await window.ade.sync.getStatus().then(
+        (snapshot) => {
+          // A synthesized snapshot (the read ran out of time) is not this
+          // project's sync state; acting on it would be acting on a guess.
+          if (!isDegradedSyncSnapshot(snapshot)) return snapshot;
+          readError = snapshot.degradedReason ?? "the read did not finish";
+          return null;
+        },
+        (err: unknown) => {
+          readError = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
+          return null;
+        },
+      );
       // The disconnect acts on the project this window has open now. If the
       // window moved to another project while the question was open, the reader
       // agreed to stop the one they were shown, so nothing is sent.

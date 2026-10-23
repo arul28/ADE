@@ -846,7 +846,72 @@ function normalizeSshConnectError(
     );
   }
 
+  // ssh2 rejects a host key that known_hosts does not allow with this text.
+  if (/Host denied \(verification failed\)/i.test(message)) {
+    return new RemoteRuntimeConnectError({
+      kind: "host_key",
+      message:
+        `The SSH host key of ${endpoint} is not the one ADE trusts for this machine. ` +
+        "Check the machine, then trust its key again.",
+      detail: message,
+    }, source);
+  }
+
+  // Node dials each address of a host (IPv6 and IPv4 for localhost) and, when
+  // all of them fail, throws an AggregateError with an empty message and the
+  // per-address errors in `errors`. The person needs the address and the
+  // reason, not an empty error.
+  const unreachableCode = socketUnreachableCode(source);
+  if (unreachableCode) {
+    const reason = unreachableCode === "ECONNREFUSED"
+      ? `Nothing is accepting SSH connections at ${endpoint}.`
+      : `ADE could not reach ${endpoint} (${unreachableCode}).`;
+    return new RemoteRuntimeConnectError({
+      kind: "unreachable",
+      message:
+        `${reason} Check that the machine is on, that its SSH server is running, ` +
+        "and that the address and port are right, then press Try again.",
+      detail: socketErrorDetail(source),
+    }, source);
+  }
+
   return source;
+}
+
+const SOCKET_UNREACHABLE_CODES = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EHOSTDOWN",
+  "ETIMEDOUT",
+]);
+
+function socketErrorsOf(error: Error): Error[] {
+  const errors = (error as Error & { errors?: unknown }).errors;
+  return Array.isArray(errors)
+    ? errors.filter((entry): entry is Error => entry instanceof Error)
+    : [];
+}
+
+/** The socket code when every address the dial tried was unreachable. */
+function socketUnreachableCode(error: Error): string | null {
+  const codeOf = (candidate: Error): string | null => {
+    const code = (candidate as Error & { code?: unknown }).code;
+    return typeof code === "string" && SOCKET_UNREACHABLE_CODES.has(code) ? code : null;
+  };
+  const members = socketErrorsOf(error);
+  if (members.length > 0) {
+    const codes = members.map(codeOf);
+    if (codes.some((code) => code == null)) return null;
+    return codes.includes("ECONNREFUSED") ? "ECONNREFUSED" : codes[0]!;
+  }
+  return codeOf(error);
+}
+
+function socketErrorDetail(error: Error): string {
+  const members = socketErrorsOf(error);
+  const lines = members.length > 0 ? members.map((member) => member.message) : [error.message];
+  return lines.filter(Boolean).join("\n") || String(error);
 }
 
 function isLocalPortUnavailableError(error: unknown): boolean {

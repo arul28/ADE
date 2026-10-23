@@ -742,7 +742,7 @@ Renderer — settings:
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
   window backdrop, configured under Settings → This computer → Appearance →
   **Background**. Modes are `plain` (the theme's flat background, no picture
-  and no mesh; the web client's default), `gradient` (the theme's animated
+  and no mesh; the default on every client), `gradient` (the theme's animated
   mesh), `image` (one picture), and `shuffle` (a picture from the library,
   changed on launch, wake, hourly, or daily). Pictures are bundled (`public/scenes/*.jpg` through
   `sceneLibrary.ts`) or the user's own — re-encoded to at most 3840 px JPEG and
@@ -1444,9 +1444,10 @@ Renderer — settings:
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account
-  whose weekly window resets soonest, ranks an account short on five-hour room
-  last, skips a login that is gone, and reports why it skipped when no account
-  was a real choice.
+  with the most weekly room left relative to its reset, after subtracting the
+  burn already committed there (measured, pending and reserved), gates on the
+  projected five-hour room, skips a login that is gone, and reports why it
+  skipped when no account was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
   best-effort lightweight request per enabled Claude/Codex account shortly
   after a five-hour reset, or right after the provider ends the window early
@@ -2336,7 +2337,11 @@ The new-project screen has a **Settings** button. It sets the app-store flag
 screen and the top bar shows a "Settings" tab. Only settings that need no
 project are shown. The manifest's standalone resolver hides `account-repo` and
 `machine-repo` entries, and a tab whose sections all need a project binding is
-left out. Standalone mode ends on a new tab ("+"), Back, closing the Settings
+left out. A page that mixes this computer's settings with ones saved in a
+project (Chat, Notifications) reads `isStandaloneSettings()` and shows one
+"Open a project to change these." notice (`ProjectSettingsNotice`) in place of
+the project cards (prompt suggestions, Smart decisions, Claude mods, scheduled
+work), so no card asks for a project config that is not there. Standalone mode ends on a new tab ("+"), Back, closing the Settings
 tab, or opening a project. A project closed while on `/settings` falls back to
 the new-project screen.
 
@@ -2440,8 +2445,11 @@ one-click fix. The macOS fix writes system power settings and is labelled
 **Fix — needs your password**; the Windows fix edits the signed-in user's active
 scheme and needs no elevation.
 
-Reads and writes use the remote-capable `keep_awake` runtime action, pinned to
-the selected machine. The local desktop handles the macOS admin prompt because
+Reads and writes go to the selected machine: a pinned machine through the
+remote-capable `keep_awake` runtime action, this computer through the brain's
+machine method `keepAwake.call` (no project needed, cto role only). A brain
+that does not manage keep-awake answers `action_not_callable`; a brain from
+before the machine method is reached through any project it has. The local desktop handles the macOS admin prompt because
 the brain has no GUI. Fixing the local Mac's system sleep timer still uses that
 prompt; a remote Mac is directed to its own Settings, while Windows uses the
 selected brain action. The desktop starts its old in-process blocker only when
@@ -2550,13 +2558,20 @@ file, so they have exactly one identity per machine.
 - **Removing an account deletes nothing on disk.** It is forgotten from the
   registry and the config home is returned so the user can be told what is still
   there. The machine's own login and the current default both refuse removal.
+- **Accounts have no names.** Every surface shows an account as its signed-in
+  email, else its id (`ProviderInstance.label` is that value, set by the host:
+  `providerInstanceDisplayLabel`). The id is what `--instance` takes and never
+  changes; a new account gets the next free `<provider>-<n>`. `create` takes no
+  label (an optional one from an older phone or script only shapes the id), and
+  desktop, web, iOS and the CLI no longer offer Rename. The `rename` action stays
+  for older phones; what it stores is not shown.
 - **Action domain `provider_instances`** carries `list`, `create`, `remove`,
-  `rename`, `setDefault`, `setAccent`, `getSettings`, `setSettings`,
-  `loginCommand`, and `refresh` — on the agent tier for reads *and* mutations,
-  with no CTO gate, because an account is a directory path and a label, never a
-  token. Reachable from the desktop IPC surface, the preload three-way route
-  (pinned runtime → project runtime → local IPC), the daemon action bus, and
-  `ade providers accounts list|add|remove|rename|default`. `setAccent` and the
+  `rename` (older phones only), `setDefault`, `setAccent`, `getSettings`,
+  `setSettings`, `loginCommand`, and `refresh` — on the agent tier for reads
+  *and* mutations, with no CTO gate, because an account is a directory path,
+  never a token. Reachable from the desktop IPC surface, the preload three-way
+  route (pinned runtime → project runtime → local IPC), the daemon action bus,
+  and `ade providers accounts list|add|remove|default`. `setAccent` and the
   stored `accentColor` field are retained for compatibility only: no desktop,
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
@@ -2635,13 +2650,12 @@ under the status chip instead.
 - **Routing strip** above the cards, shown only when it has a switch: *Smart
   balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
   provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance normally sends new
-  chats to the account whose weekly room resets soonest, so room is used before
-  it resets. When another usable account has at least 30 percentage points
-  more five-hour headroom, Claude routes two consecutive new chats to the
-  weekly-first account, then one to the account with the most five-hour room.
-  This rotation ends when the gap reaches 15 points. **Next chat** previews
-  the next slot. Codex remains weekly-first. A
+  and one line saying where new chats go. Smart balance sends new chats to the
+  account that needs the most weekly room spent before its reset, after
+  subtracting the burn already committed there: measured quota movement,
+  chats just placed, and reservations for open-but-idle chats. The five-hour
+  window is a gate, not a ranking; a chat is never refused when every account
+  is blocked. **Next chat** previews that pick. A
   running chat stays on its account; one that hits a usage limit moves to
   another account with room (with the switch off, the limit offers that move
   instead). Auto-start sends one tiny request on the cheapest model when a

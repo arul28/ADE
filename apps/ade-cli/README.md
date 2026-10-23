@@ -524,7 +524,7 @@ ade account token create --text           # print a self-contained durable ADE_A
 ade logout
 ade mcp status --text                     # ADE MCP: on/off, the server URL AI apps add, connections
 ade mcp on | off                          # let AI apps (claude.ai, ChatGPT, Cursor) use this computer, or stop
-ade mcp token create --label Grok [--read-only] --text   # a bearer token for header-based apps (shown once)
+ade mcp token create --label Grok --read-only --text     # a bearer token for header-based apps (shown once); --read-only or --full-access is required
 ade mcp scope <connection-id> read|write  # change one app's or token's access
 ade mcp remove <connection-id>            # disconnect an app or revoke a token
 ade mcp activity --text                   # what connected apps ran here
@@ -665,7 +665,7 @@ ade chat launch-status launch-id --text                      # chat.getLaunch (e
 ade actions run chat.retryLaunch --input-json '{"launchId":"launch-id"}'   # also startLaunchNow / queueLaunchMessage / completeLaunchClient (client-side CLI-launch handshake)
 ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
-ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
+ade chat status session-id --text                            # live turn phase (exit 0 running or waiting on background work / 1 idle / 2 blocked; `phase` in --json says `waiting`); adds a `resume` line while a usage limit is live and a `pending` line while an effort/fast-mode change waits for background work
 ade chat resume-now session-id --text                        # alias `resume`: send the usage-limit continue prompt now instead of waiting for the reset
 ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
@@ -675,6 +675,8 @@ ade chat steer session-id --text "active-turn context"
 ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude and Cursor take both; a Cursor cloud run declines inline and stages)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
+ade chat pending session-id --text                         # questions/approvals the chat is blocked on, with options and the respond command
+ade chat respond session-id --option 2                     # answer its pending question (--text, --answer <q>=<v>, --item <id>; --approve/--deny for approvals)
 ade chat activity testing                                  # set one fixed detail: planning|implementing|testing|reviewing|debugging|monitoring; `clear` removes it; add --session <id> to target explicitly
 ade session show session-id --text                          # status/activity detail + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade --role cto session move session-id --to done             # file the row under a Work-board column: needs-you|working|done ('needs_you' spelling also accepted)
@@ -693,7 +695,7 @@ ade chat scheduled-work list [session-id] --all     # list durable jobs; --all i
 ade chat scheduled-work create --in 12m --prompt "Check CI and report" --reason "CI check" --session session-id              # safest one-shot form; omit --session inside the bound agent
 ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report"                           # absolute one-shot; explicit offset or Z required
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --once                         # five-field cron uses the ADE brain machine's local timezone
-ade chat scheduled-work cancel session-id job-id    # cancel one job; Claude-native jobs request CronDelete in the owning chat
+ade chat scheduled-work cancel session-id job-id    # cancel one job (owning chat first; or --session/--id; inside the chat, just the job id); Claude-native jobs request CronDelete
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # provider-neutral wait | nudge | retry | resume; falls back for older Codex brains
 ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
@@ -889,6 +891,7 @@ ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); de
 ade chat list --include-archived --text              # archived chats too
 ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text
+ade actions describe chat.respondToInput --text   # one action: access, description, documented input fields, example
 ade actions run account_settings.list --args-list-json '["all"]' --text
 ade actions run account_settings.set --args-list-json '["all","appearance.theme","dark"]' --text
 ade actions run account_vault.list --args-list-json '["all"]' --text
@@ -935,8 +938,9 @@ ade link pr owner/repo 42 --ade
 ade link lane <lane-uuid> --web                     # hosted web-client URL form (app.ade-app.dev/open), mutually exclusive with --ade
 ade link linear-issue ADE-123 --branch arul/ade-123-fix
 ade linear install
-ade skill list --text
+ade skill list --text                               # project, personal and ADE skills, each labelled with its source
 ade skill show ade-browser --text
+ade help --json                                     # the command catalog as JSON (only this scope's commands under ADE MCP)
 ```
 
 `github app-auth status` answers "re-authorize, or wait?" from `credentialState`

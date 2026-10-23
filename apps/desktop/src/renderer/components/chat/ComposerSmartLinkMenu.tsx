@@ -1,16 +1,19 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Copy, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Copy, Trash } from "@phosphor-icons/react";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { Z_LAYERS } from "../ui/zLayers";
 
 export function ComposerSmartLinkMenu({
   anchor,
   onClose,
   onRemove,
+  onOpen,
 }: {
   anchor: HTMLElement;
   onClose: () => void;
   onRemove: (anchor: HTMLElement) => void;
+  onOpen: (url: string) => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
@@ -21,6 +24,7 @@ export function ComposerSmartLinkMenu({
   const copyLabel = isChatContext ? "Copy" : "Copy link";
   const removeLabel = isChatContext ? "Remove" : "Remove link";
   const menuLabel = isChatContext ? "Chat context actions" : "Link actions";
+  const url = anchor.dataset.smartLinkUrl ?? "";
   const closeWithAnchorFocus = useCallback(() => {
     if (anchor.isConnected) anchor.focus({ preventScroll: true });
     onClose();
@@ -75,9 +79,13 @@ export function ComposerSmartLinkMenu({
       ref={menuRef}
       role="menu"
       aria-label={menuLabel}
-      className="fixed z-[1000] flex -translate-y-full overflow-hidden rounded-lg border border-fg/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_95%,black_5%)] shadow-[0_16px_42px_rgba(0,0,0,0.48)] backdrop-blur-xl"
-      style={{ left: position.left, top: position.top, width: 224 }}
+      className="fixed flex -translate-y-full overflow-hidden rounded-lg border border-fg/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_95%,black_5%)] shadow-[0_16px_42px_rgba(0,0,0,0.48)] backdrop-blur-xl"
+      style={{ left: position.left, top: position.top, width: 224, zIndex: Z_LAYERS.popover }}
     >
+      {!isChatContext ? <button type="button" role="menuitem" className="flex flex-1 items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-medium text-fg/78 transition-colors hover:bg-blue-500/[0.10] hover:text-blue-100" onClick={() => { onOpen(url); closeWithAnchorFocus(); }}>
+        <ArrowSquareOut size={13} weight="bold" /> Open
+      </button> : null}
+      {!isChatContext ? <div className="w-px bg-fg/[0.06]" /> : null}
       <button
         type="button"
         role="menuitem"

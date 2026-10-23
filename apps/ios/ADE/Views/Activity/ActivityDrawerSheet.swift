@@ -371,7 +371,7 @@ struct ActivityDrawerSheet: View {
                 "checkmark.seal",
                 ADESharedTheme.statusSuccess,
                 "Nothing needs you.",
-                "Pull requests, checks, and finished runs land here."
+                "Pull requests, checks, agent messages, and finished runs land here."
             )
         }
     }
@@ -793,7 +793,25 @@ enum ActivityPreviewData {
       item("c5", title: "Rewrite the pairing guide", phase: .stale, tier: "idle", column: "waiting", reason: "snoozed", minutesAgo: 30),
       item("c6", title: "Release notes for 1.4", phase: .completed, tier: "idle", column: "done", minutesAgo: 120),
       item("c7", title: "Widget freshness tag", phase: .completed, tier: "idle", column: "done", minutesAgo: 600),
+      message,
     ]
+  )
+
+  /// An agent's `ade notify` message: Inbox only, never counted.
+  static let message = AccountAttentionItem(
+    id: "message:studio:m1", revision: 1, fingerprint: "m1", kind: .message,
+    eventKind: .agentMessage, phase: .completed, activityTier: "signal",
+    machine: machine,
+    project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
+    title: "Migration finished",
+    preview: "All 14 tables moved; two need a manual index rebuild.",
+    privacyPreview: "An ADE agent sent you a message.",
+    detail: "Fix the sync retry",
+    destination: .session(sessionId: "c4", itemId: nil, eventId: nil),
+    actions: [AccountAttentionAction(id: "open", kind: .open, label: "Open")],
+    occurredAt: now.addingTimeInterval(-240),
+    updatedAt: now.addingTimeInterval(-240),
+    expiresAt: now.addingTimeInterval(86_400)
   )
 }
 

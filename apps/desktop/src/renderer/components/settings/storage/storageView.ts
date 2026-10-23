@@ -12,6 +12,7 @@ import type {
   StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
 import type { AppResourceUsageSnapshot } from "../../../../shared/types";
+import { DELETED_LANE_CHATS_ITEM_ID } from "../../../../shared/types/storage";
 import type { ResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { formatBytes } from "../../../lib/format";
@@ -144,8 +145,11 @@ export function buildCleanupTarget(
       if (ADE_TMP_STAGING.test(p)) return { kind: "stale_tmp_staging", path: p };
       if (TMP_STAGING.test(p)) return { kind: "stale_tmp_staging", path: p };
       return null;
+    case "chats_history":
+      // History is compressed, never removed, except chats whose lane is gone.
+      return item.id === DELETED_LANE_CHATS_ITEM_ID ? { kind: "deleted_lane_chats", path: p } : null;
     default:
-      return null; // chats_history, database
+      return null; // database
   }
 }
 
@@ -165,7 +169,7 @@ export function cleanableEntries(
   for (const item of category.items) {
     const target = buildCleanupTarget(categoryId, item, laneIdByKey);
     if (!target) continue;
-    if (categoryId === "lanes_worktrees") {
+    if (categoryId === "lanes_worktrees" || categoryId === "chats_history") {
       if (item.safety !== "review_first") continue;
     } else if (categoryId !== "recovery_backups" && categoryId !== "proof_attachments") {
       // Proof is `review_first` by design — it is user data, not derived data.
@@ -299,6 +303,9 @@ const LEDGER_LABELS: Record<string, string> = {
   "db.event_logs": "Event history",
   "db.core": "Core data",
   "fs.transcripts": "Chat & terminal history",
+  "fs.transcript_duplicates": "Duplicate chat copies",
+  "cache.search_index": "Search index",
+  "fs.provider_sessions": "Provider session copies",
   "fs.tmp": "Release staging",
   "fs.tmp_staging": "Build staging",
   "fs.recovery_backups": "Recovery backups",

@@ -10,6 +10,7 @@ import {
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { createPresenceReporter, type PresenceReporter } from "../../lib/presenceReporter";
 
 const POLL_INTERVAL_MS = 15_000;
 // The snapshot is incremental: an unchanged revision costs a relay round trip
@@ -18,9 +19,16 @@ const POLL_INTERVAL_MS = 15_000;
 const SNAPSHOT_POLL_MAX_INTERVAL_MS = 120_000;
 const PRESENCE_INTERVAL_MS = 30_000;
 const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
-// This backstop must clear a 15s relay request, one 401 retry, and the 30s
-// local-runtime fallback so legitimate host failures retain their real error.
-const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 75_000;
+// Focus, blur and visibility can flap several times inside one window switch;
+// changes inside this window go out as one report carrying the latest state.
+const PRESENCE_COALESCE_MS = 250;
+// A failed report doubles the heartbeat interval per failure, up to this. The
+// main process already drops reports while the relay is unreachable; this
+// covers reports that do fail (a relay refusal, the local brain path).
+const PRESENCE_FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
+// The main process answers a snapshot inside its own 25s budget (account leg
+// plus local fallback); this backstop only catches a renderer-side hang.
+const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 35_000;
 const PREFERENCES_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
 type ActivityAccountScope = {
@@ -90,6 +98,11 @@ function unavailableActivitySnapshot(error: unknown): {
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "ADE couldn’t refresh account Activity.";
+}
+
+/** The account the Activity store currently belongs to (null when signed out). */
+export function currentActivityAccountOwnerId(): string | null {
+  return activityAccountOwnerId;
 }
 
 export async function refreshActivitySnapshot(): Promise<void> {
@@ -174,11 +187,10 @@ async function refreshActivityPreferences(
   const promise = Promise.resolve()
     .then(() => attentionApi.getPreferences(ownerId))
     .then((preferences) => {
+      // `null`: the account service is unreachable. Keep what is loaded, and
+      // do not start the throttle, so the next snapshot tries again.
       if (!isCurrentAccountScope(scope) || !preferences) return;
       activityStore.getState().setPreferences(preferences);
-    })
-    .then(() => {
-      if (!isCurrentAccountScope(scope)) return;
       preferencesRefreshed = { scope, at: Date.now() };
     })
     .catch(() => {
@@ -346,55 +358,63 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
     };
   }, [accountLoading, accountUserId]);
 
+  const presenceReporterRef = useRef<PresenceReporter | null>(null);
+
   useEffect(() => {
     if (accountLoading || !accountUserId) return;
-    const send = () => {
-      void reportPresence(
+    const reporter = createPresenceReporter({
+      send: () => reportPresence(
         ambientSurfaceVisibleRef.current,
         visibleItemIdsRef.current,
         foregroundRef.current,
-      ).catch(() => {});
-    };
-    let timer: number | null = null;
-    const schedule = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      const delay = document.visibilityState === "visible"
-        ? PRESENCE_INTERVAL_MS
-        : HIDDEN_PRESENCE_INTERVAL_MS;
-      timer = window.setTimeout(() => {
-        timer = null;
-        send();
-        schedule();
-      }, delay);
-    };
-    send();
-    schedule();
+      ),
+      isVisible: () => document.visibilityState === "visible",
+      visibleIntervalMs: PRESENCE_INTERVAL_MS,
+      hiddenIntervalMs: HIDDEN_PRESENCE_INTERVAL_MS,
+      maxBackoffMs: PRESENCE_FAILURE_BACKOFF_MAX_MS,
+      coalesceMs: PRESENCE_COALESCE_MS,
+    });
+    presenceReporterRef.current = reporter;
+    reporter.start();
     const onVisibilityChange = () => {
-      // Coming back reports at once: presence is how other devices learn this
-      // machine is being watched, and a 120s-stale "hidden" claim right as the
+      // Coming back reports promptly: a 120s-stale "hidden" claim right as the
       // user returns is the one case that misleads. Going hidden waits — `blur`
-      // has already reported the foreground change.
-      if (document.visibilityState === "visible") send();
-      schedule();
+      // has already reported the foreground change — but moves the heartbeat
+      // to the hidden cadence.
+      if (document.visibilityState === "visible") reporter.request();
+      else reporter.reschedule();
     };
     const onFocus = () => {
       foregroundRef.current = true;
-      send();
+      reporter.request();
     };
     const onBlur = () => {
       foregroundRef.current = false;
-      send();
+      reporter.request();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
     return () => {
-      if (timer !== null) window.clearTimeout(timer);
+      reporter.stop();
+      if (presenceReporterRef.current === reporter) presenceReporterRef.current = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
     };
-  }, [accountLoading, accountUserId, ambientSurfaceVisible, visibleItemIdsKey]);
+  }, [accountLoading, accountUserId]);
+
+  // What is on screen changed: report it through the same coalesced sender
+  // instead of restarting the heartbeat (and its listeners) on every change.
+  // Item ids only travel while an Activity surface is visible, so they only
+  // count as a change then.
+  const presenceStateKey = ambientSurfaceVisible ? `visible\u001e${visibleItemIdsKey}` : "hidden";
+  const lastPresenceStateKeyRef = useRef(presenceStateKey);
+  useEffect(() => {
+    if (lastPresenceStateKeyRef.current === presenceStateKey) return;
+    lastPresenceStateKeyRef.current = presenceStateKey;
+    presenceReporterRef.current?.request();
+  }, [presenceStateKey]);
 
   useEffect(() => () => {
     if (accountUserId) void reportPresence(false, [], false).catch(() => {});

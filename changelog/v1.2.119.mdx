@@ -1,0 +1,25 @@
+---
+title: "v1.2.119"
+description: "Release notes for ADE v1.2.119 - October 23, 2026"
+---
+
+ADE 1.2.119 makes smart balance spread new chats by weekly room left and current load, keeps remote MCP tokens fresh in long chats, and gives the iPhone Duo inner screen working snapshots.
+
+## New
+
+- Smart balance sends a new chat to the account furthest behind the pace needed to use its weekly limit, counting chats already running there; a burst of new chats spreads instead of piling onto one account (#1870).
+- The five-hour window is a gate: an account that cannot cover a first turn is skipped (#1870).
+- SDK MCP credentials refresh between turns, and each MCP server takes `allowedTools` / `disallowedTools` filters (#1871).
+- `ade apple device-create --extra` adds up to two extra simulators to a lane, such as an iPad next to the iPhone (#1872).
+
+## Improved
+
+- MCP settings sent mid-turn are queued and applied when the turn ends; a setting held for background agents shows a pending chip in the composer (#1871).
+- Background agents lost to a chat restart are re-run, and a chat waiting on them no longer looks finished (#1871).
+- Agents can answer a subagent's pending question (#1871).
+- `ade apple snapshot` and `tap-element` find sidebar and toolbar items on the iPhone Duo inner screen in every hold; `rotate`, `fold` and `posture` say whether the picture is tall or wide (#1872).
+- `ade apple render` reports where it filed its proof, and `--out` errors name the allowed paths (#1872).
+
+## iOS
+
+- The composer shows a pending chip for settings that wait on background work, and the smart balance description matches desktop, in a new TestFlight build.

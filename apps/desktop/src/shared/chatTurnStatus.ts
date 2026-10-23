@@ -1,9 +1,19 @@
 import { annotateSubagentTree } from "./chatSubagentTree";
 import { resourceLinkCopyPaths } from "./claudeAgentSdkFields";
-import type { AgentChatResourceLink, AgentChatRuntimeOwnerRef } from "./types/chat";
+import type {
+  AgentChatPendingSettingAfterBackground,
+  AgentChatResourceLink,
+  AgentChatRuntimeOwnerRef,
+} from "./types/chat";
 import type { CliSessionFacts } from "./cliChildSession";
 
-export type ChatTurnStatusPhase = "running" | "blocked" | "idle";
+/**
+ * `waiting`: no turn is running, but background work the chat started (a
+ * backgrounded subagent, shell or workflow) is still running and reports back
+ * into the chat when it ends. Not done, and nothing is asked of you, so it
+ * shares `running`'s exit code: a caller polling for "finished" keeps waiting.
+ */
+export type ChatTurnStatusPhase = "running" | "blocked" | "waiting" | "idle";
 
 export type ChatTurnStatusTool = {
   name: string;
@@ -34,12 +44,21 @@ export type ChatTurnStatusSnapshot = {
   sessionId: string;
   phase: ChatTurnStatusPhase;
   provider?: string;
+  /**
+   * The provider account the chat runs on (`ade chat create --instance` takes
+   * it). Claude and Codex only, the providers with several logins.
+   */
+  instanceId?: string;
   turnElapsedMs?: number | null;
   lastActivityMsAgo?: number | null;
   currentTool?: ChatTurnStatusTool | null;
   queuedMessageCount: number;
   ask?: ChatTurnStatusAsk | null;
   subagents: ChatTurnStatusSubagent[];
+  /** Live background jobs the chat waits on (monitors excluded); drives the `waiting` phase. */
+  backgroundWorkCount?: number;
+  /** Setting changes held until that background work ends (see the session summary field). */
+  pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   /** Present when the id names a tracked CLI terminal rather than a chat. */
   cliSession?: CliSessionFacts;
   /**
@@ -53,6 +72,7 @@ export type ChatTurnStatusSnapshot = {
 export type DeriveChatTurnStatusInput = {
   sessionId: string;
   provider?: string;
+  instanceId?: string | null;
   sessionStatus?: string;
   currentTurnStartedAt?: string | null;
   lastActivityAt?: string | null;
@@ -62,13 +82,19 @@ export type DeriveChatTurnStatusInput = {
   queuedMessageCount?: number;
   currentTool?: ChatTurnStatusTool | null;
   subagents?: ChatTurnStatusSubagent[];
+  /** Live background work somebody waits on (the summary's working count; monitors excluded). */
+  backgroundWorkCount?: number;
+  pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
   nowMs?: number;
 };
 
 export function chatTurnStatusExitCode(phase: ChatTurnStatusPhase): number {
   switch (phase) {
+    // `waiting` is not finished: same code as running, so existing pollers
+    // that loop until "not running" do not stop early.
     case "running":
+    case "waiting":
       return 0;
     case "idle":
       return 1;
@@ -89,16 +115,20 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
   const turnStartedMs = parseTime(input.currentTurnStartedAt);
   const lastActivityMs = parseTime(input.lastActivityAt);
   const hasLiveTurn = input.sessionStatus === "active" || turnStartedMs != null || ownedElsewhere != null;
+  const backgroundWorkCount = Math.max(0, Math.trunc(input.backgroundWorkCount ?? 0));
   const phase: ChatTurnStatusPhase = awaitingInput
     ? "blocked"
     : hasLiveTurn
       ? "running"
-      : "idle";
+      : backgroundWorkCount > 0
+        ? "waiting"
+        : "idle";
   const stranded = awaitingInput && (input.provider === "claude" || input.provider == null);
   return {
     sessionId: input.sessionId,
     phase,
     ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.instanceId?.trim() ? { instanceId: input.instanceId.trim() } : {}),
     turnElapsedMs: turnStartedMs == null ? null : Math.max(0, nowMs - turnStartedMs),
     lastActivityMsAgo: lastActivityMs == null ? null : Math.max(0, nowMs - lastActivityMs),
     currentTool: input.currentTool ?? null,
@@ -111,6 +141,10 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
         }
       : null,
     subagents: input.subagents ?? [],
+    ...(backgroundWorkCount > 0 ? { backgroundWorkCount } : {}),
+    ...(input.pendingSettingsAfterBackground?.length
+      ? { pendingSettingsAfterBackground: input.pendingSettingsAfterBackground }
+      : {}),
     ...(ownedElsewhere ? { ownedElsewhere } : {}),
   };
 }
@@ -138,7 +172,9 @@ export function formatChatTurnStatus(
     extraRows?: readonly string[];
   },
 ): string {
-  const marker = status.phase === "running" ? "●" : status.phase === "blocked" ? "●" : "○";
+  const marker = status.phase === "running" || status.phase === "blocked"
+    ? "●"
+    : status.phase === "waiting" ? "◐" : "○";
   const owner = status.ownedElsewhere;
   const phaseLabel = owner && status.phase === "running" ? "BUSY" : status.phase.toUpperCase();
   const headlineBits: string[] = [];
@@ -151,6 +187,10 @@ export function formatChatTurnStatus(
     headlineBits.push(status.ask?.title?.trim() || "awaiting input");
     if (status.turnElapsedMs != null) headlineBits.push(formatCompactDuration(status.turnElapsedMs));
     else if (status.lastActivityMsAgo != null) headlineBits.push(formatCompactDuration(status.lastActivityMsAgo));
+  } else if (status.phase === "waiting") {
+    const count = Math.max(1, status.backgroundWorkCount ?? 1);
+    headlineBits.push(`on ${count} background job${count === 1 ? "" : "s"}`);
+    if (status.lastActivityMsAgo != null) headlineBits.push(`last activity ${formatCompactDuration(status.lastActivityMsAgo)} ago`);
   } else if (status.lastActivityMsAgo != null) {
     headlineBits.push(`last turn ended ${formatCompactDuration(status.lastActivityMsAgo)} ago`);
   }
@@ -158,6 +198,9 @@ export function formatChatTurnStatus(
     `${marker} ${phaseLabel.padEnd(9)} ${headlineBits.join(" · ")}`.trimEnd(),
   ];
 
+  if (status.instanceId) {
+    lines.push(chatTurnStatusRow("account", `${status.provider ?? "provider"} ${status.instanceId}`));
+  }
   if (status.currentTool) {
     const detail = status.currentTool.detail?.trim();
     lines.push(chatTurnStatusRow("tool", `${status.currentTool.name}${detail ? ` · ${detail}` : ""}`));
@@ -167,6 +210,9 @@ export function formatChatTurnStatus(
       "queued",
       `${status.queuedMessageCount} message${status.queuedMessageCount === 1 ? "" : "s"} waiting`,
     ));
+  }
+  if (status.pendingSettingsAfterBackground?.length) {
+    lines.push(chatTurnStatusRow("pending", pendingSettingsAfterBackgroundLabel(status.pendingSettingsAfterBackground)));
   }
   if (status.ask?.stranded) {
     lines.push("  ⚠ stranded — no deadline set (dialogExpiry: never)");
@@ -218,6 +264,29 @@ export function formatChatTurnStatus(
   }
 
   return lines.join("\n").trimEnd();
+}
+
+const PENDING_SETTING_LABEL: Record<AgentChatPendingSettingAfterBackground, string> = {
+  reasoningEffort: "effort",
+  fastMode: "fast mode",
+};
+
+/** The desktop chip's short label: "Effort pending", "Fast mode pending", "Settings pending". */
+export function pendingSettingsAfterBackgroundShortLabel(
+  settings: readonly AgentChatPendingSettingAfterBackground[],
+): string {
+  if (settings.length !== 1) return "Settings pending";
+  const name = PENDING_SETTING_LABEL[settings[0]!] ?? "Setting";
+  return `${name.slice(0, 1).toUpperCase()}${name.slice(1)} pending`;
+}
+
+/** "effort change applies after background work" — shared by the CLI and the desktop chip tooltip. */
+export function pendingSettingsAfterBackgroundLabel(
+  settings: readonly AgentChatPendingSettingAfterBackground[],
+): string {
+  const names = settings.map((setting) => PENDING_SETTING_LABEL[setting] ?? setting);
+  const joined = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "setting";
+  return `${joined} change${names.length > 1 ? "s apply" : " applies"} after background work`;
 }
 
 export function chatTurnStatusCopyPaths(status: ChatTurnStatusSnapshot): string[] {

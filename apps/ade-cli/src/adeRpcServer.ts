@@ -96,7 +96,7 @@ import {
   isErrnoLikeCode,
   parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
-import { isExpectedFailure, isExpectedOutcome } from "../../desktop/src/shared/sentry/expectedFailure";
+import { isExpectedFailure, isExpectedOutcome, isProgrammingError } from "../../desktop/src/shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -271,6 +271,12 @@ type SessionIdentity = {
   ownerId: string | null;
   /** The caller's chat is a personal (project-less) chat — its `ADE_CHAT_SCOPE`. */
   personalChat: boolean;
+  /**
+   * Set when this connection was launched by ADE's remote MCP runner, which is
+   * an outside AI app, not the person at a terminal. The browser gate treats it
+   * as an agent even when it carries no chat or lane.
+   */
+  remoteMcpConnectionId: string | null;
 };
 
 type SessionState = {
@@ -1953,18 +1959,45 @@ const CALLER_ERROR_CODES = new Set<number>([
 ]);
 
 /**
- * One Sentry issue per action and error code for a failed `ade/actions/call`.
- * The endpoint turns every failure into an `ok: false` reply, which is right
- * for the caller and left nothing behind for anyone else.
+ * Sentry for a failed `ade/actions/call`. The endpoint turns every failure
+ * into an `ok: false` reply, which is right for the caller and left nothing
+ * behind for anyone else. A defect becomes one issue per action and error
+ * code; an answer the caller already got (an expected outcome, an agent's
+ * mistake, a desktop call the desktop reports) becomes a Sentry Log.
  */
-function reportFailedAction(actionName: string, error: unknown): void {
+function reportFailedAction(
+  actionName: string,
+  error: unknown,
+  session: SessionState,
+  callerReportsFailure: boolean,
+): void {
   if (isMovedAwayChatError(error)) return;
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
+  const logOnly = (kind: string) => forwardLogToSentry("warn", `runtime_action.${kind}.${actionName}`, {
+    message: error instanceof Error ? error.message : String(error),
+  });
   if (isExpectedOutcome(error)) {
-    forwardLogToSentry("warn", `runtime_action.expected.${actionName}`, {
-      message: error instanceof Error ? error.message : String(error),
-    });
+    logOnly("expected");
+    return;
+  }
+  // A desktop window's call that the desktop reports itself, with its IPC
+  // channel (`ipcCallScope.ts`): the brain's copy would be a second issue.
+  // Calls the desktop's main process makes on its own carry no flag.
+  if (callerReportsFailure && mayUseUserOnlyActions(session)) {
+    logOnly("desktop");
+    return;
+  }
+  // An agent driving `ade` is answered with the error and fixes its call: a
+  // closed tab, a device another lane owns, a note too long. Only a defect
+  // in ADE itself becomes an issue. A terminal on another machine
+  // (`ade … --machine`) may be a person, whose CLI reports nothing.
+  const foreignCaller = parseForeignCallerSessionId(session.identity.chatSessionId);
+  const agentCaller = !isUserClientSession(session) && !(foreignCaller && foreignCaller.chatSessionId === null);
+  // A missing runtime service answers with `internalError`: ADE's fault, not the caller's.
+  const internalError = error instanceof JsonRpcError && error.code === JsonRpcErrorCode.internalError;
+  if (agentCaller && !internalError && !isProgrammingError(error)) {
+    logOnly("agent");
     return;
   }
   const code = parseCodedErrorMessage(error).code ?? null;
@@ -3617,6 +3650,23 @@ function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): b
     || chatArgs.subagentTakeoverPromptShown === true;
 }
 
+/**
+ * `chat.armWait` arguments without the caller's own provenance. The `ade`
+ * CLI with no chat binding (read only runs as an unbound agent, full access as
+ * the chatless operator) keeps only the ADE MCP app label: it may already put
+ * any metadata on a direct send, and the label is what makes a delayed send
+ * from a connected app say which app sent it.
+ */
+function armWaitArgsWithoutCallerProvenance(
+  session: SessionState,
+  chatArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const { sendMetadata: callerMetadata, ...waitArgs } = chatArgs;
+  if (!isUnboundAdeCliCaller(session) && !isTrustedChatlessAdeCliCaller(session)) return waitArgs;
+  const remoteMcp = isRecord(callerMetadata) ? callerMetadata.remoteMcp : undefined;
+  return isRecord(remoteMcp) ? { ...waitArgs, sendMetadata: { remoteMcp } } : waitArgs;
+}
+
 function scopeChatAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3628,8 +3678,8 @@ function scopeChatAdeActionArgs(
   if (action === "armWait") {
     // Provenance on the prompt a send wait delivers is the host's to derive,
     // never a caller's to assert.
+    if (isUnboundAdeCliCaller(session)) return armWaitArgsWithoutCallerProvenance(session, chatArgs);
     const { sendMetadata: _callerProvenance, ...waitArgs } = chatArgs;
-    if (isUnboundAdeCliCaller(session)) return waitArgs;
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     const sendTo = asOptionalTrimmedString(waitArgs.sendToSessionId);
     if (sendTo) {
@@ -3785,7 +3835,16 @@ function scopeBuiltInBrowserAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const { chatSessionId: _callerSupplied, ...rest } = browserArgs;
   // Only the user-browser scoping below may route a call to the user's browser.
-  const scoped = { ...rest, projectRoot: undefined, force: false, [USER_BROWSER_ROUTE_PARAM]: undefined };
+  const scoped = {
+    ...rest,
+    projectRoot: undefined,
+    force: false,
+    [USER_BROWSER_ROUTE_PARAM]: undefined,
+    // An outside AI app has no chat or lane to carry, so the browser's
+    // master switch would read it as the person. The stamp is what tells the
+    // gate "this is still an agent" when agents are turned off.
+    ...(session.identity.remoteMcpConnectionId ? { agentCaller: true } : {}),
+  };
   if (!callerChatSessionId) {
     return { ...scoped, chatSessionId: undefined, laneId: asOptionalTrimmedString(rest.laneId) ?? undefined, tabCollection: undefined };
   }
@@ -5251,6 +5310,7 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
     personalChat: identity.chatScope === "personal",
+    remoteMcpConnectionId: asOptionalTrimmedString(identity.remoteMcpConnectionId),
   };
 }
 
@@ -5815,8 +5875,9 @@ async function runTool(args: {
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : domain === "chat" && action === "armWait"
         // A send wait's provenance is derived by the host (bound agents, in
-        // the chat scoping below) and never accepted from any caller.
-        ? (({ sendMetadata: _callerProvenance, ...waitArgs }) => waitArgs)(safeObject(toolArgs.args))
+        // the chat scoping below), not accepted from the caller; only the ADE
+        // MCP app label survives, and only from the `ade` CLI with no chat binding.
+        ? armWaitArgsWithoutCallerProvenance(session, safeObject(toolArgs.args))
         : safeObject(toolArgs.args);
     // `inputOrigin` names the desktop a person is talking from, and show
     // requests follow it. Only a user client may say where that person is.
@@ -8501,6 +8562,7 @@ export function createAdeRpcRequestHandler(args: {
       attemptId: null,
       ownerId: null,
       personalChat: false,
+      remoteMcpConnectionId: null,
     },
     askUserEvents: [],
     askUserRateLimit: {
@@ -8806,6 +8868,8 @@ export function createAdeRpcRequestHandler(args: {
         reportFailedAction(
           actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
           error,
+          session,
+          params.callerReportsFailure === true,
         );
         // An ADE coded error (a definitive cross-machine return refusal, …)
         // keeps its code across the wire so the caller can tell it apart;

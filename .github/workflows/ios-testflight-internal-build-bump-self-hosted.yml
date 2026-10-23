@@ -63,18 +63,7 @@ jobs:
       - name: Upload dSYMs to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ade-app
-          SENTRY_PROJECT: ade-ios
+        # An older git_ref may not have the script yet; that must not fail the run.
         run: |
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
-            echo "::notice::SENTRY_AUTH_TOKEN is not set; skipping the Sentry dSYM upload."
-            exit 0
-          fi
-          archive="${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive"
-          if [ ! -d "${archive}/dSYMs" ]; then
-            echo "::warning::No dSYMs at ${archive}/dSYMs; skipping the Sentry dSYM upload."
-            exit 0
-          fi
-          if ! npx --yes @sentry/cli@3.8.0 debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --type dsym --include-sources --wait "${archive}/dSYMs"; then
-            echo "::warning::Sentry dSYM upload failed; crashes from this build will not be symbolicated."
-          fi
+          bash scripts/release-tools/upload-ios-dsyms.sh "${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive" \
+            || echo "::warning::Sentry dSYM upload did not run; this build will not be symbolicated."

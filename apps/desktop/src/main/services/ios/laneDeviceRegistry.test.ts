@@ -59,11 +59,27 @@ const RUNTIMES: AppleInstalledRuntime[] = [{
 }];
 
 /** An in-memory stand-in for the lanes DB, narrowed to what the registry uses. */
-function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDeviceStore & { rows: typeof rows } {
+function memoryStore(
+  rows: Record<string, Record<string, unknown>> = {},
+  options: { endedLanes?: Set<string> } = {},
+): LaneDeviceStore & { rows: typeof rows; extras: Map<string, Record<string, unknown>> } {
   const kv = new Map<string, unknown>();
+  // `lane_apple_extra_devices`, keyed by udid like the real table.
+  const extras = new Map<string, Record<string, unknown>>();
   return {
     rows,
+    extras,
     run: (sql, params = []) => {
+      if (/^insert into lane_apple_extra_devices/i.test(sql.trim())) {
+        const [udid, lane_id, name, family, runtime, created_at] = params;
+        extras.set(String(udid), { udid, lane_id, name, family, runtime, created_at });
+        return;
+      }
+      if (/^delete from lane_apple_extra_devices/i.test(sql.trim())) {
+        const [laneId, udid] = params;
+        if (extras.get(String(udid))?.lane_id === laneId) extras.delete(String(udid));
+        return;
+      }
       if (/^delete from lane_apple_devices/i.test(sql.trim())) {
         delete rows[String(params[0])];
         return;
@@ -99,10 +115,14 @@ function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDe
           ? { one: 1 } as never
           : null;
       }
-      if (/from lanes/i.test(sql)) return { name: `Lane ${String(params[0])}`, status: "active" } as never;
+      if (/from lanes/i.test(sql)) {
+        return { name: `Lane ${String(params[0])}`, status: options.endedLanes?.has(String(params[0])) ? "archived" : "active" } as never;
+      }
       return (rows[String(params[0])] ?? null) as never;
     },
-    all: () => Object.values(rows) as never,
+    all: (sql, params = []) => (/lane_apple_extra_devices/i.test(sql)
+      ? [...extras.values()].filter((row) => !/where lane_id/i.test(sql) || row.lane_id === params[0])
+      : Object.values(rows)) as never,
     getJson: (key) => (kv.get(key) ?? null) as never,
     setJson: (key, value) => { kv.set(key, value); },
   };
@@ -183,6 +203,65 @@ describe("laneDeviceRegistry device lifecycle", () => {
     await expect(registry.deviceCreate({ laneId: "lane-1" })).rejects.toMatchObject({
       code: APPLE_DEVICE_EXISTS_CODE,
     });
+  });
+
+  it("keeps a lane's extra devices to its limit, never as its own device, and deletes them once the lane ends", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-extras-"));
+    const endedLanes = new Set<string>();
+    const listed: AppleInstalledSimulator[] = [];
+    let made = 0;
+    const run = vi.fn(async (_command: string, args: string[]) => {
+      const joined = args.join(" ");
+      if (joined.startsWith("simctl create ")) {
+        made += 1;
+        listed.push(simulator({ udid: `extra-${made}`, name: args[2] ?? "" }));
+        return { stdout: `extra-${made}\n`, stderr: "" };
+      }
+      if (joined === "simctl list devices --json") {
+        return { stdout: JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": listed } }), stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const store = memoryStore({}, { endedLanes });
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => listed,
+      listInstalledRuntimes: async () => RUNTIMES,
+      projectRoot: path.join(root, "project"),
+      deviceDataRoot: path.join(root, "devices"),
+      store,
+      logger: noopLogger,
+    });
+    const deleted = () => run.mock.calls.map((call) => call[1].join(" ")).filter((call) => call.startsWith("simctl delete "));
+
+    try {
+      const first = await registry.deviceCreate({ laneId: "lane-1", extra: true });
+      await registry.deviceCreate({ laneId: "lane-1", extra: true });
+      await expect(registry.deviceCreate({ laneId: "lane-1", extra: true })).rejects.toThrow(/APPLE_EXTRA_DEVICE_LIMIT/);
+      await registry.deviceCreate({ laneId: "lane-2", extra: true });
+      // Extras are held but are no lane's own device, and the project's
+      // default model does not follow them.
+      expect(first).toMatchObject({ udid: "extra-1", extra: true, laneId: "lane-1" });
+      expect(registry.get("lane-1")).toBeNull();
+      expect(registry.extras("lane-1").map((device) => device.udid)).toEqual(["extra-1", "extra-2"]);
+      expect(store.getJson("apple:last-device-type")).toBeNull();
+      await expect(registry.deviceAttach({ laneId: "lane-1", simulator: "extra-3" })).rejects.toThrow(/APPLE_DEVICE_IS_EXTRA/);
+
+      // A live lane keeps its extras through a cleanup pass.
+      await registry.reconcile();
+      expect(deleted()).toEqual([]);
+      expect([...store.extras.keys()]).toEqual(["extra-1", "extra-2", "extra-3"]);
+
+      // Once lane-1 ends, its extras are deleted whole; lane-2's stays.
+      endedLanes.add("lane-1");
+      const result = await registry.reconcile();
+      expect(deleted()).toEqual(["simctl delete extra-1", "simctl delete extra-2"]);
+      expect(result.deleted.map((entry) => entry.udid)).toEqual(["extra-1", "extra-2"]);
+      expect([...store.extras.keys()]).toEqual(["extra-3"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses rather than downloading a runtime when none is installed", async () => {
@@ -1129,6 +1208,7 @@ describe("lane device lifecycle", () => {
     const laneDevices = {
       get: () => bound,
       list: () => (bound ? [bound] : []),
+      findExtra: () => null,
       deviceDetach: vi.fn(async () => {
         const detached = bound;
         bound = null;

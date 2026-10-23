@@ -226,12 +226,21 @@ public actor SimHelperRuntime {
                     "unsupported": unsupported.map(String.init),
                 ]))
 
-            case let .scroll(_, udid, deltaX, deltaY, anchor):
-                try await session(for: udid).scroll(deltaX: deltaX, deltaY: deltaY, anchor: anchor)
+            case let .scroll(_, udid, deltaX, deltaY, anchor, space):
+                try await session(for: udid).scroll(deltaX: deltaX, deltaY: deltaY, anchor: anchor, space: space)
                 emit(.ok(id: id, payload: [:]))
 
             case let .orientation(_, udid, value):
-                let applied = try await session(for: udid).orientation(value)
+                // A foldable turns through CoreDevice; everything else keeps
+                // the GSEvent path.
+                let applied: Bool
+                // The session caches the answer, a "no" included.
+                if try await session(for: udid).isFoldable() {
+                    applied = await DevicePosture.setOrientation(udid: udid, value: value)
+                    if applied { await watchPostureIfStreaming(udid: udid) }
+                } else {
+                    applied = try await session(for: udid).orientation(value)
+                }
                 // Reported rather than thrown: the GSEvent path needs
                 // Simulator.app running, and "the device did not rotate" is a
                 // state ADE should show, not an error it should retry.
@@ -249,9 +258,14 @@ public actor SimHelperRuntime {
                 if state.supported { await watchPostureIfStreaming(udid: udid) }
 
             case let .axDescribe(_, udid):
+                let display = await DevicePosture.accessibilityDisplay(udid: udid)
                 let json = try await offMainThread {
                     SimFrameworks.load()
-                    return try AccessibilityBridge.shared.describeUI(udid: udid)
+                    return try AccessibilityBridge.shared.describeUI(
+                        udid: udid,
+                        displayId: display.id,
+                        displayOrientation: display.orientation
+                    )
                 }
                 emit(.ok(id: id, payload: ["tree": String(decoding: json, as: UTF8.self)]))
 

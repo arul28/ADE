@@ -35,6 +35,13 @@ export type MockRuntimeOptions = {
   updateMcpServers?: boolean;
   /** Advertise archive/unarchive/delete/getEventHistoryPage. Default true. */
   lifecycleActions?: boolean;
+  /** Advertise `capabilities.personalChats.mcpToolFilters`. Default false. */
+  mcpToolFilters?: boolean;
+  /**
+   * Advertise `capabilities.personalChats.deferredMcpUpdates` and queue a
+   * mid-turn `updateSession({ mcpServers })` instead of refusing it. Default false.
+   */
+  deferredMcpUpdates?: boolean;
 };
 
 type Session = {
@@ -128,6 +135,8 @@ export class MockRuntime {
       providersStatus: options.providersStatus ?? false,
       pendingInputs: options.pendingInputs ?? true,
       updateMcpServers: options.updateMcpServers ?? false,
+      mcpToolFilters: options.mcpToolFilters ?? false,
+      deferredMcpUpdates: options.deferredMcpUpdates ?? false,
       lifecycleActions: options.lifecycleActions ?? true,
       runtimeVersion: options.runtimeVersion ?? "1.2.69",
     };
@@ -275,6 +284,8 @@ export class MockRuntime {
               pushEvents: this.options.pushEvents,
               mcpServers: this.options.mcpServers,
               ...(this.options.updateMcpServers ? { updateMcpServers: true } : {}),
+              ...(this.options.mcpToolFilters ? { mcpToolFilters: true } : {}),
+              ...(this.options.deferredMcpUpdates ? { deferredMcpUpdates: true } : {}),
             },
             ...(this.options.providersStatus
               ? { providers: { status: true, cacheTtlMs: 60_000 } }
@@ -435,7 +446,14 @@ export class MockRuntime {
         if (args.reasoningEffort !== undefined) session.createArgs = { ...session.createArgs, reasoningEffort: args.reasoningEffort };
         if (args.fastMode !== undefined) session.createArgs = { ...session.createArgs, fastMode: args.fastMode };
         if (args.mcpServers !== undefined) {
-          if (session.status === "active") throw new Error("invalid_argument: mcpServers cannot change with a turn in flight");
+          if (session.status === "active") {
+            if (!this.options.deferredMcpUpdates) {
+              throw new Error("invalid_argument: mcpServers cannot change with a turn in flight");
+            }
+            // Validated at once (a bad map still fails), queued for the turn's end.
+            this.capabilityReport({ ...session.createArgs, mcpServers: args.mcpServers });
+            return { ...toSummary(session), mcpServersPending: true };
+          }
           session.createArgs = { ...session.createArgs, mcpServers: args.mcpServers };
           session.mcpCapability = this.suppressMcpCapability ? null : this.capabilityReport(session.createArgs);
         }

@@ -304,6 +304,61 @@ describe("Durable Object placement", () => {
   });
 });
 
+// A Durable Object restarting under Cloudflare. A request that can be sent
+// twice gets one more try on a fresh stub; a WebSocket upgrade never does (the
+// object may already hold its half of the socket) and the client reconnects.
+// Whatever is not recovered is a 503 with Retry-After, not an unhandled 500.
+describe("Durable Object transient failures", () => {
+  const upgrade = { upgrade: "websocket" };
+  const claimBody = JSON.stringify({ secret: SECRET });
+  it.each([
+    ["a host upgrade is not retried", `/host/${MACHINE_KEY}`, { headers: upgrade }, "Durable Object storage is no longer accessible.", 1, { status: 503, calls: 1 }],
+    ["a phone upgrade is not retried", `/connect/${MACHINE_KEY}`, { headers: upgrade }, "internal error; reference = bnpch2gr1hv7r31ifl4tvhvh", 1, { status: 503, calls: 1 }],
+    ["a prewarm is retried once", `/prewarm/${MACHINE_KEY}`, {}, "Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.", 1, { status: 200, calls: 2, body: "" }],
+    ["a claim is retried once with its body", `/machines/${MACHINE_KEY}/claim`, { method: "POST", body: claimBody }, "Internal error while starting up Durable Object storage caused object to be reset; reference = k", 1, { status: 200, calls: 2, body: claimBody }],
+    ["a claim that keeps failing is a 503", `/machines/${MACHINE_KEY}/claim`, { method: "POST", body: claimBody }, "internal error; reference = z", 9, { status: 503, calls: 2 }],
+    ["an MCP call is not sent twice", `/m/${MACHINE_KEY}/mcp`, { method: "POST", body: "{}" }, "internal error; reference = m", 1, { status: 503, calls: 1 }],
+    ["an MCP stream GET is not sent twice", `/m/${MACHINE_KEY}/mcp`, {}, "internal error; reference = m", 1, { status: 503, calls: 1 }],
+  ] as const)("%s", async (_label, path, init, message, failures, expected) => {
+    let left: number = failures;
+    let calls = 0;
+    const stub = {
+      fetch: async (request: Request) => {
+        // The MCP endpoint lookup answers with the machine it belongs to.
+        if (new URL(request.url).pathname === "/__mcp-endpoint") return Response.json({ machineKey: MACHINE_KEY });
+        calls += 1;
+        const body = request.body ? await request.text() : "";
+        if (left > 0) {
+          left -= 1;
+          throw new Error(message);
+        }
+        return new Response(body);
+      },
+    };
+    const env = {
+      TUNNEL: { idFromName: (name: string) => name, get: () => stub } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+
+    const response = await handleRequest(new Request(`https://relay.test${path}`, init), env);
+
+    expect(response.status).toBe(expected.status);
+    expect(calls).toBe(expected.calls);
+    if (expected.status === 503) expect(response.headers.get("retry-after")).toBe("5");
+    if ("body" in expected) expect(await response.text()).toBe(expected.body);
+  });
+
+  it("still surfaces a failure that is not Cloudflare's", async () => {
+    const env = {
+      TUNNEL: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async () => { throw new TypeError("Cannot read properties of undefined"); } }),
+      } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+    await expect(handleRequest(new Request(`https://relay.test/host/${MACHINE_KEY}`, { headers: { upgrade: "websocket" } }), env))
+      .rejects.toThrow("Cannot read properties of undefined");
+  });
+});
+
 describe("verifySignedQuery", () => {
   it("accepts a correct signature within skew", async () => {
     const ts = String(Math.floor(Date.now() / 1000));

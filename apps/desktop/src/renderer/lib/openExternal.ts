@@ -35,6 +35,7 @@ let windowRuntimeBinding: OpenProjectBinding | null = null;
 
 export function setWindowRuntimeBinding(binding: OpenProjectBinding | null): void {
   windowRuntimeBinding = binding;
+  followLinkOpenModeProject(binding?.key ?? null);
 }
 
 /**
@@ -247,11 +248,13 @@ export function navigateUrlInAdeBrowser(
  *
  * A link click has to answer "in-app or external" synchronously — there is no
  * await between mousedown and the window opening — so the preference has to be
- * in hand before the click, not fetched during it. It is read once per renderer
- * and refreshed by the Settings control that changes it.
+ * in hand before the click, not fetched during it. It is read once per open
+ * project and refreshed by the Settings control that changes it.
  */
 let linkOpenMode: BrowserLinkOpenMode = "in-app";
 let linkOpenModeLoad: Promise<void> | null = null;
+/** The open project, which the preference is saved in (from the window's binding). */
+let linkOpenModeProjectKey: string | null = null;
 
 export function getLinkOpenMode(): BrowserLinkOpenMode {
   return linkOpenMode;
@@ -261,14 +264,30 @@ export function setLinkOpenMode(mode: BrowserLinkOpenMode): void {
   linkOpenMode = mode;
 }
 
-/** Loads the stored preference once. Safe to call from anywhere, repeatedly. */
+/**
+ * The link-open preference is saved in the open project, so a change of
+ * project reloads it, and with no project open the default holds.
+ */
+function followLinkOpenModeProject(projectKey: string | null): void {
+  if (projectKey === linkOpenModeProjectKey) return;
+  linkOpenModeProjectKey = projectKey;
+  linkOpenModeLoad = null;
+  linkOpenMode = "in-app";
+  void refreshLinkOpenMode();
+}
+
+/** Loads the open project's preference once. Safe to call from anywhere, repeatedly. */
 export function refreshLinkOpenMode(force = false): Promise<void> {
+  const projectKey = linkOpenModeProjectKey;
+  if (!projectKey) return Promise.resolve();
   if (linkOpenModeLoad && !force) return linkOpenModeLoad;
   const config = typeof window !== "undefined" ? window.ade?.projectConfig : undefined;
   if (!config) return Promise.resolve();
   linkOpenModeLoad = config
     .get()
     .then((snapshot) => {
+      // A project switched while this read ran: its answer is not this one's.
+      if (linkOpenModeProjectKey !== projectKey) return;
       setLinkOpenMode(snapshot.effective.browser?.linkOpenMode ?? "in-app");
     })
     .catch(() => {
@@ -306,7 +325,7 @@ export function openLinkFromUi(
   const modPressed = isMac ? Boolean(modifiers?.metaKey) : Boolean(modifiers?.ctrlKey);
   if (!modPressed && !modifiers?.shiftKey) {
     const issueRef = issueRefFromUrl(normalized);
-    if (issueRef && openIssueRef({ ref: issueRef, source: "chat-link" })) return;
+    if (issueRef && openIssueRef({ ref: issueRef, source: "chat-link", pin: context?.runtimePin ?? null })) return;
   }
   const target = resolveLinkOpenTarget({
     mode: linkOpenMode,
@@ -364,10 +383,4 @@ export async function tryOpenExternalUrl(url: string | undefined | null): Promis
     return true;
   }
   return false;
-}
-
-// Warm the preference as soon as the renderer loads, so the first link click
-// already has the right answer rather than the default.
-if (typeof window !== "undefined") {
-  void refreshLinkOpenMode();
 }

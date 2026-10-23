@@ -191,6 +191,7 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
     ...(asTrimmedString(rawCreate.instanceId) ? { instanceId: asTrimmedString(rawCreate.instanceId)! } : {}),
   };
   const runtime = rawMessage.runtime === "local" || rawMessage.runtime === "cloud" ? rawMessage.runtime : null;
+  const remoteMcp = parseRemoteMcpTurnLabel(rawMessage.metadata);
   const message: ChatLaunchChatArgs["message"] = {
     text: rawMessage.text,
     ...parseAgentChatMessageFields(rawMessage),
@@ -198,8 +199,20 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
       ? { contextAttachments: rawMessage.contextAttachments.filter(isRecord) as unknown as NonNullable<AgentChatSendArgs["contextAttachments"]> }
       : {}),
     ...(runtime ? { runtime } : {}),
+    ...(remoteMcp ? { metadata: { remoteMcp } } : {}),
   };
   return { create, message };
+}
+
+/**
+ * The one piece of opening-message metadata a launch keeps: which ADE MCP app
+ * sent it, so the chat can show "via <app>". Every other key stays the host's.
+ */
+function parseRemoteMcpTurnLabel(value: unknown): { connectionId: string; label: string } | null {
+  if (!isRecord(value) || !isRecord(value.remoteMcp)) return null;
+  const connectionId = asTrimmedString(value.remoteMcp.connectionId);
+  const label = asTrimmedString(value.remoteMcp.label);
+  return connectionId && label ? { connectionId, label: label.slice(0, 80) } : null;
 }
 
 /**

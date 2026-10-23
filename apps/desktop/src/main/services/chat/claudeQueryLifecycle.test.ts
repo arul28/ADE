@@ -296,7 +296,7 @@ describe("Claude query lifecycle", () => {
     );
   });
 
-  it("emits an orphan notice when reset stops an open background task", async () => {
+  it("keeps the agent process while a background task runs when a setting changes", async () => {
     const { service, events, reaper, session } = await createDrivenSession([
       {
         type: "system",
@@ -319,11 +319,55 @@ describe("Claude query lifecycle", () => {
 
     await resetReasoningEffort(service, session.id);
 
-    expect(reaper.reapForSession).toHaveBeenCalledWith(
+    // A reset would end the process and the background task with it, so the
+    // reset stays pending until the background work is gone.
+    expect(reaper.reapForSession).not.toHaveBeenCalledWith(
       session.id,
       expect.stringMatching(/^claude_/),
     );
-    expect(lifecycleRestartNotices(events)).toHaveLength(1);
+    expect(lifecycleRestartNotices(events)).toHaveLength(0);
+  });
+
+  // A chat waiting on background work it then loses must be told once, and
+  // only once: the wake turn starts the work again, and if a second restart
+  // loses that too, waking again would loop for as long as restarts happen.
+  it("wakes once, not again when a second restart loses the work the wake turn restarted", async () => {
+    const { service, events, session } = await createDrivenSession([
+      {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "background-task-1", task_type: "local_bash", description: "Run the verification suite" }],
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "background-task-1",
+        task_type: "local_bash",
+        description: "Run the verification suite",
+        command: "npm test",
+      },
+    ]);
+    const wakeTurns = () => events.filter((envelope) =>
+      envelope.event.type === "user_message"
+      && (envelope.event.metadata as { hostContinuation?: { reason?: string } } | undefined)
+        ?.hostContinuation?.reason === "background_work_lost");
+    const lossNotices = () => events.filter((envelope) =>
+      envelope.event.type === "system_notice" && /ended with the agent process/.test(envelope.event.message));
+
+    await service.restartSession({ sessionId: session.id });
+    await vi.waitFor(() => expect(wakeTurns()).toHaveLength(1));
+    expect(lossNotices()[0]?.event).toMatchObject({ message: expect.stringContaining("npm test") });
+    // The wake turn ran the same work again, and it is running when the next restart lands.
+    await vi.waitFor(() => expect(events.filter((envelope) => envelope.event.type === "done")).toHaveLength(2));
+
+    await service.restartSession({ sessionId: session.id });
+    await vi.waitFor(() => expect(lossNotices()).toHaveLength(2));
+    // The second loss's notice is the receipt of its wake decision, written
+    // synchronously when the loss is reported: no wake, the next turn is told.
+    expect(lossNotices()[1]?.event).toMatchObject({
+      message: expect.stringContaining("The agent is told on its next turn."),
+    });
+    expect(wakeTurns()).toHaveLength(1);
   });
 
   it("does not emit an orphan notice when reset has no open background task", async () => {

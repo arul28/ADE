@@ -1,0 +1,19 @@
+---
+title: "v1.2.118"
+description: "Release notes for ADE v1.2.118 - October 22, 2026"
+---
+
+ADE 1.2.118 makes agent taps land on turned simulator screens, lets `ade apple render` work without the Apple pane open, and sharpens the 3D device view.
+
+## New
+
+- `ade apple render` works with the Apple pane closed: any open project window renders off-screen and files the proof (#1869).
+- `ade apple lease` gives agents sharing one lane's simulator a queued, expiring turn (#1869).
+- `ade apple launch` and `relaunch` pass app launch arguments, and `--configuration Release` builds that configuration (#1869).
+- `ade apple foreground --wait` waits for an app to come to the front (#1869).
+
+## Improved
+
+- Agent taps, drags and scrolls land where they should on the iPhone Duo's inner display and on any iPhone held landscape (#1869).
+- The 3D device view is sharp: its screen texture follows the view size, up to 1,600 px (#1869).
+- `ade apple screenshot` files proof and prints its `cite:` line; `--no-proof` takes a scratch shot (#1869).

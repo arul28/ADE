@@ -22,7 +22,8 @@ channels, persistence fields, and analytics/log identifiers.
   failed, and failing checks. Everything else updates Activity and the Live
   Activity without a push. Users can turn other events on per kind.
 - A push is two short lines: the session or PR title, then the state and where
-  it is. Agent text never goes in a push.
+  it is. Agent text never goes in a push, with one exception: a message an
+  agent sent because the user asked to be told (see "Agent messages").
 - Completed and merged work remains visible until it is seen or dismissed.
 - Every row owns an exact ADE destination. A PR can target Overview, Checks, or
   Review; an agent item can target a session, question, approval, or event.
@@ -618,7 +619,8 @@ row the push opens shows it in full. An agent item that offers both Approve and
 Deny carries the `ADE_APPROVAL` category, so the banner shows the two buttons.
 
 Preferences support account defaults plus device, project, and machine
-overrides. The `machines` scope is keyed by machine key and is what "mute this
+overrides, and one account-wide list of muted chats (`mutedSessionIds`, see
+"Muting one chat"). The `machines` scope is keyed by machine key and is what "mute this
 Mac" writes: it silences one machine's items everywhere rather than muting a
 category on one phone. Its size is capped like the other scopes:
 
@@ -643,9 +645,20 @@ apart or overwrite a simultaneous edit from another client. A failed phone
 preference mutation retries with capped exponential backoff until it succeeds,
 the account changes, or a newer local preference replaces it.
 
-When desktop-first delivery is enabled and a foreground Mac recently reported
-presence, the relay waits for the configured bounded delay before notifying the
-phone. The next machine heartbeat escalates an item that remains unseen.
+When desktop-first delivery is enabled (the default) and the user is at a
+computer, the relay waits for the configured bounded delay
+(`desktopFirstDelaySeconds`, 2 minutes by default) before notifying the phone.
+ADE cannot tell whether someone is looking at an open window, so the delay is
+the test: at the computer, the user opens the item (from Activity or the
+desktop notification, which marks it seen) and the phone never buzzes; away,
+nothing is opened and the phone gets it. Policy-defaults version 3 raised the
+default from 30 s, and a 30 saved under an older version reads as the new
+default, the same way version 2 moved event policies. "At
+a computer" means any client that is not a phone reported presence in the last
+45 s with a foreground ADE window, or a visible Activity surface showing that
+exact item. Desktops on Windows and Linux report platform `unknown` and the
+hosted web client `web`; both count, where only `macOS` used to. The next
+machine heartbeat escalates an item that is still unseen after the delay.
 
 Two gates run before any preference is consulted, because they are about
 whether the item deserves an interruption at all:
@@ -699,10 +712,79 @@ other notifying events use active interruption. Alert pushes also carry
 `content-available`, so the visible alert doubles as a background wake for a
 snapshot refresh — foreground polling remains the guaranteed path, not this.
 
+### Muting one chat
+
+A mute is a statement about the chat, so it applies on every device. The list
+is the account preferences' top-level `mutedSessionIds`, written only through
+`PATCH /attention/account/preferences/sessions/:sessionId` with
+`{ "muted": boolean }`, which edits it atomically (bounded at 500, oldest mute
+dropped first). A whole-document `PUT` keeps the stored list whatever it
+carries, so a stale settings save cannot undo a mute made elsewhere. When the
+relay decides whether a phone stays quiet, it takes the account list together
+with that phone's own older per-device list.
+
+Desktop shows **Mute notifications** / **Unmute notifications** in a session's
+context menu once the account preferences have loaded; the phone shows it in
+the chat header. The mute silences pushes, desktop notifications and message
+toasts for that chat. The chat keeps its row and state in Activity.
+
+## Agent messages
+
+`ade notify` run by an agent inside a chat sends that chat's message (see the
+`ade-cli-control-plane` skill for when an agent may). The chat comes from the
+caller's identity, so an agent cannot post as another chat; `--session` lets a
+person's terminal name one.
+
+- **Brain.** `pushPublisherService.sendChatMessage` checks the limits (6 per
+  chat and 30 per machine in any rolling hour; the same title and body from
+  one chat within ten minutes is a repeat and sends nothing), stores the message
+  in the push registration file (so a restart neither drops it nor resets the
+  limits), and publishes it. A machine keeps its newest 50 messages: an older
+  one leaves Activity for good once 50 newer ones exist, before its 24 hours if
+  need be, so a busy day cannot crowd chats out of the machine's roster. A seen
+  or dismissed message leaves the roster at once. The chat gets a `system_notice` with status
+  `user_notified` ("Notified you: <title>", body in `detail`). Deleting the chat
+  drops its messages.
+- **Item.** `kind: "message"`, `eventKind: "agent_message"` (outside the
+  event-policy vocabulary: a message has no policy, the user asked for it),
+  `phase: "completed"`, tier `signal`, id `message:<machineKey>:<uuid>`, the
+  chat as destination, the chat title in `detail`, a 24-hour expiry. It files
+  in the Inbox until seen or dismissed and is never counted in a column, the
+  Live Activity or a widget.
+- **Older clients.** Every older client validates the whole snapshot and
+  rejects an unknown kind, so the relay returns message items only to readers
+  that send `include=message` (`ATTENTION_SNAPSHOT_INCLUDE_MESSAGES`). Older
+  clients still get the push.
+- **Push.** The relay sends the agent's title and body (title only with Hide
+  previews on), subject to notifications off, quiet hours, a muted machine, a
+  muted chat, and desktop-first. Alerts about one chat share the APNs
+  `thread-id` `session:<sessionId>`, so they stack together.
+
+Run outside a chat, `ade notify` keeps the plain account push described next.
+
+## Desktop notifications
+
+`desktopAlertPresenter.ts` (Electron main) turns Needs you, failures, goal
+outcomes and agent messages into system notifications. Two sources feed it:
+this computer's brain announces its own chats at once (`attention_alert`
+events on the machine event bridge, which works while every window is hidden),
+and the account snapshots the windows already poll carry other machines'
+chats, at no extra request. Each state entry notifies once, whichever source
+reports it first. It obeys the same settings as a push, layered the same way
+(account, project, owning machine by its push key, then this desktop's device):
+notifications on, chat and machine not muted, the event set to notify (messages
+and goals always count), and Hide details, which cuts a system notification to
+"Agent: Needs you" or a message's title alone. It only fires while no ADE window
+is focused. Goal outcomes are not Activity items, so they pop up only on the
+computer that runs the chat. In a focused
+window a message becomes an in-app toast instead (`useAgentMessageToasts`);
+Needs you is already on the header badge. Clicking opens the chat, through
+Activity's cross-machine open for another machine's chat.
+
 ## Custom notifications
 
-`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` sends a push the
-caller wrote to every phone on the account. Agents use it when the user asked to
+Outside a chat, `ade notify --title "<t>" [--body "<b>"] [--open <ade link>]`
+sends a push the caller wrote to every phone on the account. Agents use it when the user asked to
 be told ("tell me when the deploy is done"), and automations use it through the
 **Send notification to mobile app** step (an ADE-action step for
 `attention.sendNotification`).
@@ -853,25 +935,39 @@ it and a copy edit should not silently reroute the user.
 
 Presence reports include foreground state, whether an ambient Activity surface
 is visible, and the currently visible item ids. They are posted every 30 s while
-the ADE window is visible and every 120 s while it is hidden, plus immediately
-on focus, on blur, and on becoming visible again: a hidden window still has to
-hold its claim, but it does not need to hold it at foreground rates, and a
-120 s-stale "hidden" claim right as the user returns is the one case that
-misleads other devices. Going hidden does not force an extra report, because
-`blur` has already reported the foreground change.
+the ADE window is visible and every 120 s while it is hidden, plus promptly on
+focus, on blur, on becoming visible again, and when the visible items change: a
+hidden window still has to hold its claim, but it does not need to hold it at
+foreground rates, and a 120 s-stale "hidden" claim right as the user returns is
+the one case that misleads other devices. Going hidden does not force an extra
+report, because `blur` has already reported the foreground change. Changes
+inside 250 ms go out as one report carrying the latest state, because one window
+switch can flip focus several times (`lib/presenceReporter.ts`).
+
+Presence is best effort, and a bad network must not turn it into a stream of
+errors. When the relay cannot be reached (no HTTP answer, a timeout, a 429 or a
+5xx), the desktop's `AttentionAccountCoordinator` drops presence reports and
+answers preference reads with `null` ("unknown, keep what you have"), backing
+off from 5 s to 5 minutes for every window at once and logging one
+`attention.relay_unavailable` line per outage. A report that does fail (a relay
+refusal, the local-brain path) doubles the renderer's heartbeat interval, up to
+10 minutes, until one succeeds. The settings surfaces lock their controls and
+offer Try again when preferences did not load, so the defaults they hold can
+never be saved over the account's real settings.
 
 An item is marked seen only after its exact destination opens successfully.
 Account changes and stale machine revisions fail closed and require a refresh.
 
-Every snapshot read is bounded twice. The local-brain fallback is issued as a
-sync call carrying the 30 s sync-domain timeout rather than the connection
-pool's ten-minute action budget, so an Attention poll cannot outlive the account
-stream it is standing in for. Above it, the renderer races a 75 s backstop,
-sized to clear a 15 s relay request, one forced 401 retry, and that 30 s
-fallback in sequence — a shorter race would discard a slow-but-successful
-snapshot and replace a real host error with a generic timeout. When the backstop
-wins, Activity reports that it took too long and offers a retry instead of
-leaving the header pinned on syncing.
+Every Activity read the desktop polls answers inside the 30 s IPC timer. One
+relay request (the account token, the fetch, and the one forced retry after a
+401) shares a single deadline: 20 s (`PUSH_RELAY_FOREGROUND_DEADLINE_MS`) on
+every route a person waits on (Activity reads and writes, machine mute and
+removal, notifications), 60 s on the brain's background loops. A snapshot gives the account
+leg 18 s, then answers from this computer's brain with whatever is left of a
+25 s budget, so a relay that hangs degrades to "this computer only" instead of
+to nothing. The renderer races a 35 s backstop above that, which only catches a
+renderer-side hang. When the backstop wins, Activity reports that it took too
+long and offers a retry instead of leaving the header pinned on syncing.
 
 ## Hosted web Activity
 

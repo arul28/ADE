@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { Button } from "../ui/Button";
 import {
   ActivitySettingsControls,
   useActivitySettings,
@@ -156,6 +157,11 @@ export function ActivitySettingsPopover() {
               <div className="activity-settings-error" role="alert">
                 <WarningCircle size={14} weight="fill" />
                 <span>{model.error}</span>
+                {model.loadFailed ? (
+                  <Button variant="ghost" size="sm" onClick={model.retryLoad}>
+                    Try again
+                  </Button>
+                ) : null}
               </div>
             ) : null}
 

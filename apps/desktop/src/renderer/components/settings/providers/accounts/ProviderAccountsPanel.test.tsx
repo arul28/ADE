@@ -132,7 +132,6 @@ function installBridge(options?: {
       loginCommand: { command: "claude", args: ["/login"], env: { CLAUDE_CONFIG_DIR: "/home/claude-new" } },
     }),
     remove: vi.fn().mockResolvedValue({ removed: true, configHome: "/home/claude-work" }),
-    rename: vi.fn().mockResolvedValue(WORK_INSTANCE),
     setDefault: vi.fn().mockResolvedValue(WORK_INSTANCE),
     setAccent: vi.fn().mockResolvedValue(WORK_INSTANCE),
     dismissReplaced: vi.fn().mockResolvedValue(WORK_INSTANCE),
@@ -222,14 +221,34 @@ describe("ProviderAccountsPanel", () => {
       displayName: "repo",
     };
     const studioUsage = snapshot();
+    studioUsage.windows = studioUsage.windows.map((window) => ({
+      ...window,
+      // A reset in the past reads as full, which would hide the numbers.
+      resetsAt: "2030-01-01T00:00:00.000Z",
+      resetsInMs: 1_000_000_000,
+      ...(window.windowType === "five_hour" && window.accountId === "claude:claude" ? { percentUsed: 10 } : {}),
+    }));
     studioUsage.accounts = studioUsage.accounts!.map((account) => (
       account.id === "claude:claude" ? { ...account, email: "studio@example.com" } : account
     ));
     const laptopUsage = snapshot();
+    laptopUsage.windows = laptopUsage.windows.map((window) => ({
+      ...window,
+      resetsAt: "2030-01-01T00:00:00.000Z",
+      resetsInMs: 1_000_000_000,
+      ...(window.windowType === "five_hour" && window.accountId === "claude:claude" ? { percentUsed: 90 } : {}),
+    }));
     laptopUsage.accounts = laptopUsage.accounts!.map((account) => (
       account.id === "claude:claude" ? { ...account, email: "laptop@example.com" } : account
     ));
-    installBridge();
+    // No registry email: the card falls back to the one the usage poll read,
+    // which is how the picked machine's account names the card.
+    installBridge({
+      instances: [
+        { ...DEFAULT_INSTANCE, account: undefined },
+        { ...WORK_INSTANCE, account: undefined },
+      ],
+    });
     const ade = (globalThis.window as unknown as {
       ade: { usage: { getSnapshot: ReturnType<typeof vi.fn> } };
     }).ade;
@@ -253,6 +272,8 @@ describe("ProviderAccountsPanel", () => {
     const personal = await screen.findByRole("group", { name: "Personal account" });
     expect(await within(personal).findByText("studio@example.com")).toBeTruthy();
     expect(within(personal).queryByText("laptop@example.com")).toBeNull();
+    // The reading is the picked machine's too (10% used, so 90% left).
+    expect(within(personal).getByRole("button", { name: /90% left/ })).toBeTruthy();
   });
 
   it("says a signed-in account has no usage yet when it has no windows", async () => {
@@ -471,20 +492,22 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
-  it("renames an account from its row menu", async () => {
+  it("shows the store's sentence without the Electron IPC wrapper around it", async () => {
     const harness = installBridge();
+    harness.providerInstances.remove.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'ade.localRuntime.callAction': Error: The last account cannot be removed.",
+      ),
+    );
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "REMOVE" }));
 
-    const field = screen.getByRole("textbox", { name: "Rename Work" });
-    fireEvent.change(field, { target: { value: "Acme" } });
-    fireEvent.keyDown(field, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(harness.providerInstances.rename).toHaveBeenCalledWith({ id: "claude-work", label: "Acme" });
-    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("The last account cannot be removed.");
+    expect(alert.textContent).not.toContain("invoking remote method");
   });
 
   it.each([
@@ -610,26 +633,6 @@ describe("ProviderAccountsPanel", () => {
     expect(harness.providerInstances.remove).not.toHaveBeenCalled();
   });
 
-  it("shows the store's sentence without the Electron IPC wrapper around it", async () => {
-    const harness = installBridge();
-    harness.providerInstances.rename.mockRejectedValue(
-      new Error(
-        "Error invoking remote method 'ade.localRuntime.callAction': Error: A provider account label is at most 60 characters.",
-      ),
-    );
-    renderPanel();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
-    const input = screen.getByRole("textbox", { name: "Rename Work" });
-    fireEvent.change(input, { target: { value: "Z".repeat(70) } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("A provider account label is at most 60 characters.");
-    expect(alert.textContent).not.toContain("invoking remote method");
-  });
-
   it("creates the account, runs the host's sign-in, and reports the signed-in email", async () => {
     const harness = installBridge();
     harness.providerInstances.loginStart.mockResolvedValue(
@@ -642,25 +645,19 @@ describe("ProviderAccountsPanel", () => {
     expect(within(sheet).getByText("Your other accounts stay signed in")).toBeTruthy();
 
     const start = within(sheet).getByRole("button", { name: "Continue to sign-in" });
-    expect(start.hasAttribute("disabled")).toBe(true);
-
-    fireEvent.change(within(sheet).getByRole("textbox", { name: "Account label" }), {
-      target: { value: "Work" },
-    });
-    fireEvent.click(within(sheet).getByRole("button", { name: "Continue to sign-in" }));
+    // No name to type: the account shows as its email once signed in.
+    expect(start.hasAttribute("disabled")).toBe(false);
+    expect(within(sheet).queryByRole("textbox", { name: "Account label" })).toBeNull();
+    fireEvent.click(start);
 
     await waitFor(() => {
-      expect(harness.providerInstances.create).toHaveBeenCalledWith({
-        provider: "claude",
-        label: "Work",
-      });
+      expect(harness.providerInstances.create).toHaveBeenCalledWith({ provider: "claude" });
     });
     await waitFor(() => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-new" });
     });
 
-    expect(await screen.findByText("Work is signed in")).toBeTruthy();
-    expect(within(sheet).getByText("arul@acme.com")).toBeTruthy();
+    expect(await screen.findByText("arul@acme.com is signed in")).toBeTruthy();
     await waitFor(() => {
       expect(harness.providerInstances.refresh).toHaveBeenCalledWith({
         provider: "claude",
@@ -678,9 +675,6 @@ describe("ProviderAccountsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Add account" }));
     const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
-    fireEvent.change(within(sheet).getByRole("textbox", { name: "Account label" }), {
-      target: { value: "Work" },
-    });
     fireEvent.click(within(sheet).getByRole("button", { name: "Continue to sign-in" }));
 
     expect(await screen.findByText("Sign-in did not complete.")).toBeTruthy();
@@ -697,9 +691,6 @@ describe("ProviderAccountsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Add account" }));
     const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
-    fireEvent.change(within(sheet).getByRole("textbox", { name: "Account label" }), {
-      target: { value: "Work" },
-    });
     fireEvent.click(within(sheet).getByRole("button", { name: "Continue to sign-in" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
@@ -737,10 +728,12 @@ describe("ProviderAccountsPanel", () => {
 
     if (base) {
       const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
-      expect((within(sheet).getByRole("textbox", { name: "Account label" }) as HTMLInputElement).value).toBe("old");
+      // No name field any more: the sheet says which login it is for.
+      expect(within(sheet).getByText(/Pick old@example\.com there/)).toBeTruthy();
+      expect(within(sheet).queryByRole("textbox", { name: "Account label" })).toBeNull();
       expect(harness.providerInstances.loginStart).not.toHaveBeenCalled();
     } else {
-      expect(await screen.findByRole("dialog", { name: "Sign in to Spare" })).toBeTruthy();
+      expect(await screen.findByRole("dialog", { name: "Sign in to now@example.com" })).toBeTruthy();
       await waitFor(() => {
         expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-spare" });
       });
@@ -760,12 +753,12 @@ describe("ProviderAccountsPanel", () => {
     const row = await screen.findByRole("group", { name: "Personal account" });
     fireEvent.click(within(row).getByRole("button", { name: "Sign in" }));
 
-    expect(await screen.findByRole("dialog", { name: "Sign in to Personal" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Sign in to Claude Code" })).toBeTruthy();
     await waitFor(() => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude" });
     });
     expect(harness.providerInstances.create).not.toHaveBeenCalled();
-    expect(await screen.findByText("Personal is signed in")).toBeTruthy();
+    expect(await screen.findByText("arul@gmail.com is signed in")).toBeTruthy();
   });
 
   /**

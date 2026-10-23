@@ -232,7 +232,7 @@ describe("AppleDeviceRail", () => {
     expect(screen.queryByRole("button", { name: /^Duo:/ })).toBeNull();
   });
 
-  it("lists the Duo postures and reports the chosen one", () => {
+  it("reports the posture picked from the Duo menu", () => {
     const onDuoStance = vi.fn();
     renderRail({
       duo: { capable: true, angle: 105, stance: "laptop" },
@@ -241,19 +241,10 @@ describe("AppleDeviceRail", () => {
     });
 
     openMenu("Duo: 105°");
-    const labels = screen.getAllByRole("menuitem").map((item) => item.textContent ?? "");
-    expect(labels).toEqual([
-      expect.stringContaining("Open"),
-      expect.stringContaining("Laptop"),
-      expect.stringContaining("Tent"),
-      expect.stringContaining("Closed"),
-      expect.stringContaining("Close hinge"),
-      expect.stringContaining("Open hinge"),
-    ]);
-
-    const tent = screen.getAllByRole("menuitem").find((item) => item.textContent?.includes("Tent"));
-    fireEvent.click(tent!);
-    expect(onDuoStance).toHaveBeenCalledWith("tent");
+    const item = (name: string) => screen.getAllByRole("menuitem").find((entry) => entry.textContent?.includes(name));
+    expect(item("Laptop")?.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(item("Book")!);
+    expect(onDuoStance).toHaveBeenCalledWith("book");
   });
 
   it("nudges the hinge from the Duo menu", () => {

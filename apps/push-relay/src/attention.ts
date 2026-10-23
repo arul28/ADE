@@ -4,6 +4,7 @@ import {
   type ApnsSendResult,
 } from "./apns";
 import { handleAccountSettingsRoute } from "./accountSettings";
+import { withCloudflareRetry } from "./cloudflareTransient";
 import { handleAccountVaultRoute } from "./accountVault";
 import {
   AttentionAuthVerificationUnavailableError,
@@ -71,12 +72,30 @@ const MAX_ATTENTION_ITEMS = 64;
 const MAX_ATTENTION_TOMBSTONES = 64;
 const MAX_ATTENTION_DEVICES = 32;
 const MAX_ATTENTION_MACHINE_PREFERENCES = 64;
+/**
+ * Account-wide muted chats. Session ids are opaque and a deleted chat never
+ * unmutes itself, so the list is bounded by dropping the oldest mute.
+ */
+const MAX_ACCOUNT_MUTED_SESSIONS = 500;
+/**
+ * Item kinds this relay accepts beyond the original two, echoed on every
+ * publish response. A publisher sends `message` items only after a relay has
+ * named it here: an older relay rejects a whole publish that carries a kind it
+ * does not know, which would freeze that machine's Activity.
+ */
+const ATTENTION_PUBLISH_FEATURES = ["message"] as const;
 const MAX_ACCOUNT_ATTENTION_ITEMS = 2_000;
 const ATTENTION_DEVICE_LEASE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH = 64;
 const APNS_TOKEN_PATTERN = /^[a-f0-9]{32,512}$/i;
 const ACCOUNT_MACHINE_ONLINE_WINDOW_MS = 90_000;
-const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 30;
+// Mirrors `DEFAULT_DESKTOP_FIRST_DELAY_SECONDS` in the desktop shared types.
+const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 120;
+/**
+ * The default before policy-defaults version 3. Every save writes the whole
+ * scope, so a 30 saved under an older version was that default, not a choice.
+ */
+const DESKTOP_ESCALATION_DELAY_SECONDS_BEFORE_V3 = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
@@ -107,6 +126,7 @@ const EVENT_KINDS = new Set([
   "pr_merged",
   "pr_opened",
   "pr_closed",
+  "agent_message",
 ]);
 
 const PHASES = new Set([
@@ -233,18 +253,17 @@ function attentionAlertRoutingPayload(
 }
 
 function desktopEscalationDelayMs(accountPreferences: Record<string, unknown>): number {
-  return Math.max(
-    0,
-    Math.min(
-      300,
-      Math.round(preferenceNumber(
-        {},
-        accountPreferences,
-        "desktopFirstDelaySeconds",
-        DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS,
-      )),
-    ),
-  ) * 1_000;
+  const saved = Math.round(preferenceNumber(
+    {},
+    accountPreferences,
+    "desktopFirstDelaySeconds",
+    DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS,
+  ));
+  const defaultsVersion = Number(accountPreferences.eventPolicyDefaultsVersion);
+  const savedUnderOldDefault = saved === DESKTOP_ESCALATION_DELAY_SECONDS_BEFORE_V3
+    && (!Number.isFinite(defaultsVersion) || defaultsVersion < 3);
+  const seconds = savedUnderOldDefault ? DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS : saved;
+  return Math.max(0, Math.min(300, seconds)) * 1_000;
 }
 
 function normalizedSnapshotCursor(
@@ -375,11 +394,13 @@ function sealCapacityTombstonesStatement(
       and (
         item_id like ?
         or item_id like ?
+        or item_id like ?
       )
   `).bind(
     userId,
     `agent:${machineKey}:%`,
     `pull-request:${machineKey}:%`,
+    `message:${machineKey}:%`,
   );
 }
 
@@ -929,21 +950,33 @@ function resolveActivityDeliveryPreferences(
   );
 }
 
+/**
+ * Every session this device must stay quiet about. A mute is a statement about
+ * the chat, not about one phone, so the account list (what every client writes
+ * now) always applies; a device's own list (what older phones wrote) and its
+ * registration-time list only add to it. They used to replace it, so a chat
+ * muted on the desktop still buzzed a phone that had muted anything at all.
+ */
 function resolvedMutedSessionIds(
   device: AttentionDeviceRow,
   preferences: Record<string, unknown>,
   devicePreferences: Record<string, unknown>,
-): unknown {
+): string[] {
   const explicitDevice = isRecord(devicePreferences[device.device_id])
     ? devicePreferences[device.device_id] as Record<string, unknown>
     : {};
-  if (Array.isArray(explicitDevice.mutedSessionIds)) {
-    return explicitDevice.mutedSessionIds;
+  const muted: string[] = [];
+  for (const list of [
+    preferences.mutedSessionIds,
+    explicitDevice.mutedSessionIds,
+    readPreferences(device.preferences_json).mutedSessionIds,
+  ]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (typeof entry === "string" && entry) muted.push(entry);
+    }
   }
-  if (Array.isArray(preferences.mutedSessionIds)) {
-    return preferences.mutedSessionIds;
-  }
-  return readPreferences(device.preferences_json).mutedSessionIds;
+  return muted;
 }
 
 function quietHoursActive(
@@ -1005,6 +1038,15 @@ function quietHoursActive(
   }
 }
 
+/**
+ * Alerts about one chat stack together in Notification Center, whichever item
+ * raised them (its needs-you alert and the messages its agent sent).
+ */
+function alertThreadId(item: ParsedAttentionItem): string {
+  const sessionId = itemSessionId(item);
+  return sessionId ? `session:${sessionId}` : item.id;
+}
+
 function itemSessionId(item: ParsedAttentionItem): string | null {
   return item.destination.kind === "session"
     ? requiredString(item.destination.sessionId)
@@ -1016,11 +1058,21 @@ function stringListIncludes(value: unknown, target: string | null): boolean {
   return value.some((entry) => typeof entry === "string" && entry === target);
 }
 
-async function recentDesktopAttentionItemIds(
+/**
+ * What the user's computers reported in the last presence window. Any client
+ * that is not a phone counts: a Windows or Linux desktop reports platform
+ * `unknown` and a browser `web`, and counting only `macOS` meant the phone
+ * never waited for a Windows desktop.
+ *
+ * `attended` is "someone has ADE in front of them right now" (a foreground
+ * window). While it holds, phone alerts wait out the desktop-first delay; an
+ * alert still unseen afterwards goes out on the next machine heartbeat.
+ */
+async function recentDesktopAttention(
   env: AttentionRelayEnv,
   userId: string,
   nowMs: number,
-): Promise<Set<string>> {
+): Promise<{ visibleItemIds: Set<string>; attended: boolean }> {
   const cutoff = new Date(nowMs - DESKTOP_PRESENCE_WINDOW_MS).toISOString();
   const rows = await env.DB.prepare(`
     select payload_json
@@ -1028,15 +1080,18 @@ async function recentDesktopAttentionItemIds(
     where user_id = ? and observed_at >= ?
   `).bind(userId, cutoff).all<{ payload_json: string }>();
   const visibleItemIds = new Set<string>();
+  let attended = false;
   for (const row of rows.results) {
     const presence = readPreferences(row.payload_json);
-    if (presence.platform !== "macOS" || presence.ambientSurfaceVisible !== true) continue;
+    if (presence.platform === "iOS") continue;
+    if (presence.appForeground === true) attended = true;
+    if (presence.ambientSurfaceVisible !== true) continue;
     if (!Array.isArray(presence.visibleItemIds)) continue;
     for (const itemId of presence.visibleItemIds) {
       if (typeof itemId === "string" && itemId.trim()) visibleItemIds.add(itemId);
     }
   }
-  return visibleItemIds;
+  return { visibleItemIds, attended };
 }
 
 async function claimAttentionNotificationDelivery(
@@ -1121,7 +1176,7 @@ async function deliverAttentionNotifications(
   const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
   const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
   const nowMs = Date.now();
-  const desktopVisibleItemIds = await recentDesktopAttentionItemIds(env, userId, nowMs);
+  const desktop = await recentDesktopAttention(env, userId, nowMs);
   const desktopFirstEnabled = preferenceBoolean(
     {},
     accountPreferences,
@@ -1165,14 +1220,14 @@ async function deliverAttentionNotifications(
     ) {
       continue;
     }
-    // Give a desktop surface that actually contains this item the first chance
-    // to surface it. A merely foreground ADE window is not enough: the header,
-    // or the full center must report the exact visible item.
-    // The machine heartbeat republishes the full snapshot every 30s; if the
-    // item remains unseen, the next pass escalates it to the phone.
+    // Give the computer the first chance: while ADE is in front of the user
+    // (a foreground window), or a visible Activity surface already shows this
+    // exact item, the phone waits out the desktop-first delay. The machine
+    // heartbeat republishes every 30s; an item still unseen then escalates to
+    // the phone.
     if (
       desktopFirstEnabled
-      && desktopVisibleItemIds.has(item.id)
+      && (desktop.attended || desktop.visibleItemIds.has(item.id))
       && nowMs - Date.parse(item.updatedAt) < desktopFirstDelayMs
     ) {
       continue;
@@ -1190,7 +1245,12 @@ async function deliverAttentionNotifications(
       const eventPolicies = isRecord(override.eventPolicies)
         ? override.eventPolicies
         : {};
-      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
+      // A message is a push the user asked an agent for, so it has no event
+      // policy to turn it down; notifications off, quiet hours and mutes
+      // still apply below.
+      const policy = item.kind === "message"
+        ? "notify"
+        : effectiveEventPolicy(item.eventKind, eventPolicies, override);
       if (policy !== "notify") continue;
       const notificationsEnabled = preferenceBoolean(
         override,
@@ -1268,7 +1328,7 @@ async function deliverAttentionNotifications(
               // Wakes the app for a background snapshot refresh alongside the
               // visible alert; foreground polling remains the guaranteed path.
               "content-available": 1,
-              "thread-id": item.id,
+              "thread-id": alertThreadId(item),
               "interruption-level": item.eventKind === "agent_needs_you"
                 ? "time-sensitive"
                 : "active",
@@ -1369,10 +1429,10 @@ const ALERT_STATE_LABEL: Record<string, string> = {
   pr_closed: "Closed",
 };
 
-function alertLine(value: unknown): string | null {
+function alertLine(value: unknown, max = ALERT_LINE_MAX): string | null {
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
   if (!text) return null;
-  return text.length > ALERT_LINE_MAX ? `${text.slice(0, ALERT_LINE_MAX - 1).trimEnd()}…` : text;
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
 /**
@@ -1389,6 +1449,13 @@ function attentionAlertCopy(
   item: ParsedAttentionItem,
   hideDetails: boolean,
 ): { title: string; body: string | null } {
+  if (item.kind === "message") {
+    // The agent wrote this because the user asked to be told, so the push
+    // carries its words. Hide previews keeps the title only, like `ade notify`.
+    const title = alertLine(item.title) ?? "ADE";
+    const body = alertLine(item.preview, CUSTOM_NOTIFICATION_BODY_MAX);
+    return { title, body: hideDetails || !body || body === title ? null : body };
+  }
   const state = ALERT_STATE_LABEL[item.eventKind] ?? "Update";
   if (hideDetails) {
     return {
@@ -1575,11 +1642,12 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
       && activityTier !== "ambient"
       && activityTier !== "idle"
     )
-    || (kind !== "agent" && kind !== "pull_request")
+    || (kind !== "agent" && kind !== "pull_request" && kind !== "message")
     || !eventKind
     || !EVENT_KINDS.has(eventKind)
-    || (kind === "agent" && !eventKind.startsWith("agent_"))
+    || (kind === "agent" && (!eventKind.startsWith("agent_") || eventKind === "agent_message"))
     || (kind === "pull_request" && !eventKind.startsWith("pr_"))
+    || (kind === "message" && eventKind !== "agent_message")
     || !phase
     || !PHASES.has(phase)
     || !title
@@ -1596,7 +1664,9 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   }
   const expectedIdPrefix = kind === "agent"
     ? `agent:${machineKey}:`
-    : `pull-request:${machineKey}:`;
+    : kind === "message"
+      ? `message:${machineKey}:`
+      : `pull-request:${machineKey}:`;
   if (!id.startsWith(expectedIdPrefix)) return null;
   const machineName = boundedText(value.machine.name, 120);
   const accountMachineKey = value.machine.accountMachineKey == null
@@ -1626,7 +1696,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   if (!projectId || !projectName || (value.project.rootPath != null && !rootPath)) return null;
 
   let destination: Record<string, unknown>;
-  if (kind === "agent") {
+  if (kind === "agent" || kind === "message") {
     const sessionId = requiredString(value.destination.sessionId);
     const itemId = value.destination.itemId == null
       ? null
@@ -2161,11 +2231,13 @@ async function linkMachineToAccount(
         and (
           item_id like ?
           or item_id like ?
+          or item_id like ?
         )
     `).bind(
       userId,
       `agent:${machineKey}:%`,
       `pull-request:${machineKey}:%`,
+      `message:${machineKey}:%`,
     ).run();
   }
   await env.DB.prepare(`
@@ -2281,13 +2353,16 @@ async function refreshActivityMachinePresence(
   // Presence runs every 30 s per machine. When the link already belongs to
   // this user, touch only unindexed columns: one billed row instead of the
   // upsert's two (setting `user_id`, even unchanged, rewrites its index).
-  const touched = await env.DB.prepare(`
+  // Both writes are retried after a Cloudflare blip. `now` is the relay's
+  // clock, so the upsert only applies when it is the newest report: a replay
+  // that lands after a later one changes nothing.
+  const touched = await withCloudflareRetry(() => env.DB.prepare(`
     update attention_machine_links
        set machine_name = ?, last_seen_at = ?
      where machine_key = ? and user_id = ?
-  `).bind(args.machineName, args.now, args.machineKey, args.userId).run();
+  `).bind(args.machineName, args.now, args.machineKey, args.userId).run());
   if ((touched.meta?.changes ?? 0) > 0) return;
-  await env.DB.prepare(`
+  await withCloudflareRetry(() => env.DB.prepare(`
     insert into attention_machine_links(
       machine_key, user_id, machine_name, last_seen_at, linked_at,
       legacy_devices_imported_at
@@ -2296,13 +2371,14 @@ async function refreshActivityMachinePresence(
       user_id = excluded.user_id,
       machine_name = excluded.machine_name,
       last_seen_at = excluded.last_seen_at
+    where excluded.last_seen_at >= attention_machine_links.last_seen_at
   `).bind(
     args.machineKey,
     args.userId,
     args.machineName,
     args.now,
     args.now,
-  ).run();
+  ).run());
 }
 
 async function activityItemsForMachine(
@@ -2521,6 +2597,7 @@ export async function handleAttentionMachinePublish(
   }
   const ownsItemId = (id: string) =>
     id.startsWith(`agent:${machineKey}:`)
+    || id.startsWith(`message:${machineKey}:`)
     || id.startsWith(`pull-request:${machineKey}:`);
   if ((parsedTombstones as Array<{ id: string }>).some((entry) => !ownsItemId(entry.id))) {
     return json({ ok: false, error: "foreign attention tombstone" }, { status: 403 });
@@ -2599,6 +2676,7 @@ export async function handleAttentionMachinePublish(
     return json({
       ok: true,
       protocol: 2,
+      features: ATTENTION_PUBLISH_FEATURES,
       revision: Number(current?.revision ?? 0),
       acks,
       upserted: 0,
@@ -2646,6 +2724,7 @@ export async function handleAttentionMachinePublish(
     return json({
       ok: true,
       protocol: 2,
+      features: ATTENTION_PUBLISH_FEATURES,
       revision: Number(current?.revision ?? 0),
       acks,
       upserted: 0,
@@ -2692,6 +2771,7 @@ export async function handleAttentionMachinePublish(
   return json({
     ok: true,
     protocol: 2,
+    features: ATTENTION_PUBLISH_FEATURES,
     revision: accountRevision,
     acks,
     upserted: items.length,
@@ -2699,6 +2779,18 @@ export async function handleAttentionMachinePublish(
     ...(cap.itemsTruncated ? { itemsTruncated: true } : {}),
     accountChanges,
   });
+}
+
+/**
+ * Message items reach only clients that ask for them with `include=message`.
+ * Every older desktop, web and phone build validates the whole snapshot and
+ * rejects it outright on an item kind it does not know, so sending one to them
+ * would blank their Activity. They still get the push itself.
+ */
+function snapshotIncludesMessages(url: URL): boolean {
+  return (url.searchParams.get("include") ?? "")
+    .split(",")
+    .some((entry) => entry.trim() === "message");
 }
 
 async function handleSnapshot(
@@ -2782,9 +2874,11 @@ async function handleSnapshot(
     ]),
   );
 
+  const includeMessages = snapshotIncludesMessages(url);
   const items = responseItemRows.flatMap((row) => {
     try {
       const payload = JSON.parse(row.payload_json) as ParsedAttentionItem;
+      if (payload.kind === "message" && !includeMessages) return [];
       return [{
         ...payload,
         machine: {
@@ -3031,6 +3125,9 @@ async function handlePresence(
     observedAt,
     visibleItemIds,
   };
+  // Not retried: a replay could land after the device's next report and put
+  // back an older state, and `observedAt` is the device's clock, so no
+  // freshness guard is safe. A blip is a 503 and the next report lands.
   await env.DB.prepare(`
     insert into attention_presence(user_id, device_id, payload_json, observed_at)
     values (?, ?, ?, ?)
@@ -3078,6 +3175,10 @@ async function handlePreferences(
   const preservesProjects = !Object.prototype.hasOwnProperty.call(payload, "projects");
   const result = await mutateAttentionPreferences(env, userId, (current) => ({
     ...payload,
+    // Only the per-chat route writes the account mute list. A whole-document
+    // save carries whatever list that client loaded, and letting it through
+    // would undo a mute made on another device in the meantime.
+    mutedSessionIds: Array.isArray(current.mutedSessionIds) ? current.mutedSessionIds : [],
     ...(preservesDevices && isRecord(current.devices)
       ? { devices: current.devices }
       : {}),
@@ -3397,6 +3498,49 @@ async function handleCustomNotification(
     skipped,
     failed,
     remaining: quota.remaining,
+  });
+}
+
+/**
+ * `PATCH /attention/account/preferences/sessions/:sessionId` with
+ * `{ muted: boolean }` — mute or unmute one chat on every device at once.
+ * Atomic against concurrent saves, unlike a whole-document PUT.
+ */
+async function handleSessionMutePreference(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  sessionId: string,
+): Promise<Response> {
+  const id = requiredString(sessionId, 256);
+  if (!id) return json({ ok: false, error: "invalid session id" }, { status: 400 });
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(payload) || typeof payload.muted !== "boolean") {
+    return json({ ok: false, error: "muted must be true or false" }, { status: 400 });
+  }
+  const muted = payload.muted;
+  const result = await mutateAttentionPreferences(env, userId, (current) => {
+    const existing = Array.isArray(current.mutedSessionIds)
+      ? current.mutedSessionIds.filter(
+        (entry): entry is string => typeof entry === "string" && entry !== id,
+      )
+      : [];
+    const next = muted ? [...existing, id] : existing;
+    return {
+      ...current,
+      mutedSessionIds: next.slice(-MAX_ACCOUNT_MUTED_SESSIONS),
+    };
+  });
+  if ("response" in result) return result.response;
+  return json({
+    ok: true,
+    preferences: result.preferences,
+    updatedAt: result.updatedAt,
   });
 }
 
@@ -4049,6 +4193,19 @@ async function handleAuthorizedAttentionAccountRequest(
     && request.method === "PATCH"
   ) {
     return await handleDevicePreferences(
+      request,
+      env,
+      userId,
+      decodeURIComponent(route[2] ?? ""),
+    );
+  }
+  if (
+    route.length === 3
+    && route[0] === "preferences"
+    && route[1] === "sessions"
+    && request.method === "PATCH"
+  ) {
+    return await handleSessionMutePreference(
       request,
       env,
       userId,

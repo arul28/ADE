@@ -5,16 +5,29 @@ Code, Grok through its API, scripts) run the `ade` command on one of their
 computers. Each computer is its own MCP server, reached through ADE Relay
 (`apps/tunnel-relay`). Off until the person turns it on for that computer.
 
-The server is **one tool, `ade`**: the words after `ade`, run as the real CLI
-on that computer. Everything the CLI can do is available with no per-command
-MCP work, and new CLI commands appear on their own.
+The server's main tool is **`ade`**: the words after `ade`, run as the real
+CLI on that computer. Everything the CLI can do is available with no
+per-command MCP work, and new CLI commands appear on their own.
+
+Next to it, **typed tools** cover the everyday reads with named inputs a client
+can check before calling (`projects_list`, `lanes_list`, `lanes_show`,
+`files_tree`, `files_read`, `files_search`, `diff_changes`, `diff_patch`,
+`git_status`, `prs_list`, `prs_show`, `prs_checks`, `chat_list`, `chat_read`,
+`chat_status`, `chat_wait`, `usage_limits`). Each one only builds the words of an `ade`
+command; the service runs them through the same policy check and runner as the
+`ade` tool, so a typed tool can never do more than the connection's scope. They
+ask the CLI for JSON and return it as `structuredContent`, trimmed: the CLI's
+`prs list` and `chat list` run past a megabyte, so those two filter and cut in
+the service (`remoteMcpTools.ts`).
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router, MCP JSON-RPC (stateless Streamable HTTP, JSON responses), OAuth endpoints, the `ade` tool, Settings actions. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, project resolution, run limits. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, and how its JSON is trimmed. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpCommandPolicy.ts` | Which commands run at each access level; the read-only allowlist; argv splitting; log redaction. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpRunner.ts` | Runs the CLI as a child of the brain: no shell, `--socket`, role by access level, timeout, output cap, process-tree kill. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpStore.ts` | `<secrets>/remote-mcp.json`: on/off and connections (token hashes only). |
@@ -88,7 +101,8 @@ the next request.
    - Then the person picks **Read & write** (default) or **Read only** and
      presses **Allow**; the app gets a code and exchanges it for its token.
 2. **Token** (Grok and OpenAI APIs, scripts): Settings → ADE MCP → New token,
-   or `ade mcp token create`. Shown once. Sent as `Authorization: Bearer …`.
+   or `ade mcp token create --read-only|--full-access` (the access is required;
+   there is no default). Shown once. Sent as `Authorization: Bearer …`.
 
 Why the relay cannot mint access: it never holds the PKCE verifier for ADE's
 sign-in, never issues tokens, and a code it sees in flight is useless without
@@ -148,7 +162,12 @@ command, put it in one of those lists (and in `READ_ONLY_COMMANDS` if it only
 reads). `remoteMcpCommandPolicy.test.ts` fails for any command with help text
 that is in neither, and `/quality` checks it (review rule 12).
 
-Read only also refuses `search --rebuild`. The user-only action gate keeps
+Read only also refuses `search --rebuild`, and `chat wait --async`,
+`--background` and `--cancel` (they arm, hold or cancel a wait; a plain
+`chat wait` only watches). `<command> [<sub>…] --help` is allowed at read only,
+in exactly that shape (plain words, then `--help` last): after a flag that takes
+a value, the CLI reads `--help` as the value and runs the command
+(`chat send <id> --project-root --help`). The user-only action gate keeps
 every `remote_mcp` action (reads included) away from any client but the
 desktop, whatever its role.
 
@@ -166,12 +185,64 @@ rows or fills the 50-connection cap.
   binary), never a shell or a `.cmd` wrapper, with `--socket` first and
   `ADE_DEFAULT_ROLE` set from the access level.
 - `cwd` is the `project` argument (name, id or path from the brain's project
-  registry) or the most recently opened project.
-- 120 s default, 600 s maximum, then SIGTERM and SIGKILL of the process group
-  (`taskkill /T /F` on Windows). 200 KB per stream. At most 4 commands at once
-  per machine. `stopAllRemoteRuns()` runs on brain shutdown.
+  registry) or the most recently opened project. That default changes when the
+  person opens another project, so **every result starts with the project it
+  ran in** (`[project: <name> · <id> · <path>]`; typed tools also put it in
+  `structuredContent.project`), and the activity log records it. With no
+  project registered at all, commands run in the home folder and say so.
+- The child gets `ADE_REMOTE_MCP_CONNECTION_ID`, `ADE_REMOTE_MCP_CONNECTION_LABEL`
+  and `ADE_REMOTE_MCP_SCOPE`. The CLI uses them to drop the help banner and
+  list only this scope's commands, to hide personal skills, and to label chat
+  turns the app sends ("via <label>").
+- stdin is closed unless the call passes `stdin` (256 KB at most). A command
+  that reads stdin (`--stdin`, `--json-stdin`, `--token-stdin`, or `-` after a
+  `--…-file` or `--prompt` flag) is refused without it, because with stdin
+  closed `files write --stdin` would write an empty file.
+- 120 s default, clamped to 5–600 s, then SIGTERM and SIGKILL of the process
+  group (`taskkill /T /F` on Windows). 200 KB per stream (typed tools that trim
+  their JSON allow more). At most 4 commands at once per machine and 3 per
+  connection, so one app's long `chat_wait` cannot shut the others out. A
+  JSON-RPC batch runs its messages one after another. `stopAllRemoteRuns()`
+  runs on brain shutdown.
 - A non-zero exit, a timeout or a refusal comes back as a tool result with
-  `isError: true` and a sentence the model can act on.
+  `isError: true` and a sentence the model can act on. Typed tools know their
+  command's answers: `chat_status` exits 1 for idle and 2 for blocked, which
+  are results, not errors.
+
+## Resources
+
+`ade://commands` is `ade help --json` as the connection's scope sees it: every
+command it can run, with a summary, usage lines and, at read only, the allowed
+subcommands. The brain reads it once per scope and keeps it five minutes. The
+tool description points here instead of listing the read-only allowlist inline.
+
+## Prompts
+
+The project's skills are MCP prompts, so an app can start from "context" the
+way an ADE chat would. `prompts/list` lists the default project's skills (prompt
+names must be unique, so one project's); `prompts/get` takes a `project`
+argument for another one and returns the SKILL.md body. Discovery runs in the
+brain through `agentSkillCatalogService`, the same catalog `ade skill list`
+uses: project skills (`.agents`, `.claude`, `.ade`, `.cursor`, `.codex` from the
+project up), then ADE's bundled skills. **Personal skills in the home folder
+never reach a connected app**: prompts leave them out, and `ade skill list|show`
+hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set. The check compares
+real paths, so a project folder linked to `~/.agents/skills` stays hidden too.
+
+## Chat turns from an app
+
+A message an app sends with `ade chat send|message|steer` or `chat create
+--prompt` carries `metadata.remoteMcp = { connectionId, label }`, and the chat
+shows "via <label>" under it, so the person and their agents can tell it from
+the person's own messages. It is still a person-side message (it is not in the
+host-authored key lists): it clears attention like any message the person sends.
+This is provenance, not a boundary: a full-access app can already pass its own
+metadata. `chat send --after` carries the label too: the brain strips a
+caller's own provenance from a delayed send, except this one key from an
+unbound CLI (`armWaitArgsWithoutCallerProvenance` in `adeRpcServer.ts`).
+
+`serverInfo.version` is ADE's version, so a client can tell which tools a
+machine's server has.
 
 ## Gotchas
 

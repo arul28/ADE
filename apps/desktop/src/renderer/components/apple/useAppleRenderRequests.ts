@@ -1,9 +1,59 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { AppleDevicePose, AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
-import { showToast } from "../app/toast/toastStore";
+import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
+import { showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { useAppStore } from "../../state/appStore";
 import type { AppleDeviceRenderer } from "./AppleDevice3DView";
-import { APPLE_RENDER_ANGLES, appleRenderContactSheet } from "./AppleRenderSheet";
+import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
+
+/**
+ * Where a render went, with a way there. The proof lands in the drawer of the
+ * chat that holds the device, which need not be the chat on screen, and a
+ * person who could not find it once is owed the name of the place.
+ */
+function renderFiledToast(
+  filed: AppleRenderFiled,
+  { paneChatSessionId, local }: { paneChatSessionId: string | null; local: boolean },
+): ToastInput {
+  const count = `${filed.filed} item${filed.filed === 1 ? "" : "s"}`;
+  const firstArtifact = filed.artifactIds[0] ?? null;
+  const firstFile = filed.filePaths[0] ?? null;
+  const here = Boolean(filed.chatSessionId && filed.chatSessionId === paneChatSessionId);
+  const where = !filed.chatSessionId
+    ? "Filed to this lane's proof (History)."
+    : here
+      ? "Filed to this chat's proof drawer."
+      : "Filed to the proof drawer of the chat that holds this device.";
+  const actions: ToastInput["actions"] = [];
+  if (here && firstArtifact) {
+    actions.push({
+      label: "Open proof",
+      onClick: () => {
+        window.dispatchEvent(new CustomEvent("ade:chat:open-artifact", {
+          detail: { sessionId: filed.chatSessionId, artifactId: firstArtifact },
+        }));
+      },
+    });
+  }
+  // The files sit on the device's machine; Finder can only show them there.
+  if (local && firstFile) {
+    actions.push({
+      label: "Show in Finder",
+      onClick: () => {
+        void window.ade.app.revealPath(firstFile).catch((error: unknown) => {
+          logRendererDebugEvent("apple.render_reveal_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
+      },
+    });
+  }
+  return {
+    id: "apple-render",
+    tone: "success",
+    title: `Rendered ${count}`,
+    message: local && firstFile ? `${where} Saved in ${firstFile.replace(/[/\\][^/\\]*$/u, "")}.` : where,
+    ...(actions.length ? { actions } : {}),
+  };
+}
 
 /**
  * 3D renders of the lane's device, from the Render sheet or `ade apple
@@ -57,74 +107,27 @@ export function useAppleRenderRequests({
     setRenderOpen(true);
   }, [effectiveMode]);
 
-  /**
-   * Render the device: for a Duo each pose folds the REAL simulator first and
-   * waits for it to settle, so every shot shows the panel and layout that
-   * pose really has. Every image (and the video) is filed to the proof drawer.
-   */
-  const runRender = useCallback(async (request: AppleRenderRequestSpec): Promise<number> => {
-    const renderer = rendererRef.current;
-    if (!renderer) {
+  /** The Render sheet's (and the CLI's) render, with this pane's busy state, toast and errors. */
+  const runRender = useCallback(async (request: AppleRenderRequestSpec): Promise<AppleRenderFiled> => {
+    if (!rendererRef.current) {
       showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
       throw new Error("The 3D view is still loading.");
     }
     setRendering(true);
-    const options = {
-      width: 1600,
-      height: 1600,
-      lighting: request.lighting,
-      shadow: request.shadow,
-    };
-    const shots = APPLE_RENDER_ANGLES.filter((angle) => request.angles.includes(angle.id));
-    const images: Array<{ dataUrl: string; label: string }> = [];
     try {
-      // Poses fold the real simulator; a device without a hinge has one pose.
-      const passes: Array<AppleDevicePose | null> = duoCapable && request.poses.length ? request.poses : [null];
-      for (const pose of passes) {
-        if (pose) {
-          // `setPosture` answers once the simulator has landed on the pose's
-          // panel. Then iOS animates its interface into the new layout, and
-          // the 3D body eases into the pose: give both time before the shot.
-          await window.ade.iosSimulator.setPosture({ laneId, chatSessionId: sessionId, pose }, runtimePinRef.current);
-          await new Promise((resolve) => setTimeout(resolve, 1_200));
-        }
-        const rendered = rendererRef.current?.renderShots(shots.map((angle) => angle.shot), options) ?? [];
-        rendered.forEach((dataUrl, index) => images.push({
-          dataUrl,
-          label: [pose ? pose[0]!.toUpperCase() + pose.slice(1) : null, shots[index]!.label].filter(Boolean).join(" · "),
-        }));
-      }
-      const name = deviceName ?? "device";
-      // Filed by the device's own machine, to the chat and lane there: this
-      // window may be another machine pinned to it.
-      const attachRenderProof = async (proof: { dataUrl: string; title: string }) => {
-        const result = await window.ade.iosSimulator.attachRenderProof(
-          { laneId, chatSessionId: sessionId, ...proof },
-          runtimePinRef.current,
-        );
-        return Boolean(result.proofArtifactId);
-      };
-      let filed = 0;
-      for (const image of images) {
-        if (await attachRenderProof({ dataUrl: image.dataUrl, title: `${name} · ${image.label}` })) filed++;
-      }
-      if (request.contactSheet && images.length > 1) {
-        const sheet = await appleRenderContactSheet(images);
-        if (sheet && await attachRenderProof({ dataUrl: sheet, title: `${name} · contact sheet` })) filed++;
-      }
-      if (request.video) {
-        const blob = await rendererRef.current?.renderTurntable({ ...options, width: 1280, height: 1280, seconds: 6 });
-        if (blob) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result).replace(/^data:video\/webm;[^,]*,/, "data:video/webm;base64,"));
-            reader.onerror = () => reject(reader.error);
-            reader.readAsDataURL(blob);
-          });
-          if (await attachRenderProof({ dataUrl, title: `${name} · turntable` })) filed++;
-        }
-      }
-      showToast({ id: "apple-render", tone: "success", title: `Rendered ${filed} item${filed === 1 ? "" : "s"} to the proof drawer` });
+      const filed = await renderAppleDeviceToProof({
+        request,
+        rendererRef,
+        laneId,
+        chatSessionId: sessionId,
+        deviceName,
+        duoCapable,
+        runtimePinRef,
+      });
+      // The files are on this computer when the pane's pin (else the tab) is local.
+      const binding = runtimePinRef.current ?? useAppStore.getState().projectBinding;
+      const local = binding?.kind !== "remote";
+      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local }));
       setRenderOpen(false);
       return filed;
     } catch (cause) {
@@ -136,9 +139,10 @@ export function useAppleRenderRequests({
   }, [deviceName, duoCapable, laneId, runtimePinRef, sessionId]);
 
   /*
-   * `ade apple render`: the service asks the pane open for this lane. Ack at
-   * once (so the CLI knows a pane took it), bring up the 3D view if the flat
-   * one is on, render, and report what was filed.
+   * `ade apple render`: the service asks every window with the project open.
+   * A live pane acks at once, so it always beats the off-screen render host
+   * (`AppleRenderHost`), which waits before it claims. Bring up the 3D view if
+   * the flat one is on, render, and report what was filed.
    */
   const runRenderRef = useRef(runRender);
   runRenderRef.current = runRender;
@@ -171,17 +175,14 @@ export function useAppleRenderRequests({
         while (!rendererRef.current && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        let filed = 0;
-        let error: string | null = null;
-        try {
-          filed = await runRenderRef.current(event.request);
-        } catch (cause) {
-          error = cause instanceof Error ? cause.message : String(cause);
-        }
-        // A lost answer leaves `ade apple render` waiting out its 4 minutes:
-        // say so here, where the person can see it.
-        await window.ade.iosSimulator.renderComplete({ requestId: event.requestId, filed, error }, pin)
-          .catch((cause: unknown) => onErrorRef.current?.(cause));
+        await completeAppleRenderRequest({
+          requestId: event.requestId,
+          pin,
+          render: () => runRenderRef.current(event.request),
+          // A lost answer leaves `ade apple render` waiting out its 4 minutes:
+          // say so here, where the person can see it.
+          onLostAnswer: (cause) => onErrorRef.current?.(cause),
+        });
       })();
     }, runtimePinRef.current);
   }, [pinKey, runtimePinRef]);

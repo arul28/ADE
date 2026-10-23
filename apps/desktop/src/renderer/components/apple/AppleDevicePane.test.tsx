@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dismissToast, getToasts } from "../app/toast/toastStore";
 import type {
   AppleInstalledSimulator,
   AppleLaneDevice,
@@ -698,7 +699,7 @@ describe("AppleDevicePane orientation honesty", () => {
     ).toBe("Orientation: Landscape left"));
   });
 
-  it("says why a refused rotation did nothing, and leaves the picture alone", async () => {
+  it("says quietly why a refused rotation did nothing, and leaves the picture alone", async () => {
     const { iosSimulator } = live();
     renderPane();
     await waitFor(() => expect(paneState()).toBe("live"));
@@ -714,10 +715,13 @@ describe("AppleDevicePane orientation honesty", () => {
 
     await chooseOrientation("Landscape left");
 
-    // One sentence naming the cause — not "Something went wrong", and not the
-    // wire text either.
-    const strip = await screen.findByText("The app on screen does not support that orientation.");
-    expect(strip).toBeTruthy();
+    // Not a failure: a quiet info toast carries the reason, and the pane's
+    // error strip stays out of it.
+    await waitFor(() => expect(getToasts().some((toast) => toast.tone === "info")).toBe(true));
+    const toast = getToasts().find((entry) => entry.tone === "info")!;
+    expect(toast.message).toContain("stayed portrait");
+    expect(screen.queryByText("The app on screen does not support that orientation.")).toBeNull();
+    dismissToast(toast.id);
     // And the control still reads portrait, because that is what is on screen.
     expect(
       screen.getByRole("button", { name: /^Orientation: / }).getAttribute("aria-label"),

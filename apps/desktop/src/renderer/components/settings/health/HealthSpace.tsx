@@ -1,4 +1,5 @@
 import React from "react";
+import { useLocation } from "react-router-dom";
 import {
   Archive,
   ArrowClockwise,
@@ -12,10 +13,12 @@ import {
 import type {
   DbBreakdownEntry,
   MaintenanceRunReport,
+  ProviderHistoryEntry,
   StorageCategoryId,
   StorageCategorySnapshot,
   StorageCleanupTarget,
   StorageItem,
+  StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { ModernSection } from "../primitives";
@@ -48,6 +51,7 @@ import {
 import { FreeSpaceMeter, StackedBreakdown } from "./healthCharts";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { decodeSettingsHash } from "../settingsHash";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
@@ -66,6 +70,13 @@ function getCompressNow(): ((pin?: OpenProjectBinding | null) => Promise<{ files
   return isAdeAvailable(fn) ? fn : undefined;
 }
 
+/** Anchors drawn inside the collapsed Details section; a link to one opens it. */
+export const HEALTH_DETAIL_ANCHORS: ReadonlySet<string> = new Set([
+  "storage-chat-history",
+  "storage-deleted-chats",
+  "storage-provider-history",
+]);
+
 export function HealthSpace({ data }: { data: HealthData }) {
   // Every call below acts on the machine this Settings page shows.
   const { pin } = useSettingsMachineScope();
@@ -73,7 +84,13 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const [cleanup, setCleanup] = React.useState<CleanupRequest | null>(null);
   const [safeOpen, setSafeOpen] = React.useState(false);
   const [compressing, setCompressing] = React.useState(false);
-  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const location = useLocation();
+  const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
+  const linksIntoDetails = hashAnchor != null && HEALTH_DETAIL_ANCHORS.has(hashAnchor);
+  const [detailsOpen, setDetailsOpen] = React.useState(linksIntoDetails);
+  React.useEffect(() => {
+    if (linksIntoDetails) setDetailsOpen(true);
+  }, [linksIntoDetails, hashAnchor]);
 
   const runMaintenanceBridge = React.useMemo(() => getRunMaintenanceNow(), []);
   const runMaintenanceNow = React.useMemo<(() => Promise<MaintenanceRunReport>) | undefined>(
@@ -351,6 +368,13 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 category={byId.get("chats_history")}
                 compressing={compressing}
                 onCompress={compressNow ? () => void runCompress() : null}
+                laneIdByKey={laneIdByKey}
+                onRequestCleanup={setCleanup}
+              />
+              <ProviderHistoryDetails
+                entries={snapshot.extras?.providerHistory ?? []}
+                copies={snapshot.extras?.deletedLaneProviderCopies ?? null}
+                onRequestCleanup={setCleanup}
               />
               <DatabaseDetails category={database} snapshot={snapshot} />
               {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
@@ -390,9 +414,9 @@ export function HealthSpace({ data }: { data: HealthData }) {
 // Details
 // ---------------------------------------------------------------------------
 
-function DetailBlock({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function DetailBlock({ id, title, hint, children }: { id?: string; title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="ade-health-detail-block">
+    <div className="ade-health-detail-block" id={id}>
       <div className="ade-health-detail-head">
         <span className="ade-health-detail-title">{title}</span>
         {hint ? <span className="ade-modern-muted">{hint}</span> : null}
@@ -403,6 +427,7 @@ function DetailBlock({ title, hint, children }: { title: string; hint?: string; 
 }
 
 function ItemRow({
+  id,
   label,
   path,
   size,
@@ -410,6 +435,7 @@ function ItemRow({
   muted,
   action,
 }: {
+  id?: string;
   label: React.ReactNode;
   path?: string;
   size: string;
@@ -418,7 +444,7 @@ function ItemRow({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="ade-st-item" data-muted={muted || undefined}>
+    <div className="ade-st-item" id={id} data-muted={muted || undefined}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <span className="ade-st-item-label">{label}</span>
@@ -651,18 +677,59 @@ function HistoryDetails({
   category,
   compressing,
   onCompress,
+  laneIdByKey,
+  onRequestCleanup,
 }: {
   category: StorageCategorySnapshot | undefined;
   compressing: boolean;
   onCompress: (() => void) | null;
+  laneIdByKey: Map<string, string>;
+  onRequestCleanup: (request: CleanupRequest) => void;
 }) {
   if (!category || (category.bytes <= 0 && !category.partial)) return null;
   const compressible = category.compressibleBytes ?? 0;
+  const removable = new Map(
+    cleanableEntries("chats_history", category, laneIdByKey).map((entry) => [entry.item.id, entry.target] as const),
+  );
   return (
-    <DetailBlock title={CATEGORY_META.chats_history.name} hint="Kept so you can reopen past chats and terminals.">
-      {category.items.filter((item) => item.bytes > 0 || item.partial).map((item) => (
-        <ItemRow key={item.id} label={item.label} size={formatMeasuredBytes(item.bytes, item.partial)} />
-      ))}
+    <DetailBlock
+      id="storage-chat-history"
+      title={CATEGORY_META.chats_history.name}
+      hint="Kept so you can reopen past chats and terminals. Old and finished chats are compressed automatically."
+    >
+      {category.items.filter((item) => item.bytes > 0 || item.partial).map((item) => {
+        const target = removable.get(item.id);
+        return (
+          <ItemRow
+            key={item.id}
+            id={target ? "storage-deleted-chats" : undefined}
+            label={item.label}
+            size={formatMeasuredBytes(item.bytes, item.partial)}
+            detail={target ? item.detail : undefined}
+            path={target ? item.path : undefined}
+            action={target ? (
+              <ActionButton
+                label="Remove…"
+                icon={<Archive size={13} />}
+                onClick={() => onRequestCleanup({
+                  title: "Remove chats from deleted lanes",
+                  intro: `These chats belonged to lanes that were deleted. ADE no longer tracks or shows them, but their transcripts are still on this machine in ${item.path}, and you can open those .jsonl files yourself if you want them. Removing deletes them for good, together with any Claude and Codex session files ADE started for them. Chats in existing or archived lanes are not affected.`,
+                  targets: [target],
+                })}
+              />
+            ) : undefined}
+          />
+        );
+      })}
+      {removable.size === 0 ? (
+        <ItemRow
+          id="storage-deleted-chats"
+          label="Chats from deleted lanes"
+          size="None"
+          muted
+          detail="When you delete a lane, its chats stay on disk but ADE stops showing them. They are listed here so you can remove them."
+        />
+      ) : null}
       {compressible > 0 && onCompress ? (
         <ItemRow
           label="Older than two weeks"
@@ -673,6 +740,60 @@ function HistoryDetails({
               <FileZip size={13} className={compressing ? "animate-spin" : undefined} />
               {compressing ? "Compressing…" : "Compress now"}
             </button>
+          )}
+        />
+      ) : null}
+    </DetailBlock>
+  );
+}
+
+/**
+ * Each agent CLI's own copy of its conversations, in its own folder. ADE
+ * reports these; the only ones it offers to remove are the Claude and Codex
+ * sessions it started for chats from deleted lanes.
+ */
+type DeletedLaneProviderCopies = NonNullable<StorageSnapshotExtras["deletedLaneProviderCopies"]>;
+
+function ProviderHistoryDetails({
+  entries,
+  copies,
+  onRequestCleanup,
+}: {
+  entries: ProviderHistoryEntry[];
+  copies: DeletedLaneProviderCopies | null;
+  onRequestCleanup: (request: CleanupRequest) => void;
+}) {
+  if (entries.length === 0 && !copies) return null;
+  return (
+    <DetailBlock
+      id="storage-provider-history"
+      title="Provider history on this machine"
+      hint="Every agent CLI keeps its own copy of its sessions in its own folder, for all projects. These belong to the provider, not to ADE."
+    >
+      {entries.map((entry) => (
+        <ItemRow
+          key={entry.provider}
+          label={entry.label}
+          size={formatMeasuredBytes(entry.bytes, entry.partial)}
+          detail={entry.note}
+          path={entry.paths.join(" · ")}
+        />
+      ))}
+      {copies ? (
+        <ItemRow
+          label="Copies of chats from deleted lanes"
+          size={formatBytes(copies.bytes)}
+          detail={`Claude and Codex session files ADE started for ${copies.chatCount} ${copies.chatCount === 1 ? "chat" : "chats"} it no longer has. Sessions you imported from your own CLI are never included.`}
+          action={(
+            <ActionButton
+              label="Remove…"
+              icon={<Archive size={13} />}
+              onClick={() => onRequestCleanup({
+                title: "Remove provider copies of deleted chats",
+                intro: "These are the Claude and Codex session files ADE created for chats whose lane was deleted. ADE no longer has those chats, so it cannot resume them. Removing them deletes only those files from the providers' folders; your own CLI sessions and every chat ADE still has stay.",
+                targets: [{ kind: "deleted_lane_provider_sessions", path: copies.chatSessionsDir }],
+              })}
+            />
           )}
         />
       ) : null}

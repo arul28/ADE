@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/cloudflare";
+import { retryD1Reads } from "./cloudflareTransient";
 import { handleRequest, pruneRelayState, sweepRelayState, type PushRelayEnv } from "./relay";
 import { sentryOptions, type SentryEnv } from "./sentry";
 
@@ -18,9 +19,11 @@ export default Sentry.withSentry(sentryOptions, {
   //   Activity. Those sweeps fan out into per-account revision commits and
   //   outbound APNs pushes, so they run HERE ONLY and never inside a request.
   async scheduled(_event: ScheduledEvent, env: PushRelayEnv & SentryEnv, ctx: ExecutionContext): Promise<void> {
+    // Reads ride through D1's short outages here as they do in requests.
+    const cronEnv = { ...env, DB: retryD1Reads(env.DB) };
     ctx.waitUntil((async () => {
-      await sweepRelayState(env);
-      await pruneRelayState(env);
+      await sweepRelayState(cronEnv);
+      await pruneRelayState(cronEnv);
     })().catch((error: unknown) => {
       // The sweep runs once an hour, so every failure is worth an event. waitUntil
       // would otherwise drop it. Rethrow so Cloudflare still logs it.

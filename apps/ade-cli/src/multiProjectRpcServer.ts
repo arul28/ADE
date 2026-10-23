@@ -1,3 +1,5 @@
+import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -79,6 +81,7 @@ import {
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
+import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
@@ -109,7 +112,7 @@ import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
-import type { AttentionItem } from "../../desktop/src/shared/types/attention";
+import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -317,6 +320,15 @@ export type MultiProjectRpcHandlerOptions = {
    * answers the method rather than 404ing an embedder's setup screen.
    */
   providerStatus?: ProviderStatusService;
+  /**
+   * Backs `keepAwake.call`: keep-awake is this machine's power policy, so
+   * Settings reaches it with no project open. Absent on embedded runtimes,
+   * which never own the machine's power settings.
+   */
+  keepAwakeService?: Pick<
+    BrainKeepAwakeService,
+    "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
+  > | null;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
@@ -464,6 +476,7 @@ const RUNTIME_METHODS = new Set([
   "runtime.updateImpact",
   "account.call",
   "remoteMcp.call",
+  "keepAwake.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -2468,6 +2481,37 @@ export function createMultiProjectRpcRequestHandler(
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
+    if (method === "keepAwake.call") {
+      // The same rule as the project `keep_awake` actions: every one is
+      // CTO-only, so the desktop and the person's own clients can change the
+      // machine's power policy and a session-bound agent cannot.
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Keep-awake settings require the cto role.");
+      }
+      const keepAwake = options.keepAwakeService;
+      if (!keepAwake) {
+        // Coded as not callable: the desktop then uses its own keep-awake service.
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, "This runtime does not manage keep-awake."),
+        );
+      }
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      const args = isRecord(params.args) ? params.args : {};
+      switch (action) {
+        case "getSnapshot":
+          return await keepAwake.getSnapshot();
+        case "setLevel":
+          return await keepAwake.setLevel(args.level);
+        case "migrateLegacyPreference":
+          return await keepAwake.migrateLegacyPreference(args.level);
+        case "fixSystemSleep":
+          return await keepAwake.fixSystemSleep();
+        default:
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown keep-awake action "${action}".`);
+      }
+    }
+
     // `ade notify`: machine-wide, so it neither needs nor registers the
     // caller's folder as a project. Open to agents, like the
     // `attention.sendNotification` action it shares its rules with.
@@ -2499,13 +2543,32 @@ export function createMultiProjectRpcRequestHandler(
           "Notifications are unavailable until the ADE brain has a project open.",
         );
       }
+      // Run inside a chat (`ADE_CHAT_SESSION_ID`, or `--session`), the push is
+      // that chat's message: an Activity Inbox row on every device, a line in
+      // the chat, the chat's mute and "at the computer" respected. Only a chat
+      // this brain does not hold falls through to the plain push below.
+      // An agent's own chat always wins over `--session`, so no chat can post
+      // under another chat's name; `--session` is for a person's terminal.
+      const notifyArgs = isRecord(params.args) ? params.args : {};
+      const chatSessionId = callerChatSessionId()
+        ?? (typeof notifyArgs.sessionId === "string" ? notifyArgs.sessionId.trim() : "");
       const send = buildSendNotificationAction(
         runtime,
         (notification) => publisher.sendCustomNotification(notification),
         { projectRoot: registeredRoot },
       );
       try {
-        return await send(isRecord(params.args) ? params.args : {});
+        if (chatSessionId) {
+          const chatMessage = await sendNotifyAsChatMessage({
+            publisher,
+            sessionId: chatSessionId,
+            args: notifyArgs,
+            callerScopeKey: runtime.projectId ?? null,
+            analytics: runtime.productAnalyticsService,
+          });
+          if (chatMessage) return chatMessage;
+        }
+        return await send(notifyArgs);
       } catch (error) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -2542,7 +2605,9 @@ export function createMultiProjectRpcRequestHandler(
         return await publisher.getAttentionSnapshot(since, streamId);
       }
       if (action === "getMachineSnapshot") {
-        return await publisher.getMachineAttentionSnapshot();
+        return await publisher.getMachineAttentionSnapshot({
+          includeMessages: args.include === ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+        });
       }
       if (action === "acknowledge") {
         const itemIds = Array.isArray(args.itemIds)
@@ -2744,7 +2809,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!scope) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          "machines.call scope must be repo (originUrl), project (selector), personal, or machine.",
+          "machines.call scope must be repo (originUrl), project (selector), anyProject, personal, or machine.",
         );
       }
       // The caller's chat is this connection's own claim, exactly the trust

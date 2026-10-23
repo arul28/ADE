@@ -318,6 +318,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { force?: boolean }",
       example: "ade router refresh --text",
     },
+    getUsageLimits: {
+      description:
+        "Read how much of each subscription window is left on this machine, per account: percent left, reset time, pace, "
+        + "how old the reading is, whether the account can take a chat, the account id `ade chat create --instance` takes, "
+        + "and which account the asking chat runs on. Reads the cached poll; never refreshes.",
+      input: "object { provider?: string, chatSessionId?: string }",
+      example: "ade usage limits --text",
+    },
     getUsageSnapshot: {
       description:
         "Read provider rate-limit windows and spend controls. Account-tied, so it takes no scope.",
@@ -463,6 +471,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Read live turn status for one chat: RUNNING, BLOCKED, or IDLE.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getTurnStatus --scalar chat-123",
+    },
+    listPendingInputs: {
+      description: "List the questions and approvals a chat is blocked on right now, with each item id, kind, questions and options. Empty after a restart: the provider request died with the process.",
+      input: "object { sessionId: string }",
+      example: "ade chat pending chat-123 --text",
+    },
+    respondToInput: {
+      description: "Answer a chat's pending question or approval (an item from listPendingInputs). Unblocks a chat whose sends are refused with \"Answer or decline the pending request\". Cards only the person may answer (screen-control consent) are refused to agents.",
+      input: "object { sessionId: string, itemId: string, decision?: \"accept\" | \"accept_for_session\" | \"decline\" | \"cancel\" (default decline: send accept to answer a question), answers?: { [questionId]: string | string[] } (option values or free text; \"selection\" for a model pick), responseText?: string (free answer, or the reason for a decline) }",
+      example: "ade chat respond chat-123 --option 2   (or: ade actions run chat.respondToInput --input-json '{\"sessionId\":\"chat-123\",\"itemId\":\"item-1\",\"decision\":\"accept\",\"answers\":{\"q1\":\"staging\"}}')",
     },
     createScheduledWork: {
       description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
@@ -1031,17 +1049,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   provider_instances: {
     list: {
       description:
-        "List this machine's provider accounts (Claude and Codex only). Each entry is a label plus the config directory "
-        + "that holds that login, never a credential.",
+        "List this machine's provider accounts (Claude and Codex only). Each entry is an id plus the config directory "
+        + "that holds that login, never a credential; `label` is the signed-in email, else the id.",
       input: "object { provider?: \"claude\" | \"codex\" }",
       example: "ade actions run provider_instances.list --input-json '{\"provider\":\"claude\"}' --text",
     },
     create: {
       description:
-        "Create an empty provider account: a new config directory plus a label. Returns the account and the exact login "
-        + "command (argv + env var) a terminal must run so the provider CLI signs in to THIS directory.",
-      input: "object { provider: \"claude\" | \"codex\", label: string, accentColor?: string }",
-      example: "ade actions run provider_instances.create --input-json '{\"provider\":\"claude\",\"label\":\"Work\"}' --text",
+        "Create an empty provider account: a new config directory with the next free id (`claude-2`, …). Accounts have no "
+        + "names; one shows as its email once signed in. Returns the account and the exact login command (argv + env var) "
+        + "a terminal must run so the provider CLI signs in to THIS directory. A `label` from an older client only shapes the id.",
+      input: "object { provider: \"claude\" | \"codex\", label?: string, accentColor?: string }",
+      example: "ade actions run provider_instances.create --input-json '{\"provider\":\"claude\"}' --text",
     },
     remove: {
       description:
@@ -1059,9 +1078,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.signOut --input-json '{\"id\":\"work\"}' --text",
     },
     rename: {
-      description: "Rename one provider account. Labels are at most 60 characters.",
+      description: "Kept for older phones only. Accounts have no names: the stored label is not shown anywhere.",
       input: "object { id: string, label: string }",
-      example: "ade actions run provider_instances.rename --input-json '{\"id\":\"work\",\"label\":\"Work (EU)\"}' --text",
+      example: "ade actions run provider_instances.rename --input-json '{\"id\":\"claude-2\",\"label\":\"x\"}' --text",
     },
     setDefault: {
       description:

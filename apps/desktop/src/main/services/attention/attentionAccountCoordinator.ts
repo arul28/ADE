@@ -1,6 +1,10 @@
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
-import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
+  PushRelayRequestError,
+  PushRelayUnreachableError,
+} from "../../../../../ade-cli/src/services/push/pushRelayClient";
+import {
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   runAcknowledgmentChunks,
   unreachedOutcomeFields,
@@ -12,6 +16,7 @@ import {
 } from "../../../shared/types/attention";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
+import { withDeadline } from "../shared/withTimeout";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -20,7 +25,7 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
-> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">> & {
+> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences" | "setAttentionSessionMuted">> & {
   /**
    * Purge every Activity row a removed machine published (relay
    * `DELETE /attention/account/machines/:machineKey`). Optional so a relay
@@ -35,10 +40,16 @@ type AccountAttentionClient = Pick<
 };
 
 type AttentionAccountCoordinatorOptions = {
-  getLogger: () => Pick<Logger, "warn">;
+  getLogger: () => Pick<Logger, "warn" | "info">;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   accountAttentionClient?: AccountAttentionClient | null;
   getCurrentAccountOwnerId: () => string | null;
+  /** Every account snapshot a window loaded (desktop notifications read these). */
+  onAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
+  /** The account preferences a window loaded, with the owner they belong to. */
+  onPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  /** A mute the relay accepted; desktop notifications apply it at once. */
+  onSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
 };
 
 type AttentionSnapshotRequest = {
@@ -92,6 +103,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * What the polled Activity reads (snapshot, presence, preferences) may spend,
+ * end to end. Their renderer IPC timer is the 30s default; answering inside it
+ * means the renderer gets a real answer (or a legible failure) instead of the
+ * opaque "IPC handler timed out". User-initiated writes (acknowledge, saving
+ * preferences) are bounded per relay request instead.
+ */
+export const ATTENTION_IPC_BUDGET_MS = 25_000;
+
+/**
+ * The account leg of a snapshot when this computer can answer for itself.
+ * Long enough for a slow but working relay (one 15s fetch plus a token wait);
+ * the local fallback, a read from the brain's memory, gets the rest.
+ */
+export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
+
+/** First pause after the relay could not be reached; doubles to the max. */
+const RELAY_BACKOFF_BASE_MS = 5_000;
+const RELAY_BACKOFF_MAX_MS = 5 * 60_000;
+
+/**
+ * The relay did not give an answer worth surfacing: no HTTP response at all,
+ * a timeout, a rate limit, or the relay's own 5xx. Presence and preference
+ * refreshes run on timers with nobody waiting on them, so these are "try again
+ * later", not errors.
+ */
+function isRelayUnavailable(error: unknown): boolean {
+  if (error instanceof PushRelayUnreachableError) return true;
+  return error instanceof PushRelayRequestError
+    && (error.status === 429 || error.status >= 500);
+}
+
 /** Cap on the remembered-revision cache; an account snapshot tops out well below. */
 const MAX_REMEMBERED_ITEM_REVISIONS = 4_096;
 
@@ -141,8 +184,52 @@ export class AttentionAccountCoordinator {
   private lastSnapshotScope: AttentionSnapshot["scope"] | null = null;
   private lastSnapshotAccountOwnerId: string | null = null;
   private readonly lastSnapshotItemRevisions = new Map<string, number>();
+  /** Consecutive relay failures; drives the backoff below. 0 = healthy. */
+  private relayFailures = 0;
+  /** Presence and preference reads skip the relay until this instant. */
+  private relayRetryAtMs = 0;
+  /** The last account-snapshot failure logged, so a long outage logs its edge. */
+  private loggedAccountSnapshotFailure: string | null = null;
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
+
+  /**
+   * Record that the relay could not be reached, and log the edge into it.
+   *
+   * Every window reports presence on a timer and on each focus, blur and
+   * visibility change, so an offline laptop or a flaky network used to send a
+   * burst of doomed requests (and errors) per window switch. Backing off here,
+   * in the desktop's single coordinator, covers every window at once.
+   */
+  private noteRelayUnavailable(source: string, error: unknown): void {
+    this.relayFailures += 1;
+    const backoffMs = Math.min(
+      RELAY_BACKOFF_MAX_MS,
+      RELAY_BACKOFF_BASE_MS * 2 ** Math.min(this.relayFailures - 1, 16),
+    );
+    this.relayRetryAtMs = Date.now() + backoffMs;
+    if (this.relayFailures === 1) {
+      this.options.getLogger().warn("attention.relay_unavailable", {
+        source,
+        error: error instanceof Error ? error.message : String(error),
+        retryInMs: backoffMs,
+      });
+    }
+  }
+
+  private noteRelayAvailable(): void {
+    if (this.relayFailures > 0) {
+      this.options.getLogger().info("attention.relay_recovered", {
+        failures: this.relayFailures,
+      });
+    }
+    this.relayFailures = 0;
+    this.relayRetryAtMs = 0;
+  }
+
+  private relayBackingOff(): boolean {
+    return this.relayFailures > 0 && Date.now() < this.relayRetryAtMs;
+  }
 
   async getSnapshot(input: unknown): Promise<AttentionSnapshot> {
     const request = isRecord(input) ? input as AttentionSnapshotRequest : {};
@@ -155,13 +242,31 @@ export class AttentionAccountCoordinator {
         : null;
     const accountOwnerId = this.currentAccountOwnerId();
     let accountFailure: unknown = null;
+    const startedAt = Date.now();
+    const pool = this.options.localRuntimeConnectionPool;
 
     if (accountOwnerId && this.options.accountAttentionClient) {
+      // With a local fallback the account leg gets part of the budget; without
+      // one it may use all of it.
+      const accountBudgetMs = pool
+        ? ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS
+        : ATTENTION_IPC_BUDGET_MS;
+      const accountDeadline = new AbortController();
+      const accountTimer = setTimeout(
+        () => accountDeadline.abort(
+          new PushRelayUnreachableError("timeout"),
+        ),
+        accountBudgetMs,
+      );
+      accountTimer.unref?.();
       try {
         const snapshot = await this.options.accountAttentionClient.getAttentionSnapshot(
           since,
           streamId,
+          { signal: accountDeadline.signal },
         );
+        this.noteRelayAvailable();
+        this.loggedAccountSnapshotFailure = null;
         if (snapshot) {
           const accountSnapshot: AttentionSnapshot = {
             ...snapshot,
@@ -175,24 +280,48 @@ export class AttentionAccountCoordinator {
             },
           };
           this.rememberSnapshot(accountSnapshot, accountOwnerId);
+          try {
+            this.options.onAccountSnapshot?.(accountSnapshot);
+          } catch (error) {
+            this.options.getLogger().warn("attention.snapshot_observer_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           return accountSnapshot;
         }
       } catch (error) {
         accountFailure = error;
-        this.options.getLogger().warn("attention.account_snapshot_failed", {
-          error: error instanceof Error ? error.message : String(error),
-          fallback: "local_machine",
-        });
+        if (isRelayUnavailable(error)) this.noteRelayUnavailable("snapshot", error);
+        // The poll repeats every 15s; one line per change of reason, not per poll.
+        const message = error instanceof Error ? error.message : String(error);
+        if (this.loggedAccountSnapshotFailure !== message) {
+          this.loggedAccountSnapshotFailure = message;
+          this.options.getLogger().warn("attention.account_snapshot_failed", {
+            error: message,
+            fallback: pool ? "local_machine" : "none",
+          });
+        }
+      } finally {
+        clearTimeout(accountTimer);
       }
     }
 
-    if (this.options.localRuntimeConnectionPool) {
+    if (pool) {
       try {
-        const snapshot =
-          await this.options.localRuntimeConnectionPool.callAttention<AttentionSnapshot>(
+        // Whatever the account leg left. The connect in front of the call is
+        // not covered by the transport timeout, so the deadline wraps both.
+        const remainingMs = Math.max(1, ATTENTION_IPC_BUDGET_MS - (Date.now() - startedAt));
+        const snapshot = await withDeadline(
+          pool.callAttention<AttentionSnapshot>(
             "getMachineSnapshot",
-            {},
-          );
+            { include: ATTENTION_SNAPSHOT_INCLUDE_MESSAGES },
+            { timeoutMs: remainingMs },
+          ),
+          remainingMs,
+          () => new Error(
+            "This computer's ADE brain did not answer in time. Activity will retry.",
+          ),
+        );
         const generatedAt = new Date().toISOString();
         const hostMachineKey = snapshot.streamId?.startsWith("machine:")
           ? snapshot.streamId.slice("machine:".length)
@@ -421,30 +550,59 @@ export class AttentionAccountCoordinator {
       throw new Error("A valid Activity presence payload is required.");
     }
     if (this.currentAccountOwnerId() && this.options.accountAttentionClient) {
-      await this.options.accountAttentionClient.reportAttentionPresence(
-        presence as AttentionPresence,
-      );
+      // Presence is a best-effort heartbeat with nobody waiting on it, and the
+      // next one carries the latest state. While the relay is unreachable the
+      // report is dropped, not failed.
+      if (this.relayBackingOff()) return;
+      try {
+        await this.options.accountAttentionClient.reportAttentionPresence(
+          presence as AttentionPresence,
+        );
+        this.noteRelayAvailable();
+      } catch (error) {
+        if (!isRelayUnavailable(error)) throw error;
+        this.noteRelayUnavailable("presence", error);
+      }
       return;
     }
     if (this.options.localRuntimeConnectionPool) {
       await this.options.localRuntimeConnectionPool.callAttention<void>(
         "reportPresence",
         presence as AttentionPresence & Record<string, unknown>,
+        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
       );
     }
   }
 
-  async getPreferences(input: unknown): Promise<AttentionPreferences> {
+  /**
+   * The account's Activity preferences, or `null` when the relay cannot be
+   * reached right now. `null` means "unknown, keep what you have": answering
+   * with the defaults instead would quietly undo the user's hide-details and
+   * badge choices on every network blip.
+   */
+  async getPreferences(input: unknown): Promise<AttentionPreferences | null> {
     const request = isRecord(input) ? input as AttentionPreferenceRequest : {};
     const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
     if (this.options.accountAttentionClient) {
-      return await this.options.accountAttentionClient.getAttentionPreferences(accountOwnerId)
-        ?? DEFAULT_ATTENTION_PREFERENCES;
+      if (this.relayBackingOff()) return null;
+      try {
+        const preferences =
+          await this.options.accountAttentionClient.getAttentionPreferences(accountOwnerId)
+          ?? DEFAULT_ATTENTION_PREFERENCES;
+        this.noteRelayAvailable();
+        this.options.onPreferences?.(accountOwnerId, preferences);
+        return preferences;
+      } catch (error) {
+        if (!isRelayUnavailable(error)) throw error;
+        this.noteRelayUnavailable("preferences", error);
+        return null;
+      }
     }
     if (!this.options.localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
     return await this.options.localRuntimeConnectionPool.callAttention<AttentionPreferences>(
       "getPreferences",
       { accountOwnerId },
+      { timeoutMs: ATTENTION_IPC_BUDGET_MS },
     );
   }
 
@@ -499,6 +657,47 @@ export class AttentionAccountCoordinator {
       normalizedMachineKey,
       partial as Partial<AttentionPreferenceScope>,
     );
+  }
+
+  /**
+   * Mute or unmute one chat's notifications on every device. The mute lives in
+   * the account's Activity preferences, so it needs no route to the machine the
+   * chat runs on.
+   */
+  async setSessionMuted(
+    sessionId: unknown,
+    muted: unknown,
+    expectedAccountOwnerId?: unknown,
+  ): Promise<void> {
+    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!normalizedSessionId || typeof muted !== "boolean") {
+      throw new Error("A chat and a mute setting are required.");
+    }
+    const accountOwnerId = expectedAccountOwnerId === undefined
+      ? this.currentAccountOwnerId()
+      : this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!accountOwnerId) {
+      throw new Error("Sign in to mute a chat's notifications.");
+    }
+    if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
+      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+    }
+    await this.options.accountAttentionClient.setAttentionSessionMuted(
+      accountOwnerId,
+      normalizedSessionId,
+      muted,
+    );
+    // Desktop notifications read the last loaded preferences; apply the mute
+    // to them now so a message arriving right after it stays quiet. A throw
+    // here must not fail a mute the relay already saved — the renderer would
+    // roll back and say it could not mute a chat that is muted.
+    try {
+      this.options.onSessionMuted?.(accountOwnerId, normalizedSessionId, muted);
+    } catch (error) {
+      this.options.getLogger().warn("attention.session_mute_observer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**

@@ -15,7 +15,7 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `packages/sdk/` | Embeddable sidecar that speaks this machine RPC. See [ADE SDK](../sdk/README.md). |
 | `apps/ade-cli/src/services/imageAttachment.ts` | Shared image validation, MIME sniffing, and bounded temporary-attachment persistence used by project and personal chat ingress. |
 | `apps/ade-cli/src/services/projects/machineLayout.ts` | Resolves the channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
-| `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents` machine RPC methods plus capability advertisement (`pushEvents`, `mcpServers`). |
+| `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call`, `personalChats.streamEvents`, and `personalChats.subscribeEvents` / `unsubscribeEvents` machine RPC methods plus capability advertisement (`pushEvents`, `mcpServers`, `updateMcpServers`, `mcpToolFilters`, `deferredMcpUpdates`). |
 | `apps/ade-cli/src/cli.ts` | Typed `ade chat ... --personal` commands; they require the machine brain and never fall back to a project/headless runtime. |
 | `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
@@ -88,8 +88,9 @@ The machine RPC exposes five methods outside project dispatch:
   [Provider status](../sdk/README.md#provider-status).
 
 `runtime/info.capabilities.personalChats` advertises version 1, the exact
-action set, and two optional flags: `pushEvents` and `mcpServers`. An older
-runtime omits both; a client must keep draining and must not send MCP fields
+action set, and optional flags: `pushEvents`, `mcpServers`,
+`updateMcpServers`, `mcpToolFilters` and `deferredMcpUpdates`. An older
+runtime omits them; a client must keep draining and must not send MCP fields
 it would silently ignore. Clients must capability-gate the surface; an older
 runtime is an unsupported host, not an invitation to create a normal project
 chat.
@@ -100,6 +101,33 @@ no typed `--mcp-servers` / `--strict-mcp` CLI flags in v1 — nested JSON is
 what `--arg-json` already carries, and the ADE SDK is the intended embedder
 API. The created session carries `mcpCapability`; branch on `level ===
 "enforced"`, never on the object's presence.
+
+Each server may carry `allowedTools` and `disallowedTools`, bare tool names as
+the server lists them. Codex enforces both through its per-server
+`enabled_tools` / `disabled_tools`. Claude enforces `disallowedTools` (the
+Agent SDK drops `mcp__<server>__<tool>` from the model's context) and refuses
+`allowedTools`, because hiding every unlisted tool needs the server's tool list
+before launch. Every other provider refuses both. OpenCode refuses them because
+every personal chat shares one OpenCode server config, so a filter for one chat
+would hide tools in all of them; Droid, Cursor and Muse have no per-tool switch
+ADE drives yet. A refusal is an
+`invalid_argument` naming the servers, at create, at `updateSession`, and at a
+model switch onto a provider that cannot enforce the filter. The names are
+kept in the chat record; they are not credentials.
+
+`updateSession({ mcpServers })` replaces a personal chat's caller servers.
+Between turns it restarts the provider at once, on the same provider thread.
+Mid-turn it validates the new servers immediately and queues them: the end of
+the running turn (completed, interrupted or failed) installs them, and if that
+turn ended with no `done` event the next turn's start does. On Claude it also
+waits while the chat's background agents or shells run, because the restart
+would end them; it goes in at the first turn end after that work is gone. A later update
+replaces a queued one. Until the swap, the summary carries `mcpServersPending:
+true` and its `mcpServers` / `mcpCapability` still describe the running turn's
+servers, and error redaction covers both the live and the queued header
+values. The queue is in memory only; a runtime restart drops it, like every
+other header value. A model switch that the queued servers do not suit is
+refused.
 
 `create` also accepts three host session arguments. `instructions`
 (`{ mode: "append" | "replace", text }`, or a bare string meaning append)
@@ -161,8 +189,9 @@ path-copy route into it, because `personalChats.call` is reachable from paired
 clients and must never read a caller-named file. Scheduled-work mutations call the same chat service methods as
 project chat after rechecking that the supplied session belongs to
 `surface: "personal"`. Terminal calls also check that the PTY was created by
-this personal scope. Attachment readback resolves real paths and refuses
-anything outside the hidden attachment store.
+this personal scope. Image readback resolves real paths and refuses
+anything outside the hidden attachment store, the artifact store and the
+scratch workspace (where the agent saves the pictures it views).
 
 Personal transcripts use the same bounded cursor pager as project chats:
 1,000 events / 256 KiB for the initial snapshot, 256 KiB older pages, and a
@@ -401,7 +430,9 @@ themselves are not trimmed.
   prompts or message bodies in machine RPC/sync diagnostics.
 - Do not enable project push notifications for the hidden runtime until push
   links and notification actions have an explicit personal-chat route.
-- Treat `capabilities.personalChats.mcpServers` / `pushEvents` as optional.
-  An older runtime omitting them would ignore the fields rather than error.
+- Treat `capabilities.personalChats.mcpServers` / `pushEvents` /
+  `mcpToolFilters` / `deferredMcpUpdates` as optional. An older runtime
+  omitting them would ignore the fields (or, for a mid-turn update, refuse
+  with `turn_in_flight`) rather than honor them.
 - Strict MCP on this surface is Claude-only as a guarantee. Read
   `mcpCapability.level`, not the object's presence. See [ADE SDK](../sdk/README.md#strict-mcp-honesty).

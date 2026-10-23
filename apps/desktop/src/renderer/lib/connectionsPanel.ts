@@ -6,18 +6,21 @@ export type ConnectionsPanelTab = "machines" | "mobile" | "web";
 
 const OPEN_CONNECTIONS_EVENT = "ade:open-connections-panel";
 
-export function openConnectionsPanel(tab: ConnectionsPanelTab = "machines"): void {
+export type OpenConnectionsPanelOptions = { tab?: ConnectionsPanelTab; machineId?: string };
+
+export function openConnectionsPanel(tabOrOptions: ConnectionsPanelTab | OpenConnectionsPanelOptions = "machines"): void {
+  const detail = typeof tabOrOptions === "string" ? { tab: tabOrOptions } : { tab: "machines" as const, ...tabOrOptions };
   window.dispatchEvent(
-    new CustomEvent(OPEN_CONNECTIONS_EVENT, { detail: { tab } }),
+    new CustomEvent(OPEN_CONNECTIONS_EVENT, { detail }),
   );
 }
 
 export function subscribeOpenConnectionsPanel(
-  cb: (tab: ConnectionsPanelTab) => void,
+  cb: (tab: ConnectionsPanelTab, machineId?: string) => void,
 ): () => void {
   const handler = (event: Event) => {
-    const detail = (event as CustomEvent<{ tab?: ConnectionsPanelTab }>).detail;
-    cb(detail?.tab ?? "machines");
+    const detail = (event as CustomEvent<OpenConnectionsPanelOptions>).detail;
+    cb(detail?.tab ?? "machines", detail?.machineId);
   };
   window.addEventListener(OPEN_CONNECTIONS_EVENT, handler);
   return () => window.removeEventListener(OPEN_CONNECTIONS_EVENT, handler);

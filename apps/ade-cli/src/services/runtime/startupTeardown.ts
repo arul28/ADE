@@ -21,8 +21,9 @@ export interface TeardownStack {
    * Run every registered release in reverse order and empty the stack.
    *
    * A release that throws does not stop the drain and does not propagate: the
-   * original startup failure must reach the caller unchanged. Draining twice is
-   * safe; the second call has nothing left to run.
+   * original startup failure must reach the caller unchanged. A release that
+   * returns a promise is not awaited, but its rejection is reported the same
+   * way. Draining twice is safe; the second call has nothing left to run.
    */
   drain: () => void;
   /** The number of releases still registered. Intended for tests. */
@@ -33,6 +34,13 @@ export function createTeardownStack(
   onReleaseError?: (error: unknown) => void,
 ): TeardownStack {
   const releases: Array<() => void> = [];
+  const report = (error: unknown): void => {
+    try {
+      onReleaseError?.(error);
+    } catch {
+      // A reporting failure must not mask the startup failure either.
+    }
+  };
   return {
     push(release: () => void): void {
       releases.push(release);
@@ -42,13 +50,14 @@ export function createTeardownStack(
         const release = releases.pop();
         if (!release) continue;
         try {
-          release();
+          const result: unknown = release();
+          // An async `dispose` keeps running after the drain returns, and the
+          // database closes at the end of this same drain. Its rejection (often
+          // a read of the closed database) has no other handler, so it would
+          // reach the process as an unhandled rejection.
+          if (isThenable(result)) result.then(undefined, report);
         } catch (error) {
-          try {
-            onReleaseError?.(error);
-          } catch {
-            // A reporting failure must not mask the startup failure either.
-          }
+          report(error);
         }
       }
     },
@@ -56,4 +65,8 @@ export function createTeardownStack(
       return releases.length;
     },
   };
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return typeof (value as { then?: unknown } | null)?.then === "function";
 }

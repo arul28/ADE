@@ -21,7 +21,7 @@
 //   - **Hover cards.** A pointer chip (`#1237`, a lane id, a chat id, `ADE-431`)
 //     answers "what is this" on hover instead of sending you to another tab.
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   GitBranch,
   GitCommit,
@@ -33,106 +33,32 @@ import {
 } from "@phosphor-icons/react";
 
 import { resolveAttachmentToken } from "../../../shared/attachmentLabels";
-import { buildDeeplink } from "../../../shared/deeplinks";
 import { getModelById } from "../../../shared/modelRegistry";
 import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip, type ChipTextPart } from "../../../shared/chips";
 import type { AgentChatFileRef } from "../../../shared/types";
 import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
-import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
-import { chatMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
 import { modelPermissionPresentation, permissionToneTextClass } from "../../lib/modelPermissionOptions";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./ChipHoverCard";
 import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
-import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
-import { useChatWorkspacePathOpener, type ChatWorkspacePathOpener } from "./chatWorkspacePaths";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatWorkspacePathOpener } from "./chatWorkspacePaths";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { AttachmentPeekCard, useAttachmentThumbnail } from "./AttachmentChipPeek";
 import { useAttachmentPreview } from "./ChatAttachmentTray";
 import { useMentionChipResolution } from "./mentionChipLabels";
 import { getFileIcon } from "../files/filePresentation";
-
-/** Where a click on this chip should land, or null when it is not actionable. */
-function openChip(
-  chip: Chip,
-  scope: Pick<ChatRuntimeScope, "laneId" | "pin">,
-  openWorkspacePath: ChatWorkspacePathOpener | null,
-): void {
-  const source = chip.source;
-  if (source.origin === "deeplink") {
-    openChatDeeplinkTarget(source.url, source.target, scope);
-    return;
-  }
-  if (source.origin === "url") {
-    openLinkFromUi(source.url);
-    return;
-  }
-  // An attachment chip opens its own preview; `AttachmentTranscriptChip` owns that.
-  if (source.origin === "attachment") return;
-  if (source.origin === "path") {
-    // A FOLDER is not openable: the navigation target is `kind: "file"`, and
-    // handing it `src/shared/` asks the editor for a file that does not exist.
-    // `isActionable` already refuses the click; this is the second half of that
-    // contract so no future caller can route one here by accident.
-    if (chip.kind === "folder") return;
-    // Inside a chat, a path is relative to the chat's lane on the chat's
-    // machine. The chat's opener resolves both; the bare route below would
-    // open the path under the tab's project root instead.
-    if (openWorkspacePath) {
-      openWorkspacePath(source.path);
-      return;
-    }
-    navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
-    return;
-  }
-  // A model, permission or skill chip names a setting, not a place; an
-  // attached browser tab is a handle for the agent.
-  if (
-    source.origin === "model"
-    || source.origin === "permission"
-    || source.origin === "skill"
-    || source.origin === "browser_tab"
-  ) return;
-  if (source.mentionKind === "chat") {
-    openAdeDeeplink(buildDeeplink({ kind: "session", sessionId: source.id }));
-    return;
-  }
-  if (source.mentionKind === "lane") {
-    // A lane mention resolves against the chat's machine, so it opens there.
-    navigateToAppTarget({ kind: "lane", laneId: source.id, machineId: chatMachineId(scope) });
-  }
-  // Terminal and machine mentions have no deeplink target; they stay labels.
-  // A PR mention becomes clickable in `TranscriptChip` once its row resolves
-  // (the token is an ADE row id, not a GitHub number).
-}
+import { buildChipMenuEntries } from "./chipMenu";
+import { chipMenuExtras, isChipActionable, openChipTarget, type ChipActionContext } from "./chipActions";
+import { useMachineFacts } from "./useMachineFacts";
 
 /** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
 function chipTokenTitle(chip: Chip, label: string): string {
   if (chip.kind === "browser_tab") return [label, chip.detail].filter(Boolean).join(" — ");
   return chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
-}
-
-function isActionable(chip: Chip): boolean {
-  // A folder chip is a label, like a terminal mention: there is no folder
-  // destination to open, and a pill that looks clickable and does nothing is
-  // worse than one that plainly is not. iOS reaches the same answer for the
-  // same reason (`workChipNavigationURL` returns nil for a path).
-  if (
-    chip.kind === "folder"
-    || chip.kind === "model"
-    || chip.kind === "permission"
-    || chip.kind === "skill"
-    || chip.kind === "browser_tab"
-  ) return false;
-  // Machine and terminal mentions have nowhere to go; chat and lane mentions do.
-  // A PR mention is not actionable here — `TranscriptChip` makes it clickable
-  // once its row resolves to a deeplink target.
-  return chip.source.origin !== "mention"
-    || chip.source.mentionKind === "chat"
-    || chip.source.mentionKind === "lane";
 }
 
 /**
@@ -218,7 +144,7 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
     );
   }
   // The composer's own kind marks, so a sent pill looks like the one typed.
-  if (chip.kind === "lane" || chip.kind === "chat" || chip.kind === "terminal" || chip.kind === "machine" || chip.kind === "file") {
+  if (chip.kind === "lane" || chip.kind === "chat" || chip.kind === "terminal" || chip.kind === "machine" || chip.kind === "mcp" || chip.kind === "file") {
     return <span aria-hidden className={ICON_MARK_CLASS} dangerouslySetInnerHTML={{ __html: mentionChipMarkSvg(chip.kind) }} />;
   }
   return <span aria-hidden className="shrink-0 opacity-70">{chipGlyph(chip.kind)}</span>;
@@ -312,15 +238,41 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   // `@pr:` / `@mac:` chips carry only an id; resolve "#1319 title" / the
   // machine name from data the renderer already reads (short id when unknown).
   const mention = useMentionChipResolution(chip, chatScope);
-  const label = mention.label ?? facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
-  const prTarget = mention.prTarget;
-  const actionable = isActionable(chip) || prTarget !== null;
-  const open = () => {
-    if (prTarget) openAdeDeeplink(buildDeeplink(prTarget));
-    else openChip(chip, chatScope, openWorkspacePath);
+  const machineKey = chip.source.origin === "mention" && chip.source.mentionKind === "machine" ? chip.source.id : null;
+  const machineFacts = useMachineFacts(machineKey);
+  // A terminal's name lives in the chat machine's session roster.
+  const terminalId = chip.source.origin === "mention" && chip.source.mentionKind === "terminal"
+    ? chip.source.id.toLowerCase()
+    : null;
+  const terminalLabel = terminalId
+    ? scoped.sessions?.find((session) => session.id.toLowerCase() === terminalId)?.title?.trim() || null
+    : null;
+  const label = terminalLabel ?? mention.label ?? facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
+  const actionContext: ChipActionContext = {
+    scope: chatScope,
+    lanes: scoped.lanes,
+    sessions: scoped.sessions,
+    openWorkspacePath,
+    prTarget: mention.prTarget,
+    machineFacts: machineFacts ?? null,
+    openMenu: () => openMenuRef.current(),
   };
-  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped, preview?.imageUrl ?? null);
-  const tokenTitle = chipTokenTitle(chip, label);
+  const actionable = isChipActionable(chip, actionContext);
+  const open = () => openChipTarget(chip, actionContext);
+  // Built only when a menu opens (held hover, right-click), never per render.
+  // A machine's click IS its menu, so its menu has no "open" row.
+  const menuEntries = () => buildChipMenuEntries(chip, {
+    label,
+    open: actionable && !machineKey ? open : null,
+    extra: chipMenuExtras(chip, actionContext),
+    runtimePin: chatScope.pin,
+  });
+  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped, preview?.imageUrl ?? null, menuEntries);
+  const openMenuRef = useRef(hoverCard.openMenu);
+  openMenuRef.current = hoverCard.openMenu;
+  const tokenTitle = machineFacts
+    ? [machineFacts.name, machineFacts.route, machineFacts.latency].filter(Boolean).join(" · ")
+    : chipTokenTitle(chip, label);
 
   return (
     <>
@@ -334,16 +286,18 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
         // draw a second box on top of it.
         title={hoverCard.visible ? undefined : tokenTitle}
         role={actionable ? "button" : undefined}
-        tabIndex={actionable ? 0 : undefined}
         onClick={actionable ? open : undefined}
-        onKeyDown={actionable
-          ? (event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            open();
-          }
-          : undefined}
         {...hoverCard.triggerProps}
+        // Focusable even when a click does nothing, so the menu (Shift+F10)
+        // stays reachable from the keyboard.
+        tabIndex={actionable || hoverCard.supported ? 0 : undefined}
+        onKeyDown={(event) => {
+          hoverCard.triggerProps.onKeyDown?.(event);
+          if (!actionable || event.defaultPrevented) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          open();
+        }}
       >
         <ChipIcon chip={chip} markSvg={markSvg} iconDataUrl={preview?.iconDataUrl ?? null} />
         <span className="truncate">{label}</span>

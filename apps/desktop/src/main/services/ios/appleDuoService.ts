@@ -9,18 +9,31 @@ import {
   APPLE_DUO_COVER_SCREEN_ID,
   APPLE_DUO_INNER_SCREEN_ID,
   type AppleAddDuoSkillResult,
+  type AppleDeviceOrientation,
   type AppleDevicePose,
   type AppleDevicePosture,
   type AppleDuoAppStoreScreenshotsResult,
   type AppleDuoModelResult,
   type AppleRenderRequestArgs,
+  type AppleRenderProofResult,
   type AppleRenderRequestResult,
   type AppleSetPostureArgs,
   type AppleSetPostureResult,
   type IosSimulatorEventPayload,
   type IosSimulatorScreenshot,
   type IosSimulatorScreenshotArgs,
+  APPLE_ROTATE_NOT_ADOPTED_CODE,
+  APPLE_ROTATE_SEND_FAILED_CODE,
+  APPLE_ROTATE_UNMEASURABLE_CODE,
+  type AppleRotateResult,
 } from "../../../shared/types";
+import {
+  appleDuoPanelOrientation,
+  appleDuoPhysicalOrientation,
+  appleDuoScreenName,
+  appleOrientationFamily,
+  isAppleDeviceOrientation,
+} from "../../../shared/appleOrientation";
 
 /**
  * The iPhone Duo's own surface: folding and reading its pose, the panel a
@@ -47,6 +60,8 @@ export type AppleDuoServiceDeps<Runtime extends { key: string | null }> = {
     runtime: Runtime,
     render?: { kind: "screenshot" | "video_recording"; mimeType: string },
   ) => string | null;
+  /** The chat `fileScreenshotAsProof` files to, so a render can say where it went. */
+  proofOwnerChatId: (arg: Pick<IosSimulatorScreenshotArgs, "chatSessionId">, runtime: Runtime) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: { warn: (event: string, fields?: Record<string, unknown>) => void };
   captureAnalytics: (outcome: "duo_folded" | "duo_app_store_shots" | "device_rendered" | "duo_skill_added") => void;
@@ -72,6 +87,25 @@ const FOLD_FIRST_READ_MS = 600;
 const NOT_FOLDABLE_RECHECK_MS = 10_000;
 /** iOS animates into the new panel's layout after it switches. */
 const LAYOUT_SETTLE_MS = 1_200;
+/**
+ * How long `ade apple render` waits for a window to take the request. A live
+ * pane acks at once; a window's render host waits 1.5 s for panes first, and a
+ * window on another machine hears the request over its event pump.
+ */
+const APPLE_RENDER_ACK_TIMEOUT_MS = 7_500;
+
+/**
+ * The live panel's picture turn, from the helper's display list. The guest
+ * names it as SimScreen does (`landscape_left`); ADE spells it with a hyphen.
+ */
+function liveDisplayOrientation(displays: unknown): AppleDeviceOrientation | null {
+  if (!Array.isArray(displays)) return null;
+  const live = displays.find((display): display is Record<string, unknown> => (
+    Boolean(display) && typeof display === "object" && (display as Record<string, unknown>).active === true
+  ));
+  const name = typeof live?.orientation === "string" ? live.orientation.replace(/_/g, "-") : "";
+  return isAppleDeviceOrientation(name) ? name : null;
+}
 
 /** A helper `posture-get` reply or `posture-changed` event, as ADE's type. */
 export function parseHelperPosture(payload: Record<string, unknown>): AppleDevicePosture {
@@ -82,6 +116,7 @@ export function parseHelperPosture(payload: Record<string, unknown>): AppleDevic
     orientation: typeof payload.orientation === "string" ? payload.orientation : null,
     tableMode: typeof payload.tableMode === "boolean" ? payload.tableMode : null,
     activeScreenId: typeof payload.activeScreenId === "number" ? payload.activeScreenId : null,
+    displayOrientation: liveDisplayOrientation(payload.displays),
   };
 }
 
@@ -177,6 +212,87 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     return result;
   };
 
+  /**
+   * Turn a foldable and report what its live panel did. The helper's
+   * `orientation` command sends CoreDevice's physical orientation for a
+   * hinged device (the GSEvent never reaches the inner panel), and the guest's
+   * report of the live panel's turn is the measurement: the framebuffer read
+   * the rigid path uses names the cover whatever is on, and the inner panel's
+   * framebuffer never changes shape. Runs inside the caller's control slot.
+   */
+  const rotate = async (
+    deviceUdid: string,
+    orientation: AppleDeviceOrientation,
+    value: number,
+    before: AppleDevicePosture,
+    settleMs: number,
+  ): Promise<AppleRotateResult> => {
+    const base = { orientation, frameBefore: null, frameAfter: null };
+    const payload = await deps.helperSend({ type: "orientation", udid: deviceUdid, value });
+    if (payload.applied !== true) {
+      return {
+        ...base,
+        applied: false,
+        verification: "send-failed",
+        reason: APPLE_ROTATE_SEND_FAILED_CODE,
+        detail: "The simulator helper could not turn this foldable.",
+        posture: before,
+      };
+    }
+    const pictureAxis = (posture: AppleDevicePosture) => (
+      posture.displayOrientation ? appleOrientationFamily(posture.displayOrientation) : null
+    );
+    const wantedAxis = (posture: AppleDevicePosture) => appleOrientationFamily(
+      appleDuoPanelOrientation(orientation, appleDuoScreenName(posture.activeScreenId) === "inner"),
+    );
+    // Already held that way: nothing will turn, so do not wait for it.
+    if (before.orientation === appleDuoPhysicalOrientation(orientation) && pictureAxis(before) === wantedAxis(before)) {
+      return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: before };
+    }
+    // A half turn keeps the picture on its axis, so the first reading would
+    // already match; wait for the picture itself to move, then settle for the
+    // axis at the deadline.
+    const sameAxisAtStart = pictureAxis(before) === wantedAxis(before);
+    const deadline = Date.now() + settleMs;
+    let after = before;
+    for (;;) {
+      await sleep(200);
+      after = await readPosture(deviceUdid).catch((cause: unknown) => {
+        deps.logger.warn("apple.rotate_posture_unreadable", { udid: deviceUdid, error: cause instanceof Error ? cause.message : String(cause) });
+        return after;
+      });
+      const onAxis = pictureAxis(after) === wantedAxis(after);
+      const moved = after.displayOrientation !== before.displayOrientation || after.activeScreenId !== before.activeScreenId;
+      if (onAxis && (moved || !sameAxisAtStart)) {
+        return { ...base, applied: true, verification: "rotated", reason: null, detail: null, posture: after };
+      }
+      if (Date.now() >= deadline) {
+        if (onAxis) return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after };
+        break;
+      }
+    }
+    if (!pictureAxis(after)) {
+      return {
+        ...base,
+        applied: false,
+        verification: "unmeasurable",
+        reason: APPLE_ROTATE_UNMEASURABLE_CODE,
+        detail: "The phone turned, but the simulator did not say how its screen sits, so nothing is confirmed.",
+        posture: after,
+      };
+    }
+    return {
+      ...base,
+      applied: false,
+      verification: "not-adopted",
+      reason: APPLE_ROTATE_NOT_ADOPTED_CODE,
+      detail: appleDuoScreenName(after.activeScreenId) === "cover"
+        ? "The phone turned, and the cover screen stayed as it was. The cover's Home Screen is portrait-only; open an app that rotates, or unfold the phone."
+        : "The phone turned, and the app on the inner screen kept its own orientation.",
+      posture: after,
+    };
+  };
+
   const getPosture = async (postureArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> = {}): Promise<AppleDevicePosture> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(postureArgs);
@@ -192,17 +308,26 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    */
   /** "Not a foldable" answers, by when they were given: re-asked after 10 s, as the helper does. */
   const notFoldableAt = new Map<string, number>();
-  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
+  /**
+   * A foldable's posture, or null for a device without a hinge (cached, so a
+   * rigid device pays the CoreDevice lookup once per 10 s, not on every call)
+   * or one whose posture could not be read (logged under `event`).
+   */
+  const foldablePosture = async (udid: string, event: string): Promise<AppleDevicePosture | null> => {
     const no = notFoldableAt.get(udid);
-    if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return [];
+    if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return null;
     const posture = await readPosture(udid).catch((cause: unknown) => {
-      deps.logger.warn("apple.screenshot_posture_unreadable", { udid, error: cause instanceof Error ? cause.message : String(cause) });
+      deps.logger.warn(event, { udid, error: cause instanceof Error ? cause.message : String(cause) });
       return null;
     });
-    if (!posture) return [];
+    if (!posture) return null;
     if (posture.supported) notFoldableAt.delete(udid);
     else notFoldableAt.set(udid, Date.now());
-    return posture.supported && typeof posture.activeScreenId === "number" ? [`--display=${posture.activeScreenId}`] : [];
+    return posture.supported ? posture : null;
+  };
+  const screenshotDisplayArgs = async (udid: string): Promise<string[]> => {
+    const posture = await foldablePosture(udid, "apple.screenshot_posture_unreadable");
+    return posture && typeof posture.activeScreenId === "number" ? [`--display=${posture.activeScreenId}`] : [];
   };
 
   /**
@@ -328,9 +453,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
   };
 
   /**
-   * `ade apple render`: renders need a mounted 3D view, so the request goes
-   * to the Apple pane open for the lane (on any desktop pinned to this
-   * machine), which acks within 5 s and reports when it has filed the proof.
+   * `ade apple render`: renders need a 3D view, so the request goes to every
+   * desktop window with the project open (here, or pinned to this machine).
+   * A live Apple pane for the lane acks at once; failing that, a window's
+   * off-screen render host acks after giving panes first claim. Whoever acks
+   * first renders, and reports when it has filed the proof.
    */
   const pendingRenders = new Map<string, {
     /** True for the first pane to take it; every later one stands down. */
@@ -351,9 +478,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         if (acked) return;
         pendingRenders.delete(requestId);
         reject(new Error(
-          "No Apple Development pane is open for this lane. Open it in ADE (3D view available), then render again.",
+          // Nothing here can draw: renders come from a desktop window's 3D
+          // view, and the service never opens a window or a pane unasked.
+          "No ADE desktop window took this render. Renders are drawn by a desktop window's 3D view: open the project in ADE on a desktop (a project on another machine must be the window's front tab), then render again.",
         ));
-      }, 5_000);
+      }, APPLE_RENDER_ACK_TIMEOUT_MS);
       const doneTimer = setTimeout(() => {
         pendingRenders.delete(requestId);
         reject(new Error("The render did not finish within 4 minutes."));
@@ -374,18 +503,35 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
         },
       });
     });
-    deps.emit({ type: "apple.render.request", laneId: runtime.key ?? null, requestId, request });
+    deps.emit({
+      type: "apple.render.request",
+      laneId: runtime.key ?? null,
+      // The asking chat, so a render host with no chat of its own files the
+      // proof to it.
+      chatSessionId: typeof renderArgs.chatSessionId === "string" ? renderArgs.chatSessionId : null,
+      requestId,
+      request,
+    });
     return result;
   };
   const renderAck = async (ackArgs: { requestId?: string }): Promise<{ ok: boolean }> => {
     const pending = typeof ackArgs?.requestId === "string" ? pendingRenders.get(ackArgs.requestId) : undefined;
     return { ok: pending ? pending.ack() : false };
   };
-  const renderComplete = async (doneArgs: { requestId?: string; filed?: number; error?: string | null }): Promise<{ ok: boolean }> => {
+  const renderComplete = async (doneArgs: {
+    requestId?: string;
+    filed?: number;
+    error?: string | null;
+    /** The proofs this render filed, as the window that drew it reports them, so the CLI can cite them. */
+    proofArtifactIds?: unknown;
+  }): Promise<{ ok: boolean }> => {
     const pending = typeof doneArgs?.requestId === "string" ? pendingRenders.get(doneArgs.requestId) : undefined;
     pending?.complete({
       filed: typeof doneArgs.filed === "number" ? doneArgs.filed : 0,
       error: typeof doneArgs.error === "string" ? doneArgs.error : null,
+      proofArtifactIds: Array.isArray(doneArgs.proofArtifactIds)
+        ? doneArgs.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [],
     });
     return { ok: Boolean(pending) };
   };
@@ -396,7 +542,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * render is drawn by whichever window shows the pane, which may be another
    * machine; its bytes come here so the proof lands where the chat lives.
    */
-  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<{ proofArtifactId: string | null }> => {
+  const attachRenderProof = async (proofArgs: Scope & { dataUrl?: string | null; title?: string | null }): Promise<AppleRenderProofResult> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(proofArgs);
     const png = decodeScenePngDataUrl(proofArgs.dataUrl ?? null);
@@ -417,12 +563,14 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       webm ? { kind: "video_recording", mimeType: "video/webm" } : { kind: "screenshot", mimeType: "image/png" },
     );
     if (proofArtifactId) deps.captureAnalytics("device_rendered");
-    return { proofArtifactId };
+    return { proofArtifactId, chatSessionId: deps.proofOwnerChatId(proofArgs, runtime), filePath };
   };
 
   return {
     attachRenderProof,
     readPosture,
+    foldablePosture,
+    rotate,
     screenshotDisplayArgs,
     setPosture,
     getPosture,

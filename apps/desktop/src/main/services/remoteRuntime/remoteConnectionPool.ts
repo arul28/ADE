@@ -16,7 +16,10 @@ import type {
   RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
-import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import {
+  isRemoteRuntimeEventCategory,
+  RemoteRuntimeConnectError,
+} from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import {
@@ -43,6 +46,8 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
+  RemoteActionOutcomeUnknownError,
+  RemoteConnectBackoffError,
 } from "./pairedRuntimeErrors";
 import {
   DesktopPairedMachineStore,
@@ -56,6 +61,7 @@ import {
 } from "./attachmentUploadRoute";
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
+import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -120,11 +126,12 @@ type RuntimeEventNotification = {
   eventEpoch: string | null;
 };
 
-type ConnectFailureBackoff = {
-  error: Error;
-  failureCount: number;
-  retryAfterMs: number;
-};
+type ConnectFailureBackoff = { error: Error; failureCount: number } & (
+  | { kind: "retry"; retryAfterMs: number }
+  /** Retrying cannot fix it; only Try again or an edit to the machine can. */
+  | { kind: "needs_user_action" }
+);
+
 
 type RemoteConnectionPoolConnectOptions = {
   bypassFailureBackoff?: boolean;
@@ -146,6 +153,21 @@ function assertRequiredActionRoute(
 
 export { isRemoteRuntimeConnectionError };
 
+/**
+ * A connect failure that the same attempt repeated cannot fix: the SSH server
+ * refused every key, or its host key is not the trusted one. Retrying these on
+ * a timer only repeats the refusal (and can trip the server's lockout).
+ *
+ * Only for SSH targets. A paired machine reaches SSH as a fallback when its
+ * own route is down, and that route can come back without the person.
+ */
+function isUserActionConnectFailure(target: RemoteRuntimeTarget, error: unknown): boolean {
+  if (target.transport === "paired") return false;
+  return error instanceof RemoteRuntimeConnectError
+    && (error.info.kind === "ssh_auth" || error.info.kind === "host_key");
+}
+
+
 function isRemoteRuntimeStreamFailure(error: unknown): boolean {
   return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
 }
@@ -161,6 +183,9 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.prepareCrossMachineHandoff", 120_000],
   // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
   ["pr.land", 120_000],
+  // Replay-safe, but two forced GitHub snapshots and up to 25 PR refreshes do
+  // not fit the 25s replay-safe budget.
+  ["pr.reconcileOnFocus", 60_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
   // The remote daemon answers Refresh by running the same isolated ledger
@@ -186,6 +211,10 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // `foreground --wait` asks for up to 30s; the replay-safe 25s default ended it early.
+  ["ios_simulator.getForegroundApp", 60_000],
+  // A lease waits in line for up to nine minutes.
+  ["ios_simulator.deviceLease", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Windows Desktop actions that wait on a person at the Windows PC (UAC,
   // the password dialog, Windows' sign-in window). From another machine the
   // 30s default reported a timeout while Windows was still waiting.
@@ -557,7 +586,7 @@ export class RemoteConnectionPool {
       this.pendingDisconnects.delete(target.id);
       this.resolvedEntryPromises.delete(entryPromise);
       this.relayAccountOwnerByTargetId.delete(target.id);
-      this.noteConnectFailure(target.id, error);
+      this.noteConnectFailure(target.id, error, isUserActionConnectFailure(target, error));
       throw error;
     }
   }
@@ -941,6 +970,7 @@ export class RemoteConnectionPool {
         const value = await entry.client.call("ade/actions/call", {
           projectId,
           name: "list_ade_actions",
+          ...callerReportsFailureParam(),
           arguments: { domain: "all" },
         });
         return normalizeAdeActionRegistry(value);
@@ -985,6 +1015,7 @@ export class RemoteConnectionPool {
     const params = {
       projectId,
       name: "run_ade_action",
+      ...callerReportsFailureParam(),
       arguments: {
         domain: request.domain,
         action: request.action,
@@ -1069,6 +1100,7 @@ export class RemoteConnectionPool {
     const value = await entry.client.call("ade/actions/call", {
       projectId,
       name: "stream_events",
+      ...callerReportsFailureParam(),
       arguments: {
         cursor: clampCursor(request.cursor),
         limit: clampLimit(request.limit),
@@ -1334,18 +1366,12 @@ export class RemoteConnectionPool {
         nextEntry = await this.connectEntry(reconnectTarget);
       } catch (reconnectError) {
         if (options.retryOnConnectionError) throw reconnectError;
-        throw new Error(
-          "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-            "ADE could not reconnect to the machine; check the destination before retrying the action.",
-        );
+        throw new RemoteActionOutcomeUnknownError(false);
       }
       if (options.retryOnConnectionError) {
         return await operation(nextEntry);
       }
-      throw new Error(
-        "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-          "ADE reconnected to the machine; retry the action if it is still needed.",
-      );
+      throw new RemoteActionOutcomeUnknownError(true);
     }
   }
 
@@ -1389,21 +1415,44 @@ export class RemoteConnectionPool {
     entry.dispose = evict;
   }
 
-  private assertConnectNotBackingOff(targetId: string): void {
+  /** True while a connection to this target is open or opening. */
+  hasEntry(targetId: string): boolean {
+    return this.entries.has(targetId);
+  }
+
+  /**
+   * True when the last connect failed in a way only the person can fix, so
+   * nothing but `bypassFailureBackoff` (Try again) or an edit opens it again.
+   */
+  needsUserAction(targetId: string): boolean {
+    return this.connectFailureBackoffByTargetId.get(targetId)?.kind === "needs_user_action";
+  }
+
+  /** True when `error` is the failure of this target's last connect attempt. */
+  isLastConnectFailure(targetId: string, error: unknown): boolean {
+    return error != null && this.connectFailureBackoffByTargetId.get(targetId)?.error === error;
+  }
+
+  /** The machine was edited: what failed before may work now. */
+  clearConnectFailure(targetId: string): void {
+    this.connectFailureBackoffByTargetId.delete(targetId);
+  }
+
+  /** Throws `RemoteConnectBackoffError` while a recent failure holds dials back. */
+  assertConnectNotBackingOff(targetId: string): void {
     const backoff = this.connectFailureBackoffByTargetId.get(targetId);
     if (!backoff) return;
-    const remainingMs = backoff.retryAfterMs - Date.now();
-    if (remainingMs <= 0) {
+    if (backoff.kind === "needs_user_action") {
+      throw new RemoteConnectBackoffError(backoff.error.message, null);
+    }
+    if (backoff.retryAfterMs <= Date.now()) {
       this.connectFailureBackoffByTargetId.delete(targetId);
       return;
     }
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-    throw new Error(
-      `Remote ADE service connection failed recently (${backoff.error.message}). Retrying in ${seconds}s.`,
-    );
+    throw new RemoteConnectBackoffError(backoff.error.message, backoff.retryAfterMs);
   }
 
-  private noteConnectFailure(targetId: string, error: unknown): void {
+  private noteConnectFailure(targetId: string, error: unknown, needsUserAction: boolean): void {
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return;
     const normalizedError =
       error instanceof Error ? error : new Error(String(error));
@@ -1413,11 +1462,12 @@ export class RemoteConnectionPool {
       CONNECT_FAILURE_MAX_BACKOFF_MS,
       CONNECT_FAILURE_BASE_BACKOFF_MS * 2 ** Math.max(0, failureCount - 1),
     );
-    this.connectFailureBackoffByTargetId.set(targetId, {
-      error: normalizedError,
-      failureCount,
-      retryAfterMs: Date.now() + backoffMs,
-    });
+    this.connectFailureBackoffByTargetId.set(
+      targetId,
+      needsUserAction
+        ? { error: normalizedError, failureCount, kind: "needs_user_action" }
+        : { error: normalizedError, failureCount, kind: "retry", retryAfterMs: Date.now() + backoffMs },
+    );
   }
 
   private bumpDisconnectGeneration(targetId: string): void {

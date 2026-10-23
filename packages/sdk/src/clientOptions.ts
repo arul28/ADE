@@ -61,8 +61,15 @@ export type CreateAdeChatOptions = {
    * an `autoRestart` all need the values again, and this is where they come
    * from when the caller did not pass them (`refresh.mcpServers` on
    * `threads.open` wins over it; headers passed explicitly on a create win over
-   * it too). Called synchronously; return undefined for a server that needs no
-   * headers.
+   * it too). May return a Promise, so the host can refresh an OAuth token
+   * first; return undefined for a server that needs no headers.
+   *
+   * Also called before every `send`, `retry` and `editLast` of a thread with
+   * remote servers, and by `thread.refreshMcpHeaders()`: when the values
+   * changed (a token rotated), the SDK pushes them and the runtime restarts
+   * the provider between turns on the same provider thread, so a long chat
+   * never runs on an expired token. Unchanged values push nothing, so keep
+   * the callback cheap — return a cached token until it nears expiry.
    *
    * On a resume the SDK pushes the resolved servers to the runtime with
    * `updateSession`, so a rotated token takes effect on the next turn. That

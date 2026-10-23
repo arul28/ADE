@@ -20,21 +20,33 @@ describe("createTeardownStack", () => {
     expect(calls).toEqual(["processRegistry.stop", "analyticsExporter.stop", "db.close"]);
   });
 
-  it("keeps draining after a release throws, and never throws itself", () => {
+  // An async `dispose` is not awaited, and its rejection (a read of the store
+  // the same drain closed) had no handler: it reached the brain as an unhandled
+  // rejection (ADE-BRAIN-1V/3H).
+  it.each([
+    ["throws", () => { throw new Error("stop failed"); }],
+    ["returns a rejected promise", () => Promise.reject(new Error("stop failed"))],
+  ])("keeps draining after a release %s, and reports it instead of raising it", async (_label, failingRelease) => {
     const calls: string[] = [];
     const onReleaseError = vi.fn();
-    const stack = createTeardownStack(onReleaseError);
-    stack.push(() => calls.push("db.close"));
-    stack.push(() => {
-      throw new Error("stop failed");
-    });
-    stack.push(() => calls.push("processRegistry.stop"));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const stack = createTeardownStack(onReleaseError);
+      stack.push(() => calls.push("db.close"));
+      stack.push(failingRelease as () => void);
+      stack.push(() => calls.push("processRegistry.stop"));
 
-    expect(() => stack.drain()).not.toThrow();
+      expect(() => stack.drain()).not.toThrow();
+      await vi.waitFor(() => expect(onReleaseError).toHaveBeenCalledTimes(1));
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(calls).toEqual(["processRegistry.stop", "db.close"]);
-    expect(onReleaseError).toHaveBeenCalledTimes(1);
-    expect((onReleaseError.mock.calls[0]?.[0] as Error).message).toBe("stop failed");
+      expect(calls).toEqual(["processRegistry.stop", "db.close"]);
+      expect((onReleaseError.mock.calls[0]?.[0] as Error).message).toBe("stop failed");
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("lets the original startup failure reach the caller unchanged", () => {

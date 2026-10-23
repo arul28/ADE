@@ -192,7 +192,8 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
       if (account.provider !== harness) continue;
       const source: HarnessPresetSource = { kind: "account", provider: harness, instanceId: account.instanceId };
       const key = `account:${account.instanceId}`;
-      const facts = [account.email, account.plan].filter(Boolean).join(" · ");
+      // The label is already the email (or the id before sign-in).
+      const facts = [account.plan, account.email ? account.instanceId : null].filter(Boolean).join(" · ");
       groups.push({
         key,
         kind: "native",

@@ -12,6 +12,7 @@ import {
   type AttachmentViewerTarget,
 } from "./attachmentViewerTarget";
 import { Dialog } from "../ui/dialog";
+import { useChatPaneScope } from "./agentChatApi";
 
 type ResolveState =
   | { status: "loading" }
@@ -58,8 +59,16 @@ export function ChatAttachmentPreviewModal({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const [state, setState] = useState<ResolveState>({ status: "loading" });
 
+  // A personal chat's files are in its own store, not in any project
+  // workspace, and with no project open there is no file service to ask.
+  const personalChat = useChatPaneScope()?.kind === "personal";
+
   useEffect(() => {
     let cancelled = false;
+    if (personalChat) {
+      setState({ status: "error", message: "This attachment can't be previewed in a personal chat." });
+      return undefined;
+    }
     setState({ status: "loading" });
     // `Promise.resolve().then` so a bridge that throws synchronously (no
     // `window.ade.files` at all) becomes the same error state as a rejected
@@ -88,7 +97,7 @@ export function ChatAttachmentPreviewModal({
     return () => {
       cancelled = true;
     };
-  }, [files, attachmentPath]);
+  }, [files, attachmentPath, personalChat]);
 
   const registry = registryRef.current;
   // The popup owns its Monaco models; nothing else shares this registry, so

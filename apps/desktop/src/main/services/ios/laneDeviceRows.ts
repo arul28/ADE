@@ -130,3 +130,56 @@ export function writeAdeInstalledBundleIds(
 export function forgetLaneDeviceRow(store: Pick<LaneDeviceStore, "run">, laneId: string, udid: string): void {
   store.run(`delete from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ? and udid = ?`, [laneId, udid]);
 }
+
+/**
+ * The `lane_apple_extra_devices` rows: a lane's EXTRA devices
+ * (`device-create --extra`), beside its own one. ADE-made only, keyed by
+ * udid, local-only like the table above. A store without the table (an older
+ * schema) reads as no extras.
+ */
+export const LANE_APPLE_EXTRA_DEVICES_TABLE = "lane_apple_extra_devices" as const;
+
+type LaneExtraDeviceRow = {
+  lane_id: string;
+  udid: string;
+  name: string;
+  family: string;
+  runtime: string;
+  created_at: string;
+};
+
+function extraRowToDevice(row: LaneExtraDeviceRow): AppleLaneDevice {
+  return {
+    ...rowToDevice({ ...row, origin: "created" }),
+    extra: true,
+  };
+}
+
+/** The extra devices of one lane, or of every lane when `laneId` is null. */
+export function readLaneAppleExtraDevices(store: Pick<LaneDeviceStore, "all">, laneId: string | null): AppleLaneDevice[] {
+  const trimmed = laneId?.trim() ?? null;
+  const rows = trimmed
+    ? store.all<LaneExtraDeviceRow>(
+      `select lane_id, udid, name, family, runtime, created_at from ${LANE_APPLE_EXTRA_DEVICES_TABLE} where lane_id = ? order by created_at`,
+      [trimmed],
+    )
+    : store.all<LaneExtraDeviceRow>(
+      `select lane_id, udid, name, family, runtime, created_at from ${LANE_APPLE_EXTRA_DEVICES_TABLE} order by created_at`,
+    );
+  return rows.map(extraRowToDevice);
+}
+
+export function writeLaneAppleExtraDevice(store: Pick<LaneDeviceStore, "run">, device: AppleLaneDevice): void {
+  store.run(
+    `insert into ${LANE_APPLE_EXTRA_DEVICES_TABLE} (udid, lane_id, name, family, runtime, created_at)
+     values (?, ?, ?, ?, ?, ?)
+     on conflict(udid) do update set lane_id = excluded.lane_id, name = excluded.name,
+       family = excluded.family, runtime = excluded.runtime, created_at = excluded.created_at`,
+    [device.udid, device.laneId, device.name, device.family, device.runtime, device.createdAt],
+  );
+}
+
+/** Drop one extra row, by lane AND udid. */
+export function forgetLaneAppleExtraDevice(store: Pick<LaneDeviceStore, "run">, laneId: string, udid: string): void {
+  store.run(`delete from ${LANE_APPLE_EXTRA_DEVICES_TABLE} where lane_id = ? and udid = ?`, [laneId, udid]);
+}

@@ -23,10 +23,16 @@ export function readMachineCallScope(value: unknown): MachineCallScope | null {
   const kind = value.kind;
   if (kind === "personal" || kind === "machine") return { kind };
   if (kind === "repo" && typeof value.originUrl === "string" && value.originUrl.trim()) {
+    // `orAnyProject`: a machine-wide read that any project there can answer.
+    if (value.orAnyProject === true) return { kind: "anyProject", originUrl: value.originUrl.trim() };
     return { kind, originUrl: value.originUrl.trim() };
   }
   if (kind === "project" && typeof value.selector === "string" && value.selector.trim()) {
     return { kind, selector: value.selector.trim() };
+  }
+  if (kind === "anyProject") {
+    const originUrl = typeof value.originUrl === "string" && value.originUrl.trim() ? value.originUrl.trim() : null;
+    return { kind, originUrl };
   }
   return null;
 }

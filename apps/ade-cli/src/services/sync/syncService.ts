@@ -886,14 +886,14 @@ export function createSyncService(args: SyncServiceArgs) {
           });
         }
       }
-      void emitStatus();
+      scheduleStatusEmit();
     },
     onBrainStatus: (payload) => {
       deviceRegistryService.applyBrainStatus(payload);
-      void emitStatus();
+      scheduleStatusEmit();
     },
     onRemoteChangesApplied: () => {
-      void refreshRoleState();
+      refreshRoleStateInBackground();
     },
   });
 
@@ -1012,7 +1012,11 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const emitStatus = async (): Promise<void> => {
     if (disposed) return;
-    args.onStatusChanged?.(await service.getStatus());
+    const snapshot = await service.getStatus();
+    // The snapshot awaits chat and session reads; a dispose in that window
+    // already told listeners the service is gone.
+    if (disposed) return;
+    args.onStatusChanged?.(snapshot);
   };
 
   /**
@@ -1045,6 +1049,9 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     statusEmitInFlight = emitStatus()
       .catch((error) => {
+        // A dispose closes the project database under a snapshot that is
+        // still reading it. Nobody listens any more, so that is not a failure.
+        if (disposed) return;
         // Reaching the role succeeded; only the notification failed. Failing
         // the caller for it is the confusion this path exists to remove.
         args.logger.warn("sync.status_emit_failed", {
@@ -1236,7 +1243,7 @@ export function createSyncService(args: SyncServiceArgs) {
         isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
       loopbackProbe: args.loopbackProbe,
       onStateChanged: () => {
-        void refreshRoleState();
+        refreshRoleStateInBackground();
       },
     });
     const finishHostStartup = (started: SyncHostService, resolvedPort: number): void => {
@@ -1585,6 +1592,20 @@ export function createSyncService(args: SyncServiceArgs) {
     });
     refreshPromise = work;
     return work;
+  };
+
+  /**
+   * A role refresh nobody awaits: a peer or host event asked for it. Its
+   * failure must not become an unhandled rejection, and one that a dispose
+   * caused (the database closed under it) is not worth a warning.
+   */
+  const refreshRoleStateInBackground = (): void => {
+    refreshRoleState().catch((error: unknown) => {
+      if (disposed) return;
+      args.logger.warn("sync.role_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const listRuntimeDevices = async (): Promise<SyncDeviceRuntimeState[]> => {
@@ -1955,7 +1976,7 @@ export function createSyncService(args: SyncServiceArgs) {
       if (hostDiscoveryEnabled === enabled) return;
       hostDiscoveryEnabled = enabled;
       hostService?.setDiscoveryEnabled(enabled);
-      void emitStatus();
+      scheduleStatusEmit();
     },
 
     getHostBlocker(): SyncHostBlocker | null {
@@ -2238,7 +2259,7 @@ export function createSyncService(args: SyncServiceArgs) {
      * hidden until some unrelated sync event happened along.
      */
     notifyRouteStateChanged(): void {
-      void emitStatus();
+      scheduleStatusEmit();
     },
 
     getHostService(): SyncHostService | null {

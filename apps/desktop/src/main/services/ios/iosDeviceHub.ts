@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeLaunchArguments } from "./iosLaunchArgs";
 import type {
   IosScreenSnapshot,
   IosSimulatorAppState,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorCloseDeviceResult,
@@ -619,21 +621,24 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * asking to relaunch wants to see the same binary from its first screen,
      * and paying for a rebuild to get there is the wrong price.
      */
-    async relaunchApp(args: IosSimulatorAppLifecycleArgs): Promise<IosSimulatorAppState> {
+    async relaunchApp(args: IosSimulatorRelaunchArgs): Promise<IosSimulatorAppState> {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       // Validated before the terminate, because the catch below is deliberately
       // blind: an app that is not running must not fail a relaunch, and without
       // this an empty bundle id would be swallowed there and then handed to
       // `launch` anyway.
       if (!args.bundleId?.trim()) throw new Error("A relaunch needs a bundle id.");
+      const launchArguments = normalizeLaunchArguments(args.arguments);
       await tools.terminateApp(udid, args.bundleId).catch(() => {
         // Terminating an app that is not running is not a failure; the launch
         // below is what the caller actually asked for.
       });
-      await tools.launchApp(udid, args.bundleId);
+      await tools.launchApp(udid, args.bundleId, launchArguments);
       recordAction(
         `Relaunched ${args.bundleId}.`,
-        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}`,
+        // The arguments are not recorded: one can carry a token, and the
+        // action log ends up in proof bundles.
+        `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}${launchArguments.length ? ` -- <${launchArguments.length} launch arguments>` : ""}`,
       );
       return tools.getAppState(udid, args.bundleId);
     },

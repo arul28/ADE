@@ -12,6 +12,7 @@ import {
   normalizeCallerMcpCapability,
   normalizeCallerMcpServers,
   providerAcceptsCallerMcpServers,
+  redactCallerMcpText,
   resolveCallerMcpCapability,
 } from "./callerMcpServers";
 
@@ -365,5 +366,24 @@ describe("normalizeCallerMcpServers stays lenient", () => {
       computer_use: { type: "http", url: "https://example.test/mcp" },
       brokenUrl: { type: "http", url: "nope" },
     })).toEqual({ good: { type: "http", url: "https://example.test/mcp" } });
+  });
+});
+
+describe("redactCallerMcpText", () => {
+  // A failing MCP server's error is cached and shown in other chats' `@mcp`
+  // cards, so any credential it echoes back must not survive.
+  const servers = {
+    remote: { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer sk-live-remote-token" } },
+    local: { type: "stdio", command: "npx", args: ["server"], env: { API_KEY: "local-env-secret-value" } },
+  } as const;
+
+  it.each([
+    ["a header bearer token", "401 for Bearer sk-live-remote-token", "sk-live-remote-token"],
+    ["a header token echoed without its scheme", "token sk-live-remote-token rejected", "sk-live-remote-token"],
+    ["a stdio env value", "spawn failed: API_KEY=local-env-secret-value invalid", "local-env-secret-value"],
+  ])("removes %s", (_case, text, secret) => {
+    const out = redactCallerMcpText(text, servers as never);
+    expect(out).not.toContain(secret);
+    expect(out).toContain("<redacted>");
   });
 });

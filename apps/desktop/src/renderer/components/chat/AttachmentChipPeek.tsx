@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import type { AgentChatFileRef } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
+import { useChatImageReader } from "./agentChatApi";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 
@@ -36,12 +37,16 @@ export function useAttachmentThumbnail(
   // pin for the same machine does not read the image again.
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  // A personal chat's attachments open only through its own API.
+  const reader = useChatImageReader();
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
 
   useEffect(() => {
     let cancelled = false;
     setDataUrl(initialUrl ?? null);
     if (!path || initialUrl) return;
-    readAttachmentImageDataUrl(path, pinRef.current)
+    readAttachmentImageDataUrl(path, pinRef.current, { reader: readerRef.current })
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })

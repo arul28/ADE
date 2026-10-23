@@ -113,6 +113,18 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   actions keep their action-specific budgets. Automatic reconnects use bounded
   exponential backoff from 30 s to 5 minutes and remain eligible indefinitely,
   so a temporary sleep/network gap does not require restarting the desktop app.
+  Implicit calls (a pane's poll, an event read) wait for the same backoff when
+  the machine has no open connection: they fail fast with `Remote ADE service
+  connection failed recently (…)` instead of each dialing. Calls that share one
+  failed dial count it once. An SSH target whose last connect failed with
+  `ssh_auth` or `host_key` is not retried at all until Try again (explicit
+  Connect), an edit to the target, or trusting the host key; the status message
+  then says ADE stopped retrying. Paired machines are never held this way, because their own
+  route can come back on its own. A manual disconnect sets
+  `reconnectBlocked: "disconnected"`, and the preload then answers that
+  machine's calls itself, with main's refusal text, instead of sending them
+  (`preload/remoteTargetGate.ts`); the window's event pump
+  parks until a snapshot shows the machine connected again.
 - `apps/desktop/src/renderer/components/settings/SettingsMachineScope.tsx`
   and `settings/health/useHealthData.ts` — machine-scoped Settings pages pass
   the selected machine binding to project reads and clear the previous
@@ -273,7 +285,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   a fresh Alpha/Beta app then staleness-locks onto a brain left by an earlier
   build. Repairing a *missing* endpoint stays a plain install (nothing to
   replace), and isolated recovery also forces, since it only runs after the
-  primary endpoint failed to probe compatible.
+  primary endpoint failed to probe compatible. A forced install cannot replace
+  a brain the service manager does not own, such as one an old `ade` CLI
+  started on the machine socket. So isolated recovery
+  (`olderBrainRetirement.ts`) asks a strictly older brain on the primary socket
+  to shut down through its own `shutdown` call, the clean exit that saves chats
+  for restart recovery. It never signals or force-kills, and it acts only in a
+  packaged desktop with the service installed, outside quit and update windows,
+  once per pid, and never for this process, a pool-owned brain or a brain the
+  desktop runs under. During quit, a call whose connection drops is not
+  retried: it ends as "connection closed", and `drain()` waits for every action
+  call, not only coalesced ones.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
   project/machine failure reports used when the background service exits before
   desktop IPC can obtain a normal runtime error.
@@ -1590,13 +1612,17 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
 - `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
-- `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy.
+- `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
+- `SSH authentication failed for user(s) … ADE won't retry on its own. Fix this, then press Try again.` — the server refused every key. ADE stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.
+- `The SSH host key of <host:port> is not the one ADE trusts for this machine.` — the key does not match `known_hosts`. ADE stops retrying until the key is trusted again or Try again is pressed.
+- `Nothing is accepting SSH connections at <host:port>.` (kind `unreachable`) — the port refused the connection (for `localhost`, on both IPv4 and IPv6). The machine is off, sshd is not running, or a port forward is missing. Automatic reconnects continue with backoff.
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
 - `ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.` — ADE could not initialize any compatible installed service. Expand technical details to see each channel home and the launch, initialization, or capability-negotiation failure.
 - `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
 - `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
+- `Remote ADE service connection was interrupted before ADE could confirm the action result. ADE reconnected …` — the link dropped while a call that must not run twice was in flight. The machine is reachable, so the connection status stays healthy; only that call's result is unknown. Idempotent writes the desktop sends on its own (`work_tools.setActiveTool`, `pr.reconcileOnFocus`, `session.clearWokeMarker`) are replay-safe and run again instead.
 - `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.
 - A cross-machine handoff warning that ADE lost confirmation — destination
   acceptance was already dispatched, but its request timed out or the runtime

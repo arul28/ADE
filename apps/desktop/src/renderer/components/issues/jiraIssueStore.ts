@@ -152,6 +152,9 @@ function loadJiraThreadEntityBindings(
   pin: OpenProjectBinding | null,
   force = false,
 ): Promise<void> {
+  // Jira is set up per project. With no project open and no machine pinned
+  // there is no project config to read, so a chat links no Jira keys.
+  if (!projectRoot && !pin) return Promise.resolve();
   const key = scopeKey(projectRoot, pin);
   const current = threadEntityBindings.get(key) ?? EMPTY_THREAD_ENTITY_BINDINGS;
   if (current.promise) return current.promise;

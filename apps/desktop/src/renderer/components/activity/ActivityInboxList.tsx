@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import {
   ArrowsClockwise,
+  Bell,
   CheckCircle,
   CircleDashed,
   GitBranch,
@@ -13,7 +14,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { ACTIVITY_EVENT_BY_KIND, type ActivityIconKey } from "../../../shared/activityCatalog";
-import type { AttentionItem } from "../../../shared/types";
+import { ATTENTION_MESSAGE_EVENT_KIND, type AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
 import { cn } from "../ui/cn";
 import { ActivitySectionHeader } from "./ActivitySectionHeader";
@@ -38,6 +39,12 @@ const CATALOG_ICON: Record<ActivityIconKey, React.ElementType> = {
   closed: Prohibit,
 };
 
+/** A message's body, when it says more than its title. */
+function messageBody(item: AttentionItem): string | null {
+  const body = item.preview.trim();
+  return body && body !== item.title.trim() ? body : null;
+}
+
 /** Repo first, project second: a notification's subject is where it landed. */
 function notificationGroupName(item: AttentionItem): string {
   return item.project.name?.trim() || "Elsewhere";
@@ -54,9 +61,20 @@ function InboxRow({
   onOpen: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
 }) {
-  const descriptor = ACTIVITY_EVENT_BY_KIND[item.eventKind];
-  const Icon = CATALOG_ICON[descriptor?.iconKey ?? "pull-request"] ?? GitBranch;
-  const tone = activityItemPresentation(item)?.tone ?? "neutral";
+  const message = item.kind === "message";
+  const descriptor = item.eventKind === ATTENTION_MESSAGE_EVENT_KIND
+    ? null
+    : ACTIVITY_EVENT_BY_KIND[item.eventKind];
+  const Icon = message
+    ? Bell
+    : CATALOG_ICON[descriptor?.iconKey ?? "pull-request"] ?? GitBranch;
+  // A message is the agent's own words, not a state, so it takes no state hue.
+  const tone = message ? "neutral" : activityItemPresentation(item)?.tone ?? "neutral";
+  // A message reads as what it says, then which chat sent it; everything else
+  // as what happened, then where.
+  const subtitle = message
+    ? [messageBody(item), item.detail?.trim() || null].filter(Boolean).join(" · ")
+    : `${descriptor?.label ?? item.eventKind} · ${item.machine.name}`;
   return (
     <div
       className={cn("activity-inbox-row", `activity-tone-${tone}`)}
@@ -78,9 +96,7 @@ function InboxRow({
         <span className="activity-inbox-copy">
           <strong>{item.title}</strong>
           <span>
-            {descriptor?.label ?? item.eventKind}
-            {" · "}
-            {item.machine.name}
+            {subtitle}
             {" · "}
             {relativeWhen(item.updatedAt)}
           </span>
@@ -160,8 +176,8 @@ export function ActivityInboxList({
             <CheckCircle size={20} weight="duotone" aria-hidden />
             <strong>Inbox zero</strong>
             <p>
-              Failing checks, review requests, and merged work you haven’t
-              seen collect here.
+              Failing checks, review requests, merged work you haven’t seen,
+              and messages you asked agents to send collect here.
             </p>
           </>
         )}

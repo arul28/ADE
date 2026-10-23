@@ -233,7 +233,16 @@ export class ProjectRegistry {
         "Refusing to register the user home directory or filesystem root as an ADE project. Choose a project folder.",
       );
     }
-    const stat = fs.statSync(normalized);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(normalized);
+    } catch (error) {
+      // A recent project whose folder was moved or deleted since.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`Project folder not found: ${normalized}. It may have been moved or deleted.`);
+      }
+      throw error;
+    }
     if (!stat.isDirectory()) {
       throw new Error(`Project root is not a directory: ${normalized}`);
     }

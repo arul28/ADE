@@ -14,8 +14,8 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
-import type { ProofDrawerFocus } from "../../../shared/proofDrawerModel";
+import { CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -99,7 +99,7 @@ import {
   AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
 } from "../../../shared/types/chat";
-import { musePermissionModeFromLegacyPermissionMode } from "../../../shared/modelPermissions";
+import { musePermissionModeFromLegacyPermissionMode, nativePermissionToCliMode, resolveModelPermissionValue } from "../../../shared/modelPermissions";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
@@ -254,6 +254,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { pendingSettingsAfterBackgroundLabel, pendingSettingsAfterBackgroundShortLabel } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -340,7 +341,7 @@ import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./Compose
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
-import { cancelWorkDraftLaneRequest } from "../../lib/workDraft";
+import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -509,6 +510,7 @@ import {
   CLAUDE_SESSION_QUOTA_FORK_NOTE,
 } from "../../../shared/claudeSessionQuota";
 import {
+  applyUnifiedPermissionToNativeControls,
   defaultNativeControls,
   summarizeNativeControls as summarizeNativeLaunchControls,
 } from "../../lib/nativeLaunchControls";
@@ -4489,6 +4491,15 @@ export function AgentChatPane({
     setProofFocus(focus ?? null);
     setChatActionsOpen(true);
   }, []);
+  useEffect(() => {
+    const onOpenArtifact = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null; artifactId?: string }>).detail;
+      if (!detail?.artifactId || detail.sessionId !== selectedSessionId) return;
+      openProofDrawer(proofDrawerFocus("Artifact", [{ id: detail.artifactId }]));
+    };
+    window.addEventListener("ade:chat:open-artifact", onOpenArtifact);
+    return () => window.removeEventListener("ade:chat:open-artifact", onOpenArtifact);
+  }, [openProofDrawer, selectedSessionId]);
   const clearProofFocus = useCallback(() => setProofFocus(null), []);
   // The thread's "N sources" chip opens the drawer with Sources narrowed to
   // that turn; the section's "Show all" clears it.
@@ -5080,7 +5091,12 @@ export function AgentChatPane({
   // The header PR pill opens the per-lane PR tools tab. Pressed state follows
   // the tab the Work pane is showing for this lane.
   const workSidebar = useWorkSidebarTool(laneId, chatRuntimePin);
-  const attachedTerminalShells = useAttachedTerminalShells(selectedSessionId, chatRuntimePin);
+  // A personal chat's shell is the Chats page's own panel, owned by the
+  // personal scope; the project terminal service has none (and with no project
+  // open there is no terminal service to ask at all).
+  const attachedTerminalShells = useAttachedTerminalShells(selectedSessionId, chatRuntimePin, {
+    enabled: !isPersonalPane,
+  });
   const hasAttachedTerminal = hasAttachedTerminalShell(attachedTerminalShells);
   const renderedSession = useMemo(
     () => (
@@ -8850,15 +8866,18 @@ export function AgentChatPane({
       // Fire-and-forget: this snapshot only feeds `sendOnEnter`, so awaiting it
       // put a config round trip in front of the session list AND the model
       // catalog on every single boot.
-      void getProjectConfigCached({ projectRoot })
-        .then((snapshot) => {
-          if (cancelled) return;
-          // Don't auto-restore model — user must pick one explicitly each session
-          setSendOnEnter(snapshot.effective.ai?.chat?.sendOnEnter ?? true);
-        })
-        .catch(() => {
-          // fall back to defaults.
-        });
+      // With no project open there is no project config: the default holds.
+      if (projectRoot) {
+        void getProjectConfigCached({ projectRoot })
+          .then((snapshot) => {
+            if (cancelled) return;
+            // Don't auto-restore model — user must pick one explicitly each session
+            setSendOnEnter(snapshot.effective.ai?.chat?.sendOnEnter ?? true);
+          })
+          .catch(() => {
+            // fall back to defaults.
+          });
+      }
 
       const sessionsRefresh = refreshSessions().catch(() => undefined);
       const modelsRefresh = refreshAvailableModels().catch(() => []);
@@ -11065,12 +11084,16 @@ export function AgentChatPane({
   // may still target "Auto-create lane", which would hide that lane and create
   // a new one on send.
   const workDraftProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const applyWorkDraftModelRequestRef = useRef<(request: WorkDraftModelRequest) => void>(() => {});
   useWorkDraftLaneRequest({
-    ready: isWorkDraftComposer && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue,
+    ready: isWorkDraftComposer
+      && hydratedComposerDraftStorageKey === composerDraftStorageKeyValue
+      && preferencesReady,
     projectStateKey: workDraftProjectStateKey,
-    onRequest: () => {
+    onRequest: ({ modelRequest }) => {
       setDraftLaunchTargetId(null);
       clearNewLaneConfig();
+      if (modelRequest) applyWorkDraftModelRequestRef.current(modelRequest);
     },
   });
 
@@ -15906,7 +15929,9 @@ export function AgentChatPane({
     shellIdsRef.current = new Set();
     setAttachedShells([]);
     setShellsLoadError(false);
-    if (!sessionId) return undefined;
+    // A personal chat's shell is the Chats page's own panel; the project's
+    // session list does not hold it (and with no project open, there is none).
+    if (!sessionId || isPersonalPane) return undefined;
     // A host that cannot list sessions has no shells to show. That is a
     // capability it does not have, not a failed load — the same degradation
     // every optional runtime surface here uses — so it neither errors nor
@@ -15971,7 +15996,7 @@ export function AgentChatPane({
     };
     // `shellsReloadNonce` is the Retry action; `chatRuntimePinKey` re-reads and
     // re-subscribes when the chat's machine resolves or changes.
-  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce]);
+  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce, isPersonalPane]);
 
   const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
   const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
@@ -17058,6 +17083,19 @@ export function AgentChatPane({
       runtimePin={renderedChatRuntimePin}
     />
   ) : null;
+  // An effort / fast-mode change the host holds until the chat's background
+  // work ends (applying it restarts the agent process, which would stop that
+  // work). Read off the session summary; it clears when the change applies.
+  const pendingSettingsAfterBackground = renderedSession?.pendingSettingsAfterBackground ?? [];
+  const pendingSettingsChip = composerSessionId && pendingSettingsAfterBackground.length ? (
+    <StatusChip
+      tone="neutral"
+      icon={<ClockCountdown size={10} weight="bold" />}
+      label={pendingSettingsAfterBackgroundShortLabel(pendingSettingsAfterBackground)}
+      tooltip={`The ${pendingSettingsAfterBackgroundLabel(pendingSettingsAfterBackground)} finishes. Applying it now would restart the agent and stop that work.`}
+      testId="chat-pending-settings-chip"
+    />
+  ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
     && selectedSession.orchestrationParentSessionId
@@ -17259,6 +17297,40 @@ export function AgentChatPane({
     applyModelSelectionSnapshot(snapshot);
   };
   composerModelChangeRef.current = handleComposerModelChange;
+  applyWorkDraftModelRequestRef.current = (request) => {
+    // Both catalogs follow the chat's composer machine. A model missing there
+    // is left alone; the draft itself still opens on the requested lane.
+    if (
+      !availableModelIds.includes(request.modelId)
+      && !runtimeCatalogModelIds(modelCatalogScopeKey).includes(request.modelId)
+    ) return;
+    handleComposerModelChange(request.modelId);
+    handleReasoningEffortChange(request.reasoningEffort);
+
+    if (!request.permission) return;
+    const provider = resolveChatRuntimeProvider(
+      resolveScopedModelDescriptor(request.modelId, modelCatalogScopeKey),
+    );
+    const nativePermission = resolveModelPermissionValue(provider, request.permission);
+    if (!nativePermission) return;
+    const requestedFamily = permissionLadderFamilyForProvider(provider);
+    if (requestedFamily) visitedLadderFamiliesRef.current.add(requestedFamily);
+    if (provider === "cursor") {
+      void updateNativeControls({ cursorModeId: nativePermission });
+      return;
+    }
+    if (provider === "droid") {
+      void updateNativeControls({ droidPermissionMode: nativePermission as AgentChatDroidPermissionMode });
+      return;
+    }
+    const permissionMode = nativePermissionToCliMode(provider, nativePermission);
+    if (!permissionMode) return;
+    void updateNativeControls(applyUnifiedPermissionToNativeControls(
+      request.modelId,
+      permissionMode as AgentChatPermissionMode,
+      nativeControlsRef.current,
+    ));
+  };
   const composerElement = (
       <AgentChatComposer
             scheduledSendContext={scheduledSendContext}
@@ -17680,6 +17752,7 @@ export function AgentChatPane({
         {usageLimitChip}
         <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
+        {pendingSettingsChip}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"

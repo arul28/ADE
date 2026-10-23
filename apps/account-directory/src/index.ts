@@ -1,7 +1,9 @@
 import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
+import { cloudflareTransientKind, logCloudflareTransient, retryD1Reads, transientUnavailableResponse } from "./cloudflareTransient";
 import { sentryOptions, type SentryEnv } from "./sentry";
+import { scrubString } from "./sentryScrub";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
 import { cleanupExpiredDeviceAuthorizations } from "./deviceAuthorization";
 import {
@@ -31,27 +33,42 @@ import {
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv & SentryEnv;
 
+function route(request: Request, env: WorkerEnv): Promise<Response> {
+  // Diagnostics and usage research are matched before the directory because
+  // they are the routes here that are not account-scoped: `handleRequest`
+  // answers an unknown OPTIONS with 404 and applies the directory's
+  // exact-origin CORS rule, neither of which fits a write-only sink that an
+  // unauthenticated client has to be able to reach.
+  const url = new URL(request.url);
+  if (isDiagnosticsRequest(url)) return handleDiagnosticsRequest(request, env);
+  if (isUsageResearchRequest(url)) return handleUsageResearchRequest(request, env);
+  // The model registry takes an account bearer but is not a directory route:
+  // it answers GET and HEAD only, has no CORS (the ADE brain is the only
+  // caller), and caches with an ETag.
+  if (isModelRegistryRequest(url)) return handleModelRegistryRequest(request, env);
+  // Apple Music developer tokens: same shape as the registry (account bearer,
+  // GET only, no CORS — the desktop main process is the only caller).
+  if (isMusicDeveloperTokenRequest(url)) return handleMusicDeveloperTokenRequest(request, env);
+  // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
+  // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
+  if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
+  return handleRequest(request, env);
+}
+
 export default Sentry.withSentry(sentryOptions, {
-  fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    // Diagnostics and usage research are matched before the directory because
-    // they are the routes here that are not account-scoped: `handleRequest`
-    // answers an unknown OPTIONS with 404 and applies the directory's
-    // exact-origin CORS rule, neither of which fits a write-only sink that an
-    // unauthenticated client has to be able to reach.
-    const url = new URL(request.url);
-    if (isDiagnosticsRequest(url)) return handleDiagnosticsRequest(request, env);
-    if (isUsageResearchRequest(url)) return handleUsageResearchRequest(request, env);
-    // The model registry takes an account bearer but is not a directory route:
-    // it answers GET and HEAD only, has no CORS (the ADE brain is the only
-    // caller), and caches with an ETag.
-    if (isModelRegistryRequest(url)) return handleModelRegistryRequest(request, env);
-    // Apple Music developer tokens: same shape as the registry (account bearer,
-    // GET only, no CORS — the desktop main process is the only caller).
-    if (isMusicDeveloperTokenRequest(url)) return handleMusicDeveloperTokenRequest(request, env);
-    // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
-    // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
-    if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-    return handleRequest(request, env);
+  async fetch(request: Request, workerEnv: WorkerEnv): Promise<Response> {
+    // Reads ride through D1's short Cloudflare-side outages.
+    const env = { ...workerEnv, DB: retryD1Reads(workerEnv.DB) };
+    try {
+      return await route(request, env);
+    } catch (error) {
+      // A route outside the directory hit D1 restarting under Cloudflare: the
+      // caller retries a 503, so answer that and keep it out of Sentry.
+      const transient = cloudflareTransientKind(error);
+      if (!transient) throw error;
+      logCloudflareTransient("ade-account-directory", transient, scrubString(new URL(request.url).pathname), error);
+      return transientUnavailableResponse();
+    }
   },
 
   async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {

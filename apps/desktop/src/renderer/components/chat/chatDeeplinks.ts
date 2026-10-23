@@ -42,6 +42,12 @@ export function openChatDeeplinkTarget(
     navigateToAppTarget({ kind: "commit", sha: target.sha, laneId: scope.laneId, machineId: chatMachineId(scope) });
     return;
   }
+  if (target.kind === "session") {
+    // The link names a chat, not this chat's lane; the app finds its lane and
+    // machine itself (local first, then every connected machine).
+    navigateToAppTarget({ kind: "chat", sessionId: target.sessionId });
+    return;
+  }
   // A commit that names its own lane (a chip carrying one) still belongs to the
   // chat's machine: the generic route would resolve the lane against the tab's,
   // where a same-id local lane could win before the chat's remote one.
@@ -83,6 +89,7 @@ export function openChatDeeplinkTarget(
         openIssueRef({
           ref: { provider: "github", owner: resolved.owner, repo: resolved.repo, number: prNumber, url: resolved.issue.url },
           source: "chip",
+          pin: scope.pin,
         });
       })
       .catch(openPr);

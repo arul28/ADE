@@ -858,10 +858,13 @@ export type SyncRoleSnapshot = {
   crdtSyncAvailable?: boolean;
   /**
    * Set only on a fallback snapshot the main process synthesized because the
-   * local runtime could not answer (see buildMachineOnlySyncSnapshot). Carries
-   * the reason. Absent on every real snapshot, so renderers can back off on a
-   * degraded read without guessing from route health — which is legitimately
-   * all-down on healthy machines that host nothing.
+   * local runtime could not answer (see buildMachineOnlySyncSnapshot), from
+   * `sync.getLocalStatus` or a project's `sync.getStatus`. Carries the reason.
+   * Its role and routes are placeholders: a reader must treat the snapshot as
+   * "couldn't read" (`isDegradedSyncSnapshot`), never as this machine's state.
+   * Absent on every real snapshot, so renderers can back off on a degraded
+   * read without guessing from route health — which is legitimately all-down
+   * on healthy machines that host nothing.
    */
   degradedReason?: string;
   survivableStateText: string;

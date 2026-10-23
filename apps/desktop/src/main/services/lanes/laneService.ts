@@ -3596,6 +3596,10 @@ export function createLaneService({
     } else {
       db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     }
+    // Extra devices (`device-create --extra`) are keyed by udid, so the
+    // keeper takes all of them; left behind, the cleanup pass would delete
+    // them as belonging to an ended lane.
+    db.run("update lane_apple_extra_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     // Everything else lane-scoped on the duplicate cascades away. The duplicate
     // is a create/recover race artifact, not a lane the user made, and its
     // sessions now belong to the keeper — so its tombstone preserves whatever

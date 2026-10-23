@@ -76,7 +76,7 @@ function normalizeBranchForCompare(branch: string): string {
   return normalized;
 }
 
-function laneOwnedByBranch(lanes: LaneSummary[], branch: string): LaneSummary | null {
+export function laneOwnedByBranch(lanes: LaneSummary[], branch: string): LaneSummary | null {
   const normalized = normalizeBranchForCompare(branch);
   return (
     lanes.find((lane) => normalizeBranchForCompare(lane.branchRef ?? "") === normalized) ?? null

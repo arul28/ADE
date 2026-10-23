@@ -30,13 +30,17 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
-import type { BuiltInBrowserStatus } from "../../../shared/types/builtInBrowser";
+import {
+  BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
+  type BuiltInBrowserStatus,
+} from "../../../shared/types/builtInBrowser";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createComputerUseNamespace } from "./computerUse";
@@ -273,8 +277,15 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   infra.addDispose(
     events.on("githubInvalidated", async () => {
-      const status = await call("github.getStatus", {}, githubDisconnectedStatus());
-      events.emit("githubStatusChanged", status);
+      // A computer that is reconnecting, or a project switch, ends the read;
+      // the status shown stays until the next invalidation reads it again.
+      const status = await call("github.getStatus", {}, githubDisconnectedStatus()).catch((error: unknown) => {
+        forwardLogToSentry("warn", "web.github_status_reread_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+      if (status) events.emit("githubStatusChanged", status);
     })
   );
 
@@ -1286,6 +1297,8 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
     bounds: { x: 0, y: 0, width: 0, height: 0 },
     activeTabId: null,
     tabs: [],
+    tabCount: 0,
+    tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
     url: null,
     title: null,
     isLoading: false,
@@ -1296,6 +1309,7 @@ export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
     ownerLaneId: null,
     ownerChatSessionId: null,
     ownerClaimedAt: null,
+    ownerLastActiveAt: null,
     ownerLeaseExpiresAt: null,
   };
 }

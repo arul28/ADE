@@ -1992,6 +1992,11 @@ function installRealTranscriptParser(): void {
   );
 }
 
+/** The chat's dedicated transcript, the only file chats write events to. */
+function dedicatedTranscriptPath(sessionId: string): string {
+  return path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
+}
+
 function writeTestTranscriptEnvelopes(sessionId: string, envelopes: AgentChatEventEnvelope[]): void {
   const raw = `${envelopes.map((envelope) => JSON.stringify(envelope)).join("\n")}\n`;
   const legacyPath = mockState.sessions.get(sessionId)?.transcriptPath;
@@ -1999,7 +2004,7 @@ function writeTestTranscriptEnvelopes(sessionId: string, envelopes: AgentChatEve
     fs.mkdirSync(path.dirname(String(legacyPath)), { recursive: true });
     fs.writeFileSync(String(legacyPath), raw, "utf8");
   }
-  const durablePath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${sessionId}.jsonl`);
+  const durablePath = dedicatedTranscriptPath(sessionId);
   fs.mkdirSync(path.dirname(durablePath), { recursive: true });
   fs.writeFileSync(durablePath, raw, "utf8");
 }
@@ -2490,6 +2495,7 @@ export {
   query,
   readPendingInputRecord,
   readPersistedChatState,
+  dedicatedTranscriptPath,
   readThreadPointerLedger,
   realSetImmediate,
   releaseCursorSdkConnection,

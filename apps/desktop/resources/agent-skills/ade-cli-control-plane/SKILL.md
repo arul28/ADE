@@ -21,6 +21,7 @@ to inspect or control an existing ADE-owned terminal session.
 2. Run `ade help <command>` or `ade help <command> <subcommand>` before guessing flags.
 3. Prefer `--text` for human-readable output and JSON output when scripting.
 4. Use `ade actions list --text` or `ade actions list --domain <domain> --text` as the escape hatch for service methods without a typed command.
+5. Before running an action, `ade actions describe <domain.action> --text` prints its read/write access, description, documented input fields and an example (actions without a documented contract say so).
 
 ## Project secrets
 
@@ -159,7 +160,9 @@ and receive the same lineage environment. The parent thread shows a CLI child
 as a subagent card, but the card closes (and a `subagent` wakes the parent with
 the CLI's last message) only when the CLI process exits. An interactive CLI
 that finishes its task and stays open reports nothing until it is closed.
-Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
+Poll CLI children with `ade chat status <id>` (running / blocked / waiting / idle;
+`waiting` means the turn ended but background agents or shells it started still
+run and report back, so it is not done yet; it exits 0 like running), find
 them with `ade chat list` (archived ones need `--include-archived`), and read their last message plus terminal tail with
 `ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
 to `--mode chat` for a subagent that must report back**: a chat child reports
@@ -214,6 +217,20 @@ a chat you do not own:
 - To be woken when your own background job ends, `ade chat wait --background
   [--job <id>]`, then end your turn (Claude and OpenCode already wake you on
   their own; this matters for Codex).
+- **A child blocked on a question.** While a chat waits on a question or an
+  approval, `ade chat message` / `ade chat send` to it are refused ("Answer or
+  decline the pending request…", error -32011). When your `--type subagent`
+  child asks a question, ADE also sends it to you as a message with the
+  options and the exact command. See what it waits on with
+  `ade chat pending <session> --text`, then answer:
+  `ade chat respond <session> --option 2` (number, value or label; repeat for
+  multi-select), `--text "<answer>"` for a free answer or a note on the pick,
+  `--answer 1=<value> --answer 2=<value>` for several questions, and
+  `--approve` / `--approve-session` / `--deny --text "<why>"` for an approval.
+  Add `--item <id>` when more than one input is open. Questions that need the
+  person (money, credentials, a product call) are theirs: ask them, or leave
+  the card for them. Approvals and secret questions are never relayed to you.
+  Approvals are the person's to answer unless you were told you may approve.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
@@ -313,10 +330,17 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
-- **`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` pushes to the
-  user's phone**, only when they asked to be told (for example "tell me when the
-  deploy is done"). The account allows 60 an hour; the command exits non-zero
-  past that or when signed out.
+- **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
+  asked to hear about**, and only then: "tell me when the deploy is done",
+  "ping me if the tests fail". Never on your own initiative; ADE already alerts
+  the user when you need them, fail, or finish. Run from your chat, it is your
+  chat's message: the chat shows "Notified you", Activity's Inbox lists it on
+  every device, a tap opens your chat, and the phone stays quiet while the user
+  is at the computer or has muted the chat. Lead with what they would act on
+  ("Deploy failed on step 3, rolling back"), not "Done". A chat may send 6 an
+  hour, and the same words twice within ten minutes go out once; past the limit
+  the command exits non-zero and says when to try again. It is not a question:
+  if you need an answer, `ask`.
 
 #### Activity detail on the card
 
@@ -440,6 +464,47 @@ the limit is still live burns the attempt and re-parks the chat. Action:
 `chat.resumeUsageLimitNow`. To stop auto-resuming altogether, or to turn it back
 on after a pause, use `chat.updateSession` with `autoContinueAtUsageLimit`.
 
+### Usage limits: when the user asks about them
+
+Don't track usage limits on your own. Read them only when the user asks you to:
+"work until 5% is left", "start it on the account with the most room",
+"split this across my machines", "how much Claude do I have left?".
+
+```bash
+ade usage limits --text                       # this machine, every account
+ade usage limits --provider claude --text     # one provider
+ade usage limits --machine "Mac mini" --text  # another machine (must be online)
+ade usage limits --all-machines --text        # every machine in one table
+ade chat status "$ADE_CHAT_SESSION_ID" --text # `account` row: the account you run on
+```
+
+Each row is one window of one account: `account` is the id
+`ade chat create --instance` takes (Claude and Codex, the providers with several
+logins), then `left`, `resets`, and `pace` (`lasts to reset` or
+`runs out in 3h`). `(this chat)` marks your own account and `(next chat)` the
+account smart balance would start a new chat on; with smart balance on, a chat
+started without `--instance` goes there by itself. A `note` says when a row can't
+be trusted or used: `signed out` (can't take a chat), `login expired` (renews on
+its next chat), a failed check showing the last numbers, or a reading more than
+10 minutes old. `--json` gives the same report with ISO times and minutes.
+
+The numbers are the machine's cached poll (about every 1–5 minutes), so read them
+between steps rather than in a loop. Common requests:
+
+- **Work until X% is left, then continue after the reset.** Check between steps.
+  At X%, finish the step you are in, then
+  `ade chat scheduled-work create --at <the window's reset time> --prompt "Limits reset; continue <task>"`
+  and stop. Reset times come from `--json` (`windows[].resetsAt`).
+- **Start a chat on the account with the most room.**
+  `ade chat create --lane <lane> --provider claude --instance <account> --prompt "…"`.
+- **Use another machine's accounts.** Read them with `--machine <name>`, then
+  start the chat there: `ade chat create --machine <name> --lane <lane there> --instance <account> …`.
+  An offline machine answers with an error and can't take chats either.
+
+The same login on two machines is one quota; `--all-machines` says so under the
+table. Providers without a limits source (Droid, Qwen, Pi, Devin, Antigravity,
+generic ACP) are not listed.
+
 ### Lane branch drift
 
 A lane's worktree HEAD can drift from the branch ADE recorded (someone runs
@@ -491,6 +556,7 @@ ade actions run chat.createScheduledWork --input-json '{"delaySeconds":720,"prom
 ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report" --text
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --text
 ade chat scheduled-work list --all --text
+ade chat scheduled-work cancel <session> <id> --text   # session first; inside your own chat, 'cancel <id>' is enough
 ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
 ```
 

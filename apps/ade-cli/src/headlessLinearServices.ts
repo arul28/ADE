@@ -142,6 +142,8 @@ import {
   registerGithubCredentialIdentity,
   type GithubCredentialCandidate,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
+import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
+
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
 
@@ -361,6 +363,8 @@ class HeadlessGithubCredentialAttemptError extends Error {
     message: string,
     readonly authFailure: GitHubAuthFailure,
     readonly rateLimit: GitHubRateLimitState | null,
+    /** The HTTP status of a REST failure, when there was one. */
+    readonly status: number | null = null,
   ) {
     super(message);
     this.name = "HeadlessGithubCredentialAttemptError";
@@ -1553,6 +1557,7 @@ export function createHeadlessGitHubService(
           message,
           failure.authFailure,
           failure.rateLimit,
+          response.status,
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
@@ -2415,10 +2420,19 @@ export function createHeadlessGitHubService(
       });
     },
     async listRepoAutolinks(owner, name) {
-      const rows = await apiRequestAllPages({
-        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-        query: { per_page: 100 },
-      });
+      let rows: Record<string, unknown>[];
+      try {
+        rows = await apiRequestAllPages<Record<string, unknown>>({
+          path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+          query: { per_page: 100 },
+        });
+      } catch (error) {
+        throw githubAutolinksAccessError(
+          owner,
+          name,
+          error instanceof HeadlessGithubCredentialAttemptError ? error.status : null,
+        ) ?? error;
+      }
       return rows.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
     },
     async createRepoAutolink(owner, name, args) {

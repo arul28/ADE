@@ -53,6 +53,9 @@ enum CrashReporting {
       options.attachViewHierarchy = false
       options.enableMetricKit = true
       options.enableAppHangTracking = true
+      // A hang the main thread was not fully blocked for is a slow frame, not
+      // a freeze; MetricKit (on above) still reports those from the OS.
+      options.enableReportNonFullyBlockingAppHangs = false
       options.enableWatchdogTerminationTracking = true
       options.enableLogs = true
       options.tracesSampleRate = 0.05
@@ -66,7 +69,7 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        if isSuspendedAppHang(event) { return nil }
+        if isIdleRunLoopAppHang(event) { return nil }
         return ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
           ? ADECrashScrubber.scrub(event)
           : nil
@@ -139,15 +142,19 @@ enum CrashReporting {
     SentrySDK.setUser(user)
   }
 
-  /// A non-fatal hang whose main thread was waiting for work in its run loop,
-  /// not blocked: the app was suspended while the detector kept counting. A
-  /// hang with real work on the stack is kept, however long it claims to be.
-  private static func isSuspendedAppHang(_ event: Sentry.Event) -> Bool {
+  /// An app hang whose main thread sat idle in its run loop: the app was
+  /// suspended (or the detector misfired) while nothing ran. Decided on
+  /// library names and in-app flags, because Sentry fills in no function
+  /// names on device; a hang with real work on the stack is always kept.
+  private static func isIdleRunLoopAppHang(_ event: Sentry.Event) -> Bool {
     guard let exception = event.exceptions?.last,
-          exception.type?.hasPrefix("App Hang") == true,
-          let frames = exception.stacktrace?.frames, let top = frames.last?.function,
-          top == "mach_msg2_trap" || top == "mach_msg_trap" else { return false }
-    return frames.suffix(6).contains { $0.function == "__CFRunLoopServiceMachPort" }
+          exception.type?.contains("App Hang") == true else { return false }
+    let stacktrace = exception.stacktrace
+      ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+    guard let frames = stacktrace?.frames else { return false }
+    return ADEAppHangStack.isIdleRunLoop(frames.map {
+      ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
+    })
   }
 
   // MARK: - Configuration helpers
@@ -184,6 +191,39 @@ enum CrashReporting {
     // A phone on a weak network, like a lost connection: the network, not ADE.
     .timedOut,
   ]
+}
+
+/// Reads an app hang's main-thread stack, outermost frame first.
+enum ADEAppHangStack {
+  struct Frame {
+    /// The image path Sentry records for the frame.
+    let package: String?
+    let inApp: Bool
+  }
+
+  /// True when the stack is the idle main run loop and nothing else: the
+  /// innermost frame is in `libsystem_kernel` (waiting in `mach_msg`), every
+  /// frame inside `GraphicsServices` (GSEventRunModal) is CoreFoundation's run
+  /// loop or the kernel, and no ADE code is on the stack except the entry
+  /// point outside the run loop.
+  static func isIdleRunLoop(_ frames: [Frame]) -> Bool {
+    guard let innermost = frames.last, library(innermost) == "libsystem_kernel.dylib",
+          let runLoopEntry = frames.firstIndex(where: { library($0) == "GraphicsServices" }) else {
+      return false
+    }
+    let insideRunLoop = frames[frames.index(after: runLoopEntry)...]
+    guard !insideRunLoop.isEmpty else { return false }
+    return insideRunLoop.allSatisfy {
+      !$0.inApp && idleRunLoopLibraries.contains(library($0))
+    }
+  }
+
+  private static let idleRunLoopLibraries: Set<String> = ["CoreFoundation", "libsystem_kernel.dylib"]
+
+  private static func library(_ frame: Frame) -> String {
+    guard let package = frame.package else { return "" }
+    return package.split(separator: "/").last.map(String.init) ?? package
+  }
 }
 
 /// Scrubs strings, dictionaries and events before they leave the device.

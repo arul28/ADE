@@ -39,7 +39,7 @@ const fakeEditor = vi.hoisted(() => () => ({
   dispose: vi.fn(),
 }));
 
-vi.mock("../monacoLoader", () => {
+vi.mock("../../../../lib/monacoLoader", () => {
   // One editor object per mounted viewer is enough here: every test renders one.
   const editor = fakeEditor();
   return {

@@ -26,6 +26,10 @@ describe("parseChatMentionKindFilter", () => {
     ["lane", "lane", ""],
     ["term", "terminal", ""],
     ["terminal", "terminal", ""],
+    // iOS and the TUI send `mcp <query>` for an `@mcp:` prefix.
+    ["mcp", "mcp", ""],
+    ["mcp github", "mcp", "github"],
+    ["server", "mcp", ""],
     // The rest of the query is the text to search inside the chosen section.
     ["pr 1234", "pr", "1234"],
     // "followed by whitespace" is any whitespace, not just a space or a tab.
@@ -48,6 +52,8 @@ describe("chat mention grammar", () => {
     expect(formatChatMentionToken("lane", "l1")).toBe("@lane:l1");
     // Terminals use the short `term` prefix, not `terminal`.
     expect(formatChatMentionToken("terminal", "t1")).toBe("@term:t1");
+    expect(formatChatMentionToken("mcp", "github")).toBe("@mcp:github");
+    expect(parseChatMentions("use @mcp:context7-docs now").map((m) => [m.kind, m.id])).toEqual([["mcp", "context7-docs"]]);
   });
 
   it("parses tokens at word boundaries with correct offsets", () => {

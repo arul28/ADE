@@ -53,14 +53,27 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 | Type, then press Return | `"$A" apple type "reddit" --submit --text` |
 | Press one key | `"$A" apple key return --text` (also `tab`) |
 | Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
-| Which app is in front | `"$A" apple foreground --text` |
+| Which app is in front | `"$A" apple foreground --text` (`--wait 10` right after a launch) |
+| Open an app with launch arguments | `"$A" apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home` |
+| Take turns with other agents on this device | `"$A" apple lease --wait 300 --text`, later `"$A" apple lease release --token <t> --text` |
 | What is on screen | `"$A" apple snapshot --text` |
 | Go home / app switcher | `"$A" apple button home --text` / `"$A" apple button app-switcher --text` |
 | Close an app (no gesture) | `"$A" apple terminate --bundle-id com.apple.mobilesafari --text` |
 | Show the device to the user | `"$A" apple show --text` (tools pane) or `--floating` |
 
 - Right after `relaunch`, `foreground` can still say `null` for a moment.
-  Wait for an element of that app instead of checking at once.
+  Use `foreground --wait 10`, or wait for an element of that app.
+- Tap, drag and scroll coordinates are the screenshot's and the snapshot's
+  points, upright, whichever way the device is held (the Duo's inner display
+  included): ADE turns them onto the framebuffer for you. Prefer
+  `tap-element` anyway.
+- `launch` builds Debug. Pass `--configuration Release` when the app's
+  configurations differ in more than speed (ADE's own iOS app signs into a
+  test backend in Debug); the summary names the configuration it built.
+  Arguments after `--` reach the app, for `launch` and `relaunch`.
+- Several agents on one lane share one device. Before a run of builds,
+  rotates and shots, take a `lease` (it queues behind whoever has it) and
+  release it after. It is advisory, so it only works if every agent uses it.
 - A simulator signed in to an Apple Account can show an "Apple Account
   Verification" alert over every app. Dismiss it with
   `tap-element --label "Not Now"`, then continue.
@@ -112,14 +125,22 @@ makes a new, empty one from the newest installed runtime, boots it, and
 streams it. Other simulators in `apple devices` belong to someone else:
 another lane, an `xcodebuild test` run, or the user.
 
-- You may make the lane's ONE device without asking. You may not make a
-  second one, and you never make a simulator with `xcrun simctl create` or
-  `simctl clone` — ADE cannot see or delete a device made that way.
+- You may make the lane's ONE device without asking, and you never make a
+  simulator with `xcrun simctl create` or `simctl clone` — ADE cannot see or
+  delete a device made that way.
+- Need a second model too (an iPad beside an iPhone Duo)? Give the lane an
+  extra device: `device-create --extra --device-type "iPad Pro 11-inch (M5)"`
+  (at most 2). It comes up booted; reach it from any command with
+  `--device <udid|name>` (`rotate`, `screenshot`, `snapshot`, `relaunch`,
+  `tap-element`, …). Without `--device` every command still drives the lane's
+  own device. ADE deletes it with the lane; `device-delete --device <udid>`
+  deletes it now.
 - You may attach an installed simulator only when the user names it
   (`device-attach --simulator <name>` or `start --udid <udid>`). ADE refuses a
   simulator another lane holds, with `APPLE_DEVICE_NOT_LANE_OWNED`.
-- `--device <udid>` on any other command must be this lane's device. With no
-  device yet, the command tells you to run `ade apple start`.
+- `--device <udid>` on any other command must be this lane's device or one of
+  its extra devices. With no device yet, the command tells you to run
+  `ade apple start`.
 
 **A busy device is not a blocker, and it is not a reason to ask a human.**
 Make the lane's own with `start`. It takes seconds (see "The lane's device").
@@ -193,7 +214,7 @@ A new device has no sign-ins, so the app starts at its first-run state.
 - `stop` powers the device **off**. `shutdown` only ends this chat's session
   and leaves the simulator running — the two are not the same, and a verb named
   `stop` that left a booted device behind was a real bug.
-- `device-create` and `device-attach` never boot. `device-delete` removes the
+- `device-create` and `device-attach` never boot (`device-create --extra` does). `device-delete` removes the
   lane's ADE device and refuses an attached device unless `--force`, which only
   detaches. Like `stop`, it is refused while another chat is driving the device.
 - ADE deletes the lane's own device, with all its data and the lane's build
@@ -244,6 +265,20 @@ Name elements, not pixels.
   refusal as a broken simulator. `verification: already-on-axis` means the
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
+  On an iPhone Duo, `rotate` names how the PHONE is held, not the shape of
+  the picture, and the inner display runs a quarter turn from the phone:
+
+  | You want (inner display) | Do | Screenshot |
+  |---|---|---|
+  | Wide, flat open | `fold open` (or, already flat open, `rotate portrait`) | 2853x2007 |
+  | Tall (upright), flat open | `fold laptop`, then `fold --angle 180` (or, already flat open, `rotate landscape-left`) | 2007x2853 |
+  | Laptop (half open, tall) | `fold laptop` | 2007x2853 |
+  | Book (half open, wide) | `fold book` | 2853x2007 |
+
+  `rotate`, `fold` and `posture` print `picture inner display, tall|wide`;
+  trust that line over the orientation name. A raw `fold --angle` keeps how
+  the phone is held; `fold open` and `rotate portrait` turn it back to wide.
+  The cover's Home Screen is portrait-only.
 
 - Folding (iPhone Duo only): `fold closed|open|laptop|book|tent` or
   `fold --angle 120`, then read `posture` back. The answer is what the
@@ -251,7 +286,15 @@ Name elements, not pixels.
   live view, taps and typing follow it. On any other device it answers
   `supported: false`. Test a layout in more than one pose, and fold during a
   session, not only at launch. For a demo, `fold --sequence closed,open,tent`
-  inside a recording adds a caption per pose.
+  inside a recording adds a caption per pose. Tent reads `orientation
+  facedown, tableMode yes, activeScreenId 1`: that is Device Hub's Tent (the
+  phone stands on its outer edges, the cover faces the viewer), not a fault.
+  Screenshots are the panel's own pixels and look the same in book, laptop
+  and tent; to show the fold itself, `render --poses`.
+- A simulator that is signed in and paired with an ADE machine gets that
+  machine's real push notifications, and their banners land on screenshots.
+  Capture fixtures on a device that was never paired (a fresh lane device or
+  an extra device is not), or sign the app out first.
 
 - Getting an app ready for the Duo: `duo-skill` copies Apple's
   `app-resizability` skill (from Xcode 27) into the lane's
@@ -263,10 +306,12 @@ Name elements, not pixels.
 
 - 3D renders: `render --angles front,three-quarter-left --poses closed,open`
   (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
-  of the 3D device with its live screen to the proof drawer. It needs the
-  lane's Apple pane open in ADE desktop on the device's machine (the pane
-  does the rendering); otherwise it says so. On a Duo each pose folds the
-  simulator first.
+  of the 3D device with its live screen to the proof drawer. No pane needs to
+  be open: any ADE desktop window with the project open renders it off
+  screen (a project on another machine must be the window's front tab);
+  with none, it says so. The device must be on (`apple start`). On a
+  Duo each pose folds the simulator first. It prints a `cite:` line per
+  image; paste them to show the renders.
 
 Agent launches stay in the background; `apple show` brings the device up at
 any time.
@@ -328,7 +373,10 @@ You do not pin anything. Both of these file themselves in the proof drawer and
 return a `proofArtifactId`:
 
 - **every recording**, the moment it stops, whoever started it;
-- **every screenshot** you take.
+- **every screenshot** you take. It prints a `cite:` line: paste that to
+  show the shot. Do not `proof attach` the same file again; it is refused
+  as a duplicate (the refusal prints the same `cite:` line).
+  For a validation loop of throwaway shots, add `--no-proof`.
 
 ```bash
 "$ADE_CLI_PATH" apple screenshot --out shot.png --text
@@ -474,8 +522,10 @@ One chat owns a simulator session at a time. A second launch fails with
   equivalent. Today: `shake`.
 - `APPLE_DEVICE_ATTACHED_NOT_DELETABLE` — `device-delete` without `--force` on
   an attached simulator. `--force` detaches; it does not delete.
-- `APPLE_DEVICE_EXISTS` — this lane already owns a device. Use it, or remove it
-  first.
+- `APPLE_DEVICE_EXISTS` — this lane already owns a device. Use it, remove it
+  first, or add another model beside it with `device-create --extra`.
+- `APPLE_EXTRA_DEVICE_LIMIT` — the lane already has 2 extra devices. Delete
+  one with `device-delete --device <udid>`.
 - `APPLE_DEVICE_NOT_LANE_OWNED` — you named a simulator this lane does not
   hold, or another lane holds it. Do not look for a way around it. Run
   `ade apple start` to get the lane's own, or attach it first if the user named it.
@@ -485,6 +535,8 @@ One chat owns a simulator session at a time. A second launch fails with
 - `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` — re-run `"$ADE_CLI_PATH" apple apps --text`.
 - `IOS_SIMULATOR_NO_BUILDABLE_TARGET` — pass `--target-id` or `--bundle-id`
   only when you deliberately want the installed app.
-- `screenshot --out` and `frame --out` must land inside the build root.
+- `screenshot --out` and `frame --out` must land inside the build root (the
+  lane worktree). A relative path resolves there (`--out .ade/tmp/shot.png`);
+  `/tmp` is refused with `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT`.
 - `--text` reads two ways. A bare `--text` is ADE's output mode;
   `--text-match <value>` is the element query's substring match.

@@ -4,11 +4,88 @@
  * content (pages/*.tsx). Page-specific styles live with their page.
  */
 
-/* A big canvas: pages are full-bleed feature spreads, not notices. */
+/* Pages set their own height (pages/whatsNewFeature.css), so the frame hugs them. */
 .ade-whats-new {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
-  min-height: min(680px, calc(100vh - 64px));
+}
+
+/* The glow: three soft lights in the background picture's colours
+   (`--wn-glow-1…4`, set from AnnouncementsHost), behind everything in the
+   panel. Each page moves them (a transform transition) and each drifts on its
+   own slow loop. Transform and opacity only, so it stays on the compositor,
+   and it only runs while the modal is open. */
+.ade-whats-new-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ade-whats-new-glow > span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 68%;
+  aspect-ratio: 1;
+  transition: transform 1400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ade-whats-new-glow > span::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: ade-whats-new-drift 16s ease-in-out infinite alternate;
+}
+.ade-whats-new-glow > span:nth-child(1)::before { background: radial-gradient(closest-side, var(--wn-glow-3), transparent); }
+.ade-whats-new-glow > span:nth-child(2)::before { background: radial-gradient(closest-side, var(--wn-glow-2), transparent); animation-duration: 21s; animation-delay: -7s; }
+.ade-whats-new-glow > span:nth-child(3)::before { background: radial-gradient(closest-side, var(--wn-glow-4), transparent); opacity: 0.32; animation-duration: 18s; animation-delay: -12s; }
+[data-theme="light"] .ade-whats-new-glow > span::before { opacity: 0.38; }
+[data-theme="light"] .ade-whats-new-glow > span:nth-child(3)::before { opacity: 0.26; }
+
+/* Where the lights sit on each page (percent of a light's own size). */
+.ade-whats-new-glow[data-page="0"] > span:nth-child(1) { transform: translate(78%, -42%); }
+.ade-whats-new-glow[data-page="0"] > span:nth-child(2) { transform: translate(-38%, 38%); }
+.ade-whats-new-glow[data-page="0"] > span:nth-child(3) { transform: translate(52%, 52%) scale(0.7); }
+.ade-whats-new-glow[data-page="1"] > span:nth-child(1) { transform: translate(84%, 22%); }
+.ade-whats-new-glow[data-page="1"] > span:nth-child(2) { transform: translate(-30%, -48%); }
+.ade-whats-new-glow[data-page="1"] > span:nth-child(3) { transform: translate(70%, -40%) scale(0.65); }
+.ade-whats-new-glow[data-page="2"] > span:nth-child(1) { transform: translate(60%, 30%); }
+.ade-whats-new-glow[data-page="2"] > span:nth-child(2) { transform: translate(8%, -56%); }
+.ade-whats-new-glow[data-page="2"] > span:nth-child(3) { transform: translate(-34%, 30%) scale(0.75); }
+
+@keyframes ade-whats-new-drift {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(7%, -6%) scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-whats-new-glow > span { transition: none; }
+  .ade-whats-new-glow > span::before { animation: none; }
+}
+html[data-motion="reduced"] .ade-whats-new-glow > span { transition: none; }
+html[data-motion="reduced"] .ade-whats-new-glow > span::before { animation: none; }
+
+/* ADE's mark and the modal's name, top left; the close button sits opposite. */
+.ade-whats-new-brand {
+  position: absolute;
+  top: 19px;
+  left: 24px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+  pointer-events: none;
+  user-select: none;
+}
+.ade-whats-new-brand img {
+  height: 15px;
+  width: auto;
 }
 
 .ade-whats-new-close.kit-icon-btn {
@@ -22,7 +99,7 @@
 }
 
 .ade-whats-new-loading {
-  height: 520px;
+  height: clamp(400px, calc(90vh - 128px), 560px);
 }
 
 .ade-whats-new-foot {

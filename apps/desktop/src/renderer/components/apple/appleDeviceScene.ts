@@ -67,8 +67,11 @@ export type DuoBodyControls = {
   animate?: (now: number) => boolean;
   /** Apple's physical body only: which panel is live (it shows the stream). */
   setActivePanel?: (screenId: number | null) => void;
-  /** Apple's physical body only: the device as held (`landscape-left`, …). */
-  setPhysicalOrientation?: (orientation: string | null) => void;
+  /**
+   * Apple's physical body only: the device as held (`landscape-left`, …) and
+   * whether it stands in Tent's Table Mode, which set how it sits in view.
+   */
+  setPhysicalOrientation?: (orientation: string | null, tableMode?: boolean) => void;
 };
 
 export type DeviceBody = {

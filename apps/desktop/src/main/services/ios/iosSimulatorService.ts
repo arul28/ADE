@@ -89,6 +89,7 @@ import type {
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorRelaunchArgs,
   IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
@@ -119,6 +120,7 @@ import type {
 import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
@@ -171,8 +173,12 @@ import {
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
+import { createAppleDeviceLeases } from "./appleDeviceLease";
+import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
+import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
+import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 
 const execFile = promisify(execFileCallback);
 
@@ -183,6 +189,7 @@ const ADE_IOS_INSPECTOR_SNAPSHOT_PATH = path.join("Documents", "ade-inspector-el
 const IOS_APPLICATION_PRODUCT_TYPE = "com.apple.product-type.application";
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
 const TOOL_STATUS_CACHE_MS = 10_000;
+const SIMCTL_MISSING_RECHECK_MS = 60_000;
 const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
 const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
@@ -222,21 +229,6 @@ const HELPER_ORIENTATION_VALUE: Record<AppleDeviceOrientation, number> = {
 
 function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonName {
   return (APPLE_HARDWARE_BUTTONS as readonly string[]).includes(value);
-}
-
-function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
-  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
-}
-
-/**
- * Portrait and upside-down are one axis; the two landscapes are the other.
- *
- * The axis is all the framebuffer can tell you, because a 180-degree turn
- * inside one axis produces exactly the same pixel geometry. Naming that limit
- * here keeps `rotate` from pretending otherwise.
- */
-function appleOrientationAxis(orientation: AppleDeviceOrientation): "portrait" | "landscape" {
-  return orientation === "landscape-left" || orientation === "landscape-right" ? "landscape" : "portrait";
 }
 
 function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
@@ -297,16 +289,31 @@ function isAppleScrollDirection(value: string): value is AppleScrollDirection {
 const APPLE_SCROLL_DEFAULT_AMOUNT = 600;
 
 /**
- * Viewport direction to the helper's content-movement delta.
- *
- * Inverted on purpose: the finger moves opposite to the content, so revealing
- * what is BELOW (`down`) moves the content UP, which is a negative deltaY.
+ * Which picture an input's points are measured on (the helper's `space`). A
+ * viewer (the pane, a remote window, the phone; all `source: "user"`) maps a
+ * click onto the raw framebuffer it draws turned; everyone else measures on
+ * what a screenshot and the accessibility tree show. The helper turns the
+ * second onto the first where the picture sits turned on its framebuffer: any
+ * device held landscape, and the iPhone Duo's inner display always.
+ */
+type HelperPointSpace = "frame" | "screen";
+
+function inputPointSpace(source: AppleInputSource | undefined): HelperPointSpace {
+  return source === "user" ? "frame" : "screen";
+}
+
+/**
+ * Viewport direction to the helper's scroll delta, which reads like a wheel's:
+ * positive `deltaY` reveals what is below (the helper swipes the finger up),
+ * positive `deltaX` what is to the right. Measured on an iPhone 17 and the
+ * iPhone Duo: the opposite signs, used until 2026-10, scrolled every agent
+ * the wrong way.
  */
 const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { deltaX: number; deltaY: number }> = {
-  down: (amount) => ({ deltaX: 0, deltaY: -amount }),
-  up: (amount) => ({ deltaX: 0, deltaY: amount }),
-  right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
-  left: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  down: (amount) => ({ deltaX: 0, deltaY: amount }),
+  up: (amount) => ({ deltaX: 0, deltaY: -amount }),
+  right: (amount) => ({ deltaX: amount, deltaY: 0 }),
+  left: (amount) => ({ deltaX: -amount, deltaY: 0 }),
 };
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
@@ -415,7 +422,12 @@ export class IosSimulatorOutPathOutsideRootError extends Error {
   readonly code: typeof IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE;
 
   constructor(outPath: string, root: string) {
-    super(`${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${outPath} is outside the build root ${root}.`);
+    // Says which paths ARE allowed: callers over MCP or the web see only this
+    // message, not the CLI's hint.
+    super(
+      `${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${outPath} is outside the build root ${root}. `
+      + `--out must be a path inside that root; a relative path resolves under it (for example .ade/tmp/shot.png).`,
+    );
     this.name = "IosSimulatorOutPathOutsideRootError";
   }
 }
@@ -1504,18 +1516,6 @@ function normalizeLaunchEnvironment(value: unknown): Record<string, string> {
   return normalized;
 }
 
-function normalizeLaunchArguments(value: unknown): string[] {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("iOS Simulator launch arguments must be an array.");
-  }
-  for (const item of value) {
-    if (typeof item !== "string") {
-      throw new Error("iOS Simulator launch arguments must be an array of strings.");
-    }
-  }
-  return value as string[];
-}
 
 function normalizeCoordinate(value: unknown, label: string): number {
   const coordinate = typeof value === "number" ? value : Number(value);
@@ -1866,6 +1866,8 @@ async function findAppBundle(
      */
     productName?: string | null;
     appBundlePath?: string | null;
+    /** Only a bundle that matches by id or name; never the first one found. */
+    matchOnly?: boolean;
   },
 ): Promise<string | null> {
   if (criteria.appBundlePath && fs.existsSync(criteria.appBundlePath)) return criteria.appBundlePath;
@@ -1887,7 +1889,7 @@ async function findAppBundle(
     const match = appBundles.find((candidate) => path.basename(candidate) === expectedName);
     if (match) return match;
   }
-  return appBundles[0] ?? null;
+  return criteria.matchOnly ? null : appBundles[0] ?? null;
 }
 
 function unquotePbxValue(raw: string | null | undefined): string | null {
@@ -2135,6 +2137,18 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
   "deviceStop", "closeDevice", "stopStream", "stopEventLog", "getEventLog", "listLaunchTargets",
 ] as const;
 
+/**
+ * Actions that work the lane's live view, its claim, its recordings or its
+ * builds, which belong to the lane's own device: `--device <extra>` on one of
+ * them is refused rather than quietly acting on (or rebinding) the lane's
+ * device. Everything else acts on the device it is given.
+ */
+const AGENT_EXTRA_DEVICE_REFUSED_ACTIONS = new Set<string>([
+  "launch", "openDevice", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
+  "recordStart", "startEventLog", "stopEventLog", "getEventLog", "selectPoint", "duoAppStoreScreenshots", "getInspectorSnapshot",
+  "frame",
+]);
+
 /** Who holds the session, when it is an agent on another machine. */
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
   if (!chatSessionId || !parseForeignCallerSessionId(chatSessionId)) return null;
@@ -2315,6 +2329,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
+  const deviceLeases = createAppleDeviceLeases();
 
   /**
    * The lane a call is about, and a note that its device was used.
@@ -2653,10 +2668,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── per-lane devices ───────────────────────── */
 
+  // A Mac with the Command Line Tools but no Xcode has `xcrun` and no
+  // `simctl`. It has no simulators: answer that, and only look again once a
+  // minute so an Xcode install is noticed without a spawn on every poll.
+  let simctlMissingAt = 0;
   const listInstalledSimulators = async (): Promise<AppleInstalledSimulator[]> => {
     if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
-    const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "--json"], { timeoutMs: 30_000 });
-    return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
+    if (simctlMissingAt && Date.now() - simctlMissingAt < SIMCTL_MISSING_RECHECK_MS) return [];
+    try {
+      const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "--json"], { timeoutMs: 30_000 });
+      simctlMissingAt = 0;
+      return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
+    } catch (error) {
+      if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+      if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
+      simctlMissingAt = Date.now();
+      return [];
+    }
   };
 
   const laneDevices = createLaneDeviceRegistry({
@@ -2900,7 +2928,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       canTap: canControl,
       canType: canControl,
       canDrag: canControl,
-      canInspect: canControl || cachedCommandExists("xcrun"),
+      canInspect: canControl || (cachedCommandExists("xcrun") && !simctlMissingAt),
     };
   };
 
@@ -4219,7 +4247,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
-  const buildProjectApp = async (target: ResolvedLaunchTarget, device: IosSimulatorDevice, projectRoot: string): Promise<string | null> => {
+  const buildProjectApp = async (
+    target: ResolvedLaunchTarget,
+    device: IosSimulatorDevice,
+    projectRoot: string,
+    configuration: string,
+    /** The caller asked for this configuration, rather than taking Debug. */
+    configurationNamed: boolean,
+  ): Promise<string | null> => {
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     if (!target.projectPath || !target.scheme) {
       return target.appBundlePath;
@@ -4231,6 +4266,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         projectRoot,
         projectPath: relativeProjectPath,
         scheme: target.scheme,
+        configuration,
         deviceUdid: device.udid,
         derivedDataPath,
       });
@@ -4243,7 +4279,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
             "-scheme",
             target.scheme,
             "-configuration",
-            "Debug",
+            configuration,
             "-sdk",
             "iphonesimulator",
             "-destination",
@@ -4271,7 +4307,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
       args.logger.info("ios_simulator.build.complete", { projectPath: relativeProjectPath, scheme: target.scheme, derivedDataPath });
     }
-    return findAppBundle(derivedDataPath, {
+    // A named configuration's products only: a lane that has built both
+    // Debug and Release has two apps with one bundle id, and a configuration
+    // that was never built must not quietly install the other one. With none
+    // named, Debug's products first, else anything the lane built, as before.
+    const productRoot = path.join(derivedDataPath, "Build", "Products", `${configuration}-iphonesimulator`);
+    const built = fs.existsSync(productRoot);
+    if (configurationNamed && !built) {
+      throw new Error(`${configuration} has not been built for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    const appBundle = await findAppBundle(built ? productRoot : derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
       // productName lives on the underlying launch target (ResolvedLaunchTarget
@@ -4280,7 +4325,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // differs from the produced .app, still resolves to the right bundle.
       productName: target.target.productName,
       appBundlePath: target.appBundlePath,
+      // Without a build just now, a named configuration's folder may hold
+      // only another target's app; never install that under this name.
+      matchOnly: configurationNamed && !target.shouldBuild,
     });
+    if (!appBundle && configurationNamed && !target.shouldBuild) {
+      throw new Error(`${configuration} has no build of ${target.scheme ?? "this target"} for this lane. Launch without --no-build to build it, or drop --configuration.`);
+    }
+    return appBundle;
   };
 
   const attachToChatSession = (
@@ -4390,6 +4442,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
     if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
+    // The caller's own inputs, refused before a boot or a build costs anything.
+    const buildConfiguration = normalizeBuildConfiguration(launchArgs.configuration);
+    const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
     // A launch that names no chat session may not evict one that does: an
     // agent's anonymous CLI launch would otherwise silently take the simulator
@@ -4527,13 +4582,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         emitLaunchProgress(launchId, "build-app", "skipped", "Build skipped.", staleBinaryDetail, buildStepExtra);
       }
       const appBundle = target.shouldBuild || target.shouldInstall
-        ? await buildProjectApp(target, device, projectRoot)
+        ? await buildProjectApp(target, device, projectRoot, buildConfiguration, Boolean(launchArgs.configuration?.trim()))
         : target.appBundlePath;
       emitLaunchProgress(
         launchId,
         "build-app",
         target.shouldBuild ? "complete" : "skipped",
-        target.shouldBuild ? "Build complete." : "Using a previously built app.",
+        target.shouldBuild ? `${buildConfiguration} build complete.` : "Using a previously built app.",
         target.shouldBuild
           ? [relativeToRoot(projectRoot, appBundle ?? projectRoot), `root ${abbreviatePathTail(projectRoot)}`].join(" · ")
           : staleBinaryDetail,
@@ -4560,7 +4615,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }
 
       const launchEnvironment = normalizeLaunchEnvironment(launchArgs.environment);
-      const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
       const startedAt = nowIso();
       const session: IosSimulatorSession = {
         id: randomUUID(),
@@ -4584,6 +4638,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // caller of `launch` ever saw those two facts before.
         buildRoot: projectRoot,
         usedInstalledBinary,
+        buildConfiguration: target.shouldBuild ? buildConfiguration : null,
       };
       // A launch that was superseded (force takeover, dispose) must not publish
       // its session over the newer one.
@@ -4780,6 +4835,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * hear about: the PNG on disk is the result that was asked for, and a drawer
    * that refused the row must not turn a good capture into a thrown call.
    */
+  /** The chat a capture is filed to: the caller's, else the chat that claimed the device. */
+  const proofOwnerChatId = (arg: Pick<IosSimulatorScreenshotArgs, "chatSessionId">, runtime: LaneRuntime): string | null =>
+    arg.chatSessionId?.trim() || runtime.activeSession?.chatSessionId || null;
+
   const fileScreenshotAsProof = (
     shot: Pick<IosSimulatorScreenshot, "deviceUdid" | "filePath" | "capturedAt" | "width" | "height">,
     arg: IosSimulatorScreenshotArgs,
@@ -4789,9 +4848,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   ): string | null => {
     const filer = args.recordingDeps?.artifactFiler;
     if (!filer) return null;
-    const chatSessionId = arg.chatSessionId?.trim()
-      || runtime.activeSession?.chatSessionId
-      || null;
+    const chatSessionId = proofOwnerChatId(arg, runtime);
     const caption = arg.caption?.trim()
       || `Simulator screenshot · ${deviceLabelForUdid(shot.deviceUdid)}`;
     /*
@@ -5030,7 +5087,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const elements = syntheticElements.length
       ? mergeScreenElements(baseElements, syntheticElements)
       : baseElements;
-    const screen = inspectorSnapshot?.screen ?? {
+    // The app's inspector names the screen only when it described this one: a
+    // snapshot it published before a turn or a fold (the iPhone Duo's inner
+    // display held upright read 669x835 against a 669x951 picture) is stale.
+    const inspectorScreen = inspectorSnapshot?.screen;
+    const inspectorScreenIsCurrent = Boolean(
+      inspectorScreen
+      && inspectorElements.length
+      && (!shot.width || !shot.height
+        || (Math.abs(inspectorScreen.width * inspectorScreen.scale - shot.width) <= 2
+          && Math.abs(inspectorScreen.height * inspectorScreen.scale - shot.height) <= 2)),
+    );
+    const screen = (inspectorScreenIsCurrent ? inspectorScreen : null) ?? {
       width: accessibilityScreen?.width ?? shot.width ?? 0,
       height: accessibilityScreen?.height ?? shot.height ?? 0,
       scale: accessibilityScreen?.scale ?? 1,
@@ -5765,10 +5833,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * the same unit idb's `ui tap` took — so no call site had to change its
    * coordinates when the engine did.
    */
-  const helperTap = async (deviceUdid: string, x: number, y: number): Promise<void> => {
+  const helperTap = async (deviceUdid: string, x: number, y: number, space: HelperPointSpace): Promise<void> => {
     const client = helper();
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y });
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
   };
 
   const helperType = async (deviceUdid: string, text: string): Promise<void> => {
@@ -5787,13 +5855,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const helperSwipe = async (
     deviceUdid: string,
     input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null },
+    space: HelperPointSpace,
   ): Promise<void> => {
     const durationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
     if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
     const client = helper();
     const steps = Math.max(2, Math.min(60, Math.round(Math.max(durationMs, 1) / DRAG_STEP_MS)));
     const stepDelayMs = Math.max(0, Math.round(durationMs / steps));
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY, space });
     for (let step = 1; step < steps; step += 1) {
       const progress = step / steps;
       await client.send({
@@ -5802,10 +5871,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         phase: "move",
         x: input.startX + ((input.endX - input.startX) * progress),
         y: input.startY + ((input.endY - input.startY) * progress),
+        space,
       });
       if (stepDelayMs > 0) await delay(stepDelayMs);
     }
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY, space });
   };
 
   const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
@@ -5817,7 +5887,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return enqueueControl("tap", async () => {
       // Whoever taps now, a live finger still held on this lane comes up first.
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
-      await helperTap(deviceUdid, x, y);
+      await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
       return { ok: true };
@@ -5895,6 +5965,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     resolveScopedRootForSession,
     enqueueControl,
     fileScreenshotAsProof,
+    proofOwnerChatId,
     emit,
     logger: args.logger,
     captureAnalytics: (outcome) => args.captureAnalytics?.(outcome),
@@ -5934,8 +6005,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(rotateArgs);
     const deviceUdid = await resolveControlDeviceUdid(rotateArgs.deviceUdid, runtime);
     const value = HELPER_ORIENTATION_VALUE[rawOrientation];
-    const wantedAxis = appleOrientationAxis(rawOrientation);
+    const wantedAxis = appleOrientationFamily(rawOrientation);
     return enqueueControl("rotate", async () => {
+      const postureBefore = await duo.foldablePosture(deviceUdid, "apple.rotate_posture_unreadable");
+      if (postureBefore) return duo.rotate(deviceUdid, rawOrientation, value, postureBefore, APPLE_ROTATE_SETTLE_TIMEOUT_MS);
       const frameBefore = await readSimulatorFramebufferGeometry(deviceUdid);
       const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
@@ -6046,7 +6119,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = resolveRuntime(scrollArgs);
     const deviceUdid = await resolveControlDeviceUdid(scrollArgs.deviceUdid, runtime);
     return enqueueControl("scroll", async () => {
-      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}) });
+      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}), space: inputPointSpace(scrollArgs.source) });
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       // A scroll IS injected input under the auto-record contract: it changes
       // what is on screen, and a video that skips it shows a jump cut. The
@@ -6086,7 +6159,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // Still validated rather than ignored: a caller passing a nonsense delta
       // has a bug, and silently accepting it hides it.
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
-      await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs });
+      await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
       return { ok: true };
@@ -6116,7 +6189,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const LIVE_TOUCH_IDLE_RELEASE_MS = 4_000;
 
   const sendTouch = (udid: string, phase: "begin" | "move" | "end", x: number, y: number): Promise<unknown> =>
-    helper().send({ type: "touch", udid, phase, x, y });
+    // A viewer's finger, already on the framebuffer it draws.
+    helper().send({ type: "touch", udid, phase, x, y, space: "frame" satisfies HelperPointSpace });
 
   /** Lift a lane's held finger, if any. Best-effort: the device may be gone. */
   const liftLiveTouch = async (laneKey: string, reason: string, laneId: string | null): Promise<void> => {
@@ -6265,16 +6339,36 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const deviceCreate = async (deviceArgs: AppleDeviceCreateArgs = {}): Promise<AppleLaneDevice> => {
     assertDarwin();
     const runtime = requireLaneScope(deviceArgs);
-    const device = await laneDevices.deviceCreate({
+    const create = () => laneDevices.deviceCreate({
       laneId: runtime.key,
       from: deviceArgs.from,
       runtime: deviceArgs.runtime,
       deviceType: deviceArgs.deviceType,
       name: deviceArgs.name,
+      extra: deviceArgs.extra === true,
     });
+    // Extras queue per lane: two at once would both pass the limit check
+    // before either row is written.
+    const device = deviceArgs.extra === true ? await serializeDeviceLifecycle(runtime, create) : await create();
     invalidateDeviceList();
     invalidateStatus(runtime);
+    // An extra device has no pane or `start` of its own: it comes up booted,
+    // so the next `--device` command finds it ready.
+    if (device.extra) {
+      args.captureAnalytics?.("extra_device_created");
+      await bootExtraDevice(device);
+    }
     return device;
+  };
+
+  /** Boot one of a lane's extra devices if it is off, and note that it was used. */
+  const bootExtraDevice = async (device: AppleLaneDevice): Promise<void> => {
+    const listed = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
+    if (listed?.state !== "Booted") {
+      await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" });
+      invalidateDeviceList();
+    }
+    maintenance?.touch(device.udid);
   };
 
   const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
@@ -6527,8 +6621,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     assertDarwin();
     let onlyUdids: Set<string> | null = null;
     if (cleanupArgs.agentCaller === true) {
-      const own = laneDevices.get(resolveRuntime(cleanupArgs).key);
-      onlyUdids = new Set(own ? [own.udid] : []);
+      const key = resolveRuntime(cleanupArgs).key;
+      const own = laneDevices.get(key);
+      // The lane's extra devices are its own too.
+      onlyUdids = new Set([...(own ? [own.udid] : []), ...(key ? laneDevices.extras(key).map((device) => device.udid) : [])]);
     }
     const result = await laneMaintenance().runCleanup({ powerOffIdle: cleanupArgs.powerOffIdle === true, onlyUdids });
     invalidateDeviceList();
@@ -6772,6 +6868,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // chat claim go first, then the power. The device stays the lane's.
       // The udid the pass checked, not whatever the lane holds by now.
       powerOffDevice: async (device) => {
+        // An extra device has no stream or claim of its own to stop first.
+        if (device.extra) {
+          await power.powerOffDevice(device.udid, "power-off");
+          return;
+        }
         await deviceStop({ laneId: device.laneId, udid: device.udid, ignoreOwnership: true });
       },
       isBusyHere,
@@ -6860,6 +6961,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           .map((value) => (typeof value === "string" ? value.trim() : ""))
           .find(Boolean) ?? null;
         let laneDevice = laneDevices.get(runtime.key);
+        // One of the lane's extra devices (`device-create --extra`), named by
+        // udid or name: the call runs on it, booted first.
+        const extra = explicit && explicit !== laneDevice?.udid ? laneDevices.findExtra(runtime.key, explicit) : null;
+        if (extra) {
+          if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
+            throw new Error(
+              `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
+              + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
+              + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+            );
+          }
+          if (mode === "drive") await bootExtraDevice(extra);
+          const onExtra = { ...callArgs, deviceUdid: extra.udid, ...(callArgs.udid !== undefined ? { udid: extra.udid } : {}) };
+          return (original as (...params: unknown[]) => unknown)(onExtra, ...rest);
+        }
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
@@ -7000,7 +7116,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
       return result;
     },
-    relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
+    relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
     terminateApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).terminateApp(toolArgs),
     uninstallApp: async (toolArgs: IosSimulatorUninstallAppArgs) => darwinHub(toolArgs).uninstallApp(toolArgs),
     setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub(toolArgs).setStatusBar(toolArgs),
@@ -7012,27 +7128,59 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
      * device that has not finished booting, reads as `null`, not as an error:
      * the drawer asks every couple of seconds and an empty home screen is a
      * normal answer.
+     *
+     * `waitMs` keeps asking (up to 30 s) until an app is in front: an app
+     * launched a moment ago is not yet the accessibility tree's frontmost.
      */
     getForegroundApp: async (
-      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null } = {},
+      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null; waitMs?: number | null } = {},
     ): Promise<IosSimulatorForegroundApp> => {
       assertDarwin();
       const udid = await resolveControlDeviceUdid(arg.deviceUdid, resolveRuntime(arg));
-      let payload: Record<string, unknown>;
-      try {
-        payload = await helper().send({ type: "ax-frontmost", udid });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/frontmost application|not booted/i.test(message)) return null;
-        throw error;
+      const readFrontmost = async (): Promise<IosSimulatorForegroundApp> => {
+        let payload: Record<string, unknown>;
+        try {
+          payload = await helper().send({ type: "ax-frontmost", udid });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/frontmost application|not booted/i.test(message)) return null;
+          throw error;
+        }
+        const app = payload.app;
+        if (!app || typeof app !== "object") return null;
+        const bundleId = (app as { bundleId?: unknown }).bundleId;
+        if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
+        const pid = (app as { pid?: unknown }).pid;
+        return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
+      };
+      const waitMs = Math.min(Math.max(Number(arg.waitMs) || 0, 0), 30_000);
+      const deadline = Date.now() + waitMs;
+      for (;;) {
+        const app = await readFrontmost();
+        if (app || Date.now() >= deadline) return app;
+        await delay(Math.min(500, Math.max(0, deadline - Date.now())));
       }
-      const app = payload.app;
-      if (!app || typeof app !== "object") return null;
-      const bundleId = (app as { bundleId?: unknown }).bundleId;
-      if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
-      const pid = (app as { pid?: unknown }).pid;
-      return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
     },
+
+    /*
+     * Turns on the lane's device for the agents that share it (advisory: see
+     * `appleDeviceLease.ts`). Keyed by lane, as the device is.
+     */
+    deviceLease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; holder?: string | null; ttlMs?: number | null; waitMs?: number | null } = {}) => {
+      const runtime = resolveRuntime(leaseArgs);
+      const holder = leaseArgs.holder?.trim() || leaseArgs.chatSessionId?.trim() || "agent";
+      const result = await deviceLeases.acquire({ key: runtime.key, holder, ttlMs: leaseArgs.ttlMs, waitMs: leaseArgs.waitMs });
+      // A new turn, not a renewal or a busy answer: agents taking turns.
+      if (result.acquired && !result.renewed) args.captureAnalytics?.("device_leased");
+      return result;
+    },
+    deviceLeaseRelease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; token?: string | null } = {}) => {
+      const token = leaseArgs.token?.trim();
+      if (!token) throw new Error("A lease release needs the token `apple lease` printed.");
+      return deviceLeases.release({ key: resolveRuntime(leaseArgs).key, token });
+    },
+    deviceLeaseStatus: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null } = {}) =>
+      deviceLeases.status(resolveRuntime(leaseArgs).key),
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
     startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub(logArgs).startEventLog(logArgs),
@@ -7100,6 +7248,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();
       for (const held of liveTouches.values()) clearTimeout(held.release);

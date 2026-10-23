@@ -3,6 +3,8 @@
 // path. They run before any route, so each must stay cheap: none writes D1 per
 // request except the rare claim gate.
 
+import { withCloudflareRetry } from "./cloudflareTransient";
+
 export type SpendGuardEnv = {
   DB: D1Database;
   DAILY_REQUEST_BUDGET?: string;
@@ -187,7 +189,10 @@ export function checkIpRateInMemory(ip: string, limit: number, windowSeconds: nu
 }
 
 async function flushBudgetCount(env: SpendGuardEnv, day: string, increment: number, nowMs: number): Promise<number> {
-  const row = await env.DB
+  // Retried on a Cloudflare blip. A try that committed but lost its reply
+  // counts its block twice, which leaves the shared count ahead of real
+  // traffic: the one direction this budget allows.
+  const row = await withCloudflareRetry(() => env.DB
     .prepare(
       `insert into rate_counters(bucket, window_start, count, updated_at)
        values (?, ?, ?, ?)
@@ -196,7 +201,7 @@ async function flushBudgetCount(env: SpendGuardEnv, day: string, increment: numb
        returning count`,
     )
     .bind(`budget:${day}`, Math.floor(nowMs / 1000), increment, new Date(nowMs).toISOString())
-    .first<{ count: number }>();
+    .first<{ count: number }>());
   return row?.count ?? 0;
 }
 
@@ -262,7 +267,8 @@ export async function recordDailyBudget(
       });
       budgetReservation = { day, promise };
     }
-    // A D1 failure rejects every waiter, as the per-request upsert did.
+    // A D1 failure that outlasts the retries rejects every waiter; each then
+    // answers 503 (see `handleRequest`).
     await budgetReservation.promise;
   }
 }

@@ -169,7 +169,27 @@ import {
   displayPercent as usageWindowDisplayPercent,
   windowLabel as usageWindowDisplayLabel,
 } from "../../desktop/src/shared/usageWindowPresentation";
-import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import {
+  buildUsageLimitsReport,
+  formatLimitsDuration,
+  sharedLoginsAcrossMachines,
+  usageLimitsLeftText,
+  usageLimitsPaceText,
+  type UsageLimitsAccount,
+  type UsageLimitsReport,
+} from "../../desktop/src/shared/usageLimitsReport";
+import { LIVE_QUOTA_PROVIDERS, type UsageSnapshot } from "../../desktop/src/shared/types/usage";
+import type {
+  AgentChatApprovalDecision,
+  AgentChatDispatchSteerMode,
+  PendingInputRequest,
+} from "../../desktop/src/shared/types/chat";
+import {
+  describePendingInputForAgent,
+  resolvePendingInputResponse,
+  type PendingInputResponse,
+} from "../../desktop/src/shared/pendingInputCommand";
+import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
 import {
   isAgentChatStopMode,
   type AgentChatStopMode,
@@ -227,6 +247,14 @@ import {
   APPLE_RENDER_ANGLE_IDS,
   APPLE_RENDER_LIGHTINGS,
 } from "../../desktop/src/shared/types/iosSimulator";
+import type { AppleDeviceOrientation, AppleDevicePosture } from "../../desktop/src/shared/types/iosSimulator";
+import {
+  appleDuoHeldOrientation,
+  appleDuoPictureShape,
+  appleDuoScreenName,
+  appleOrientationFamily,
+  isAppleDeviceOrientation,
+} from "../../desktop/src/shared/appleOrientation";
 import {
   ADE_USAGE_COST_BREAKDOWN_BY,
   isAdeUsageCostBreakdownBy,
@@ -498,6 +526,8 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
+import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
@@ -580,6 +610,8 @@ export type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  /** Not run when this says so, given the earlier steps' values (a fallback for an older host). */
+  skipWhen?: (values: JsonObject) => boolean;
   injectProjectRootIntoArgs?: boolean;
 };
 
@@ -624,6 +656,8 @@ export type FormatterId =
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
+  | "chat-pending-inputs"
+  | "actions-describe"
   | "drafts-list"
   | "drafts-entry"
   | "drafts-show"
@@ -639,6 +673,8 @@ export type FormatterId =
   | "ios-sim-launch"
   | "ios-sim-stream"
   | "ios-sim-rotate"
+  | "apple-posture"
+  | "apple-render"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
@@ -731,7 +767,7 @@ type ChatWaitTarget =
   | "terminal";
 
 export type CliPlan =
-  | { kind: "help"; text: string }
+  | { kind: "help"; text: string; catalogTopic?: string | null }
   | { kind: "static"; value: unknown; formatter?: FormatterId }
   | {
       kind: "execute";
@@ -782,7 +818,7 @@ export type CliPlan =
        * The list this plan returns, so `--all-machines` can merge it across
        * the account's machines (see `cliMachineTargeting.ts`).
        */
-      machineList?: "chats" | "lanes" | "projects";
+      machineList?: "chats" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
       historyOperationId?: string;
@@ -1244,12 +1280,13 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
+    $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
-    $ ade providers accounts list | add | remove | rename | default
+    $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
@@ -1258,7 +1295,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
-    $ ade actions list | run | status | wait        Escape hatch for every ADE service action
+    $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
@@ -1318,6 +1355,11 @@ export function topLevelHelpText(): string {
   return text;
 }
 
+function remoteMcpHelpScope(): "read" | "write" | undefined {
+  const scope = process.env.ADE_REMOTE_MCP_SCOPE;
+  return scope === "read" || scope === "write" ? scope : undefined;
+}
+
 function commandHelpText(key: string): string | undefined {
   if (key === "automations" && !automationsCliEnabled()) {
     return internalFeatureUnavailableHelp(
@@ -1339,6 +1381,29 @@ function commandHelpText(key: string): string | undefined {
   return HELP_BY_COMMAND[key];
 }
 
+function helpCatalogTopic(key: string): string {
+  if (key === "windows-desktop" || key === "windows-desk") return "screen";
+  if (
+    process.platform === "win32"
+    && (key === "mac-desktop" || key === "mac-desk" || key === "desk")
+  ) {
+    return "screen";
+  }
+  return key;
+}
+
+function buildHelpPlan(
+  text: string,
+  catalogTopic: string | null,
+  options: { json?: boolean },
+): CliPlan {
+  return {
+    kind: "help",
+    text,
+    ...(options.json ? { catalogTopic } : {}),
+  };
+}
+
 function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): string {
   const subcommand = args.find((arg) => arg !== "--" && !arg.startsWith("-"));
   if (!subcommand) return primaryKey;
@@ -1348,6 +1413,58 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   if (primaryKey === "new" && normalizedSubcommand === "cli") return "new chat";
   return `${primaryKey} ${normalizedSubcommand}`;
 }
+
+export const CLI_COMMAND_ALIASES: Record<string, string> = {
+  lane: "lanes",
+  diff: "diff",
+  diffs: "diff",
+  file: "files",
+  pr: "prs",
+  pty: "shell",
+  term: "terminal",
+  chats: "chat",
+  work: "chat",
+  agents: "agent",
+  test: "tests",
+  computer: "proof",
+  "computer-use": "proof",
+  artifact: "proof",
+  artifacts: "proof",
+  apple: "apple",
+  "ios-sim": "apple",
+  ios: "apple",
+  simulator: "apple",
+  "mac-desk": "mac-desktop",
+  desk: "mac-desktop",
+  app: "app-control",
+  apps: "app-control",
+  electron: "app-control",
+  "ade-browser": "browser",
+  "built-in-browser": "browser",
+  "builtin-browser": "browser",
+  worktools: "work-tools",
+  "tools-pane": "work-tools",
+  setting: "settings",
+  config: "settings",
+  action: "actions",
+  coord: "coordinator",
+  automation: "automations",
+  "auto-update": "update",
+  updates: "update",
+  operation: "operations",
+  sessions: "session",
+  project: "projects",
+  machine: "machines",
+  quota: "usage",
+  quotas: "usage",
+  disk: "storage",
+  archived: "archive",
+  skills: "skill",
+  gh: "github",
+  create: "new",
+  login: "auth",
+  logout: "auth",
+};
 
 export const HELP_BY_COMMAND: Record<string, string> = {
   reset: `${ADE_BANNER}
@@ -1459,6 +1576,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   from a terminal, from an agent ("tell me when the deploy is done"), or from
   an automation. The text arrives exactly as written; nothing is added.
 
+  Run by an agent inside an ADE chat, it is that chat's message: the chat shows
+  "Notified you", Activity's Inbox lists it on every device, a tap opens the
+  chat, and the phone stays quiet while you are at your computer or if you
+  muted the chat. A chat can send 6 an hour; the same words twice within ten
+  minutes go out once.
+
     $ ade notify --title "Deploy finished"
     $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
     $ ade notify --title "Review ready" --open "ade://pr/1514"
@@ -1477,6 +1600,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     Phones that turned notifications off, are in quiet hours, or muted this
     machine stay quiet. An account can send 60 an hour; past that the command
     exits non-zero and says when to try again.
+    --session <chat id> sends as that chat from a terminal; an agent always
+    sends as its own chat.
 `,
   auth: `${ADE_BANNER}
   ADE Account
@@ -2035,7 +2160,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   stops being listed. Most commands accept either --lane <lane-id> or a
   positional lane id.
 
-    $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
+  The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
+  stand in). --project-root <dir>, before or after the subcommand, names
+  another one; then the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT are ignored.
+
+  "lanes create" pushes the new branch to origin with upstream tracking right
+  away (best effort; the lane still works locally if the push fails), so the
+  branch is ready for a PR.
+
+    $ ade lanes list --text                        Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
@@ -2276,6 +2409,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Files
 
   File commands operate inside an ADE workspace id, usually a lane id.
+  --workspace defaults to --lane, else the shell's lane (ADE_LANE_ID).
 
     $ ade files workspaces --text                   List workspace roots
     $ ade files tree --workspace <lane> --path src  Show a workspace tree
@@ -2380,8 +2514,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat show <session>                       Session summary (title, provider, model, activity report)
-    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
-                                                    Exit 0 running, 1 idle, 2 blocked. Use --text.
+    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
+                                                    Exit 0 running or waiting (turn ended, background
+                                                    agents/shells still running), 1 idle, 2 blocked. Use --text.
+                                                    Adds a 'pending' line while an effort/fast-mode change
+                                                    waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
@@ -2396,7 +2533,22 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
+                                                    and the exact 'chat respond' command for each
+    $ ade chat respond <session> --option 2         Answer the chat's pending question (alias: answer). Finds the one
+                                                    open input itself; --item <id> picks one when several are open.
+                                                    Question: --option <number|value|label> (repeat for multi-select),
+                                                    --answer <question>=<value> per question (number from 1, or the
+                                                    question id), --text "<answer>" for a free answer or a note on
+                                                    the pick, --answers-json '{"<questionId>":"..."}' for the raw map.
+                                                    Approval: --approve | --approve-session | --deny (--text is the
+                                                    reason). Approvals are the person's to answer unless you were
+                                                    told you may approve. --deny/--cancel also decline a question.
+                                                    While a chat waits on input, 'chat message' and 'chat send' are
+                                                    refused (error -32011) until it is answered. A subagent's question
+                                                    is also sent to its parent chat with these commands filled in.
     $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+                                                    (--session <id>; defaults to $ADE_CHAT_SESSION_ID)
     $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
                                                     Also: ade chat update --title, ade lanes rename.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
@@ -2483,6 +2635,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
+                                                    <session> is the chat that owns the job (first), <id> the job id;
+                                                    also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
     $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -2834,7 +2988,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   ADE hashes every proof file. An attach whose bytes match earlier proof in
   this project (a renamed copy included) fails with PROOF_DUPLICATE and names
-  the earlier proof. Record a new one, or report that recording failed.
+  the earlier proof with its cite: line. To show a shot ADE already filed
+  (every "apple screenshot" is), paste that cite: line. Otherwise record a
+  new one, or report that recording failed.
   An attached video whose own creation time is before the chat's request is
   kept, marked older in the proof drawer, and the command prints a warning.
 `,
@@ -2872,6 +3028,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket apple launch --follow         Same, announcing the wait before the summary
     $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket apple launch --bundle-id com.example Launch installed app
+    $ ade --socket apple launch --configuration Release Build Release instead of Debug
+    $ ade --socket apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
     $ ade --socket apple shutdown                End this chat's simulator session (the device stays on)
     $ ade --socket apple shutdown --force        Force-release a session owned by another chat
     $ ade --socket apple launch --force          Take the simulator over in one step
@@ -2880,7 +3038,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade apple screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade apple screenshot --out shot.png --text Capture a screenshot (filed as proof; prints cite:)
+    $ ade apple screenshot --no-proof --text     A scratch shot that files nothing
     $ ade apple proof --caption "<what>" --text  Screenshot into the proof drawer
     $ ade apple snapshot --text                  Capture selectable UI context
     $ ade apple inspector --text                 Show current inspector data
@@ -2911,6 +3070,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Per-lane devices:
     $ ade apple device-create --text             Make a new, empty device for this lane
     $ ade apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
+    $ ade apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text   A second device beside the lane's own; drive it with --device
     $ ade apple device-attach --simulator <id>   Bind an installed simulator the user named
     $ ade apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
@@ -2936,7 +3096,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple posture --text                   A foldable's hinge angle and active panel
     $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
     $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
-    $ ade apple render --poses closed,open --text  3D renders (needs the Apple pane open), as proof
+    $ ade apple render --poses closed,open --text  3D renders (needs ADE open on the project), as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -2953,6 +3113,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple status-bar --clear               Drop the status bar override
     $ ade apple app-state --bundle-id <id>       Report running state and pid
     $ ade apple foreground --text                Which app the device has in front
+    $ ade apple foreground --wait 10 --text      Same, waiting up to 10 s for an app after a launch
+    $ ade apple lease --wait 300 --text          Take a turn on the lane's device (queues behind others)
+    $ ade apple lease release --token <t>        Hand the device to the next agent in line
 
   Event log:
     $ ade apple log-start --bundle-id <id>       Start the device event log
@@ -2978,7 +3141,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple tap 120 420                      Tap in the simulator
     $ ade apple drag 120 700 120 250             Drag in the simulator
     $ ade apple swipe 120 700 120 250            Swipe in the simulator
-    $ ade apple scroll --x 200 --y 500 --dy -400 Scroll at a point
+    $ ade apple scroll down --anchor-x 200 --anchor-y 500  Scroll the view under a point
     $ ade apple type "hello" --text              Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer
@@ -3392,6 +3555,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
     $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
     $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade --socket browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
+    $ ade --socket browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
+    $ ade --socket browser downloads --tab <tab-id> --text
+    $ ade --socket browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
+    $ ade --socket browser clipboard --text
+    $ ade --socket browser clipboard write --value "hello" --text
+    $ ade --socket browser paste --selector "#editor" --text
     $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
     $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
     $ ade --socket browser emulate --tab <tab-id> --off
@@ -3455,14 +3625,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --test-id <id>       Click by data-testid/data-test-id/data-cy.
     --element <n>        Click an element index from the current DOM observation.
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
-    --value <text>       Explicit value for browser fill, including an empty string.
+    --value <text>       Explicit value for browser fill, including an empty string,
+                         or the text for browser clipboard write.
+    --html <markup>      HTML flavor for browser clipboard write.
+    --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
     --keep <n>           Keep only the latest n scratch observations per tab (default 3).
     --dom, --no-dom      Include or skip the DOM element list in observations.
     --diagnostics, --no-diagnostics
                          Include or skip console/network diagnostics in observations.
     --max-elements <n>   Cap DOM elements captured per observation (default 80).
-    --limit <n>          Trace/network entries to show for browser trace or network (default 20/50).
+    --limit <n>          Trace/network entries to show for browser trace or network, or
+                         downloads for browser downloads (default 20/50).
     --device <preset>    Emulation preset for browser emulate/open: desktop, iphone-17,
                          iphone-17-pro, iphone-17-pro-max, ipad, pixel, responsive.
     --width/--height <n> Custom emulation viewport for browser emulate.
@@ -3486,6 +3660,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --option-value/--option-label/--option-index
                          Option to pick for browser select-option.
     --file <path>        Repeatable file path for browser upload.
+    --trigger <selector>
+                         Browser upload: click this element and hand the files to the
+                         file picker it opens. For pages that build their input on
+                         demand (X's media button is one), where --selector has no
+                         input to point at.
     --fps <30|60>        Frame rate for browser record start.
     --plain              Browser record start/stop: file the video as recorded (no cuts,
                          zoom, pointer or captions). Otherwise it becomes a demo at stop.
@@ -3609,6 +3788,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   history, token/cost stats, and budget guardrails. Live quota refresh is
   intentionally separate from local provider-ledger scans.
 
+    $ ade usage limits --text                       Per account: % left, reset, pace, reading age
+    $ ade usage limits --provider claude --text     One provider's accounts
+    $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
+    $ ade usage limits --all-machines --text        Every machine on the account in one table
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
     $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
     $ ade usage stats --scope account --text        Merge every machine on the account
@@ -3731,6 +3914,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade storage compress --text                   Losslessly compress old chat/terminal history
     $ ade --role cto storage maintenance --text     Run the policy-driven maintenance sweep now (CTO)
     $ ade storage actions --text                    List raw storage service actions
+    $ ade storage action deletedLaneChatsSummary --text   Chats from deleted lanes still on disk, and where
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
 `,
@@ -3748,19 +3932,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   signed-in account out with the provider CLI's own logout, then forgets it; the
   directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
-  proof, and starts out as the default.
+  proof, and starts out as the default. Accounts have no names: each shows as
+  its signed-in email, and its id (what --instance takes) never changes. A new
+  account's id is the next free <provider>-<n>.
 
     $ ade providers accounts list --text            All accounts, both providers
     $ ade providers accounts list --provider claude --text
-    $ ade providers accounts add --provider claude --label Work --text
+    $ ade providers accounts add --provider claude --text
                                                     Create an account and print its login command
-    $ ade providers accounts add --provider codex --label "Personal" --accent '#3b82f6' --text
-    $ ade providers accounts login --instance work --text
+    $ ade providers accounts add --provider codex --accent '#3b82f6' --text
+    $ ade providers accounts login --instance claude-2 --text
                                                     Reprint one account's login command
-    $ ade providers accounts rename --instance work --label "Work (EU)" --text
-    $ ade providers accounts default --instance work --text
+    $ ade providers accounts default --instance claude-2 --text
                                                     Make an account the provider's default
-    $ ade providers accounts remove --instance work --text
+    $ ade providers accounts remove --instance claude-2 --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
@@ -3774,8 +3959,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
   Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance work
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance work
+    $ ade chat create --lane <lane> --provider claude --instance claude-2
+    $ ade new chat --mode cli --lane <lane> --provider claude --instance claude-2
 
   Use a saved custom setup (agent + model, from Settings > Providers > Custom)
   or one stored API key for one session:
@@ -3934,6 +4119,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
+    $ ade actions describe chat.respondToInput --text
+                                                    One action: read/write access, description, documented
+                                                    input fields and an example (alias: show, schema)
     $ ade --role cto actions list --domain attention --text
                                                     Discover account-wide Activity actions
     $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
@@ -5059,6 +5247,21 @@ export function readNumberOption(
   return parsed;
 }
 
+/**
+ * A number flag whose value is optional: `--wait 10` and `--wait=10` read 10,
+ * a bare `--wait` reads `bareValue`, no flag reads undefined.
+ */
+function readOptionalNumberOption(args: string[], names: string[], bareValue: number): number | undefined {
+  const index = args.findIndex((token) => names.includes(token));
+  // Bare: last, or followed by another flag. `readNumberOption` would take
+  // that next token as the value.
+  if (index >= 0 && (index === args.length - 1 || args[index + 1]!.startsWith("-"))) {
+    args.splice(index, 1);
+    return bareValue;
+  }
+  return readNumberOption(args, names);
+}
+
 function readJsonOption(
   args: string[],
   names: string[],
@@ -5617,8 +5820,14 @@ const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
 const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--text", "--prompt", "--kickoff", "--kickoff-prompt", "--note", "--handoff-note", "--message",
   "--question", "--objective", "--goal", "--set", "--title", "--reason", "--steer",
+  "--answer", "--option", "--response",
+]);
+const LANES_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--name", "--description", "--desc", "--branch-name", "--linear-issue-json", "--reason",
 ]);
 const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["lanes", LANES_VALUE_FLAGS],
+  ["lane", LANES_VALUE_FLAGS],
   ["secrets", SECRETS_VALUE_FLAGS],
   ["secret", SECRETS_VALUE_FLAGS],
   ["chat", CHAT_VALUE_FLAGS],
@@ -7176,11 +7385,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
           arguments: {
             domain: "chat",
             action: "messageSession",
-            args: {
+            args: mergeRemoteMcpTurnMetadata({
               sessionId: targetSession,
               text: prompt,
               kind: "auto",
-            },
+            }),
           },
         };
       },
@@ -9904,7 +10113,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     laneId,
     prompt,
     provider,
-    chat: { create, message: { text: prompt } },
+    chat: { create, message: mergeRemoteMcpTurnMetadata({ text: prompt }) },
   };
   maybePut(launchArgs, "laneName", laneName);
   maybePut(launchArgs, "baseBranch", baseBranch);
@@ -10094,6 +10303,21 @@ export function formatChatLaunches(value: unknown): string {
  */
 const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
 
+function remoteMcpTurnMetadata(): { remoteMcp: { connectionId: string; label: string } } | null {
+  const connectionId = process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim();
+  if (!connectionId) return null;
+  const configuredLabel = process.env.ADE_REMOTE_MCP_CONNECTION_LABEL?.trim();
+  const label = configuredLabel?.slice(0, 80).trim() || "AI app";
+  return { remoteMcp: { connectionId, label } };
+}
+
+function mergeRemoteMcpTurnMetadata(args: JsonObject): JsonObject {
+  const metadata = remoteMcpTurnMetadata();
+  if (!metadata) return args;
+  const existingMetadata = isRecord(args.metadata) ? args.metadata : {};
+  return { ...args, metadata: { ...existingMetadata, ...metadata } };
+}
+
 /**
  * The target both handoff forms read the same way: the mode, the model (also
  * `--target` or a bare positional) and its settings. `sub` "fork" implies
@@ -10144,6 +10368,100 @@ function readHandoffTarget(args: string[], sub: string): {
       ...(codexSandbox !== null ? { codexSandbox } : {}),
       ...(codexConfigSource !== null ? { codexConfigSource } : {}),
     },
+  };
+}
+
+/**
+ * `ade chat respond <session>`: answer the question or approval the chat is
+ * blocked on. Reads the chat's pending inputs first so the caller needs no
+ * item id when exactly one is open, and so `--option` / `--answer` can name an
+ * option by number or label; then calls `chat.respondToInput`. The flag
+ * grammar lives in `resolvePendingInputResponse`, beside the formatter that
+ * prints these commands.
+ */
+function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
+  const requestedItemId = readValue(args, ["--item", "--item-id"]);
+  const optionArgs = readRepeatedValues(args, ["--option", "--choice"]);
+  const answerArgs = readRepeatedValues(args, ["--answer"]);
+  const answersJson = readJsonOption(args, ["--answers-json"], "--answers-json");
+  if (answersJson !== undefined && !isRecord(answersJson)) {
+    throw new CliUsageError("--answers-json takes an object of question id to answer string (or array of strings).");
+  }
+  const text = readValue(args, ["--text", "--message", "--response"]);
+  const decisionFlags: Array<[boolean, AgentChatApprovalDecision]> = [
+    [readFlag(args, ["--approve", "--accept", "--allow"]), "accept"],
+    [readFlag(args, ["--approve-session", "--accept-for-session", "--always-allow"]), "accept_for_session"],
+    [readFlag(args, ["--deny", "--decline", "--reject"]), "decline"],
+    [readFlag(args, ["--cancel"]), "cancel"],
+  ];
+  const chosenDecisions = decisionFlags.filter(([set]) => set).map(([, decision]) => decision);
+  if (chosenDecisions.length > 1) {
+    throw new CliUsageError("Use only one of --approve, --approve-session, --deny, or --cancel.");
+  }
+  const explicitDecision = chosenDecisions[0] ?? null;
+  const hasAnswer = optionArgs.length > 0 || answerArgs.length > 0 || answersJson !== undefined || Boolean(text?.trim());
+  if (!explicitDecision && !hasAnswer) {
+    throw new CliUsageError(
+      `chat respond needs an answer: --option <n|label>, --answer <question>=<value>, --text "<answer>", or --approve / --deny. `
+      + `See the question with: ade chat pending ${sessionId} --text`,
+    );
+  }
+  // Pure: params and shapeResult both derive from the listed inputs, so the
+  // printed result never depends on which of them ran first.
+  const resolve = (values: JsonObject): PendingInputResponse => {
+    const pendingValue = values.pending;
+    const listed = !(isRecord(pendingValue) && pendingValue.ok === false);
+    const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
+    try {
+      return resolvePendingInputResponse(requests, listed, {
+        sessionId,
+        itemId: requestedItemId,
+        options: optionArgs,
+        answers: answerArgs,
+        ...(isRecord(answersJson) ? { answersJson: answersJson as Record<string, string | string[]> } : {}),
+        text,
+        decision: explicitDecision,
+      });
+    } catch (error) {
+      throw new CliUsageError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  return {
+    kind: "execute",
+    label: "chat respond",
+    shapeResult: (values) => {
+      const { itemId, decision, kind, title } = resolve(values);
+      return { answered: true, sessionId, itemId, decision, ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
+    },
+    steps: [
+      {
+        ...actionStep("pending", "chat", "listPendingInputs", { sessionId }),
+        // With an explicit item an older brain without the read still answers.
+        ...(requestedItemId ? { optional: true } : {}),
+      },
+      {
+        key: "result",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        params: (values) => {
+          const { itemId, decision, answers, responseText } = resolve(values);
+          return {
+            name: "run_ade_action",
+            arguments: {
+              domain: "chat",
+              action: "respondToInput",
+              args: {
+                sessionId,
+                itemId,
+                decision,
+                ...(answers ? { answers } : {}),
+                ...(responseText ? { responseText } : {}),
+              },
+            },
+          };
+        },
+      },
+    ],
   };
 }
 
@@ -10344,7 +10662,14 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "regenerateSessionMetadata",
-          withSession(fields.length ? { fields } : {}),
+          collectGenericObjectArgs(args, {
+            ...(fields.length ? { fields } : {}),
+            // Like `note` and `ask`: the caller's own chat unless one is named
+            // (`--arg sessionId=…` still overrides this).
+            ...((sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim())
+              ? { sessionId: sessionId ?? process.env.ADE_CHAT_SESSION_ID?.trim() }
+              : {}),
+          }),
         ),
       ],
     };
@@ -10436,7 +10761,7 @@ function buildChatPlan(args: string[]): CliPlan {
         // straight off the top level.
         const record = isRecord(result) ? result : {};
         const phase = asString(record.phase) as ChatTurnStatusPhase | undefined;
-        if (phase === "running" || phase === "idle" || phase === "blocked") {
+        if (phase === "running" || phase === "idle" || phase === "blocked" || phase === "waiting") {
           return chatTurnStatusExitCode(phase);
         }
         return 1;
@@ -10753,11 +11078,11 @@ function buildChatPlan(args: string[]): CliPlan {
                   arguments: {
                     domain: "chat",
                     action: "messageSession",
-                    args: {
+                    args: mergeRemoteMcpTurnMetadata({
                       sessionId: targetSession,
                       text: explicitKickoff,
                       kind: "auto",
-                    },
+                    }),
                   },
                 };
               },
@@ -10806,11 +11131,11 @@ function buildChatPlan(args: string[]): CliPlan {
             arguments: {
               domain: "chat",
               action: "messageSession",
-              args: {
+              args: mergeRemoteMcpTurnMetadata({
                 sessionId: targetSession,
                 text: explicitKickoff ?? deriveLinearKickoffPrompt(issueForKickoff),
                 kind: "auto",
-              },
+              }),
             },
           };
         },
@@ -10843,6 +11168,7 @@ function buildChatPlan(args: string[]): CliPlan {
       // "Start B after A": a durable wait that sends this prompt to B once
       // every chat named in --after is idle.
       const afterIds = afterValue.split(",").map((id) => id.trim()).filter(Boolean);
+      const sendMetadata = remoteMcpTurnMetadata();
       return {
         kind: "execute",
         label: "chat send after",
@@ -10853,17 +11179,18 @@ function buildChatPlan(args: string[]): CliPlan {
             waitFor: normalizeChatWaitTarget(afterWaitFor),
             sendToSessionId: targetSession,
             text: sendText,
+            ...(sendMetadata ? { sendMetadata } : {}),
             ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
           }),
         ],
       };
     }
-    const messageArgs = withSession({
+    const messageArgs = mergeRemoteMcpTurnMetadata(withSession({
       sessionId: targetSession,
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-    });
+    }));
     return {
       kind: "execute",
       label: "chat send",
@@ -10899,12 +11226,12 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "messageSession",
-          withSession({
+          mergeRemoteMcpTurnMetadata(withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-          }),
+          })),
         ),
       ],
     };
@@ -10926,15 +11253,31 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "steer",
-          withSession({
+          mergeRemoteMcpTurnMetadata(withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
             ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
-          }),
+          })),
         ),
       ],
     };
+  }
+  if (sub === "pending" || sub === "pending-inputs") {
+    const targetSession = requireSession();
+    return {
+      kind: "execute",
+      label: "chat pending",
+      formatter: "chat-pending-inputs",
+      shapeResult: (values) => {
+        const listed = unwrapActionEnvelope(values.result);
+        return { sessionId: targetSession, requests: firstArray(listed, ["requests"]) };
+      },
+      steps: [actionStep("result", "chat", "listPendingInputs", { sessionId: targetSession })],
+    };
+  }
+  if (sub === "respond" || sub === "answer") {
+    return buildChatRespondPlan(args, requireSession());
   }
   if (sub === "waits") {
     const input: JsonObject = {};
@@ -11398,8 +11741,23 @@ function buildChatPlan(args: string[]): CliPlan {
       };
     }
     if (scheduledWorkOperation === "cancel") {
-      const targetSession = requireValue(sessionId, "sessionId");
-      const scheduleId = requireValue(firstStandalonePositional(args), "scheduleId");
+      // `cancel <session> <id>`, `cancel --session <s> --id <id>`, or, from
+      // inside a chat, `cancel <id>` for that chat's own job.
+      const scheduleIdFlag = readValue(args, ["--id", "--schedule-id", "--job-id"]);
+      const secondPositional = scheduleIdFlag ? null : firstStandalonePositional(args);
+      const callerChat = asString(process.env.ADE_CHAT_SESSION_ID);
+      let targetSession: string | null = sessionId;
+      let scheduleId: string | null = scheduleIdFlag ?? secondPositional;
+      if (!scheduleId && !explicitSessionId && sessionId) {
+        scheduleId = sessionId;
+        targetSession = callerChat;
+      } else if (!targetSession) {
+        targetSession = callerChat;
+      }
+      const cancelUsage = "Usage: ade chat scheduled-work cancel <session> <id>  (or --session <session> --id <id>; "
+        + "the job id and its session are in 'ade chat scheduled-work list --text').";
+      if (!scheduleId) throw new CliUsageError(`scheduled-work cancel needs the job id. ${cancelUsage}`);
+      if (!targetSession) throw new CliUsageError(`scheduled-work cancel needs the chat that owns the job. ${cancelUsage}`);
       return {
         kind: "execute",
         label: "chat scheduled-work cancel",
@@ -12985,7 +13343,12 @@ function buildFilesPlan(args: string[]): CliPlan {
       label: "file actions",
       steps: [listActionsStep("actions", "file")],
     };
-  const workspaceId = readValue(args, ["--workspace", "--workspace-id"]);
+  // A lane's workspace id is its lane id, so the shell's lane is the default.
+  // `--lane` is read once: reading it consumes it.
+  const laneId = readLaneId(args);
+  const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
+    ?? laneId
+    ?? (process.env.ADE_LANE_ID?.trim() || null);
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,
@@ -13001,7 +13364,7 @@ function buildFilesPlan(args: string[]): CliPlan {
           "result",
           "file",
           "listWorkspaces",
-          collectGenericObjectArgs(args, { laneId: readLaneId(args) }),
+          collectGenericObjectArgs(args, { laneId }),
         ),
       ],
     };
@@ -13819,7 +14182,7 @@ function iosSimulatorErrorHint(
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
   }
   if (message.includes(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE)) {
-    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
+    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a relative path (it resolves under that root, e.g. .ade/tmp/shot.png).";
   }
   if (message.includes(APPLE_DEVICE_ALREADY_RECORDING_CODE)) {
     return "Another lane is recording this device — stop it there with: ade apple record-stop --lane <lane named above>";
@@ -13969,6 +14332,18 @@ function buildIosSimulatorPlan(
   const sub = firstPositional(args) ?? "status";
   if (sub === "help")
     return { kind: "help", text: buildIosSimulatorHelp(args) };
+  // `apple launch|relaunch … -- <app args>`: everything after the fence is the
+  // app's, split off before any flag reader can take a token from it.
+  // `--launch-arg=<value>` adds one at a time (the `=` lets a value start with
+  // a dash, as `-adePreviewScreen` does).
+  const readAppLaunchArguments = (): string[] => {
+    const fence = args.indexOf("--");
+    const passthrough = fence >= 0 ? args.splice(fence).slice(1) : [];
+    return [...readRepeatedValues(args, ["--launch-arg"]), ...passthrough];
+  };
+  const appLaunchArguments = ["launch", "open", "relaunch", "restart-app"].includes(sub)
+    ? readAppLaunchArguments()
+    : [];
   // `claim` reads its own (required) lane/chat-session args in its branch; for
   // every other subcommand the claim args are consumed once here so the lane
   // is available to the shared root defaults below without double-reading the
@@ -14080,6 +14455,8 @@ function buildIosSimulatorPlan(
       scheme: readValue(args, ["--scheme"]),
       chatSessionId: claimArgs.chatSessionId,
       build: !readFlag(args, ["--no-build"]),
+      configuration: readValue(args, ["--configuration", "--config"]),
+      ...(appLaunchArguments.length ? { arguments: appLaunchArguments } : {}),
       mode: readValue(args, ["--mode"]) ?? "live",
       keepSimulatorInBackground: !foreground,
       ...(openDrawer ? { openDrawer: true } : {}),
@@ -14105,10 +14482,14 @@ function buildIosSimulatorPlan(
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Filed as proof by default; `--no-proof` is a scratch shot for an agent's
+    // own eyes, so a validation loop does not flood the proof drawer.
+    const noProof = readFlag(args, ["--no-proof"]);
     return iosAction("iOS simulator screenshot", "screenshot", {
       deviceUdid: readIosSimulatorDevice(args),
       ...rootArgs(),
       ...readIosSimulatorOutPath(args),
+      ...(noProof ? { proof: false } : {}),
     });
   }
   if (sub === "proof" || sub === "promote") {
@@ -14669,6 +15050,7 @@ function buildIosSimulatorPlan(
     return iosAction("iOS simulator relaunch app", "relaunchApp", {
       deviceUdid: device,
       bundleId,
+      ...(appLaunchArguments.length ? { arguments: appLaunchArguments } : {}),
     });
   }
   if (sub === "terminate" || sub === "kill-app") {
@@ -14728,8 +15110,12 @@ function buildIosSimulatorPlan(
     // `getAppState` answers about a bundle id the caller already knows.
     // This one answers "what is on screen", from the helper's accessibility
     // bridge — the question an agent that has just arrived actually has.
+    // `--wait [seconds]`: keep asking until an app is in front (default 10 s),
+    // for the moment after a launch when the tree still names nothing.
+    const waitSeconds = readOptionalNumberOption(args, ["--wait"], 10);
     return iosAction("Apple device foreground app", "getForegroundApp", {
       deviceUdid: readIosSimulatorDevice(args),
+      ...(waitSeconds ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
     });
   }
   if (sub === "app-state") {
@@ -14829,12 +15215,15 @@ function buildIosSimulatorPlan(
     const name = readValue(args, ["--name"]);
     const runtime = readValue(args, ["--runtime"]);
     const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
+    // A second (or third) device beside the lane's own, booted, reached with --device.
+    const extra = readFlag(args, ["--extra", "--second"]);
     return iosAction("Apple device create", "deviceCreate", {
       ...(laneId ? { laneId } : {}),
       ...(from ? { from } : {}),
       ...(runtime ? { runtime } : {}),
       ...(deviceType ? { deviceType } : {}),
       ...(name ? { name } : {}),
+      ...(extra ? { extra: true } : {}),
     });
   }
   if (sub === "device-attach") {
@@ -14935,10 +15324,19 @@ function buildIosSimulatorPlan(
   }
   if (sub === "device-delete") {
     const force = readFlag(args, ["--force", "-f"]);
+    // `--device` names one of the lane's extra devices (or, as the pane does,
+    // the lane's own device the caller read).
+    const udid = readIosSimulatorDevice(args);
+    // An empty `--device "$UDID"` must not fall through to deleting the
+    // lane's own device.
+    if (udid !== null && !udid.trim()) {
+      throw new CliUsageError("--device needs a udid or name; leave it out to delete the lane's own device.");
+    }
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {
       ...(laneId ? { laneId } : {}),
+      ...(udid ? { udid } : {}),
       ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),
       ...readIgnoreOwnershipArg(args),
@@ -15126,8 +15524,9 @@ function buildIosSimulatorPlan(
   }
   if (sub === "render") {
     // `ade apple render --angles front,three-quarter-left --poses closed,open
-    // --lighting studio --video --sheet --no-shadow`: the Apple pane open for
-    // the lane renders it and files the proof.
+    // --lighting studio --video --sheet --no-shadow`: the lane's live Apple
+    // pane, else any desktop window with the project open, renders it and
+    // files the proof.
     const listOf = <T extends string>(flag: string[], valid: readonly T[], fallback: T[]): T[] => {
       const raw = readValue(args, flag);
       if (raw == null) return fallback;
@@ -15166,6 +15565,35 @@ function buildIosSimulatorPlan(
   if (sub === "duo-skill" || sub === "resizability-skill") {
     // Apple's app-resizability agent skill, from this Mac's Xcode into the lane.
     return iosAction("Apple Duo agent skill", "addDuoSkill", laneId ? { laneId } : {});
+  }
+  if (sub === "lease") {
+    // `ade apple lease [--wait <s>] [--ttl <s>] [--holder <name>]`, then
+    // `ade apple lease release --token <t>`; `ade apple lease status`.
+    // Every flag first: a flag's value must not be read as the verb.
+    const waitSeconds = readNumberOption(args, ["--wait"]);
+    const ttlSeconds = readNumberOption(args, ["--ttl"]);
+    // A shell with no chat is its own holder (its parent, the shell), so two
+    // terminals queue instead of both renewing one anonymous lease. A caller
+    // that runs each command in a fresh shell names itself with --holder.
+    const holder = readValue(args, ["--holder", "--name"])
+      ?? (claimArgs.chatSessionId ? null : `shell ${process.ppid}`);
+    const tokenFlag = readValue(args, ["--token"]);
+    const verb = firstPositional(args) ?? "acquire";
+    const scope = { ...(laneId ? { laneId } : {}), ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}) };
+    if (verb === "status") return iosAction("Apple device lease status", "deviceLeaseStatus", scope);
+    if (verb === "release") {
+      const token = requireValue(tokenFlag ?? firstPositional(args), "--token");
+      return iosAction("Apple device lease release", "deviceLeaseRelease", { ...scope, token });
+    }
+    if (verb !== "acquire" && verb !== "take") {
+      throw new CliUsageError(`ios-sim lease: unknown action '${verb}'. Use acquire (the default), release or status.`);
+    }
+    return iosAction("Apple device lease", "deviceLease", {
+      ...scope,
+      ...(holder ? { holder } : {}),
+      ...(waitSeconds != null ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
+      ...(ttlSeconds != null ? { ttlMs: Math.round(ttlSeconds * 1000) } : {}),
+    });
   }
   if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
     return iosAction("Apple device posture", "getPosture", {
@@ -15957,6 +16385,10 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   drag: ["drag", "drag-and-drop"],
   selectOption: ["select-option", "choose", "option"],
   upload: ["upload", "upload-file", "attach-file"],
+  drop: ["drop", "drop-file", "drop-files", "drag-file"],
+  downloads: ["downloads", "download", "downloaded-files"],
+  clipboard: ["clipboard", "clip"],
+  paste: ["paste"],
   record: ["record", "recording"],
   trace: ["trace", "action-trace", "timeline"],
   proof: ["proof", "promote"],
@@ -17188,8 +17620,13 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   if (isBrowserSubcommand(sub, "upload")) {
     const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--upload"]);
     const targetArgs = readBrowserClickTargetArgs(args);
-    if (Object.keys(targetArgs).length === 0) {
-      throw new CliUsageError("browser upload requires --selector, --text-match, --test-id, --element, or --handle.");
+    // `--trigger` names the button that opens the picker, so it is a complete
+    // target on its own: the page has no input for `--selector` to point at.
+    const triggerSelector = readValue(args, ["--trigger", "--trigger-selector"]);
+    if (!triggerSelector && Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError(
+        "browser upload requires --selector, --text-match, --test-id, --element, or --handle (or --trigger for a button that opens the file picker).",
+      );
     }
     const actionArgs = readBrowserAgentActionArgs(args);
     // `browserPositionals`, not a raw filter: the filter both kept flag values
@@ -17207,7 +17644,137 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
+            ...(triggerSelector ? { triggerSelector } : {}),
             paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "drop")) {
+    const explicitPaths = readRepeatedValues(args, ["--file", "--path", "--drop"]);
+    const targetArgs = readBrowserClickTargetArgs(args);
+    if (Object.keys(targetArgs).length === 0) {
+      throw new CliUsageError("browser drop requires --selector, --text-match, --test-id, --element, or --handle.");
+    }
+    const paths = explicitPaths.length ? explicitPaths : browserPositionals(args);
+    if (!paths.length) throw new CliUsageError("browser drop requires at least one file path.");
+    return {
+      kind: "execute",
+      label: "browser drop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "dropFiles",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...targetArgs,
+            paths,
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "downloads")) {
+    const mode = (firstBrowserPositional(args) ?? "list").toLowerCase();
+    if (mode !== "list" && mode !== "wait" && mode !== "next") {
+      throw new CliUsageError("browser downloads takes no word (a list) or `wait`.");
+    }
+    const limit = readNumberOption(args, ["--limit", "--entries"]);
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    if (mode === "wait" || mode === "next") {
+      const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
+      return {
+        kind: "execute",
+        label: "browser downloads wait",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "waitForDownload",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              ...(timeoutMs == null ? {} : { timeoutMs }),
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser downloads",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "listDownloads",
+          collectGenericObjectArgs(args, {
+            ...targetArgs,
+            ...(limit == null ? {} : { limit }),
+          }),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "clipboard")) {
+    const mode = (firstBrowserPositional(args) ?? "read").toLowerCase();
+    if (mode !== "read" && mode !== "write" && mode !== "set") {
+      throw new CliUsageError("browser clipboard takes no word (read today), `read`, or `write`.");
+    }
+    const targetArgs = readBrowserOwnedTabTargetArgs(args);
+    // `--value` / `--html`, not `--text`: `--text` is this CLI's human-readable
+    // output switch, and reading it as content would eat the flag.
+    const value = readValue(args, ["--value", "--content"]);
+    const html = readValue(args, ["--html"]);
+    const imagePath = readValue(args, ["--image", "--image-path"]);
+    if (mode === "write" || mode === "set" || value != null || html != null || imagePath != null) {
+      if (!value && !html && !imagePath) {
+        throw new CliUsageError("browser clipboard write requires --value, --html or --image.");
+      }
+      return {
+        kind: "execute",
+        label: "browser clipboard write",
+        steps: [
+          actionStep(
+            "result",
+            "built_in_browser",
+            "writeClipboard",
+            collectGenericObjectArgs(args, {
+              ...targetArgs,
+              ...(value ? { text: value } : {}),
+              ...(html ? { html } : {}),
+              ...(imagePath ? { imagePath } : {}),
+            }),
+          ),
+        ],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "browser clipboard",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "readClipboard",
+          collectGenericObjectArgs(args, targetArgs),
+        ),
+      ],
+    };
+  }
+  if (isBrowserSubcommand(sub, "paste")) {
+    return {
+      kind: "execute",
+      label: "browser paste",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "paste",
+          collectGenericObjectArgs(args, {
+            ...readBrowserAgentActionArgs(args),
+            ...readBrowserClickTargetArgs(args),
           }),
         ),
       ],
@@ -17812,6 +18379,69 @@ function buildUsagePlan(args: string[]): CliPlan {
       label: "usage action",
       steps: [buildActionRunStep(["usage", ...args])],
     };
+  // What an agent plans with: per account, how much of each window is left,
+  // when it resets, its pace, and the id `chat create --instance` takes.
+  if (sub === "limits" || sub === "limit" || sub === "left") {
+    const provider = readValue(args, ["--provider"])?.trim().toLowerCase() || null;
+    if (provider && !(LIVE_QUOTA_PROVIDERS as readonly string[]).includes(provider)) {
+      throw new CliUsageError(
+        `usage limits --provider must be one of ${LIVE_QUOTA_PROVIDERS.join(", ")}; other providers report no limits.`,
+      );
+    }
+    // The asking chat, so the answer can say which account it runs on. On
+    // another machine no chat has this id, and the mark is simply absent.
+    const chatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+    const isReport = (value: unknown): value is UsageLimitsReport =>
+      isRecord(value) && Array.isArray(value.accounts);
+    return {
+      kind: "execute",
+      label: "usage limits",
+      steps: [
+        {
+          ...actionStep("limits", "usage", "getUsageLimits", {
+            ...(provider ? { provider } : {}),
+            ...(chatSessionId ? { chatSessionId } : {}),
+          }),
+          optional: true,
+        },
+        // A host older than `getUsageLimits` still has the full snapshot.
+        {
+          ...actionStep("snapshot", "usage", "getUsageSnapshot", {}),
+          skipWhen: (values) => isReport(unwrapActionEnvelope(values.limits)),
+        },
+        // The fallback also keeps the asking chat's account, which the host's
+        // own report would have resolved. An older host still knows the
+        // summary's `instanceId`.
+        ...(chatSessionId
+          ? [{
+            ...actionArgsListStep("chat", "chat", "getSessionSummary", [chatSessionId]),
+            optional: true,
+            skipWhen: (values: JsonObject) => isReport(unwrapActionEnvelope(values.limits)),
+          }]
+          : []),
+      ],
+      shapeResult: (values) => {
+        const limits = unwrapActionEnvelope(values.limits);
+        if (isReport(limits)) return limits;
+        const snapshot = unwrapActionEnvelope(values.snapshot);
+        const summary = unwrapActionEnvelope(values.chat);
+        const chat = isRecord(summary)
+          ? {
+            provider: asString(summary.provider),
+            instanceId: asString(summary.instanceId)?.trim() ?? null,
+          }
+          : null;
+        return buildUsageLimitsReport(isRecord(snapshot) ? snapshot as Partial<UsageSnapshot> : null, {
+          nowMs: Date.now(),
+          provider,
+          chat: chat?.provider && chat.instanceId ? { provider: chat.provider, instanceId: chat.instanceId } : null,
+        });
+      },
+      machineList: "usageLimits",
+      formatText: formatUsageLimits,
+      tableText: formatUsageLimits,
+    };
+  }
   if (sub === "snapshot" || sub === "get" || sub === "status") {
     return {
       kind: "execute",
@@ -18423,7 +19053,7 @@ function buildProxyPlan(args: string[]): CliPlan {
 /**
  * `ade providers accounts …` — this machine's Claude and Codex logins.
  *
- * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
+ * An account is an id plus a provider config directory (`CLAUDE_CONFIG_DIR` /
  * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
  * flow, so `add` prints the exact command and env var a shell must run for the
  * login to land in the new directory, and `remove` signs the account out, then
@@ -18445,7 +19075,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
   }
   if (group !== "accounts" && group !== "account") {
     throw new CliUsageError(
-      "providers supports `accounts <list|add|remove|rename|default>` or `actions`.",
+      "providers supports `accounts <list|add|remove|default>` or `actions`.",
     );
   }
   const sub = firstPositional(args) ?? "list";
@@ -18470,10 +19100,10 @@ function buildProvidersPlan(args: string[]): CliPlan {
     if (!provider) {
       throw new CliUsageError("providers accounts add requires --provider claude|codex.");
     }
-    const label = requireValue(
-      readValue(args, ["--label", "--name"]) ?? firstPositional(args),
-      "account label",
-    );
+    // Accounts have no names: they show as their email once signed in.
+    if (readValue(args, ["--label", "--name"]) != null) {
+      throw new CliUsageError("Accounts have no names: drop --label. A new account shows as its email once signed in; its id is the next <provider>-<n>.");
+    }
     const accentColor = readValue(args, ["--accent", "--accent-color"]);
     return {
       kind: "execute",
@@ -18481,7 +19111,6 @@ function buildProvidersPlan(args: string[]): CliPlan {
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "create", {
         provider,
-        label,
         ...(accentColor ? { accentColor } : {}),
       })],
     };
@@ -18496,14 +19125,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "rename") {
-    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
-    const label = requireValue(readValue(args, ["--label", "--name"]) ?? firstPositional(args), "account label");
-    return {
-      kind: "execute",
-      label: "providers accounts rename",
-      formatter: "provider-accounts",
-      steps: [actionStep("result", "provider_instances", "rename", { id, label })],
-    };
+    throw new CliUsageError("Accounts have no names to change: each one shows as its signed-in email, and its id stays the same.");
   }
   if (sub === "default" || sub === "set-default" || sub === "use") {
     const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
@@ -18524,7 +19146,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    "providers accounts supports list, add, remove, rename, default, login, or refresh.",
+    "providers accounts supports list, add, remove, default, login, or refresh.",
   );
 }
 
@@ -18579,6 +19201,16 @@ function buildActionsPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "describe" || sub === "show" || sub === "schema") {
+    const target = parseActionRunTarget(args);
+    return {
+      kind: "execute",
+      label: "actions describe",
+      formatter: "actions-describe",
+      steps: [listActionsStep("catalog", target.domain)],
+      shapeResult: (values) => describeActionFromCatalog(values.catalog, target.domain, target.action),
+    };
+  }
   if (sub === "call" || sub === "direct" || sub === "tool") {
     const toolName = requireValue(firstPositional(args), "toolName");
     return {
@@ -18633,7 +19265,7 @@ function buildActionsPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  throw new CliUsageError("actions supports list, run, call, status, or wait.");
+  throw new CliUsageError("actions supports list, describe, run, call, status, or wait.");
 }
 
 function buildAgentPlan(args: string[]): CliPlan {
@@ -20086,6 +20718,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--chat-session",
   "--chat-session-id",
   "--click-count",
+  "--content",
   "--count",
   "--css",
   "--data-cy",
@@ -20099,6 +20732,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--device-scale-factor",
   "--dock",
   "--dpr",
+  "--drop",
   "--dx",
   "--dy",
   "--element",
@@ -20109,6 +20743,9 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--entries",
   "--factor",
   "--file",
+  "--html",
+  "--image",
+  "--image-path",
   "--filter",
   "--find",
   "--for",
@@ -20190,6 +20827,8 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--to-text-match",
   "--to-x",
   "--to-y",
+  "--trigger",
+  "--trigger-selector",
   "--ua",
   "--upload",
   "--url",
@@ -20214,6 +20853,16 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   // positional readers by the browser builder only. Merging it here once made
   // `--text` a CLI-wide carrier and `ade session show --text s1` silently read
   // the ambient session instead of "s1".
+  // `chat respond` / `chat scheduled-work cancel` values; a session given
+  // after them must not be read as their value.
+  "--item",
+  "--item-id",
+  "--option",
+  "--choice",
+  "--answer",
+  "--answers-json",
+  "--schedule-id",
+  "--job-id",
   "-b",
   "-m",
   "-q",
@@ -20524,7 +21173,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -20535,63 +21184,12 @@ function buildCliPlan(
   }
   const primary = firstPositional(args);
   if (!primary) {
-    return { kind: "help", text: topLevelHelpText() };
+    return buildHelpPlan(topLevelHelpText(), null, options);
   }
   if (primary === "-h" || primary === "--help") {
-    return { kind: "help", text: topLevelHelpText() };
+    return buildHelpPlan(topLevelHelpText(), null, options);
   }
-  const aliases: Record<string, string> = {
-    lane: "lanes",
-    diff: "diff",
-    diffs: "diff",
-    file: "files",
-    pr: "prs",
-    pty: "shell",
-    term: "terminal",
-    chats: "chat",
-    work: "chat",
-    agents: "agent",
-    test: "tests",
-    computer: "proof",
-    "computer-use": "proof",
-    artifact: "proof",
-    artifacts: "proof",
-    apple: "apple",
-    "ios-sim": "apple",
-    ios: "apple",
-    simulator: "apple",
-    "mac-desk": "mac-desktop",
-    desk: "mac-desktop",
-    app: "app-control",
-    apps: "app-control",
-    electron: "app-control",
-    "ade-browser": "browser",
-    "built-in-browser": "browser",
-    "builtin-browser": "browser",
-    worktools: "work-tools",
-    "tools-pane": "work-tools",
-    setting: "settings",
-    config: "settings",
-    action: "actions",
-    coord: "coordinator",
-    automation: "automations",
-    "auto-update": "update",
-    updates: "update",
-    operation: "operations",
-    sessions: "session",
-    project: "projects",
-    machine: "machines",
-    quota: "usage",
-    quotas: "usage",
-    disk: "storage",
-    archived: "archive",
-    skills: "skill",
-    gh: "github",
-    create: "new",
-    login: "auth",
-    logout: "auth",
-  };
-  const primaryHelpKey = aliases[primary] ?? primary;
+  const primaryHelpKey = CLI_COMMAND_ALIASES[primary] ?? primary;
   // The browser grammar carries values the global table does not, and a `--`
   // that belongs to one of them must not fence `--help` out of the scan.
   const helpCarriers =
@@ -20613,43 +21211,51 @@ function buildCliPlan(
   if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "apple") {
-      return { kind: "help", text: buildIosSimulatorHelp(args) };
+      return buildHelpPlan(buildIosSimulatorHelp(args), helpCatalogTopic(helpKey), options);
     }
     if (primaryHelpKey === "cursor") {
-      return { kind: "help", text: buildCursorHelp(args) };
+      return buildHelpPlan(buildCursorHelp(args), helpCatalogTopic(helpKey), options);
     }
     if (primaryHelpKey === "app-control") {
-      return { kind: "help", text: buildAppControlHelp(args) };
+      return buildHelpPlan(buildAppControlHelp(args), helpCatalogTopic(helpKey), options);
     }
-    return {
-      kind: "help",
-      text: commandHelpText(helpKey) ?? commandHelpText(primaryHelpKey) ?? topLevelHelpText(),
-    };
+    const text = commandHelpText(helpKey) ?? commandHelpText(primaryHelpKey) ?? topLevelHelpText();
+    return buildHelpPlan(text, helpCatalogTopic(helpKey), options);
   }
   if (primary === "help") {
     const topics = args
       .filter((arg) => arg !== "--" && !arg.startsWith("-"))
       .map((arg) => arg.toLowerCase());
     const topic = topics[0] ?? "";
-    const key = aliases[topic] ?? topic;
+    const key = CLI_COMMAND_ALIASES[topic] ?? topic;
     const subtopic = topics[1];
     const helpKey = subtopic ? helpKeyWithSubcommand(key, [subtopic]) : key;
     const nestedHelpArgs = subtopic ? topics.slice(1) : [];
     if (key === "apple") {
-      return { kind: "help", text: buildIosSimulatorHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildIosSimulatorHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
     if (key === "cursor") {
-      return { kind: "help", text: buildCursorHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildCursorHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
     if (key === "app-control") {
-      return { kind: "help", text: buildAppControlHelp(nestedHelpArgs) };
+      return buildHelpPlan(
+        buildAppControlHelp(nestedHelpArgs),
+        helpKey ? helpCatalogTopic(helpKey) : null,
+        options,
+      );
     }
-    return {
-      kind: "help",
-      text: key
-        ? commandHelpText(helpKey) ?? commandHelpText(key) ?? topLevelHelpText()
-        : topLevelHelpText(),
-    };
+    const text = key
+      ? commandHelpText(helpKey) ?? commandHelpText(key) ?? topLevelHelpText()
+      : topLevelHelpText();
+    return buildHelpPlan(text, key ? helpCatalogTopic(helpKey) : null, options);
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
@@ -20771,6 +21377,7 @@ function buildCliPlan(
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
     const body = readValue(args, ["--body", "-b"]);
     const open = readValue(args, ["--open", "--link"]);
+    const session = readValue(args, ["--session"]);
     const problem = customNotificationProblem({ title, body, open });
     if (problem) {
       throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
@@ -20791,6 +21398,7 @@ function buildCliPlan(
             title: title.trim(),
             ...(body?.trim() ? { body: body.trim() } : {}),
             ...(open?.trim() ? { open: open.trim() } : {}),
+            ...(session?.trim() ? { sessionId: session.trim() } : {}),
           },
           projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
         },
@@ -22798,6 +23406,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "machineInfo.get" ||
     method.startsWith("account.") ||
     method === "remoteMcp.call" ||
+    method === "keepAwake.call" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -23589,6 +24198,11 @@ function buildInitializeParams(
       callerId:
         envChatSessionId ?? envAttemptId ?? syntheticCallerId(clientName),
       role: options.role,
+      // The remote MCP runner launches this CLI for an outside AI app; the
+      // browser gate has to know that even when the call has no chat.
+      ...(asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID)
+        ? { remoteMcpConnectionId: asString(process.env.ADE_REMOTE_MCP_CONNECTION_ID) }
+        : {}),
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envRunId ? { runId: envRunId } : {}),
       ...(envStepId ? { stepId: envStepId } : {}),
@@ -25469,8 +26083,18 @@ async function runServe(
   if (process.platform === "darwin") {
     boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
   }
+  // Resolved before the backoff: the crash-loop record counts only failures
+  // on this brain's own endpoint.
+  const rawSocketPath =
+    readValue(args, ["--socket"]) ??
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
+    resolveMachineAdeLayout().socketPath;
+  const serveSocketPath = normalizeRuntimeSocketPath(rawSocketPath);
   const previousFailure = readLastFailure({ kind: "machine" });
-  const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
+  const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now(), {
+    socketPath: serveSocketPath,
+    primarySocketPath: normalizeRuntimeSocketPath(resolveMachineAdeLayout().socketPath),
+  });
   if (startupBackoffMs > 0 && previousFailure) {
     // The bare `code` alone printed "unknown" for every failure the classifier
     // had no pattern for — which is exactly the class you need the reason for.
@@ -25557,13 +26181,7 @@ async function runServe(
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
   });
-  const rawSocketPath =
-    readValue(args, ["--socket"]) ??
-    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
-    layout.socketPath;
-  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
-    ? rawSocketPath
-    : path.resolve(rawSocketPath);
+  const socketPath = serveSocketPath;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
@@ -26542,6 +27160,7 @@ async function runServe(
       scopeRegistry,
       personalChatScope,
       providerStatus,
+      keepAwakeService,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
@@ -26976,6 +27595,7 @@ async function runServe(
             code: fault.code,
             message: fault.message,
             detail,
+            socketPath,
             component: "sync_host",
           });
         },
@@ -27714,6 +28334,7 @@ async function runServe(
         code,
         message: "ADE's background service could not start.",
         detail: details,
+        socketPath: serveSocketPath,
         component: /sync host|mobile sync/i.test(details) ? "sync_host" : "brain_startup",
       });
     }
@@ -28490,6 +29111,73 @@ export function formatUsagePrices(value: unknown): string {
     "",
     renderTable(["model", "counts as"], Object.entries(aliases).map(([from, to]) => [from, String(to)]), "No models mapped."),
   ].join("\n");
+}
+
+/**
+ * `ade usage limits`: one row per window, named by the account id `chat create
+ * --instance` takes, with the reading's age when it is not fresh. Rows merged
+ * from several machines (`--all-machines`) lead with the machine.
+ */
+export function formatUsageLimits(value: unknown): string {
+  const report = isRecord(value) ? value : {};
+  const accounts = Array.isArray(report.accounts) ? report.accounts.filter(isRecord) : [];
+  const merged = accounts.some((account) => MACHINE_ROW_KEY in account);
+  const headers = [...(merged ? ["machine"] : []), "provider", "account", "login", "window", "left", "resets", "pace", "note"];
+  const rows: unknown[][] = [];
+  for (const record of accounts) {
+    const machineCells = merged ? [record[MACHINE_ROW_KEY] ?? ""] : [];
+    const unavailable = asString(record.unavailable);
+    if (unavailable) {
+      rows.push([...machineCells, "", "", "", "", "", "", "", unavailable]);
+      continue;
+    }
+    const account = record as unknown as UsageLimitsAccount;
+    const marks = [account.thisChat ? "this chat" : null, account.nextChat ? "next chat" : null].filter(Boolean);
+    const accountCell = `${account.instanceId ?? ""}${marks.length ? ` (${marks.join(", ")})` : ""}`.trim();
+    const login = [account.email ?? account.label, account.plan].filter(Boolean).join(" · ");
+    const notes: string[] = [];
+    if (account.note) notes.push(account.note);
+    if (account.state === "ok" && account.ageMinutes != null && account.ageMinutes >= 10) {
+      notes.push(`read ${formatLimitsDuration(account.ageMinutes)} ago`);
+    }
+    if (account.resetCredits) notes.push(`${account.resetCredits} reset credit${account.resetCredits === 1 ? "" : "s"} banked`);
+    const windows = Array.isArray(account.windows) ? account.windows : [];
+    const lead = [...machineCells, usageProviderTextLabel(account.provider), accountCell, login];
+    if (windows.length === 0) {
+      rows.push([...lead, "", "", "", "", notes.join("; ")]);
+      continue;
+    }
+    windows.forEach((window, index) => {
+      rows.push([
+        ...lead,
+        window.label,
+        usageLimitsLeftText(window),
+        window.resetsInMinutes != null ? `in ${formatLimitsDuration(window.resetsInMinutes)}` : "",
+        usageLimitsPaceText(window),
+        index === 0 ? notes.join("; ") : "",
+      ]);
+    });
+  }
+  const readAt = asString(report.readAt);
+  const chat = isRecord(report.chat) ? report.chat : null;
+  const lines = [
+    `ADE usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
+    ...(chat ? [`this chat runs on ${usageProviderTextLabel(chat.provider)} account ${String(chat.instanceId ?? "")}`] : []),
+    "",
+    renderTable(headers, rows, "No provider limits on this machine. Providers that report limits: Claude, Codex, Cursor, Copilot, Grok, OpenCode, Kimi, Muse.", {
+      fullColumns: ["account", "login"],
+    }),
+  ];
+  // The same login seen from two machines is one quota, not two.
+  for (const login of sharedLoginsAcrossMachines(accounts.map((record) => ({ ...record, machine: record[MACHINE_ROW_KEY] })))) {
+    lines.push(`${usageProviderTextLabel(login.provider)} ${login.email} is one login on ${login.machines.join(", ")}: they share one quota.`);
+  }
+  const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
+  if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
+  if (accounts.some((account) => asString(account.instanceId))) {
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <account>");
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -29937,6 +30625,54 @@ function statusWord(value: unknown): string {
   return raw.toUpperCase();
 }
 
+/**
+ * One action's entry from the brain's catalog (`list_ade_actions`), for
+ * `ade actions describe`. The input shape is the documented contract from
+ * `actionInputContracts.ts`, a one-line type sketch rather than a JSON schema;
+ * an action without one says so instead of guessing.
+ */
+function describeActionFromCatalog(catalog: unknown, domain: string, action: string): JsonObject {
+  const entry = firstArray(catalog, ["actions"]).find((candidate) =>
+    asString(candidate.name) === `${domain}.${action}`
+    || (asString(candidate.domain) === domain && asString(candidate.action) === action));
+  if (!entry) {
+    throw new CliUsageError(
+      `${domain}.${action} is not an action this caller can run here. List them with: ade actions list --domain ${domain} --text`,
+    );
+  }
+  const input = asString(entry.input);
+  return {
+    name: `${domain}.${action}`,
+    access: asString(entry.access) ?? adeActionAccess(domain, action) ?? "unknown",
+    description: asString(entry.description) ?? null,
+    input: input ?? null,
+    example: asString(entry.example) ?? null,
+    ...(input
+      ? {}
+      : {
+          note: "No documented input contract for this action. It takes the service method's own arguments: "
+            + "usually one object (--input-json), sometimes positional (--args-list-json) or one scalar (--scalar). "
+            + "A wrong shape is refused with an error naming the missing field.",
+        }),
+  };
+}
+
+function formatActionDescription(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const name = asString(record.name) ?? "(unknown)";
+  const lines = [
+    name,
+    `  access:      ${asString(record.access) ?? "unknown"}`,
+    `  description: ${asString(record.description) ?? "(none recorded)"}`,
+    `  input:       ${asString(record.input) ?? "(not documented)"}`,
+  ];
+  const example = asString(record.example);
+  lines.push(`  example:     ${example ?? `ade actions run ${name} --input-json '{"key":"value"}'`}`);
+  const note = asString(record.note);
+  if (note) lines.push("", `  ${note}`);
+  return lines.join("\n");
+}
+
 function formatActionsList(value: unknown): string {
   const actionResult =
     isRecord(value) && isRecord(value.actions) ? value.actions : value;
@@ -31152,6 +31888,7 @@ function formatIosSimLaunch(value: unknown): string {
       ],
     ]),
     `build root: ${buildRootLabel}`,
+    ...(asString(session.buildConfiguration) ? [`configuration: ${asString(session.buildConfiguration)}`] : []),
   ];
   if (session.usedInstalledBinary === true) {
     lines.push(
@@ -31191,6 +31928,10 @@ function formatIosSimRotate(value: unknown): string {
     if (typeof width !== "number" || typeof height !== "number") return null;
     return `${String(width)}x${String(height)}`;
   };
+  const posture = isRecord(result.posture) ? (result.posture as AppleDevicePosture) : null;
+  const asked = typeof result.orientation === "string" && isAppleDeviceOrientation(result.orientation)
+    ? result.orientation
+    : null;
   return renderKeyValues("ADE Apple device rotate", [
     ["applied", result.applied],
     ["orientation", result.orientation],
@@ -31198,7 +31939,74 @@ function formatIosSimRotate(value: unknown): string {
     ["reason", result.reason],
     ["screen before", frame(result.frameBefore)],
     ["screen after", frame(result.frameAfter)],
+    ...appleDuoPictureRows(posture),
     ["detail", result.detail],
+    ["note", asked ? appleDuoTurnNote(posture, asked) : null],
+  ], ["note"]);
+}
+
+/**
+ * A foldable's live screen and how its picture runs. The iPhone Duo's inner
+ * display runs a quarter turn from the phone, so "held portrait" and "a tall
+ * screenshot" are different requests there; these rows name both.
+ */
+function appleDuoPictureRows(posture: AppleDevicePosture | null): Array<[string, unknown]> {
+  const shape = appleDuoPictureShape(posture);
+  if (!posture || !shape) return [];
+  const screen = appleDuoScreenName(posture.activeScreenId);
+  return [["picture", `${screen ? `${screen} display, ` : ""}${shape}`]];
+}
+
+/** Said when the hold asked for gives the other shape than its name suggests (the Duo's inner display). */
+function appleDuoTurnNote(posture: AppleDevicePosture | null, asked: AppleDeviceOrientation): string | null {
+  const shape = appleDuoPictureShape(posture);
+  if (!posture || !shape || appleDuoScreenName(posture.activeScreenId) !== "inner") return null;
+  const heldPortrait = appleOrientationFamily(asked) === "portrait";
+  if (heldPortrait && shape === "wide") {
+    return "The iPhone Duo's inner display runs a quarter turn from the phone: held portrait, its picture is wide. For a tall (upright) picture, hold it landscape: rotate landscape-left, or fold laptop.";
+  }
+  if (!heldPortrait && shape === "tall") {
+    return "The iPhone Duo's inner display runs a quarter turn from the phone: held landscape, its picture is tall. For a wide picture, hold it portrait: rotate portrait, or fold open.";
+  }
+  return null;
+}
+
+/** `render`: what was filed, where, and a `cite:` line per proof. */
+function formatAppleRender(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const ids = Array.isArray(result.proofArtifactIds)
+    ? result.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+  return [
+    renderKeyValues("ADE Apple device render", [
+      ["filed", result.filed],
+      ["error", result.error],
+      // A live pane files to the chat it shows; the off-screen host to the asking chat.
+      ["where", ids.length ? "the proof drawer and the lane's proof (ade proof list); cite below" : null],
+    ]),
+    ...ids.map((id, index) => `cite: ${proofCitationMarkdown(id, ids.length > 1 ? `3D render ${index + 1}` : "3D render")}`),
+  ].join("\n");
+}
+
+/** `fold` and `posture`: the hinge, how the phone is held, and the picture a screenshot will get. */
+function formatApplePosture(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const posture = (isRecord(result.posture) ? result.posture : result) as AppleDevicePosture;
+  if (posture.supported === false) {
+    return renderKeyValues("ADE Apple device posture", [
+      ["applied", result.applied],
+      ["supported", false],
+      ["detail", "This device has no hinge."],
+    ]);
+  }
+  return renderKeyValues("ADE Apple device posture", [
+    ["applied", result.applied],
+    ["angle", posture.angle],
+    // In `rotate`'s names: CoreDevice names the device's turn, which swaps
+    // the two landscapes against what `rotate landscape-left` asked for.
+    ["held", appleDuoHeldOrientation(posture) ?? posture.orientation],
+    ["table mode", posture.tableMode],
+    ...appleDuoPictureRows(posture),
   ]);
 }
 
@@ -31211,8 +32019,11 @@ function formatIosSimSnapshot(value: unknown): string {
   const providers = Array.isArray(snapshot.providers)
     ? snapshot.providers.filter(isRecord)
     : [];
-  const elements = Array.isArray(snapshot.elements)
-    ? snapshot.elements.filter(isRecord)
+  // A plain screenshot reads no accessibility tree, so it has no element
+  // list at all; printing "elements 0" there read as "the screen is empty".
+  const hasElements = Array.isArray(snapshot.elements);
+  const elements = hasElements
+    ? (snapshot.elements as unknown[]).filter(isRecord)
     : [];
   const providerSummary = providers
     .map(
@@ -31220,6 +32031,8 @@ function formatIosSimSnapshot(value: unknown): string {
         `${provider.source}:${provider.available ? (provider.elementCount ?? "ok") : "unavailable"}`,
     )
     .join(", ");
+  const filePath = asString(screenshot.filePath);
+  const proofArtifactId = asString(screenshot.proofArtifactId);
   return [
     renderKeyValues("ADE iOS simulator snapshot", [
       ["device", snapshot.deviceUdid],
@@ -31236,12 +32049,15 @@ function formatIosSimSnapshot(value: unknown): string {
           ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x`
           : null,
       ],
-      ["elements", elements.length],
+      ["elements", hasElements ? elements.length : null],
       ["providers", providerSummary],
     ]),
     // Printed raw rather than as a table cell: agents Read this path back,
     // and the key/value renderer truncates long values.
-    asString(screenshot.filePath) ? `file: ${asString(screenshot.filePath)}` : "",
+    filePath ? `file: ${filePath}` : "",
+    // A shot filed as proof is cited from here: attaching the same file again
+    // is refused as a duplicate.
+    ...(proofArtifactId ? [`cite: ${proofCitationMarkdown(proofArtifactId, "Simulator screenshot")}`] : []),
     elements.length ? "" : "",
     elements.length
       ? renderTable(
@@ -31622,10 +32438,28 @@ function formatBrowserStatus(value: unknown): string {
   }
   const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
   const activeTabId = asString(status.activeTabId);
+  // Collection occupancy, not the scoped list: an agent needs to see that one
+  // more tab hits the limit even when some tabs belong to another chat.
+  const tabCount = typeof status.tabCount === "number" ? status.tabCount : tabs.length;
+  const tabLimit = typeof status.tabLimit === "number" ? status.tabLimit : null;
+  const tabUsage = tabLimit == null
+    ? String(tabCount)
+    : `${tabCount} of ${tabLimit}${tabCount >= tabLimit ? " — at the limit; close a tab before opening another" : ""}`;
   // `claimable` marks a tab with no owner or an expired lease. It is visible
   // so an agent can discover it instead of starting a duplicate tab, but every
   // action on it still fails until the caller claims it — so the owner column
   // says exactly that, with the command that fixes it.
+  // How long since the owner last touched it. A tab with a live lease can
+  // still be stale, and "idle 24m" is what tells an agent to reuse or close it
+  // instead of opening another.
+  const idleForTab = (tab: Record<string, unknown>): string | null => {
+    const last = asString(tab.ownerLastActiveAt);
+    if (!last) return null;
+    const elapsed = Date.now() - Date.parse(last);
+    if (!Number.isFinite(elapsed) || elapsed < 60_000) return null;
+    const minutes = Math.round(elapsed / 60_000);
+    return minutes < 60 ? `idle ${minutes}m` : `idle ${Math.round(minutes / 60)}h`;
+  };
   const ownerForTab = (tab: Record<string, unknown>): string => {
     if (tab.claimable === true) {
       const id = asString(tab.id) ?? "<id>";
@@ -31639,10 +32473,25 @@ function formatBrowserStatus(value: unknown): string {
     const chat = asString(tab.ownerChatSessionId);
     // The caller's own tab says so in words; anyone else's shows full ids,
     // never a truncated one that looks copyable and is not.
-    if (chat && chat === callerChatSessionId) return "this chat";
-    return [lane, chat].filter(Boolean).join(" / ");
+    const owner = chat && chat === callerChatSessionId
+      ? "this chat"
+      : [lane, chat].filter(Boolean).join(" / ");
+    const idle = idleForTab(tab);
+    return idle ? `${owner} · ${idle}` : owner;
   };
   const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  // Who created the tab, independent of who holds it now: a tab an agent
+  // opened and released still says so.
+  const openedForTab = (tab: Record<string, unknown>): string => {
+    const by = asString(tab.openedBy);
+    if (by === "chat") {
+      const chat = asString(tab.openedByChatSessionId);
+      if (chat && chat === callerChatSessionId) return "this chat";
+      return chat ? `chat ${chat}` : "agent";
+    }
+    if (by === "human") return "you";
+    return "";
+  };
   const signInForTab = (tab: Record<string, unknown>): string => {
     const profile = asString(tab.isolatedProfile);
     return profile ? `isolated profile "${profile}"` : "shared (the user's)";
@@ -31686,6 +32535,7 @@ function formatBrowserStatus(value: unknown): string {
       ["visible", status.visible],
       ["attached", status.attached],
       ["active tab", activeTabId],
+      ["tabs", tabUsage],
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
@@ -31700,11 +32550,12 @@ function formatBrowserStatus(value: unknown): string {
     ]),
     "",
     renderTable(
-      ["active", "tab", "owner", "title", "url"],
+      ["active", "tab", "owner", "opened", "title", "url"],
       tabs.map((tab) => [
         asString(tab.id) === activeTabId ? "*" : "",
         tab.id,
         ownerForTab(tab),
+        openedForTab(tab),
         tab.title,
         tab.url,
       ]),
@@ -32440,10 +33291,10 @@ function formatProviderAccounts(value: unknown): string {
     renderKeyValues("ADE provider account", [
       ["id", instance.id],
       ["provider", instance.provider],
-      ["label", instance.label],
+      ["email", isRecord(instance.account) ? instance.account.email : undefined],
+      ["plan", isRecord(instance.account) ? instance.account.plan : undefined],
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
-      ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
       ["same login as", instance.sameLoginAs],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
@@ -32505,21 +33356,20 @@ function formatProviderAccounts(value: unknown): string {
   }
   const instances = firstArray(value, ["instances"]);
   return renderTable(
-    ["id", "provider", "label", "default", "signed in", "config home"],
+    ["id", "provider", "email", "plan", "default", "signed in", "config home"],
     instances.map((instance) => [
       instance.id,
       instance.provider,
-      instance.label,
+      isRecord(instance.account) ? instance.account.email ?? "" : "",
+      isRecord(instance.account) ? instance.account.plan ?? "" : "",
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? `${isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes"}${
-          typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""
-        }`
+        ? `yes${typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""}`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
-    { fullColumns: ["id"] },
+    { fullColumns: ["id", "email"] },
   );
 }
 
@@ -33107,6 +33957,18 @@ function formatTextOutput(
       return formatDraftDetail(value, { fullPrompt: true });
     case "drafts-confirm":
       return formatDraftConfirmation(value);
+    case "chat-pending-inputs": {
+      const record = isRecord(value) ? value : {};
+      const sessionId = asString(record.sessionId) ?? "<session>";
+      const requests = firstArray(record, ["requests"]) as unknown as PendingInputRequest[];
+      if (requests.length === 0) return `Chat ${sessionId} is not waiting on any question or approval.`;
+      return [
+        `Chat ${sessionId} is waiting on ${requests.length === 1 ? "1 input" : `${requests.length} inputs`}:`,
+        ...requests.map((request) => describePendingInputForAgent(sessionId, request)),
+      ].join("\n\n");
+    }
+    case "actions-describe":
+      return formatActionDescription(value);
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};
@@ -33153,6 +34015,10 @@ function formatTextOutput(
       return formatIosSimStream(value);
     case "ios-sim-rotate":
       return formatIosSimRotate(value);
+    case "apple-posture":
+      return formatApplePosture(value);
+    case "apple-render":
+      return formatAppleRender(value);
     case "ios-sim-snapshot":
       return formatIosSimSnapshot(value);
     case "ios-sim-selection":
@@ -33368,6 +34234,8 @@ function inferFormatter(
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";
+  if (label === "apple device posture" || label === "apple device fold") return "apple-posture";
+  if (label === "apple device render") return "apple-render";
   if (
     label === "ios simulator tap" ||
     label === "ios simulator drag" ||
@@ -34705,6 +35573,7 @@ async function executePlan(
   try {
     const values: JsonObject = {};
     for (const step of plan.steps) {
+      if (step.skipWhen?.(values)) continue;
       try {
         const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;
@@ -35216,7 +36085,51 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
-  if (!parsed.options.machine) return await runParsedCli(parsed);
+  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
+  try {
+    if (!parsed.options.machine) return await runParsedCli(parsed);
+    return await runOnMachine(parsed);
+  } finally {
+    restoreShellScope();
+  }
+}
+
+/**
+ * An agent's shell carries its own lane: `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`
+ * and `ADE_LANE_ID` all name the project the agent works in. A command that
+ * names another project with `--project-root` must not pick that lane or
+ * worktree up as its default: the lane is not in the named project, and a
+ * worktree there would route the call back to the shell's project. For this
+ * run only, the shell's lane and worktree are dropped (an explicit
+ * `--workspace-root` still wins). Returns the undo.
+ */
+function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+  const explicitRoot = options.projectRoot;
+  const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
+  const saved: Array<[string, string | undefined]> = [];
+  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
+    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
+    saved.push([name, process.env[name]]);
+    delete process.env[name];
+  }
+  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+    process.stderr.write(
+      `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
+      + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
+    );
+  }
+  return () => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
+async function runOnMachine(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   // This shell's lane is a lane on THIS machine. Plan builders that default
   // to it would name a lane the other machine has never heard of; there the
   // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
@@ -35238,11 +36151,37 @@ async function runParsedCli(
     warnDeprecatedIosSimAlias();
   }
   const plan = buildCliPlan(parsed.command, parsed.options);
-  if (plan.kind === "help")
-    return {
-      output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
-      exitCode: 0,
-    };
+  if (plan.kind === "help") {
+    let output: string;
+    if (parsed.options.json && plan.catalogTopic !== undefined) {
+      const scope = remoteMcpHelpScope();
+      const catalog = createHelpCatalog({
+        version: VERSION,
+        pages: HELP_BY_COMMAND,
+        aliases: CLI_COMMAND_ALIASES,
+        topic: plan.catalogTopic,
+        scope,
+        availability: remoteCommandAvailability,
+      });
+      if (!catalog) {
+        const topic = plan.catalogTopic ?? "";
+        throw new CliUsageError(`Unknown help topic '${topic}'. Run 'ade help'.`);
+      }
+      output = `${JSON.stringify(catalog, null, 2)}\n`;
+    } else {
+      output = plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`;
+      if (
+        (process.env.ADE_REMOTE_MCP_CONNECTION_ID || process.stdout.isTTY !== true)
+        && output.startsWith(ADE_BANNER)
+      ) {
+        output = output.slice(ADE_BANNER.length);
+      }
+      // Through ADE MCP, a page lists only the commands this connection can run.
+      const scope = remoteMcpHelpScope();
+      if (scope) output = filterHelpTextForScope(output, scope, remoteCommandAvailability);
+    }
+    return { output, exitCode: 0 };
+  }
   if (plan.kind === "static")
     return {
       output: formatOutput(plan.value, parsed.options, plan.formatter),

@@ -11,7 +11,7 @@ import { TopBar } from "./TopBar";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
 import { isSettingsRoute } from "./projectSidebar/settingsReturnRoute";
-import { isMachineScopedSettingsRoute } from "../settings/settingsManifest";
+import { isMachineScopedSettingsRoute, settingsRouteFor } from "../settings/settingsManifest";
 import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
@@ -65,6 +65,7 @@ import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
+import { useDeletedChatsReminderBanner } from "./useDeletedChatsReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
 import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
@@ -76,6 +77,7 @@ import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { ActivityPane } from "../activity/ActivityPane";
 import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
+import { useAgentMessageToasts } from "../activity/useAgentMessageToasts";
 import { isActivityRoute } from "../../lib/legacyRoutes";
 import {
   BROWSER_TAB_KEYBINDING,
@@ -346,6 +348,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     enabled: !showWelcome,
     onReview: openArchiveSettings,
   });
+  const openStorageSettings = useCallback(() => navigate(settingsRouteFor("storage.deleted-lane-chats")), [navigate]);
+  useDeletedChatsReminderBanner({
+    projectRoot: project?.rootPath ?? null,
+    enabled: !showWelcome,
+    onReview: openStorageSettings,
+  });
   useLaneDependencyBanners({
     projectRoot: project?.rootPath ?? null,
     projectBinding,
@@ -380,6 +388,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useAppWideSessionAttention();
   useCtoAttention();
   useActivitySync(activityPaneOpen);
+  useAgentMessageToasts();
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;

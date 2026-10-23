@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { getHeadSha, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -244,6 +244,20 @@ export function createGitOperationsService({
     for (const key of laneReadCache.keys()) {
       if (key.includes(needle)) laneReadCache.delete(key);
     }
+  }
+
+  /**
+   * Whether HEAD names a branch that has no commits yet (a new repository, or
+   * `git switch --orphan`). An unreadable HEAD whose branch does exist is a
+   * broken repository, not an empty one.
+   */
+  async function isUnbornHead(cwd: string): Promise<boolean> {
+    if (await resolveGitCommit("HEAD", cwd)) return false;
+    const symbolic = await runGit(["symbolic-ref", "-q", "HEAD"], { cwd, timeoutMs: 8_000 });
+    const branchRef = symbolic.exitCode === 0 ? symbolic.stdout.trim() : "";
+    if (!branchRef) return false;
+    const listed = await runGit(["for-each-ref", "--format=%(refname)", branchRef], { cwd, timeoutMs: 8_000 });
+    return listed.exitCode === 0 && listed.stdout.trim() === "";
   }
 
   /**
@@ -742,23 +756,32 @@ export function createGitOperationsService({
         const format = withTrailers
           ? "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1e)%x1f%s"
           : "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s";
+        const readLog = (logRefs: string[] | null) => runGitOrThrow(
+          [
+            "log",
+            ...(logRefs ? ["--date-order"] : []),
+            `-n${limit}`,
+            ...(skip > 0 ? [`--skip=${skip}`] : []),
+            "--date=iso-strict",
+            `--pretty=format:${format}`,
+            ...(logRefs ?? []),
+          ],
+          { cwd: lane.worktreePath, timeoutMs: 15_000 }
+        );
+        // The refs actually read: without HEAD when its branch has no commits.
+        let walkedRefs = refs;
         let out: string;
         try {
-          out = await runGitOrThrow(
-            [
-              "log",
-              ...(refs ? ["--date-order"] : []),
-              `-n${limit}`,
-              ...(skip > 0 ? [`--skip=${skip}`] : []),
-              "--date=iso-strict",
-              `--pretty=format:${format}`,
-              ...(refs ?? []),
-            ],
-            { cwd: lane.worktreePath, timeoutMs: 15_000 }
-          );
+          out = await readLog(refs);
         } catch (error) {
           if (isMissingWorktreeError(error)) throw laneWorktreeMissingError(lane);
-          throw error;
+          // A new repository's branch has no commits yet. It has no history of
+          // its own; every other lane still shows its own.
+          if (!(await isUnbornHead(lane.worktreePath))) throw error;
+          const otherRefs = refs?.filter((ref) => ref !== "HEAD") ?? [];
+          if (otherRefs.length === 0) return [];
+          walkedRefs = otherRefs;
+          out = await readLog(otherRefs);
         }
 
         // Determine which commits are unpushed. One lane: against its upstream.
@@ -776,8 +799,8 @@ export function createGitOperationsService({
             ? new Set(res.stdout.split("\n").map((l) => l.trim()).filter(Boolean))
             : null;
         };
-        if (refs) {
-          unpushedShas = await notOnAnyRemote(refs);
+        if (walkedRefs) {
+          unpushedShas = await notOnAnyRemote(walkedRefs);
         } else {
           const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
             cwd: lane.worktreePath,

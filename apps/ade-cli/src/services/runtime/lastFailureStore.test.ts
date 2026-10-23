@@ -33,7 +33,20 @@ describe("lastFailureStore", () => {
     expect(lastFailurePathForProject(projectRoot)).toBe(path.join(projectRoot, ".ade", "runtime", "last-failure.json"));
   });
 
-  it("increments identical signatures and keeps the first timestamp", () => {
+  // The socket rows: a record from before `socketPath` existed continues into
+  // the next count (an update must not drop a crash loop's backoff), and a
+  // failure on a different socket is a different incident.
+  it.each([
+    [undefined, undefined, 2, "2026-07-12T10:00:00.000Z"],
+    [undefined, "/home/.ade/sock/ade.sock", 2, "2026-07-12T10:00:00.000Z"],
+    ["/home/.ade/sock/ade.sock", "/home/.ade/sock/ade.sock", 2, "2026-07-12T10:00:00.000Z"],
+    ["/home/.ade/sock/ade.sock", "/home/.ade/sock/i-41d6ff7a.sock", 1, "2026-07-12T10:00:10.000Z"],
+  ])("counts a repeat of the same failure (first socket %s, second %s) as %i since %s", (
+    firstSocket,
+    secondSocket,
+    expectedCount,
+    expectedFirstAt,
+  ) => {
     const home = makeRoot("ade-last-failure-count-");
     const target = { kind: "machine" as const, env: { ADE_HOME: home } };
     recordLastFailure(target, {
@@ -42,6 +55,7 @@ describe("lastFailureStore", () => {
       projectRoot: "/project-a",
       message: "first",
       at: "2026-07-12T10:00:00.000Z",
+      ...(firstSocket ? { socketPath: firstSocket } : {}),
     });
     recordLastFailure(target, {
       code: "disk_full",
@@ -49,10 +63,11 @@ describe("lastFailureStore", () => {
       projectRoot: "/project-a",
       message: "second",
       at: "2026-07-12T10:00:10.000Z",
+      ...(secondSocket ? { socketPath: secondSocket } : {}),
     });
     expect(readLastFailure(target)).toMatchObject({
-      count: 2,
-      firstAt: "2026-07-12T10:00:00.000Z",
+      count: expectedCount,
+      firstAt: expectedFirstAt,
       at: "2026-07-12T10:00:10.000Z",
       message: "second",
     });
@@ -91,23 +106,40 @@ describe("lastFailureStore", () => {
     expect(readLastFailure(target)?.message).toBe("first");
   });
 
+  const primarySocket = "/home/.ade/sock/ade.sock";
+  const isolatedSocket = "/home/.ade/sock/i-41d6ff7a.sock";
+  // The socket columns: where the recorded failure happened, and the socket of
+  // the brain that is starting (undefined = no scope given). A desktop's
+  // isolated brain slept 60 s for the service's socket fight (ADE-DESKTOP-8).
   it.each([
-    [2, "2026-07-12T10:00:00.000Z", 0],
-    [3, "2026-07-12T10:00:00.000Z", 10_000],
-    [4, "2026-07-12T10:00:00.000Z", 20_000],
-    [8, "2026-07-12T10:00:00.000Z", 60_000],
-    [20, "2026-07-12T09:54:59.999Z", 0],
-  ])("computes bounded startup backoff for count %i", (count, firstAt, expected) => {
+    [2, "2026-07-12T10:00:00.000Z", 0, undefined, undefined],
+    [3, "2026-07-12T10:00:00.000Z", 10_000, undefined, undefined],
+    [4, "2026-07-12T10:00:00.000Z", 20_000, undefined, undefined],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, undefined, undefined],
+    [20, "2026-07-12T09:54:59.999Z", 0, undefined, undefined],
+    [8, "2026-07-12T10:00:00.000Z", 0, primarySocket, isolatedSocket],
+    [8, "2026-07-12T10:00:00.000Z", 0, undefined, isolatedSocket],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, undefined, primarySocket],
+    [8, "2026-07-12T10:00:00.000Z", 60_000, isolatedSocket, isolatedSocket],
+  ])("computes bounded startup backoff for count %i (window from %s) as %i ms, failure on %s, starting on %s", (
+    count,
+    firstAt,
+    expected,
+    recordedSocket,
+    startingSocket,
+  ) => {
     const report: AdeLastFailureReport = {
       version: 1,
-      code: "disk_full",
+      code: "socket_owned_by_other",
       message: "failure",
       at: "2026-07-12T10:00:00.000Z",
       component: "brain_startup",
       count,
       firstAt,
+      ...(recordedSocket ? { socketPath: recordedSocket } : {}),
     };
-    expect(computeStartupBackoffMs(report, Date.parse("2026-07-12T10:00:00.000Z"))).toBe(expected);
+    const scope = startingSocket ? { socketPath: startingSocket, primarySocketPath: primarySocket } : undefined;
+    expect(computeStartupBackoffMs(report, Date.parse("2026-07-12T10:00:00.000Z"), scope)).toBe(expected);
   });
 
   it("moves the current incident to previous when cleared", () => {

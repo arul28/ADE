@@ -9,15 +9,44 @@
  * issue per channel (per runtime action for the brain's action channel) and
  * error type. Slow calls leave a breadcrumb for whatever fails next.
  */
-import { ipcMain } from "electron";
+import { app, ipcMain, powerMonitor } from "electron";
 import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
 import { parseCodedErrorMessage } from "../../shared/codedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../shared/sentry/logBridge";
+import { runInCapturedIpcCall } from "./ipcCallScope";
 
 const SLOW_CALL_BREADCRUMB_MS = 250;
 
 type PatchedIpcMain = typeof ipcMain & { __adeSentryWrapped?: boolean };
+
+const IPC_TIMEOUT_MESSAGE = /^IPC handler for '[^']+' timed out after (\d+)ms\b/;
+
+/**
+ * When the machine last woke from sleep. `powerMonitor` only works once the
+ * app is ready, and this wrapper installs before that, so the listener is
+ * added by the first call made after ready.
+ */
+let lastResumeAt = 0;
+let watchingResume = false;
+
+function watchResume(): void {
+  if (watchingResume || !app.isReady()) return;
+  watchingResume = true;
+  powerMonitor.on("resume", () => {
+    lastResumeAt = Date.now();
+  });
+}
+
+/**
+ * A timeout whose deadline passed while the machine slept: it woke after the
+ * deadline, so the timer fired late and nothing hung. A short sleep before the
+ * deadline leaves a real hang reported.
+ */
+function sleptThroughTimeout(error: unknown, startedAt: number): boolean {
+  const limitMs = Number(IPC_TIMEOUT_MESSAGE.exec(error instanceof Error ? error.message : "")?.[1]);
+  return limitMs > 0 && lastResumeAt >= startedAt + limitMs;
+}
 
 /**
  * `labelFor` names a call more precisely than its channel when it can (the
@@ -32,8 +61,9 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
   target.handle = ((channel: string, listener: Parameters<typeof ipcMain.handle>[1]) =>
     originalHandle(channel, async (event, ...args) => {
       const startedAt = Date.now();
+      watchResume();
       try {
-        const result = await listener(event, ...args);
+        const result = await runInCapturedIpcCall(() => listener(event, ...args));
         const durationMs = Date.now() - startedAt;
         if (durationMs >= SLOW_CALL_BREADCRUMB_MS) {
           addSentryBreadcrumb("ipc", labelFor(channel, args), { durationMs, ok: true });
@@ -42,7 +72,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
-        if (isExpectedOutcome(error)) {
+        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt)) {
           // An answer ("Lane not found", "Can't reach …"): a Sentry Log, not an issue.
           forwardLogToSentry("warn", `ipc.expected.${label}`, {
             message: error instanceof Error ? error.message : String(error),

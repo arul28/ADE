@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
+import {
+  PushRelayRequestError,
+  PushRelayUnreachableError,
+} from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
+import { IPC } from "../../../shared/ipc";
+import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import {
+  ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS,
+  ATTENTION_IPC_BUDGET_MS,
   ActivityAcknowledgmentStaleError,
   AttentionAccountCoordinator,
 } from "./attentionAccountCoordinator";
@@ -33,7 +40,7 @@ function snapshot(
 }
 
 function logger() {
-  return { warn: vi.fn() };
+  return { warn: vi.fn(), info: vi.fn() };
 }
 
 describe("AttentionAccountCoordinator", () => {
@@ -70,7 +77,7 @@ describe("AttentionAccountCoordinator", () => {
         recovery: null,
       },
     });
-    expect(getAttentionSnapshot).toHaveBeenCalledWith(7, "account:owner-a");
+    expect(getAttentionSnapshot).toHaveBeenCalledWith(7, "account:owner-a", expect.anything());
     expect(callAttention).not.toHaveBeenCalled();
   });
 
@@ -775,11 +782,94 @@ describe("AttentionAccountCoordinator", () => {
     });
     expect(result.availability?.message).toContain("Showing work from This MacBook");
     expect(result.availability?.message).not.toMatch(/relay|bearer|401/i);
-    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {});
+    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", { include: "message" }, expect.anything());
     expect(testLogger.warn).toHaveBeenCalledWith(
       "attention.account_snapshot_failed",
       expect.objectContaining({ fallback: "local_machine" }),
     );
+  });
+
+  it("answers from this computer inside the IPC budget when the account relay never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      // A relay (or the token wait in front of it) that hangs until told to stop.
+      const getAttentionSnapshot = vi.fn((_since: number, _streamId: string | null, options?: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(options.signal?.reason));
+        }));
+      const callAttention = vi.fn(async () => snapshot());
+      const coordinator = new AttentionAccountCoordinator({
+        getLogger: logger,
+        getCurrentAccountOwnerId: () => "owner-a",
+        accountAttentionClient: {
+          getAttentionSnapshot,
+          acknowledgeAttention: vi.fn(),
+          reportAttentionPresence: vi.fn(),
+          getAttentionPreferences: vi.fn(),
+          putAttentionPreferences: vi.fn(),
+        },
+        localRuntimeConnectionPool: { callAttention } as any,
+      });
+
+      const settled = vi.fn();
+      const read = coordinator.getSnapshot({});
+      void read.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS);
+
+      expect(settled).toHaveBeenCalledTimes(1);
+      await expect(read).resolves.toMatchObject({
+        scope: "machine",
+        availability: { state: "degraded", recovery: "retry" },
+      });
+      // Under the IPC timer that used to answer first.
+      expect(ATTENTION_IPC_BUDGET_MS).toBeLessThan(ipcInvokeTimeoutMs(IPC.attentionGetSnapshot));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops presence and preference reads while the relay is unreachable, then retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const reportAttentionPresence = vi.fn(async () => {
+        throw new PushRelayUnreachableError("ECONNRESET");
+      });
+      const getAttentionPreferences = vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES);
+      const coordinator = new AttentionAccountCoordinator({
+        getLogger: logger,
+        getCurrentAccountOwnerId: () => "owner-a",
+        accountAttentionClient: {
+          getAttentionSnapshot: vi.fn(),
+          acknowledgeAttention: vi.fn(),
+          reportAttentionPresence,
+          getAttentionPreferences,
+          putAttentionPreferences: vi.fn(),
+        },
+      });
+      const presence = { deviceId: "desktop-1", platform: "macOS" };
+
+      // A network failure is not an IPC failure, and a burst behind it does
+      // not reach the relay at all.
+      await expect(coordinator.reportPresence(presence)).resolves.toBeUndefined();
+      await expect(coordinator.reportPresence(presence)).resolves.toBeUndefined();
+      // Unknown, not defaults: defaults would overwrite the user's choices.
+      await expect(coordinator.getPreferences({ accountOwnerId: "owner-a" })).resolves.toBeNull();
+      expect(reportAttentionPresence).toHaveBeenCalledTimes(1);
+      expect(getAttentionPreferences).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await coordinator.reportPresence(presence);
+      expect(reportAttentionPresence).toHaveBeenCalledTimes(2);
+
+      // The relay answering with a refusal is still an error worth surfacing.
+      await vi.advanceTimersByTimeAsync(10_000);
+      reportAttentionPresence.mockRejectedValueOnce(
+        new PushRelayRequestError("reportAttentionPresence", 400, "invalid presence"),
+      );
+      await expect(coordinator.reportPresence(presence)).rejects.toThrow("invalid presence");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("routes proven machine-fallback mutations through machine Attention", async () => {
@@ -815,7 +905,7 @@ describe("AttentionAccountCoordinator", () => {
       preferences: DEFAULT_ATTENTION_PREFERENCES,
     });
 
-    expect(callAttention).toHaveBeenNthCalledWith(1, "getMachineSnapshot", {});
+    expect(callAttention).toHaveBeenNthCalledWith(1, "getMachineSnapshot", { include: "message" }, expect.anything());
     expect(callAttention).toHaveBeenNthCalledWith(2, "acknowledge", {
       itemIds: ["attention-1"],
       sourceRevisions: { "attention-1": 3 },
@@ -827,11 +917,13 @@ describe("AttentionAccountCoordinator", () => {
       3,
       "reportPresence",
       expect.objectContaining({ deviceId: "desktop-1" }),
+      expect.anything(),
     );
     expect(callAttention).toHaveBeenNthCalledWith(
       4,
       "getPreferences",
       { accountOwnerId: "owner-a" },
+      expect.anything(),
     );
     expect(callAttention).toHaveBeenNthCalledWith(
       5,

@@ -7840,7 +7840,7 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
-  it("keeps the next-chat preview in sync with Claude's capacity rotation", async () => {
+  it("spreads a burst of new chats and keeps the preview in sync", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
     writeClaudeAccount(workHome, "work@example.com");
     const signedInInstances = (): ProviderInstance[] => [
@@ -7850,30 +7850,41 @@ describe("per-account quota attribution", () => {
     const dependencies = {
       pollClaudeUsage: vi.fn(async () => ({
         windows: [
+          // Default: 80% of the week left over 48h -> 1.67 points/hour.
           {
             provider: "claude" as const,
             windowType: "five_hour" as const,
             accountId: "claude:claude",
-            percentUsed: 44,
-            resetsAt: new Date(Date.now() + 47 * 60_000).toISOString(),
-            resetsInMs: 47 * 60_000,
+            percentUsed: 20,
+            resetsAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+            resetsInMs: 2 * 60 * 60_000,
           },
           {
             provider: "claude" as const,
             windowType: "weekly" as const,
             accountId: "claude:claude",
-            percentUsed: 76,
-            resetsAt: new Date(Date.now() + (2 * 24 + 13) * 60 * 60_000).toISOString(),
-            resetsInMs: (2 * 24 + 13) * 60 * 60_000,
+            percentUsed: 20,
+            resetsAt: new Date(Date.now() + 48 * 60 * 60_000).toISOString(),
+            resetsInMs: 48 * 60 * 60_000,
             windowDurationMs: 7 * 24 * 60 * 60_000,
           },
+          // Work: 40% of the week left over 48h -> 0.83 points/hour.
           {
             provider: "claude" as const,
             windowType: "five_hour" as const,
             accountId: "claude:work",
-            percentUsed: 0,
-            resetsAt: new Date(Date.now() + (2 * 60 + 7) * 60_000).toISOString(),
-            resetsInMs: (2 * 60 + 7) * 60_000,
+            percentUsed: 10,
+            resetsAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+            resetsInMs: 2 * 60 * 60_000,
+          },
+          {
+            provider: "claude" as const,
+            windowType: "weekly" as const,
+            accountId: "claude:work",
+            percentUsed: 60,
+            resetsAt: new Date(Date.now() + 48 * 60 * 60_000).toISOString(),
+            resetsInMs: 48 * 60 * 60_000,
+            windowDurationMs: 7 * 24 * 60 * 60_000,
           },
         ],
         errors: [] as never[],
@@ -7891,33 +7902,31 @@ describe("per-account quota attribution", () => {
     const service = createUsageTrackingService({ logger, dependencies });
 
     const initial = await service.poll({ reason: "user" });
-
-    // The default has the sooner weekly reset; work has a fresh 100% five-hour
-    // window and no weekly reading, so it receives the third capacity slot.
     expect(initial.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
     expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
     expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+
+    // The first two chats go to the account that needs the most room. Each one
+    // is remembered before the next poll, so the second still fits and the
+    // third no longer does.
     expect(service.resolveBalancedInstance("claude")).toMatchObject({
       instanceId: "claude",
-      reason: "soonest weekly reset",
+      reason: "most room to spend before reset",
     });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
+    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
+    // Work now carries the third chat, so the next one belongs back on Default.
     expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
 
-    // A quota poll recomputes the preview without consuming another slot.
+    // A quota poll recomputes the same preview without placing another chat.
     const afterPoll = await service.poll({ reason: "user" });
     expect(afterPoll.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
-    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
-    expect(service.resolveBalancedInstance("claude")).toMatchObject({ instanceId: "claude" });
-    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
 
-    const staleCachedSnapshot = service.getUsageSnapshot();
-    expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
-    expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
-    expect(service.resolveBalancedInstance("claude")).toMatchObject({
-      instanceId: "work",
-      reason: "higher five-hour headroom",
-    });
-    expect(service.getUsageSnapshot().balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+    // A stale marker cached by a previous process is recomputed, not trusted.
+    const staleCachedSnapshot = {
+      ...service.getUsageSnapshot(),
+      balanceNext: [{ provider: "claude" as const, instanceId: "work" }],
+    };
     service.dispose();
 
     const originalVitest = process.env.VITEST;
@@ -7940,9 +7949,10 @@ describe("per-account quota attribution", () => {
       restartedService = createUsageTrackingService({ logger, dependencies });
       const reloaded = restartedService.getUsageSnapshot();
 
+      // Pending assignments are process-local; the fresh process starts from
+      // the measured windows and picks Default again.
       expect(reloaded.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
       expect(reloaded.revision).toMatchObject({ producerId: restartedService.producerId, seq: 1 });
-      expect(staleCachedSnapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
     } finally {
       restartedService?.dispose();
       cacheRead.mockRestore();
@@ -7950,6 +7960,87 @@ describe("per-account quota attribution", () => {
       else process.env.VITEST = originalVitest;
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("learns an account's burn from consecutive quota readings", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const claudeWindows = (defaultWeekly: number) => [
+      {
+        provider: "claude" as const,
+        windowType: "five_hour" as const,
+        accountId: "claude:claude",
+        percentUsed: 20,
+        resetsAt: "2026-07-17T14:00:00.000Z",
+        resetsInMs: 2 * 60 * 60_000,
+      },
+      {
+        provider: "claude" as const,
+        windowType: "weekly" as const,
+        accountId: "claude:claude",
+        percentUsed: defaultWeekly,
+        resetsAt: "2026-07-19T12:00:00.000Z",
+        resetsInMs: 48 * 60 * 60_000,
+        windowDurationMs: 7 * 24 * 60 * 60_000,
+      },
+      {
+        provider: "claude" as const,
+        windowType: "five_hour" as const,
+        accountId: "claude:work",
+        percentUsed: 20,
+        resetsAt: "2026-07-17T14:00:00.000Z",
+        resetsInMs: 2 * 60 * 60_000,
+      },
+      {
+        provider: "claude" as const,
+        windowType: "weekly" as const,
+        accountId: "claude:work",
+        percentUsed: 60,
+        resetsAt: "2026-07-19T12:00:00.000Z",
+        resetsInMs: 48 * 60 * 60_000,
+        windowDurationMs: 7 * 24 * 60 * 60_000,
+      },
+    ];
+    const pollClaudeUsage = vi.fn()
+      .mockResolvedValueOnce({ windows: claudeWindows(20), errors: [] as never[] })
+      .mockResolvedValueOnce({ windows: claudeWindows(30), errors: [] as never[] });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider: string) => (provider === "claude"
+          ? [defaultInstance(), workInstance()]
+          : []),
+        providerInstanceStore: {
+          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+          list: (provider?: string): ProviderInstance[] => (provider === "claude"
+            ? [
+                { ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+                { ...workInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+              ]
+            : []),
+        },
+        ...scannerStubs(),
+      },
+    });
+
+    try {
+      // Default has 80% of the week left over 48h (1.67 points/hour); work has
+      // 40% (0.83), so Default takes the first chat.
+      const first = await service.poll({ reason: "user" });
+      expect(first.balanceNext).toEqual([{ provider: "claude", instanceId: "claude" }]);
+
+      // Ten minutes and ten weekly points later, the measured rate is 60
+      // points/hour. That commitment now outweighs Default's larger room.
+      vi.advanceTimersByTime(10 * 60_000);
+      const second = await service.poll({ reason: "user" });
+      expect(second.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+      expect(service.peekBalancedInstance("claude")).toMatchObject({ instanceId: "work" });
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
     }
   });
 

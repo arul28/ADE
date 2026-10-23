@@ -26,6 +26,7 @@ const PR_MARK = svg(
 const MACHINE_MARK = svg(
   '<rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" />',
 );
+const MCP_MARK = svg('<circle cx="12" cy="12" r="3" /><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.93 4.93l2.12 2.12m9.9 9.9 2.12 2.12m0-14.14-2.12 2.12m-9.9 9.9-2.12 2.12" />');
 const FILE_MARK = svg(
   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" />',
 );
@@ -57,6 +58,8 @@ export function mentionChipMarkSvg(kind: ComposerAtChipKind): string {
       return PR_MARK;
     case "machine":
       return MACHINE_MARK;
+    case "mcp":
+      return MCP_MARK;
     case "file":
       return FILE_MARK;
     default: {

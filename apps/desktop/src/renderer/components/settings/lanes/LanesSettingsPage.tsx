@@ -10,7 +10,7 @@ import { SessionLifecycleSection } from "../SessionLifecycleSection";
 import { ProjectSection } from "../ProjectSection";
 import { LaneBehaviorSection } from "../LaneBehaviorSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
-import { HealthSpace } from "../health/HealthSpace";
+import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanups } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
@@ -46,7 +46,7 @@ const LANES_VIEWS: readonly View[] = [
 ];
 
 const STORAGE_VIEWS: readonly View[] = [
-  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", "storage-cleanups"] },
+  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
     id: "cleanup-rules",
@@ -112,10 +112,21 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
   const settled = !data.report.loading && !data.storage.loading;
   React.useEffect(() => {
     if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(views, hashAnchor) !== view) return;
+    let flashTimer: number | null = null;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(hashAnchor)?.scrollIntoView({ block: "start" });
+      const card = document.getElementById(hashAnchor);
+      if (!card) return;
+      card.scrollIntoView({ block: "start" });
+      // A row deep in the details reads like any other row; one flash points at it.
+      if (HEALTH_DETAIL_ANCHORS.has(hashAnchor)) {
+        card.classList.add("ade-settings-flash");
+        flashTimer = window.setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
+      }
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (flashTimer != null) window.clearTimeout(flashTimer);
+    };
   }, [hashAnchor, view, settled, views]);
 
   // A search with no match in this view moves to the first view that has one.

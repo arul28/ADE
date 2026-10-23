@@ -413,7 +413,7 @@ function withAttemptBusyTimeout<T>(db: DatabaseSyncType, read: () => T): T {
 }
 
 /** A macrotask turn, so the peer can make progress while this process waits. */
-const waitForWalConversionRetry = (): Promise<void> =>
+const waitForPeerLockRetry = (): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, WAL_CONVERSION_RETRY_DELAY_MS); });
 
 /**
@@ -462,11 +462,43 @@ async function ensureWalJournalMode(db: DatabaseSyncType, logger?: Logger): Prom
           return;
         }
       }
-      await waitForWalConversionRetry();
+      await waitForPeerLockRetry();
     }
   } finally {
     runStatement(db, `pragma busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
   }
+}
+
+/**
+ * The CRR conversion's wall-clock budget when a sibling process holds the
+ * write lock. The brain and the desktop main process open the same project
+ * database at the same time, and on a project's first open both convert every
+ * table: one conversion holds the write lock for longer than the 5,000 ms
+ * default wait, and `crsql_as_crr` threw `database is locked` and failed the
+ * project open (ADE-DESKTOP-6V).
+ */
+const CRR_CONVERSION_BUDGET_MS = 30_000;
+
+/**
+ * `ensureCrrTables` with the same short-attempt pattern as the WAL conversion:
+ * each attempt waits at most `WAL_CONVERSION_ATTEMPT_BUSY_TIMEOUT_MS` for a lock,
+ * and a macrotask runs between attempts, so this thread never blocks for long.
+ * The conversion is idempotent: a table the last attempt converted is skipped.
+ * The attempt after the budget uses the default wait and throws as before.
+ */
+async function ensureCrrTablesYielding(db: DatabaseSyncType, logger?: Logger): Promise<void> {
+  const deadline = Date.now() + CRR_CONVERSION_BUDGET_MS;
+  for (let attempt = 1; Date.now() < deadline; attempt += 1) {
+    try {
+      withAttemptBusyTimeout(db, () => ensureCrrTables(db, logger));
+      if (attempt > 1) logger?.info("db.crr_conversion_settled", { attempt });
+      return;
+    } catch (error) {
+      if (!isSqliteBusyOrLockedError(error)) throw error;
+    }
+    await waitForPeerLockRetry();
+  }
+  ensureCrrTables(db, logger);
 }
 
 function openRawDatabase(dbPath: string): DatabaseSyncType {
@@ -1209,6 +1241,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // its udid means nothing on another machine. Replicating it would make a
   // second machine (or a phone) believe the lane owns a device it cannot see.
   "lane_apple_devices",
+  "lane_apple_extra_devices",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -2130,6 +2163,9 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
         logger?.info("db.crr_integrity_repaired", { tableName, rowCount: mismatch.baseRowCount });
       }
     } catch (error) {
+      // A lock is the sibling process, not a failed repair: the caller waits and
+      // runs the whole pass again.
+      if (isSqliteBusyOrLockedError(error)) throw error;
       logger?.warn("db.crr_integrity_repair_failed", {
         tableName,
         error: error instanceof Error ? error.message : String(error),
@@ -2885,6 +2921,20 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // the local-only row, not in the synced kv table: a udid means nothing on
   // another machine, and the list must not replicate or race across peers.
   safeAddColumn(db, "alter table lane_apple_devices add column ade_installed_bundle_ids text");
+  // A lane's EXTRA devices (`device-create --extra`, an iPad beside its iPhone
+  // Duo): ADE-made only, keyed by udid, deleted with the lane. Local-only for
+  // the same reason as the table above.
+  db.run(`
+    create table if not exists lane_apple_extra_devices (
+      udid text primary key,
+      lane_id text not null,
+      name text not null,
+      family text not null default 'iphone',
+      runtime text not null default '',
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_lane_apple_extra_devices_lane on lane_apple_extra_devices(lane_id)");
 
   db.run(`
     create table if not exists terminal_sessions (
@@ -4920,7 +4970,7 @@ export async function openKvDb(
 
     if (crsqliteLoaded) {
       loadCrsqliteIfAvailable();
-      ensureCrrTables(db, logger);
+      await ensureCrrTablesYielding(db, logger);
       forceSiteId(db, desiredSiteId);
       replayDeferredColumnChanges(db, logger);
 

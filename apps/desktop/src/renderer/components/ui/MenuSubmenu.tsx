@@ -364,12 +364,30 @@ export const MENU_ITEM_CLASS =
 export const DESTRUCTIVE_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
 
-export function MenuRowIcon({ icon: Icon, danger = false }: { icon: Icon; danger?: boolean }) {
+/**
+ * Icon colours a menu row may take. A tinted icon tells the rows apart at a
+ * glance (open is blue, copy is quiet, GitHub is the GitHub grey); the label
+ * stays the normal text colour, so the menu still reads as one list.
+ */
+export type MenuIconTone = "blue" | "sky" | "green" | "violet" | "amber" | "rose" | "teal";
+
+const MENU_ICON_TONE_CLASS: Record<MenuIconTone, string> = {
+  blue: "text-blue-300/90",
+  sky: "text-sky-300/90",
+  green: "text-emerald-300/90",
+  violet: "text-violet-300/90",
+  amber: "text-amber-300/90",
+  rose: "text-rose-300/90",
+  teal: "text-teal-300/90",
+};
+
+export function MenuRowIcon({ icon: Icon, danger = false, tone }: { icon: Icon; danger?: boolean; tone?: MenuIconTone }) {
+  const colorClass = danger ? "text-red-300/70" : tone ? MENU_ICON_TONE_CLASS[tone] : "text-fg/45";
   return (
     <span
       aria-hidden
       data-menu-icon=""
-      className={danger ? "inline-flex shrink-0 text-red-300/70" : "inline-flex shrink-0 text-fg/45"}
+      className={`inline-flex shrink-0 ${colorClass}`}
     >
       <Icon size={13} weight="duotone" />
     </span>

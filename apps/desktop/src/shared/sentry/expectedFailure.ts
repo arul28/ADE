@@ -16,6 +16,11 @@ import {
   isUnsupportedAdeActionError,
   parseCodedErrorMessage,
 } from "../codedError";
+import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
+import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
+import { SIMCTL_MISSING } from "../xcodeToolchain";
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Matched against the error message (or event text). Added from real Sentry traffic, 2026-10-14 and 2026-10-16. */
 export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
@@ -85,12 +90,57 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /signed in but reports no available models/,
   // GitHub's own outage, not ADE's.
   /GitHub API request failed \(HTTP 5\d\d\)/,
+  // Added from Sentry traffic, 2026-10-23.
+  // GitHub, Jira and remote-machine sign-ins the user has to fix in Settings.
+  /GitHub auth is invalid or missing required access/,
+  /\bAPI rate limit (?:already )?exceeded for user ID\b/,
+  /\[jira:unauthenticated\]/,
+  GITHUB_AUTOLINKS_REFUSED,
+  /^SSH authentication failed for user\(s\) /,
+  /^ADE couldn't connect to this machine\. Check that ADE is open there/,
+  /\bWINDOWS_DESKTOP_SIGN_IN_FAILED: Windows could not verify the password\.|^(?:invalid_argument: )?Enter a Windows user name and password\.$/,
+  // A remote machine the user disconnected, or a reconnect mid-call; the pool reconnects on its own.
+  /^Remote machine was manually disconnected\. Connect again to use this remote project\.$/,
+  /^Remote ADE service connection was interrupted before ADE could confirm the action result\./,
+  // ADE quitting while a call was still in flight.
+  /^Local runtime connection pool is disposed\.$/,
+  // A project whose folder or database moved or vanished; ADE tells the user where.
+  /The project database is no longer available at its original location/,
+  /\bproject_data_missing: /,
+  /\bProject folder not found: /,
+  // A Mac with the Command Line Tools but no Xcode.
+  SIMCTL_MISSING,
+  // The machine itself is out of processes or disk.
+  /\bspawn \S+ EAGAIN\b/,
+  /\bENOSPC: no space left on device\b/,
+  // A chat waiting on the user: a recovery choice, a pending question, a turn still running.
+  /This chat requires an explicit continuity recovery action before another turn can be sent/,
+  new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
+  /^Wait for the current response to finish before /,
+  /^This chat is still responding\. Wait for the turn to end/,
+  /\bis still owned by another ADE runtime\. Stop it from that runtime/,
+  // Lane rules the user is told about.
+  /^Primary lane cannot be (?:deleted|renamed|archived)$/,
+  /^Lane delete is already running: /,
+  /^Color already in use by lane /,
+  // Apple simulator answers: a device another lane owns, one that is off, a path outside the build.
+  /\b(?:APPLE_DEVICE_(?:NOT_LANE_OWNED|OFF|EXISTS)|IOS_SIMULATOR_(?:OUT_PATH_OUTSIDE_ROOT|NO_BUILDABLE_TARGET)):/,
+  // The web client while its computer reconnects or the user switches project.
+  /^Reconnecting to this computer\. Try again when connected\.$/,
+  /^Project connection changed\.$/,
+  // ADE's own fetch boundaries (shared/fetchTransportFailure.ts) name undici's
+  // reason in the text, because the cause chain does not cross RPC. The same
+  // offline reasons as NETWORK_FAILURE below; a bare reset stays an issue.
+  /^(?:Can't reach GitHub|ADE can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
+  /^ADE's account service did not answer in time\.$/,
 ];
 
 // Each of these names the address or host it failed to reach, so a loopback
 // target is visible. A reset or a closed socket mid-request is not on the list:
 // its message names no address.
-const NETWORK_FAILURE = /\b(ConnectTimeoutError|Connect Timeout Error|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b/;
+// A TLS handshake cut off names no address either, but only a remote HTTPS
+// host has one, so it cannot be a local service.
+const NETWORK_FAILURE = /\b(ConnectTimeoutError|Connect Timeout Error|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|Client network socket disconnected before secure TLS connection was established/;
 const LOOPBACK_ADDRESS = /(^|[\s(\[,])(127\.\d+\.\d+\.\d+|::1|localhost)(?=[\s:)\],]|$)/;
 
 /**
@@ -142,13 +192,43 @@ export function isExpectedOutcomeText(text: string): boolean {
   return Boolean(text) && EXPECTED_OUTCOME_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/**
+ * Codes `codedError` puts on an error rather than in its message, for the
+ * same expected states the text patterns name once the code crosses the wire
+ * as a `code: message` prefix.
+ */
+const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving"]);
+
 /** An answer the caller gets, worth a Sentry Log but not an issue. */
 export function isExpectedOutcome(error: unknown): boolean {
   const text = failureText(error);
   if (isExpectedOutcomeText(text)) return true;
+  const code = parseCodedErrorMessage(error).code;
+  if (code && EXPECTED_OUTCOME_CODES.has(code)) return true;
   if (text !== "fetch failed" || !(error instanceof Error)) return false;
   const causes = causeTexts(error);
   return causes !== null && isOfflineFetchFailure(text, causes);
+}
+
+const PROGRAMMING_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError", "EvalError"]);
+const STORAGE_FAILURE = /\bSQLite\b|\bSQLITE_|\bdatabase is (?:not open|locked)\b|\bdatabase disk image is malformed\b/i;
+
+/** System-call failures that mean the machine is in trouble, not that a path was wrong. */
+const RESOURCE_ERRNOS = new Set(["EMFILE", "ENFILE", "ENOMEM", "EIO"]);
+
+/**
+ * A failure that is a defect in ADE whoever made the call: a JavaScript
+ * runtime error, the project database failing, or the machine running out of
+ * files, memory or I/O. An agent's own mistakes (a tab that closed, a file
+ * that does not exist, a note too long) are answers to the agent; these are
+ * not.
+ */
+export function isProgrammingError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return PROGRAMMING_ERROR_NAMES.has(error.name)
+    || STORAGE_FAILURE.test(error.message)
+    || (typeof code === "string" && RESOURCE_ERRNOS.has(code));
 }
 
 export function isExpectedFailure(error: unknown): boolean {

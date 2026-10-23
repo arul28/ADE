@@ -13,6 +13,7 @@ import {
   MenuSectionLabel,
   MenuSeparator,
   MenuSubmenu,
+  type MenuIconTone,
 } from "./MenuSubmenu";
 import { OpenInSubmenu } from "./OpenInSubmenu";
 import { Z_LAYERS } from "./zLayers";
@@ -31,6 +32,8 @@ export type ContextMenuEntry =
       onSelect: () => void;
       danger?: boolean;
       disabled?: boolean;
+      /** Tints the icon only; see `MenuIconTone`. */
+      tone?: MenuIconTone;
       /** Quiet trailing text, e.g. how many of a selection the row touches. */
       hint?: string;
       title?: string;
@@ -40,6 +43,7 @@ export type ContextMenuEntry =
       key: string;
       label: string;
       icon: Icon;
+      tone?: MenuIconTone;
       entries: ContextMenuEntry[];
       /** Runs as the submenu opens, for rows that resolve against the clock. */
       onOpen?: () => void;
@@ -86,6 +90,14 @@ function tidyEntries(entries: ContextMenuEntry[]): ContextMenuEntry[] {
   return out;
 }
 
+/**
+ * The rows of a menu without its frame, for a surface that hosts them itself
+ * (a chip's hover card shows its actions under the card's facts).
+ */
+export function ContextMenuRows(props: { entries: ContextMenuEntry[]; onClose: () => void }) {
+  return <EntryRows {...props} />;
+}
+
 function EntryRows({
   entries,
   onClose,
@@ -124,7 +136,7 @@ function EntryRows({
               <MenuSubmenu
                 key={entry.key}
                 label={entry.label}
-                icon={<MenuRowIcon icon={entry.icon} />}
+                icon={<MenuRowIcon icon={entry.icon} tone={entry.tone} />}
                 className={MENU_ITEM_CLASS}
                 role="menuitem"
                 onOpen={entry.onOpen}
@@ -150,7 +162,7 @@ function EntryRows({
                   entry.onSelect();
                 }}
               >
-                <MenuRowIcon icon={entry.icon} danger={entry.danger} />
+                <MenuRowIcon icon={entry.icon} danger={entry.danger} tone={entry.tone} />
                 {entry.label}
                 {entry.hint ? (
                   <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">{entry.hint}</span>
@@ -204,6 +216,57 @@ export function ContextMenu({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [menu, onClose]);
   if (!menu) return null;
+  return (
+    <ContextMenuSurface
+      menuRef={ref}
+      left={position?.left ?? menu.x}
+      top={position?.top ?? menu.y}
+      positioned={Boolean(position)}
+      onClose={onClose}
+      label={label}
+      testId={testId}
+      portal={portal}
+      role="menu"
+      className="min-w-[200px]"
+    >
+      <EntryRows entries={entries} onClose={onClose} />
+    </ContextMenuSurface>
+  );
+}
+
+/**
+ * The context-menu overlay itself: a click-away backdrop and the glass panel
+ * at a clamped position, on the context-menu layer. `ContextMenu` builds its
+ * rows from entries; a menu with bespoke content (inline rename, tag input)
+ * passes children instead and still gets the shared layer.
+ */
+export function ContextMenuSurface({
+  menuRef,
+  left,
+  top,
+  positioned,
+  onClose,
+  label,
+  testId,
+  portal = false,
+  role,
+  className,
+  children,
+}: {
+  menuRef: React.Ref<HTMLDivElement>;
+  /** `menu` when the rows are menu items (entry-built menus); omit otherwise. */
+  role?: "menu";
+  left: number;
+  top: number;
+  /** False until the clamp has measured the panel; it stays hidden until then. */
+  positioned: boolean;
+  onClose: () => void;
+  label?: string;
+  testId?: string;
+  portal?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
   // The overlay host is click-through; the menu's own layers opt back in.
   const pointerEvents = portal ? ("auto" as const) : undefined;
   const content = (
@@ -222,22 +285,22 @@ export function ContextMenu({
         }}
       />
       <div
-        ref={ref}
-        role="menu"
+        ref={menuRef}
+        role={role}
         aria-label={label}
         data-testid={testId}
-        className="ade-liquid-glass-menu fixed min-w-[200px] py-1"
+        className={`ade-liquid-glass-menu fixed py-1 ${className ?? ""}`}
         style={{
           zIndex: Z_LAYERS.contextMenu,
-          left: position?.left ?? menu.x,
-          top: position?.top ?? menu.y,
-          visibility: position ? "visible" : "hidden",
+          left,
+          top,
+          visibility: positioned ? "visible" : "hidden",
           WebkitAppRegion: "no-drag",
           pointerEvents,
         } as React.CSSProperties}
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <EntryRows entries={entries} onClose={onClose} />
+        {children}
       </div>
     </>
   );
