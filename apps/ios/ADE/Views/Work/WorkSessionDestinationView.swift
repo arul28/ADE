@@ -753,7 +753,7 @@ struct WorkSessionDestinationView: View {
       sessionIdCopied: sessionIdCopied,
       sessionDeepLinkCopied: sessionDeepLinkCopied,
       sessionId: session.id,
-      sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
+      sessionMuted: pushNotificationService.isSessionMuted(session.id),
       showsProof: !personalChat,
       showsPinAction: !personalChat
         || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
@@ -918,6 +918,10 @@ struct WorkSessionDestinationView: View {
         // durable resume point when the host has one) goes out before the
         // summary/artifact loads below.
         openThreadSubscriptionIfNeeded()
+        // The reader is in the chat now; its alerts in Notification Center
+        // have done their job.
+        let openedSessionId = sessionId
+        Task { await PushNotificationService.shared.removeDeliveredNotifications(sessionId: openedSessionId) }
       }
       .onChange(of: isCrossProject) { wasForeign, isForeign in
         switch hubChatActivationScopeTransition(wasForeign: wasForeign, isForeign: isForeign) {

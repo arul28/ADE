@@ -12,6 +12,7 @@ import {
   ArrowsIn,
   ArrowsLeftRight,
   ArrowCounterClockwise,
+  Bell,
   Brain,
   CheckCircle,
   Compass,
@@ -39,6 +40,7 @@ import type { SystemNoticeEvent } from "./quietNoticeLines";
 const ICON_BY_STATUS: ReadonlyMap<string, Icon> = new Map([
   ["memory_recall", Brain],
   ["classifier_context", Funnel],
+  ["user_notified", Bell],
   ["goal_reached", Target],
   ["goal_blocked", Target],
   ["cross_machine_handoff_state", ArrowsLeftRight],

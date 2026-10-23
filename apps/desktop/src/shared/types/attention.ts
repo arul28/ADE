@@ -4,7 +4,20 @@ import type { WorkBoardColumn, WorkBoardWaitingReason } from "./chat";
 
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
-export type AttentionItemKind = "agent" | "pull_request";
+/**
+ * `message` is a note an agent sent because the user asked to be told
+ * (`ade notify` from a chat). It files in the Inbox, never in an agent column,
+ * and the relay sends it only to clients that ask for it
+ * (`ATTENTION_SNAPSHOT_INCLUDE_MESSAGES`), because older clients reject a
+ * snapshot that carries a kind they do not know.
+ */
+export type AttentionItemKind = "agent" | "pull_request" | "message";
+
+/**
+ * The query value a client sends when it can read `message` items. Every
+ * account-snapshot reader built after messages existed passes it.
+ */
+export const ATTENTION_SNAPSHOT_INCLUDE_MESSAGES = "message";
 
 export const ATTENTION_PHASES = [
   "starting",
@@ -40,6 +53,14 @@ export const ATTENTION_EVENT_KINDS = [
 ] as const;
 
 export type AttentionEventKind = (typeof ATTENTION_EVENT_KINDS)[number];
+
+/**
+ * The event of a `message` item. Deliberately not in `ATTENTION_EVENT_KINDS`:
+ * that list is the event-policy vocabulary every saved preference document must
+ * cover, and a message has no policy — the user asked for it.
+ */
+export const ATTENTION_MESSAGE_EVENT_KIND = "agent_message" as const;
+export type AttentionItemEventKind = AttentionEventKind | typeof ATTENTION_MESSAGE_EVENT_KIND;
 
 export type AttentionDeliveryPolicy = "off" | "ambient" | "notify";
 
@@ -127,7 +148,7 @@ export type AttentionItem = {
   /** Stable identity for alert deduplication. */
   alertFingerprint?: string;
   kind: AttentionItemKind;
-  eventKind: AttentionEventKind;
+  eventKind: AttentionItemEventKind;
   phase: AttentionPhase;
   machine: AttentionMachineRef;
   project: AttentionProjectRef;
@@ -260,6 +281,31 @@ export type AttentionSnapshot = {
   items: AttentionItem[];
   itemsTruncated?: boolean;
   tombstones?: AttentionTombstone[];
+};
+
+/**
+ * One thing worth a desktop notification: an agent that needs the user, one
+ * that failed, or a message an agent sent because the user asked to be told.
+ *
+ * Two sources feed it. This computer's brain announces its own chats the
+ * moment they change (`attention_alert` runtime events), which works while every
+ * ADE window is hidden. Chats on other machines arrive through the account
+ * Activity snapshots the windows already poll, so they cost no extra request.
+ */
+export type AttentionDesktopAlert = {
+  /** The Activity item this alert is about; both sources name it the same way. */
+  itemId: string;
+  /** `goal`: a chat reached, or got blocked on, the goal the user gave it. */
+  kind: "needs_you" | "failed" | "goal" | "message";
+  sessionId: string;
+  title: string;
+  body: string | null;
+  /** When the state began; stale alerts are dropped. */
+  at: string;
+  /** The account-directory key of the machine that owns the chat, when known. */
+  accountMachineKey: string | null;
+  /** Set for alerts read from an account snapshot: opening goes through Activity. */
+  item?: AttentionItem;
 };
 
 export type AttentionPresence = {
@@ -480,10 +526,16 @@ export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
 
 /**
  * Version 2: only the urgent events (a question, a failure, red CI) notify by
- * default. Bump it when a default policy changes, and add the change to
- * `upgradeAttentionEventPolicies`. The push relay applies the same rule.
+ * default. Version 3: the phone waits 2 minutes (was 30 s) while the user is
+ * at a computer. Bump it when a default changes, and add the change to
+ * `upgradeAttentionEventPolicies`. The push relay applies the same rules.
  */
-export const ATTENTION_EVENT_POLICY_DEFAULTS_VERSION = 2;
+export const ATTENTION_EVENT_POLICY_DEFAULTS_VERSION = 3;
+
+/** How long the phone waits while the user is at a computer, by default. */
+export const DEFAULT_DESKTOP_FIRST_DELAY_SECONDS = 120;
+/** The version-2 default; a saved 30 from before version 3 was this default. */
+const DESKTOP_FIRST_DELAY_SECONDS_BEFORE_V3 = 30;
 
 /** Events that notified under version 1 defaults and are ambient from version 2. */
 const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2: readonly AttentionEventKind[] = [
@@ -498,7 +550,9 @@ const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2: readonly AttentionEventKind[] = [
  * Every save writes the whole `eventPolicies` map, so a "notify" saved under an
  * older version cannot tell a user's choice apart from the default it was
  * saved with. Version 2 treats it as the default and moves it to "ambient".
- * After that the scope carries the current version, so any later choice stays.
+ * Version 3 does the same for the desktop-first delay: a saved 30 s becomes
+ * the new 2 minutes. After that the scope carries the current version, so any
+ * later choice stays.
  */
 export function upgradeAttentionEventPolicies<T extends Partial<AttentionPreferenceScope>>(
   scope: T,
@@ -508,7 +562,8 @@ export function upgradeAttentionEventPolicies<T extends Partial<AttentionPrefere
     : 1;
   if (version >= ATTENTION_EVENT_POLICY_DEFAULTS_VERSION) return scope;
   const eventPolicies = scope.eventPolicies ? { ...scope.eventPolicies } : undefined;
-  if (eventPolicies) {
+  const delayWasOldDefault = scope.desktopFirstDelaySeconds === DESKTOP_FIRST_DELAY_SECONDS_BEFORE_V3;
+  if (eventPolicies && version < 2) {
     for (const kind of EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2) {
       if (eventPolicies[kind] === "notify") eventPolicies[kind] = "ambient";
     }
@@ -516,6 +571,7 @@ export function upgradeAttentionEventPolicies<T extends Partial<AttentionPrefere
   return {
     ...scope,
     ...(eventPolicies ? { eventPolicies } : {}),
+    ...(delayWasOldDefault ? { desktopFirstDelaySeconds: DEFAULT_DESKTOP_FIRST_DELAY_SECONDS } : {}),
     eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
   };
 }
@@ -527,7 +583,7 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
     notificationsEnabled: true,
     liveActivitiesEnabled: true,
     desktopFirstEnabled: true,
-    desktopFirstDelaySeconds: 30,
+    desktopFirstDelaySeconds: DEFAULT_DESKTOP_FIRST_DELAY_SECONDS,
     soundsEnabled: false,
     celebrationsEnabled: true,
     hideDetails: false,
@@ -750,8 +806,28 @@ export type CustomNotificationResult = {
  * and the automation editor's test send, so the two say it the same way.
  */
 export function describeCustomNotificationResult(
-  result: Partial<CustomNotificationResult>,
+  result: Partial<CustomNotificationResult> & {
+    delivery?: unknown;
+    repeat?: unknown;
+    accountSignedIn?: unknown;
+    chatTitle?: unknown;
+  },
 ): { tone: "ok" | "warn"; message: string } {
+  // Sent from a chat: it is that chat's message, delivered through Activity,
+  // so there are no per-phone counts to report at send time.
+  if (result.delivery === "chat") {
+    const link = result.linkSkipped ? ` The link was left off: ${result.linkSkipped}` : "";
+    if (result.repeat === true) {
+      return { tone: "warn", message: `Not sent again: this chat sent the same notification a few minutes ago.${link}` };
+    }
+    if (result.accountSignedIn === false) {
+      return {
+        tone: "warn",
+        message: `Shown in the chat and on this computer. Phones get it once this computer is signed in (\`ade login\`).${link}`,
+      };
+    }
+    return { tone: "ok", message: `Sent. It shows in the chat, in Activity, and on your phone unless you're at your computer or muted this chat.${link}` };
+  }
   const devices = Number(result.devices) || 0;
   const delivered = Number(result.delivered) || 0;
   const skipped = Number(result.skipped) || 0;

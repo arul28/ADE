@@ -36,6 +36,7 @@ const ATTENTION_EVENTS = new Set([
   "pr_merged",
   "pr_opened",
   "pr_closed",
+  "agent_message",
 ]);
 
 /**
@@ -155,7 +156,7 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     )
     || (value.contentFingerprint !== undefined && !isNonEmptyString(value.contentFingerprint, 1_024))
     || (value.alertFingerprint !== undefined && !isNonEmptyString(value.alertFingerprint, 1_024))
-    || (value.kind !== "agent" && value.kind !== "pull_request")
+    || (value.kind !== "agent" && value.kind !== "pull_request" && value.kind !== "message")
     || typeof value.eventKind !== "string"
     || !ATTENTION_EVENTS.has(value.eventKind)
     || typeof value.phase !== "string"
@@ -206,7 +207,10 @@ function isAttentionItem(value: unknown): value is AttentionItem {
       )
     )
     || !isAttentionDestination(value.destination)
-    || (value.kind === "agent" && (value.destination as { kind?: unknown }).kind !== "session")
+    || (
+      (value.kind === "agent" || value.kind === "message")
+      && (value.destination as { kind?: unknown }).kind !== "session"
+    )
     || (
       value.kind === "pull_request"
       && (value.destination as { kind?: unknown }).kind !== "pull_request"

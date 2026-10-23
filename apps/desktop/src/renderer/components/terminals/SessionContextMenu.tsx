@@ -7,6 +7,8 @@ import {
   ArrowDown,
   ArrowsLeftRight,
   ArrowUp,
+  Bell,
+  BellSlash,
   CheckCircle,
   ClockCountdown,
   Copy,
@@ -55,6 +57,7 @@ import {
   MenuSubmenu,
 } from "../ui/MenuSubmenu";
 import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
+import { useSessionNotificationMute } from "../activity/useSessionNotificationMute";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import type { OpenInTarget } from "../../../shared/editorTargets";
@@ -369,6 +372,7 @@ function SessionContextMenuPanel({
   // Snooze is a visibility overlay, so it is read from the shared snooze
   // derivation and never inferred from the canonical phase.
   const isSnoozed = isSessionSnoozed(session);
+  const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled";
   const isDeclaredSettled = Boolean(session.settledAt);
@@ -621,6 +625,18 @@ function SessionContextMenuPanel({
           >
             <MenuRowIcon icon={SquaresFour} />
             Remove from grid
+          </button>
+        ) : null}
+        {notificationMute.available ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-mute-notifications"
+            title="Applies on every device"
+            onClick={() => { notificationMute.toggle(); onClose(); }}
+          >
+            <MenuRowIcon icon={notificationMute.muted ? Bell : BellSlash} />
+            {notificationMute.muted ? "Unmute notifications" : "Mute notifications"}
           </button>
         ) : null}
 

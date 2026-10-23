@@ -60,6 +60,12 @@ import {
 } from "./services/deeplinks/protocolHandler";
 import { buildDeeplink } from "../shared/deeplinks";
 import {
+  createDesktopAlertPresenter,
+  parseDesktopAlertOpenRequest,
+  readDesktopAlertEvent,
+  type DesktopAlert,
+} from "./services/attention/desktopAlertPresenter";
+import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
   ownerNavigationFailureCopy,
@@ -257,6 +263,7 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
+  AttentionPreferences,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -6613,6 +6620,73 @@ app.whenReady().then(async () => {
    * The brain exposes usage per project scope, so the bridge borrows any booted
    * scope; every scope is fed by the same machine-level poller.
    */
+  /**
+   * Desktop notifications for agents that need the user, failed, reached a
+   * goal, or sent the user a message. Fed by this computer's brain (below, on
+   * the machine event bridge) and by the account snapshots windows poll (for
+   * chats on other machines). See `desktopAlertPresenter.ts`.
+   */
+  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
+  /** Electron drops a click on a notification nothing references any more. */
+  const liveDesktopAlertNotifications = new Set<Notification>();
+  const openDesktopAlert = (alert: DesktopAlert): void => {
+    // Opening it is seeing it: the phone, still waiting out desktop-first,
+    // stays quiet. Best effort; a failure only means the phone gets it later.
+    void ipcBridge?.markAttentionItemSeen(alert.itemId).catch((error: unknown) => {
+      logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (alert.item) {
+      void navigateFromAttentionItem(alert.item, attentionItemNavigationRequest(alert.item))
+        .catch((error) => logMachineEvent("warn", "attention.desktop_alert_open_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return;
+    }
+    handleDeeplinkUrl(
+      buildDeeplink({ kind: "session", sessionId: alert.sessionId }, { form: "ade" }),
+      "notification:attention",
+      dispatchOrQueueAppNavigationRequest,
+    );
+  };
+  const desktopAlertPresenter = createDesktopAlertPresenter({
+    isSupported: () => Notification.isSupported(),
+    isAppFocused: () => Boolean(BrowserWindow.getFocusedWindow()),
+    getPreferences: () => {
+      const ownerId = readAccountOwnerId();
+      return ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
+        ? attentionPreferencesForAlerts.preferences
+        : null;
+    },
+    show: (alert, onClick) => {
+      try {
+        const notification = new Notification({ title: alert.title, ...(alert.body ? { body: alert.body } : {}) });
+        liveDesktopAlertNotifications.add(notification);
+        const release = () => liveDesktopAlertNotifications.delete(notification);
+        notification.on("click", () => {
+          release();
+          onClick();
+        });
+        notification.on("close", release);
+        notification.show();
+        // A notification the user never touches still has to let go.
+        setTimeout(release, 10 * 60_000).unref?.();
+      } catch (error) {
+        logMachineEvent("warn", "attention.desktop_alert_failed", {
+          kind: alert.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    toastInFocusedWindow: (alert) => {
+      const focused = BrowserWindow.getFocusedWindow();
+      if (!focused || focused.isDestroyed()) return;
+      focused.webContents.send(IPC.attentionAlert, alert);
+    },
+    open: openDesktopAlert,
+  });
+
   let machineUsageEventRoot: string | null = null;
   let machineUsageEventCleanup: (() => void) | null = null;
   let machineUsageEventRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -6690,6 +6764,11 @@ app.whenReady().then(async () => {
         { category: "runtime", replay: false },
         (event) => {
           if (machineUsageEventRoot !== root) return;
+          if (event.payload?.type === "attention_alert") {
+            const alert = readDesktopAlertEvent(event.payload);
+            if (alert) desktopAlertPresenter.presentLocal(alert);
+            return;
+          }
           if (event.payload?.type !== "usage") return;
           const snapshot = event.payload.snapshot;
           if (!isUsageSnapshot(snapshot)) return;
@@ -9784,6 +9863,14 @@ app.whenReady().then(async () => {
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
     openAttentionItem: async (item: AttentionItem) => {
       await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
+    },
+    onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
+    onAttentionPreferences: (ownerId, preferences) => {
+      attentionPreferencesForAlerts = { ownerId, preferences };
+    },
+    openDesktopAlert: (input) => {
+      const alert = parseDesktopAlertOpenRequest(input);
+      if (alert) openDesktopAlert(alert);
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

@@ -5052,6 +5052,24 @@ func eventCard(
           isInProgress: !resumed
         )
       }
+      // ── Agent notified the user ──
+      // One quiet bell line: the message the user was sent, with its body when
+      // there is one. Not folded into the turn's history — it is the one
+      // place the chat records that the phone was pinged.
+      if kind == AgentChatNoticeKind.userNotified.rawValue {
+        let line = nonEmptyWorkTimelineText(message) ?? "Notified you"
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: nonEmptyWorkTimelineText(detail).map { "\(line) · \($0)" } ?? line,
+          icon: "bell",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: []
+        )
+      }
       // ── Board move ──
       // The user dragged this chat's card between columns and the host sent the
       // agent a sentence about it. It renders as a quiet notice rather than a

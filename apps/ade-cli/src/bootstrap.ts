@@ -3270,6 +3270,8 @@ export async function createAdeRuntime(args: {
         ptyService,
         projectName: project.displayName,
         projectRoot,
+        // The desktop app pops a notification from this; see desktopAlertPresenter.
+        onDesktopAlert: (alert) => pushEvent("runtime", { type: "attention_alert", alert }),
         subscribePrNotifications: (cb) => {
           pushPrNotificationSubscribers.add(cb);
           return () => pushPrNotificationSubscribers.delete(cb);

@@ -160,13 +160,18 @@ public enum ActivityWidgetPresentation {
         }
     }
 
-    /// Items worth showing at all: not dismissed, not expired.
+    /// Items worth showing at all: not dismissed, not expired, and not an
+    /// agent's message to the user. Messages live in the in-app Inbox and the
+    /// alert itself; a status surface that counted them would read "1 recent"
+    /// for a note, not for work.
     public static func visibleItems(
         _ items: [AccountAttentionItem],
         now: Date = Date()
     ) -> [AccountAttentionItem] {
         items.filter { item in
-            item.dismissedAt == nil && (item.expiresAt.map { $0 > now } ?? true)
+            item.kind != .message
+                && item.dismissedAt == nil
+                && (item.expiresAt.map { $0 > now } ?? true)
         }
     }
 
@@ -174,11 +179,12 @@ public enum ActivityWidgetPresentation {
     /// point. Anything that is not explicitly a pull request counts as agent
     /// work: a kind this build has never heard of is far likelier to be a new
     /// agent shape than a new flavour of PR, and dropping it entirely would be
-    /// the one failure mode a status surface must not have.
+    /// the one failure mode a status surface must not have. Messages are the
+    /// one other known kind, and they are notifications too.
     public static func agentItems(
         _ items: [AccountAttentionItem]
     ) -> [AccountAttentionItem] {
-        items.filter { $0.kind != .pullRequest }
+        items.filter { $0.kind != .pullRequest && $0.kind != .message }
     }
 
     /// PR / CI traffic — the "notification side". Rendered as one signal line,

@@ -81,6 +81,8 @@ import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
+  AttentionPreferences,
+  AttentionSnapshot,
 } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { createSyncStatusReaders } from "../sync/syncStatusReaders";
@@ -1933,6 +1935,9 @@ export function registerIpc({
   retryCaptureGesture,
   captureGestureNow,
   openAttentionItem,
+  onAttentionAccountSnapshot,
+  onAttentionPreferences,
+  openDesktopAlert,
   getCurrentAccountOwnerId,
   accountAttentionClient,
   attemptedProjectRoots,
@@ -2011,6 +2016,11 @@ export function registerIpc({
   retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   captureGestureNow?: () => boolean;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
+  /** Account Activity snapshots and preferences, for desktop notifications. */
+  onAttentionAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
+  onAttentionPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  /** Open what a desktop alert (toast) points at. */
+  openDesktopAlert?: (alert: unknown) => void;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
     PushRelayClient,
@@ -2020,6 +2030,7 @@ export function registerIpc({
     | "getAttentionPreferences"
     | "putAttentionPreferences"
     | "putActivityMachinePreferences"
+    | "setAttentionSessionMuted"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -2072,6 +2083,8 @@ export function registerIpc({
     localRuntimeConnectionPool,
     accountAttentionClient,
     getCurrentAccountOwnerId: resolveCurrentAttentionAccountOwnerId,
+    onAccountSnapshot: onAttentionAccountSnapshot,
+    onPreferences: onAttentionPreferences,
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -3573,6 +3586,24 @@ export function registerIpc({
       );
     },
   );
+
+  ipcMain.handle(
+    IPC.attentionSetSessionMuted,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { accountOwnerId?: unknown; sessionId?: unknown; muted?: unknown }
+        : {};
+      return attentionAccountCoordinator.setSessionMuted(
+        request.sessionId,
+        request.muted,
+        request.accountOwnerId,
+      );
+    },
+  );
+
+  ipcMain.handle(IPC.attentionOpenAlert, async (_event, input: unknown) => {
+    openDesktopAlert?.(input);
+  });
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const item = parseAttentionItem(input);
@@ -14178,6 +14209,17 @@ export function registerIpc({
 
   return {
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
+    /**
+     * The user opened this item from a desktop notification: mark it seen on
+     * the account, so the phone (waiting out desktop-first) stays quiet.
+     */
+    async markAttentionItemSeen(itemId: string): Promise<void> {
+      await attentionAccountCoordinator.acknowledge({
+        itemIds: [itemId],
+        seenAt: new Date().toISOString(),
+        expectedAccountOwnerId: resolveCurrentAttentionAccountOwnerId(),
+      });
+    },
     /** The account machine directory, for the in-process `@mac:` mention path. */
     listAccountMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
