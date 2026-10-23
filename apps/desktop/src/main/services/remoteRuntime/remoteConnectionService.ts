@@ -1570,7 +1570,8 @@ export class RemoteConnectionService {
       throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
     }
     const target = this.registry.get(targetId);
-    // The in-memory set first: it must hold even if the saved machine is gone.
+    // The in-memory set covers a machine another ADE on this computer took,
+    // which is never written to the saved machine.
     if (
       this.manuallyDisconnectedTargetIds.has(targetId)
       || target?.manuallyDisconnectedAt != null
