@@ -36,11 +36,17 @@ extension EnvironmentValues {
 /// its list away (held portrait, or a detail that took the width).
 struct DuoSplitListToggle: ToolbarContent {
   let split: DuoSplitModel?
+  @Environment(\.duoLayout) private var duo
 
   var body: some ToolbarContent {
     if let split, split.listCollapsible {
       ToolbarItem(placement: .topBarLeading) {
-        Button(split.listShown ? "Hide list" : "Show list", systemImage: "sidebar.left") {
+        // A phone has no sidebar: the list is the screen behind this one, so
+        // the way to it is Back, as on Files.
+        Button(
+          duo.isWide ? (split.listShown ? "Hide list" : "Show list") : "Back",
+          systemImage: duo.isWide ? "sidebar.left" : "chevron.backward"
+        ) {
           withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { split.toggleList() }
         }
       }
