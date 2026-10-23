@@ -523,6 +523,9 @@ struct DuoChatRailActions {
   var onCopySessionDeepLink: () -> Void
   var onTogglePinned: () -> Void
   var onDelete: () -> Void
+  /// The CTO thread: its settings page, beside the thread. Set, the rail is
+  /// the CTO's (Chat Info, CTO Settings) rather than a Work chat's.
+  var onOpenCtoSettings: (() -> Void)? = nil
 }
 
 /// The wide chat's toolbar: the chat's three buckets as buttons, and nothing
@@ -565,6 +568,10 @@ struct DuoChatRail: ViewModifier {
   /// A pane (tool, Chat Info, PR) is open on the chat's right.
   private var paneBesideChat: Bool { pane.isOpen && family != .tall }
 
+  /// The CTO thread: no list to go back to, so the header leads with the way
+  /// back to the Hub, and the rail carries the CTO's buttons.
+  private var isCto: Bool { actions.onOpenCtoSettings != nil }
+
   /// Held landscape with the chat alone on the right: the title capsule spans
   /// the chat's top, and the chat's PR capsule sits at its trailing end.
   private var spansColumn: Bool { duo.hasEdgeBar && !paneBesideChat && family != .tall }
@@ -577,7 +584,9 @@ struct DuoChatRail: ViewModifier {
     // chat's buttons and, upright on the Duo, the status column: the title
     // leaves them their room, or the bar folds Tools into its overflow.
     if !duo.hasEdgeBar {
-      return max(150, min(420, columnWidth - 400))
+      // Measured upright on the Duo (669pt): at - 400 the bar folded Tools
+      // and ⋯ into its own "More".
+      return max(150, min(420, columnWidth - 470))
     }
     let chat = paneBesideChat ? columnWidth / 2 : columnWidth
     let trailing: CGFloat = duo.hasEdgeBar || paneBesideChat ? 36 : 250
@@ -693,6 +702,43 @@ struct DuoChatRail: ViewModifier {
   /// beside Chat Info; Chat Info · Tools beside a tool or the PR.
   @ViewBuilder
   private var chatButtons: some View {
+    if isCto {
+      ctoButtons
+    } else {
+      workChatButtons
+    }
+  }
+
+  /// The CTO's: Chat Info and CTO Settings (each away while it is the pane),
+  /// and on the edge bar a ⋯ with Activity and Settings, which the rail's
+  /// bottom never carries.
+  @ViewBuilder
+  private var ctoButtons: some View {
+    if !(paneBesideChat && pane.tab == .chatInfo) {
+      chatInfoButton
+        .disabled(!model.isChat)
+    }
+    if !(paneBesideChat && pane.tab == .ctoSettings) {
+      Button {
+        ADEHaptics.light()
+        actions.onOpenCtoSettings?()
+      } label: {
+        Label("CTO Settings", systemImage: DuoToolTab.ctoSettings.symbolName)
+      }
+      .accessibilityIdentifier("Duo.Cto.Settings")
+    }
+    if !paneBesideChat && duo.hasEdgeBar {
+      Menu {
+        DuoAppUtilityMenuItems()
+      } label: {
+        Label("More", systemImage: "ellipsis")
+      }
+      .accessibilityIdentifier("Duo.Cto.More")
+    }
+  }
+
+  @ViewBuilder
+  private var workChatButtons: some View {
     if !(paneBesideChat && pane.tab == .chatInfo) {
       chatInfoButton
         .disabled(!model.isChat)
@@ -714,6 +760,7 @@ struct DuoChatRail: ViewModifier {
       fills: spansColumn,
       pane: paneHeader,
       showsSidebarButton: showsSidebarButton,
+      showsHubBack: isCto,
       showsPrBadge: spansColumn,
       onToggleSidebar: {
         ADEHaptics.light()
@@ -808,6 +855,9 @@ struct DuoChatHeaderCapsules: View {
   let fills: Bool
   var pane: PaneHeader?
   let showsSidebarButton: Bool
+  /// The ‹ project logo at the capsule's leading end: the way back to the
+  /// Hub for a screen with no list column (the CTO).
+  var showsHubBack = false
   let showsPrBadge: Bool
   let onToggleSidebar: () -> Void
   let onOpenPr: () -> Void
@@ -817,8 +867,9 @@ struct DuoChatHeaderCapsules: View {
   /// item: an item sized from its own position re-laid the bar out forever.
   static let barLeadingInset: CGFloat = 20
 
-  /// The system bar's capsule height, so the header reads as part of it.
-  static let height: CGFloat = 44
+  /// A thin floating pill: room for the title over its one-line subtitle
+  /// and no more, so it reads as a label over the thread, not a bar.
+  static let height: CGFloat = 38
 
   var body: some View {
     if let pane {
@@ -881,12 +932,49 @@ struct DuoChatHeaderCapsules: View {
         .accessibilityLabel("Show chats")
         .accessibilityIdentifier("Duo.Work.SidebarToggle")
       }
+      if showsHubBack {
+        DuoHubBackInCapsule()
+      }
       DuoChatTitleBlock(model: model)
-        .padding(.leading, showsSidebarButton ? 0 : 12)
+        .padding(.leading, showsSidebarButton || showsHubBack ? 0 : 12)
         .padding(.trailing, 14)
     }
     .frame(height: Self.height)
     .glassEffect(.regular, in: Capsule())
+  }
+}
+
+/// ‹ and the project's logo inside a header capsule's leading end: back to
+/// the Hub.
+private struct DuoHubBackInCapsule: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      syncService.showProjectHub()
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 14, weight: .bold))
+          .foregroundStyle(ADEColor.textSecondary)
+        if let icon = projectIconImage(from: syncService.activeProject?.iconDataUrl) {
+          Image(uiImage: icon).projectIconStyle(size: 22, cornerRadius: 6)
+        } else {
+          Image(systemName: "folder")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 22, height: 22)
+        }
+      }
+      .padding(.leading, 12)
+      .padding(.trailing, 10)
+      .frame(height: DuoChatHeaderCapsules.height)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Back to all projects")
+    .accessibilityIdentifier("Duo.Cto.HubBack")
   }
 }
 

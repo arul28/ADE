@@ -24,6 +24,9 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   /// Opening a pull request for the chat's lane (desktop opens it where the
   /// PR shows).
   case createPr
+  /// The CTO's settings (identity, model, home machine, memory), beside the
+  /// CTO thread: desktop's CTO settings page.
+  case ctoSettings
 
   var id: String { rawValue }
 
@@ -37,6 +40,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .proof: return "Proof"
     case .pr: return "Pull Request"
     case .createPr: return "New Pull Request"
+    case .ctoSettings: return "CTO Settings"
     }
   }
 
@@ -51,6 +55,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     case .proof: return "photo.on.rectangle.angled"
     case .pr: return "arrow.triangle.pull"
     case .createPr: return "plus"
+    case .ctoSettings: return "gearshape"
     }
   }
 
@@ -58,7 +63,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   var isTool: Bool {
     switch self {
     case .simulator, .macDesktop, .appControl, .browser: return true
-    case .chatInfo, .proof, .pr, .createPr: return false
+    case .chatInfo, .proof, .pr, .createPr, .ctoSettings: return false
     }
   }
 
@@ -413,6 +418,9 @@ struct DuoToolsPane<Content: View>: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    // The pane's header floats over its content like the chat's: a soft
+    // edge, never the hard band iOS picks under a bar with wide items.
+    .scrollEdgeEffectStyle(.soft, for: .top)
     .overlayPreferenceValue(DuoPaneHeaderActionsKey.self, alignment: .top) { actions in
       if !headerInBar {
         header(tab: tab, actions: actions)
@@ -547,16 +555,22 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
   let chat: () -> Chat
   let tools: () -> Tools
   let idle: () -> Idle
+  /// Stacked (laptop, upright) with nothing open, the top half shows what can
+  /// open there. False for a chat made for the whole screen (the CTO): the
+  /// thread takes the height until something opens.
+  var showsIdle = true
 
   init(
     isOpen: Bool,
     origin: UnitPoint = .topTrailing,
+    showsIdle: Bool = true,
     @ViewBuilder chat: @escaping () -> Chat,
     @ViewBuilder tools: @escaping () -> Tools,
     @ViewBuilder idle: @escaping () -> Idle
   ) {
     self.isOpen = isOpen
     self.origin = origin
+    self.showsIdle = showsIdle
     self.chat = chat
     self.tools = tools
     self.idle = idle
@@ -599,6 +613,7 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
   private func layout(fold: DuoFold, hingeX: CGFloat?, size: CGSize) -> some View {
     if family == .tall {
       let split = DuoWorkMetrics.tallSplit(height: size.height, fold: fold)
+      let topShown = isOpen || showsIdle
       VStack(spacing: 0) {
         ZStack {
           if isOpen {
@@ -610,8 +625,11 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
           }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: split.top)
+        .frame(height: topShown ? split.top : 0)
+        .clipped()
         DuoSeam(axis: .horizontal, foldRect: split.fold)
+          .opacity(topShown ? 1 : 0)
+          .frame(height: topShown ? nil : 0)
         chat()
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }

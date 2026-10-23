@@ -19,61 +19,98 @@ struct CtoRootScreen: View {
   @State private var modelPickInFlight = false
   @State private var modelPickError: String?
 
+  /// The pane beside the CTO thread on a wide display (Chat Info, CTO
+  /// Settings), the same model Work's chat column owns.
+  @StateObject private var duoPane = DuoWorkPaneModel()
+
   var body: some View {
+    Group {
+      if duo.isWide {
+        wideBody
+      } else {
+        phoneBody
+      }
+    }
+    .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
+      guard isTabActive else { return }
+      // The CTO follows the project's home machine; a change there reloads.
+      let previousHome = syncService.ctoHomeMachineKey
+      await syncService.refreshCtoHomeMachine()
+      guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
+      await loadSnapshot()
+    }
+    .task(id: ctoLiveReloadKey) {
+      guard ctoLiveReloadKey != nil else { return }
+      let now = Date()
+      guard shouldRunCtoLiveReload(lastReloadAt: lastLiveSnapshotReloadAt, now: now) else { return }
+      lastLiveSnapshotReloadAt = now
+      await loadSnapshot()
+    }
+    .sheet(isPresented: $showingSettings) {
+      CtoSettingsScreen(snapshot: snapshot) { updated in
+        self.snapshot = updated
+      }
+      .environmentObject(syncService)
+    }
+  }
+
+  /// The phone: the CTO's own top bar over the thread, settings as a sheet.
+  private var phoneBody: some View {
     NavigationStack {
-      screenBody
+      content
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(ADEColor.ctoAccent)
         .adeScreenBackground()
         .adeNavigationGlass()
-        .navigationTitle(duo.isWide ? topBarTitle : "")
-        .navigationBarTitleDisplayMode(.inline)
-        // The inner display uses the system toolbar (the edge bar held
-        // landscape); the phone keeps its own top bar.
-        .toolbar(duo.isWide ? .automatic : .hidden, for: .navigationBar)
-        .safeAreaInset(edge: .top, spacing: 0) {
-          if !duo.isWide {
-            topBar
-          }
-        }
-        .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
-          guard isTabActive else { return }
-          // The CTO follows the project's home machine; a change there reloads.
-          let previousHome = syncService.ctoHomeMachineKey
-          await syncService.refreshCtoHomeMachine()
-          guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
-          await loadSnapshot()
-        }
-        .task(id: ctoLiveReloadKey) {
-          guard ctoLiveReloadKey != nil else { return }
-          let now = Date()
-          guard shouldRunCtoLiveReload(lastReloadAt: lastLiveSnapshotReloadAt, now: now) else { return }
-          lastLiveSnapshotReloadAt = now
-          await loadSnapshot()
-        }
-        .sheet(isPresented: $showingSettings) {
-          CtoSettingsScreen(snapshot: snapshot) { updated in
-            self.snapshot = updated
-          }
-          .environmentObject(syncService)
-        }
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) { topBar }
     }
   }
 
-  /// The chat, or on the Duo's inner display the chat beside its live
-  /// overview (Views/Duo/DuoWindows.swift).
+  /// The inner display and an iPad: the CTO thread full screen with Work's
+  /// chat chrome (a thin title pill, the pill row, the composer on the rail's
+  /// line). Chat Info and CTO Settings open in the pane at the hinge, the way
+  /// Work's chat panes do. Before there is a thread (loading, a model to
+  /// pick, an error), the same column with the way back and the tabs.
   @ViewBuilder
-  private var screenBody: some View {
-    if duo.isWide {
-      DuoCtoWide(
+  private var wideBody: some View {
+    if case .thread = currentContent {
+      CtoSessionDestinationView(
+        navigationChrome: .embedded,
+        duoPane: duoPane,
+        duoPaneOpen: duoPane.isOpen,
         title: topBarTitle,
-        onOpenSettings: { showingSettings = true },
-        isTabActive: isTabActive
-      ) {
-        content
-      }
+        duoSettings: { [snapshot] in
+          AnyView(
+            CtoSettingsScreen(snapshot: snapshot, embedded: true) { updated in
+              self.snapshot = updated
+            }
+          )
+        }
+      )
+      .environmentObject(syncService)
+      .tint(ADEColor.ctoAccent)
+      // Work's rule: laptop or tent (a bent horizontal fold) stacks the pane
+      // over the thread; flat, held either way, it sits beside it.
+      .environment(\.duoWorkFamily, duo.fold.isStacked && duo.bend > 0 ? .tall : .wide)
     } else {
-      content
+      NavigationStack {
+        content
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .tint(ADEColor.ctoAccent)
+          .adeScreenBackground()
+          .navigationTitle(topBarTitle)
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            DuoHubBackToolbarItem()
+            ToolbarItem(placement: .topBarTrailing) {
+              Button { showingSettings = true } label: {
+                Label("CTO Settings", systemImage: "gearshape")
+              }
+            }
+            DuoAppTabsToolbar()
+          }
+      }
     }
   }
 
@@ -98,13 +135,17 @@ struct CtoRootScreen: View {
 
   // MARK: - Content
 
-  @ViewBuilder
-  private var content: some View {
-    switch ctoRootContent(
+  private var currentContent: CtoRootContent {
+    ctoRootContent(
       identity: snapshot?.identity,
       loadError: snapshotLoadError,
       hostUnreachable: syncService.connectionState.isHostUnreachable
-    ) {
+    )
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    switch currentContent {
     case .modelPick:
       // No model the CTO can steer live has been picked yet. The picker takes
       // the thread's place — and `CtoSessionDestinationView` is deliberately

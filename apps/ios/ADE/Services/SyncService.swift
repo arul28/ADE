@@ -12237,6 +12237,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Files' cached reads, off the main actor and with no request: the
+  /// workspaces and a folder's last listing. The tab paints from these at once,
+  /// and a projection bump (which this tab's own cache writes cause) re-reads
+  /// them instead of asking the machine again.
+  func cachedFilesWorkspaces() async -> [FilesWorkspace] {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) { database.listWorkspaces() }.value
+  }
+
+  func cachedDirectoryListing(workspaceId: String, parentPath: String, includeIgnored: Bool) async -> [FileTreeNode]? {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) {
+      database.fetchDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored)
+    }.value
+  }
+
   func listTree(workspaceId: String, parentPath: String = "", includeIgnored: Bool = false) async throws -> [FileTreeNode] {
     do {
       let nodes = try decode(

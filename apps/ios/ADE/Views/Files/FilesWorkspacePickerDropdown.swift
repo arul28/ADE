@@ -6,6 +6,7 @@ struct FilesWorkspacePickerDropdown: View {
   let workspaces: [FilesWorkspace]
   let lanes: [LaneSummary]
   @Binding var selectedWorkspaceId: String
+  var isLive = true
 
   @State private var menuPresented = false
   @State private var searchQuery = ""
@@ -56,71 +57,61 @@ struct FilesWorkspacePickerDropdown: View {
     }
   }
 
+  /// One compact control: the lane's mark, its name, and branch · machine
+  /// under it, left-aligned like a list row; the chevrons say it is a picker.
   private var triggerLabel: some View {
     let workspace = selectedWorkspace
     let lane = workspace.flatMap { filesWorkspaceLaneSummary($0, lanes: lanes) }
-    let isCompact = workspace != nil
-
-    return ZStack {
-      centeredTriggerContent(workspace: workspace, lane: lane)
-        .padding(.horizontal, 28)
-      HStack(spacing: 0) {
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.up.chevron.down")
-          .font(.system(size: 10, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.6))
-      }
+    var subtitle = workspace.map(filesWorkspaceSubtitle) ?? ""
+    if workspace != nil, !isLive {
+      subtitle = subtitle.isEmpty ? "Offline" : "\(subtitle) · Offline"
     }
-    .padding(.horizontal, isCompact ? 12 : 14)
-    .padding(.vertical, isCompact ? 5 : 6)
-    .adeKitPill()
-    .frame(maxWidth: .infinity)
-  }
 
-  @ViewBuilder
-  private func centeredTriggerContent(workspace: FilesWorkspace?, lane: LaneSummary?) -> some View {
-    let title = workspace?.name ?? "Select workspace..."
-    let subtitle = workspace.map(filesWorkspaceSubtitle) ?? ""
-
-    if !subtitle.isEmpty {
-      VStack(spacing: 2) {
-        HStack(spacing: 5) {
-          if let lane {
-            WorkLaneLogoMark(
-              color: LaneColorPalette.displayColor(forHex: lane.color, fallback: ADEColor.textSecondary),
-              laneIcon: lane.icon,
-              emoji: lane.emoji,
-              size: 11
-            )
-          } else if workspace?.kind.lowercased() == "primary" {
-            Image(systemName: "house.fill")
-              .font(.system(size: 10, weight: .bold))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          Text(title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-        }
-        HStack(spacing: 4) {
-          Image(systemName: "arrow.branch")
-            .font(.system(size: 9, weight: .regular))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.55))
-          Text(subtitle)
-            .font(.system(size: 11.5))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.92))
-            .lineLimit(1)
+    return HStack(spacing: 8) {
+      Group {
+        if let lane {
+          WorkLaneLogoMark(
+            color: LaneColorPalette.displayColor(forHex: lane.color, fallback: ADEColor.textSecondary),
+            laneIcon: lane.icon,
+            emoji: lane.emoji,
+            size: 13
+          )
+        } else {
+          Image(systemName: workspace?.kind.lowercased() == "primary" ? "house" : "folder")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
         }
       }
-      .multilineTextAlignment(.center)
-    } else {
-      HStack(spacing: 5) {
-        Text(title)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
+      .frame(width: 18)
+
+      VStack(alignment: .leading, spacing: 1) {
+        Text(workspace?.name ?? "Select workspace")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(workspace == nil ? ADEColor.textSecondary : ADEColor.textPrimary)
           .lineLimit(1)
+        if !subtitle.isEmpty {
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
     }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .frame(minHeight: 44)
+    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
   }
 }
 

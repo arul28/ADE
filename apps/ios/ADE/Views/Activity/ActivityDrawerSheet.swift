@@ -96,6 +96,11 @@ struct ActivityDrawerSheet: View {
                     }
                     .accessibilityLabel("Activity actions")
                 }
+                if isInspector {
+                    // The column now has the curved edge, so its rail ends in
+                    // the five tabs, as every in-project rail does.
+                    DuoAppTabsToolbar()
+                }
             }
             .adeScreenBackground()
             .adeNavigationGlass()

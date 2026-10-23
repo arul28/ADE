@@ -197,27 +197,32 @@ final class DuoAppNavigation: ObservableObject {
 /// column. Add it after the screen's own items; it picks its form from the
 /// window's family:
 ///
-/// - the edge bar (the Duo's inner display held landscape): one item per
-///   destination at the bottom of the vertical edge bar, Activity and Settings
-///   last at low priority so they are the first to overflow;
+/// - the edge bar (the Duo's inner display held landscape): the five tabs
+///   at the bottom of the vertical edge bar, and nothing else, so the rail's
+///   bottom is the same on every screen;
 /// - any other wide window (the inner display held upright, an iPad in either
 ///   orientation): one menu on the leading side of the top bar, labelled with
 ///   the current tab's symbol and badged with what waits elsewhere — never a
 ///   bar under content, which on an iPad would sit under the composer;
 /// - compact: nothing (the phone's tab bar is still there).
 ///
-/// `includesUtilities: false` leaves Activity and Settings out, for a screen
-/// whose own items already carry them (Home).
+/// `includesUtilities: false` leaves Activity and Settings out of the tall
+/// form's menu, for a screen whose own items already carry them (Home).
 struct DuoAppTabsToolbar: ToolbarContent {
   @ObservedObject var navigation = DuoAppNavigation.shared
   var includesUtilities = true
+  /// A column beside this screen (Activity) has taken the curved edge: its
+  /// rail carries the tabs, so this screen draws none (they would land in a
+  /// bar under its content).
+  @Environment(\.duoLayout) private var duo
 
   var body: some ToolbarContent {
     if navigation.hasEdgeBar {
-      DuoAppDestinationsToolbarGroup(navigation: navigation)
-      if includesUtilities {
-        ToolbarSpacer(.fixed, placement: .bottomBar)
-        DuoAppUtilitiesToolbarGroup(navigation: navigation)
+      // Exactly the five tabs, on every screen and in every state: the rail's
+      // bottom never changes shape. Activity and Settings live in the
+      // screen's own ⋯ (or the Hub's), never at the rail's bottom.
+      if !duo.edgeBarYielded {
+        DuoAppDestinationsToolbarGroup(navigation: navigation)
       }
     } else if navigation.family != .compact {
       DuoAppTabsMenuItem(navigation: navigation, includesUtilities: includesUtilities)
@@ -286,30 +291,6 @@ private struct DuoAppDestinationsToolbarGroup: ToolbarContent {
       // ‹ project logo at the top of each screen, as on the phone.
       ForEach(navigation.destinations.filter { $0.role != .home }) { item in
         DuoAppTabButton(item: item, isSelected: navigation.selectedId == item.id) {
-          navigation.select(item.id)
-        }
-      }
-    }
-  }
-}
-
-/// Activity and Settings at the very bottom of the edge bar, in their own
-/// group so they read apart from the destinations and give way first.
-private struct DuoAppUtilitiesToolbarGroup: ToolbarContent {
-  @ObservedObject var navigation: DuoAppNavigation
-
-  var body: some ToolbarContent {
-    if #available(iOS 27.0, *) {
-      group.visibilityPriority(.low)
-    } else {
-      group
-    }
-  }
-
-  private var group: some ToolbarContent {
-    ToolbarItemGroup(placement: .bottomBar) {
-      ForEach(navigation.utilities) { item in
-        DuoAppTabButton(item: item, isSelected: false) {
           navigation.select(item.id)
         }
       }

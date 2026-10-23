@@ -30,6 +30,8 @@ struct FilesDetailScreen: View {
   @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
   @State var lastHandledFilesProjectionRevision: Int?
   @State var lastFilesDetailReload = Date.distantPast
+  /// The trailing safe area the edge bar reserves (wide, held landscape).
+  @State var railInset: CGFloat = 0
 
   var language: FilesLanguage {
     FilesLanguage.detect(languageId: blob?.languageId, filePath: relativePath)
@@ -68,6 +70,13 @@ struct FilesDetailScreen: View {
     filesFullPath(rootPath: workspace.rootPath, relativePath: relativePath)
   }
 
+  /// Under the Duo's edge bar the code reaches the screen edge and stops
+  /// short of the rail by the bar's own width.
+  private var trailingMargin: CGFloat? {
+    guard duoChrome?.runsUnderRail == true else { return nil }
+    return railInset
+  }
+
   var body: some View {
     Group {
       if let blob {
@@ -85,66 +94,19 @@ struct FilesDetailScreen: View {
     .adeNavigationGlass()
     .adeRootTabBarHidden()
     .adeAnalyticsScreen(.fileDetail)
-    .modifier(FilesDuoEditorTitle(chrome: duoChrome, title: lastPathComponent(relativePath), subtitle: duoSubtitle))
+    .navigationTitle(duoChrome == nil ? lastPathComponent(relativePath) : "")
+    .navigationSubtitle(duoChrome == nil ? viewerSubtitle : "")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      if let duoChrome {
-        duoEditorToolbar(duoChrome)
-      } else {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-          Menu {
-            Button("Copy Full Path") {
-              UIPasteboard.general.string = fullPath
-            }
-
-            Button("Copy Relative Path") {
-              UIPasteboard.general.string = relativePath
-            }
-          } label: {
-            Image(systemName: "ellipsis.circle")
-          }
-          .accessibilityLabel("File actions")
-
-          Button {
-            isDetailsSheetPresented = true
-          } label: {
-            Image(systemName: "info.circle")
-          }
-          .accessibilityLabel("File details")
-          .disabled(blob == nil)
-        }
-      }
-    }
+    .toolbar { viewerToolbar(duoChrome) }
     .safeAreaInset(edge: .top, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
-        if duoChrome == nil {
-          FilesBreadcrumbBar(
-            relativePath: relativePath,
-            includeCurrentFile: true,
-            onSelectDirectory: { path in
-              if path.isEmpty {
-                navigateToDirectory("")
-              } else {
-                navigateToDirectory(path)
-              }
-            }
-          )
-          .padding(.horizontal, 16)
-
-          if let blob {
-            FilesViewerControlStrip(
-              editorModes: editorModes,
-              mode: $mode,
-              showsMarkdownToggle: mode == .preview && isMarkdownFile,
-              markdownViewMode: $markdownViewMode,
-              showsLayoutToggle: showsCodeLayoutControl(blob: blob),
-              codeLayoutMode: $codeLayoutMode,
-              showsDiffScopeToggle: mode == .diff && workspace.laneId != nil,
-              diffMode: $diffMode
-            )
-          }
+        // Wide: the file's name floats over the code in a slim glass capsule
+        // (the bar there is the edge bar or the group's top bar).
+        if duoChrome != nil {
+          viewerHeader
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
         }
-
         if let errorMessage {
           FilesCompactBanner(
             symbol: "exclamationmark.triangle.fill",
@@ -154,11 +116,17 @@ struct FilesDetailScreen: View {
             onAction: { Task { await load() } }
           )
           .padding(.horizontal, 16)
+          .background(ADEColor.pageBackground.opacity(0.94))
         }
       }
-      .padding(.top, duoChrome == nil ? 4 : 0)
-      .padding(.bottom, duoChrome == nil ? 6 : 0)
-      .background(ADEColor.pageBackground.opacity(0.94))
+      .padding(.bottom, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .environment(\.filesViewerTrailingMargin, trailingMargin)
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.safeAreaInsets.trailing
+    } action: { inset in
+      if railInset != inset { railInset = inset }
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "container", workspaceId: workspace.id, path: relativePath), in: transitionNamespace)
     .sheet(isPresented: $isDetailsSheetPresented) {

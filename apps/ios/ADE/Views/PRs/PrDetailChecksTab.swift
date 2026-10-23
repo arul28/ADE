@@ -175,8 +175,7 @@ struct PrChecksSections: View {
               .font(.subheadline.weight(.medium))
               .foregroundStyle(ADEColor.textPrimary)
             Spacer(minLength: 8)
-            // The Duo's column has Re-run in its toolbar.
-            if canRerun && headline.failing > 0 && selection == nil {
+            if canRerun && headline.failing > 0 {
               Button("Re-run", action: onRerun)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(ADEColor.accent)

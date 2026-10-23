@@ -993,12 +993,17 @@ struct PrDuoAssigneesCard: View {
 struct PrPushTickRail: View {
   let ticks: [PrDigestPushTick]
   let activeId: String?
+  /// An item of the Duo's edge bar: the bar draws the capsule, and the rail
+  /// is a little wider to sit centred in it.
+  var inBar = false
   let onSelect: (PrDigestPushTick) -> Void
 
   @State private var previewId: String?
 
+  private var width: CGFloat { inBar ? 36 : 26 }
+
   var body: some View {
-    ScrollView(.vertical, showsIndicators: false) {
+    let rail = ScrollView(.vertical, showsIndicators: false) {
       VStack(spacing: 2) {
         ForEach(ticks) { tick in
           tickButton(tick)
@@ -1007,10 +1012,14 @@ struct PrPushTickRail: View {
       .padding(.vertical, 8)
     }
     .scrollBounceBehavior(.basedOnSize)
-    .frame(width: 26, height: min(CGFloat(ticks.count) * 14 + 16, 320))
-    .glassEffect(.regular, in: Capsule(style: .continuous))
+    .frame(width: width, height: min(CGFloat(max(ticks.count, 1)) * 14 + 16, inBar ? 250 : 320))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Pushes")
+    if inBar {
+      rail
+    } else {
+      rail.glassEffect(.regular, in: Capsule(style: .continuous))
+    }
   }
 
   private func tickButton(_ tick: PrDigestPushTick) -> some View {
@@ -1022,7 +1031,7 @@ struct PrPushTickRail: View {
     return Capsule(style: .continuous)
       .fill(tone)
       .frame(width: active ? 13 : talked ? 10 : 6, height: 3)
-      .frame(width: 26, height: 12)
+      .frame(width: width, height: 12)
       .contentShape(Rectangle())
       .onTapGesture {
         ADEHaptics.light()

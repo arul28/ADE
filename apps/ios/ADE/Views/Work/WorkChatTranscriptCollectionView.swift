@@ -471,6 +471,12 @@ final class WorkChatTranscriptController: UIViewController {
     collectionView.alwaysBounceVertical = true
     collectionView.keyboardDismissMode = .interactive
     collectionView.contentInsetAdjustmentBehavior = .never
+    // Under a native bar (the Duo's wide column) the header capsules float
+    // over the thread: a soft edge, never the hard band iOS picks for a bar
+    // with wide items. The thread's own fade does the rest.
+    if #available(iOS 26.0, *) {
+      collectionView.topEdgeEffect.style = .soft
+    }
     collectionView.delegate = self
     collectionView.onWillLayout = { [weak self] in self?.layoutWorkDepth += 1 }
     collectionView.onDidLayout = { [weak self] in

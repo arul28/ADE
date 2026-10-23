@@ -1,7 +1,6 @@
 import Foundation
 
 enum FilesRoute: Hashable {
-  case directory(workspaceId: String, parentPath: String)
   case editor(workspaceId: String, relativePath: String, focusLine: Int?)
 }
 
@@ -151,6 +150,9 @@ struct FilesDiffRenderState {
 }
 
 let filesDetailRefreshMinimumInterval: TimeInterval = 0.75
+/// How long after reading a file a projection bump is taken as the echo of
+/// that read's own cache write.
+let filesDetailQuietInterval: TimeInterval = 5
 
 func filesDetailRefreshDelay(
   hasLoadedBlob: Bool,

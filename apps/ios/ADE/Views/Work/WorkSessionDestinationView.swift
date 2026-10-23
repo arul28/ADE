@@ -316,6 +316,10 @@ struct WorkSessionDestinationView: View {
   var onDuoToggleSidebar: (() -> Void)?
   /// Wide column only: empties the column when the chat is deleted.
   var onDuoBack: (() -> Void)?
+  /// The CTO thread on a wide display: its settings page for the pane beside
+  /// it. Set, the rail carries the CTO's buttons (Chat Info, CTO Settings)
+  /// instead of a Work chat's, and the header leads with the way to the Hub.
+  var duoCtoSettings: (() -> AnyView)?
 
   @MainActor
   init(
@@ -341,7 +345,8 @@ struct WorkSessionDestinationView: View {
     duoPaneOpen: Bool = false,
     duoShowsSidebar: Bool = false,
     onDuoToggleSidebar: (() -> Void)? = nil,
-    onDuoBack: (() -> Void)? = nil
+    onDuoBack: (() -> Void)? = nil,
+    duoCtoSettings: (() -> AnyView)? = nil
   ) {
     let initStart = CACurrentMediaTime()
     defer { ScrollDiagnostics.shared.record(.destinationInit, since: initStart) }
@@ -369,6 +374,7 @@ struct WorkSessionDestinationView: View {
     self.duoShowsSidebar = duoShowsSidebar
     self.onDuoToggleSidebar = onDuoToggleSidebar
     self.onDuoBack = onDuoBack
+    self.duoCtoSettings = duoCtoSettings
 
     _session = State(initialValue: initialSession)
     _chatSummary = State(initialValue: initialChatSummary)
@@ -847,6 +853,10 @@ struct WorkSessionDestinationView: View {
       duoProofContent
     case .chatInfo:
       chatInfoDetailsContent(sections: .all, embedded: true)
+    case .ctoSettings:
+      if let duoCtoSettings {
+        duoCtoSettings()
+      }
     }
   }
 
@@ -1188,6 +1198,8 @@ struct WorkSessionDestinationView: View {
       showChatInfo(origin: origin)
     case .proof:
       showProof()
+    case .ctoSettings:
+      duoPane?.open(.ctoSettings, origin: origin)
     case .simulator, .macDesktop, .appControl, .browser:
       if let duoPane {
         duoPane.open(tab, origin: origin)
@@ -1238,7 +1250,9 @@ struct WorkSessionDestinationView: View {
   private var duoChatSubtitle: String? {
     let current = session ?? initialSession
     var parts: [String] = []
-    if let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
+    // The CTO's lane is a stand-in named "CTO": the title already says it.
+    if duoCtoSettings == nil,
+       let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
       parts.append(lane)
     }
     let model = shortModelLabel(composerChatSummary?.model)
@@ -1291,7 +1305,8 @@ struct WorkSessionDestinationView: View {
         onCopySessionId: { copyCurrentSessionId() },
         onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
         onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
-        onDelete: { Task { await deleteCurrentChatSession() } }
+        onDelete: { Task { await deleteCurrentChatSession() } },
+        onOpenCtoSettings: duoCtoSettings == nil ? nil : { openChatTool(.ctoSettings) }
       )
     )
   }
@@ -1548,6 +1563,7 @@ struct WorkSessionDestinationView: View {
           DuoWorkChatPaneSplit(
             isOpen: duoPaneOpen,
             origin: duoPane.origin,
+            showsIdle: duoCtoSettings == nil,
             chat: { chatColumnBody },
             tools: { duoToolsPane },
             idle: { duoToolTiles }

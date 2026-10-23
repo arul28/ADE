@@ -179,14 +179,19 @@ struct DuoSplitMetrics: Equatable {
     var width = preferredListWidth
     var gutter: CGFloat = 1
     var showsRule = true
+    var detailFloor = minimumDetailWidth
     if case .sideBySide(let rect) = fold, rect.minX > 0 {
       width = rect.minX
       gutter = min(max(rect.width, 1), 48)
       showsRule = false
+      // Book-folded the hinge decides: the list is the whole left page and
+      // the detail the right one, even when that page is narrower than the
+      // detail would like (a detail across the hinge is worse).
+      detailFloor = min(minimumDetailWidth, 240)
     }
     // A folded page is the sidebar, but never squeeze the detail below
     // something readable and never let the sidebar take the whole screen.
-    let ceiling = max(200, available - minimumDetailWidth - gutter)
+    let ceiling = max(200, available - detailFloor - gutter)
     let floor: CGFloat = 220
     width = min(max(width, floor), ceiling)
     self.listWidth = min(max(width, 0), available)
@@ -425,6 +430,9 @@ extension LanesTabView {
 /// other than the default is on.
 struct LaneHeaderSearchField<MenuContent: View>: View {
   @Binding var searchText: String
+  /// The field's placeholder and the filter chip's name (the PRs tab reuses it).
+  var prompt = "Search lanes, branches"
+  var filterLabel = "Lane filters"
   @ViewBuilder var menuContent: () -> MenuContent
   var filterActive: () -> Bool
 
@@ -435,7 +443,7 @@ struct LaneHeaderSearchField<MenuContent: View>: View {
         .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(ADEColor.textMuted)
         .accessibilityHidden(true)
-      TextField("Search lanes, branches", text: $searchText)
+      TextField(prompt, text: $searchText)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .font(.subheadline)
@@ -468,7 +476,7 @@ struct LaneHeaderSearchField<MenuContent: View>: View {
           .frame(minWidth: 36, minHeight: 40)
           .contentShape(Rectangle())
       }
-      .accessibilityLabel("Lane filters")
+      .accessibilityLabel(filterLabel)
       .accessibilityValue(active ? "On" : "None")
     }
     .padding(.leading, 10)
