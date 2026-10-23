@@ -360,6 +360,27 @@ describe("router core", () => {
     const routes = buildModelRoutes([catalogModel("claude", OPUS)], baseSnapshot());
     expect(routeCost(routeFor(routes, OPUS), new Map([["claude", blocked]])).blockedReason)
       .toContain("96%");
+
+    // A login whose readings all reset (removed or renamed, still in the
+    // 30-day ledger) has no pressure and no block to rank on. A live account
+    // still beats it even when its own pressure is higher…
+    const stale = {
+      ...claudePlan(40),
+      accountId: "claude:stale",
+      latestPercentUsed: null,
+      latestResetsAt: null,
+    };
+    const live = planStatesFromBurnRates(
+      [{ ...claudePlan(60), accountId: "claude:live" }, stale],
+      NOW,
+    ).get("claude")!;
+    expect(live.accountId).toBe("claude:live");
+    // …but a full live login loses to a free one.
+    const free = planStatesFromBurnRates(
+      [{ ...claudePlan(96), accountId: "claude:live" }, stale],
+      NOW,
+    ).get("claude")!;
+    expect(free.accountId).toBe("claude:stale");
   });
 
   it("allows a dearer route once the reference's own plan is blocked", () => {

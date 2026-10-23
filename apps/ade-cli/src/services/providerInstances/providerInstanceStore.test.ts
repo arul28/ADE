@@ -57,7 +57,8 @@ describe("providerInstanceStore", () => {
 
     expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex"]);
     expect(instances.every((instance) => instance.isDefault)).toBe(true);
-    expect(instances.every((instance) => instance.label === "Default")).toBe(true);
+    // An account reads as its email, else its id; nothing is named "Default".
+    expect(instances.map((instance) => instance.label)).toEqual(["claude", "codex"]);
     expect(instances[0].configHome).toBe(path.join(homeDir, ".claude"));
     expect(instances[1].configHome).toBe(path.join(homeDir, ".codex"));
     expect(fs.existsSync(store.registryPath)).toBe(false);
@@ -85,7 +86,8 @@ describe("providerInstanceStore", () => {
     const created = store.create({ provider: "claude", label: "Work Account", accentColor: "#AABBCC" });
 
     expect(created.instance.provider).toBe("claude");
-    expect(created.instance.label).toBe("Work Account");
+    // The typed name only shaped the id; the label is the id until sign-in.
+    expect(created.instance.label).toBe("work-account");
     expect(created.instance.accentColor).toBe("#aabbcc");
     expect(created.instance.isDefault).toBe(false);
     expect(created.instance.signedIn).toBe(false);
@@ -173,10 +175,15 @@ describe("providerInstanceStore", () => {
     expect(store.get("claude")?.isDefault).toBe(true);
   });
 
-  it("rejects a label that is empty or too long", () => {
+  it("creates an unnamed account with the next short id, and still rejects a label that is too long", () => {
     const { store } = makeStore();
 
-    expect(() => store.create({ provider: "claude", label: "   " })).toThrow(/needs a label/);
+    // No name is the normal case: the account shows as its email once signed in.
+    const first = store.create({ provider: "claude" });
+    const second = store.create({ provider: "claude", label: "   " });
+    expect(first.instance.id).toBe("claude-2");
+    expect(second.instance.id).toBe("claude-3");
+    expect(first.instance.label).toBe("claude-2");
     expect(() => store.create({ provider: "claude", label: "x".repeat(61) })).toThrow(/at most 60/);
     expect(() => store.create({ provider: "cursor", label: "Nope" })).toThrow(/Unknown provider/);
   });
@@ -197,7 +204,8 @@ describe("providerInstanceStore", () => {
       readAccount: async () => ({}),
     });
     const instance = reopened.get(created.instance.id);
-    expect(instance?.label).toBe("Personal Codex");
+    // The rename is stored but not shown: an account reads as its email or id.
+    expect(instance?.label).toBe("personal");
     expect(instance?.accentColor).toBe("#123abc");
     expect(instance?.isDefault).toBe(true);
     expect(reopened.getDefault("codex").id).toBe(created.instance.id);
@@ -219,7 +227,7 @@ describe("providerInstanceStore", () => {
     store.rename("claude", "Main");
 
     expect(store.list("claude")).toHaveLength(1);
-    expect(store.get("claude")?.label).toBe("Main");
+    expect(store.get("claude")?.label).toBe("claude");
     expect(store.get("claude")?.configHome).toBe(path.join(homeDir, ".claude"));
     expect(store.get("claude")?.isDefault).toBe(true);
   });
@@ -368,8 +376,12 @@ describe("providerInstanceStore", () => {
     expect(homes).toContain(`claude:${created.instance.configHome}`);
     const work = refreshed.find((instance) => instance.id === created.instance.id);
     expect(work?.account).toEqual({ email: "work@example.com", plan: "Claude Max" });
+    // The card names it by the login it just read.
+    expect(work?.label).toBe("work@example.com");
     expect(work?.signedIn).toBe(true);
     expect(refreshed.find((instance) => instance.id === "claude")?.signedIn).toBe(false);
+    // With no email the id is the name.
+    expect(refreshed.find((instance) => instance.id === "claude")?.label).toBe("claude");
   });
 
   it("preserves a known account when its config is malformed", async () => {
@@ -510,6 +522,22 @@ describe("providerInstanceStore", () => {
     expect(reused?.loginBroken).toBeUndefined();
   });
 
+  it("never gives an unnamed account a removed account's config home", () => {
+    const { store } = makeStore();
+
+    // No label means the next short id, and a removed account's home stays on
+    // disk with its login: minting its id again would hand the new account the
+    // old login and history.
+    const first = store.create({ provider: "claude" });
+    expect(first.instance.id).toBe("claude-2");
+    store.remove(first.instance.id);
+    expect(fs.existsSync(first.instance.configHome)).toBe(true);
+
+    const second = store.create({ provider: "claude" });
+    expect(second.instance.id).toBe("claude-3");
+    expect(second.instance.configHome).not.toBe(first.instance.configHome);
+  });
+
   it("gives a shared login to the working default account, else the first working one", async () => {
     const { store } = makeStore({
       readAccount: async (_provider, configHome) => (
@@ -585,7 +613,7 @@ describe("providerInstanceStore", () => {
 
     const created = store.create({ provider: "claude", label: "Work" });
 
-    expect(store.get(created.instance.id)?.label).toBe("Work");
+    expect(store.get(created.instance.id)?.label).toBe("work");
   });
 
   it("writes the registry file atomically with owner-only permissions", () => {

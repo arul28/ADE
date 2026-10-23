@@ -77,6 +77,7 @@ import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
+import { extractMachineTargeting } from "./cliMachineTargeting";
 import { SDK_WORKER_COMMANDS } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
@@ -17228,27 +17229,14 @@ describe("ade providers accounts", () => {
 
     expect(
       expectExecutePlan(buildCliPlan([
-        "providers", "accounts", "add", "--provider", "codex", "--label", "Work", "--accent", "#3b82f6",
+        "providers", "accounts", "add", "--provider", "codex", "--accent", "#3b82f6",
       ])).steps[0]?.params,
     ).toEqual({
       name: "run_ade_action",
       arguments: {
         domain: "provider_instances",
         action: "create",
-        args: { provider: "codex", label: "Work", accentColor: "#3b82f6" },
-      },
-    });
-
-    expect(
-      expectExecutePlan(buildCliPlan([
-        "providers", "accounts", "rename", "--instance", "work", "--label", "Work (EU)",
-      ])).steps[0]?.params,
-    ).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "provider_instances",
-        action: "rename",
-        args: { id: "work", label: "Work (EU)" },
+        args: { provider: "codex", accentColor: "#3b82f6" },
       },
     });
 
@@ -17275,15 +17263,18 @@ describe("ade providers accounts", () => {
     ).toEqual({ name: "list_ade_actions", arguments: { domain: "provider_instances" } });
   });
 
-  it("requires the inputs each mutation cannot invent", () => {
+  it("requires the inputs each mutation cannot invent, and refuses names", () => {
     expect(() => buildCliPlan(["providers", "accounts", "add", "--label", "Work"]))
       .toThrow(/--provider claude\|codex/);
-    expect(() => buildCliPlan(["providers", "accounts", "add", "--provider", "claude"]))
-      .toThrow(/account label is required/i);
+    // Accounts have no names any more: adding one with a label is refused.
+    expect(() => buildCliPlan(["providers", "accounts", "add", "--provider", "claude", "--label", "Work"]))
+      .toThrow(/drop --label/i);
+    expect(() => buildCliPlan(["providers", "accounts", "rename", "--instance", "work", "--label", "Work (EU)"]))
+      .toThrow(/no names to change/i);
     expect(() => buildCliPlan(["providers", "accounts", "remove"]))
       .toThrow(/account id is required/i);
     expect(() => buildCliPlan(["providers", "accounts", "sync"]))
-      .toThrow(/list, add, remove, rename, default, login, or refresh/);
+      .toThrow(/list, add, remove, default, login, or refresh/);
   });
 
   it("--json is the default and --text renders the account table and the login command", () => {
@@ -17384,23 +17375,24 @@ describe("ade providers accounts", () => {
     expect(ruleWidth).toBeGreaterThan(0);
   });
 
-  it("renders the wrapped payloads rename, default and login actually return", () => {
+  it("renders the wrapped payloads default and login actually return", () => {
     const instance = {
       id: "work",
       provider: "claude",
-      label: "Work (EU)",
+      label: "work@example.com",
       configHome: "/home/me/.ade/provider-homes/claude/work",
       isDefault: true,
       createdAt: new Date(1).toISOString(),
-      signedIn: false,
+      signedIn: true,
+      account: { email: "work@example.com" },
     };
 
-    // rename / setDefault / setAccent answer { instance } — never a bare
-    // instance and never a list. Falling through to the table branch printed
-    // "(no provider accounts found)" after a rename that had succeeded.
+    // setDefault / setAccent answer { instance } — never a bare instance and
+    // never a list. Falling through to the table branch printed
+    // "(no provider accounts found)" after a change that had succeeded.
     const renamed = formatOutput({ instance }, textOpts, "provider-accounts");
     expect(renamed).toContain("ADE provider account");
-    expect(renamed).toContain("Work (EU)");
+    expect(renamed).toContain("work@example.com");
     expect(renamed).not.toContain("no provider accounts found");
 
     // loginCommand answers { loginCommand }.
@@ -17430,6 +17422,73 @@ describe("ade providers accounts", () => {
     expect(settings).toContain("smart balance");
     expect(settings).toContain("on");
     expect(settings).not.toContain("no provider accounts found");
+  });
+});
+
+describe("ade usage limits", () => {
+  it("falls back to the full snapshot when an older host has no getUsageLimits action", () => {
+    const plan = expectExecutePlan(buildCliPlan(["usage", "limits"]));
+    expect(plan.steps[0]).toMatchObject({
+      key: "limits",
+      params: {
+        name: "run_ade_action",
+        arguments: { domain: "usage", action: "getUsageLimits", args: {} },
+      },
+      optional: true,
+    });
+    const snapshotStep = plan.steps[1]!;
+    expect(snapshotStep.params).toMatchObject({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getUsageSnapshot", args: {} },
+    });
+    // A host that answered the new action skips the snapshot step.
+    expect(snapshotStep.skipWhen?.({
+      limits: { domain: "usage", action: "getUsageLimits", result: { accounts: [] } },
+    })).toBe(true);
+    // One that did not gets the same report built locally from the snapshot.
+    const report = plan.shapeResult?.({
+      limits: undefined,
+      snapshot: {
+        domain: "usage",
+        action: "getUsageSnapshot",
+        result: {
+          accounts: [{
+            id: "claude:claude-2",
+            provider: "claude",
+            instanceId: "claude-2",
+            email: "work@example.com",
+            machines: [],
+          }],
+          windows: [{
+            provider: "claude",
+            windowType: "weekly",
+            accountId: "claude:claude-2",
+            percentUsed: 40,
+            resetsAt: "2030-01-01T00:00:00.000Z",
+            resetsInMs: 1,
+          }],
+          lastPolledAt: "2026-10-23T11:55:00.000Z",
+        },
+      },
+    }) as { accounts: Array<{ instanceId: string | null; windows: Array<{ percentLeft: number }> }> };
+    expect(report.accounts).toHaveLength(1);
+    expect(report.accounts[0]?.instanceId).toBe("claude-2");
+    expect(report.accounts[0]?.windows[0]?.percentLeft).toBe(60);
+  });
+});
+
+describe("--machine targeting", () => {
+  it("refuses --machine on a command that can only run here, and keeps it on a targetable one", () => {
+    // Left in place, the flag used to be ignored and the answer read as the
+    // other machine's.
+    expect(() => extractMachineTargeting(parseCliArgs(["providers", "accounts", "list", "--machine", "Studio"])))
+      .toThrow(/runs on this machine only/);
+    const targeted = extractMachineTargeting(parseCliArgs(["lanes", "list", "--machine", "Studio"]));
+    expect(targeted.command).toEqual(["lanes", "list"]);
+    expect(targeted.options.machine).toBe("Studio");
+    // A command whose own --machine means something else keeps its flag.
+    expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
+      .toBeUndefined();
   });
 });
 
