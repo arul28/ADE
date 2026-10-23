@@ -123,6 +123,10 @@ describe("createSentryEventHooks", () => {
     ["a local service refusing a connection", "connect ECONNREFUSED 127.0.0.1:64540", false],
     ["a remote machine the user disconnected", "Remote machine was manually disconnected. Connect again to use this remote project.", true],
     ["a Mac without Xcode", 'Command failed: xcrun simctl list devices available --json\nxcrun: error: unable to find utility "simctl", not a developer tool or in PATH', true],
+    ["GitHub unreachable offline", "Can't reach GitHub (ENOTFOUND). Check this machine's network connection, then try again.", true],
+    ["the account service behind a cut TLS handshake", "ADE can't reach its account service (TLS handshake cut off).", true],
+    ["the account service not answering in time", "ADE's account service did not answer in time.", true],
+    ["GitHub resetting a connection, which stays an issue", "Can't reach GitHub (ECONNRESET). Check this machine's network connection, then try again.", false],
     ["any other xcrun failure", "Command failed: xcrun simctl boot X\nAn error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60)", false],
   ])("drops expected outcomes: %s", (_label, value, dropped) => {
     const hooks = createSentryEventHooks();

@@ -78,7 +78,7 @@ import {
   readGitHubRateLimitState,
 } from "./githubRateLimit";
 import {
-  fetchTransportFailureCode,
+  describeFetchTransportFailure,
   isFetchTransportFailure,
 } from "../../../shared/fetchTransportFailure";
 import {
@@ -503,9 +503,9 @@ async function fetchGitHub(
  * code here, while it is still attached.
  */
 function githubUnreachableError(error: unknown): Error {
-  const code = fetchTransportFailureCode(error);
+  const reason = describeFetchTransportFailure(error);
   return new Error(
-    `Can't reach GitHub${code ? ` (${code})` : ""}. Check this machine's network connection, then try again.`,
+    `Can't reach GitHub${reason ? ` (${reason})` : ""}. Check this machine's network connection, then try again.`,
     { cause: error },
   );
 }

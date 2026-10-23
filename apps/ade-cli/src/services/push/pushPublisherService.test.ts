@@ -4056,6 +4056,7 @@ describe("createPushRelayClient", () => {
       token: () => new Promise<string | null>(() => {}),
       fetch: undefined,
       code: "timeout",
+      message: /did not answer in time/,
     },
     {
       name: "a token wait that gives up as null at the deadline",
@@ -4066,6 +4067,7 @@ describe("createPushRelayClient", () => {
       }),
       fetch: undefined,
       code: "timeout",
+      message: /did not answer in time/,
     },
     {
       name: "a TLS handshake the network cut",
@@ -4079,8 +4081,10 @@ describe("createPushRelayClient", () => {
         });
       },
       code: "ECONNRESET",
+      // The words Sentry's expected-outcome list keys on, not a bare reset.
+      message: /\(TLS handshake cut off\)/,
     },
-  ])("reports $name as an unreachable relay inside one deadline", async ({ token, fetch, code }) => {
+  ])("reports $name as an unreachable relay inside one deadline", async ({ token, fetch, code, message }) => {
     if (fetch) fetchMock.mockImplementation(fetch);
     const client = createPushRelayClient({
       store: makeStore(),
@@ -4105,7 +4109,7 @@ describe("createPushRelayClient", () => {
 
     expect(settled).toHaveBeenCalledTimes(1);
     await expect(report).rejects.toBeInstanceOf(PushRelayUnreachableError);
-    await expect(report).rejects.toMatchObject({ code });
+    await expect(report).rejects.toMatchObject({ code, message: expect.stringMatching(message) });
   });
 
   it("rejects an account snapshot response that resolves after the account changes", async () => {

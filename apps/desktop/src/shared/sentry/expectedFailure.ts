@@ -128,6 +128,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The web client while its computer reconnects or the user switches project.
   /^Reconnecting to this computer\. Try again when connected\.$/,
   /^Project connection changed\.$/,
+  // ADE's own fetch boundaries (shared/fetchTransportFailure.ts) name undici's
+  // reason in the text, because the cause chain does not cross RPC. The same
+  // offline reasons as NETWORK_FAILURE below; a bare reset stays an issue.
+  /^(?:Can't reach GitHub|ADE can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
+  /^ADE's account service did not answer in time\.$/,
 ];
 
 // Each of these names the address or host it failed to reach, so a loopback

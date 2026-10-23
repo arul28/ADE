@@ -43,6 +43,30 @@ export function fetchTransportFailureCode(error: unknown): string | null {
   return null;
 }
 
+/** Node's text for a TLS handshake the network cut off; its code is a bare ECONNRESET. */
+const TLS_HANDSHAKE_CUT = /Client network socket disconnected before secure TLS connection was established/;
+
+/**
+ * The reason to name in a "can't reach" message: "TLS handshake cut off" when
+ * that is what happened (its code alone, ECONNRESET, reads like any reset),
+ * otherwise the transport code, or null when undici named nothing. Sentry's
+ * expected-outcome list keys on these words, since the cause chain they come
+ * from does not cross RPC.
+ */
+export function describeFetchTransportFailure(error: unknown): string | null {
+  const seen = new Set<unknown>();
+  const pending: unknown[] = [error];
+  while (pending.length > 0 && seen.size < MAX_CAUSE_DEPTH) {
+    const next = pending.shift();
+    if (!next || typeof next !== "object" || seen.has(next)) continue;
+    seen.add(next);
+    const message = (next as { message?: unknown }).message;
+    if (typeof message === "string" && TLS_HANDSHAKE_CUT.test(message)) return "TLS handshake cut off";
+    pending.push((next as { cause?: unknown }).cause);
+  }
+  return fetchTransportFailureCode(error);
+}
+
 /**
  * Whether `error` is a request that never reached an HTTP answer: undici's
  * `fetch failed`, or anything whose chain carries a transport code. Aborts and

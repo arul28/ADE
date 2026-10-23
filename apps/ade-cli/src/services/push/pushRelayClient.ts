@@ -1,7 +1,10 @@
 import { recordAccountChangeMarks } from "../account/accountChangeMarks";
 import type { AccountAccessTokenOptions } from "../account/accountAuthService";
 import { createHash, createHmac } from "node:crypto";
-import { fetchTransportFailureCode } from "../../../../desktop/src/shared/fetchTransportFailure";
+import {
+  describeFetchTransportFailure,
+  fetchTransportFailureCode,
+} from "../../../../desktop/src/shared/fetchTransportFailure";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
   AttentionItem,
@@ -196,10 +199,11 @@ export class PushRelayUnreachableError extends Error {
     readonly code: string | null,
     options?: { cause?: unknown },
   ) {
+    const reason = code === "timeout" ? null : describeFetchTransportFailure(options?.cause) ?? code;
     super(
       code === "timeout"
         ? "ADE's account service did not answer in time."
-        : `ADE can't reach its account service${code ? ` (${code})` : ""}.`,
+        : `ADE can't reach its account service${reason ? ` (${reason})` : ""}.`,
       options,
     );
     this.name = "PushRelayUnreachableError";
