@@ -5036,16 +5036,18 @@ export function AgentChatPane({
   // there re-reads an older stored snapshot over pending edits.
   const fastModeAllowedForComposerRef = useRef(fastModeAllowedForComposer);
   fastModeAllowedForComposerRef.current = fastModeAllowedForComposer;
-  // Fast slots configured while the account allowed Fast are cleared when the
-  // permission goes away. The create path gates again; this keeps the visible
-  // slots honest too.
+  // Fast slots, a mounted Fast draft, and its Cursor Cloud tier are cleared
+  // when the permission goes away. Every create path gates again; this keeps
+  // the visible state honest too.
   useEffect(() => {
     if (fastModeAllowedForComposer) return;
     setParallelModelSlots((prev) => {
       if (!prev.some((slot) => slot.fastMode === true || slot.fastTier != null)) return prev;
       return prev.map((slot) => ({ ...slot, fastMode: false, fastTier: null }));
     });
-  }, [fastModeAllowedForComposer]);
+    setFastModeState(false, null);
+    setCursorCloudServiceTier(null);
+  }, [fastModeAllowedForComposer, setFastModeState]);
   const goTo = useGoTo();
   const openFastModeSetting = useCallback(() => {
     // The same "show me" path ADE Tips uses: land on the row, then ring it.
@@ -12391,7 +12393,7 @@ export function AgentChatPane({
       },
       tracked: true,
     };
-  }, [harnessPresets, modelCatalogScopeKey]);
+  }, [fastModeAllowedForComposer, harnessPresets, modelCatalogScopeKey]);
 
   const startDraftCliLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
@@ -13015,7 +13017,7 @@ export function AgentChatPane({
         startingRef,
         modelId: cloudModelId || null,
         reasoningEffort: snapshot.reasoningEffort,
-        ...(snapshot.cursorCloudServiceTier
+        ...(fastModeAllowedForComposer && snapshot.cursorCloudServiceTier
           ? { serviceTier: snapshot.cursorCloudServiceTier }
           : {}),
         autoCreatePR: prFields.autoCreatePR,

@@ -9014,7 +9014,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // A new chat opens on what this machine used last, from any client,
         // unless the user already picked a model here.
         void readLaunchDefaults(conn).then((read) => {
-          if (!read.ok) return;
+          if (!read.ok || connectionRef.current !== conn) return;
           const defaults = read.defaults;
           if (!defaults) {
             // The host answered with no saved defaults: no permission to grant.
@@ -9122,7 +9122,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // later hop.
     void readLaunchDefaults(entry.connection).then((read) => {
       if (connectionRef.current !== entry.connection || !read.ok) return;
-      const allowed = read.defaults?.fastModeAllowed === true;
+      // A valid record with no permission field comes from an older host, which
+      // clients treat as allowed. Only an explicit false (or no record) denies.
+      const allowed = read.defaults ? read.defaults.fastModeAllowed !== false : false;
       setFastModeAllowed(allowed);
       if (!allowed) {
         setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
@@ -9766,7 +9768,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         lastFastModePolicyReadAtRef.current = Date.now();
         void readLaunchDefaults(connection).then((read) => {
           if (connectionRef.current !== connection || !read.ok) return;
-          const allowed = read.defaults?.fastModeAllowed === true;
+          // A valid record with no permission field is an older host; only an
+          // explicit false (or no record) denies.
+          const allowed = read.defaults ? read.defaults.fastModeAllowed !== false : false;
           setFastModeAllowed(allowed);
           if (!allowed) {
             setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
