@@ -311,6 +311,60 @@ struct WorkChatHeaderMenu: View, Equatable {
   }
 }
 
+/// The ⋯ menu's three parts as separate rail buttons: Chat Info, Tools ▸ and ⋯
+/// with the chat's actions. The Duo's outer display held upright puts them at
+/// the top of its edge rail, as the inner display does, instead of in one ⋯
+/// in the header. Same items and actions as `WorkChatHeaderMenu`.
+struct WorkChatRailButtons: View {
+  var model: WorkChatHeaderMenuModel
+  var session: TerminalSessionSummary?
+  var onShowChatInfo: () -> Void
+  var onOpenTool: (DuoToolTab) -> Void
+  var onCreatePullRequest: () -> Void
+  var onOpenLane: () -> Void
+  var onRename: () -> Void
+  var onDelete: () -> Void
+  var onCopySessionId: () -> Void
+  var onCopySessionDeepLink: () -> Void
+  var onTogglePinned: () -> Void
+  var onRestartAgent: (() -> Void)? = nil
+
+  var body: some View {
+    Button("Chat Info", systemImage: DuoToolTab.chatInfo.symbolName, action: onShowChatInfo)
+      .badge(model.chatInfoCount)
+      .accessibilityIdentifier("Work.Chat.Rail.ChatInfo")
+    Menu {
+      WorkChatToolsMenuItems(
+        tools: model.tools,
+        hasPullRequest: model.hasPullRequest,
+        canCreatePullRequest: model.canCreatePullRequest,
+        onOpen: onOpenTool,
+        onCreatePullRequest: onCreatePullRequest
+      )
+    } label: {
+      Label("Tools", systemImage: "wrench.and.screwdriver")
+    }
+    .badge(model.tools.count)
+    .accessibilityIdentifier("Work.Chat.Rail.Tools")
+    Menu {
+      WorkChatActionsMenuItems(
+        session: session,
+        model: model,
+        onOpenLane: onOpenLane,
+        onRename: onRename,
+        onDelete: onDelete,
+        onCopySessionId: onCopySessionId,
+        onCopySessionDeepLink: onCopySessionDeepLink,
+        onTogglePinned: onTogglePinned,
+        onRestartAgent: onRestartAgent
+      )
+    } label: {
+      Label("Chat actions", systemImage: "ellipsis")
+    }
+    .accessibilityIdentifier("Work.Chat.Rail.Actions")
+  }
+}
+
 /// The chat's own items (rename, restart, copy, pin, mute, delete), shared by
 /// the phone header's ⋯ menu and the Duo rail's overflow menu so the two can
 /// never offer different actions.

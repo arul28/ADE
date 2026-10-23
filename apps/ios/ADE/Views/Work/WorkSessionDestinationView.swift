@@ -767,6 +767,27 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// The same three parts as the ⋯, as rail buttons (the Duo's outer display).
+  @ViewBuilder
+  var sessionRailControls: some View {
+    if let session, isChatSession(session) {
+      WorkChatRailButtons(
+        model: headerMenuModel(session),
+        session: session,
+        onShowChatInfo: { showChatInfo() },
+        onOpenTool: { openChatTool($0) },
+        onCreatePullRequest: { presentCreateLanePr() },
+        onOpenLane: { openSessionLane() },
+        onRename: { presentSessionRename() },
+        onDelete: { Task { await deleteCurrentChatSession() } },
+        onCopySessionId: { copyCurrentSessionId() },
+        onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+        onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+        onRestartAgent: { Task { await restartAgentSession(stopFirst: false) } }
+      )
+    }
+  }
+
   /// The phone's ⋯: Chat Info, Tools ▸, then the chat's actions.
   func sessionHeaderMenu(_ session: TerminalSessionSummary, toolbarLabel: Bool) -> some View {
     WorkChatHeaderMenu(
@@ -1618,6 +1639,7 @@ struct WorkSessionDestinationView: View {
         // A split column has no stack to pop: the leading control is the
         // sidebar toggle, and only the delete path uses `onDuoBack`.
         onBack: duoUsesPane ? onDuoToggleSidebar : onDuoBack,
+        railControls: { AnyView(sessionRailControls) },
         trailingControls: { sessionHeaderTrailingControls }
       )
       // No zoom navigation transition here: a zoom-pushed screen closes on a
@@ -3422,7 +3444,13 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
   let leadingSymbol: String
   let leadingLabel: String
   let leadingIdentifier: String
+  /// The header's trailing controls as separate buttons for the edge rail's
+  /// top, used where the display has one (the Duo's outer display, upright).
+  let railControls: (() -> AnyView)?
   let trailingControls: () -> TrailingControls
+
+  /// The trailing controls live on the rail, not in the header.
+  private var controlsOnRail: Bool { displayHasEdgeRail && railControls != nil }
 
   @ViewBuilder
   func body(content: Content) -> some View {
@@ -3461,12 +3489,20 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
                 dismiss()
               }
             },
-            trailingControls: trailingControls
+            trailingControls: { Group { if !controlsOnRail { trailingControls() } } }
           )
         }
         .navigationTitle("")
+        .navigationBarBackButtonHidden(true)
+        // With a rail, the bar's trailing items are the rail's top (the
+        // header keeps back and the title); without one the bar stays hidden.
+        .toolbar {
+          if controlsOnRail, let railControls {
+            ToolbarItemGroup(placement: .topBarTrailing) { railControls() }
+          }
+        }
         .toolbar(displayHasEdgeRail ? .automatic : .hidden, for: .tabBar)
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(controlsOnRail ? .automatic : .hidden, for: .navigationBar)
         .adeRootTabBarHidden()
     case .column:
       content
@@ -3524,6 +3560,7 @@ extension View {
     leadingLabel: String = "Back",
     leadingIdentifier: String = "Work.Chat.Header.Back",
     onBack: (() -> Void)? = nil,
+    railControls: (() -> AnyView)? = nil,
     @ViewBuilder trailingControls: @escaping () -> TrailingControls
   ) -> some View {
     modifier(
@@ -3535,6 +3572,7 @@ extension View {
         leadingSymbol: leadingSymbol,
         leadingLabel: leadingLabel,
         leadingIdentifier: leadingIdentifier,
+        railControls: railControls,
         trailingControls: trailingControls
       )
     )
