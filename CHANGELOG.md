@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.120] - 2026-10-23
+
+### Desktop and web
+
+- Polls stop dialing unreachable machines; SSH sign-in refusals stop retries (#1875).
+- Sync status and Activity reads have one capped deadline; presence backs off on bad networks (#1876).
+- No false crash reports at quit or shutdown; no "database is locked" on project open; private brain starts at once (#1878).
+- No-project windows: strict path checks, personal chat images, no project terminals, keep-awake (#1879).
+- Relay Workers retry through Cloudflare D1 and Durable Object outages (#1873).
+- Fewer expected states reported to Sentry, and small Sentry-found bug fixes (#1874).
+
+### iOS
+
+- No main-thread hangs and readable Sentry reports (#1877), in a new TestFlight build.
+
 ## [1.2.119] - 2026-10-23
 
 ### Desktop and web
@@ -2693,7 +2708,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.119...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.120...HEAD
+[1.2.120]: https://github.com/arul28/ADE/compare/v1.2.119...v1.2.120
 [1.2.119]: https://github.com/arul28/ADE/compare/v1.2.118...v1.2.119
 [1.2.118]: https://github.com/arul28/ADE/compare/v1.2.117...v1.2.118
 [1.2.117]: https://github.com/arul28/ADE/compare/v1.2.116...v1.2.117
