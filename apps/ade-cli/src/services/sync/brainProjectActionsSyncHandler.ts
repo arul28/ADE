@@ -184,6 +184,9 @@ type BrainProjectActionsSyncHandlerArgs = {
   }) => void;
 };
 
+const SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE =
+  "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.";
+
 export type { BrainProjectCommandRouter };
 
 type BrainPeerState = SyncRosterPeerState & {
@@ -1433,6 +1436,16 @@ export function createBrainProjectActionsSyncHandler(
             }
             return;
           }
+          if (envelope.type === "account_challenge") {
+            // Sealed account adoption opens with this challenge, which only a
+            // project host serves. Without this answer the phone's first frame
+            // drew a bare `invalid_hello`, and the user saw a protocol message
+            // instead of what to do next.
+            send(ws, "account_challenge_error", {
+              message: SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE,
+            }, envelope.requestId);
+            return;
+          }
           if (envelope.type !== "hello") {
             send(ws, "hello_error", {
               code: "invalid_hello",
@@ -1608,10 +1621,7 @@ export function createBrainProjectActionsSyncHandler(
               // handler does not serve. Say so plainly instead of failing as an
               // unreadable payload — the device's next move is a PIN pair. Not
               // `auth_failed`: the saved pairing, if any, is untouched by this.
-              return authFail(
-                "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.",
-                "account_session_changed",
-              );
+              return authFail(SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE, "account_session_changed");
             }
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             if (transportOrigin === "relay-bridge") {

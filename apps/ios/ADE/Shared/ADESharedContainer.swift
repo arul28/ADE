@@ -81,8 +81,9 @@ public enum ADESharedContainer {
         guard let data = defaults.data(forKey: workspaceSnapshotKey) else {
             return nil
         }
-        let decoder = attentionJSONDecoder()
-        return try? decoder.decode(WorkspaceSnapshot.self, from: data)
+        return workspaceSnapshotMemo.value(for: data) {
+            try? attentionJSONDecoder.decode(WorkspaceSnapshot.self, from: data)
+        }
     }
 
     /// Encodes and stores the snapshot. Returns `true` when the write
@@ -104,7 +105,7 @@ public enum ADESharedContainer {
         guard let data = defaults.data(forKey: attentionSnapshotKey) else {
             return nil
         }
-        guard let snapshot = decodeAttentionSnapshot(from: data),
+        guard let snapshot = attentionSnapshotMemo.value(for: data, decode: { decodeAttentionSnapshot(from: data) }),
               snapshot.contractVersion == ADEAttentionContractVersion else {
             return nil
         }
@@ -112,7 +113,7 @@ public enum ADESharedContainer {
     }
 
     public static func decodeAttentionSnapshot(from data: Data) -> AccountAttentionSnapshot? {
-        try? attentionJSONDecoder().decode(AccountAttentionSnapshot.self, from: data)
+        try? attentionJSONDecoder.decode(AccountAttentionSnapshot.self, from: data)
     }
 
     /// Encode-then-store: the JSON is built before either key is touched, so a
@@ -170,7 +171,12 @@ public enum ADESharedContainer {
     /// Relay timestamps include fractional seconds while Swift-written widget
     /// snapshots historically did not. Accept both shapes (and unix seconds)
     /// so one malformed timestamp never blanks an otherwise valid snapshot.
-    private static func attentionJSONDecoder() -> JSONDecoder {
+    ///
+    /// One shared decoder with value-type parse styles: the app re-reads these
+    /// snapshots on the main thread whenever sessions change, and building two
+    /// ICU-backed `ISO8601DateFormatter`s per date there hung the app.
+    /// `JSONDecoder.decode` is safe to call from several threads at once.
+    private static let attentionJSONDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -184,14 +190,10 @@ public enum ADESharedContainer {
                 return Date(timeIntervalSince1970: seconds)
             }
             let raw = try container.decode(String.self)
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = fractional.date(from: raw) {
+            if let date = try? fractionalISO8601.parse(raw) {
                 return date
             }
-            let standard = ISO8601DateFormatter()
-            standard.formatOptions = [.withInternetDateTime]
-            if let date = standard.date(from: raw) {
+            if let date = try? standardISO8601.parse(raw) {
                 return date
             }
             throw DecodingError.dataCorruptedError(
@@ -200,7 +202,16 @@ public enum ADESharedContainer {
             )
         }
         return decoder
-    }
+    }()
+
+    private static let fractionalISO8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let standardISO8601 = Date.ISO8601FormatStyle()
+
+    /// The last decoded snapshot per key, reused while the stored bytes are
+    /// unchanged. Several observers re-read the same blob after every session
+    /// change; comparing bytes is far cheaper than decoding them again.
+    private static let workspaceSnapshotMemo = DecodedBlobMemo<WorkspaceSnapshot>()
+    private static let attentionSnapshotMemo = DecodedBlobMemo<AccountAttentionSnapshot>()
 
     private struct SharedPushPrivacyPreferences: Decodable {
         let hideDetails: Bool
@@ -252,5 +263,28 @@ public enum ADESharedContainer {
             pieces.append("#\(pr.number) \(mark)")
         }
         return pieces.joined(separator: " · ")
+    }
+}
+
+/// Remembers one decoded value and the bytes it came from. Thread-safe; the
+/// decode itself runs outside the lock.
+private final class DecodedBlobMemo<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data?
+    private var value: Value?
+
+    func value(for data: Data, decode: () -> Value?) -> Value? {
+        lock.lock()
+        if let cached = value, self.data == data {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+        let decoded = decode()
+        lock.lock()
+        self.data = decoded == nil ? nil : data
+        value = decoded
+        lock.unlock()
+        return decoded
     }
 }

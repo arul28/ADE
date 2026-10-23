@@ -620,6 +620,43 @@ func syncAccountAdoptionFailureIsFatal(_ error: Error) -> Bool {
     || error is AccountPairingConnectionSupersededError
 }
 
+/// A machine the phone could not reach in time (asleep, switched off, on
+/// another network) is an outcome the connection card already explains, not
+/// a bug: connect failures like these are not sent to Sentry. A machine that
+/// answered and refused still is.
+func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
+  if let exhausted = error as? AccountAdoptionRoutesExhaustedError {
+    // No route reported anything before the attempt's budget ran out.
+    guard let finalFailure = exhausted.finalFailure else { return true }
+    return syncConnectFailureIsUnreachableMachine(finalFailure)
+  }
+  if let urlError = error as? URLError {
+    return syncUnreachableURLErrorCodes.contains(urlError.code)
+  }
+  let nsError = error as NSError
+  switch nsError.domain {
+  case "ADE":
+    // 25: the socket never opened. 35: a connect step timed out.
+    return nsError.code == 25 || nsError.code == 35
+  case NSURLErrorDomain:
+    return syncUnreachableURLErrorCodes.contains(URLError.Code(rawValue: nsError.code))
+  case NSPOSIXErrorDomain:
+    return [ECONNREFUSED, ETIMEDOUT, EHOSTUNREACH, EHOSTDOWN, ENETUNREACH, ENETDOWN]
+      .contains(Int32(nsError.code))
+  default:
+    return false
+  }
+}
+
+private let syncUnreachableURLErrorCodes: Set<URLError.Code> = [
+  .timedOut,
+  .cannotConnectToHost,
+  .cannotFindHost,
+  .dnsLookupFailed,
+  .networkConnectionLost,
+  .notConnectedToInternet,
+]
+
 /// Old hosts omit `rotation`; new hosts advertise it only when they staged an
 /// existing credential and can consume the post-hello commit.
 func syncPairingCommitRequired(_ payload: [String: Any]) -> Bool {
@@ -4782,6 +4819,8 @@ final class SyncService: ObservableObject {
   /// 2s debounce task shared by all writers of the App Group workspace
   /// snapshot. Coalesces bursty state changes into a single widget reload.
   private var snapshotDebouncerTask: Task<Void, Never>?
+  private var tailnetInterfaceScanTask: Task<Void, Never>?
+  private var tailnetInterfaceScanGeneration: UInt64 = 0
 
   /// Tracks `activeSessions` derivation so we do not rebuild on every
   /// unrelated `localStateRevision` bump.
@@ -6566,6 +6605,7 @@ final class SyncService: ObservableObject {
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     snapshotDebouncerTask?.cancel()
+    tailnetInterfaceScanTask?.cancel()
     activeSessionsObservationTask?.cancel()
     discoveryBrowser.stop()
     tailnetDiscovery.stop()
@@ -6900,11 +6940,20 @@ final class SyncService: ObservableObject {
     return candidate.lastSuccessfulAddress != nil && existing.lastSuccessfulAddress == nil
   }
 
+  /// The last decoded saved-profile blob. Discovery, the fleet and every
+  /// connect path re-read the profiles on the main actor, and decoding the
+  /// same bytes each time showed up in hang reports.
+  private var savedProfilesMemo: (data: Data, profiles: [String: HostConnectionProfile])?
+
   private func loadSavedProfilesRaw() -> [String: HostConnectionProfile] {
     guard let data = UserDefaults.standard.data(forKey: profilesKey) else {
       return [:]
     }
+    if let memo = savedProfilesMemo, memo.data == data {
+      return memo.profiles
+    }
     if let decoded = try? decoder.decode([String: HostConnectionProfile].self, from: data) {
+      savedProfilesMemo = (data, decoded)
       return decoded
     }
     if let legacyArray = try? decoder.decode([HostConnectionProfile].self, from: data) {
@@ -8506,7 +8555,9 @@ final class SyncService: ObservableObject {
         machineWasAsleep: blamesSleep
       )
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
-      CrashReporting.capture(error, context: ["area": "pairing", "step": "connect"])
+      if !syncConnectFailureIsUnreachableMachine(error) {
+        CrashReporting.capture(error, context: ["area": "pairing", "step": "connect"])
+      }
       ProductAnalytics.shared.captureError(.pairing)
       lastError = message
       connectionState = .error
@@ -9157,10 +9208,22 @@ final class SyncService: ObservableObject {
   /// Rescan interfaces for a tailnet self-address. Called on network-path
   /// changes (NWPathMonitor fires when a VPN tunnel comes up or down), on
   /// foreground transitions, and before surfacing an unreachable state.
+  ///
+  /// The scan runs off the main actor: `getifaddrs` is a sysctl that can
+  /// block for seconds while the kernel reshuffles interfaces, which is
+  /// exactly when a path change calls this. The newest scan wins.
   private func refreshPhoneTailnetInterfaceState() {
-    let hasTailnet = syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
-    if phoneHasTailnetInterface != hasTailnet {
-      phoneHasTailnetInterface = hasTailnet
+    tailnetInterfaceScanGeneration &+= 1
+    let generation = tailnetInterfaceScanGeneration
+    tailnetInterfaceScanTask?.cancel()
+    tailnetInterfaceScanTask = Task { @MainActor [weak self] in
+      let hasTailnet = await Task.detached(priority: .userInitiated) {
+        syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
+      }.value
+      guard let self, !Task.isCancelled, generation == self.tailnetInterfaceScanGeneration else { return }
+      if self.phoneHasTailnetInterface != hasTailnet {
+        self.phoneHasTailnetInterface = hasTailnet
+      }
     }
   }
 
@@ -9756,7 +9819,9 @@ final class SyncService: ObservableObject {
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
       ProductAnalytics.shared.capturePairingOutcome(lastPairingFailure?.analyticsOutcome ?? .failed)
-      CrashReporting.capture(error, context: ["area": "pairing", "step": "relay_connect"])
+      if !syncConnectFailureIsUnreachableMachine(error) {
+        CrashReporting.capture(error, context: ["area": "pairing", "step": "relay_connect"])
+      }
       ProductAnalytics.shared.captureError(.pairing)
     }
   }
@@ -10671,13 +10736,15 @@ final class SyncService: ObservableObject {
     let prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
     try requireCurrentHydrationProjectScope(scope)
     // List only: "none" tells hydration it carries no snapshot information,
-    // so no cached snapshot is cleared here.
-    try database.replacePullRequestHydration(
-      PullRequestRefreshPayload(refreshedCount: prs.count, prs: prs, snapshots: [], snapshotScope: "none"),
-      pruneStale: true,
-      expectedProjectId: scope.projectId
-    )
-    let liveLaneIds = Set(database.fetchLanes(includeArchived: false).map(\.id))
+    // so no cached snapshot is cleared here. Every write and read here runs
+    // off the main actor: a stale-row prune behind a changeset apply hung the
+    // app on the main thread.
+    let database = self.database
+    let listPayload = PullRequestRefreshPayload(refreshedCount: prs.count, prs: prs, snapshots: [], snapshotScope: "none")
+    let liveLaneIds = try await Task.detached(priority: .userInitiated) {
+      try database.replacePullRequestHydration(listPayload, pruneStale: true, expectedProjectId: scope.projectId)
+      return Set(database.fetchLanes(includeArchived: false).map(\.id))
+    }.value
     let activeIds = syncActivePullRequestIds(prs, liveLaneIds: liveLaneIds)
     for batch in syncPullRequestRefreshBatches(activeIds) {
       let raw = try await sendCommand(
@@ -10696,7 +10763,10 @@ final class SyncService: ObservableObject {
       payload.snapshots = payload.snapshots.filter { batchIds.contains($0.prId) }
       payload.snapshotScope = "requested"
       payload.omittedSnapshotPrIds = nil
-      try database.replacePullRequestHydration(payload, pruneStale: false, expectedProjectId: scope.projectId)
+      let batchPayload = payload
+      try await Task.detached(priority: .userInitiated) {
+        try database.replacePullRequestHydration(batchPayload, pruneStale: false, expectedProjectId: scope.projectId)
+      }.value
     }
   }
 
@@ -21407,7 +21477,7 @@ final class SyncService: ObservableObject {
     relayTask = Task { @MainActor in
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 400_000_000)
-        sendLocalChanges()
+        await sendLocalChanges()
       }
     }
   }
@@ -21526,7 +21596,7 @@ final class SyncService: ObservableObject {
     sendEnvelope(type: "changeset_batch", requestId: pending.payload.batchId, payload: payloadObject)
   }
 
-  private func sendLocalChanges() {
+  private func sendLocalChanges() async {
     guard canSendLiveRequests() else { return }
     let now = ProcessInfo.processInfo.systemUptime
     guard now >= nextOutboundChangesetAttemptAt else { return }
@@ -21555,7 +21625,26 @@ final class SyncService: ObservableObject {
       }
       return
     }
-    guard let pending = makeNextOutboundChangeset(sentAt: now) else { return }
+    // The export runs off the main actor: a background changeset apply holds
+    // the database queue for its whole batch, and waiting for it here froze
+    // the app for seconds.
+    let since = outboundLocalDbVersion
+    let projectId = activeProjectId
+    let generation = connectionGeneration
+    let currentDbVersion = database.currentDbVersion()
+    guard currentDbVersion > since else { return }
+    let rowLimit = outboundChangesetRowLimit
+    let allChanges = await readDatabaseOffMain { $0.exportLocalChangesSince(version: since, rowLimit: rowLimit) }
+    // Anything may have moved while the export ran: a reconnect, a project
+    // switch, or another send.
+    guard canSendLiveRequests(), connectionGeneration == generation, activeProjectId == projectId,
+          pendingOutboundChangeset == nil, outboundLocalDbVersion == since,
+          let pending = makeOutboundChangeset(
+            from: allChanges,
+            since: since,
+            currentDbVersion: currentDbVersion,
+            sentAt: ProcessInfo.processInfo.systemUptime
+          ) else { return }
     sendOutboundChangeset(pending)
     if supportsChangesetAck {
       pendingOutboundChangeset = pending
@@ -21573,7 +21662,20 @@ final class SyncService: ObservableObject {
       version: outboundLocalDbVersion,
       rowLimit: outboundChangesetRowLimit
     )
-    let previousDbVersion = outboundLocalDbVersion
+    return makeOutboundChangeset(
+      from: allChanges,
+      since: outboundLocalDbVersion,
+      currentDbVersion: currentDbVersion,
+      sentAt: sentAt
+    )
+  }
+
+  private func makeOutboundChangeset(
+    from allChanges: [CrsqlChangeRow],
+    since previousDbVersion: Int,
+    currentDbVersion: Int,
+    sentAt: TimeInterval
+  ) -> PendingOutboundChangeset? {
     guard !allChanges.isEmpty else {
       advanceOutboundCursorForActiveProject(to: currentDbVersion, persistImmediately: false)
       return nil
@@ -23994,12 +24096,17 @@ extension SyncService {
     snapshotDebouncerTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       guard let self, !Task.isCancelled else { return }
-      self.writeWorkspaceSnapshotNow()
+      await self.writeWorkspaceSnapshotNow()
     }
   }
 
-  private func writeWorkspaceSnapshotNow() {
-    let prs: [PrSnapshot] = database.fetchPullRequestListItems().prefix(12).map { item in
+  /// The PR read and the JSON encode run off the main actor: the read waits
+  /// for any changeset apply that holds the database queue, and both hung the
+  /// app when they ran on the main thread.
+  private func writeWorkspaceSnapshotNow() async {
+    let items = await readDatabaseOffMain { Array($0.fetchPullRequestListItems().prefix(12)) }
+    guard !Task.isCancelled else { return }
+    let prs: [PrSnapshot] = items.map { item in
       PrSnapshot(
         id: item.id,
         number: item.githubPrNumber,
@@ -24042,7 +24149,10 @@ extension SyncService {
       machineName: identity?.name
     )
 
-    if ADESharedContainer.writeWorkspaceSnapshot(snapshot) {
+    let written = await Task.detached(priority: .utility) {
+      ADESharedContainer.writeWorkspaceSnapshot(snapshot)
+    }.value
+    if written, !Task.isCancelled {
       workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }

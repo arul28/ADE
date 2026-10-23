@@ -3,7 +3,11 @@
 #
 #   bash scripts/release-tools/ios-testflight.sh <marketing-version> <build-number> <release-sha>
 #
-# Run from the repo root with <release-sha> checked out, on macOS. Safe to rerun:
+# Run from the repo root with <release-sha> checked out, on macOS. Uploads the
+# archive's dSYMs to Sentry (org ade-app, project ade-ios) so iOS crash and hang
+# reports name ADE's own frames. The upload token is SENTRY_AUTH_TOKEN from the
+# environment, else the ADE project secret SENTRY_AUTH_TOKEN, else whatever
+# ~/.sentryclirc holds; it must be a token of the ade-app org. Safe to rerun:
 # an IPA already exported for this build is reused, and a build already in App
 # Store Connect is not uploaded again. App Store Connect often answers with 5xx
 # errors and timeouts; every ASC call is retried, so do not wrap this in
@@ -82,6 +86,29 @@ if [ -z "$existing" ]; then
   log "uploading"
   retry 8 asc builds upload --app "$APP" --ipa "$OUT/ADE.ipa" | tail -2
 fi
+
+# Every rerun uploads again: Sentry keeps one copy per debug id, and a rerun is
+# how a failed upload gets retried. A failure warns and never stops the release,
+# but it is loud: without dSYMs every ADE frame in Sentry is a bare address.
+upload_dsyms() {
+  local dsyms="$OUT/ADE.xcarchive/dSYMs"
+  if [ ! -d "$dsyms" ]; then
+    log "WARNING: no dSYMs at $dsyms (archive removed?); Sentry cannot symbolicate build $BN"
+    return 0
+  fi
+  if [ -z "${SENTRY_AUTH_TOKEN:-}" ] && command -v ade > /dev/null 2>&1; then
+    SENTRY_AUTH_TOKEN="$(ade secrets get SENTRY_AUTH_TOKEN --text 2> /dev/null || true)"
+    [ -n "$SENTRY_AUTH_TOKEN" ] && export SENTRY_AUTH_TOKEN || unset SENTRY_AUTH_TOKEN
+  fi
+  log "uploading dSYMs to Sentry (logs: $OUT/sentry-dsyms.log)"
+  if retry 3 npx --yes @sentry/cli@3.8.0 debug-files upload --org ade-app --project ade-ios \
+      --type dsym --include-sources --wait "$dsyms" > "$OUT/sentry-dsyms.log"; then
+    log "dSYMs uploaded to Sentry"
+  else
+    log "WARNING: Sentry dSYM upload FAILED; rerun this script to retry. $(tail -1 "$OUT/sentry-dsyms.log")"
+  fi
+}
+upload_dsyms
 
 log "waiting for processing"
 for i in $(seq 1 60); do

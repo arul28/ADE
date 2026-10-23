@@ -1,7 +1,27 @@
 import Foundation
+import os
 import Security
 
 final class KeychainService {
+  /// Read-through cache of item values (nil = known absent), shared by every
+  /// instance in the process and dropped on any write. Each keychain read is a
+  /// round trip to securityd; the machine fleet reads every paired machine's
+  /// token on the main thread, and those waits got the app watchdog-killed.
+  /// Failed reads (a locked keychain before first unlock) are never cached,
+  /// and a read stores its value only if no write landed while it ran.
+  private struct Cache {
+    var values: [String: String?] = [:]
+    var generation = 0
+  }
+  private static let cache = OSAllocatedUnfairLock(initialState: Cache())
+
+  private static func invalidate(_ cacheKey: String?) {
+    cache.withLock { state in
+      state.generation &+= 1
+      if let cacheKey { state.values[cacheKey] = nil } else { state.values.removeAll() }
+    }
+  }
+
   private let service = "com.ade.ios.sync"
   private let tokenAccount = "connection-token"
   private let deviceIdAccount = "device-id"
@@ -22,6 +42,9 @@ final class KeychainService {
   }
 
   private func saveString(_ value: String, account: String) {
+    let cacheKey = self.cacheKey(account)
+    // After the write, so a read racing it cannot cache the old value.
+    defer { Self.invalidate(cacheKey) }
     let data = Data(value.utf8)
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -38,7 +61,16 @@ final class KeychainService {
     }
   }
 
+  private func cacheKey(_ account: String) -> String {
+    "\(service)\u{0}\(account)"
+  }
+
   private func loadString(account: String) -> String? {
+    let cacheKey = self.cacheKey(account)
+    let (cached, generation) = Self.cache.withLock { ($0.values[cacheKey], $0.generation) }
+    if let cached {
+      return cached
+    }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -48,11 +80,23 @@ final class KeychainService {
     ]
     var item: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &item)
-    guard status == errSecSuccess, let data = item as? Data else { return nil }
-    return String(data: data, encoding: .utf8)
+    let value: String?
+    if status == errSecSuccess, let data = item as? Data {
+      value = String(data: data, encoding: .utf8)
+    } else if status == errSecItemNotFound {
+      value = nil
+    } else {
+      return nil
+    }
+    Self.cache.withLock { state in
+      if state.generation == generation { state.values[cacheKey] = .some(value) }
+    }
+    return value
   }
 
   private func clearString(account: String) {
+    let cacheKey = self.cacheKey(account)
+    defer { Self.invalidate(cacheKey) }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -131,6 +175,7 @@ final class KeychainService {
   /// a keyed or legacy token alias.
   @discardableResult
   func clearAllConnectionTokens() -> Bool {
+    defer { Self.invalidate(nil) }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
