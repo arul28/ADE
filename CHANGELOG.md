@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.121] - 2026-10-23
+
+### Desktop and web
+
+- Agents message you on every device with `ade notify`; desktop notifications; mutes apply everywhere (#1880).
+- `ade usage limits` and a read-only MCP `usage_limits` tool; accounts show as email and id (#1881).
+- Chats take less space; Storage & cleanup lists chats from deleted lanes (#1882).
+- Plain background on new installs; Halftone and scanline fixes (#1883).
+- New link preview image and video, reorganized README (#1885).
+
+### iOS
+
+- One modern layout on iPhone Duo, iPad and iPhone: hinge panes, edge-bar tabs, PR view from desktop, rebuilt Files (#1887), in a new TestFlight build.
+
 ## [1.2.120] - 2026-10-23
 
 ### Desktop and web
@@ -2708,7 +2722,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.120...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.121...HEAD
+[1.2.121]: https://github.com/arul28/ADE/compare/v1.2.120...v1.2.121
 [1.2.120]: https://github.com/arul28/ADE/compare/v1.2.119...v1.2.120
 [1.2.119]: https://github.com/arul28/ADE/compare/v1.2.118...v1.2.119
 [1.2.118]: https://github.com/arul28/ADE/compare/v1.2.117...v1.2.118
