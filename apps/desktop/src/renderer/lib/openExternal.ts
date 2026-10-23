@@ -7,6 +7,7 @@ import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget"
 import { holdBrowserLinkOpen } from "./pendingBrowserLinkOpens";
 import { issueRefFromUrl } from "../../shared/issueRefs";
 import { openIssueRef } from "./issueNavigation";
+import { useAppStore } from "../state/appStore";
 
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
@@ -252,6 +253,8 @@ export function navigateUrlInAdeBrowser(
  */
 let linkOpenMode: BrowserLinkOpenMode = "in-app";
 let linkOpenModeLoad: Promise<void> | null = null;
+/** The project the loaded preference came from. */
+let linkOpenModeProjectKey: string | null = null;
 
 export function getLinkOpenMode(): BrowserLinkOpenMode {
   return linkOpenMode;
@@ -261,11 +264,23 @@ export function setLinkOpenMode(mode: BrowserLinkOpenMode): void {
   linkOpenMode = mode;
 }
 
-/** Loads the stored preference once. Safe to call from anywhere, repeatedly. */
+/**
+ * Loads the stored preference once per open project. Safe to call from
+ * anywhere, repeatedly. The preference is saved in the project, so with no
+ * project open there is nothing to read and the default holds.
+ */
 export function refreshLinkOpenMode(force = false): Promise<void> {
-  if (linkOpenModeLoad && !force) return linkOpenModeLoad;
+  const projectKey = useAppStore.getState().projectBinding?.key ?? null;
+  if (!projectKey) {
+    linkOpenModeLoad = null;
+    linkOpenModeProjectKey = null;
+    linkOpenMode = "in-app";
+    return Promise.resolve();
+  }
+  if (linkOpenModeLoad && linkOpenModeProjectKey === projectKey && !force) return linkOpenModeLoad;
   const config = typeof window !== "undefined" ? window.ade?.projectConfig : undefined;
   if (!config) return Promise.resolve();
+  linkOpenModeProjectKey = projectKey;
   linkOpenModeLoad = config
     .get()
     .then((snapshot) => {
@@ -366,8 +381,14 @@ export async function tryOpenExternalUrl(url: string | undefined | null): Promis
   return false;
 }
 
-// Warm the preference as soon as the renderer loads, so the first link click
-// already has the right answer rather than the default.
+// Warm the preference as soon as the renderer loads, and again whenever the
+// open project changes, so the first link click already has the right answer.
+// After this module's evaluation, so the store is ready even in an import cycle.
 if (typeof window !== "undefined") {
-  void refreshLinkOpenMode();
+  queueMicrotask(() => {
+    void refreshLinkOpenMode();
+    useAppStore.subscribe((state, previous) => {
+      if (state.projectBinding?.key !== previous.projectBinding?.key) void refreshLinkOpenMode();
+    });
+  });
 }

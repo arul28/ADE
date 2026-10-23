@@ -2282,9 +2282,12 @@ export function ChatBuiltInBrowserPanel({
   // Read once on mount and again whenever the device menu opens: a booted
   // simulator is a fact about right now, and polling for it would cost every
   // panel that never opens the menu.
+  const hasSimulatorRuntime = browserRuntimePin != null || activeProjectBinding != null;
   useEffect(() => {
     const simulator = window.ade?.iosSimulator;
-    if (!simulator?.getStatus) return undefined;
+    // The simulator service lives in a project runtime. With no project open
+    // and no machine pinned there is none to ask, so no device row.
+    if (!simulator?.getStatus || !hasSimulatorRuntime) return undefined;
     let cancelled = false;
     void simulator.getStatus(runtimePinRef.current)
       .then((simulatorStatus) => {
@@ -2297,7 +2300,7 @@ export function ChatBuiltInBrowserPanel({
     return () => {
       cancelled = true;
     };
-  }, [deviceMenuOpen]);
+  }, [deviceMenuOpen, hasSimulatorRuntime]);
 
   /*
     The lane's servers as the shared store sees them, from the lane's machine.

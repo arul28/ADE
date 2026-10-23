@@ -8866,15 +8866,18 @@ export function AgentChatPane({
       // Fire-and-forget: this snapshot only feeds `sendOnEnter`, so awaiting it
       // put a config round trip in front of the session list AND the model
       // catalog on every single boot.
-      void getProjectConfigCached({ projectRoot })
-        .then((snapshot) => {
-          if (cancelled) return;
-          // Don't auto-restore model — user must pick one explicitly each session
-          setSendOnEnter(snapshot.effective.ai?.chat?.sendOnEnter ?? true);
-        })
-        .catch(() => {
-          // fall back to defaults.
-        });
+      // With no project open there is no project config: the default holds.
+      if (projectRoot) {
+        void getProjectConfigCached({ projectRoot })
+          .then((snapshot) => {
+            if (cancelled) return;
+            // Don't auto-restore model — user must pick one explicitly each session
+            setSendOnEnter(snapshot.effective.ai?.chat?.sendOnEnter ?? true);
+          })
+          .catch(() => {
+            // fall back to defaults.
+          });
+      }
 
       const sessionsRefresh = refreshSessions().catch(() => undefined);
       const modelsRefresh = refreshAvailableModels().catch(() => []);
@@ -15926,7 +15929,9 @@ export function AgentChatPane({
     shellIdsRef.current = new Set();
     setAttachedShells([]);
     setShellsLoadError(false);
-    if (!sessionId) return undefined;
+    // A personal chat's shell is the Chats page's own panel; the project's
+    // session list does not hold it (and with no project open, there is none).
+    if (!sessionId || isPersonalPane) return undefined;
     // A host that cannot list sessions has no shells to show. That is a
     // capability it does not have, not a failed load — the same degradation
     // every optional runtime surface here uses — so it neither errors nor
@@ -15991,7 +15996,7 @@ export function AgentChatPane({
     };
     // `shellsReloadNonce` is the Retry action; `chatRuntimePinKey` re-reads and
     // re-subscribes when the chat's machine resolves or changes.
-  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce]);
+  }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce, isPersonalPane]);
 
   const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
   const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";

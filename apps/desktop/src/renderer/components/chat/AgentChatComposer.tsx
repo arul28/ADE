@@ -8332,6 +8332,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   // A parallel slot carries a model, not a preset, so a Custom
                   // pick here would be silently dropped at launch.
@@ -8384,6 +8385,7 @@ function AgentChatComposerImpl({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
+                  catalogScopeKey={modelCatalogScopeKey}
                   allowCliOnlyModels={allowCliOnlyModels}
                   listsHarnessPresets={listsHarnessPresets}
                   {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
