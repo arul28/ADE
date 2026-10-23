@@ -309,17 +309,13 @@ export type RemoteRuntimeConnectionStatus = {
   lastAttemptedAt: number | null;
   connectedAt: number | null;
   /**
-   * Why ADE will not reconnect this machine on its own. Absent while calls
-   * may still reconnect it.
-   * - `disconnected`: the person disconnected it, or another ADE on this
-   *   computer took the connection. Only Connect brings it back.
-   * - `needs_attention`: the last connect failed in a way that retrying cannot
-   *   fix (SSH sign-in refused, host key not trusted). Try again or Edit.
+   * `disconnected` when the person disconnected this machine, or another ADE
+   * on this computer took the connection. Calls to it are refused until
+   * Connect. A machine that waits for a fix (SSH sign-in refused, host key not
+   * trusted) says so in `lastErrorInfo` instead.
    */
-  reconnectBlocked?: RemoteRuntimeReconnectBlock | null;
+  reconnectBlocked?: "disconnected" | null;
 };
-
-export type RemoteRuntimeReconnectBlock = "disconnected" | "needs_attention";
 
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =

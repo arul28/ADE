@@ -31,6 +31,7 @@ import {
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
   PairedRuntimeSupersededError,
+  RemoteConnectBackoffError,
 } from "./pairedRuntimeErrors";
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
@@ -56,6 +57,17 @@ function target(
     runtimeBinaryVersion: null,
     lastConnectedAt,
     autoConnect: lastConnectedAt != null,
+  };
+}
+
+/** The pool's connect-state queries, for pool mocks that do not model them. */
+function poolConnectStateStubs() {
+  return {
+    hasEntry: () => false,
+    needsUserAction: () => false,
+    isLastConnectFailure: () => false,
+    clearConnectFailure: () => {},
+    assertConnectNotBackingOff: () => {},
   };
 }
 
@@ -97,6 +109,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       pairWithMachine: vi.fn(),
@@ -167,6 +180,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       pairWithMachine: vi.fn(async () => savedCredentials),
@@ -241,6 +255,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       get: vi.fn(() => savedCredentials),
@@ -336,6 +351,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(
       { list: vi.fn(() => []) } as unknown as RemoteTargetRegistry,
@@ -388,6 +404,7 @@ describe("RemoteConnectionService", () => {
         evicted = listener;
         return () => {};
       }),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
     await service.connect(remote.id, { explicit: true });
@@ -426,6 +443,7 @@ describe("RemoteConnectionService", () => {
         return () => {};
       }),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
     await service.connect(remote.id, { explicit: true });
@@ -468,6 +486,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -515,6 +534,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
 
@@ -551,6 +571,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -586,6 +607,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
     await service.connect(remote.id, { explicit: true });
@@ -621,6 +643,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -661,6 +684,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const credentials = { hostIdentity: { deviceId: "host-1" } };
     const pairedStore = {
@@ -708,6 +732,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       getForReference: vi.fn(() => credentials),
@@ -740,6 +765,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -785,6 +811,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       pruneAccountOwned: vi.fn(() => [{
@@ -832,6 +859,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = { pruneAccountOwned: vi.fn() };
     const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
@@ -864,6 +892,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
 
@@ -893,6 +922,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     let answerOwnerCheck!: (owner: string) => void;
     const service = new RemoteConnectionService(registry, pool, {
@@ -941,6 +971,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const pairedStore = { pruneAccountOwned: vi.fn(() => []) };
     const service = new RemoteConnectionService(
@@ -984,6 +1015,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(
       registry,
@@ -1016,6 +1048,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1042,6 +1075,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
 
@@ -1070,6 +1104,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
 
@@ -1098,6 +1133,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1138,6 +1174,7 @@ describe("RemoteConnectionService", () => {
       callActionForTarget: vi.fn(async () => actionResult),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1188,6 +1225,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1234,6 +1272,7 @@ describe("RemoteConnectionService", () => {
       callActionForTarget: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1281,6 +1320,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1317,6 +1357,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1364,6 +1405,7 @@ describe("RemoteConnectionService", () => {
         callActionForTarget: vi.fn(),
         onEntryConnected: vi.fn(() => () => {}),
         onEntryEvicted: vi.fn(() => () => {}),
+        ...poolConnectStateStubs(),
       } as unknown as RemoteConnectionPool;
 
       const service = new RemoteConnectionService(registry, pool);
@@ -1414,13 +1456,12 @@ describe("RemoteConnectionService", () => {
     } as unknown as RemoteTargetRegistry;
     const pool = {
       connect: vi.fn(async () => {
-        throw new Error(
-          "Remote ADE service connection failed recently (ssh reset). Retrying in 3s.",
-        );
+        throw new RemoteConnectBackoffError("ssh reset", Date.now() + 3_000);
       }),
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1454,6 +1495,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1494,6 +1536,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1546,6 +1589,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1586,6 +1630,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool, {
@@ -1633,6 +1678,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool, {
@@ -1671,6 +1717,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1707,6 +1754,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1746,6 +1794,7 @@ describe("RemoteConnectionService", () => {
       }),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
     await service.connect(previouslyConnected.id, { explicit: true });
@@ -1798,6 +1847,7 @@ describe("RemoteConnectionService", () => {
         evicted = listener;
         return () => {};
       }),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
@@ -1915,6 +1965,7 @@ describe("uploadChatAttachment", () => {
           request: { domain: string; action: string; args?: Record<string, unknown> },
         ) => dispatchRunAdeAction(runtime, request),
       ),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const sourcePath = path.join(sourceDir, "design notes.pdf");
@@ -1989,6 +2040,7 @@ describe("uploadChatAttachment", () => {
         maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
       })),
       callActionForTarget,
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool);
     return { projectRoot, service, remote, callActionForTarget };
   }
@@ -2054,6 +2106,7 @@ describe("uploadChatAttachment", () => {
           request: { domain: string; action: string; args?: Record<string, unknown> },
         ) => dispatchRunAdeAction({ projectRoot, agentChatService: {} }, request),
       ),
+      ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(targetRegistry, pool);

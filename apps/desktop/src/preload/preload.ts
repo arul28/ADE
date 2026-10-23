@@ -38,6 +38,7 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { createMacDesktopBridge } from "./macDesktopPreload";
+import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
@@ -234,10 +235,7 @@ import type {
   HarnessRouteSource,
   HarnessRouteTestResult,
 } from "../shared/harnessRoutes";
-import {
-  isRemoteRuntimeEventCategory,
-  REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
-} from "../shared/types/remoteRuntime";
+import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -1911,81 +1909,26 @@ async function callRemoteProjectActionIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding(guardBinding);
-  const response = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, binding.targetId, {
+  const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     request: { domain, action, ...request },
-  })) as RemoteRuntimeActionResult;
+  });
   checkAfterInvoke();
   return { handled: true, result: response.result as T };
 }
 
-/**
- * Machines this window must not call: the person disconnected them, or another
- * ADE on this computer took the connection. Main refuses such a call anyway.
- * Asking it anyway cost one IPC round trip and one Sentry report for every poll
- * of every pane, for as long as the tab stayed open. Fed by the connection
- * snapshot main pushes to every window.
- */
-const disconnectedRemoteTargetIds = new Set<string>();
-let disconnectedRemoteTargetsUpdatedAt = 0;
-let disconnectedRemoteTargetsRead: Promise<void> | null = null;
-
-function applyRemoteCallBlocks(snapshot: RemoteRuntimeConnectionSnapshot | null | undefined): void {
-  if (!snapshot || !Array.isArray(snapshot.connections)) return;
-  // A push and the first read can cross; the newer snapshot wins.
-  if (snapshot.updatedAt < disconnectedRemoteTargetsUpdatedAt) return;
-  disconnectedRemoteTargetsUpdatedAt = snapshot.updatedAt;
-  const wasBlocked = new Set(disconnectedRemoteTargetIds);
-  disconnectedRemoteTargetIds.clear();
-  for (const connection of snapshot.connections) {
-    if (connection?.reconnectBlocked === "disconnected" && connection.target?.id) {
-      disconnectedRemoteTargetIds.add(connection.target.id);
+const remoteTargetGate = createRemoteTargetGate({
+  ipcRenderer,
+  onReconnected: (targetId) => {
+    // The event pump parked while the bound machine was disconnected picks up
+    // where it stopped.
+    const binding = currentProjectBinding;
+    if (binding?.kind === "remote" && binding.targetId === targetId) {
+      resumeRemoteRuntimeEventPollAfterReconnect();
     }
-  }
-  const binding = currentProjectBinding;
-  if (
-    binding?.kind === "remote"
-    && wasBlocked.has(binding.targetId)
-    && !disconnectedRemoteTargetIds.has(binding.targetId)
-  ) {
-    // Connected again: the event pump parked while the machine was
-    // disconnected picks up where it stopped.
-    resumeRemoteRuntimeEventPollAfterReconnect();
-  }
-}
-
-ipcRenderer.on(IPC.remoteRuntimeConnectionSnapshotChanged, (_event, payload) => {
-  applyRemoteCallBlocks(payload as RemoteRuntimeConnectionSnapshot);
+  },
 });
-
-async function isRemoteTargetDisconnected(targetId: string): Promise<boolean> {
-  // One read per window covers a tab restored at launch for a machine that was
-  // already disconnected, before any push arrives.
-  disconnectedRemoteTargetsRead ??= (
-    ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot) as Promise<RemoteRuntimeConnectionSnapshot>
-  ).then(applyRemoteCallBlocks, () => {});
-  await disconnectedRemoteTargetsRead;
-  return disconnectedRemoteTargetIds.has(targetId);
-}
-
-/**
- * Invoke a remote-runtime channel for `targetId` unless the person disconnected
- * that machine. The refusal has the shape main's own refusal had, so callers
- * read it as before.
- */
-async function invokeRemoteTargetChannel(
-  channel: string,
-  targetId: string,
-  payload: Record<string, unknown>,
-): Promise<unknown> {
-  if (await isRemoteTargetDisconnected(targetId)) {
-    throw new Error(
-      `Error invoking remote method '${channel}': Error: ${REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE}`,
-    );
-  }
-  return await ipcRenderer.invoke(channel, payload);
-}
 
 function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
@@ -2337,11 +2280,11 @@ async function callPinnedRuntimeAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<T> {
   if (pin.kind === "remote") {
-    const response = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, pin.targetId, {
+    const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
       request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
+    });
     return response.result as T;
   }
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -2863,12 +2806,12 @@ async function callRemoteProjectSyncIfBound<T>(
   checkBeforeBind();
   if (!binding) return { handled: false };
   const checkAfterInvoke = captureProjectBinding();
-  const result = (await invokeRemoteTargetChannel(IPC.remoteRuntimeCallSync, binding.targetId, {
+  const result = await remoteTargetGate.invoke<T>(IPC.remoteRuntimeCallSync, binding.targetId, {
     id: binding.targetId,
     projectId: binding.projectId,
     method,
     params,
-  })) as T;
+  });
   checkAfterInvoke();
   return { handled: true, result };
 }
@@ -3535,7 +3478,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 
     pollingBindingKey = binding.key;
     pollingGeneration = projectBindingGeneration;
-    if (binding.kind === "remote" && await isRemoteTargetDisconnected(binding.targetId)) {
+    if (binding.kind === "remote" && await remoteTargetGate.isDisconnected(binding.targetId)) {
       // Parked, not failed: polling every 2s cannot reach a machine the person
       // disconnected. A snapshot that shows it connected again resumes it.
       remoteRuntimeEventPollParked = true;
@@ -5456,21 +5399,21 @@ const adeBridge = {
       projectId: string,
       request: RemoteRuntimeActionRequest,
     ): Promise<RemoteRuntimeActionResult> =>
-      invokeRemoteTargetChannel(IPC.remoteRuntimeCallAction, id, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeCallAction, id, {
         id,
         projectId,
         request,
-      }) as Promise<RemoteRuntimeActionResult>,
+      }),
     streamEvents: async (
       id: string,
       projectId: string,
       request: RemoteRuntimeStreamEventsRequest = {},
     ): Promise<RemoteRuntimeStreamEventsResult> =>
-      invokeRemoteTargetChannel(IPC.remoteRuntimeStreamEvents, id, {
+      remoteTargetGate.invoke(IPC.remoteRuntimeStreamEvents, id, {
         id,
         projectId,
         request,
-      }) as Promise<RemoteRuntimeStreamEventsResult>,
+      }),
     disconnect: async (
       id: string,
       options: { manual?: boolean } = {},
@@ -6591,10 +6534,10 @@ const adeBridge = {
     listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
       const binding = await getRemoteProjectBinding({ fresh: true });
       if (binding) {
-        return invokeRemoteTargetChannel(IPC.remoteRuntimeListActionRegistry, binding.targetId, {
+        return remoteTargetGate.invoke(IPC.remoteRuntimeListActionRegistry, binding.targetId, {
           id: binding.targetId,
           projectId: binding.projectId,
-        }) as Promise<AdeActionRegistryEntry[]>;
+        });
       }
       const localBinding = await getLocalProjectBinding({ fresh: true });
       if (localBinding) {

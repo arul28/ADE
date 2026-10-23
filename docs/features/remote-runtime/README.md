@@ -118,13 +118,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   connection failed recently (…)` instead of each dialing. Calls that share one
   failed dial count it once. An SSH target whose last connect failed with
   `ssh_auth` or `host_key` is not retried at all until Try again (explicit
-  Connect), an edit to the target, or trusting the host key; the status then
-  carries `reconnectBlocked: "needs_attention"` and its message says ADE
-  stopped retrying. Paired machines are never held this way, because their own
+  Connect), an edit to the target, or trusting the host key; the status message
+  then says ADE stopped retrying. Paired machines are never held this way, because their own
   route can come back on its own. A manual disconnect sets
   `reconnectBlocked: "disconnected"`, and the preload then answers that
   machine's calls itself, with main's refusal text, instead of sending them
-  (`invokeRemoteTargetChannel` in `preload.ts`); the window's event pump
+  (`preload/remoteTargetGate.ts`); the window's event pump
   parks until a snapshot shows the machine connected again.
 - `apps/desktop/src/renderer/components/settings/SettingsMachineScope.tsx`
   and `settings/health/useHealthData.ts` — machine-scoped Settings pages pass

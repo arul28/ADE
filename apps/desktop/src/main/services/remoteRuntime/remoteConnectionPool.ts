@@ -46,6 +46,8 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
+  RemoteActionOutcomeUnknownError,
+  RemoteConnectBackoffError,
 } from "./pairedRuntimeErrors";
 import {
   DesktopPairedMachineStore,
@@ -123,13 +125,12 @@ type RuntimeEventNotification = {
   eventEpoch: string | null;
 };
 
-type ConnectFailureBackoff = {
-  error: Error;
-  failureCount: number;
-  retryAfterMs: number;
+type ConnectFailureBackoff = { error: Error; failureCount: number } & (
+  | { kind: "retry"; retryAfterMs: number }
   /** Retrying cannot fix it; only Try again or an edit to the machine can. */
-  needsUserAction: boolean;
-};
+  | { kind: "needs_user_action" }
+);
+
 
 type RemoteConnectionPoolConnectOptions = {
   bypassFailureBackoff?: boolean;
@@ -165,23 +166,6 @@ function isUserActionConnectFailure(target: RemoteRuntimeTarget, error: unknown)
     && (error.info.kind === "ssh_auth" || error.info.kind === "host_key");
 }
 
-/**
- * The connection dropped while a call that may not run twice was in flight, so
- * ADE cannot say whether the machine ran it. `reconnected` says whether the
- * machine answered again right after: then it is reachable, and only this one
- * call's outcome is unknown.
- */
-export class RemoteActionOutcomeUnknownError extends Error {
-  constructor(readonly reconnected: boolean) {
-    super(
-      "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-        (reconnected
-          ? "ADE reconnected to the machine; retry the action if it is still needed."
-          : "ADE could not reconnect to the machine; check the destination before retrying the action."),
-    );
-    this.name = "RemoteActionOutcomeUnknownError";
-  }
-}
 
 function isRemoteRuntimeStreamFailure(error: unknown): boolean {
   return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
@@ -198,6 +182,9 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.prepareCrossMachineHandoff", 120_000],
   // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
   ["pr.land", 120_000],
+  // Replay-safe, but two forced GitHub snapshots and up to 25 PR refreshes do
+  // not fit the 25s replay-safe budget.
+  ["pr.reconcileOnFocus", 60_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
   // The remote daemon answers Refresh by running the same isolated ledger
@@ -1433,8 +1420,8 @@ export class RemoteConnectionPool {
    * True when the last connect failed in a way only the person can fix, so
    * nothing but `bypassFailureBackoff` (Try again) or an edit opens it again.
    */
-  isWaitingForUserAction(targetId: string): boolean {
-    return this.connectFailureBackoffByTargetId.get(targetId)?.needsUserAction === true;
+  needsUserAction(targetId: string): boolean {
+    return this.connectFailureBackoffByTargetId.get(targetId)?.kind === "needs_user_action";
   }
 
   /** True when `error` is the failure of this target's last connect attempt. */
@@ -1447,26 +1434,18 @@ export class RemoteConnectionPool {
     this.connectFailureBackoffByTargetId.delete(targetId);
   }
 
-  private assertConnectNotBackingOff(targetId: string): void {
+  /** Throws `RemoteConnectBackoffError` while a recent failure holds dials back. */
+  assertConnectNotBackingOff(targetId: string): void {
     const backoff = this.connectFailureBackoffByTargetId.get(targetId);
     if (!backoff) return;
-    // The "failed recently" prefix is how callers (and Sentry) tell a refusal
-    // to dial from a real failure; keep it on both messages.
-    if (backoff.needsUserAction) {
-      throw new Error(
-        `Remote ADE service connection failed recently (${backoff.error.message}). ` +
-          "ADE won't retry on its own. Press Try again or edit the machine.",
-      );
+    if (backoff.kind === "needs_user_action") {
+      throw new RemoteConnectBackoffError(backoff.error.message, null);
     }
-    const remainingMs = backoff.retryAfterMs - Date.now();
-    if (remainingMs <= 0) {
+    if (backoff.retryAfterMs <= Date.now()) {
       this.connectFailureBackoffByTargetId.delete(targetId);
       return;
     }
-    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-    throw new Error(
-      `Remote ADE service connection failed recently (${backoff.error.message}). Retrying in ${seconds}s.`,
-    );
+    throw new RemoteConnectBackoffError(backoff.error.message, backoff.retryAfterMs);
   }
 
   private noteConnectFailure(targetId: string, error: unknown, needsUserAction: boolean): void {
@@ -1479,12 +1458,12 @@ export class RemoteConnectionPool {
       CONNECT_FAILURE_MAX_BACKOFF_MS,
       CONNECT_FAILURE_BASE_BACKOFF_MS * 2 ** Math.max(0, failureCount - 1),
     );
-    this.connectFailureBackoffByTargetId.set(targetId, {
-      error: normalizedError,
-      failureCount,
-      retryAfterMs: needsUserAction ? Number.POSITIVE_INFINITY : Date.now() + backoffMs,
-      needsUserAction,
-    });
+    this.connectFailureBackoffByTargetId.set(
+      targetId,
+      needsUserAction
+        ? { error: normalizedError, failureCount, kind: "needs_user_action" }
+        : { error: normalizedError, failureCount, kind: "retry", retryAfterMs: Date.now() + backoffMs },
+    );
   }
 
   private bumpDisconnectGeneration(targetId: string): void {
