@@ -41,12 +41,14 @@ export function localSyncStatusBackoffMs(
 }
 
 /**
- * A snapshot the main process could not source from the local runtime. The
- * main process marks these explicitly (`degradedReason`); nothing is inferred
- * from route health, which is legitimately all-down on healthy standalone
- * machines that host nothing.
+ * A snapshot the main process synthesized because the runtime could not answer
+ * in time, from either `sync.getLocalStatus` or `sync.getStatus`. It is not a
+ * reading: its role and routes are placeholders, so a reader must treat it as
+ * "couldn't read" and never act on them. The main process marks these
+ * explicitly (`degradedReason`); nothing is inferred from route health, which
+ * is legitimately all-down on healthy standalone machines that host nothing.
  */
-export function isDegradedLocalSyncSnapshot(snapshot: SyncRoleSnapshot): boolean {
+export function isDegradedSyncSnapshot(snapshot: SyncRoleSnapshot): boolean {
   return typeof snapshot.degradedReason === "string" && snapshot.degradedReason.length > 0;
 }
 
@@ -175,7 +177,7 @@ export function readLocalSyncStatus(
     .then(() => window.ade.sync.getLocalStatus())
     .then(
       (snapshot) => {
-        if (isDegradedLocalSyncSnapshot(snapshot)) settleUnhealthy(issued, snapshot, null);
+        if (isDegradedSyncSnapshot(snapshot)) settleUnhealthy(issued, snapshot, null);
         else settleHealthy(issued, snapshot);
         return snapshot;
       },

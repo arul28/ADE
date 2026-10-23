@@ -145,6 +145,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   // outlive that answer. On the 30s default a Windows cold start (45s cap) would
   // show the opaque IPC timeout instead.
   if (channel === IPC.syncGetLocalStatus) return LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS;
+  // The project-scoped status read answers the same way at the same cap, after
+  // registering the project on a runtime that may still be starting.
+  if (channel === IPC.syncGetStatus) return LOCAL_RUNTIME_SYNC_STATUS_IPC_TIMEOUT_MS;
   // Reconnecting forwards to the brain on the same 30s sync budget. On the 30s
   // IPC default the two would expire together and the renderer would render an
   // opaque IPC timeout instead of the brain's legible reason — so this channel

@@ -853,25 +853,39 @@ it and a copy edit should not silently reroute the user.
 
 Presence reports include foreground state, whether an ambient Activity surface
 is visible, and the currently visible item ids. They are posted every 30 s while
-the ADE window is visible and every 120 s while it is hidden, plus immediately
-on focus, on blur, and on becoming visible again: a hidden window still has to
-hold its claim, but it does not need to hold it at foreground rates, and a
-120 s-stale "hidden" claim right as the user returns is the one case that
-misleads other devices. Going hidden does not force an extra report, because
-`blur` has already reported the foreground change.
+the ADE window is visible and every 120 s while it is hidden, plus promptly on
+focus, on blur, on becoming visible again, and when the visible items change: a
+hidden window still has to hold its claim, but it does not need to hold it at
+foreground rates, and a 120 s-stale "hidden" claim right as the user returns is
+the one case that misleads other devices. Going hidden does not force an extra
+report, because `blur` has already reported the foreground change. Changes
+inside 250 ms go out as one report carrying the latest state, because one window
+switch can flip focus several times (`lib/presenceReporter.ts`).
+
+Presence is best effort, and a bad network must not turn it into a stream of
+errors. When the relay cannot be reached (no HTTP answer, a timeout, a 429 or a
+5xx), the desktop's `AttentionAccountCoordinator` drops presence reports and
+answers preference reads with `null` ("unknown, keep what you have"), backing
+off from 5 s to 5 minutes for every window at once and logging one
+`attention.relay_unavailable` line per outage. A report that does fail (a relay
+refusal, the local-brain path) doubles the renderer's heartbeat interval, up to
+10 minutes, until one succeeds. The settings surfaces lock their controls and
+offer Try again when preferences did not load, so the defaults they hold can
+never be saved over the account's real settings.
 
 An item is marked seen only after its exact destination opens successfully.
 Account changes and stale machine revisions fail closed and require a refresh.
 
-Every snapshot read is bounded twice. The local-brain fallback is issued as a
-sync call carrying the 30 s sync-domain timeout rather than the connection
-pool's ten-minute action budget, so an Attention poll cannot outlive the account
-stream it is standing in for. Above it, the renderer races a 75 s backstop,
-sized to clear a 15 s relay request, one forced 401 retry, and that 30 s
-fallback in sequence — a shorter race would discard a slow-but-successful
-snapshot and replace a real host error with a generic timeout. When the backstop
-wins, Activity reports that it took too long and offers a retry instead of
-leaving the header pinned on syncing.
+Every Activity read the desktop polls answers inside the 30 s IPC timer. One
+relay request (the account token, the fetch, and the one forced retry after a
+401) shares a single deadline: 20 s (`PUSH_RELAY_FOREGROUND_DEADLINE_MS`) on
+every route a person waits on (Activity reads and writes, machine mute and
+removal, notifications), 60 s on the brain's background loops. A snapshot gives the account
+leg 18 s, then answers from this computer's brain with whatever is left of a
+25 s budget, so a relay that hangs degrades to "this computer only" instead of
+to nothing. The renderer races a 35 s backstop above that, which only catches a
+renderer-side hang. When the backstop wins, Activity reports that it took too
+long and offers a retry instead of leaving the header pinned on syncing.
 
 ## Hosted web Activity
 

@@ -78,6 +78,10 @@ import {
   readGitHubRateLimitState,
 } from "./githubRateLimit";
 import {
+  describeFetchTransportFailure,
+  isFetchTransportFailure,
+} from "../../../shared/fetchTransportFailure";
+import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
@@ -484,10 +488,26 @@ async function fetchGitHub(
     if (controller.signal.aborted && controller.signal.reason instanceof Error) {
       throw controller.signal.reason;
     }
+    if (isFetchTransportFailure(error)) throw githubUnreachableError(error);
     throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * GitHub never answered: undici's bare `fetch failed`, with the reason
+ * (`ECONNRESET`, `ENOTFOUND`, a TLS handshake cut short) only in its cause
+ * chain. That chain is dropped when the error crosses JSON-RPC from the brain,
+ * so the desktop used to show, and report, nothing but "fetch failed". Name the
+ * code here, while it is still attached.
+ */
+function githubUnreachableError(error: unknown): Error {
+  const reason = describeFetchTransportFailure(error);
+  return new Error(
+    `Can't reach GitHub${reason ? ` (${reason})` : ""}. Check this machine's network connection, then try again.`,
+    { cause: error },
+  );
 }
 
 function detectGitHubTokenType(token: string): NonNullable<GitHubStatus["tokenType"]> {

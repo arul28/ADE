@@ -2112,11 +2112,15 @@ export class LocalRuntimeConnectionPool {
     );
   }
 
-  async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {
+  async syncStatusForRoot(
+    rootPath: string,
+    args: SyncGetStatusArgs = {},
+    options: { timeoutMs?: number } = {},
+  ): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.getStatus", {
       includeTransferReadiness: args.includeTransferReadiness === true,
       forceTransferReadiness: args.forceTransferReadiness === true,
-    });
+    }, options);
   }
 
   async refreshSyncDiscoveryForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
@@ -2182,13 +2186,20 @@ export class LocalRuntimeConnectionPool {
   async callAttention<T>(
     action: string,
     args: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     // An Attention snapshot poll that inherits the ten-minute runtime budget
     // pins the renderer on "syncing" long after the account stream has wedged.
+    // Callers behind an IPC timer pass what is left of their own budget.
+    const timeoutMs = options.timeoutMs !== undefined
+      && Number.isFinite(options.timeoutMs)
+      && options.timeoutMs > 0
+      ? Math.min(LOCAL_RUNTIME_SYNC_TIMEOUT_MS, Math.trunc(options.timeoutMs))
+      : LOCAL_RUNTIME_SYNC_TIMEOUT_MS;
     return await this.callSync<T>(
       "attention.call",
       { action, args },
-      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+      { timeoutMs },
     );
   }
 
@@ -2518,13 +2529,15 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     method: string,
     params: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
   ): Promise<T> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
+    // The transport clock starts here, after registration and connect.
     return await entry.client.call(method, {
       ...params,
       projectId: project.projectId,
-    }, { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
+    }, { timeoutMs: options.timeoutMs ?? LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
   }
 
   /**

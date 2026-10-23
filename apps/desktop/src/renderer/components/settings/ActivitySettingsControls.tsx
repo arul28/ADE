@@ -102,6 +102,10 @@ export function useActivitySettings() {
     DEFAULT_ATTENTION_PREFERENCES,
   );
   const [loading, setLoading] = useState(true);
+  // The account's real preferences never arrived. Every control is locked:
+  // saving now would write the defaults above over them.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const mounted = useRef(true);
@@ -126,11 +130,19 @@ export function useActivitySettings() {
     void api.getPreferences(accountOwnerId)
       .then((next) => {
         if (cancelled || !mounted.current) return;
+        // `null`: the account service is unreachable right now.
+        if (!next) {
+          setLoadFailed(true);
+          setError("ADE can’t reach its account service right now, so your Activity settings didn’t load.");
+          return;
+        }
         setPreferences(normalizeActivityPreferences(next));
+        setLoadFailed(false);
         setError(null);
       })
       .catch((loadError: unknown) => {
         if (cancelled || !mounted.current) return;
+        setLoadFailed(true);
         setError(loadError instanceof Error && loadError.message.trim()
           ? loadError.message
           : "ADE couldn’t load your Activity settings.");
@@ -139,7 +151,9 @@ export function useActivitySettings() {
         if (!cancelled && mounted.current) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [accountOwnerId]);
+  }, [accountOwnerId, loadAttempt]);
+
+  const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
 
   const flashSaved = useCallback(() => {
     setSaved(true);
@@ -160,6 +174,7 @@ export function useActivitySettings() {
       setError("Sign in to ADE to change Activity settings.");
       return;
     }
+    if (loadFailed) return;
     try {
       await api.putPreferences(accountOwnerId, next);
       if (!mounted.current) return;
@@ -171,7 +186,7 @@ export function useActivitySettings() {
         ? saveError.message
         : "ADE couldn’t save your Activity settings.");
     }
-  }, [accountOwnerId, flashSaved]);
+  }, [accountOwnerId, flashSaved, loadFailed]);
 
   const updateAccount = useCallback((patch: Partial<AttentionPreferences["account"]>) => {
     const next: AttentionPreferences = {
@@ -240,6 +255,10 @@ export function useActivitySettings() {
     accountOwnerId,
     signedOut: !accountOwnerId,
     loading,
+    loadFailed,
+    retryLoad,
+    /** Controls are read-only: loading, signed out, or the real values never arrived. */
+    busy: loading || !accountOwnerId || loadFailed,
     error,
     saved,
     preferences,
@@ -323,14 +342,12 @@ export function ActivitySettingsControls({
 }) {
   const {
     account,
-    loading,
-    signedOut,
+    busy,
     machines,
     updateAccount,
     setMachineMuted,
     machineMuted,
   } = model;
-  const busy = loading || signedOut;
 
   if (variant === "popover") {
     return (
@@ -417,7 +434,9 @@ export function ActivitySettingsControls({
                   icon={DesktopTower}
                   label={machine.name}
                   description={
-                    machineMuted(machine.machineKey)
+                    model.loadFailed
+                      ? "Notification setting didn’t load."
+                      : machineMuted(machine.machineKey)
                       ? "Visible in Activity; never notifies."
                       : machine.online
                         ? "Online · notifies normally."
@@ -427,7 +446,7 @@ export function ActivitySettingsControls({
                     <PopoverSwitch
                       label={`Notify me about ${machine.name}`}
                       checked={!machineMuted(machine.machineKey)}
-                      disabled={signedOut}
+                      disabled={busy}
                       onChange={(enabled) =>
                         void setMachineMuted(machine.machineKey, !enabled)}
                     />
@@ -498,8 +517,7 @@ function SegmentedChoice<T extends string>({
 
 /** What Activity reveals, and what the Dock badge counts. */
 export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel }) {
-  const { account, loading, signedOut, updateAccount } = model;
-  const busy = loading || signedOut;
+  const { account, busy, updateAccount } = model;
   return (
     <ModernSection group="Privacy" title="Privacy and badges" hint="What ambient surfaces reveal, and what the badge counts.">
       <ModernRows>
@@ -537,7 +555,7 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
 
 /** One switch per machine. Muted machines still show in Activity. */
 export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
-  const { machines, signedOut, setMachineMuted, machineMuted } = model;
+  const { machines, busy, setMachineMuted, machineMuted } = model;
   return (
     <ModernSection group="Machines" anchor="activity-machines" title="Machines" hint="Mute a machine to keep it in Activity without notifications.">
       <ModernRows>
@@ -558,14 +576,16 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
                 hint={(
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
-                    {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                    {model.loadFailed
+                      ? "Notification setting didn’t load"
+                      : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
                   </span>
                 )}
                 control={
                   <SettingsToggle
                     label={`Notify me about ${machine.name}`}
                     checked={!muted}
-                    disabled={signedOut}
+                    disabled={busy}
                     onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
                   />
                 }

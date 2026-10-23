@@ -2048,8 +2048,9 @@ declare global {
         reportPresence: (
           presence: import("../shared/types").AttentionPresence,
         ) => Promise<void>;
+        /** `null` = the account service is unreachable right now; keep the current preferences. */
         getPreferences: (accountOwnerId: string) => Promise<
-          import("../shared/types").AttentionPreferences
+          import("../shared/types").AttentionPreferences | null
         >;
         putPreferences: (
           accountOwnerId: string,

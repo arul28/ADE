@@ -6583,7 +6583,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.attentionAcknowledge, args),
     reportPresence: async (presence: AttentionPresence): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionReportPresence, presence),
-    getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences> =>
+    getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences | null> =>
       ipcRenderer.invoke(IPC.attentionGetPreferences, { accountOwnerId }),
     putPreferences: async (
       accountOwnerId: string,
