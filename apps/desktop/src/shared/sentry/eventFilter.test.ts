@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
+import { codedError } from "../codedError";
 import { isExpectedOutcome } from "./expectedFailure";
 
 type TestEvent = Record<string, any>;
@@ -120,6 +121,9 @@ describe("createSentryEventHooks", () => {
     ["a Windows sign-in that failed", "WINDOWS_DESKTOP_SIGN_IN_FAILED: LogonUser returned 1326", false],
     ["an agent pointing App Control at a closed port", "APP_CONTROL_DEBUG_PORT_CLOSED: Nothing is listening at http://127.0.0.1:9222/json/list.", true],
     ["a local service refusing a connection", "connect ECONNREFUSED 127.0.0.1:64540", false],
+    ["a remote machine the user disconnected", "Remote machine was manually disconnected. Connect again to use this remote project.", true],
+    ["a Mac without Xcode", 'Command failed: xcrun simctl list devices available --json\nxcrun: error: unable to find utility "simctl", not a developer tool or in PATH', true],
+    ["any other xcrun failure", "Command failed: xcrun simctl boot X\nAn error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60)", false],
   ])("drops expected outcomes: %s", (_label, value, dropped) => {
     const hooks = createSentryEventHooks();
     expect(hooks.beforeSend(errorEvent(value)) === null).toBe(dropped);
@@ -147,6 +151,7 @@ describe("createSentryEventHooks", () => {
     ["every relay address unreachable", [["Error", "connect ENETUNREACH 104.21.35.163:443"], ["Error", "connect EHOSTUNREACH 2606:4700:3037::ac43:b1a3:443"], ["AggregateError", ""]], true],
     ["a local service refusing the connection", [["Error", "connect ECONNREFUSED 127.0.0.1:64540"]], false],
     ["a local service on IPv6 loopback", [["Error", "connect ECONNREFUSED ::1:4096"]], false],
+    ["a TLS handshake to a relay cut off", [["Error", "Client network socket disconnected before secure TLS connection was established"]], true],
     ["a reset that names no address", [["Error", "read ECONNRESET"]], false],
     ["no cause at all", [], false],
   ])("fetch failed: %s", (_label, causes, dropped) => {
@@ -166,5 +171,12 @@ describe("createSentryEventHooks", () => {
     expect(isExpectedOutcome(error)).toBe(expected);
     // The same causes under any other message are never expected.
     expect(isExpectedOutcome(new TypeError("Cannot read properties of undefined", { cause: cause() }))).toBe(false);
+  });
+
+  it("reads an expected state from an error's code as well as its text", () => {
+    expect(isExpectedOutcome(codedError("The project folder is gone.", "project_data_missing"))).toBe(true);
+    // The same code after crossing the wire as a message prefix.
+    expect(isExpectedOutcome(new Error("project_moving: This project is being moved."))).toBe(true);
+    expect(isExpectedOutcome(codedError("The project folder is gone.", "project_corrupt"))).toBe(false);
   });
 });

@@ -2382,6 +2382,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Files
 
   File commands operate inside an ADE workspace id, usually a lane id.
+  --workspace defaults to --lane, else the shell's lane (ADE_LANE_ID).
 
     $ ade files workspaces --text                   List workspace roots
     $ ade files tree --workspace <lane> --path src  Show a workspace tree
@@ -2520,6 +2521,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
     $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+                                                    (--session <id>; defaults to $ADE_CHAT_SESSION_ID)
     $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
                                                     Also: ade chat update --title, ade lanes rename.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
