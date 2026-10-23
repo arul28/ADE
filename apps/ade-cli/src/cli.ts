@@ -169,6 +169,15 @@ import {
   displayPercent as usageWindowDisplayPercent,
   windowLabel as usageWindowDisplayLabel,
 } from "../../desktop/src/shared/usageWindowPresentation";
+import {
+  buildUsageLimitsReport,
+  formatLimitsDuration,
+  usageLimitsLeftText,
+  usageLimitsPaceText,
+  type UsageLimitsAccount,
+  type UsageLimitsReport,
+} from "../../desktop/src/shared/usageLimitsReport";
+import { LIVE_QUOTA_PROVIDERS, type UsageSnapshot } from "../../desktop/src/shared/types/usage";
 import type {
   AgentChatApprovalDecision,
   AgentChatDispatchSteerMode,
@@ -594,6 +603,8 @@ export type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  /** Not run when this says so, given the earlier steps' values (a fallback for an older host). */
+  skipWhen?: (values: JsonObject) => boolean;
   injectProjectRootIntoArgs?: boolean;
 };
 
@@ -800,7 +811,7 @@ export type CliPlan =
        * The list this plan returns, so `--all-machines` can merge it across
        * the account's machines (see `cliMachineTargeting.ts`).
        */
-      machineList?: "chats" | "lanes" | "projects";
+      machineList?: "chats" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
       historyOperationId?: string;
@@ -1262,12 +1273,13 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
+    $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
-    $ ade providers accounts list | add | remove | rename | default
+    $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
@@ -1395,7 +1407,7 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   return `${primaryKey} ${normalizedSubcommand}`;
 }
 
-const CLI_COMMAND_ALIASES: Record<string, string> = {
+export const CLI_COMMAND_ALIASES: Record<string, string> = {
   lane: "lanes",
   diff: "diff",
   diffs: "diff",
@@ -3761,6 +3773,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   history, token/cost stats, and budget guardrails. Live quota refresh is
   intentionally separate from local provider-ledger scans.
 
+    $ ade usage limits --text                       Per account: % left, reset, pace, reading age
+    $ ade usage limits --provider claude --text     One provider's accounts
+    $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
+    $ ade usage limits --all-machines --text        Every machine on the account in one table
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
     $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
     $ ade usage stats --scope account --text        Merge every machine on the account
@@ -3900,19 +3916,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   signed-in account out with the provider CLI's own logout, then forgets it; the
   directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
-  proof, and starts out as the default.
+  proof, and starts out as the default. Accounts have no names: each shows as
+  its signed-in email, and its id (what --instance takes) never changes. A new
+  account's id is the next free <provider>-<n>.
 
     $ ade providers accounts list --text            All accounts, both providers
     $ ade providers accounts list --provider claude --text
-    $ ade providers accounts add --provider claude --label Work --text
+    $ ade providers accounts add --provider claude --text
                                                     Create an account and print its login command
-    $ ade providers accounts add --provider codex --label "Personal" --accent '#3b82f6' --text
-    $ ade providers accounts login --instance work --text
+    $ ade providers accounts add --provider codex --accent '#3b82f6' --text
+    $ ade providers accounts login --instance claude-2 --text
                                                     Reprint one account's login command
-    $ ade providers accounts rename --instance work --label "Work (EU)" --text
-    $ ade providers accounts default --instance work --text
+    $ ade providers accounts default --instance claude-2 --text
                                                     Make an account the provider's default
-    $ ade providers accounts remove --instance work --text
+    $ ade providers accounts remove --instance claude-2 --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
@@ -18346,6 +18363,51 @@ function buildUsagePlan(args: string[]): CliPlan {
       label: "usage action",
       steps: [buildActionRunStep(["usage", ...args])],
     };
+  // What an agent plans with: per account, how much of each window is left,
+  // when it resets, its pace, and the id `chat create --instance` takes.
+  if (sub === "limits" || sub === "limit" || sub === "left") {
+    const provider = readValue(args, ["--provider"])?.trim().toLowerCase() || null;
+    if (provider && !(LIVE_QUOTA_PROVIDERS as readonly string[]).includes(provider)) {
+      throw new CliUsageError(
+        `usage limits --provider must be one of ${LIVE_QUOTA_PROVIDERS.join(", ")}; other providers report no limits.`,
+      );
+    }
+    // The asking chat, so the answer can say which account it runs on. On
+    // another machine no chat has this id, and the mark is simply absent.
+    const chatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+    const isReport = (value: unknown): value is UsageLimitsReport =>
+      isRecord(value) && Array.isArray(value.accounts);
+    return {
+      kind: "execute",
+      label: "usage limits",
+      steps: [
+        {
+          ...actionStep("limits", "usage", "getUsageLimits", {
+            ...(provider ? { provider } : {}),
+            ...(chatSessionId ? { chatSessionId } : {}),
+          }),
+          optional: true,
+        },
+        // A host older than `getUsageLimits` still has the full snapshot.
+        {
+          ...actionStep("snapshot", "usage", "getUsageSnapshot", {}),
+          skipWhen: (values) => isReport(unwrapActionEnvelope(values.limits)),
+        },
+      ],
+      shapeResult: (values) => {
+        const limits = unwrapActionEnvelope(values.limits);
+        if (isReport(limits)) return limits;
+        const snapshot = unwrapActionEnvelope(values.snapshot);
+        return buildUsageLimitsReport(isRecord(snapshot) ? snapshot as Partial<UsageSnapshot> : null, {
+          nowMs: Date.now(),
+          provider,
+        });
+      },
+      machineList: "usageLimits",
+      formatText: formatUsageLimits,
+      tableText: formatUsageLimits,
+    };
+  }
   if (sub === "snapshot" || sub === "get" || sub === "status") {
     return {
       kind: "execute",
@@ -18957,7 +19019,7 @@ function buildProxyPlan(args: string[]): CliPlan {
 /**
  * `ade providers accounts …` — this machine's Claude and Codex logins.
  *
- * An account is a label plus a provider config directory (`CLAUDE_CONFIG_DIR` /
+ * An account is an id plus a provider config directory (`CLAUDE_CONFIG_DIR` /
  * `CODEX_HOME`), never a credential: ADE does not drive the provider's OAuth
  * flow, so `add` prints the exact command and env var a shell must run for the
  * login to land in the new directory, and `remove` signs the account out, then
@@ -18979,7 +19041,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
   }
   if (group !== "accounts" && group !== "account") {
     throw new CliUsageError(
-      "providers supports `accounts <list|add|remove|rename|default>` or `actions`.",
+      "providers supports `accounts <list|add|remove|default>` or `actions`.",
     );
   }
   const sub = firstPositional(args) ?? "list";
@@ -19004,10 +19066,9 @@ function buildProvidersPlan(args: string[]): CliPlan {
     if (!provider) {
       throw new CliUsageError("providers accounts add requires --provider claude|codex.");
     }
-    const label = requireValue(
-      readValue(args, ["--label", "--name"]) ?? firstPositional(args),
-      "account label",
-    );
+    // Accounts have no names: they show as their email once signed in. A
+    // legacy `--label` still shapes the new id.
+    const label = readValue(args, ["--label", "--name"]);
     const accentColor = readValue(args, ["--accent", "--accent-color"]);
     return {
       kind: "execute",
@@ -19015,7 +19076,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "create", {
         provider,
-        label,
+        ...(label?.trim() ? { label } : {}),
         ...(accentColor ? { accentColor } : {}),
       })],
     };
@@ -19030,14 +19091,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "rename") {
-    const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
-    const label = requireValue(readValue(args, ["--label", "--name"]) ?? firstPositional(args), "account label");
-    return {
-      kind: "execute",
-      label: "providers accounts rename",
-      formatter: "provider-accounts",
-      steps: [actionStep("result", "provider_instances", "rename", { id, label })],
-    };
+    throw new CliUsageError("Accounts have no names to change: each one shows as its signed-in email, and its id stays the same.");
   }
   if (sub === "default" || sub === "set-default" || sub === "use") {
     const id = requireValue(readValue(args, ["--instance", "--instance-id", "--id"]) ?? firstPositional(args), "account id");
@@ -19058,7 +19112,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    "providers accounts supports list, add, remove, rename, default, login, or refresh.",
+    "providers accounts supports list, add, remove, default, login, or refresh.",
   );
 }
 
@@ -28977,6 +29031,87 @@ export function formatUsagePrices(value: unknown): string {
 }
 
 /**
+ * `ade usage limits`: one row per window, named by the account id `chat create
+ * --instance` takes, with the reading's age when it is not fresh. Rows merged
+ * from several machines (`--all-machines`) lead with the machine.
+ */
+export function formatUsageLimits(value: unknown): string {
+  const report = isRecord(value) ? value : {};
+  const accounts = Array.isArray(report.accounts) ? report.accounts.filter(isRecord) : [];
+  const merged = accounts.some((account) => MACHINE_ROW_KEY in account);
+  const headers = [...(merged ? ["machine"] : []), "provider", "account", "login", "window", "left", "resets", "pace", "note"];
+  const rows: unknown[][] = [];
+  for (const record of accounts) {
+    const machineCells = merged ? [record[MACHINE_ROW_KEY] ?? ""] : [];
+    const unavailable = asString(record.unavailable);
+    if (unavailable) {
+      rows.push([...machineCells, "", "", "", "", "", "", "", unavailable]);
+      continue;
+    }
+    const account = record as unknown as UsageLimitsAccount;
+    const marks = [account.thisChat ? "this chat" : null, account.nextChat ? "next chat" : null].filter(Boolean);
+    const accountCell = `${account.instanceId ?? ""}${marks.length ? ` (${marks.join(", ")})` : ""}`.trim();
+    const login = [account.email ?? account.label, account.plan].filter(Boolean).join(" · ");
+    const notes: string[] = [];
+    if (account.note) notes.push(account.note);
+    if (account.state === "ok" && account.ageMinutes != null && account.ageMinutes >= 10) {
+      notes.push(`read ${formatLimitsDuration(account.ageMinutes)} ago`);
+    }
+    if (account.resetCredits) notes.push(`${account.resetCredits} reset credit${account.resetCredits === 1 ? "" : "s"} banked`);
+    const windows = Array.isArray(account.windows) ? account.windows : [];
+    const lead = [...machineCells, usageProviderTextLabel(account.provider), accountCell, login];
+    if (windows.length === 0) {
+      rows.push([...lead, "", "", "", "", notes.join("; ")]);
+      continue;
+    }
+    windows.forEach((window, index) => {
+      rows.push([
+        ...lead,
+        window.label,
+        usageLimitsLeftText(window),
+        window.resetsInMinutes != null ? `in ${formatLimitsDuration(window.resetsInMinutes)}` : "",
+        usageLimitsPaceText(window),
+        index === 0 ? notes.join("; ") : "",
+      ]);
+    });
+  }
+  const readAt = asString(report.readAt);
+  const chat = isRecord(report.chat) ? report.chat : null;
+  const lines = [
+    `ADE usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
+    ...(chat ? [`this chat runs on ${usageProviderTextLabel(chat.provider)} account ${String(chat.instanceId ?? "")}`] : []),
+    "",
+    renderTable(headers, rows, "No provider limits on this machine. Providers that report limits: Claude, Codex, Cursor, Copilot, Grok, OpenCode, Kimi, Muse.", {
+      fullColumns: ["account", "login"],
+    }),
+  ];
+  // The same login seen from two machines is one quota, not two.
+  if (merged) {
+    const machinesByLogin = new Map<string, Set<string>>();
+    for (const record of accounts) {
+      const email = asString(record.email)?.toLowerCase();
+      const machine = asString(record[MACHINE_ROW_KEY]);
+      if (!email || !machine) continue;
+      const key = `${asString(record.provider)}:${email}`;
+      const set = machinesByLogin.get(key) ?? new Set<string>();
+      set.add(machine);
+      machinesByLogin.set(key, set);
+    }
+    for (const [key, machines] of machinesByLogin) {
+      if (machines.size < 2) continue;
+      const [provider, ...email] = key.split(":");
+      lines.push(`${usageProviderTextLabel(provider)} ${email.join(":")} is one login on ${[...machines].join(", ")}: they share one quota.`);
+    }
+  }
+  const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
+  if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
+  if (accounts.some((account) => asString(account.instanceId))) {
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <account>");
+  }
+  return lines.join("\n");
+}
+
+/**
  * `ade usage snapshot --text` (and the two refresh verbs, which return the same
  * snapshot) — the quota half of the desktop Limits band.
  *
@@ -33087,10 +33222,10 @@ function formatProviderAccounts(value: unknown): string {
     renderKeyValues("ADE provider account", [
       ["id", instance.id],
       ["provider", instance.provider],
-      ["label", instance.label],
+      ["email", isRecord(instance.account) ? instance.account.email : undefined],
+      ["plan", isRecord(instance.account) ? instance.account.plan : undefined],
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
-      ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
       ["same login as", instance.sameLoginAs],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
@@ -33152,21 +33287,20 @@ function formatProviderAccounts(value: unknown): string {
   }
   const instances = firstArray(value, ["instances"]);
   return renderTable(
-    ["id", "provider", "label", "default", "signed in", "config home"],
+    ["id", "provider", "email", "plan", "default", "signed in", "config home"],
     instances.map((instance) => [
       instance.id,
       instance.provider,
-      instance.label,
+      isRecord(instance.account) ? instance.account.email ?? "" : "",
+      isRecord(instance.account) ? instance.account.plan ?? "" : "",
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? `${isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes"}${
-          typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""
-        }`
+        ? `yes${typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""}`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
-    { fullColumns: ["id"] },
+    { fullColumns: ["id", "email"] },
   );
 }
 
@@ -35370,6 +35504,7 @@ async function executePlan(
   try {
     const values: JsonObject = {};
     for (const step of plan.steps) {
+      if (step.skipWhen?.(values)) continue;
       try {
         const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;

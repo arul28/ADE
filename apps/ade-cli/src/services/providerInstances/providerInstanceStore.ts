@@ -149,6 +149,11 @@ function slugForLabel(label: string): string {
   return slug.length ? slug : "account";
 }
 
+/** What every surface calls an account: its email, else its id. */
+export function providerInstanceDisplayLabel(instance: { id: string; account?: { email?: string } }): string {
+  return instance.account?.email?.trim() || instance.id;
+}
+
 function normalizeLabel(value: unknown): string {
   const label = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!label) throw new Error("A provider account needs a label.");
@@ -412,7 +417,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
-      label: stored.label,
+      // An account is named by its login, not by a name someone typed: the
+      // email once it has signed in, its id until then.
+      label: providerInstanceDisplayLabel(stored),
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
       configHome: stored.configHome,
       isDefault: defaultIdFor(stored.provider, file) === stored.id,
@@ -532,11 +539,19 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return { instance, command: { ...loginCommandFor(instance), args } };
   }
 
-  function uniqueInstanceId(provider: ProviderInstanceProvider, label: string, file: RegistryFile): string {
+  function uniqueInstanceId(provider: ProviderInstanceProvider, label: string | null, file: RegistryFile): string {
     const taken = new Set<string>([
       ...PROVIDER_INSTANCE_PROVIDERS,
       ...file.instances.map((instance) => instance.id),
     ]);
+    // No name: the next short id an agent can type (`claude-2`, `claude-3`).
+    if (!label) {
+      for (let index = 2; index < 1000; index += 1) {
+        const candidate = `${provider}-${index}`;
+        if (!taken.has(candidate)) return candidate;
+      }
+      return `${provider}-${randomBytes(8).toString("hex")}`;
+    }
     const base = slugForLabel(label);
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const candidate = attempt === 0 && !taken.has(base)
@@ -549,14 +564,19 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
 
   function create(args: {
     provider: unknown;
-    label: unknown;
+    /**
+     * Optional, and only shapes the id: accounts are shown by their email.
+     * Older phones and scripts still send one.
+     */
+    label?: unknown;
     accentColor?: unknown;
   }): { instance: ProviderInstance; loginCommand: ProviderInstanceLoginCommand } {
     const provider = requireProvider(args.provider);
-    const label = normalizeLabel(args.label);
+    const typedLabel = typeof args.label === "string" && args.label.trim() ? normalizeLabel(args.label) : null;
     const accentColor = normalizeProviderInstanceAccent(args.accentColor);
     const file = readFile();
-    const id = uniqueInstanceId(provider, label, file);
+    const id = uniqueInstanceId(provider, typedLabel, file);
+    const label = typedLabel ?? id;
     const configHome = path.join(options.adeDir, INSTANCE_HOMES_DIR, provider, id);
     // 0o700: the provider CLI is about to write its own credentials in here.
     // Use the same best-effort POSIX and owner-only Windows policy as every
@@ -601,6 +621,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return toPublic(next, file);
   }
 
+  /**
+   * Kept for older phones, which still offer Rename. The stored name is no
+   * longer shown anywhere: an account reads as its email.
+   */
   function rename(id: string, label: unknown): ProviderInstance {
     const nextLabel = normalizeLabel(label);
     return mutateRecord(id, "rename", (record) => ({ ...record, label: nextLabel }));

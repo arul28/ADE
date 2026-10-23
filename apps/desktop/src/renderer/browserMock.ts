@@ -1203,7 +1203,7 @@ const mockProviderInstances: Array<{
   {
     id: "claude",
     provider: "claude",
-    label: "Default",
+    label: "ada.lovelace@example.com",
     configHome: "/mock/.claude",
     isDefault: true,
     createdAt: new Date(0).toISOString(),
@@ -1216,7 +1216,7 @@ const mockProviderInstances: Array<{
   {
     id: "claude-work",
     provider: "claude",
-    label: "Work",
+    label: "jo.martin@example.com",
     accentColor: "#5ba8d9",
     configHome: "/mock/.ade/provider-homes/claude/work",
     isDefault: false,
@@ -1227,7 +1227,7 @@ const mockProviderInstances: Array<{
   {
     id: "codex",
     provider: "codex",
-    label: "Default",
+    label: "dev@example.com",
     configHome: "/mock/.codex",
     isDefault: true,
     createdAt: new Date(0).toISOString(),
@@ -8795,11 +8795,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     providerInstances: {
       list: async (args?: { provider?: "claude" | "codex" }) =>
         mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),
-      create: async (args: { provider: "claude" | "codex"; label: string; accentColor?: string }) => {
+      create: async (args: { provider: "claude" | "codex"; label?: string; accentColor?: string }) => {
+        const id = `${args.provider}-${mockProviderInstances.length + 1}`;
         const instance = {
-          id: `${args.provider}-${mockProviderInstances.length + 1}`,
+          id,
           provider: args.provider,
-          label: args.label,
+          label: id,
           ...(args.accentColor ? { accentColor: args.accentColor } : {}),
           configHome: `/mock/.ade/provider-homes/${args.provider}/${mockProviderInstances.length + 1}`,
           isDefault: false,
@@ -8814,11 +8815,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const configHome = index >= 0 ? mockProviderInstances[index]!.configHome : "";
         if (index >= 0) mockProviderInstances.splice(index, 1);
         return { removed: index >= 0, configHome };
-      },
-      rename: async (args: { id: string; label: string }) => {
-        const instance = mockProviderInstanceById(args.id);
-        instance.label = args.label;
-        return instance;
       },
       setDefault: async (args: { id: string }) => {
         const instance = mockProviderInstanceById(args.id);

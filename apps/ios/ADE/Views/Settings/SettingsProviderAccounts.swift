@@ -18,9 +18,10 @@ func providerAccountWindows(_ account: ProviderAccount, snapshot: MobileUsageQuo
 
 /// The one-line state under an account's name.
 func providerAccountDetailLine(_ account: ProviderAccount) -> String {
-  if account.loginBroken == true { return [account.email, "sign in again"].compactMap { $0 }.joined(separator: " · ") }
-  guard account.signedIn else { return "Not signed in yet" }
-  return [account.email, account.plan.map { $0.capitalized }].compactMap { $0 }.joined(separator: " · ")
+  // The title is already the email; this line names the id `--instance` takes.
+  if account.loginBroken == true { return [account.id, "sign in again"].joined(separator: " · ") }
+  guard account.signedIn else { return "\(account.id) · not signed in yet" }
+  return [account.id, account.plan.map { $0.capitalized }].compactMap { $0 }.joined(separator: " · ")
 }
 
 /// The provider's name, for an account of either provider.
@@ -173,10 +174,8 @@ struct ProviderAccountsScreen: View {
   var canChange = true
   var machines: [ProviderAccountsMachineOption] = []
   var selectedMachineId: Binding<String>?
-  @State private var addPresented = false
+  @State private var adding = false
   @State private var signIn: ProviderAccountSignInRoute?
-  @State private var renaming: ProviderAccount?
-  @State private var renameText = ""
   @State private var removing: ProviderAccount?
   @State private var toast: ADEToastMessage?
 
@@ -246,12 +245,17 @@ struct ProviderAccountsScreen: View {
           .contextMenu { contextMenu(account) }
         }
         if canChange, store.loaded {
-          Button { addPresented = true } label: {
-            Label("Add \(provider.title) account", systemImage: "plus")
-              .font(.system(size: 15))
-              .foregroundStyle(ADEColor.accent)
+          // No name to type: the account shows as the email it signs in with.
+          Button { addAccount() } label: {
+            HStack(spacing: 8) {
+              Label("Add \(provider.title) account", systemImage: "plus")
+                .font(.system(size: 15))
+                .foregroundStyle(ADEColor.accent)
+              if adding { ProgressView().controlSize(.mini) }
+            }
           }
           .buttonStyle(.plain)
+          .disabled(adding)
           .adeSettingsListRow()
         }
       } header: {
@@ -272,18 +276,6 @@ struct ProviderAccountsScreen: View {
     }
     .animation(.snappy, value: store.accounts)
     .adeToast($toast)
-    .sheet(isPresented: $addPresented) {
-      ProviderAccountAddSheet(provider: provider) { label in
-        guard let created = await store.create(label: label) else {
-          return store.errorMessage ?? "ADE could not add the account."
-        }
-        addPresented = false
-        try? await Task.sleep(for: .milliseconds(350))
-        signIn = ProviderAccountSignInRoute(account: created)
-        return nil
-      }
-      .presentationDetents([.medium, .large])
-    }
     .sheet(item: $signIn) { route in
       ProviderAccountSignInSheet(account: route.account, host: machine.host) { email in
         signIn = nil
@@ -292,19 +284,8 @@ struct ProviderAccountsScreen: View {
       }
       .presentationDetents([.large])
     }
-    .alert("Rename account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-      TextField("Name", text: $renameText)
-      Button("Cancel", role: .cancel) { renaming = nil }
-      Button("Save") {
-        guard let account = renaming else { return }
-        let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        renaming = nil
-        guard !label.isEmpty else { return }
-        Task { await store.rename(id: account.id, label: label) }
-      }
-    }
     .confirmationDialog(
-      "Remove \(removing?.label ?? "account")?",
+      "Remove \(removing?.displayName ?? "account")?",
       isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
       titleVisibility: .visible
     ) {
@@ -313,7 +294,7 @@ struct ProviderAccountsScreen: View {
         removing = nil
         Task {
           if await store.remove(id: account.id) {
-            toast = ADEToastMessage(text: "\(account.label) removed")
+            toast = ADEToastMessage(text: "\(account.displayName) removed")
           }
         }
       }
@@ -356,11 +337,11 @@ struct ProviderAccountsScreen: View {
     if enabled {
       if signedIn.count < 2 { return "Add a second signed-in account to spread chats across them." }
       if let next = store.accounts.first(where: isBalanceNext) {
-        return "New chats go to the account furthest behind the pace needed to use its weekly limit before it resets. Next: \(next.label)."
+        return "New chats go to the account furthest behind the pace needed to use its weekly limit before it resets. Next: \(next.displayName)."
       }
       return "New chats go to the account furthest behind the pace needed to use its weekly limit before it resets."
     }
-    let fallback = store.accounts.first(where: \.isDefault)?.label ?? "the default"
+    let fallback = store.accounts.first(where: \.isDefault)?.displayName ?? "the default"
     return "New chats use \(fallback). Running chats always keep their account."
   }
 
@@ -377,10 +358,6 @@ struct ProviderAccountsScreen: View {
       Button { signIn = ProviderAccountSignInRoute(account: account) } label: {
         Label(account.hasLogin ? "Sign in again" : "Sign in", systemImage: "person.badge.key")
       }
-      Button {
-        renameText = account.label
-        renaming = account
-      } label: { Label("Rename", systemImage: "pencil") }
       if !account.isDefault {
         Divider()
         Button(role: .destructive) { removing = account } label: { Label("Remove", systemImage: "trash") }
@@ -388,11 +365,21 @@ struct ProviderAccountsScreen: View {
     }
   }
 
+  private func addAccount() {
+    guard !adding else { return }
+    adding = true
+    Task {
+      let created = await store.create()
+      adding = false
+      if let created { signIn = ProviderAccountSignInRoute(account: created) }
+    }
+  }
+
   private func makeDefault(_ account: ProviderAccount) {
     Task {
       if await store.makeDefault(id: account.id) {
         ADEHaptics.success()
-        toast = ADEToastMessage(text: "\(account.label) is now the default")
+        toast = ADEToastMessage(text: "\(account.displayName) is now the default")
       }
     }
   }
@@ -404,7 +391,7 @@ struct ProviderAccountsScreen: View {
 
   private func ownerLabel(_ account: ProviderAccount) -> String? {
     guard let owner = account.sameLoginAs else { return nil }
-    return store.account(id: owner)?.label ?? owner
+    return store.account(id: owner)?.displayName ?? owner
   }
 }
 
@@ -428,7 +415,7 @@ struct ProviderAccountRow: View {
         if let asset = providerAssetName(account.provider) {
           ADEProviderMark(assetName: asset, size: 14)
         }
-        Text(account.label)
+        Text(account.displayName)
           .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -512,8 +499,6 @@ struct ProviderAccountDetailPage: View {
   var canChange = true
   var onSignIn: (ProviderAccount) -> Void = { _ in }
   @Environment(\.dismiss) private var dismiss
-  @State private var renameText = ""
-  @State private var renamePresented = false
   @State private var confirmRemove = false
 
   var body: some View {
@@ -541,7 +526,7 @@ struct ProviderAccountDetailPage: View {
             }
             VStack(alignment: .leading, spacing: 3) {
               HStack(spacing: 6) {
-                Text(account.label)
+                Text(account.displayName)
                   .font(.system(size: 18, weight: .semibold))
                   .foregroundStyle(ADEColor.textPrimary)
                 if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
@@ -597,16 +582,7 @@ struct ProviderAccountDetailPage: View {
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .alert("Rename account", isPresented: $renamePresented) {
-      TextField("Name", text: $renameText)
-      Button("Cancel", role: .cancel) {}
-      Button("Save") {
-        let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { return }
-        Task { await store.rename(id: account.id, label: label) }
-      }
-    }
-    .confirmationDialog("Remove \(account.label)?", isPresented: $confirmRemove, titleVisibility: .visible) {
+    .confirmationDialog("Remove \(account.displayName)?", isPresented: $confirmRemove, titleVisibility: .visible) {
       Button("Remove", role: .destructive) {
         Task {
           if await store.remove(id: account.id) { dismiss() }
@@ -632,80 +608,9 @@ struct ProviderAccountDetailPage: View {
         }
         Button(account.signedIn ? "Sign in again" : "Sign in") { onSignIn(account) }
           .buttonStyle(ADEKitButtonStyle(prominent: !account.signedIn))
-        Button("Rename") {
-          renameText = account.label
-          renamePresented = true
-        }
-        .buttonStyle(ADEKitButtonStyle())
         Spacer(minLength: 0)
       }
       .disabled(store.busyAccountId == account.id)
-    }
-  }
-}
-
-// MARK: - Add
-
-struct ProviderAccountAddSheet: View {
-  let provider: ProviderAccountProvider
-  /// Creates the account; returns an error message, or nil when it worked.
-  let onCreate: (String) async -> String?
-  @Environment(\.dismiss) private var dismiss
-  @State private var label = ""
-  @State private var working = false
-  @State private var error: String?
-  @FocusState private var focused: Bool
-
-  var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          ADESettingsSection("Name", hint: "Like Work or Personal. You sign in next.") {
-            TextField("Account name", text: $label)
-              .font(.system(size: 15))
-              .focused($focused)
-              .submitLabel(.next)
-              .onSubmit(create)
-              .padding(.horizontal, ADEKit.inset)
-              .frame(minHeight: 48)
-              .adeKitCard(padding: nil)
-          }
-          if let error {
-            ADESettingsNotice(message: error, tone: .crit)
-          }
-        }
-        .padding(16)
-      }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle("New \(provider.title) account")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          if working {
-            ProgressView()
-          } else {
-            Button("Next", action: create)
-              .fontWeight(.semibold)
-              .disabled(trimmed.isEmpty)
-          }
-        }
-      }
-      .onAppear { focused = true }
-    }
-  }
-
-  private var trimmed: String { label.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-  private func create() {
-    guard !trimmed.isEmpty, !working else { return }
-    working = true
-    error = nil
-    Task {
-      error = await onCreate(trimmed)
-      working = false
     }
   }
 }

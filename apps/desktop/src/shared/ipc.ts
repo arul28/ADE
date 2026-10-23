@@ -769,7 +769,6 @@ export const IPC = {
   providerInstancesList: "ade.providerInstances.list",
   providerInstancesCreate: "ade.providerInstances.create",
   providerInstancesRemove: "ade.providerInstances.remove",
-  providerInstancesRename: "ade.providerInstances.rename",
   providerInstancesSetDefault: "ade.providerInstances.setDefault",
   providerInstancesSetAccent: "ade.providerInstances.setAccent",
   providerInstancesDismissReplaced: "ade.providerInstances.dismissReplaced",

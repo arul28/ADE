@@ -55,8 +55,8 @@ export type AddProviderAccountSheetProps = {
   providerLabel: string;
   /** Present when reopening sign-in for an account that already exists. */
   existingInstance?: ProviderInstance | null;
-  /** A starting label for a new account, e.g. one being added back. */
-  initialLabel?: string;
+  /** The login a new account is meant for, e.g. one being added back. */
+  expectedEmail?: string;
   /** Called on every close. `changed` is true once anything was written. */
   onClose: (changed: boolean) => void;
 };
@@ -84,7 +84,7 @@ export function AddProviderAccountSheet({
   provider,
   providerLabel,
   existingInstance,
-  initialLabel,
+  expectedEmail,
   onClose,
 }: AddProviderAccountSheetProps) {
   // The account, its sign-in and its config home all live on the machine the
@@ -92,7 +92,6 @@ export function AddProviderAccountSheet({
   const { pin, isThisMachine } = useSettingsMachineScope();
   const resuming = Boolean(existingInstance);
   const [phase, setPhase] = useState<Phase>(resuming ? "signing" : "form");
-  const [label, setLabel] = useState(initialLabel ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [login, setLogin] = useState<ProviderLoginStatus | null>(null);
@@ -109,7 +108,6 @@ export function AddProviderAccountSheet({
   const changedRef = useRef(false);
   const closedRef = useRef(false);
   const aliveRef = useRef(true);
-  const labelInputRef = useRef<HTMLInputElement | null>(null);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
 
   // One bridge per machine, so the poll and success effects do not restart on
@@ -237,10 +235,8 @@ export function AddProviderAccountSheet({
     setBusy(true);
     setError(null);
     try {
-      const created = await api.create({
-        provider,
-        label: label.trim(),
-      });
+      // No name: the account is shown by the email it signs in with.
+      const created = await api.create({ provider });
       changedRef.current = true;
       instanceIdRef.current = created.instance.id;
       if (!aliveRef.current) return;
@@ -252,7 +248,7 @@ export function AddProviderAccountSheet({
     } finally {
       if (aliveRef.current) setBusy(false);
     }
-  }, [api, label, provider, startLogin]);
+  }, [api, provider, startLogin]);
 
   // ── Reopening sign-in for an account that already exists ──
   const startedRef = useRef(false);
@@ -294,13 +290,13 @@ export function AddProviderAccountSheet({
     }).catch(() => undefined);
   }, []);
 
-  // The synthesized default account (still named "Default") is just "the
-  // provider" to the person signing in (first run, the provider card); an
-  // account the user named keeps its name.
+  // An account is called by its email. One that has never signed in has none
+  // yet: the machine's own login is just "the provider" to the person signing
+  // in (first run, the provider card), any other is "this account".
   const existingName = existingInstance
-    ? existingInstance.isDefault && existingInstance.label === "Default" ? providerLabel : existingInstance.label
+    ? existingInstance.account?.email?.trim() || (existingInstance.isDefault ? providerLabel : null)
     : null;
-  const accountName = existingName ?? (label.trim() || "this account");
+  const accountName = existingName ?? expectedEmail ?? "this account";
   const title = resuming
     ? `Sign in to ${existingName ?? providerLabel}`
     : `Add a ${providerLabel} account`;
@@ -323,7 +319,7 @@ export function AddProviderAccountSheet({
       ? [{
           label: busy ? "Starting…" : "Continue to sign-in",
           onClick: () => void startCreate(),
-          disabled: busy || label.trim().length === 0,
+          disabled: busy,
           variant: "solid",
         }]
       : phase === "signing"
@@ -346,7 +342,6 @@ export function AddProviderAccountSheet({
       closeLabel="Close add account"
       width={560}
       maxHeight="82vh"
-      initialFocusRef={labelInputRef}
       preventAutoFocus={resuming}
       bodyPadding={false}
       scrollBody
@@ -367,25 +362,6 @@ export function AddProviderAccountSheet({
 
       {phase === "form" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "18px 20px 8px" }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={FIELD_LABEL_STYLE}>Name</span>
-            <input
-              ref={labelInputRef}
-              aria-label="Account label"
-              value={label}
-              autoFocus
-              placeholder="Work"
-              onChange={(event) => setLabel(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && label.trim() && !busy) void startCreate();
-              }}
-              style={TEXT_INPUT_STYLE}
-            />
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-              Shown in Settings, the usage bar, and on each chat that uses it.
-            </span>
-          </label>
-
           <Banner
             layout="inline"
             model={{
@@ -393,7 +369,7 @@ export function AddProviderAccountSheet({
               tone: "neutral",
               icon: <ShieldCheck size={15} />,
               title: "Your other accounts stay signed in",
-              detail: `Next, ${providerLabel} opens its sign-in page in your browser. Pick the account you want there before you approve. The login is saved for this account only.`,
+              detail: `Next, ${providerLabel} opens its sign-in page in your browser. Pick ${expectedEmail ?? "the account you want"} there before you approve. The account shows as its email once signed in, and its login is saved for it only.`,
             }}
           />
         </div>
@@ -550,7 +526,7 @@ export function AddProviderAccountSheet({
           />
           {existingInstance ? (
             <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-              Currently: {accountIdentityLine(existingInstance)}
+              Currently: {[existingInstance.account?.email, accountIdentityLine(existingInstance)].filter(Boolean).join(" · ")}
             </span>
           ) : null}
           <OutputDisclosure output={login?.output ?? ""} open={showOutput} onToggle={() => setShowOutput((open) => !open)} />
@@ -678,8 +654,8 @@ function SheetSteps({ current }: { current: number }) {
   );
 }
 
-/** What the sign-in sheet opens on: an existing account, or a new one with an optional starting label. */
-export type AccountSignInTarget = { existing: ProviderInstance | null; label?: string };
+/** What the sign-in sheet opens on: an existing account, or a new one, optionally meant for one login. */
+export type AccountSignInTarget = { existing: ProviderInstance | null; email?: string };
 
 /**
  * Hosts the sign-in sheet for one provider: `open` shows it, `element` goes
@@ -699,11 +675,11 @@ export function useAccountSignInSheet({
   const element = target ? (
     <AddProviderAccountSheet
       // A new target is a new sheet, never the old one's state.
-      key={target.existing?.id ?? `new:${target.label ?? ""}`}
+      key={target.existing?.id ?? `new:${target.email ?? ""}`}
       provider={provider}
       providerLabel={providerLabel}
       existingInstance={target.existing}
-      initialLabel={target.label}
+      expectedEmail={target.email}
       onClose={(changed) => {
         setTarget(null);
         if (changed) onChanged();

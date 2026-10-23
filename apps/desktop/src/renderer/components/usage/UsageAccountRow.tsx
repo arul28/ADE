@@ -150,6 +150,7 @@ export function UsageAccountRow({
   nowMs,
   reducedMotion,
   dim,
+  hideIdentity,
 }: {
   row: AccountLimitRow;
   /** "OAuth · 2m ago" — where this reading came from, on the account's title. */
@@ -165,6 +166,8 @@ export function UsageAccountRow({
   nowMs: number;
   reducedMotion: boolean;
   dim?: boolean;
+  /** The surrounding card already names the account (Settings → Accounts). */
+  hideIdentity?: boolean;
 }) {
   const account = row.account;
   const [openCell, setOpenCell] = useState<string | null>(null);
@@ -226,12 +229,14 @@ export function UsageAccountRow({
     <div className="flex min-w-0 flex-col gap-1">
       {/* Only the email. See the note at the top of this file. */}
       <div className="usage-account-head">
-        <span
-          className={cn("usage-account-email", dim && "opacity-70")}
-          title={providerTitle ? `${identity} · ${providerTitle}` : identity}
-        >
-          {identity}
-        </span>
+        {hideIdentity ? null : (
+          <span
+            className={cn("usage-account-email", dim && "opacity-70")}
+            title={providerTitle ? `${identity} · ${providerTitle}` : identity}
+          >
+            {identity}
+          </span>
+        )}
         {/* The pace line, back outside the details panel where it was legible
             without hovering anything. */}
         {account?.login === "signed_out" ? (

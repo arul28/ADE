@@ -11905,6 +11905,20 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The account a Claude or Codex chat runs on: its recorded account, or the
+   * default when it has none or that account was removed (the launch falls
+   * back the same way). Null for providers with one login.
+   */
+  const resolvedChatInstanceId = (provider: string, instanceId: string | null | undefined): string | null => {
+    if (!isProviderInstanceProvider(provider)) return null;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
    * The account whose config home holds this chat's provider thread: `null`
    * when no account holds it (or the chat has no thread yet), `undefined` when
    * the accounts could not be read, which is not an answer to pin on.
@@ -64630,6 +64644,7 @@ export function createAgentChatService(args: {
     return deriveChatTurnStatus({
       sessionId: summary.sessionId,
       provider: summary.provider,
+      instanceId: resolvedChatInstanceId(summary.provider, summary.instanceId),
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,

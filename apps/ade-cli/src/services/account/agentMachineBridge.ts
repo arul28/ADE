@@ -83,7 +83,13 @@ export type MachineCallScope =
   /** Projectless personal chats on the target. */
   | { kind: "personal" }
   /** Machine-level methods (`projects.list`). */
-  | { kind: "machine" };
+  | { kind: "machine" }
+  /**
+   * A machine-wide read that still runs through a project there (its usage
+   * quota): this repository's checkout when it has one, else the project it
+   * opened most recently.
+   */
+  | { kind: "anyProject"; originUrl: string | null };
 
 export type MachineCallRequest = {
   machine: string;
@@ -186,6 +192,15 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     records: RemoteProjectRecord[],
     scope: MachineCallScope,
   ): RemoteProjectRecord => {
+    if (scope.kind === "anyProject") {
+      const origin = scope.originUrl ? normalizeGitRemoteIdentity(scope.originUrl) : null;
+      const sameRepo = origin
+        ? pickLiveCheckout(records.filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin))
+        : null;
+      const match = sameRepo ?? pickLiveCheckout(records);
+      if (match) return match;
+      throw new Error(`${machineName(machine)} has no project open in ADE, so it can't answer this. Open any project there once.`);
+    }
     if (scope.kind === "repo") {
       const origin = normalizeGitRemoteIdentity(scope.originUrl);
       if (!origin) {

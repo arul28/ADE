@@ -318,6 +318,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { force?: boolean }",
       example: "ade router refresh --text",
     },
+    getUsageLimits: {
+      description:
+        "Read how much of each subscription window is left on this machine, per account: percent left, reset time, pace, "
+        + "how old the reading is, whether the account can take a chat, the account id `ade chat create --instance` takes, "
+        + "and which account the asking chat runs on. Reads the cached poll; never refreshes.",
+      input: "object { provider?: string, chatSessionId?: string }",
+      example: "ade usage limits --text",
+    },
     getUsageSnapshot: {
       description:
         "Read provider rate-limit windows and spend controls. Account-tied, so it takes no scope.",

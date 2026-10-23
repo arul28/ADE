@@ -7126,10 +7126,6 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.providerInstancesRename, async (_event, arg: unknown): Promise<ProviderInstance> => {
-    return getMachineProviderInstanceStore().rename(providerInstanceId(arg), providerInstanceArgs(arg).label);
-  });
-
   ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
     const instance = getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
     captureProviderAccount("default_selected", "completed", instance.provider);

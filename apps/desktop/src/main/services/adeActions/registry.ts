@@ -221,6 +221,7 @@ import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/d
 import { isPathInside } from "../shared/pathCompare";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import { buildUsageLimitsReport } from "../../../shared/usageLimitsReport";
 import { runGit } from "../git/git";
 // The turn diff is shared with the local ipcMain handler; see chat/turnFileDiff.ts.
 export { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
@@ -4141,6 +4142,41 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 }
 
 
+/**
+ * The usage service's own methods, plus `getUsageLimits`: the quota snapshot
+ * cut down to what an agent plans with (`ade usage limits`). It also names the
+ * account the asking chat runs on, which the usage service cannot see.
+ */
+function buildUsageDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const usage = runtime.usageTrackingService;
+  if (!usage) return null;
+  const chatAccount = async (chatSessionId: string): Promise<{ provider: string; instanceId: string } | null> => {
+    const summary = await runtime.agentChatService?.getSessionSummary(chatSessionId).catch(() => null);
+    if (!summary || !isProviderInstanceProvider(summary.provider)) return null;
+    try {
+      // A chat with no recorded account, or one whose account was removed,
+      // runs on the provider's default.
+      return {
+        provider: summary.provider,
+        instanceId: getMachineProviderInstanceStore().resolve(summary.provider, summary.instanceId?.trim() || undefined).instance.id,
+      };
+    } catch {
+      return null;
+    }
+  };
+  return {
+    ...(usage as unknown as OpaqueService),
+    getUsageLimits: async (args?: { provider?: unknown; chatSessionId?: unknown }) => {
+      const chatSessionId = typeof args?.chatSessionId === "string" ? args.chatSessionId.trim() : "";
+      return buildUsageLimitsReport(usage.getUsageSnapshot(), {
+        nowMs: Date.now(),
+        provider: typeof args?.provider === "string" ? args.provider : null,
+        chat: chatSessionId ? await chatAccount(chatSessionId) : null,
+      });
+    },
+  };
+}
+
 function buildProjectHealthDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectHealthService = runtime.projectHealthService;
   if (!projectHealthService) return null;
@@ -4192,7 +4228,7 @@ export function getAdeActionDomainServices(
     github: buildGithubDomainService(runtime),
     jira: toService(runtime.jiraService),
     issues: toService(runtime.issueTrackerService),
-    usage: toService(runtime.usageTrackingService),
+    usage: buildUsageDomainService(runtime),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
     project_health: toService(buildProjectHealthDomainService(runtime)),

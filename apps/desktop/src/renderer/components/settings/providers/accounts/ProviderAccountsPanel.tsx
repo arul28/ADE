@@ -172,11 +172,6 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
   return width;
 }
 
-/** `name@host` → `name`, the label a re-added account starts with. */
-function labelFromEmail(email: string): string {
-  return email.split("@")[0]?.slice(0, 32) || email;
-}
-
 export function ProviderAccountsPanel({
   provider,
   providerLabel,
@@ -196,7 +191,6 @@ export function ProviderAccountsPanel({
   const nowMs = Date.now();
 
   const [actionError, setActionError] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
@@ -226,10 +220,6 @@ export function ProviderAccountsPanel({
     (action: RowMenuAction, instance: ProviderInstance) => {
       const api = pinnedProviderInstances(pin);
       if (!api) return;
-      if (action === "rename") {
-        setRenamingId(instance.id);
-        return;
-      }
       if (action === "signIn") {
         openSheet({ existing: instance });
         return;
@@ -307,18 +297,6 @@ export function ProviderAccountsPanel({
     [pin, run, saveSettings, settings.smartBalance],
   );
 
-  const onCommitRename = useCallback(
-    (instance: ProviderInstance, label: string) => {
-      setRenamingId(null);
-      const next = label.trim();
-      if (!next || next === instance.label) return;
-      const api = pinnedProviderInstances(pin);
-      if (!api) return;
-      void run(() => api.rename({ id: instance.id, label: next }));
-    },
-    [pin, run],
-  );
-
   /**
    * Bring a replaced login back. A copy of THIS account is the natural slot:
    * signing it in to the replaced email turns two cards of one login back into
@@ -332,7 +310,7 @@ export function ProviderAccountsPanel({
         candidate.sameLoginAs === instance.id && !isBaseProviderInstance(candidate)
       ));
       if (slot) openSheet({ existing: slot });
-      else openSheet({ existing: null, label: labelFromEmail(email) });
+      else openSheet({ existing: null, email });
     },
     [instances, openSheet],
   );
@@ -487,9 +465,6 @@ export function ProviderAccountsPanel({
                 onAction={onAction}
                 onSignIn={(target) => openSheet({ existing: target })}
                 replacedNote={replacedNote}
-                renaming={renamingId === instance.id}
-                onCommitRename={onCommitRename}
-                onCancelRename={() => setRenamingId(null)}
               />
             );
           })}

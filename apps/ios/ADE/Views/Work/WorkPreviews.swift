@@ -1394,7 +1394,6 @@ enum ADEPreviewScreen: String, CaseIterable {
   case accounts = "accounts"
   case accountsOtherMachine = "accounts-other-machine"
   case accountDetail = "account-detail"
-  case accountAdd = "account-add"
   case accountSignInClaude = "account-signin-claude"
   case accountSignInCodex = "account-signin-codex"
   case accountSignInDone = "account-signin-done"
@@ -1506,8 +1505,6 @@ struct ADEPreviewScreenHost: View {
       ProviderAccountsPreviewHost(screen: .otherMachine)
     case .accountDetail:
       ProviderAccountsPreviewHost(screen: .detail)
-    case .accountAdd:
-      ProviderAccountsPreviewHost(screen: .add)
     case .accountSignInClaude:
       ProviderAccountsPreviewHost(screen: .signInClaude)
     case .accountSignInCodex:
