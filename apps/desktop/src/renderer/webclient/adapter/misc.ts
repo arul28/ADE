@@ -276,8 +276,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   infra.addDispose(
     events.on("githubInvalidated", async () => {
-      const status = await call("github.getStatus", {}, githubDisconnectedStatus());
-      events.emit("githubStatusChanged", status);
+      // A computer that is reconnecting, or a project switch, ends the read;
+      // the status shown stays until the next invalidation reads it again.
+      const status = await call("github.getStatus", {}, githubDisconnectedStatus()).catch(() => null);
+      if (status) events.emit("githubStatusChanged", status);
     })
   );
 

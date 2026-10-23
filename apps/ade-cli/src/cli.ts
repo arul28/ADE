@@ -10627,7 +10627,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "regenerateSessionMetadata",
-          withSession(fields.length ? { fields } : {}),
+          collectGenericObjectArgs(args, {
+            ...(fields.length ? { fields } : {}),
+            // Like `note` and `ask`: the caller's own chat unless one is named.
+            sessionId: requireValue(sessionId ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null), "sessionId"),
+          }),
         ),
       ],
     };
@@ -13301,7 +13305,10 @@ function buildFilesPlan(args: string[]): CliPlan {
       label: "file actions",
       steps: [listActionsStep("actions", "file")],
     };
-  const workspaceId = readValue(args, ["--workspace", "--workspace-id"]);
+  // A lane's workspace id is its lane id, so the shell's lane is the default.
+  const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
+    ?? readLaneId(args)
+    ?? (process.env.ADE_LANE_ID?.trim() || null);
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,

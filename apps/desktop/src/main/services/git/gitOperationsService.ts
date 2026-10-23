@@ -758,6 +758,8 @@ export function createGitOperationsService({
           );
         } catch (error) {
           if (isMissingWorktreeError(error)) throw laneWorktreeMissingError(lane);
+          // A new repository's branch has no commits yet: its history is empty.
+          if (/does not have any commits yet/.test(error instanceof Error ? error.message : String(error))) return [];
           throw error;
         }
 

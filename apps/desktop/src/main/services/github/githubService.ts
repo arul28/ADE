@@ -2128,10 +2128,21 @@ export function createGithubService({
   });
 
   const listRepoAutolinks = async (owner: string, name: string): Promise<GitHubAutolink[]> => {
-    const data = await apiRequestAllPages<Record<string, unknown>>({
-      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-      query: { per_page: 100 },
-    });
+    let data: Record<string, unknown>[];
+    try {
+      data = await apiRequestAllPages<Record<string, unknown>>({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+        query: { per_page: 100 },
+      });
+    } catch (error) {
+      // GitHub shows a repository's autolinks only to its admins, and answers
+      // everyone else with a bare 404 ("Not Found").
+      const status = (error as { status?: unknown }).status;
+      if (status === 404 || status === 403) {
+        throw new Error(`Only admins of ${owner}/${name} can read its GitHub autolinks.`);
+      }
+      throw error;
+    }
     return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
   };
 

@@ -361,6 +361,8 @@ class HeadlessGithubCredentialAttemptError extends Error {
     message: string,
     readonly authFailure: GitHubAuthFailure,
     readonly rateLimit: GitHubRateLimitState | null,
+    /** The HTTP status of a REST failure, when there was one. */
+    readonly status: number | null = null,
   ) {
     super(message);
     this.name = "HeadlessGithubCredentialAttemptError";
@@ -1553,6 +1555,7 @@ export function createHeadlessGitHubService(
           message,
           failure.authFailure,
           failure.rateLimit,
+          response.status,
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
@@ -2415,10 +2418,21 @@ export function createHeadlessGitHubService(
       });
     },
     async listRepoAutolinks(owner, name) {
-      const rows = await apiRequestAllPages({
-        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-        query: { per_page: 100 },
-      });
+      let rows: Record<string, unknown>[];
+      try {
+        rows = await apiRequestAllPages<Record<string, unknown>>({
+          path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+          query: { per_page: 100 },
+        });
+      } catch (error) {
+        // GitHub shows a repository's autolinks only to its admins, and answers
+        // everyone else with a bare 404 ("Not Found").
+        const status = (error as { status?: unknown }).status;
+        if (status === 404 || status === 403) {
+          throw new Error(`Only admins of ${owner}/${name} can read its GitHub autolinks.`);
+        }
+        throw error;
+      }
       return rows.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
     },
     async createRepoAutolink(owner, name, args) {

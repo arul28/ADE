@@ -19,6 +19,13 @@ const SLOW_CALL_BREADCRUMB_MS = 250;
 
 type PatchedIpcMain = typeof ipcMain & { __adeSentryWrapped?: boolean };
 
+const IPC_TIMEOUT_MESSAGE = /^IPC handler for '[^']+' timed out after (\d+)ms\b/;
+
+function sleptThroughTimeout(error: unknown, durationMs: number): boolean {
+  const limitMs = Number(IPC_TIMEOUT_MESSAGE.exec(error instanceof Error ? error.message : "")?.[1]);
+  return limitMs > 0 && durationMs > limitMs * 2;
+}
+
 /**
  * `labelFor` names a call more precisely than its channel when it can (the
  * brain's action channel carries every action); it returns the channel
@@ -42,7 +49,9 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
-        if (isExpectedOutcome(error)) {
+        // A timeout that fired long after its limit means the machine slept
+        // through the call, so its timer ran late; nothing hung.
+        if (isExpectedOutcome(error) || sleptThroughTimeout(error, durationMs)) {
           // An answer ("Lane not found", "Can't reach …"): a Sentry Log, not an issue.
           forwardLogToSentry("warn", `ipc.expected.${label}`, {
             message: error instanceof Error ? error.message : String(error),

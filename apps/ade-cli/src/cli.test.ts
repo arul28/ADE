@@ -2959,7 +2959,15 @@ describe("ADE CLI", () => {
       "hello",
     ]);
 
-    const plan = buildCliPlan(parsed.command);
+    // `files` defaults its workspace to the shell's lane; this case has none.
+    const previousLane = process.env.ADE_LANE_ID;
+    delete process.env.ADE_LANE_ID;
+    let plan: ReturnType<typeof buildCliPlan>;
+    try {
+      plan = buildCliPlan(parsed.command);
+    } finally {
+      if (previousLane !== undefined) process.env.ADE_LANE_ID = previousLane;
+    }
     const executePlan = expectExecutePlan(plan);
 
     expect(executePlan.steps[0]?.params).toEqual({

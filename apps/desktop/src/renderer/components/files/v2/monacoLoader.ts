@@ -8,25 +8,42 @@ import type * as Monaco from "monaco-editor";
  */
 let monacoInit: Promise<typeof Monaco> | null = null;
 
+/**
+ * The worker for each Monaco language label. CSS, JSON and HTML run their
+ * language features (colors, validation, formatting) in their own worker; the
+ * plain editor worker answers them with "Missing requestHandler". Each is
+ * imported only when a model of that language first needs it.
+ */
+async function createMonacoWorker(label: string): Promise<Worker> {
+  switch (label) {
+    case "typescript":
+    case "javascript":
+      return new (await import("monaco-editor/esm/vs/language/typescript/ts.worker?worker")).default();
+    case "css":
+    case "scss":
+    case "less":
+      return new (await import("monaco-editor/esm/vs/language/css/css.worker?worker")).default();
+    case "json":
+      return new (await import("monaco-editor/esm/vs/language/json/json.worker?worker")).default();
+    case "html":
+    case "handlebars":
+    case "razor":
+      return new (await import("monaco-editor/esm/vs/language/html/html.worker?worker")).default();
+    default:
+      return new (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default();
+  }
+}
+
 export async function loadMonaco(): Promise<typeof Monaco> {
   if (!monacoInit) {
     monacoInit = (async () => {
-      const [{ default: EditorWorker }, { default: TsWorker }] = await Promise.all([
-        import("monaco-editor/esm/vs/editor/editor.worker?worker"),
-        import("monaco-editor/esm/vs/language/typescript/ts.worker?worker"),
-      ]);
       const globalAny = globalThis as typeof globalThis & {
-        MonacoEnvironment?: { getWorker?: (workerId: string, label: string) => Worker };
+        MonacoEnvironment?: { getWorker?: (workerId: string, label: string) => Promise<Worker> | Worker };
       };
       const existing = globalAny.MonacoEnvironment;
       globalAny.MonacoEnvironment = {
         ...existing,
-        getWorker:
-          existing?.getWorker ??
-          ((_workerId: string, label: string) => {
-            if (label === "typescript" || label === "javascript") return new TsWorker();
-            return new EditorWorker();
-          }),
+        getWorker: existing?.getWorker ?? ((_workerId: string, label: string) => createMonacoWorker(label)),
       };
       const monaco = await import("monaco-editor");
       defineAdeThemes(monaco);
