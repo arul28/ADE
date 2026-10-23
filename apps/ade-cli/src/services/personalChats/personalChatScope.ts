@@ -704,7 +704,10 @@ export class PersonalChatScope {
         // The images a personal chat shows: its attachments, and the pictures
         // its agent saved and viewed in its own workspace or artifact store.
         // Nothing else on the machine.
-        const requestedPath = await fs.promises.realpath(requiredString(args.path, "path"));
+        // A relative name is one the agent used in its own workspace.
+        const requestedPath = await fs.promises.realpath(
+          path.resolve(runtime.workspaceRoot, requiredString(args.path, "path")),
+        );
         const roots = await Promise.all([
           projectAttachmentsDir(runtime.projectRoot),
           resolveAdeLayout(runtime.projectRoot).artifactsDir,

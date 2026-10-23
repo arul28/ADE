@@ -181,7 +181,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError } from "../shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -9634,10 +9634,10 @@ app.whenReady().then(async () => {
     try {
       return await localRuntimePool.callSync("keepAwake.call", { action, args: args ?? {} });
     } catch (error) {
+      // A brain without the service answers "not callable", which sends the
+      // IPC handler to this app's own service.
+      if (isUnsupportedAdeActionError(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      if (/Method not found: keepAwake\.call/.test(message)) {
-        throw codedError("This machine's brain does not manage keep-awake.", ACTION_NOT_CALLABLE_CODE);
-      }
       if (!/Method keepAwake\.call requires params\.projectId/.test(message)) throw error;
     }
     const projects = await localRuntimePool.projects();

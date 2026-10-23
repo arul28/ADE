@@ -612,7 +612,7 @@ describe("multi-project RPC server", () => {
 
       const unmanaged = await connect("cto", null);
       await expect(unmanaged({ jsonrpc: "2.0", id: 2, method: "keepAwake.call", params: { action: "getSnapshot" } }))
-        .rejects.toThrow(/Method not found: keepAwake\.call/);
+        .rejects.toThrow(/does not manage keep-awake/);
       unmanaged.dispose();
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);

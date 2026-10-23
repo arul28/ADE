@@ -175,7 +175,7 @@ export function ChatSection() {
               <ProjectSettingsNotice
                 group="Smart decisions"
                 title="Project chat settings"
-                hint="Next prompt suggestions, Smart decisions and Claude mods are saved in each project. Open a project to change them."
+                detail="Next prompt suggestions, Smart decisions and Claude mods are saved in each project."
               />
             ) : (
               <>

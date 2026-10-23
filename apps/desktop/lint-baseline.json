@@ -20,8 +20,7 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/chat/ComposerSmartLinkMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
+      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/chat/CursorCloudAdvancedMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,

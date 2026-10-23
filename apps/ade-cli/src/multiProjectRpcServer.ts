@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import {
@@ -2535,7 +2536,11 @@ export function createMultiProjectRpcRequestHandler(
       }
       const keepAwake = options.keepAwakeService;
       if (!keepAwake) {
-        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Method not found: keepAwake.call (this runtime does not manage keep-awake).");
+        // Coded as not callable: the desktop then uses its own keep-awake service.
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, "This runtime does not manage keep-awake."),
+        );
       }
       const action = typeof params.action === "string" ? params.action.trim() : "";
       const args = isRecord(params.args) ? params.args : {};

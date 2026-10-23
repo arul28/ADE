@@ -321,7 +321,7 @@ export function NotificationsSection() {
               <ProjectSettingsNotice
                 group="Scheduled work"
                 title="Scheduled work"
-                hint="Scheduled work is saved in each project. Open a project to see its jobs or pause them."
+                detail="Scheduled work is saved in each project, with its jobs and its pause."
               />
             ) : (
               <AiFeaturesSection />

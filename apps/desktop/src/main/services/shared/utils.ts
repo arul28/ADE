@@ -642,8 +642,8 @@ export function resolveWithinAllowedRoots(
 ): string {
   // A blank root is "no folder", never the working directory: `path.resolve("")`
   // is the process's cwd, which is "/" for an app opened from Finder.
-  roots = roots.filter((root) => typeof root === "string" && root.trim().length > 0);
-  const rootReals: Array<{ real: string | null; error: unknown }> = roots.map((root) => {
+  const allowedRoots = roots.filter((root) => typeof root === "string" && root.trim().length > 0);
+  const rootReals: Array<{ real: string | null; error: unknown }> = allowedRoots.map((root) => {
     try {
       return { real: realpathExisting(path.resolve(root)), error: null };
     } catch (error) {
@@ -654,7 +654,7 @@ export function resolveWithinAllowedRoots(
     rootReals.some(({ real }) => real !== null && isWithinDir(real, filePath));
   let sawEscape = false;
   let ownRootFailure: unknown = null;
-  for (const [index, root] of roots.entries()) {
+  for (const [index, root] of allowedRoots.entries()) {
     const { real, error: rootError } = rootReals[index];
     const walk = walkWithinRoot(root, candidate);
     if (walk.failure === null) {

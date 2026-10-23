@@ -8,10 +8,13 @@ import { effectiveRuntimeBinding } from "./chatMachineRouting";
  * One rule for every surface that shows or copies an attachment image:
  * - A chat that has its own reader (a personal chat, whose files are not under
  *   any project) reads through it, and only through it.
- * - Otherwise read once, through the runtime of `pin`. No pin means the machine
- *   this window is bound to; with no project bound, that is this computer's
- *   own reader. The runtime allows every folder this computer's reader does,
- *   so a refusal there is the answer, not a cue to ask again here.
+ * - Otherwise read through the runtime of `pin`. No pin means the machine this
+ *   window is bound to; with no project bound, that is this computer's own
+ *   reader. When the owner is this computer and the runtime cannot answer (it
+ *   is down, or the path is outside its folders but in an OS user folder it
+ *   cannot know, like a Desktop moved into OneDrive), ask this computer's
+ *   reader too. A runtime answer about the file itself ("Path does not
+ *   exist", "not an image", too large) is final: asking again only fails again.
  * - Never read a remote-owned path here. That path names a file on the other
  *   machine, and on this computer it is missing or, worse, a different file.
  */
@@ -104,9 +107,7 @@ async function readUncached(
     try {
       return await runtimeRead(path, pin ?? undefined);
     } catch (error) {
-      // A brain from before chat images could live outside the project
-      // refuses them with this message; this computer's reader still can.
-      if (!ownedHere || !localRead || !LEGACY_RUNTIME_REFUSAL.test(errorText(error))) throw error;
+      if (!ownedHere || !localRead || FINAL_FILE_ANSWER.test(errorText(error))) throw error;
       return await localRead(path).catch(() => {
         throw error;
       });
@@ -116,7 +117,8 @@ async function readUncached(
   throw new Error("No image reader is available for the machine that owns this attachment.");
 }
 
-const LEGACY_RUNTIME_REFUSAL = /Image path must be inside the project/;
+/** A runtime answer about the file itself, which this computer's reader would repeat. */
+const FINAL_FILE_ANSWER = /Path does not exist|not an image|not a file|or smaller\./i;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
