@@ -771,6 +771,10 @@ struct WorkChatSessionView: View {
   @Environment(\.duoComposerLeadingInset) private var duoComposerLeadingInset
   @Environment(\.workCompactEdgeRail) private var workCompactEdgeRail
   @Environment(\.duoLayout) private var composerDuoLayout
+  /// A short window (a phone or the Duo's outer display held landscape): the
+  /// chrome under the thread takes one row less (the send notice joins the
+  /// pill row instead of standing on its own above it).
+  @Environment(\.verticalSizeClass) private var composerVerticalSizeClass
   /// The tools pane is open beside this chat. Its tools are then in the pane's
   /// toolbar, so the composer drops its lane tool chips (never the chat's own).
   var duoPaneOpen = false
@@ -2265,10 +2269,11 @@ struct WorkChatSessionView: View {
   func composerPillRowContent(hasBannersAbove: Bool) -> ComposerPillRowContent {
     let hasNotice = composerFeedback != nil
     let chips = showsComposerBadgeChips
+    let short = composerVerticalSizeClass == .compact
     return ComposerPillRowContent(
       shown: chips || hasNotice || (jumpToLatestVisible && hasBannersAbove),
-      noticeInline: !chips && hasNotice,
-      noticeAbove: chips && hasNotice
+      noticeInline: (!chips || short) && hasNotice,
+      noticeAbove: chips && hasNotice && !short
     )
   }
 
@@ -2291,6 +2296,10 @@ struct WorkChatSessionView: View {
   func composerPillRow(noticeInline: Bool) -> some View {
     HStack(alignment: .center, spacing: 8) {
       if showsComposerBadgeChips {
+        // Short windows: the notice leads the pills on their one row.
+        if noticeInline, let composerFeedback {
+          composerFeedbackNotice(composerFeedback, inline: true)
+        }
         composerBadgeChipRow
       } else if noticeInline, let composerFeedback {
         composerFeedbackNotice(composerFeedback)
@@ -2306,9 +2315,10 @@ struct WorkChatSessionView: View {
 
   /// "Reconnecting… Your draft is safe." and the other send notices: a small
   /// glass caption at the leading edge.
-  func composerFeedbackNotice(_ text: String) -> some View {
+  func composerFeedbackNotice(_ text: String, inline: Bool = false) -> some View {
     Text(text)
       .font(.caption2)
+      .lineLimit(inline ? 1 : nil)
       .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
       .multilineTextAlignment(.leading)
       .padding(.horizontal, 10)
@@ -2324,7 +2334,8 @@ struct WorkChatSessionView: View {
       // Floats over the thread like every other control: its own glass,
       // no band behind the composer stack.
       .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(maxWidth: inline ? 260 : .infinity, alignment: .leading)
+      .layoutPriority(inline ? 1 : 0)
   }
 
   /// Band the header covers at the top of the transcript: the status bar and
@@ -2823,7 +2834,7 @@ func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFlo
 /// paper tone so the chat doesn't look out of place there.
 /// The widest the thread and composer get: past it, lines are too long to
 /// read (desktop caps its chat column the same way).
-let workChatReadableWidth: CGFloat = 860
+let workChatReadableWidth: CGFloat = 760
 
 let workChatCanvasBackground = Color(uiColor: UIColor { traits in
   traits.userInterfaceStyle == .dark
@@ -2973,6 +2984,7 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
   var compactFirstOffer: WorkCompactFirstOffer? = nil
@@ -3338,7 +3350,9 @@ private struct WorkChatComposerDraftInput: View {
   /// re-lays the whole draft out on a background hop that lands outside the
   /// animation, which is what made a long draft fold in steps. The folded card
   /// clips the same measured field instead (`collapsed:` below).
-  private var composerMaxLines: Int { 6 }
+  /// Fewer lines before the field scrolls in a short window, so a long
+  /// draft never takes the thread's whole height.
+  private var composerMaxLines: Int { verticalSizeClass == .compact ? 3 : 6 }
 
   /// The app's one prompt box (`ADEGlassComposerCard`): folded to
   /// [⋯][one-line field][send/stop], unfolded on focus to the field plus the

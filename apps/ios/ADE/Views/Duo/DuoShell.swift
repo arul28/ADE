@@ -39,6 +39,16 @@ final class DuoShellChrome: ObservableObject {
     guard hubHostsActivity != hosts else { return }
     hubHostsActivity = hosts
   }
+
+  /// Bumped when a screen swaps the navigation stack under the edge bar for
+  /// another one (Work's detail column: a chat, New chat, nothing picked).
+  /// The edge bar kept the old stack's items as empty glass over the new
+  /// one; the root tab view re-binds its bars, as it does after a fold.
+  @Published private(set) var barRebindToken = 0
+
+  func requestBarRebind() {
+    barRebindToken &+= 1
+  }
 }
 
 // MARK: - Root tab shell
@@ -53,19 +63,70 @@ final class DuoShellChrome: ObservableObject {
 struct DuoAdaptableTabShell<SelectionValue: Hashable, Content: TabContent>: View
 where Content.TabValue == SelectionValue {
   @Binding private var selection: SelectionValue
+  /// Every tab's value, so a fold can step the bar off the current tab and
+  /// back (see `rebindBars()`).
+  private let values: [SelectionValue]
   private let content: Content
+  @Environment(\.duoLayout) private var duo
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+  /// The tab the bar shows for a moment while it rebinds; nil the rest of
+  /// the time. The app's selection (and so every tab's `isActive`) never
+  /// moves.
+  @ObservedObject private var chrome = DuoShellChrome.shared
+  @State private var steppedSelection: SelectionValue?
+  @State private var previousSelection: SelectionValue?
 
   init(
     selection: Binding<SelectionValue>,
+    values: [SelectionValue] = [],
     @TabContentBuilder<SelectionValue> content: () -> Content
   ) {
     _selection = selection
+    self.values = values
     self.content = content()
   }
 
   var body: some View {
-    TabView(selection: $selection) {
+    TabView(selection: Binding(
+      get: { steppedSelection ?? selection },
+      set: { next in
+        steppedSelection = nil
+        selection = next
+      }
+    )) {
       content
+    }
+    // The outer display held landscape folded the rail's five tabs down to
+    // the current one whenever a screen was pushed: the tabs are how the
+    // user leaves, so they never collapse.
+    .tabBarMinimizeBehavior(.never)
+    .onChange(of: selection) { old, _ in previousSelection = old }
+    // A fold, the inner display turning between landscape (edge bar) and
+    // upright, or a phone turning (compact height) all swap the items a
+    // screen puts on its bars: one re-bind per change.
+    .onChange(of: "\(duo.isWide)|\(duo.hasEdgeBar)|\(verticalSizeClass == .compact)") { _, _ in rebindBars() }
+    .onChange(of: chrome.barRebindToken) { _, _ in rebindBars(after: .milliseconds(400)) }
+  }
+
+  /// Opening or closing the Duo swaps the current tab's toolbars (the inner
+  /// display's split columns for the phone's one stack). iOS kept the bars
+  /// bound to the stacks that were gone: the outer display showed their
+  /// empty glass (a circle and a capsule at the bottom, a dead ⋯ on the
+  /// edge) and none of the new stack's items, until the user changed tabs.
+  /// Changing tabs for one frame, and back, makes it bind the live stack.
+  private func rebindBars(after delay: Duration = .milliseconds(350)) {
+    let current = selection
+    guard let other = previousSelection.flatMap({ $0 != current ? $0 : nil })
+      ?? values.first(where: { $0 != current })
+    else { return }
+    // After the fold has swapped the tab's stacks (stepping in the same
+    // update rebinds to the stacks on their way out), for one frame.
+    Task { @MainActor in
+      try? await Task.sleep(for: delay)
+      guard selection == current else { return }
+      steppedSelection = other
+      try? await Task.sleep(for: .milliseconds(50))
+      if steppedSelection == other { steppedSelection = nil }
     }
   }
 }
@@ -74,8 +135,13 @@ extension View {
   /// Hides the root tab bar on the Duo's inner display, where the edge bar
   /// carries the tabs. Apply to each root tab's content; a tab bar's
   /// visibility is set from inside the tab, never on the tab view itself.
+  ///
+  /// Compact also hides the bottom toolbar: nothing on a phone puts items
+  /// there, and after a fold the app tabs the inner display had put in it
+  /// (`DuoAppTabsToolbar`) could leave an empty glass capsule behind.
   func duoHidesTabBar(_ hidden: Bool) -> some View {
     toolbar(hidden ? .hidden : .automatic, for: .tabBar)
+      .toolbar(hidden ? .automatic : .hidden, for: .bottomBar)
   }
 
   /// Publishes the window's layout family to `DuoAppNavigation`, which is how
@@ -264,16 +330,32 @@ private struct DuoAppTabsMenuItem: ToolbarContent {
 /// before any of them does.
 /// Back to the Hub as the top-leading item of an in-project screen: the
 /// ‹ project logo, kept in the top row (never moved into the edge bar).
+///
+/// The same ‹ logo as the Work, Lanes and Files list headers (no capsule, and
+/// the ADE mark rather than a folder glyph when the project has no icon), so
+/// the way back looks the same on every tab and sits level with the round
+/// toolbar buttons beside it.
 struct DuoHubBackToolbarItem: ToolbarContent {
   var body: some ToolbarContent {
     if #available(iOS 27.1, *) {
-      ToolbarItem(placement: .topBarLeading) { ADEHubBackButton() }
+      ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
         .sharedBackgroundVisibility(.hidden)
         .axisBehavior(.horizontalOnly)
     } else {
-      ToolbarItem(placement: .topBarLeading) { ADEHubBackButton() }
+      ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
         .sharedBackgroundVisibility(.hidden)
     }
+  }
+}
+
+private struct DuoHubBackButton: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    WorkHeaderProjectButton(iconDataUrl: syncService.activeProject?.iconDataUrl) {
+      syncService.showProjectHub()
+    }
+    .padding(.horizontal, 4)
   }
 }
 
@@ -473,7 +555,7 @@ private struct DuoShellFixtureScreen: View {
   @State private var selection = "files"
 
   var body: some View {
-    DuoAdaptableTabShell(selection: $selection) {
+    DuoAdaptableTabShell(selection: $selection, values: ["work", "lanes", "prs", "files", "cto"]) {
       tab("work", "Work", "terminal")
       tab("lanes", "Lanes", "square.stack.3d.up")
       tab("prs", "PRs", "arrow.triangle.pull")

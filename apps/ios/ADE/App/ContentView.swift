@@ -311,7 +311,7 @@ struct ContentView: View {
     // The same five tabs on every display: the bottom bar as always on a phone;
     // on the Duo's inner display each tab hides the bar and the edge bar carries
     // the tabs instead (see Views/Duo/DuoShell.swift).
-    DuoAdaptableTabShell(selection: $selectedTab) {
+    DuoAdaptableTabShell(selection: $selectedTab, values: RootTab.allCases) {
       workTab
       lanesTab
       prsTab

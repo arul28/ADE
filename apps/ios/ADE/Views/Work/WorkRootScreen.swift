@@ -1000,6 +1000,12 @@ struct WorkRootListScreen: View, Equatable {
     }
     .background(ADEColor.pageBackground)
     .task(id: duoPreviewSelectionKey) { applyDuoPreviewSelectionIfNeeded() }
+    // The swapped-out stack's rail items stayed behind as empty glass over
+    // the composer (a circle from nothing-picked's New chat, a capsule from a
+    // chat's tool group).
+    .onChange(of: duoDetailStackKind) { _, _ in
+      if duoLayout.hasEdgeBar { DuoShellChrome.shared.requestBarRebind() }
+    }
   }
 
 
@@ -1016,6 +1022,16 @@ struct WorkRootListScreen: View, Equatable {
     if let route = duoSelectedRoute { return .chat(route) }
     if duoViewMode == .board { return .board }
     return .empty
+  }
+
+  /// Which navigation stack the detail column holds: changing it swaps the
+  /// stack under the edge bar (see `DuoShellChrome.requestBarRebind`).
+  private var duoDetailStackKind: Int {
+    switch duoDetail {
+    case .compose: return 0
+    case .chat: return 1
+    case .board, .empty: return 2
+    }
   }
 
   @ViewBuilder
@@ -1161,7 +1177,7 @@ struct WorkRootListScreen: View, Equatable {
         } else {
           DuoWorkEmptyDetail(
             canCreate: inputs.isLive,
-            showsNewChatButton: !duoLayout.hasEdgeBar,
+            showsNewChatButton: true,
             onNewChat: pushNewChatRoute
           )
           .modifier(duoShowSessionsItem)
@@ -1171,7 +1187,11 @@ struct WorkRootListScreen: View, Equatable {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(removing: .title)
       .toolbar {
-        if duoLayout.hasEdgeBar || isBoard {
+        // Never on the edge bar: opening New chat swaps this stack for the
+        // compose one, and the edge bar then dropped the rail-top item to an
+        // empty glass circle over the composer. The sessions column's header,
+        // the empty state and the board header carry New chat there.
+        if isBoard && !duoLayout.hasEdgeBar {
           ToolbarItem(placement: .topBarTrailing) { duoNewChatRailButton }
         }
         // Activity and Settings are in the sessions ⋯, not on the rail.
@@ -1227,6 +1247,18 @@ struct WorkRootListScreen: View, Equatable {
       }
       .pickerStyle(.segmented)
       .frame(width: 150)
+      if duoLayout.hasEdgeBar {
+        Button(action: pushNewChatRoute) {
+          Image(systemName: "square.and.pencil")
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!inputs.isLive)
+        .accessibilityLabel("New chat")
+      }
     }
   }
 
@@ -1741,7 +1773,9 @@ struct WorkRootListScreen: View, Equatable {
       .contentMargins(.horizontal, duoColumn ? 0 : nil, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
-    let list = workListChrome(rows, duoColumn: duoColumn)
+    // The filter panel drops from under the header (search and its filter
+    // chip), not over it: on the rows, whose safe area the header insets.
+    let rowsWithFilters = rows
       .overlay(alignment: .top) {
         if filterPanelOpen {
           ZStack(alignment: .top) {
@@ -1759,6 +1793,7 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .animation(.snappy(duration: 0.18), value: filterPanelOpen)
+    let list = workListChrome(rowsWithFilters, duoColumn: duoColumn)
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if isSelecting {
           WorkSelectionActionBar(
@@ -1951,41 +1986,6 @@ struct WorkRootListScreen: View, Equatable {
       }
   }
 
-  /// New chat, Activity, Linear, GitHub Issues, Cursor Cloud and Settings as
-  /// separate buttons on the outer display's edge bar (the Hub's controls
-  /// land there the same way).
-  @ToolbarContentBuilder
-  private var workEdgeRailItems: some ToolbarContent {
-    let actions = workHeaderActions
-    ToolbarItem(placement: .topBarTrailing) {
-      Button("New chat", systemImage: "square.and.pencil", action: actions.onNewChat)
-        .disabled(!inputs.isLive)
-    }
-    ToolbarSpacer(.fixed, placement: .topBarTrailing)
-    ToolbarItemGroup(placement: .topBarTrailing) {
-      WorkActivityRailButton(action: actions.onOpenActivity)
-      if inputs.showsLinear {
-        Button(action: actions.onOpenLinear) {
-          Label { Text("Linear") } icon: { Image("LinearLogo") }
-        }
-      }
-      if inputs.showsGitHubIssues {
-        Button(action: actions.onOpenGitHubIssues) {
-          Label { Text("GitHub Issues") } icon: { Image("ProviderGitHub") }
-        }
-      }
-      if inputs.showsCursorCloud {
-        Button(action: actions.onOpenCursorCloud) {
-          Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
-        }
-      }
-    }
-    ToolbarSpacer(.fixed, placement: .topBarTrailing)
-    ToolbarItem(placement: .topBarTrailing) {
-      Button("Settings", systemImage: "gearshape", action: actions.onOpenSettings)
-    }
-  }
-
   /// The list's chrome. The phone keeps its one-row header floating over the
   /// list; the Duo's sessions column is a native navigation bar with the title,
   /// search and the toolbar.
@@ -2015,30 +2015,10 @@ struct WorkRootListScreen: View, Equatable {
             }
           }
         }
-    } else if workListHasEdgeRail {
-      // The Duo's closed outer display: its curved edge carries a vertical
-      // bar beside the clock. New chat and the header ⋯'s items become that
-      // bar's buttons, and the header row keeps the title and a wider search.
-      rows
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { workEdgeRailItems }
-        .safeAreaInset(edge: .top, spacing: 0) {
-          WorkRootHeader(
-            projectIconDataUrl: inputs.projectIconDataUrl,
-            searchText: searchTextBinding,
-            filterOpen: $filterPanelOpen,
-            activeFilterCount: workActiveFilterCount,
-            isLive: inputs.isLive,
-            showsLinear: inputs.showsLinear,
-            showsCursorCloud: inputs.showsCursorCloud,
-            showsGitHubIssues: inputs.showsGitHubIssues,
-            selectionCount: isSelecting ? selectedSessionIds.count : nil,
-            actions: workHeaderActions,
-            showsTrailingActions: false
-          )
-        }
     } else {
+      // Every phone, the Duo's closed outer display included: the header's
+      // own row (no buttons on the outer display's rail, which then keeps
+      // its five tabs held landscape, and no bell: Activity is in ⋯).
       rows
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)

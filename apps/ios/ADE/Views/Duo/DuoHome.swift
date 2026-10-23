@@ -469,17 +469,10 @@ struct DuoPersonalChatsWindow: View {
               onSelect: { summary, machineKey in
                 selection = Selection(summary: summary, machineKey: machineKey)
               },
-              selectedSessionId: selection?.summary.sessionId
+              selectedSessionId: selection?.summary.sessionId,
+              onClose: onClose
             )
             .duoLeadingColumnContent()
-            .toolbar {
-              ToolbarItem(placement: .topBarLeading) {
-                Button(action: onClose) {
-                  Label("Home", systemImage: "chevron.backward")
-                }
-                .accessibilityHint("Returns to all projects.")
-              }
-            }
           }
         } second: {
           detail
@@ -763,7 +756,7 @@ enum DuoWidgetRowMetrics {
   static let textInset: CGFloat = 44
 }
 
-/// One chat in the Needs you widget: the state glyph, the title on one line,
+/// One chat in the Needs you widget: the state glyph, the title (up to two lines),
 /// project · lane under it, and how long ago. The glyph carries the state (a
 /// red triangle is a failure); the row speaks the word. Taps open the chat.
 struct DuoWidgetChatRow: View {
@@ -784,10 +777,13 @@ struct DuoWidgetChatRow: View {
           .frame(width: DuoWidgetRowMetrics.textInset - 16, alignment: .center)
         VStack(alignment: .leading, spacing: 1) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // Two lines before it truncates: the column is narrow beside the
+            // project grid (an iPad held portrait), and one line cut most
+            // titles to a few words.
             Text(item.row.title)
               .font(.subheadline)
               .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
+              .lineLimit(2)
               .frame(maxWidth: .infinity, alignment: .leading)
             if let activity = item.row.activityLabel {
               Text(activity)

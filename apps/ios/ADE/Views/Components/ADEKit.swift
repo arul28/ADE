@@ -954,6 +954,11 @@ extension View {
   /// An inset-grouped `List` that reads like `ADESettingsPage` + `ADESettingsRows`.
   func adeSettingsList() -> some View {
     listStyle(.insetGrouped)
+      // The same 16pt sides as `ADESettingsPage`: a regular-width window
+      // widened the system's inset, so List pages ended further in than the
+      // pages beside them. Plus the trailing safe area, so the rows still
+      // stop at the Duo's edge bar.
+      .duoInsetGroupedMargins(16)
       .scrollContentBackground(.hidden)
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .listSectionSpacing(22)

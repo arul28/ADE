@@ -1119,15 +1119,19 @@ struct HubProjectTile: View, Equatable {
               HubProjectMachineChip(count: machineCount)
             }
           }
-          Spacer(minLength: 8)
+          // The name right under the icon and the counts pinned to the
+          // bottom: a name that wraps to two lines no longer pushes its
+          // tile's counts below its neighbours' (the content overflowed the
+          // fixed height).
           Text(project.displayName)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
         }
-        Spacer(minLength: 6)
+        Spacer(minLength: 0)
         // Bound to a local because `stateCounts` walks the whole lane tree.
         let stateCounts = presentation.stateCounts
         HStack(alignment: .lastTextBaseline, spacing: 6) {

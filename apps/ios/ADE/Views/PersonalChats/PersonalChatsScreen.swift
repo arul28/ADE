@@ -8,6 +8,10 @@ struct PersonalChatsScreen: View {
   var onSelect: ((AgentChatSessionSummary, _ machineKey: String?) -> Void)? = nil
   /// The chat the detail column shows, drawn selected in the list.
   var selectedSessionId: String? = nil
+  /// Back to the Hub from the Duo's Chats window; nil when the list is
+  /// pushed (the ‹ then pops it).
+  var onClose: (() -> Void)? = nil
+  @Environment(\.dismiss) private var dismiss
   @State private var searchText = ""
   @State private var loading = false
   @State private var errorMessage: String?
@@ -84,32 +88,60 @@ struct PersonalChatsScreen: View {
         chatList
       }
     }
-    .navigationTitle("Chats")
+    // Every list column's header (Work, Lanes): ‹ ADE and the title, then
+    // search with its filter inside, and New chat.
+    .navigationTitle("")
     .adeAnalyticsScreen(.personalChats)
-    .navigationBarTitleDisplayMode(.large)
-    .searchable(text: $searchText, prompt: "Search chats")
+    .navigationBarTitleDisplayMode(.inline)
+    .navigationBarBackButtonHidden(true)
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        Menu {
-          Toggle("Show archived", isOn: $showsArchived)
-        } label: {
-          Image(systemName: "ellipsis.circle")
+      ToolbarItem(placement: .topBarLeading) {
+        HStack(spacing: 6) {
+          WorkHeaderProjectButton(iconDataUrl: nil) {
+            if let onClose { onClose() } else { dismiss() }
+          }
+          .accessibilityLabel("Back to all projects")
+          Text("Chats")
+            .font(.system(size: 22, weight: .heavy, design: .rounded))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityAddTraits(.isHeader)
         }
-        .accessibilityLabel("Chat list options")
+        .padding(.horizontal, 4)
       }
-      ToolbarItem(placement: .topBarTrailing) {
+      .sharedBackgroundVisibility(.hidden)
+    }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      HStack(spacing: 8) {
+        LaneHeaderSearchField(
+          searchText: $searchText,
+          prompt: "Search chats",
+          filterLabel: "Chat filters"
+        ) {
+          Toggle("Show archived", isOn: $showsArchived)
+        } filterActive: {
+          showsArchived
+        }
         Button {
           newChatPresented = true
         } label: {
           Image(systemName: "square.and.pencil")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(canCreateChat ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 36, height: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .disabled(!canCreateChat)
         .accessibilityLabel("New chat")
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
           : "Connect to a compatible ADE machine to start a chat.")
       }
+      .padding(.horizontal, 16)
+      .padding(.bottom, 6)
+      .background(ADEColor.pageBackground.opacity(0.94))
     }
     .navigationDestination(isPresented: $newChatPresented) {
       PersonalChatNewScreen()
@@ -175,9 +207,12 @@ struct PersonalChatsScreen: View {
               } label: {
                 PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
               }
+              // The selected row, as Work and Lanes mark theirs.
               .background {
                 if summary.sessionId == selectedSessionId {
-                  ADEColor.accent.opacity(0.14)
+                  RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ADEColor.accent.opacity(0.12))
+                    .padding(.horizontal, 6)
                 }
               }
               .accessibilityAddTraits(summary.sessionId == selectedSessionId ? .isSelected : [])
@@ -215,11 +250,11 @@ struct PersonalChatsScreen: View {
           }
         }
       }
-      .adeKitCard(padding: nil)
+      // Flat rows under the header, like every other list column (no card
+      // around the list).
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      .padding(.vertical, 4)
     }
     .refreshable { await refresh() }
     .scrollIndicators(.hidden)

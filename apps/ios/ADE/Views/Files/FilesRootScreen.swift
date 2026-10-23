@@ -323,6 +323,9 @@ extension View {
     @ViewBuilder row: () -> Row
   ) -> some View {
     safeAreaInset(edge: .top, spacing: 0) { row() }
+      // The viewer hides the bar held landscape on a phone; coming back,
+      // the tree asks for it again (SwiftUI kept it hidden after the pop).
+      .toolbar(.visible, for: .navigationBar)
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {

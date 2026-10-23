@@ -341,7 +341,7 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
         if let side, let primary {
           pairedGroups(primary: primary, side: side, book: book, size: size, fold: fold)
         } else {
-          group(primary, isSide: false, carriesAppTabs: true, runsUnderRail: true, fold: fold, landscape: true)
+          group(primary, isSide: false, carriesAppTabs: true, runsUnderRail: false, fold: fold, landscape: true)
         }
       }
       .frame(maxWidth: .infinity)
@@ -361,7 +361,7 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
       onCloseGroup: { closeGroup(isSide: true) },
       onFind: onFind,
       treeVisible: false,
-      runsUnderRail: duoLayout.hasEdgeBar
+      runsUnderRail: false
     )
     let leftWidth = book.map { max(0, min($0.minX, size.width)) } ?? size.width / 2
     return NavigationStack {
@@ -426,13 +426,20 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
         DuoSeam(axis: .vertical)
           .ignoresSafeArea()
       }
-      if side != nil {
-        VStack(spacing: 0) {
-          group(primary, isSide: false, carriesAppTabs: true, runsUnderRail: false, fold: fold, landscape: false)
-          DuoSeam(axis: .horizontal)
-            .ignoresSafeArea()
-          group(side, isSide: true, carriesAppTabs: false, runsUnderRail: false, fold: fold, landscape: false)
-        }
+      if let side, let primary {
+        // Too narrow for two editors side by side, and two stacked halves
+        // showed a few lines each: one editor at a time, the two files a
+        // switcher in its header.
+        group(
+          sideFocused ? side : primary,
+          isSide: sideFocused,
+          carriesAppTabs: true,
+          runsUnderRail: false,
+          fold: fold,
+          landscape: false,
+          switcher: AnyView(editorSwitcher(primary: primary, side: side))
+        )
+        .frame(maxWidth: .infinity)
       } else {
         group(primary, isSide: false, carriesAppTabs: true, runsUnderRail: false, fold: fold, landscape: false)
           .frame(maxWidth: .infinity)
@@ -441,6 +448,26 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
   }
 
   // MARK: Groups
+
+  /// The two open files, one shown at a time (a narrow window).
+  private func editorSwitcher(primary: DuoFilesEditorRef, side: DuoFilesEditorRef) -> some View {
+    Picker("Editor", selection: Binding(
+      get: { sideFocused },
+      set: { next in
+        ADEHaptics.light()
+        sideFocused = next
+      }
+    )) {
+      Text(verbatim: (primary.path as NSString).lastPathComponent).tag(false)
+      Text(verbatim: (side.path as NSString).lastPathComponent).tag(true)
+    }
+    .pickerStyle(.segmented)
+    .padding(.horizontal, 16)
+    .padding(.top, 4)
+    .padding(.bottom, 8)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.pageBackground)
+  }
 
   private func noFileStack(carriesAppTabs: Bool, fold: DuoFold, landscape: Bool) -> some View {
     let treeShown = isTreeShown(fold: fold, landscape: landscape)
@@ -475,7 +502,8 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
     carriesAppTabs: Bool,
     runsUnderRail: Bool,
     fold: DuoFold,
-    landscape: Bool
+    landscape: Bool,
+    switcher: AnyView? = nil
   ) -> AnyView {
     guard let ref else {
       return AnyView(noFileStack(carriesAppTabs: carriesAppTabs, fold: fold, landscape: landscape))
@@ -491,6 +519,9 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
     return AnyView(
       NavigationStack {
         editor(ref, chrome)
+          .safeAreaInset(edge: .top, spacing: 0) {
+            if let switcher { switcher }
+          }
           .toolbar {
             if carriesAppTabs {
               DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar)

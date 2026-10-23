@@ -614,7 +614,17 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   @ViewBuilder let git: () -> Git
 
   @Environment(\.duoSplit) private var split
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
   @State private var section: Section = .overview
+
+  @Environment(\.dismiss) private var dismiss
+
+  /// A pushed lane in a short window (the Duo's outer display or an iPhone
+  /// held landscape). Any trailing toolbar item there joins the outer
+  /// display's rail, and the rail then folds its five tabs down to the
+  /// current one. So the way back is the top bar's leading item and the
+  /// lane's actions are one ⋯ in the header, and the rail keeps the tabs.
+  private var isShort: Bool { verticalSizeClass == .compact && split == nil }
 
   var body: some View {
     withToolbar(
@@ -672,6 +682,22 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
         stateLine
       }
       Spacer(minLength: 0)
+      if isShort {
+        Menu {
+          pullRequestButton
+          Button("Open in Files", systemImage: "folder", action: onOpenFiles)
+          Button("Manage lane", systemImage: "slider.horizontal.3", action: onManage)
+          Divider()
+          overflowItems
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Lane options")
+      }
     }
   }
 
@@ -707,7 +733,16 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
 
   @ViewBuilder
   private func withToolbar<Content: View>(_ content: Content) -> some View {
-    if #available(iOS 27.0, *) {
+    if isShort {
+      content
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+          ToolbarItem(placement: .topBarLeading) {
+            Button("Back", systemImage: "chevron.left") { dismiss() }
+              .accessibilityLabel("Back to lanes")
+          }
+        }
+    } else if #available(iOS 27.0, *) {
       content.toolbar {
         DuoSplitListToggle(split: split)
         ToolbarItem(placement: .topBarPinnedTrailing) { pullRequestButton }
@@ -796,9 +831,10 @@ struct LaneDuoDashboard: View {
     // Right under the column's segmented control: no grouped-list gap above.
     .contentMargins(.top, 4, for: .scrollContent)
     .contentMargins(.bottom, 24, for: .scrollContent)
-    // The same 16pt sides as the header and the segmented control above:
-    // the grouped list's own margins ran its cards ~14pt further right.
-    .contentMargins(.horizontal, 16, for: .scrollContent)
+    // The same 16pt sides as the header and the segmented control above
+    // (the grouped list's own margins ran its cards ~14pt further right),
+    // and clear of the edge bar held landscape.
+    .duoInsetGroupedMargins()
   }
 
   // MARK: Identity

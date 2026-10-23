@@ -1834,6 +1834,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   @Environment(\.duoSplit) private var split
   @Environment(\.duoLayout) private var duo
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+  @Environment(\.dismiss) private var dismiss
   @State private var dock: PrDuoDock?
   @State private var commentDraft = ""
   @State private var reviewerDraft = ""
@@ -1843,6 +1845,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   @State private var activePush: String?
   @State private var scrollRequest: PrTickScrollRequest?
   @State private var overviewSize: CGSize = .zero
+  /// The Duo's closed display, held upright: its rail runs beside the PR.
+  @State private var compactEdgeRail = false
 
   init(
     model: PrDuoDetailModel,
@@ -1903,9 +1907,17 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     case .phone, .column:
       page
         .toolbar { toolbarItems }
+        .toolbar(controlsInTitleRow ? .hidden : .automatic, for: .navigationBar)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
     }
+  }
+
+  /// A phone held landscape has little height: back and ⋯ join the title's
+  /// row instead of taking a bar of their own above it. (The Duo's closed
+  /// display keeps them at the edge bar's top.)
+  private var controlsInTitleRow: Bool {
+    context == .phone && verticalSizeClass == .compact && !duo.hasEdgeBar
   }
 
   private var page: some View {
@@ -1919,6 +1931,11 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         }
       }
       .background(ADEColor.pageBackground)
+      .onGeometryChange(for: Bool.self) { proxy in
+        workDisplayHasEdgeRail(proxy)
+      } action: { hasRail in
+        if compactEdgeRail != hasRail { compactEdgeRail = hasRail }
+      }
       // Files wants both pages for the list and the diff: the PR list folds
       // behind the sidebar toggle while it is open.
       .onChange(of: tab == .files && context == .column, initial: true) { _, files in
@@ -1949,13 +1966,25 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     .padding(.horizontal, 16)
     // Held landscape there is no top bar over the column: the title's first
     // line sits on the list column's title row.
-    .padding(.top, context == .pane ? 2 : (context == .column && duo.hasEdgeBar ? 34 : 6))
+    .padding(.top, context == .pane ? 2 : (context == .column && duo.hasEdgeBar ? 34 : (controlsInTitleRow ? 2 : 6)))
     .padding(.bottom, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var titleBlock: some View {
     HStack(alignment: .top, spacing: 12) {
+      if controlsInTitleRow {
+        Button {
+          dismiss()
+        } label: {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 16, weight: .semibold))
+            .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Back")
+      }
       // Held landscape the edge bar drops a leading item, so the way back to
       // a folded list (Files takes both pages) sits beside the title.
       if ticksInRail, let split, split.listCollapsible {
@@ -1977,7 +2006,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
           Text(model.title)
             .font(.title3.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(3)
+            .lineLimit(controlsInTitleRow ? 1 : 3)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
             .accessibilityAddTraits(.isHeader)
@@ -1994,7 +2023,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       // Held landscape the column's bar is the edge bar, whose top is the
       // ticks, so ⋯ sits beside the title; with a normal bar (an iPad, the
       // Duo upright) it is the bar's trailing item, as on the phone.
-      if context == .column && duo.hasEdgeBar {
+      if (context == .column && duo.hasEdgeBar) || controlsInTitleRow {
         Menu {
           overflow()
         } label: {
@@ -2094,9 +2123,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       .overlay(alignment: .bottom) {
         if isReady && !dockIsVertical {
           rowDock
-            // In a Work chat's pane the row sits on the composer's line: its
-            // capsules' bottom is the rail's bottom (8 = the row's own pad).
-            .modifier(PrPaneDockAlignment(active: context == .pane))
+            // Beside the edge bar (a Work chat's pane, the PRs tab, the
+            // closed display) the row's capsules end on the rail's bottom
+            // line, level with the composer (8 = the row's own pad).
+            .duoEdgeBarAlignedBottom(contentBottomPadding: 8)
+            // The closed display's rail: the same line, from the window's
+            // bottom edge (a Work chat's composer does the same).
+            .padding(.bottom, compactEdgeRail && !duo.hasEdgeBar ? DuoEdgeBar.bottomInset - 8 : 0)
+            .ignoresSafeArea(.container, edges: compactEdgeRail && !duo.hasEdgeBar ? .bottom : [])
         }
       }
       .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
@@ -2123,7 +2157,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         Spacer(minLength: 12)
         if showsDock {
           columnDock
-            .padding(.bottom, 14)
+            // The last bubble's bottom on the rail's bottom line.
+            .duoEdgeBarAlignedBottom()
         }
       }
       .frame(width: showsDock ? 44 : 26)
@@ -2204,13 +2239,15 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       LinearGradient(
         stops: [
           .init(color: ADEColor.pageBackground.opacity(0), location: 0),
-          .init(color: ADEColor.pageBackground.opacity(0.85), location: 0.3),
-          .init(color: ADEColor.pageBackground, location: 0.5),
+          .init(color: ADEColor.pageBackground.opacity(0.9), location: 0.22),
+          .init(color: ADEColor.pageBackground, location: 0.36),
         ],
         startPoint: .top,
         endPoint: .bottom
       )
-      .frame(height: 112)
+      // From above the capsules' top to the screen's bottom edge: solid by
+      // the time the capsules start, so no row reads through their glass.
+      .frame(height: 96)
       .ignoresSafeArea(edges: .bottom)
       .allowsHitTesting(false)
     }
@@ -2353,9 +2390,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
 
   @ViewBuilder
   private var files: some View {
-    if context == .column {
+    // The phone lays the tab out as the wide column does held portrait: the
+    // list over the diff. Only a chat's pane keeps a list that pushes.
+    // Loading or empty, the list says so on its own.
+    if context != .pane, !model.files.isEmpty {
       DuoLocalFoldReader { fold, size in
-        if family == .wide {
+        // A phone held landscape has the width and not the height: side by
+        // side, like the wide column.
+        if family == .wide || (context == .phone && size.width > size.height) {
           let listWidth: CGFloat = {
             if case .sideBySide(let rect) = fold, rect.minX > 220 { return rect.minX }
             return min(300, size.width * 0.4)
@@ -2368,7 +2410,9 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         } else {
           let top: CGFloat = {
             if case .stacked(let rect) = fold, rect.minY > 160 { return rect.minY }
-            return size.height * 0.4
+            // A short list takes only its own height; a long one stops at
+            // 40% and scrolls, so the diff keeps the rest.
+            return min(size.height * 0.4, filesListHeight)
           }()
           VStack(spacing: 0) {
             filesList(selecting: true).frame(height: top)
@@ -2404,6 +2448,13 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     .listSectionSpacing(4)
     .contentMargins(.bottom, 24, for: .scrollContent)
     .refreshable { await actions.refresh() }
+  }
+
+  /// The file list's own height: the summary row, a header per folder and a
+  /// row per file, plus its bottom margin.
+  private var filesListHeight: CGFloat {
+    let folders = prFileFolderGroups(model.files).count
+    return 44 + CGFloat(folders) * 30 + CGFloat(model.files.count) * 46 + 24
   }
 
   private var currentFile: PrFile? {
@@ -2624,20 +2675,5 @@ private struct PrDockCardPopover<Card: View>: ViewModifier {
 
   func body(content: Content) -> some View {
     content.popover(isPresented: $isPresented, arrowEdge: arrowEdge) { card() }
-  }
-}
-
-/// The PR pane's row of capsules, on a Duo held landscape: bottom-aligned
-/// with the edge bar's last capsule and the chat's prompt box beside it.
-private struct PrPaneDockAlignment: ViewModifier {
-  let active: Bool
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if active {
-      content.duoEdgeBarAlignedBottom(contentBottomPadding: 8)
-    } else {
-      content
-    }
   }
 }

@@ -136,9 +136,11 @@ struct LaneDiffScreen: View {
   }
 
   private var diffContent: some View {
+      // The file, the side picker, then the text taking the rest of the
+      // column (a scroll view around the header split the height in two and
+      // left a band of empty space above a short diff).
       VStack(spacing: 0) {
-        ScrollView {
-          VStack(spacing: 14) {
+          VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
               Text(request.title)
                 .font(.system(size: 14.5, weight: .semibold))
@@ -168,8 +170,7 @@ struct LaneDiffScreen: View {
               )
             }
           }
-          .padding(16)
-        }
+          .padding(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
 
         if let diff {
           if diff.isBinary == true {
@@ -214,6 +215,7 @@ struct LaneDiffScreen: View {
               .adeKitCard(padding: nil)
               .disabled(side == "original" || !canEditDiff)
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
           }
@@ -221,8 +223,11 @@ struct LaneDiffScreen: View {
           Spacer()
           ProgressView()
           Spacer()
+        } else {
+          Spacer(minLength: 0)
         }
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 
   @MainActor

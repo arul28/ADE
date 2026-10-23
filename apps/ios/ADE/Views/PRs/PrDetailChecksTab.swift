@@ -167,22 +167,32 @@ struct PrChecksSections: View {
           // summary must not read green while one is missing.
           let missing = missingRequired.count
           let icon = headlineIcon(failing: headline.failing, running: headline.running, missing: missing)
-          HStack(spacing: 8) {
-            Image(systemName: icon.symbol)
-              .foregroundStyle(icon.tint)
-              .font(.system(size: 13, weight: .semibold))
-            Text(missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text)
-              .font(.subheadline.weight(.medium))
-              .foregroundStyle(ADEColor.textPrimary)
-              // The tally takes the row before the spacer; it wrapped to
-              // three short lines beside Re-run in the Duo's check column.
-              .layoutPriority(1)
-            Spacer(minLength: 8)
-            if canRerun && headline.failing > 0 {
-              Button("Re-run", action: onRerun)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(ADEColor.accent)
-                .buttonStyle(.plain)
+          let tally = missing > 0 ? "\(headline.text) · \(missing) required missing" : headline.text
+          let showsRerun = canRerun && headline.failing > 0
+          // The tally on one line with Re-run beside it while that fits; in a
+          // narrow column (the Duo's check list, a phone) Re-run goes under
+          // the tally instead of squeezing it into three short lines.
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+              headlineGlyph(icon)
+              Text(tally)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .fixedSize()
+              Spacer(minLength: 8)
+              if showsRerun { rerunButton }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+              headlineGlyph(icon)
+              VStack(alignment: .leading, spacing: 6) {
+                Text(tally)
+                  .font(.subheadline.weight(.medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .fixedSize(horizontal: false, vertical: true)
+                if showsRerun { rerunButton }
+              }
+              Spacer(minLength: 0)
             }
           }
           .adeFlatRow(separator: .hidden)
@@ -251,6 +261,20 @@ struct PrChecksSections: View {
 
   /// The summary line's glyph: failing beats running beats a required check
   /// that never reported; all clear is green (muted when no CI ran).
+  private func headlineGlyph(_ icon: (symbol: String, tint: Color)) -> some View {
+    Image(systemName: icon.symbol)
+      .foregroundStyle(icon.tint)
+      .font(.system(size: 13, weight: .semibold))
+  }
+
+  private var rerunButton: some View {
+    Button("Re-run", action: onRerun)
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(ADEColor.accent)
+      .buttonStyle(.plain)
+      .fixedSize()
+  }
+
   private func headlineIcon(failing: Int, running: Int, missing: Int) -> (symbol: String, tint: Color) {
     if failing > 0 { return ("xmark.circle.fill", ADEColor.danger) }
     if running > 0 { return ("clock.fill", ADEColor.warning) }

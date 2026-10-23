@@ -263,54 +263,61 @@ extension LanesTabView {
     syncService.projects.first { $0.id == syncService.activeProjectId }?.iconDataUrl
   }
 
-  /// The same notices, tray and rows the phone list draws, under Work's
-  /// two-row header: ‹ project logo and "Lanes", then search (with the
-  /// filter inside it), Add lane and ⋯ (Activity, Settings).
+  /// The lane list in its own stack, the split's left column.
   var duoLanesListColumn: some View {
     NavigationStack {
-      List {
-        Section {
-          laneNoticeRows
-          if showsLaneLoadingSkeletons {
-            ForEach(0..<5, id: \.self) { _ in
-              LaneRowSkeleton()
-                .adeFlatRow(insets: laneRowInsets)
-            }
-          }
-          if !openLaneSnapshots.isEmpty {
-            openLanesTray
-              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
+      lanesListContent
+        // The column ends at the seam: the trailing inset iOS reports here is
+        // the edge bar's, not this column's.
+        .duoLeadingColumnContent()
+    }
+  }
+
+  /// The lane list on every display (the split's left column, the phone's
+  /// root): notices, the open-lanes tray and the rows, under Work's two-row
+  /// header: ‹ project logo and "Lanes", then search (with the filter inside
+  /// it), Add lane and ⋯ (Activity, Settings).
+  var lanesListContent: some View {
+    List {
+      Section {
+        laneNoticeRows
+        if showsLaneLoadingSkeletons {
+          ForEach(0..<5, id: \.self) { _ in
+            LaneRowSkeleton()
+              .adeFlatRow(insets: laneRowInsets)
           }
         }
-        laneListSections
-      }
-      .adeFlatList()
-      .listSectionSpacing(.compact)
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .environment(\.defaultMinListRowHeight, 0)
-      .adeScrollDiagnosticsSurface(.lanes, key: "lanes-split")
-      .refreshable { await refreshFromPullGesture() }
-      .safeAreaInset(edge: .top, spacing: 0) { duoLanesSearchRow }
-      // The column ends at the seam: the trailing inset iOS reports here is
-      // the edge bar's, not this column's.
-      .duoLeadingColumnContent()
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          HStack(spacing: 6) {
-            WorkHeaderProjectButton(iconDataUrl: duoProjectIconDataUrl) { syncService.showProjectHub() }
-            Text("Lanes")
-              .font(.system(size: 22, weight: .heavy, design: .rounded))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .fixedSize()
-              .accessibilityAddTraits(.isHeader)
-          }
-          .padding(.horizontal, 4)
+        if !openLaneSnapshots.isEmpty {
+          openLanesTray
+            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
         }
-        .sharedBackgroundVisibility(.hidden)
       }
+      laneListSections
+    }
+    .adeFlatList()
+    .listSectionSpacing(.compact)
+    .contentMargins(.bottom, 24, for: .scrollContent)
+    .environment(\.defaultMinListRowHeight, 0)
+    .adeScrollDiagnosticsSurface(.lanes, key: duoLayout.isWide ? "lanes-split" : "lanes")
+    .refreshable { await refreshFromPullGesture() }
+    .safeAreaInset(edge: .top, spacing: 0) { duoLanesSearchRow }
+    .adeScreenBackground()
+    .navigationTitle("")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        HStack(spacing: 6) {
+          WorkHeaderProjectButton(iconDataUrl: duoProjectIconDataUrl) { syncService.showProjectHub() }
+          Text("Lanes")
+            .font(.system(size: 22, weight: .heavy, design: .rounded))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityAddTraits(.isHeader)
+        }
+        .padding(.horizontal, 4)
+      }
+      .sharedBackgroundVisibility(.hidden)
     }
   }
 
@@ -550,6 +557,8 @@ private struct DuoLanesFixtureScreen: View {
       selection: selection,
       wantsWholeDisplay: true
     ) { _ in
+      // The real list column's shape: ‹ logo + "Lanes", then search (the
+      // filter inside it), Add lane and ⋯, and the selected row tinted.
       NavigationStack {
         List {
           Section {
@@ -568,40 +577,69 @@ private struct DuoLanesFixtureScreen: View {
                 machine: nil,
                 showsMachineChip: snapshot.lane.laneType == "primary"
               )
+              .background {
+                if selection == snapshot.lane.id {
+                  RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ADEColor.accent.opacity(0.12))
+                    .padding(.horizontal, 6)
+                }
+              }
               .adeFlatRow(insets: EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 6))
-              .listRowBackground(selection == snapshot.lane.id ? ADEColor.accent.opacity(0.12) : Color.clear)
             }
           }
         }
         .adeFlatList()
         .listSectionSpacing(.compact)
         .environment(\.defaultMinListRowHeight, 0)
-        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search lanes, branches, is:dirty")
-        .navigationTitle("Lanes")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .topBarLeading) {
-            Menu {
+        .safeAreaInset(edge: .top, spacing: 0) {
+          HStack(spacing: 8) {
+            LaneHeaderSearchField(searchText: $search) {
               Picker("Show", selection: $filter) {
                 ForEach(LaneQuickFilter.allCases) { filter in
                   Text(filter.title).tag(filter)
                 }
               }
-            } label: {
-              Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+              .pickerStyle(.inline)
+            } filterActive: {
+              filter != .active
             }
+            Button {} label: {
+              Image(systemName: "plus")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(ADEColor.textPrimary)
+                .frame(width: 32, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add lane")
+            WorkHeaderOverflowMenu(
+              showsLinear: false,
+              showsCursorCloud: false,
+              actions: WorkRootHeaderActions(onOpenActivity: {}, onOpenSettings: {})
+            )
           }
+          .padding(.horizontal, 16)
+          .padding(.bottom, 6)
+          .background(ADEColor.pageBackground.opacity(0.94))
+        }
+        .duoLeadingColumnContent()
+        .adeScreenBackground()
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
           ToolbarItem(placement: .topBarLeading) {
-            Menu {
-              Button("All machines", systemImage: "checkmark") {}
-              Button("MacBook Pro") {}
-            } label: {
-              Label("Machines", systemImage: "desktopcomputer")
+            HStack(spacing: 6) {
+              WorkHeaderProjectButton(iconDataUrl: nil) {}
+              Text("Lanes")
+                .font(.system(size: 22, weight: .heavy, design: .rounded))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityAddTraits(.isHeader)
             }
+            .padding(.horizontal, 4)
           }
-          ToolbarItem(placement: .topBarTrailing) {
-            Button("Add lane", systemImage: "plus") {}
-          }
+          .sharedBackgroundVisibility(.hidden)
         }
       }
     } detail: {
@@ -645,7 +683,8 @@ private struct DuoLaneDetailFixture: View {
       onOpenFiles: {},
       onManage: {},
       onCopyLaneLink: {},
-      onCopyBranchLink: {}
+      onCopyBranchLink: {},
+      forcesGit: diffOpen
     ) {
       LaneDuoDashboard(
         snapshot: snapshot,
@@ -716,8 +755,6 @@ private struct DuoLaneDetailFixture: View {
           onOpenLinkedPullRequest: { _ in },
           onCreateLaneFromChanges: {}
         )
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
       }
     }
   }
@@ -757,37 +794,53 @@ private struct DuoPrsFixtureScreen: View {
                 )
               }
               .buttonStyle(.plain)
+              // Before `adeFlatRow`, as in the real list: the innermost row
+              // background wins.
+              .listRowBackground(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                  .fill(selection == item.githubPrNumber ? ADEColor.accent.opacity(0.14) : Color.clear)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 2)
+              )
               .adeFlatRow(insets: EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16))
-              .listRowBackground(selection == item.githubPrNumber ? ADEColor.accent.opacity(0.12) : Color.clear)
             }
           }
         }
         .adeFlatList()
         .contentMargins(.bottom, 24, for: .scrollContent)
+        // The real list column's header (PrsRootScreen).
         .safeAreaInset(edge: .top, spacing: 0) {
-          Picker("Status", selection: $category) {
-            Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
-            Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
-            Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
+          PrListHeaderBar(
+            searchText: $search,
+            prompt: "Search PRs",
+            filterActive: false,
+            canCreate: true,
+            onCreate: {},
+            onOpenActivity: {},
+            onOpenSettings: {}
+          ) {
+            Button("Mine") {}
+          } category: {
+            Picker("Status", selection: $category) {
+              Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
+              Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
+              Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
+            }
+            .pickerStyle(.segmented)
           }
-          .pickerStyle(.segmented)
-          .padding(.horizontal, 16)
-          .padding(.top, 4)
-          .padding(.bottom, 8)
         }
-        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search PRs, branches, authors")
-        .navigationTitle("PRs")
+        .duoLeadingColumnContent()
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarTitleMenu {
-          Picker("View", selection: .constant(PrRootSurface.github)) {
-            Label("GitHub", systemImage: "arrow.triangle.pull").tag(PrRootSurface.github)
-            Label("Workflows", systemImage: "point.3.filled.connected.trianglepath.dotted").tag(PrRootSurface.workflows)
-          }
-        }
         .toolbar {
-          ToolbarItem(placement: .topBarTrailing) {
-            Button("New pull request", systemImage: "plus") {}
+          ToolbarItem(placement: .topBarLeading) {
+            HStack(spacing: 6) {
+              WorkHeaderProjectButton(iconDataUrl: nil) {}
+              PrListTitleLabel(title: "PRs")
+            }
+            .padding(.horizontal, 4)
           }
+          .sharedBackgroundVisibility(.hidden)
         }
       }
     } detail: {

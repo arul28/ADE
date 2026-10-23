@@ -221,6 +221,31 @@ extension FilesDetailScreen {
           .glassEffect(.regular.interactive(), in: Capsule(style: .continuous))
         }
       }
+    } else if changesInMenu(duoChrome) {
+      HStack(spacing: 8) {
+        Button {
+          dismissViewer()
+        } label: {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 15, weight: .semibold))
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("Back")
+        viewerHeaderCapsule
+        Spacer(minLength: 0)
+        Menu {
+          viewerMenuContent(duoChrome)
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 15, weight: .medium))
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("More")
+      }
     } else {
       viewerHeaderCapsule
     }
@@ -278,7 +303,7 @@ extension FilesDetailScreen {
   /// top; elsewhere the top bar.
   @ToolbarContentBuilder
   func viewerToolbar(_ chrome: FilesDuoEditorChrome?) -> some ToolbarContent {
-    if chrome?.declaresToolbar != false {
+    if chrome?.declaresToolbar != false, !changesInMenu(chrome) {
       viewerToolbarItems(chrome)
     }
   }
@@ -308,14 +333,16 @@ extension FilesDetailScreen {
         }
       }
     }
-    ToolbarItem(placement: .primaryAction) {
-      Button {
-        mode = mode == .diff ? .preview : .diff
-      } label: {
-        Label(changesButtonTitle, systemImage: mode == .diff ? "plusminus.circle.fill" : "plusminus.circle")
+    if !changesInMenu(chrome) {
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          mode = mode == .diff ? .preview : .diff
+        } label: {
+          Label(changesButtonTitle, systemImage: mode == .diff ? "plusminus.circle.fill" : "plusminus.circle")
+        }
+        .disabled(editorModes.count < 2)
+        .accessibilityValue(mode == .diff ? "On" : "Off")
       }
-      .disabled(editorModes.count < 2)
-      .accessibilityValue(mode == .diff ? "On" : "Off")
     }
     ToolbarItem(placement: .primaryAction) {
       Menu {
@@ -326,10 +353,24 @@ extension FilesDetailScreen {
     }
   }
 
+  /// A phone held landscape: Changes is a ⋯ item, not a bar button.
+  func changesInMenu(_ chrome: FilesDuoEditorChrome?) -> Bool {
+    chrome == nil && verticalSizeClass == .compact
+  }
+
   /// Everything in ⋯: how the file reads, sharing, paths and details.
   @ViewBuilder
   func viewerMenuContent(_ chrome: FilesDuoEditorChrome?) -> some View {
     Section {
+      if changesInMenu(chrome) {
+        Toggle(isOn: Binding(
+          get: { mode == .diff },
+          set: { mode = $0 ? .diff : .preview }
+        )) {
+          Label(changesButtonTitle, systemImage: "plusminus.circle")
+        }
+        .disabled(editorModes.count < 2)
+      }
       if mode == .preview, isMarkdownFile {
         Picker("Markdown", selection: $markdownViewMode) {
           ForEach(FilesMarkdownViewMode.allCases) { option in

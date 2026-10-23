@@ -3,6 +3,10 @@ import UIKit
 
 struct FilesDetailScreen: View {
   @EnvironmentObject var syncService: SyncService
+  /// Held landscape on a phone (the Duo's closed display included) the
+  /// rail has little height: Changes moves into ⋯ so the tabs keep room.
+  @Environment(\.verticalSizeClass) var verticalSizeClass
+  @Environment(\.dismiss) var dismissViewer
 
   let workspace: FilesWorkspace
   let relativePath: String
@@ -94,19 +98,21 @@ struct FilesDetailScreen: View {
     .adeNavigationGlass()
     .adeRootTabBarHidden()
     .adeAnalyticsScreen(.fileDetail)
-    .navigationTitle(duoChrome == nil ? lastPathComponent(relativePath) : "")
-    .navigationSubtitle(duoChrome == nil ? viewerSubtitle : "")
+    // The file's name is the floating capsule over the code on every
+    // display (the wide window's design), not the bar's title.
+    .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar { viewerToolbar(duoChrome) }
+    // Held landscape on a phone, back and ⋯ ride the file's header row: the
+    // closed display's rail folds its five tabs to one under two top items.
+    .toolbar(changesInMenu(duoChrome) ? .hidden : .automatic, for: .navigationBar)
     .safeAreaInset(edge: .top, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
-        // Wide: the file's name floats over the code in a slim glass capsule
-        // (the bar there is the edge bar or the group's top bar).
-        if duoChrome != nil {
-          viewerHeader
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-        }
+        // The file's name floats over the code in a slim glass capsule (the
+        // bar beside or above it is the edge bar or the stack's top bar).
+        viewerHeader
+          .padding(.horizontal, 12)
+          .padding(.top, 6)
         if let errorMessage {
           FilesCompactBanner(
             symbol: "exclamationmark.triangle.fill",
@@ -227,13 +233,34 @@ struct FilesDetailScreen: View {
       if let limit = filesPartialPreviewLimit(blob: blob, focusLine: focusLine) {
         // Takes precedence over the generic size cap: "we only got the start"
         // is the honest reason, and it is the one that explains a line number
-        // that goes nowhere.
-        FilesContentFallback(
-          symbol: "doc.text.magnifyingglass",
-          title: limit.title,
-          message: limit.message
-        )
-        .padding(16)
+        // that goes nowhere. The start that did load still shows under it.
+        if let focusLine, focusLine > filesPartialPreviewLineCount(blob.content) {
+          FilesContentFallback(
+            symbol: "doc.text.magnifyingglass",
+            title: limit.title,
+            message: limit.message
+          )
+          .padding(16)
+        } else {
+          VStack(spacing: 0) {
+            FilesCompactBanner(
+              symbol: "doc.text.magnifyingglass",
+              tint: ADEColor.warning,
+              title: "\(limit.title). Open it in ADE on your machine to read the rest.",
+              actionTitle: nil,
+              onAction: nil
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+            SyntaxHighlightedCodeView(
+              text: filesPartialPreviewPrefix(blob.content),
+              language: language,
+              focusLine: focusLine,
+              layoutMode: codeLayoutMode,
+              fillsContainer: true
+            )
+          }
+        }
       } else if let limit = filesTextPreviewLimit(blob: blob) {
         FilesContentFallback(
           symbol: "doc.text.magnifyingglass",

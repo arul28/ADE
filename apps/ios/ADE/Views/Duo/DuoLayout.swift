@@ -276,3 +276,32 @@ extension View {
     ignoresSafeArea(.container, edges: .trailing)
   }
 }
+
+// MARK: - Inset-grouped detail lists
+
+extension View {
+  /// The sides an inset-grouped list in a detail column shares with the
+  /// header above it, `side` on each side, and on the trailing side the
+  /// window's trailing safe area on top: a list's own content margins
+  /// replace the safe area, so held landscape on the Duo its rows ran under
+  /// the edge bar. Apply it in place of `.contentMargins(.horizontal, …)`.
+  func duoInsetGroupedMargins(_ side: CGFloat = 16) -> some View {
+    modifier(DuoInsetGroupedMargins(side: side))
+  }
+}
+
+private struct DuoInsetGroupedMargins: ViewModifier {
+  let side: CGFloat
+  @State private var insets = EdgeInsets()
+
+  func body(content: Content) -> some View {
+    content
+      .contentMargins(.leading, side + insets.leading, for: .scrollContent)
+      .contentMargins(.trailing, side + insets.trailing, for: .scrollContent)
+      .onGeometryChange(for: EdgeInsets.self) { proxy in
+        proxy.safeAreaInsets
+      } action: { next in
+        insets = next
+      }
+  }
+}

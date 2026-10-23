@@ -550,6 +550,7 @@ struct DuoChatRailActions {
 /// is open (the PR's actions are in its own header).
 struct DuoChatRail: ViewModifier {
   @ObservedObject var pane: DuoWorkPaneModel
+  @Environment(\.workCompactEdgeRail) private var compactEdgeRail
   let model: DuoChatRailModel
   /// The sessions column is away, so the chat offers the way back.
   let showsSidebarButton: Bool
@@ -592,6 +593,12 @@ struct DuoChatRail: ViewModifier {
       // and ⋯ into its own "More". An iPad has no status column beside the
       // bar, so its title keeps more of the width (it cut to "Bump mob…"
       // with 150pt free beside it).
+      // A phone (the CTO thread, compact): the closed display's rail takes
+      // the chat's buttons, so the title has the row; a plain phone's bar
+      // keeps Chat Info and Settings beside it.
+      if !duo.isWide {
+        return max(150, columnWidth - (compactEdgeRail ? 24 : 136))
+      }
       let reserved: CGFloat = duo.hasFold ? 470 : (paneBesideChat ? 330 : 270)
       return max(150, min(420, columnWidth - reserved))
     }

@@ -241,19 +241,11 @@ extension PrDuoDetailActions {
 struct PrsListPreviewHost: View {
   @State private var category = PrGitHubCategory.merged
   @State private var search = ""
+  @StateObject private var drawer = ActivityDrawerModel()
 
   var body: some View {
     NavigationStack {
       List {
-        Section {
-          Picker("Status", selection: $category) {
-            Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
-            Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
-            Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
-          }
-          .pickerStyle(.segmented)
-          .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-        }
         let groups = prListPeriodGroups(PrFlatPreviewData.mergedItems)
         ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
           Section {
@@ -273,103 +265,85 @@ struct PrsListPreviewHost: View {
         }
       }
       .adeFlatList()
-      .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search PRs, branches, authors")
+      // The real list's header (PrsRootScreen): ‹ logo and "PRs ▾", then
+      // search, New pull request and ⋯, then Open / Merged / Closed.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        PrListHeaderBar(
+          searchText: $search,
+          prompt: "Search PRs",
+          filterActive: false,
+          canCreate: true,
+          onCreate: {},
+          onOpenActivity: {},
+          onOpenSettings: {}
+        ) {
+          Button("Mine") {}
+        } category: {
+          Picker("Status", selection: $category) {
+            Text(verbatim: "Open 17").tag(PrGitHubCategory.open)
+            Text(verbatim: "Merged 1035").tag(PrGitHubCategory.merged)
+            Text(verbatim: "Closed 167").tag(PrGitHubCategory.closed)
+          }
+          .pickerStyle(.segmented)
+        }
+      }
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarLeading) {
-          HStack(spacing: 4) {
-            Text("PRs").font(.system(size: 20, weight: .bold, design: .rounded))
-            Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(ADEColor.textMuted)
+          HStack(spacing: 6) {
+            WorkHeaderProjectButton(iconDataUrl: nil) {}
+            PrListTitleLabel(title: "PRs")
           }
-          .fixedSize()
+          .padding(.horizontal, 4)
         }
         .sharedBackgroundVisibility(.hidden)
-        ToolbarItemGroup(placement: .topBarTrailing) {
-          Button {} label: { Image(systemName: "magnifyingglass") }
-          Button {} label: { Image(systemName: "plus") }
-          Button {} label: { Image(systemName: "bell") }
-        }
       }
     }
+    .environmentObject(drawer)
   }
 }
 
-/// `-adePreviewScreen pr-detail | pr-files | pr-checks`: a merged, bot-heavy PR.
+/// `-adePreviewScreen pr-detail | pr-files | pr-checks`: the phone's PR
+/// detail, the same `PrDuoDetail` the app pushes (`.phone` context).
 struct PrDetailPreviewHost: View {
   @State var tab: PrDetailTab
   var state = "merged"
+  @State private var method: PrMergeMethodOption = .squash
 
   var body: some View {
-    let pr = PrFlatPreviewData.pr(state: state)
-    let snapshot = PrFlatPreviewData.snapshot()
-    let cleaned = prCleanBody(snapshot.detail?.body)
-    let inputs = prDigestInputs(pr: pr, snapshot: snapshot, reviewThreads: PrFlatPreviewData.threads,
-                                activity: PrFlatPreviewData.activity, bodySections: cleaned.sections)
-    let digest = buildPrConversationDigest(commits: inputs.commits, entries: inputs.entries, story: inputs.story)
-    let step = PrNextStep.resolve(PrNextStepInput(
-      state: state, mergeStateStatus: nil, mergeConflicts: false, behindBaseBy: nil, mergeabilityComputing: false,
-      checksStatus: "failing", failingChecks: 1, pendingChecks: 1, passingChecks: 4, reviewDecision: nil,
-      approvalsCount: nil, requiredApprovals: nil, changesRequestedBy: [], unresolvedThreads: 2, canBypass: false,
-      autoMergeAllowed: nil, autoMergeEnabled: false, autoMergeMethod: nil, baseBranch: "main"
-    ))
     NavigationStack {
-      List {
-        Section {
+      PrDuoDetail(
+        model: PrFlatPreviewData.duoModel(state: state),
+        actions: .inert,
+        tab: $tab,
+        mergeMethod: $method,
+        context: .phone,
+        header: {
           PrFlatDetailHeader(
-            createdAt: pr.createdAt, updatedAt: pr.updatedAt, title: pr.title, baseBranch: pr.baseBranch, headBranch: pr.headBranch,
-            laneName: "cross-machine", ghostLaneName: nil, machineName: "MacBook Pro", stackLabel: nil,
-            onOpenLane: {}, onOpenStack: nil, canCreateLane: true, canLinkLane: true, onCreateLane: {}, onLinkLane: {}
+            createdAt: PrFlatPreviewData.iso(12 * PrFlatPreviewData.day),
+            updatedAt: PrFlatPreviewData.iso(3 * PrFlatPreviewData.hour),
+            title: "",
+            baseBranch: "main",
+            headBranch: "ade/cross-machine-to-phone",
+            laneName: "cross-machine",
+            ghostLaneName: nil,
+            machineName: "MacBook Pro",
+            stackLabel: nil,
+            onOpenLane: {},
+            onOpenStack: nil,
+            canCreateLane: false,
+            canLinkLane: false,
+            onCreateLane: {},
+            onLinkLane: {},
+            showsTitle: false
           )
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
-          Picker("Section", selection: $tab) {
-            Text("Overview").tag(PrDetailTab.overview)
-            Text("Files \(snapshot.files.count)").tag(PrDetailTab.files)
-            Text("Checks \(snapshot.checks.count)").tag(PrDetailTab.checks)
-          }
-          .pickerStyle(.segmented)
-          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
+        },
+        overflow: {
+          Button("Comment", systemImage: "text.bubble") {}
+          Button("Copy link", systemImage: "link") {}
         }
-        switch tab {
-        case .overview, .activity:
-          PrOverviewSections(
-            description: cleaned.body, digest: digest,
-            threadsById: Dictionary(uniqueKeysWithValues: PrFlatPreviewData.threads.map { ($0.id, $0) }),
-            canAct: true, onReply: { _, _ in }, onResolve: { _, _ in }
-          )
-        case .files:
-          PrFilesSections(files: snapshot.files, isLoading: false, canOpenFiles: true, onOpenFile: { _ in }, onCopyPath: { _ in })
-        case .checks:
-          PrChecksSections(
-            checks: snapshot.checks, overallChecksStatus: "failing", checksReason: nil, missingRequired: [],
-            actionRuns: PrFlatPreviewData.actionRuns, deployments: [], canRerun: true, onRerun: {}
-          )
-        }
-      }
-      .adeFlatList()
-      .listSectionSpacing(.compact)
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) { Button {} label: { Image(systemName: "chevron.left") } }
-        ToolbarItem(placement: .topBarTrailing) { Button {} label: { Image(systemName: "ellipsis") } }
-      }
-      .safeAreaInset(edge: .bottom) {
-        PrNextStepFlatBar(step: step, isBusy: false, busyLabel: nil, onTapText: {}) {
-          if state == "merged" {
-            Button { } label: { Text("Delete branch").font(.subheadline.weight(.semibold)) }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.danger)
-          } else {
-            Menu {
-              Button("Squash and merge") {}
-            } label: { Text("Merge").font(.subheadline.weight(.semibold)) }
-              .menuStyle(.button)
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.success)
-          }
-        }
-      }
+      )
     }
   }
 }

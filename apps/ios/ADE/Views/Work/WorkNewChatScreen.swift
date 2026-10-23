@@ -1015,16 +1015,20 @@ struct WorkNewChatScreen: View {
     .navigationBarBackButtonHidden(displayHasEdgeRail)
     .modifier(WorkNewChatTopBackButton(shown: displayHasEdgeRail) { dismiss() })
     .toolbar {
+      // The busy spinner rides beside the switcher, in the same item: a
+      // trailing item declared only while busy left an empty glass circle
+      // over the composer when it went away (the edge bar does not drop a
+      // removed item), and an always-declared empty one draws the circle too.
       ToolbarItem(placement: .principal) {
         WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
           WorkNewSessionModePreferences.save(mode, projectId: activeProjectId)
         })
-      }
-      // Declared only while busy: an always-declared item with nothing in it
-      // still draws an empty glass circle in the bar.
-      if busy {
-        ToolbarItem(placement: .topBarTrailing) {
-          ProgressView().controlSize(.small)
+        .overlay(alignment: .trailing) {
+          if busy {
+            ProgressView()
+              .controlSize(.small)
+              .offset(x: 28)
+          }
         }
       }
     }

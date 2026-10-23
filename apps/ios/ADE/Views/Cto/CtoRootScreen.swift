@@ -22,49 +22,36 @@ struct CtoRootScreen: View {
   /// The pane beside the CTO thread on a wide display (Chat Info, CTO
   /// Settings), the same model Work's chat column owns.
   @StateObject private var duoPane = DuoWorkPaneModel()
+  /// The Duo's closed display, held upright: its rail beside the thread, so
+  /// the composer lines up with the rail's bottom, as in a Work chat.
+  @State private var compactEdgeRail = false
 
   var body: some View {
-    Group {
-      if duo.isWide {
-        wideBody
-      } else {
-        phoneBody
+    // One design on every display: the phone, the Duo's closed display and
+    // the wide windows all get the thread with Work's chat chrome. Only where
+    // its panes open changes (stacked over the thread on a narrow window).
+    wideBody
+      .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
+        guard isTabActive else { return }
+        // The CTO follows the project's home machine; a change there reloads.
+        let previousHome = syncService.ctoHomeMachineKey
+        await syncService.refreshCtoHomeMachine()
+        guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
+        await loadSnapshot()
       }
-    }
-    .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
-      guard isTabActive else { return }
-      // The CTO follows the project's home machine; a change there reloads.
-      let previousHome = syncService.ctoHomeMachineKey
-      await syncService.refreshCtoHomeMachine()
-      guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
-      await loadSnapshot()
-    }
-    .task(id: ctoLiveReloadKey) {
-      guard ctoLiveReloadKey != nil else { return }
-      let now = Date()
-      guard shouldRunCtoLiveReload(lastReloadAt: lastLiveSnapshotReloadAt, now: now) else { return }
-      lastLiveSnapshotReloadAt = now
-      await loadSnapshot()
-    }
-    .sheet(isPresented: $showingSettings) {
-      CtoSettingsScreen(snapshot: snapshot) { updated in
-        self.snapshot = updated
+      .task(id: ctoLiveReloadKey) {
+        guard ctoLiveReloadKey != nil else { return }
+        let now = Date()
+        guard shouldRunCtoLiveReload(lastReloadAt: lastLiveSnapshotReloadAt, now: now) else { return }
+        lastLiveSnapshotReloadAt = now
+        await loadSnapshot()
       }
-      .environmentObject(syncService)
-    }
-  }
-
-  /// The phone: the CTO's own top bar over the thread, settings as a sheet.
-  private var phoneBody: some View {
-    NavigationStack {
-      content
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .tint(ADEColor.ctoAccent)
-        .adeScreenBackground()
-        .adeNavigationGlass()
-        .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .top, spacing: 0) { topBar }
-    }
+      .sheet(isPresented: $showingSettings) {
+        CtoSettingsScreen(snapshot: snapshot) { updated in
+          self.snapshot = updated
+        }
+        .environmentObject(syncService)
+      }
   }
 
   /// The inner display and an iPad: the CTO thread full screen with Work's
@@ -90,9 +77,17 @@ struct CtoRootScreen: View {
       )
       .environmentObject(syncService)
       .tint(ADEColor.ctoAccent)
+      .environment(\.workCompactEdgeRail, compactEdgeRail)
+      .onGeometryChange(for: Bool.self) { proxy in
+        workDisplayHasEdgeRail(proxy)
+      } action: { hasRail in
+        if compactEdgeRail != hasRail { compactEdgeRail = hasRail }
+      }
       // Work's rule: laptop or tent (a bent horizontal fold) stacks the pane
-      // over the thread; flat, held either way, it sits beside it.
-      .environment(\.duoWorkFamily, duo.fold.isStacked && duo.bend > 0 ? .tall : .wide)
+      // over the thread; flat, held either way, it sits beside it. A narrow
+      // window (a phone, the closed display) has no room beside the thread,
+      // so its panes stack over it too.
+      .environment(\.duoWorkFamily, ctoWorkFamily)
     } else {
       NavigationStack {
         content
@@ -114,19 +109,14 @@ struct CtoRootScreen: View {
     }
   }
 
-  // MARK: - Top bar
-
-  private var topBar: some View {
-    ADERootTopBar(title: topBarTitle) {
-      Button {
-        showingSettings = true
-      } label: {
-        ADEKitCircleIcon(systemImage: "gearshape")
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("CTO settings")
-    }
+  /// Where the thread's panes open: beside it on a wide window held flat,
+  /// stacked over it when the window is narrow or the fold is bent.
+  private var ctoWorkFamily: DuoFamily {
+    if !duo.isWide { return .tall }
+    return duo.fold.isStacked && duo.bend > 0 ? .tall : .wide
   }
+
+  // MARK: - Title
 
   private var topBarTitle: String {
     guard let name = snapshot?.identity.name, !name.isEmpty else { return "CTO" }

@@ -161,6 +161,18 @@ struct LanesTabView: View, Equatable {
       }
     }
     .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+    // Folding keeps the lane on screen: the split's selected lane is pushed
+    // when the window turns compact, and a phone's pop clears the selection.
+    .onChange(of: duoLayout.isWide) { _, wide in
+      if wide {
+        lanePath = NavigationPath()
+      } else if let laneId = duoSelectedLaneId {
+        lanePath = NavigationPath([LaneRoute(laneId: laneId)])
+      }
+    }
+    .onChange(of: lanePath.count) { _, count in
+      if !duoLayout.isWide, count == 0 { duoSelectedLaneId = nil }
+    }
     // Times the "Waiting for live lane actions" notice: shown only if the wait
     // outlasts the routine re-sync a visit starts.
     .task(id: isActive && laneLiveActionsWaiting) {
@@ -278,54 +290,14 @@ struct LanesTabView: View, Equatable {
     }
   }
 
-  /// The phone layout: the lane list, with each lane's detail pushed on top.
+  /// The phone layout: the same list as the inner display's left column,
+  /// with each lane's detail (the same Overview | Git screen) pushed on top.
   private var lanesPhoneBody: some View {
     NavigationStack(path: $lanePath) {
-      List {
-        Section {
-          laneSearchField
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-          if !laneSnapshots.isEmpty {
-            laneQuickFilterChips
-              .adeFlatRow(insets: EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
-          }
-          if !remoteLanes.machines.isEmpty {
-            laneMachineFilterChips
-              .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-          }
-          laneNoticeRows
-          if showsLaneLoadingSkeletons {
-            ForEach(0..<5, id: \.self) { _ in
-              LaneRowSkeleton()
-                .adeFlatRow(insets: laneRowInsets)
-            }
-          }
-          if !openLaneSnapshots.isEmpty {
-            openLanesTray
-              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
-          }
+      lanesListContent
+        .navigationDestination(for: LaneRoute.self) { route in
+          laneDestination(route)
         }
-        laneListSections
-      }
-      .adeFlatList()
-      .listSectionSpacing(.compact)
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .environment(\.defaultMinListRowHeight, 0)
-      .adeScrollDiagnosticsSurface(.lanes, key: "lanes")
-      .refreshable { await refreshFromPullGesture() }
-      .navigationDestination(for: LaneRoute.self) { route in
-        laneDestination(route)
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar(.hidden, for: .navigationBar)
-      .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(title: "Lanes") {
-          topBarActions
-        }
-      }
     }
   }
 
@@ -354,11 +326,6 @@ struct LanesTabView: View, Equatable {
   }
 
   // MARK: - Top bar
-
-  @ViewBuilder
-  private var topBarActions: some View {
-    addLaneActionButton
-  }
 
   /// In the top bar, beside the hub back button and the activity bell.
   var addLaneActionButton: some View {

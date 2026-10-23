@@ -59,7 +59,6 @@ struct PRsTabView: View, Equatable {
   @SceneStorage("ade.prs.githubScopeFilter") private var githubScopeFilterRawValue = PrGitHubScopeFilter.all.rawValue
   @SceneStorage("ade.prs.githubSort") private var githubSortRawValue = PrGitHubSortOption.updated.rawValue
   @State var searchText = ""
-  @State var searchPresented = false
   @State var toast: ADEToastMessage?
 
   private var hasActiveFilters: Bool {
@@ -493,46 +492,17 @@ struct PRsTabView: View, Equatable {
   }
 
   /// The phone layout: the PR list, with each PR's detail pushed on top.
+  /// The phone, the Duo's closed display and a narrow window: the same list
+  /// column the wide layout shows (same header, rows and filters), with a
+  /// PR's detail pushed over it.
   private var prsPhoneBody: some View {
     NavigationStack(path: $path) {
-      List {
-        noticeRows
-        if isLoadingSkeleton {
-          Section {
-            ForEach(0..<4, id: \.self) { _ in
-              PrRowCardSkeleton().adeFlatRow()
-            }
-          }
-        } else {
-          switch selectedRootSurface.wrappedValue {
-          case .github:
-            githubSurfaceRows
-          case .workflows:
-            workflowsSurfaceRows
-          }
+      prsListColumnContent(diagnosticsKey: "pr-list")
+        // Root PR actions run at the service level (`runDurablePrAction`), so
+        // switching tabs never aborts in-flight integration or link work.
+        .navigationDestination(for: String.self) { prId in
+          duoPrDetail(prId)
         }
-      }
-      .adeFlatList()
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .adeScrollDiagnosticsSurface(.prList, key: "pr-list")
-      .searchable(
-        text: $searchText,
-        isPresented: $searchPresented,
-        placement: .navigationBarDrawer(displayMode: .automatic),
-        prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflows"
-      )
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar { prsToolbar }
-      .adeToast($toast)
-      .refreshable {
-        await refreshFromPullGesture()
-      }
-      // Root PR actions run at the service level (`runDurablePrAction`), so
-      // switching tabs never aborts in-flight integration or link work.
-      .navigationDestination(for: String.self) { prId in
-        duoPrDetail(prId)
-      }
     }
   }
 
@@ -585,45 +555,53 @@ struct PRsTabView: View, Equatable {
   /// bar.
   private var duoPrsListColumn: some View {
     NavigationStack {
-      List {
-        noticeRows
-        if isLoadingSkeleton {
-          Section {
-            ForEach(0..<4, id: \.self) { _ in
-              PrRowCardSkeleton().adeFlatRow()
-            }
-          }
-        } else {
-          switch selectedRootSurface.wrappedValue {
-          case .github:
-            githubSurfaceRows
-          case .workflows:
-            workflowsSurfaceRows
-          }
-        }
-      }
-      .adeFlatList()
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .adeScrollDiagnosticsSurface(.prList, key: "pr-list-split")
-      .refreshable { await refreshFromPullGesture() }
-      .safeAreaInset(edge: .top, spacing: 0) { duoPrsHeaderRows }
-      // The column ends at the seam: the trailing inset iOS reports here is
-      // the edge bar's, not this column's.
-      .duoLeadingColumnContent()
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          HStack(spacing: 6) {
-            WorkHeaderProjectButton(iconDataUrl: duoProjectIconDataUrl) { syncService.showProjectHub() }
-            duoTitleMenu
-          }
-          .padding(.horizontal, 4)
-        }
-        .sharedBackgroundVisibility(.hidden)
-      }
-      .adeToast($toast)
+      prsListColumnContent(diagnosticsKey: "pr-list-split")
     }
+  }
+
+  /// The list with its two-row header, for both layouts. Beside a detail it
+  /// ends at the seam; alone (the phone) it is the trailing column, so it
+  /// keeps the edge bar's inset where the closed display has one.
+  private func prsListColumnContent(diagnosticsKey: String) -> some View {
+    List {
+      noticeRows
+      if isLoadingSkeleton {
+        Section {
+          ForEach(0..<4, id: \.self) { _ in
+            PrRowCardSkeleton().adeFlatRow()
+          }
+        }
+      } else {
+        switch selectedRootSurface.wrappedValue {
+        case .github:
+          githubSurfaceRows
+        case .workflows:
+          workflowsSurfaceRows
+        }
+      }
+    }
+    .adeFlatList()
+    .contentMargins(.bottom, 24, for: .scrollContent)
+    .adeScrollDiagnosticsSurface(.prList, key: diagnosticsKey)
+    .refreshable { await refreshFromPullGesture() }
+    .safeAreaInset(edge: .top, spacing: 0) { duoPrsHeaderRows }
+    .modifier(PrListColumnEdgeModifier(isLeadingColumn: duoLayout.isWide))
+    // A PR's detail hides the bar held landscape on a phone; the list asks
+    // for it again when the detail pops.
+    .toolbar(.visible, for: .navigationBar)
+    .navigationTitle("")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        HStack(spacing: 6) {
+          WorkHeaderProjectButton(iconDataUrl: duoProjectIconDataUrl) { syncService.showProjectHub() }
+          duoTitleMenu
+        }
+        .padding(.horizontal, 4)
+      }
+      .sharedBackgroundVisibility(.hidden)
+    }
+    .adeToast($toast)
   }
 
   /// The project the tab belongs to, for the header's ‹ logo.
@@ -652,17 +630,7 @@ struct PRsTabView: View, Equatable {
         .disabled(prsStatus.phase == .hydrating)
       }
     } label: {
-      HStack(spacing: 5) {
-        Text(selectedRootSurface.wrappedValue == .github ? "PRs" : "Workflows")
-          .font(.system(size: 22, weight: .heavy, design: .rounded))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .fixedSize()
-        Image(systemName: "chevron.down")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .accessibilityAddTraits(.isHeader)
+      PrListTitleLabel(title: selectedRootSurface.wrappedValue == .github ? "PRs" : "Workflows")
     }
     .accessibilityLabel(selectedRootSurface.wrappedValue == .github ? "PRs, switch view" : "Workflows, switch view")
   }
@@ -670,68 +638,47 @@ struct PRsTabView: View, Equatable {
   /// The column's second header row (search with the scope and sort inside
   /// it, New pull request, ⋯), then Open / Merged / Closed.
   private var duoPrsHeaderRows: some View {
-    VStack(spacing: 8) {
-      HStack(spacing: 8) {
-        LaneHeaderSearchField(
-          searchText: $searchText,
-          prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs" : "Search workflows",
-          filterLabel: "PR filters"
-        ) {
-          if selectedRootSurface.wrappedValue == .github {
-            Picker("Show", selection: selectedGitHubScopeFilter) {
-              ForEach(PrGitHubScopeFilter.allCases) { scope in
-                Text(scope.title).tag(scope)
-              }
-            }
-            .pickerStyle(.inline)
-            Picker("Sort", selection: selectedGitHubSort) {
-              ForEach(PrGitHubSortOption.allCases) { sort in
-                Text(sort.title).tag(sort)
-              }
-            }
-            .pickerStyle(.inline)
-          } else {
-            Picker("Kind", selection: selectedWorkflowFilter) {
-              ForEach(PrWorkflowKindFilter.allCases) { filter in
-                Text(filter.title).tag(filter)
-              }
-            }
-            .pickerStyle(.inline)
+    PrListHeaderBar(
+      searchText: $searchText,
+      prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs" : "Search workflows",
+      filterActive: selectedRootSurface.wrappedValue == .github
+        ? hasActiveFilters
+        : selectedWorkflowFilter.wrappedValue != .all,
+      canCreate: canCreatePr,
+      onCreate: {
+        createInitialLaneId = nil
+        createPresented = true
+      },
+      onOpenActivity: { syncService.attentionDrawerPresented = true },
+      onOpenSettings: { syncService.settingsPresented = true }
+    ) {
+      if selectedRootSurface.wrappedValue == .github {
+        Picker("Show", selection: selectedGitHubScopeFilter) {
+          ForEach(PrGitHubScopeFilter.allCases) { scope in
+            Text(scope.title).tag(scope)
           }
-        } filterActive: {
-          selectedRootSurface.wrappedValue == .github
-            ? hasActiveFilters
-            : selectedWorkflowFilter.wrappedValue != .all
         }
-        Button {
-          createInitialLaneId = nil
-          createPresented = true
-        } label: {
-          Image(systemName: "plus")
-            .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(canCreatePr ? ADEColor.textPrimary : ADEColor.textMuted)
-            .frame(width: 32, height: 44)
-            .contentShape(Rectangle())
+        .pickerStyle(.inline)
+        Picker("Sort", selection: selectedGitHubSort) {
+          ForEach(PrGitHubSortOption.allCases) { sort in
+            Text(sort.title).tag(sort)
+          }
         }
-        .buttonStyle(.plain)
-        .disabled(!canCreatePr)
-        .accessibilityLabel("New pull request")
-        WorkHeaderOverflowMenu(
-          showsLinear: false,
-          showsCursorCloud: false,
-          actions: WorkRootHeaderActions(
-            onOpenActivity: { syncService.attentionDrawerPresented = true },
-            onOpenSettings: { syncService.settingsPresented = true }
-          )
-        )
+        .pickerStyle(.inline)
+      } else {
+        Picker("Kind", selection: selectedWorkflowFilter) {
+          ForEach(PrWorkflowKindFilter.allCases) { filter in
+            let count = workflowKindCounts[filter.rawValue] ?? 0
+            Text(verbatim: count > 0 ? "\(filter.title) \(count)" : filter.title).tag(filter)
+          }
+        }
+        .pickerStyle(.inline)
       }
+    } category: {
       if selectedRootSurface.wrappedValue == .github {
         githubCategoryPicker
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.bottom, 8)
-    .background(ADEColor.pageBackground.opacity(0.94))
   }
 
   /// The selected PR, in a stack of its own: on the Duo held landscape it is
@@ -760,114 +707,6 @@ struct PRsTabView: View, Equatable {
         includesUtilities: !duoLayout.hasEdgeBar
       )
     }
-  }
-
-  // MARK: - Top bar
-
-  @ToolbarContentBuilder
-  var prsToolbar: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      ADEHubBackButton()
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarLeading) {
-      titleMenu
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarTrailing) {
-      Button {
-        searchPresented = true
-      } label: {
-        ADEKitCircleIcon(systemImage: "magnifyingglass")
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Search pull requests")
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarTrailing) {
-      Button {
-        createInitialLaneId = nil
-        createPresented = true
-      } label: {
-        ADEKitCircleIcon(systemImage: "plus")
-      }
-      .buttonStyle(.plain)
-      .disabled(!canCreatePr)
-      .opacity(canCreatePr ? 1 : 0.45)
-      .accessibilityLabel("Create pull request")
-    }
-    .sharedBackgroundVisibility(.hidden)
-
-    ToolbarItem(placement: .topBarTrailing) {
-      ADERootToolbarControls(scopeKey: "PRs")
-    }
-    .sharedBackgroundVisibility(.hidden)
-  }
-
-  /// "PRs ▾": GitHub or Workflows, and the list's scope and sort.
-  private var titleMenu: some View {
-    Menu {
-      titleMenuContent
-    } label: {
-      HStack(spacing: 4) {
-        Text(selectedRootSurface.wrappedValue == .github ? "PRs" : "Workflows")
-          .font(.system(size: 20, weight: .bold, design: .rounded))
-          .foregroundStyle(ADEColor.textPrimary)
-        Image(systemName: "chevron.down")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-        if hasActiveFilters {
-          Circle().fill(ADEColor.accent).frame(width: 6, height: 6)
-        }
-      }
-      .fixedSize()
-    }
-    .accessibilityLabel(selectedRootSurface.wrappedValue == .github ? "PRs, switch view" : "Workflows, switch view")
-  }
-
-  /// The view, scope, sort and refresh choices behind the list's title.
-  @ViewBuilder
-  private var titleMenuContent: some View {
-      Picker("View", selection: selectedRootSurface) {
-        Label("GitHub", systemImage: "arrow.triangle.pull").tag(PrRootSurface.github)
-        Label(workflowCards.isEmpty ? "Workflows" : "Workflows (\(workflowCards.count))", systemImage: "point.3.filled.connected.trianglepath.dotted")
-          .tag(PrRootSurface.workflows)
-      }
-      if selectedRootSurface.wrappedValue == .github {
-        Section {
-          Picker(selection: selectedGitHubScopeFilter) {
-            ForEach(PrGitHubScopeFilter.allCases) { scope in
-              Text(scope.title).tag(scope)
-            }
-          } label: {
-            Label("Show", systemImage: "line.3.horizontal.decrease")
-          }
-          .pickerStyle(.menu)
-          Picker(selection: selectedGitHubSort) {
-            ForEach(PrGitHubSortOption.allCases) { sort in
-              Text(sort.title).tag(sort)
-            }
-          } label: {
-            Label("Sort", systemImage: "arrow.up.arrow.down")
-          }
-          .pickerStyle(.menu)
-        }
-      }
-      Section {
-        Button {
-          Task {
-            async let remote: Void = refreshRemotePrs()
-            await reload(refreshRemote: true)
-            await remote
-          }
-        } label: {
-          Label("Refresh", systemImage: "arrow.clockwise")
-        }
-        .disabled(prsStatus.phase == .hydrating)
-      }
   }
 
   // MARK: - Notices
@@ -920,12 +759,6 @@ struct PRsTabView: View, Equatable {
   @ViewBuilder
   var githubSurfaceRows: some View {
     Section {
-      // The Duo's list column carries the picker under its toolbar instead.
-      if !duoLayout.isWide {
-        githubCategoryPicker
-          .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-      }
-
       if prsStatus.phase == .ready && filteredGitHubPrs.isEmpty && !isLoadingExternalHistory {
         PrFlatEmptyRow(
           title: searchText.isEmpty ? "No pull requests here" : "No PRs match “\(searchText)”",
@@ -1002,12 +835,18 @@ struct PRsTabView: View, Equatable {
   }
 
   /// Open / Merged / Closed, each with its count.
+  /// The counts wait for GitHub's snapshot: before it lands only this
+  /// machine's own PRs are known, and their counts (Merged 32) jumped to the
+  /// real ones (Merged 1494) a second later.
   var githubCategoryPicker: some View {
-    let counts = githubCategoryCounts
+    let counts: PrGitHubCategoryCounts? = githubSnapshot == nil ? nil : githubCategoryCounts
+    func title(_ name: String, _ count: Int?) -> String {
+      count.map { "\(name) \($0)" } ?? name
+    }
     return Picker("Status", selection: selectedGitHubCategory) {
-      Text(verbatim: "Open \(counts.open)").tag(PrGitHubCategory.open)
-      Text(verbatim: "Merged \(counts.merged)").tag(PrGitHubCategory.merged)
-      Text(verbatim: "Closed \(counts.closed)").tag(PrGitHubCategory.closed)
+      Text(verbatim: title("Open", counts?.open)).tag(PrGitHubCategory.open)
+      Text(verbatim: title("Merged", counts?.merged)).tag(PrGitHubCategory.merged)
+      Text(verbatim: title("Closed", counts?.closed)).tag(PrGitHubCategory.closed)
     }
     .pickerStyle(.segmented)
   }
@@ -1138,17 +977,6 @@ struct PRsTabView: View, Equatable {
   @ViewBuilder
   var workflowsSurfaceRows: some View {
     Section {
-      // The wide list column has the kind in its search field's filter.
-      if !duoLayout.isWide {
-        Picker("Kind", selection: selectedWorkflowFilter) {
-          ForEach(PrWorkflowKindFilter.allCases) { filter in
-            let count = workflowKindCounts[filter.rawValue] ?? 0
-            Text(verbatim: count > 0 ? "\(filter.title) \(count)" : filter.title).tag(filter)
-          }
-        }
-        .pickerStyle(.segmented)
-        .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-      }
       if groupedWorkflowCards.isEmpty {
         PrFlatEmptyRow(
           title: "No active PR workflows",
@@ -1802,5 +1630,90 @@ fileprivate enum PrWizardError: LocalizedError {
     case .integrationConflict:
       return "Integration has conflicts — simulate in full first"
     }
+  }
+}
+
+/// The PR list's trailing edge: beside a detail the column ends at the seam
+/// (the edge bar's inset iOS reports there belongs to the detail); alone it is
+/// the screen's trailing column and keeps it.
+private struct PrListColumnEdgeModifier: ViewModifier {
+  let isLeadingColumn: Bool
+
+  func body(content: Content) -> some View {
+    if isLeadingColumn {
+      content.duoLeadingColumnContent()
+    } else {
+      content
+    }
+  }
+}
+
+/// "PRs ▾": the list column's title, the label of its view menu.
+struct PrListTitleLabel: View {
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 5) {
+      Text(title)
+        .font(.system(size: 22, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .fixedSize()
+      Image(systemName: "chevron.down")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// The PR list's second header row, Work's and Lanes' grammar: search with
+/// the scope and sort inside it, New pull request and ⋯ (Activity,
+/// Settings); then Open / Merged / Closed. One header on every display.
+struct PrListHeaderBar<Filters: View, Category: View>: View {
+  @Binding var searchText: String
+  let prompt: String
+  let filterActive: Bool
+  let canCreate: Bool
+  let onCreate: () -> Void
+  let onOpenActivity: () -> Void
+  let onOpenSettings: () -> Void
+  @ViewBuilder var filters: () -> Filters
+  @ViewBuilder var category: () -> Category
+
+  var body: some View {
+    VStack(spacing: 8) {
+      HStack(spacing: 8) {
+        LaneHeaderSearchField(
+          searchText: $searchText,
+          prompt: prompt,
+          filterLabel: "PR filters",
+          menuContent: filters,
+          filterActive: { filterActive }
+        )
+        Button(action: onCreate) {
+          Image(systemName: "plus")
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(canCreate ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 32, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canCreate)
+        .accessibilityLabel("New pull request")
+        WorkHeaderOverflowMenu(
+          showsLinear: false,
+          showsCursorCloud: false,
+          actions: WorkRootHeaderActions(
+            onOpenActivity: onOpenActivity,
+            onOpenSettings: onOpenSettings
+          )
+        )
+      }
+      category()
+    }
+    .padding(.horizontal, 16)
+    .padding(.bottom, 8)
+    .background(ADEColor.pageBackground.opacity(0.94))
   }
 }
