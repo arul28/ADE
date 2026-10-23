@@ -689,7 +689,7 @@ function activityAgentItem(
 }
 
 describe("account Attention contract", () => {
-  it("resolves muted sessions device override then account then registration fallback", () => {
+  it("unions account, device override and registration mutes", () => {
     const device = {
       device_id: "phone-1",
       apns_token: "ab".repeat(32),
@@ -699,16 +699,18 @@ describe("account Attention contract", () => {
       preferences_json: JSON.stringify({ mutedSessionIds: ["registration-muted"] }),
       generation: "device-generation",
     };
+    // A mute is about the chat, so every list a client wrote applies; a device
+    // list no longer replaces the account list.
     expect(attentionTestInternals.resolvedMutedSessionIds(
       device,
       { mutedSessionIds: ["account-muted"] },
       { "phone-1": { mutedSessionIds: ["device-muted"] } },
-    )).toEqual(["device-muted"]);
+    )).toEqual(["account-muted", "device-muted", "registration-muted"]);
     expect(attentionTestInternals.resolvedMutedSessionIds(
       device,
       { mutedSessionIds: ["account-muted"] },
       {},
-    )).toEqual(["account-muted"]);
+    )).toEqual(["account-muted", "registration-muted"]);
     expect(attentionTestInternals.resolvedMutedSessionIds(
       device,
       {},
@@ -718,7 +720,7 @@ describe("account Attention contract", () => {
       device,
       { mutedSessionIds: ["account-muted"] },
       { "phone-1": { mutedSessionIds: [] } },
-    )).toEqual([]);
+    )).toEqual(["account-muted", "registration-muted"]);
   });
 
   it("accepts and normalizes a bounded machine-owned agent item", () => {
@@ -768,7 +770,7 @@ describe("account Attention contract", () => {
   });
 
   it("clamps desktop-first escalation preferences to a safe relay range", () => {
-    expect(attentionTestInternals.desktopEscalationDelayMs({})).toBe(30_000);
+    expect(attentionTestInternals.desktopEscalationDelayMs({})).toBe(120_000);
     expect(attentionTestInternals.desktopEscalationDelayMs({
       desktopFirstDelaySeconds: -90,
     })).toBe(0);
@@ -778,6 +780,19 @@ describe("account Attention contract", () => {
     expect(attentionTestInternals.desktopEscalationDelayMs({
       desktopFirstDelaySeconds: 3_600,
     })).toBe(300_000);
+    // 30 was the default saved under an older policy-defaults version, not a
+    // choice; only a save at version 3 or later means the user picked it.
+    expect(attentionTestInternals.desktopEscalationDelayMs({
+      desktopFirstDelaySeconds: 30,
+    })).toBe(120_000);
+    expect(attentionTestInternals.desktopEscalationDelayMs({
+      desktopFirstDelaySeconds: 30,
+      eventPolicyDefaultsVersion: 2,
+    })).toBe(120_000);
+    expect(attentionTestInternals.desktopEscalationDelayMs({
+      desktopFirstDelaySeconds: 30,
+      eventPolicyDefaultsVersion: 3,
+    })).toBe(30_000);
   });
 
   it("resets a cursor that belongs to a different account revision stream", () => {
@@ -3505,7 +3520,7 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("delays only items visible in Attention, then retries without duplicating delivery", async () => {
+  it("delays a foreground computer's or visible Activity's alert, then escalates once without duplicating delivery", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T08:00:10.000Z"));
     const database = new SqliteD1Database();
@@ -3551,7 +3566,7 @@ describe("account Attention contract", () => {
         insert into attention_presence(user_id, device_id, payload_json, observed_at)
         values (
           'account-a', 'desktop-1',
-          '{"platform":"macOS","appForeground":true,"ambientSurfaceVisible":false}',
+          '{"platform":"macOS","appForeground":false,"ambientSurfaceVisible":false}',
           '2026-07-28T08:00:10.000Z'
         )
       `).run();
@@ -3577,6 +3592,8 @@ describe("account Attention contract", () => {
         delete from attention_alert_log
         where user_id = 'account-a' and alert_fingerprint = ?
       `).run(parsed.alertFingerprint);
+      // Any computer with ADE in front of the user holds the phone, not only a
+      // macOS one with a visible Activity surface.
       database.native.prepare(`
         update attention_presence
         set payload_json = ?
@@ -3584,8 +3601,7 @@ describe("account Attention contract", () => {
       `).run(JSON.stringify({
         platform: "macOS",
         appForeground: true,
-        ambientSurfaceVisible: true,
-        visibleItemIds: [parsed.id],
+        ambientSurfaceVisible: false,
       }));
       sendPush.mockClear();
 
@@ -3597,7 +3613,28 @@ describe("account Attention contract", () => {
       );
       expect(sendPush).not.toHaveBeenCalled();
 
-      vi.setSystemTime(new Date("2026-07-28T08:00:40.000Z"));
+      database.native.prepare(`
+        update attention_presence
+        set payload_json = ?
+        where user_id = 'account-a' and device_id = 'desktop-1'
+      `).run(JSON.stringify({
+        platform: "macOS",
+        appForeground: true,
+        ambientSurfaceVisible: true,
+        visibleItemIds: [parsed.id],
+      }));
+
+      await attentionTestInternals.deliverAttentionNotifications(
+        env,
+        "account-a",
+        [parsed],
+        sendPush,
+      );
+      expect(sendPush).not.toHaveBeenCalled();
+
+      // The desktop-first window is 120 s by default; the item is still unseen
+      // at its edge, so the next pass escalates it to the phone.
+      vi.setSystemTime(new Date("2026-07-28T08:02:05.000Z"));
       await attentionTestInternals.deliverAttentionNotifications(
         env,
         "account-a",
@@ -3611,7 +3648,7 @@ describe("account Attention contract", () => {
         where user_id = 'account-a' and item_id = ? and device_id = 'phone-1'
       `, parsed.id)).toHaveLength(1);
 
-      vi.setSystemTime(new Date("2026-07-28T08:00:41.000Z"));
+      vi.setSystemTime(new Date("2026-07-28T08:02:06.000Z"));
       await attentionTestInternals.deliverAttentionNotifications(
         env,
         "account-a",
@@ -3626,7 +3663,7 @@ describe("account Attention contract", () => {
       `).run(parsed.id);
       database.native.prepare(`
         update attention_items
-        set seen_at = '2026-07-28T08:00:41.000Z'
+        set seen_at = '2026-07-28T08:02:06.000Z'
         where user_id = 'account-a' and item_id = ?
       `).run(parsed.id);
       await attentionTestInternals.deliverAttentionNotifications(

@@ -3756,7 +3756,7 @@ describe("createPushRelayClient", () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(
-      "https://relay.test/attention/account/snapshot?since=12&streamId=account-a",
+      "https://relay.test/attention/account/snapshot?since=12&streamId=account-a&include=message",
     );
     expect(init.headers.authorization).toBe("Bearer account-access-token");
   });

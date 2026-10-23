@@ -172,7 +172,7 @@ final class PairingAndDpopTests: XCTestCase {
   func testAccountAttentionRelayFetchesDeltaWithClerkBearer() async throws {
     AccountDirectoryURLProtocolStub.install { request in
       XCTAssertEqual(request.url?.path, "/attention/account/snapshot")
-      XCTAssertEqual(request.url?.query, "since=41")
+      XCTAssertEqual(request.url?.query, "since=41&include=message")
       XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer clerk-token")
       let response = try XCTUnwrap(HTTPURLResponse(
         url: request.url ?? URL(string: "https://relay.example")!,
@@ -261,7 +261,7 @@ final class PairingAndDpopTests: XCTestCase {
   func testAccountAttentionRelayPropagatesSnapshotStreamIdentity() async throws {
     AccountDirectoryURLProtocolStub.install { request in
       XCTAssertEqual(request.url?.path, "/attention/account/snapshot")
-      XCTAssertEqual(request.url?.query, "since=12&streamId=account-stream-a")
+      XCTAssertEqual(request.url?.query, "since=12&streamId=account-stream-a&include=message")
       let response = try XCTUnwrap(HTTPURLResponse(
         url: request.url ?? URL(string: "https://relay.example")!,
         statusCode: 200,
