@@ -77,7 +77,8 @@ export function AccountCard({
   const signedOut = state.kind === "signedOut";
   const isCopy = state.kind === "copy";
   const inUse = badge !== null;
-  const email = instance.account?.email ?? null;
+  // The registry's copy of the email, else the one the usage poll read.
+  const email = instance.account?.email ?? limitRow?.account?.email ?? null;
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
@@ -217,27 +218,30 @@ export function AccountCard({
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, minHeight: 26 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
-          {/* An account is its login: the email, then the id that `--instance` takes. */}
+          {/* An account is its login: the email, then the id that `--instance`
+              takes. Before it signs in, the id alone; the body says why. */}
           <span
-            title={email ?? undefined}
+            title={email ?? `Account id ${instance.id}`}
             style={{
               fontSize: 13,
               fontWeight: 500,
               fontFamily: SANS_FONT,
-              color: email ? COLORS.textPrimary : COLORS.textSecondary,
+              color: COLORS.textPrimary,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
           >
-            {email ?? "Not signed in"}
+            {email ?? instance.id}
           </span>
-          <span
-            title="Account id"
-            style={{ flex: "none", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, whiteSpace: "nowrap" }}
-          >
-            {instance.id}
-          </span>
+          {email ? (
+            <span
+              title="Account id"
+              style={{ flex: "none", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim, whiteSpace: "nowrap" }}
+            >
+              {instance.id}
+            </span>
+          ) : null}
           {badge ? <NoticeBadge tone="accent">{badge}</NoticeBadge> : null}
           {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Signed out</NoticeBadge> : null}
           {isCopy ? <NoticeBadge tone="neutral">Copy</NoticeBadge> : null}

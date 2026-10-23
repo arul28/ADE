@@ -235,8 +235,12 @@ export function AddProviderAccountSheet({
     setBusy(true);
     setError(null);
     try {
-      // No name: the account is shown by the email it signs in with.
-      const created = await api.create({ provider });
+      // No name: the account is shown by the email it signs in with. A host
+      // older than nameless accounts still asks for one; give it the provider's.
+      const created = await api.create({ provider }).catch((err: unknown) => {
+        if (!providerActionMessage(err, "").includes("needs a label")) throw err;
+        return api.create({ provider, label: providerLabel });
+      });
       changedRef.current = true;
       instanceIdRef.current = created.instance.id;
       if (!aliveRef.current) return;
@@ -248,7 +252,7 @@ export function AddProviderAccountSheet({
     } finally {
       if (aliveRef.current) setBusy(false);
     }
-  }, [api, provider, startLogin]);
+  }, [api, provider, providerLabel, startLogin]);
 
   // ── Reopening sign-in for an account that already exists ──
   const startedRef = useRef(false);
@@ -606,7 +610,7 @@ const TEXT_INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
-const SHEET_STEPS = ["Name it", "Sign in", "Done"] as const;
+const SHEET_STEPS = ["Start", "Sign in", "Done"] as const;
 
 /** Where the user is in the add flow: three beats, the current one lit. */
 function SheetSteps({ current }: { current: number }) {

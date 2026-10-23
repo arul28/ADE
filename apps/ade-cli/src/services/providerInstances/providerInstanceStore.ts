@@ -53,8 +53,8 @@ import {
  * it cannot open. The registry is machine-local by nature, so it lives where the
  * other machine-local facts live.
  *
- * What is NOT in this file: credentials. An instance is a directory path plus a
- * label; the provider CLI writes its own tokens inside that directory and ADE
+ * What is NOT in this file: credentials. An instance is a directory path plus an
+ * id; the provider CLI writes its own tokens inside that directory and ADE
  * never reads or copies them. That is also why `remove` deletes nothing on disk.
  */
 
@@ -147,6 +147,17 @@ function slugForLabel(label: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 24);
   return slug.length ? slug : "account";
+}
+
+/**
+ * The account a Claude or Codex chat runs on: its recorded account, or the
+ * provider's default when it has none or that account was removed (a launch
+ * falls back the same way). Null for providers with one login. Throws when
+ * the account registry cannot be read.
+ */
+export function resolveChatInstanceId(provider: string, instanceId: string | null | undefined): string | null {
+  if (!isProviderInstanceProvider(provider)) return null;
+  return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
 }
 
 /** What every surface calls an account: its email, else its id. */
@@ -544,11 +555,15 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...PROVIDER_INSTANCE_PROVIDERS,
       ...file.instances.map((instance) => instance.id),
     ]);
+    // A removed account's config home stays on disk with its old login and
+    // history, so its id is never handed to a new account.
+    const free = (candidate: string): boolean =>
+      !taken.has(candidate) && !fs.existsSync(path.join(options.adeDir, INSTANCE_HOMES_DIR, provider, candidate));
     // No name: the next short id an agent can type (`claude-2`, `claude-3`).
     if (!label) {
       for (let index = 2; index < 1000; index += 1) {
         const candidate = `${provider}-${index}`;
-        if (!taken.has(candidate)) return candidate;
+        if (free(candidate)) return candidate;
       }
       return `${provider}-${randomBytes(8).toString("hex")}`;
     }
@@ -689,8 +704,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
-    // An instance id is a label slug and can be reused: recreating an account
-    // with the same label mints the same id, so a stale entry here would report
+    // An instance id can be reused (an older label slug is minted again when
+    // the same label comes back), so a stale entry here would report
     // the fresh account as signed out until its next poll.
     brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });

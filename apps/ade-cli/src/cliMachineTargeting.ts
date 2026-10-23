@@ -58,7 +58,7 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
  * Commands whose own `--machine` flag means something else (a draft's sending
  * machine, the machine `ade machines` acts on). They keep the flag.
  */
-const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "draft", "machines", "help"]);
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help", "code"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
@@ -93,6 +93,9 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     // answer for THIS machine, which reads as the other machine's answer.
     const flags = flagNamesOutsideFreeText(parsed.command);
     if (!OWN_MACHINE_FLAG_PRIMARIES.has(primary) && (flags.has("--machine") || flags.has("--all-machines"))) {
+      if (typed.startsWith("-")) {
+        throw new CliUsageError("Put --machine or --all-machines after the command: ade chat list --machine <name>.");
+      }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
         + "Commands that run on another machine: chat, lanes, projects, usage, apple, mac-desktop, app-control.",

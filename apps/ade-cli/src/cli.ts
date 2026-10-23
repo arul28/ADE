@@ -172,6 +172,7 @@ import {
 import {
   buildUsageLimitsReport,
   formatLimitsDuration,
+  sharedLoginsAcrossMachines,
   usageLimitsLeftText,
   usageLimitsPaceText,
   type UsageLimitsAccount,
@@ -3943,8 +3944,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
   Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance work
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance work
+    $ ade chat create --lane <lane> --provider claude --instance claude-2
+    $ ade new chat --mode cli --lane <lane> --provider claude --instance claude-2
 
   Use a saved custom setup (agent + model, from Settings > Providers > Custom)
   or one stored API key for one session:
@@ -19066,9 +19067,10 @@ function buildProvidersPlan(args: string[]): CliPlan {
     if (!provider) {
       throw new CliUsageError("providers accounts add requires --provider claude|codex.");
     }
-    // Accounts have no names: they show as their email once signed in. A
-    // legacy `--label` still shapes the new id.
-    const label = readValue(args, ["--label", "--name"]);
+    // Accounts have no names: they show as their email once signed in.
+    if (readValue(args, ["--label", "--name"]) != null) {
+      throw new CliUsageError("Accounts have no names: drop --label. A new account shows as its email once signed in; its id is the next <provider>-<n>.");
+    }
     const accentColor = readValue(args, ["--accent", "--accent-color"]);
     return {
       kind: "execute",
@@ -19076,7 +19078,6 @@ function buildProvidersPlan(args: string[]): CliPlan {
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "create", {
         provider,
-        ...(label?.trim() ? { label } : {}),
         ...(accentColor ? { accentColor } : {}),
       })],
     };
@@ -29086,22 +29087,8 @@ export function formatUsageLimits(value: unknown): string {
     }),
   ];
   // The same login seen from two machines is one quota, not two.
-  if (merged) {
-    const machinesByLogin = new Map<string, Set<string>>();
-    for (const record of accounts) {
-      const email = asString(record.email)?.toLowerCase();
-      const machine = asString(record[MACHINE_ROW_KEY]);
-      if (!email || !machine) continue;
-      const key = `${asString(record.provider)}:${email}`;
-      const set = machinesByLogin.get(key) ?? new Set<string>();
-      set.add(machine);
-      machinesByLogin.set(key, set);
-    }
-    for (const [key, machines] of machinesByLogin) {
-      if (machines.size < 2) continue;
-      const [provider, ...email] = key.split(":");
-      lines.push(`${usageProviderTextLabel(provider)} ${email.join(":")} is one login on ${[...machines].join(", ")}: they share one quota.`);
-    }
+  for (const login of sharedLoginsAcrossMachines(accounts.map((record) => ({ ...record, machine: record[MACHINE_ROW_KEY] })))) {
+    lines.push(`${usageProviderTextLabel(login.provider)} ${login.email} is one login on ${login.machines.join(", ")}: they share one quota.`);
   }
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));

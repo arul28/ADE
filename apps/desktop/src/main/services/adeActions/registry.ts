@@ -219,7 +219,7 @@ import {
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { isPathInside } from "../shared/pathCompare";
-import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { getMachineProviderInstanceStore, resolveChatInstanceId } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { buildUsageLimitsReport } from "../../../shared/usageLimitsReport";
 import { runGit } from "../git/git";
@@ -4150,17 +4150,15 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 function buildUsageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const usage = runtime.usageTrackingService;
   if (!usage) return null;
+  // The account mark is extra: a chat or registry that cannot be read leaves it
+  // off and says why in the log, and the limits still come back.
   const chatAccount = async (chatSessionId: string): Promise<{ provider: string; instanceId: string } | null> => {
-    const summary = await runtime.agentChatService?.getSessionSummary(chatSessionId).catch(() => null);
-    if (!summary || !isProviderInstanceProvider(summary.provider)) return null;
     try {
-      // A chat with no recorded account, or one whose account was removed,
-      // runs on the provider's default.
-      return {
-        provider: summary.provider,
-        instanceId: getMachineProviderInstanceStore().resolve(summary.provider, summary.instanceId?.trim() || undefined).instance.id,
-      };
-    } catch {
+      const summary = await runtime.agentChatService?.getSessionSummary(chatSessionId);
+      const instanceId = summary ? resolveChatInstanceId(summary.provider, summary.instanceId) : null;
+      return summary && instanceId ? { provider: summary.provider, instanceId } : null;
+    } catch (error) {
+      runtime.logger.warn("usage.limits_chat_account_unavailable", { chatSessionId, error: getErrorMessage(error) });
       return null;
     }
   };

@@ -299,10 +299,11 @@ export function accountStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], n
 
 /**
  * The live state of each plan. A plan with several accounts is as good as its
- * best account: one with a current reading first, then unblocked, then the
+ * best account: unblocked first, then one with a current reading, then the
  * lowest pressure. An account whose every reading has reset (a login that was
  * removed or renamed, still in the 30-day ledger) has no pressure and no block
- * to show, so ranked on those alone it would beat every live account.
+ * to show, so ranked on those alone it would beat every live account; a
+ * blocked live account still loses to it, since a free login beats a full one.
  */
 export function planStatesFromAccountStates(accounts: ReadonlyMap<string, PlanState>): Map<string, PlanState> {
   const states = new Map<string, PlanState>();
@@ -310,8 +311,8 @@ export function planStatesFromAccountStates(accounts: ReadonlyMap<string, PlanSt
     const own = [...accounts.values()]
       .filter((state) => state.plan === plan)
       .sort((a, b) =>
-        Number(hasLiveReading(b)) - Number(hasLiveReading(a))
-        || Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason))
+        Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason))
+        || Number(hasLiveReading(b)) - Number(hasLiveReading(a))
         || a.pressure - b.pressure);
     states.set(plan, own[0] ?? { plan, accountId: null, usdPerPercent: null, rateWindow: null, burnConfidence: "none", pressure: 1, blockedReason: null, windows: [] });
   }

@@ -20,6 +20,7 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "./types/usage";
+import { localUsageAccountId, usageAccountId } from "./usageAccountId";
 import { computeResetsInMs, windowLabel } from "./usageWindowPresentation";
 
 export type UsageLimitsPace = {
@@ -202,7 +203,7 @@ export function buildUsageLimitsReport(
   const knownAccounts = Array.isArray(snapshot?.accounts) ? snapshot.accounts : [];
   const providerStatus = snapshot?.providerStatus ?? {};
   const chat = options.chat ?? null;
-  const nextChat = new Set((snapshot?.balanceNext ?? []).map((pick) => `${pick.provider}:${pick.instanceId}`));
+  const nextChat = new Set((snapshot?.balanceNext ?? []).map((pick) => usageAccountId(pick)));
 
   const accounts: UsageAccount[] = [...knownAccounts];
   const windowsByAccount = new Map<string, UsageWindow[]>();
@@ -212,7 +213,7 @@ export function buildUsageLimitsReport(
       const own = accounts.filter((account) => account.provider === window.provider);
       if (own.length === 1) accountId = own[0]!.id;
       else {
-        accountId = `${window.provider}:local`;
+        accountId = localUsageAccountId(window.provider);
         if (!accounts.some((account) => account.id === accountId)) {
           const status = providerStatus[window.provider];
           accounts.push({
@@ -238,7 +239,7 @@ export function buildUsageLimitsReport(
     if (status?.state !== "error" && status?.state !== "stale") continue;
     if (accounts.some((account) => account.provider === provider)) continue;
     accounts.push({
-      id: `${provider}:local`,
+      id: localUsageAccountId(provider),
       provider,
       ...(status.accountEmail ? { email: status.accountEmail } : {}),
       machines: [],
@@ -250,7 +251,12 @@ export function buildUsageLimitsReport(
     if (providerFilter && account.provider !== providerFilter) continue;
     const status = providerStatus[account.provider];
     const accountWindows = windowsByAccount.get(account.id) ?? [];
-    const readAt = isoOrNull(account.machines?.[0]?.checkedAt)
+    // The newest reading of this login, whichever machine took it.
+    const newestCheck = (account.machines ?? [])
+      .map((machine) => isoOrNull(machine.checkedAt))
+      .filter((at): at is string => at != null)
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+    const readAt = newestCheck
       ?? isoOrNull(status?.updatedAt)
       ?? isoOrNull(status?.lastSuccessAt)
       ?? (accountWindows.length > 0 ? isoOrNull(snapshot?.lastPolledAt) : null);
@@ -258,6 +264,7 @@ export function buildUsageLimitsReport(
     const instanceId = INSTANCE_PROVIDERS.has(account.provider)
       ? account.instanceId?.trim()
         || (account.id.startsWith(`${account.provider}:`) && !account.id.includes("@")
+          && account.id !== localUsageAccountId(account.provider)
           ? account.id.slice(account.provider.length + 1)
           : null)
         || null
@@ -275,7 +282,7 @@ export function buildUsageLimitsReport(
       state,
       note,
       thisChat: Boolean(chat && instanceId && chat.provider === account.provider && chat.instanceId === instanceId),
-      nextChat: Boolean(instanceId && nextChat.has(`${account.provider}:${instanceId}`)),
+      nextChat: Boolean(instanceId && nextChat.has(usageAccountId({ provider: account.provider, instanceId }))),
       windows: accountWindows.map((window) => buildWindow(window, readAtMs, nowMs)),
     };
     const credits = account.resetCredits?.availableCount;
@@ -332,4 +339,27 @@ export function usageLimitsLeftText(window: UsageLimitsWindow): string {
     : "";
   if (window.countLeft != null && window.countTotal != null) return `${window.countLeft} of ${window.countTotal} (${percent})${models}`;
   return `${percent}${models}`;
+}
+
+/**
+ * The logins `--all-machines` saw on more than one machine. One login is one
+ * quota, so its rows on two machines are not two allowances.
+ */
+export function sharedLoginsAcrossMachines(
+  rows: ReadonlyArray<{ provider?: unknown; email?: unknown; machine?: unknown }>,
+): Array<{ provider: string; email: string; machines: string[] }> {
+  const machinesByLogin = new Map<string, { provider: string; email: string; machines: Set<string> }>();
+  for (const row of rows) {
+    const provider = typeof row.provider === "string" ? row.provider : null;
+    const email = typeof row.email === "string" && row.email.trim() ? row.email.trim().toLowerCase() : null;
+    const machine = typeof row.machine === "string" ? row.machine : null;
+    if (!provider || !email || !machine) continue;
+    const key = `${provider}:${email}`;
+    const entry = machinesByLogin.get(key) ?? { provider, email, machines: new Set<string>() };
+    entry.machines.add(machine);
+    machinesByLogin.set(key, entry);
+  }
+  return [...machinesByLogin.values()]
+    .filter((entry) => entry.machines.size > 1)
+    .map((entry) => ({ provider: entry.provider, email: entry.email, machines: [...entry.machines] }));
 }

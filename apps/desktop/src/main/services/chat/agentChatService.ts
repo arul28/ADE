@@ -375,6 +375,7 @@ import {
   claudeAccountPromptCacheEnv,
   claudeAccountStopsOnExtraUsage,
   providerInstanceEnvPatch,
+  resolveChatInstanceId,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
@@ -11905,20 +11906,6 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The account a Claude or Codex chat runs on: its recorded account, or the
-   * default when it has none or that account was removed (the launch falls
-   * back the same way). Null for providers with one login.
-   */
-  const resolvedChatInstanceId = (provider: string, instanceId: string | null | undefined): string | null => {
-    if (!isProviderInstanceProvider(provider)) return null;
-    try {
-      return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
-    } catch {
-      return null;
-    }
-  };
-
-  /**
    * The account whose config home holds this chat's provider thread: `null`
    * when no account holds it (or the chat has no thread yet), `undefined` when
    * the accounts could not be read, which is not an answer to pin on.
@@ -21988,7 +21975,8 @@ export function createAgentChatService(args: {
       await sendMessage({
         sessionId: created.id,
         text: usageLimitHandoffPrompt({
-          accountLabel: alternate.label,
+          // The id, not the label: the label is the login's email now.
+          accountLabel: alternate.instanceId,
           title: managed.autoTitleSeed,
           task: managed.session.goal,
           summary: managed.continuitySummary,
@@ -64641,10 +64629,17 @@ export function createAgentChatService(args: {
       : 0;
     const snapshots = await getTrackedSubagents(trimmed);
     const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
+    // The account is extra: an unreadable registry leaves it off, logged.
+    let instanceId: string | null = null;
+    try {
+      instanceId = resolveChatInstanceId(summary.provider, summary.instanceId);
+    } catch (error) {
+      logger.warn("chat.status_account_unavailable", { sessionId: summary.sessionId, error: getErrorMessage(error) });
+    }
     return deriveChatTurnStatus({
       sessionId: summary.sessionId,
       provider: summary.provider,
-      instanceId: resolvedChatInstanceId(summary.provider, summary.instanceId),
+      instanceId,
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,

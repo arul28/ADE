@@ -100,7 +100,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["automations webhook", new Set(["list", "deliveries", "delivery"])],
   ["tests", new Set(["list", "runs", "logs"])],
   ["proof", new Set(["status", "list", "broken"])],
-  ["usage", new Set(["limits", "snapshot", "stats", "prices", "turns"])],
+  ["usage", new Set(["limits", "limit", "left", "snapshot", "stats", "prices", "turns"])],
   ["usage budget", new Set(["get", "check", "cumulative"])],
   ["storage", new Set(["snapshot", "actions"])],
   ["archive", new Set(["list", "summary"])],
