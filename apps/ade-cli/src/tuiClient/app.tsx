@@ -140,7 +140,7 @@ import {
   enrichChatSessionsWithLifecycle,
   enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
-  getLaunchDefaults,
+  readLaunchDefaults,
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
@@ -4967,11 +4967,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // footer cells exist and are focusable (refs let the input handler read current
   // values without stale closures).
   const footerFastSupported = useMemo(() => {
+    if (!fastModeAllowed) return false;
     const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
     const activeModel = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
     return Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
       || modelSupportsFastMode(descriptor);
-  }, [models, modelState.modelId]);
+  }, [fastModeAllowed, models, modelState.modelId]);
   const footerReasoningSupported = useMemo(
     () => modelReasoningEfforts(modelState, models).length > 0,
     [modelState, models],
@@ -9012,8 +9013,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setMode(conn.mode);
         // A new chat opens on what this machine used last, from any client,
         // unless the user already picked a model here.
-        void getLaunchDefaults(conn).then((defaults) => {
-          if (!defaults) return;
+        void readLaunchDefaults(conn).then((read) => {
+          if (!read.ok) return;
+          const defaults = read.defaults;
+          if (!defaults) {
+            // The host answered with no saved defaults: no permission to grant.
+            setFastModeAllowed(false);
+            return;
+          }
           setFastModeAllowed(defaults.fastModeAllowed ?? true);
           if (defaults.fastModeAllowed === false) {
             setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
@@ -9113,9 +9120,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // A different machine can carry a different account answer. Read it for the
     // connection just adopted, and drop a response that lost the race to a
     // later hop.
-    void getLaunchDefaults(entry.connection).then((defaults) => {
-      if (connectionRef.current !== entry.connection) return;
-      const allowed = defaults?.fastModeAllowed === true;
+    void readLaunchDefaults(entry.connection).then((read) => {
+      if (connectionRef.current !== entry.connection || !read.ok) return;
+      const allowed = read.defaults?.fastModeAllowed === true;
       setFastModeAllowed(allowed);
       if (!allowed) {
         setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
@@ -9757,15 +9764,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       if (Date.now() - lastFastModePolicyReadAtRef.current >= 60_000) {
         lastFastModePolicyReadAtRef.current = Date.now();
-        void getLaunchDefaults(connection).then((defaults) => {
-          if (connectionRef.current !== connection) return;
-          const allowed = defaults?.fastModeAllowed === true;
+        void readLaunchDefaults(connection).then((read) => {
+          if (connectionRef.current !== connection || !read.ok) return;
+          const allowed = read.defaults?.fastModeAllowed === true;
           setFastModeAllowed(allowed);
           if (!allowed) {
             setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
           }
-        }).catch(() => {
-          // Keep the last answer; the next poll retries.
         });
       }
     }, intervalMs);

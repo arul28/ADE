@@ -5036,6 +5036,16 @@ export function AgentChatPane({
   // there re-reads an older stored snapshot over pending edits.
   const fastModeAllowedForComposerRef = useRef(fastModeAllowedForComposer);
   fastModeAllowedForComposerRef.current = fastModeAllowedForComposer;
+  // Fast slots configured while the account allowed Fast are cleared when the
+  // permission goes away. The create path gates again; this keeps the visible
+  // slots honest too.
+  useEffect(() => {
+    if (fastModeAllowedForComposer) return;
+    setParallelModelSlots((prev) => {
+      if (!prev.some((slot) => slot.fastMode === true || slot.fastTier != null)) return prev;
+      return prev.map((slot) => ({ ...slot, fastMode: false, fastTier: null }));
+    });
+  }, [fastModeAllowedForComposer]);
   const goTo = useGoTo();
   const openFastModeSetting = useCallback(() => {
     // The same "show me" path ADE Tips uses: land on the row, then ring it.
@@ -9350,8 +9360,10 @@ export function AgentChatPane({
   useEffect(() => {
     if (handoffFormActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
-      setHandoffFastMode(fastModeAllowedForComposer && fastMode);
-      setHandoffFastTier(fastModeAllowedForComposer && fastMode ? fastTierRef.current : null);
+      // A handoff creates a new chat, so it starts Standard. The form's own
+      // Fast control is the only way to turn it on for this target.
+      setHandoffFastMode(false);
+      setHandoffFastTier(null);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
@@ -11338,7 +11350,9 @@ export function AgentChatPane({
     // remembered family effort when nothing explicit is set, and the launch
     // must carry the value the user can actually see.
     const launchReasoningEffort = launchState?.reasoningEffort ?? effectiveReasoningEffort;
-    const launchFastMode = launchState?.fastMode ?? fastMode;
+    // A locked account cannot send a Fast launch even when a stale composer
+    // state remembers one; the visible control is the only authority.
+    const launchFastMode = fastModeAllowedForComposer && (launchState?.fastMode ?? fastMode);
     const launchFastTier = launchFastMode && (launchState ? launchState.fastTier : fastTier) === "ultrafast"
       ? "ultrafast" as const
       : null;
@@ -12338,15 +12352,13 @@ export function AgentChatPane({
     const provider = resolvedProvider;
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
     const supportsFastMode = modelSupportsFastMode(desc);
-    const launchFastMode = supportsFastMode
+    const launchFastMode = fastModeAllowedForComposer && supportsFastMode
       ? prepared.fastMode
-      : provider === "claude"
-        ? false
-        : undefined;
+      : false;
     const launchModel = desc.family === "cursor"
       ? resolveCursorCliModelVariant(desc, {
           reasoningEffort: prepared.reasoningEffort,
-          fastMode: supportsFastMode && prepared.fastMode,
+          fastMode: fastModeAllowedForComposer && supportsFastMode && prepared.fastMode,
         })
       : runtimeModel;
     const permissionMode = cliPermissionModeFromNativeControls(provider, prepared.nativeControls);
@@ -14074,6 +14086,9 @@ export function AgentChatPane({
           }), launchBinding);
           const provider = resolveChatRuntimeProvider(desc);
           const model = provider === "opencode" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
+          // The account gate applies to every slot at creation, even one
+          // configured while Fast was allowed.
+          const slotFastMode = fastModeAllowedForComposer && slot.fastMode === true;
           const created = await agentChatApiRef.current.create({
             laneId: childLane.id,
             provider,
@@ -14081,8 +14096,8 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
-            fastMode: slot.fastMode,
-            ...(provider === "codex" && slot.fastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+            fastMode: slotFastMode,
+            ...(provider === "codex" && slotFastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
