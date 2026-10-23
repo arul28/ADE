@@ -733,6 +733,7 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  USER_NOTIFIED_NOTICE_STATUS,
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
@@ -73286,6 +73287,24 @@ export function createAgentChatService(args: {
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
     getSessionSummary,
+    /**
+     * Leave the "Notified you" line in a chat whose agent sent the user a
+     * message (`ade notify` from that chat). A transcript notice like any other,
+     * so every surface that renders notices shows it; `status` marks it so a
+     * surface can give it a bell instead of the generic info mark.
+     */
+    recordUserNotification(args: { sessionId: string; title: string; body?: string | null }): void {
+      const managed = ensureManagedSession(args.sessionId);
+      const body = args.body?.trim() || null;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        status: USER_NOTIFIED_NOTICE_STATUS,
+        message: `Notified you: ${args.title.trim()}`,
+        ...(body ? { detail: body } : {}),
+      });
+    },
     getSessionIdentityKey,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
     getTurnStartedAt: (sessionId: string): string | null => {

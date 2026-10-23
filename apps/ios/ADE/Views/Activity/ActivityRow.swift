@@ -36,14 +36,97 @@ struct ActivityRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            regularContent
-                .contentShape(Rectangle())
+            Group {
+                if row.isMessage {
+                    messageContent
+                } else {
+                    regularContent
+                }
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .opacity(dimmed ? 0.55 : 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(row.isMessage ? messageAccessibilityLabel : accessibilityLabel)
         .accessibilityHint(row.isPullRequest ? "Opens the pull request." : "Opens the session.")
+    }
+
+    // MARK: - Message
+
+    /// An agent's message to the user. Not a session card: there is no state
+    /// to report, so the bell stands where the status slot would be and the
+    /// body and the sending chat share the second line.
+    private var messageContent: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ADEColor.accent)
+                .frame(width: 18, height: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(row.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ADEColor.textPrimary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let age = messageAge {
+                        Text(age)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(ADEColor.textMuted)
+                            .fixedSize()
+                    }
+                }
+                if let secondLine = messageSecondLine {
+                    Text(secondLine)
+                        .font(.caption)
+                        .foregroundStyle(ADEColor.textSecondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                switch connectState {
+                case .idle:
+                    EmptyView()
+                case .connecting(let machine):
+                    ActivityRowConnectLine(
+                        text: "Connecting to \(machine)…",
+                        tint: ADEColor.accent,
+                        showsSpinner: true
+                    )
+                case .unreachable(let machine):
+                    ActivityRowConnectLine(
+                        text: "Could not reach \(machine). Tap to retry.",
+                        tint: activityToneColor(.amber),
+                        showsSpinner: false
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .adeKitCard(padding: nil)
+    }
+
+    /// "<body> · <chat title>", either half alone, or nil when neither exists
+    /// (and always nil under Hide details).
+    private var messageSecondLine: String? {
+        let parts = [row.messageBody, row.messageChatTitle].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var messageAge: String? {
+        ActivityRowPresentation.formatDuration(Date().timeIntervalSince(row.updatedAt))
+            .map { "\($0) ago" }
+    }
+
+    private var messageAccessibilityLabel: String {
+        var parts = ["Message", row.title]
+        if let secondLine = messageSecondLine { parts.append(secondLine) }
+        if let age = messageAge { parts.append(age) }
+        if let connect = connectAccessibilitySuffix { parts.append(connect) }
+        return parts.joined(separator: ", ")
     }
 
     private var connectAccessibilitySuffix: String? {

@@ -90,6 +90,10 @@ final class PushNotificationService: ObservableObject {
     @Published private(set) var relayStatus: PushRelayStatus?
     @Published private(set) var relayRefreshError: String?
     @Published private(set) var isRefreshingStatus = false
+    /// The signed-in account's per-chat mute list, which applies on every
+    /// device. Read mute state through `isSessionMuted(_:)`, which also honours
+    /// the old per-device list.
+    @Published private(set) var accountMutedSessionIds: Set<String>
 
     // MARK: - Internal state
 
@@ -109,10 +113,18 @@ final class PushNotificationService: ObservableObject {
     /// the in-flight run re-registers once more with the latest token state.
     private var registerPending = false
     private let prefsSyncRetrier = PushPreferenceSyncRetrier()
+    /// Mute changes the relay has not confirmed yet, newest intent per chat.
+    /// Overlaid on `accountMutedSessionIds` so a refresh cannot undo a tap.
+    private var pendingSessionMutes: [String: Bool] = [:]
+    private let sessionMuteRetrier = PushPreferenceSyncRetrier()
+    /// Whose account `accountMutedSessionIds` belongs to, so a switch never
+    /// shows the previous account's mutes.
+    private var accountMutedOwnerId: String?
 
     private let defaults = ADESharedContainer.defaults
     private let prefsKey = ADESharedContainer.pushPreferencesKey
     private let diagnosticsKey = "ade.push.diagnostics"
+    private let accountMutesKey = "ade.push.accountMutedSessions.v1"
 
     private init() {
         let loadedPrefs = Self.loadPrefs(from: defaults, key: prefsKey)
@@ -125,6 +137,9 @@ final class PushNotificationService: ObservableObject {
         }
         self.prefs = loadedPrefs
         self.diagnostics = loadedDiagnostics
+        let cachedMutes = defaults.dictionary(forKey: accountMutesKey)
+        self.accountMutedOwnerId = cachedMutes?["ownerId"] as? String
+        self.accountMutedSessionIds = Set(cachedMutes?["sessionIds"] as? [String] ?? [])
         self.liveActivitiesAuthorized = ActivityAuthorizationInfo().areActivitiesEnabled
         self.registrationState = PushRegistrationState(rawValue: loadedDiagnostics.registrationStateRaw) ?? .notDetermined
         if migratedTransientFailure {
@@ -226,6 +241,7 @@ final class PushNotificationService: ObservableObject {
             break
         }
         startPreferencesSync()
+        await refreshAccountMutedSessions()
     }
 
     /// Account auth ended. Keep the APNs token for any independently paired
@@ -233,6 +249,9 @@ final class PushNotificationService: ObservableObject {
     func handleAccountSignOut() {
         registerPending = false
         prefsSyncRetrier.cancel()
+        sessionMuteRetrier.cancel()
+        pendingSessionMutes = [:]
+        setAccountMutedSessions([], ownerId: nil)
         guard SyncService.shared?.hasPairedHost != true else { return }
         relayStatus = nil
         relayRefreshError = nil
@@ -371,7 +390,7 @@ final class PushNotificationService: ObservableObject {
                     "apsEnvironment": Self.apsEnvironment,
                     "platform": "iOS",
                     "deviceName": UIDevice.current.name,
-                    "prefs": prefs.commandPayload,
+                    "prefs": machinePrefsPayload,
                 ]
                 if let apnsTokenHex { args["apnsToken"] = apnsTokenHex }
                 if mutation.clear {
@@ -464,12 +483,184 @@ final class PushNotificationService: ObservableObject {
         startPreferencesSync()
     }
 
+    /// Whether alerts about this chat are muted on this device: muted for the
+    /// whole account, or in the per-device list older builds wrote.
+    func isSessionMuted(_ sessionId: String) -> Bool {
+        prefs.mutedSessionIds.contains(sessionId)
+            || (accountMuteOwnerIsCurrent && accountMutedSessionIds.contains(sessionId))
+    }
+
+    /// Signed in, a mute is a statement about the chat and lands on every
+    /// device through the account's per-chat route. Signed out, it stays the
+    /// per-device list it always was.
     func setMuted(_ muted: Bool, sessionId: String) {
-        updatePrefs { prefs in
-            var set = Set(prefs.mutedSessionIds)
-            if muted { set.insert(sessionId) } else { set.remove(sessionId) }
-            prefs.mutedSessionIds = set.sorted()
+        guard AccountService.shared.isSignedIn,
+              let ownerId = AccountService.shared.identity?.userId else {
+            updatePrefs { prefs in
+                var set = Set(prefs.mutedSessionIds)
+                if muted { set.insert(sessionId) } else { set.remove(sessionId) }
+                prefs.mutedSessionIds = set.sorted()
+            }
+            return
         }
+        var next = accountMuteOwnerIsCurrent ? accountMutedSessionIds : []
+        if muted { next.insert(sessionId) } else { next.remove(sessionId) }
+        setAccountMutedSessions(next, ownerId: ownerId)
+        pendingSessionMutes[sessionId] = muted
+        if !muted, prefs.mutedSessionIds.contains(sessionId) {
+            // The relay mutes on either list, so an unmute clears the old
+            // per-device entry too or the chat would stay silent here.
+            updatePrefs { $0.mutedSessionIds.removeAll { $0 == sessionId } }
+        } else if SyncService.shared?.hasPairedHost == true {
+            // The paired machine's own publisher reads the merged list.
+            startPreferencesSync()
+        }
+        startSessionMuteSync()
+    }
+
+    /// Re-read the account mute list, then move any per-device mutes into it
+    /// (once: each per-device entry is dropped after the account holds it).
+    func refreshAccountMutedSessions() async {
+        guard AccountService.shared.isSignedIn,
+              let ownerId = AccountService.shared.identity?.userId else { return }
+        if accountMutedOwnerId != ownerId {
+            pendingSessionMutes = [:]
+            sessionMuteRetrier.cancel()
+        }
+        guard let ids = await AccountService.shared.fetchAttentionMutedSessionIds(),
+              AccountService.shared.identity?.userId == ownerId else { return }
+        applyAccountMutedSessions(ids, ownerId: ownerId)
+        let legacy = Set(prefs.mutedSessionIds).subtracting(accountMutedSessionIds)
+        for sessionId in legacy where pendingSessionMutes[sessionId] == nil {
+            pendingSessionMutes[sessionId] = true
+        }
+        // Per-device ids the account already holds need no PATCH, only removal.
+        dropMigratedLegacyMutes()
+        if !pendingSessionMutes.isEmpty {
+            startSessionMuteSync()
+        }
+    }
+
+    private var accountMuteOwnerIsCurrent: Bool {
+        guard let ownerId = accountMutedOwnerId else { return false }
+        return AccountService.shared.isSignedIn && AccountService.shared.identity?.userId == ownerId
+    }
+
+    private func startSessionMuteSync() {
+        sessionMuteRetrier.start { [weak self] in
+            guard let self else { return true }
+            return await self.flushPendingSessionMutes()
+        }
+    }
+
+    /// One pass over the unconfirmed mute changes. True when nothing is left
+    /// to send, or nothing can be sent because the account is gone.
+    private func flushPendingSessionMutes() async -> Bool {
+        guard AccountService.shared.isSignedIn,
+              let ownerId = AccountService.shared.identity?.userId,
+              accountMutedOwnerId == ownerId else {
+            pendingSessionMutes = [:]
+            return true
+        }
+        for (sessionId, muted) in pendingSessionMutes.sorted(by: { $0.key < $1.key }) {
+            guard !Task.isCancelled else { return true }
+            guard let ids = await AccountService.shared.setAttentionSessionMuted(
+                sessionId: sessionId,
+                muted: muted
+            ) else {
+                return false
+            }
+            guard AccountService.shared.identity?.userId == ownerId else { return true }
+            // A newer tap on the same chat stays pending for the next pass.
+            if pendingSessionMutes[sessionId] == muted {
+                pendingSessionMutes.removeValue(forKey: sessionId)
+            }
+            applyAccountMutedSessions(ids, ownerId: ownerId)
+        }
+        dropMigratedLegacyMutes()
+        return pendingSessionMutes.isEmpty
+    }
+
+    /// The relay's list with unconfirmed changes laid over it.
+    private func applyAccountMutedSessions(_ ids: [String], ownerId: String) {
+        var next = Set(ids)
+        for (sessionId, muted) in pendingSessionMutes {
+            if muted { next.insert(sessionId) } else { next.remove(sessionId) }
+        }
+        setAccountMutedSessions(next, ownerId: ownerId)
+    }
+
+    private func setAccountMutedSessions(_ ids: Set<String>, ownerId: String?) {
+        guard ids != accountMutedSessionIds || ownerId != accountMutedOwnerId else { return }
+        accountMutedSessionIds = ids
+        accountMutedOwnerId = ownerId
+        if let ownerId {
+            defaults.set(
+                ["ownerId": ownerId, "sessionIds": ids.sorted()],
+                forKey: accountMutesKey
+            )
+        } else {
+            defaults.removeObject(forKey: accountMutesKey)
+        }
+    }
+
+    /// Drop per-device mutes the account list now holds and the relay has
+    /// confirmed. The relay mutes on either list, so this changes nothing
+    /// about delivery; it only stops the old list from outliving an unmute
+    /// made on another device.
+    private func dropMigratedLegacyMutes() {
+        let migrated = prefs.mutedSessionIds.filter {
+            accountMutedSessionIds.contains($0) && pendingSessionMutes[$0] == nil
+        }
+        guard !migrated.isEmpty else { return }
+        let drop = Set(migrated)
+        updatePrefs { $0.mutedSessionIds.removeAll { drop.contains($0) } }
+    }
+
+    /// The machine-scoped publisher on a paired computer predates the account
+    /// list, so it gets the merged list to stay quiet about the same chats.
+    private var machinePrefsPayload: [String: Any] {
+        var payload = prefs.commandPayload
+        if accountMuteOwnerIsCurrent {
+            payload["mutedSessionIds"] = Set(prefs.mutedSessionIds)
+                .union(accountMutedSessionIds)
+                .sorted()
+        }
+        return payload
+    }
+
+    // MARK: - Delivered notifications
+
+    /// Remove alerts for Activity items that were seen, dismissed or removed
+    /// (on this device or any other).
+    func removeDeliveredNotifications(attentionItemIds: Set<String>) async {
+        guard !attentionItemIds.isEmpty else { return }
+        await removeDeliveredNotifications { content in
+            (content.userInfo["attentionItemId"] as? String).map(attentionItemIds.contains) ?? false
+        }
+    }
+
+    /// Remove every alert about one chat. Called when the chat is opened: the
+    /// reader is looking at it, so its stacked alerts have done their job.
+    func removeDeliveredNotifications(sessionId: String) async {
+        let normalized = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        let threadId = "session:\(normalized)"
+        await removeDeliveredNotifications { content in
+            content.threadIdentifier == threadId
+                || (content.userInfo["sessionId"] as? String) == normalized
+        }
+    }
+
+    private func removeDeliveredNotifications(
+        matching predicate: (UNNotificationContent) -> Bool
+    ) async {
+        let center = UNUserNotificationCenter.current()
+        let identifiers = await center.deliveredNotifications()
+            .filter { predicate($0.request.content) }
+            .map(\.request.identifier)
+        guard !identifiers.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
     private func startPreferencesSync() {
@@ -482,7 +673,7 @@ final class PushNotificationService: ObservableObject {
     private func syncPrefsOnce() async -> Bool {
         let accountRouteExpected = AccountService.shared.isSignedIn
         let accountDevicePreferences = prefs.accountDeviceOverride
-        let machinePreferences = prefs.commandPayload
+        let machinePreferences = machinePrefsPayload
         let accountRegistered = await registerAccountAttentionDevice()
         guard !Task.isCancelled else { return true }
         if accountRegistered {

@@ -85,6 +85,7 @@ import {
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
+import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
@@ -115,7 +116,7 @@ import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
-import type { AttentionItem } from "../../desktop/src/shared/types/attention";
+import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -2589,13 +2590,32 @@ export function createMultiProjectRpcRequestHandler(
           "Notifications are unavailable until the ADE brain has a project open.",
         );
       }
+      // Run inside a chat (`ADE_CHAT_SESSION_ID`, or `--session`), the push is
+      // that chat's message: an Activity Inbox row on every device, a line in
+      // the chat, the chat's mute and "at the computer" respected. Only a chat
+      // this brain does not hold falls through to the plain push below.
+      // An agent's own chat always wins over `--session`, so no chat can post
+      // under another chat's name; `--session` is for a person's terminal.
+      const notifyArgs = isRecord(params.args) ? params.args : {};
+      const chatSessionId = callerChatSessionId()
+        ?? (typeof notifyArgs.sessionId === "string" ? notifyArgs.sessionId.trim() : "");
       const send = buildSendNotificationAction(
         runtime,
         (notification) => publisher.sendCustomNotification(notification),
         { projectRoot: registeredRoot },
       );
       try {
-        return await send(isRecord(params.args) ? params.args : {});
+        if (chatSessionId) {
+          const chatMessage = await sendNotifyAsChatMessage({
+            publisher,
+            sessionId: chatSessionId,
+            args: notifyArgs,
+            callerScopeKey: runtime.projectId ?? null,
+            analytics: runtime.productAnalyticsService,
+          });
+          if (chatMessage) return chatMessage;
+        }
+        return await send(notifyArgs);
       } catch (error) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -2632,7 +2652,9 @@ export function createMultiProjectRpcRequestHandler(
         return await publisher.getAttentionSnapshot(since, streamId);
       }
       if (action === "getMachineSnapshot") {
-        return await publisher.getMachineAttentionSnapshot();
+        return await publisher.getMachineAttentionSnapshot({
+          includeMessages: args.include === ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+        });
       }
       if (action === "acknowledge") {
         const itemIds = Array.isArray(args.itemIds)

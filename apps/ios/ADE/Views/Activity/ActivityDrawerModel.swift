@@ -164,7 +164,9 @@ public final class ActivityDrawerModel: ObservableObject {
             // The relay row for a session carries the brain's Work-board column;
             // the socket row does not. Keep the relay's wait on the live row.
             let relayBySession = Dictionary(
-                active.compactMap { item in Self.sessionId(item).map { ($0, item) } },
+                active.compactMap { item in
+                    item.kind == .message ? nil : Self.sessionId(item).map { ($0, item) }
+                },
                 uniquingKeysWith: { first, _ in first }
             )
             let liveItems = Self.accountItems(
@@ -190,7 +192,9 @@ public final class ActivityDrawerModel: ObservableObject {
                 if let prId = Self.pullRequestId(item), replacedPullRequests.contains(prId) {
                     return false
                 }
-                if item.kind == .pullRequest { return true }
+                // The live view projects sessions and PRs only; an agent's
+                // message has no live copy, so nothing can replace it.
+                if item.kind == .pullRequest || item.kind == .message { return true }
                 if let session = Self.sessionId(item), replacedSessions.contains(session) {
                     return false
                 }
@@ -329,20 +333,25 @@ public final class ActivityDrawerModel: ObservableObject {
         truncated: Bool,
         inlineActionsAllowed: Bool
     ) {
+        let hideDetails = ADESharedContainer.hideAttentionDetails
         let rows = items.map {
-            ActivityRowPresentation(item: $0, inlineActionsAllowed: inlineActionsAllowed)
+            ActivityRowPresentation(
+                item: $0,
+                inlineActionsAllowed: inlineActionsAllowed,
+                hideDetails: hideDetails
+            )
         }
         pruneDismissedItems(activeIDs: Set(rows.map(\.id)))
         let visible = rows.filter { !dismissedItemIDs.contains($0.id) }
 
         sessions = visible
-            .filter { !$0.isPullRequest }
+            .filter { !$0.isPullRequest && !$0.isMessage }
             .sortedByActivityPriority()
-        // PR/CI traffic always files here; agent rows join it only once they
-        // have finished and nobody has looked — which is exactly the set that
-        // would otherwise be a push nobody can act on.
+        // PR/CI traffic and agents' messages always file here; agent rows join
+        // it only once they have finished and nobody has looked — which is
+        // exactly the set that would otherwise be a push nobody can act on.
         inbox = visible
-            .filter { $0.isPullRequest || ($0.needsInbox && $0.band == .done) }
+            .filter { $0.isPullRequest || $0.isMessage || ($0.needsInbox && $0.band == .done) }
             .sortedByActivityPriority()
         self.machines = machines
         self.source = source

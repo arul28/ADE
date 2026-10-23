@@ -14,6 +14,7 @@ import type {
   AttentionSnapshot,
   AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
+import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES } from "../../../../desktop/src/shared/types/attention";
 import type { PushDeviceRegistration } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import {
@@ -156,6 +157,8 @@ export type ActivityPublishResult = {
   unchanged?: boolean;
   suppressed?: boolean;
   itemsTruncated?: boolean;
+  /** Item kinds beyond agent and pull request this relay accepts (`message`). */
+  features?: string[];
 };
 
 export type AttentionRelayPublishPayload =
@@ -643,6 +646,10 @@ export function createPushRelayClient(args: {
       ...(body.itemsTruncated !== undefined
         ? { itemsTruncated: body.itemsTruncated as boolean }
         : {}),
+      // Lenient: an unknown or malformed list only means "nothing new".
+      ...(Array.isArray(body.features)
+        ? { features: body.features.filter((entry): entry is string => typeof entry === "string") }
+        : {}),
     };
   };
 
@@ -755,6 +762,8 @@ export function createPushRelayClient(args: {
         since: String(Math.max(0, Math.trunc(since))),
       });
       if (streamId?.trim()) query.set("streamId", streamId.trim());
+      // This reader understands message items; older ones never receive them.
+      query.set("include", ATTENTION_SNAPSHOT_INCLUDE_MESSAGES);
       const response = await request(
         "GET",
         `/attention/account/snapshot?${query.toString()}`,
@@ -976,6 +985,28 @@ export function createPushRelayClient(args: {
         return;
       }
       requireOk("putActivityMachinePreferences", response);
+    },
+
+    /**
+     * Mute or unmute one chat's alerts on every device. Account-wide, so it
+     * works the same for a chat on any machine.
+     */
+    async setAttentionSessionMuted(
+      expectedAccountUserId: string,
+      sessionId: string,
+      muted: boolean,
+    ): Promise<void> {
+      const response = await request(
+        "PATCH",
+        `/attention/account/preferences/sessions/${encodeURIComponent(sessionId)}`,
+        {
+          body: { muted },
+          accountAuthorized: true,
+          expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
+        },
+      );
+      requireOk("setAttentionSessionMuted", response);
     },
 
     /**

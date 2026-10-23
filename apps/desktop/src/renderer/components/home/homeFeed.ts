@@ -62,7 +62,8 @@ function joinDetail(...parts: Array<string | null | undefined>): string | null {
 export function feedFromAttention(items: Iterable<AttentionItem>): HomeFeedEvent[] {
   const events: HomeFeedEvent[] = [];
   for (const item of items) {
-    if (item.dismissedAt) continue;
+    // A message is something an agent told the user, not a finished chat.
+    if (item.dismissedAt || item.kind === "message") continue;
     const at = epoch(item.statusSince) ?? epoch(item.updatedAt) ?? epoch(item.occurredAt);
     if (at == null) continue;
     const project: HomeFeedProject = { name: item.project.name, rootPath: item.project.rootPath, canonicalId: item.project.canonicalId };

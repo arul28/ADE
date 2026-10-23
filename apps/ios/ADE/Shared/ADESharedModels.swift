@@ -256,12 +256,18 @@ public let ADEAttentionContractVersion = 1
 public enum AccountAttentionItemKind: RawRepresentable, Codable, Hashable, Sendable {
     case agent
     case pullRequest
+    /// A message an agent sent the user from a chat (`ade notify`). A
+    /// notification, not agent work: it files with pull requests and is never
+    /// counted in a column. The relay only returns these to clients that ask
+    /// with `include=message`.
+    case message
     case unrecognized(String)
 
     public init?(rawValue: String) {
         switch rawValue {
         case "agent": self = .agent
         case "pull_request": self = .pullRequest
+        case "message": self = .message
         default: self = .unrecognized(rawValue)
         }
     }
@@ -270,6 +276,7 @@ public enum AccountAttentionItemKind: RawRepresentable, Codable, Hashable, Senda
         switch self {
         case .agent: return "agent"
         case .pullRequest: return "pull_request"
+        case .message: return "message"
         case .unrecognized(let rawValue): return rawValue
         }
     }
@@ -372,6 +379,7 @@ public enum AccountAttentionEventKind: RawRepresentable, Codable, Hashable, Send
     case prMerged
     case prOpened
     case prClosed
+    case agentMessage
     case unrecognized(String)
 
     public init?(rawValue: String) {
@@ -387,6 +395,7 @@ public enum AccountAttentionEventKind: RawRepresentable, Codable, Hashable, Send
         case "pr_merged": self = .prMerged
         case "pr_opened": self = .prOpened
         case "pr_closed": self = .prClosed
+        case "agent_message": self = .agentMessage
         default: self = .unrecognized(rawValue)
         }
     }
@@ -404,6 +413,7 @@ public enum AccountAttentionEventKind: RawRepresentable, Codable, Hashable, Send
         case .prMerged: return "pr_merged"
         case .prOpened: return "pr_opened"
         case .prClosed: return "pr_closed"
+        case .agentMessage: return "agent_message"
         case .unrecognized(let rawValue): return rawValue
         }
     }

@@ -2062,9 +2062,26 @@ declare global {
           machineKey: string,
           preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
         ) => Promise<void>;
+        /**
+         * Mute one chat's notifications on every device. Account-scoped, so it
+         * takes no pin: the chat's machine is not involved.
+         */
+        setSessionMuted?: (
+          accountOwnerId: string,
+          sessionId: string,
+          muted: boolean,
+        ) => Promise<void>;
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
+        /**
+         * An agent's message to show as a toast in this (focused) window. Desktop
+         * only: the hosted web client has no main process to raise it.
+         */
+        onAlert?: (
+          cb: (alert: import("../shared/types").AttentionDesktopAlert) => void,
+        ) => () => void;
+        openAlert?: (alert: import("../shared/types").AttentionDesktopAlert) => Promise<void>;
       };
       /**
        * The global capture gesture. Optional on the whole namespace, like

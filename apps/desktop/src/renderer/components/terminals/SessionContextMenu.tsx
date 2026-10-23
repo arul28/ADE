@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ContextMenuSurface } from "../ui/ContextMenu";
 import {
   Alarm,
   ArrowBendUpRight,
@@ -7,6 +7,8 @@ import {
   ArrowDown,
   ArrowsLeftRight,
   ArrowUp,
+  Bell,
+  BellSlash,
   CheckCircle,
   ClockCountdown,
   Copy,
@@ -55,6 +57,7 @@ import {
   MenuSubmenu,
 } from "../ui/MenuSubmenu";
 import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
+import { useSessionNotificationMute } from "../activity/useSessionNotificationMute";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import type { OpenInTarget } from "../../../shared/editorTargets";
@@ -369,6 +372,7 @@ function SessionContextMenuPanel({
   // Snooze is a visibility overlay, so it is read from the shared snooze
   // derivation and never inferred from the canonical phase.
   const isSnoozed = isSessionSnoozed(session);
+  const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled";
   const isDeclaredSettled = Boolean(session.settledAt);
@@ -549,21 +553,14 @@ function SessionContextMenuPanel({
   };
 
   return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
-
-      {/* Menu */}
-      <div
-        ref={menuRef}
-        className="ade-liquid-glass-menu fixed min-w-[180px] py-1"
-        style={{
-          ...menuPosition,
-          zIndex: Z_LAYERS.contextMenu,
-          visibility: clampedPosition ? "visible" : "hidden",
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
+    <ContextMenuSurface
+      menuRef={menuRef}
+      left={menuPosition.left}
+      top={menuPosition.top}
+      positioned={Boolean(clampedPosition)}
+      onClose={onClose}
+      className="min-w-[180px]"
+    >
         {/* ── Identity: what this row is called and where it sits. Unlabelled;
             it is the first block under the cursor and needs no signpost. ── */}
         {renaming && !showNameStatusSubmenu ? renameInput : null}
@@ -621,6 +618,18 @@ function SessionContextMenuPanel({
           >
             <MenuRowIcon icon={SquaresFour} />
             Remove from grid
+          </button>
+        ) : null}
+        {notificationMute.available ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-mute-notifications"
+            title="Applies on every device"
+            onClick={() => { notificationMute.toggle(); onClose(); }}
+          >
+            <MenuRowIcon icon={notificationMute.muted ? Bell : BellSlash} />
+            {notificationMute.muted ? "Unmute notifications" : "Mute notifications"}
           </button>
         ) : null}
 
@@ -894,7 +903,6 @@ function SessionContextMenuPanel({
             {deletingLabel ?? "Delete session"}
           </button>
         ) : null}
-      </div>
-    </>
+    </ContextMenuSurface>
   );
 }

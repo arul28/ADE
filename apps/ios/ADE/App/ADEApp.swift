@@ -130,6 +130,8 @@ struct ADEApp: App {
           // Clear the badge on every foreground, independent of the sync
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }
+          // Chats muted on another device since the app was last open.
+          Task { await PushNotificationService.shared.refreshAccountMutedSessions() }
           Task { await accountService.updateAttentionAppForeground(true) }
           Task { await appUpdateAdvisor.checkForUpdates() }
           // Defense-in-depth: drain intent commands queued by an extension
