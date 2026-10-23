@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.119] - 2026-10-23
+
+### Desktop and web
+
+- Smart balance spreads new chats by weekly room left and current load (#1870).
+- SDK MCP tokens refresh in long chats; per-server tool filters; background-agent recovery; agents answer subagent questions (#1871).
+- iPhone Duo inner-screen snapshots, extra lane devices, tall/wide naming, render proof location (#1872).
+
+### iOS
+
+- Pending-settings chip in the composer and updated smart balance copy (#1870, #1871), in a new TestFlight build.
+
 ## [1.2.118] - 2026-10-22
 
 ### Desktop and web
@@ -2681,7 +2693,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.118...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.119...HEAD
+[1.2.119]: https://github.com/arul28/ADE/compare/v1.2.118...v1.2.119
 [1.2.118]: https://github.com/arul28/ADE/compare/v1.2.117...v1.2.118
 [1.2.117]: https://github.com/arul28/ADE/compare/v1.2.116...v1.2.117
 [1.2.116]: https://github.com/arul28/ADE/compare/v1.2.115...v1.2.116
