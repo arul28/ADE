@@ -298,9 +298,9 @@ struct DuoAppTabsToolbar: ToolbarContent {
   @Environment(\.duoRailRetired) private var retired
 
   var body: some ToolbarContent {
-    if retired {
-      // The wide layout is leaving: hand its group back first.
-    } else if navigation.hasEdgeBar {
+    // `retired`: the wide layout is leaving, so it hands its group back first.
+    // (No empty branch: Xcode 26's toolbar builder rejects one.)
+    if !retired, navigation.hasEdgeBar {
       // Exactly the five tabs, on every screen and in every state: the rail's
       // bottom never changes shape. Activity and Settings live in the
       // screen's own ⋯ (or the Hub's), never at the rail's bottom.
@@ -310,7 +310,7 @@ struct DuoAppTabsToolbar: ToolbarContent {
       if !duo.edgeBarYielded, navigation.selectedId != "home" {
         DuoAppDestinationsToolbarGroup(navigation: navigation)
       }
-    } else if navigation.family != .compact {
+    } else if !retired, navigation.family != .compact {
       DuoAppTabsMenuItem(navigation: navigation, includesUtilities: includesUtilities)
     }
   }
