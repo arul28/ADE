@@ -1,5 +1,6 @@
 import { TunnelDurableObject } from "./tunnelDo";
 import {
+  cloudflareTransientKind,
   fetchDurableObject,
   logCloudflareTransient,
   transientUnavailableResponse,
@@ -304,25 +305,16 @@ async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Pro
   const cached = endpointCache.get(endpointKey);
   if (cached) return cached;
   const id = env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey));
-  const result = await fetchDurableObject(
+  const response = await fetchDurableObject(
     () => env.TUNNEL.get(id),
     new Request(`https://relay.internal${MCP_ENDPOINT_PATH}`),
   );
-  if ("transient" in result) throw new TransientDurableObjectError(result.transient, result.error);
-  const response = result.response;
   if (!response.ok) return null;
   const machineKey = ((await response.json()) as { machineKey?: unknown }).machineKey;
   if (typeof machineKey !== "string" || !validKey(machineKey)) return null;
   if (endpointCache.size >= MAX_CACHED_ENDPOINTS) endpointCache.clear();
   endpointCache.set(endpointKey, machineKey);
   return machineKey;
-}
-
-/** A Durable Object call that hit a Cloudflare transient failure and was not recovered. */
-class TransientDurableObjectError extends Error {
-  constructor(readonly kind: string, readonly original: unknown) {
-    super(`Durable Object transient failure: ${kind}`);
-  }
 }
 
 /**
@@ -338,22 +330,13 @@ export async function handleRequest(request: Request, env: TunnelRelayEnv): Prom
   try {
     return await routeRequest(request, env);
   } catch (error) {
-    if (!(error instanceof TransientDurableObjectError)) throw error;
+    const kind = cloudflareTransientKind(error);
+    if (!kind) throw error;
     const url = new URL(request.url);
-    logCloudflareTransient("ade-tunnel-relay", error.kind, scrubString(url.pathname), error.original);
+    logCloudflareTransient("ade-tunnel-relay", kind, scrubString(url.pathname), error);
     const mcp = (routeTunnelPath(url.pathname) ?? routeMcpPath(url))?.kind === "mcp";
     return transientUnavailableResponse(mcp ? MCP_CORS_HEADERS : {});
   }
-}
-
-async function forwardToObject(
-  getStub: () => DurableObjectStub,
-  request: Request,
-  options: { replayable?: boolean } = {},
-): Promise<Response> {
-  const result = await fetchDurableObject(getStub, request, options);
-  if ("transient" in result) throw new TransientDurableObjectError(result.transient, result.error);
-  return result.response;
 }
 
 async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
@@ -381,9 +364,10 @@ async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Resp
         { status: 404, headers: { "cache-control": "no-store", ...MCP_CORS_HEADERS } },
       );
     }
-    // An MCP call is forwarded to the brain and may run a tool: never sent twice.
+    // An MCP call is forwarded to the brain and may run a tool or open a
+    // stream, whatever its method: never sent twice.
     const id = env.TUNNEL.idFromName(machineKey);
-    return await forwardToObject(() => env.TUNNEL.get(id), request);
+    return await fetchDurableObject(() => env.TUNNEL.get(id), request, { retry: "never" });
   }
 
   // Every route is scoped to a single machine → a single Durable Object
@@ -396,9 +380,9 @@ async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Resp
     ? locationHintForGeo((request as { cf?: RequestPlacementGeo | null }).cf)
     : undefined;
   // A claim stores the secret first-writer-wins, so sending it twice is safe.
-  return await forwardToObject(
+  return await fetchDurableObject(
     () => (locationHint ? env.TUNNEL.get(id, { locationHint }) : env.TUNNEL.get(id)),
     request,
-    { replayable: route.kind === "claim" },
+    route.kind === "claim" ? { retry: "replayable" } : {},
   );
 }

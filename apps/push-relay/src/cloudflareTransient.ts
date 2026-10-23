@@ -118,14 +118,19 @@ class ReadRetryStatement {
 const unwrapStatement = (statement: D1PreparedStatement): D1PreparedStatement =>
   statement instanceof ReadRetryStatement ? statement.inner : statement;
 
-const retryingDatabases = new WeakSet<object>();
+// One wrapper per binding, so the database object a Worker sees stays the same
+// across requests in an isolate (webhook-relay throttles cleanup per binding).
+const retryingDatabases = new WeakMap<D1Database, D1Database>();
+const wrappers = new WeakSet<object>();
 
 /**
  * The same database, with every read-only statement (and every all-read batch)
  * retried on a retryable Cloudflare error. Writes run once, as before.
  */
 export function retryD1Reads(db: D1Database): D1Database {
-  if (!db || retryingDatabases.has(db)) return db;
+  if (!db || wrappers.has(db)) return db;
+  const cached = retryingDatabases.get(db);
+  if (cached) return cached;
   const wrapped = {
     prepare: (sql: string) => new ReadRetryStatement(db.prepare(sql), READ_ONLY_SQL.test(sql)),
     batch: (statements: D1PreparedStatement[]) => {
@@ -137,7 +142,8 @@ export function retryD1Reads(db: D1Database): D1Database {
     dump: () => db.dump(),
     withSession: (constraintOrBookmark?: string) => db.withSession(constraintOrBookmark),
   } as unknown as D1Database;
-  retryingDatabases.add(wrapped);
+  wrappers.add(wrapped);
+  retryingDatabases.set(db, wrapped);
   return wrapped;
 }
 
@@ -186,32 +192,25 @@ function isWebSocketUpgrade(request: Request): boolean {
  * a retryable failure gets one more try on a fresh stub, when the request is
  * safe to send twice. A WebSocket upgrade is never retried (the object may
  * have accepted its half of the socket before failing); the client reconnects.
- * `replayable` says whether a request with a body may be sent again.
- *
- * A transient failure that was not recovered comes back as `transient`, so the
- * caller answers 503 in its own shape; any other failure is rethrown.
+ * `retry: "replayable"` allows it for a request with a body that is safe to
+ * send twice; `retry: "never"` turns it off for one that is not, whatever its
+ * method. A failure that is not recovered is rethrown for the caller to classify.
  */
 export async function fetchDurableObject(
   getStub: () => DurableObjectStub,
   request: Request,
-  options: { replayable?: boolean } = {},
-): Promise<{ response: Response } | { transient: string; error: unknown }> {
+  options: { retry?: "never" | "replayable" } = {},
+): Promise<Response> {
   const idempotent = request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS";
-  const retry = !isWebSocketUpgrade(request) && (idempotent || options.replayable === true);
+  const retry = options.retry !== "never"
+    && !isWebSocketUpgrade(request)
+    && (idempotent || options.retry === "replayable");
   // workers-types types `clone()` with incoming-request `cf` metadata; it is the same request.
   const second = retry && request.body ? (request.clone() as unknown as Request) : null;
   try {
-    return { response: await getStub().fetch(request) };
+    return await getStub().fetch(request);
   } catch (error) {
-    const kind = cloudflareTransientKind(error);
-    if (!kind) throw error;
-    if (!retry || !isRetryableCloudflareError(error)) return { transient: kind, error };
-    try {
-      return { response: await getStub().fetch(second ?? request) };
-    } catch (retryError) {
-      const retryKind = cloudflareTransientKind(retryError);
-      if (!retryKind) throw retryError;
-      return { transient: retryKind, error: retryError };
-    }
+    if (!retry || !isRetryableCloudflareError(error)) throw error;
+    return await getStub().fetch(second ?? request);
   }
 }

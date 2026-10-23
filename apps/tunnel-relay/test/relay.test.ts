@@ -318,6 +318,7 @@ describe("Durable Object transient failures", () => {
     ["a claim is retried once with its body", `/machines/${MACHINE_KEY}/claim`, { method: "POST", body: claimBody }, "Internal error while starting up Durable Object storage caused object to be reset; reference = k", 1, { status: 200, calls: 2, body: claimBody }],
     ["a claim that keeps failing is a 503", `/machines/${MACHINE_KEY}/claim`, { method: "POST", body: claimBody }, "internal error; reference = z", 9, { status: 503, calls: 2 }],
     ["an MCP call is not sent twice", `/m/${MACHINE_KEY}/mcp`, { method: "POST", body: "{}" }, "internal error; reference = m", 1, { status: 503, calls: 1 }],
+    ["an MCP stream GET is not sent twice", `/m/${MACHINE_KEY}/mcp`, {}, "internal error; reference = m", 1, { status: 503, calls: 1 }],
   ] as const)("%s", async (_label, path, init, message, failures, expected) => {
     let left: number = failures;
     let calls = 0;

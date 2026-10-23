@@ -262,7 +262,9 @@ reference = …", "object to be reset", "overloaded"). Every read-only statement
 is retried through them (three tries, about a second in all;
 `src/cloudflareTransient.ts`), and so are the few writes that are safe to run
 twice: the budget reservation (a duplicate only runs the count ahead) and the
-presence upserts. A request that still hits one gets `503` with `Retry-After: 5`
+machine-link refresh (it applies only when newest by the relay's clock). Device
+presence is not retried: its time is the device's clock, so a replay could put
+back an older state. A request that still hits one gets `503` with `Retry-After: 5`
 and a `cloudflare_transient` log line instead of an unhandled 500, and it is not
 sent to Sentry.
 

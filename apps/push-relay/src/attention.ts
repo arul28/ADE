@@ -2282,7 +2282,9 @@ async function refreshActivityMachinePresence(
   // Presence runs every 30 s per machine. When the link already belongs to
   // this user, touch only unindexed columns: one billed row instead of the
   // upsert's two (setting `user_id`, even unchanged, rewrites its index).
-  // Both writes set fixed values, so a retry after a Cloudflare blip lands the same row.
+  // Both writes are retried after a Cloudflare blip. `now` is the relay's
+  // clock, so the upsert only applies when it is the newest report: a replay
+  // that lands after a later one changes nothing.
   const touched = await withCloudflareRetry(() => env.DB.prepare(`
     update attention_machine_links
        set machine_name = ?, last_seen_at = ?
@@ -2298,6 +2300,7 @@ async function refreshActivityMachinePresence(
       user_id = excluded.user_id,
       machine_name = excluded.machine_name,
       last_seen_at = excluded.last_seen_at
+    where excluded.last_seen_at >= attention_machine_links.last_seen_at
   `).bind(
     args.machineKey,
     args.userId,
@@ -3033,14 +3036,16 @@ async function handlePresence(
     observedAt,
     visibleItemIds,
   };
-  // Last write wins on one row, so a retry after a Cloudflare blip is safe.
-  await withCloudflareRetry(() => env.DB.prepare(`
+  // Not retried: a replay could land after the device's next report and put
+  // back an older state, and `observedAt` is the device's clock, so no
+  // freshness guard is safe. A blip is a 503 and the next report lands.
+  await env.DB.prepare(`
     insert into attention_presence(user_id, device_id, payload_json, observed_at)
     values (?, ?, ?, ?)
     on conflict(user_id, device_id) do update set
       payload_json = excluded.payload_json,
       observed_at = excluded.observed_at
-  `).bind(userId, deviceId, JSON.stringify(stored), observedAt).run());
+  `).bind(userId, deviceId, JSON.stringify(stored), observedAt).run();
   return json({ ok: true, observedAt });
 }
 

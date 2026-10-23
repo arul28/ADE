@@ -21,8 +21,9 @@ export default Sentry.withSentry(sentryOptions, {
       // Reads ride through D1's short Cloudflare-side outages.
       return await handleRequest(request, { ...env, DB: retryD1Reads(env.DB) }, ctx);
     } catch (error) {
-      // D1 or a Durable Object restarting under Cloudflare: the client (or
-      // GitHub's redelivery) retries, so answer 503 and keep it out of Sentry.
+      // D1 or a Durable Object restarting under Cloudflare: answer 503 with
+      // Retry-After rather than a 500, and keep it out of Sentry. ADE clients
+      // retry; GitHub records the failed delivery for a manual redeliver.
       const transient = cloudflareTransientKind(error);
       if (transient) {
         logCloudflareTransient("ade-webhook-relay", transient, scrubString(new URL(request.url).pathname), error);
