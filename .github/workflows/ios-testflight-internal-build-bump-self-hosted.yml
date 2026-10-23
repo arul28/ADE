@@ -63,4 +63,7 @@ jobs:
       - name: Upload dSYMs to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: bash scripts/release-tools/upload-ios-dsyms.sh "${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive"
+        # An older git_ref may not have the script yet; that must not fail the run.
+        run: |
+          bash scripts/release-tools/upload-ios-dsyms.sh "${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive" \
+            || echo "::warning::Sentry dSYM upload did not run; this build will not be symbolicated."

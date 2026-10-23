@@ -657,8 +657,9 @@ private enum SyncConnectErrorCode {
   static let connectStepTimedOut = 35
 }
 
-/// Not `.cannotConnectToHost` or `.networkConnectionLost`: a refused or
-/// dropped connection can be the machine's fault and stays reported.
+/// Not `.cannotConnectToHost`: a refused connection can be the machine's
+/// fault and stays reported. (`.networkConnectionLost` is left out too, but
+/// `CrashReporting.capture` drops it as a benign network state anyway.)
 private let syncUnreachableURLErrorCodes: Set<URLError.Code> = [
   .timedOut,
   .cannotFindHost,
@@ -5742,8 +5743,10 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog(preferRemoteSelection: true, cachedRows: rows)
   }
 
-  /// One database read on a detached task. A changeset batch applies under
-  /// the database queue for the whole batch, so a main-actor read waits it out.
+  /// One database read off the main actor, on the shared queue described at
+  /// `performDatabaseOffMain` (submission order; it runs even if the caller is
+  /// cancelled). A changeset batch applies under the database queue for the
+  /// whole batch, so a main-actor read would wait it out.
   func readDatabaseOffMain<T>(_ read: @escaping (DatabaseService) -> T) async -> T {
     let database = self.database
     return await withCheckedContinuation { continuation in
@@ -9239,13 +9242,11 @@ final class SyncService: ObservableObject {
   /// The scan runs off the main actor: `getifaddrs` is a sysctl that can
   /// block for seconds while the kernel reshuffles interfaces, which is
   /// exactly when a path change calls this. The newest scan wins; a caller
-  /// that decides on `phoneHasTailnetInterface` awaits the returned task.
-  @discardableResult
-  private func refreshPhoneTailnetInterfaceState() -> Task<Void, Never> {
+  /// that decides on `phoneHasTailnetInterface` awaits `latestTailnetScan()`.
+  private func refreshPhoneTailnetInterfaceState() {
     tailnetInterfaceScanGeneration &+= 1
     let generation = tailnetInterfaceScanGeneration
-    tailnetInterfaceScanTask?.cancel()
-    let scan = Task { @MainActor [weak self] in
+    tailnetInterfaceScanTask = Task { @MainActor [weak self] in
       let hasTailnet = await Task.detached(priority: .userInitiated) {
         syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
       }.value
@@ -9254,8 +9255,16 @@ final class SyncService: ObservableObject {
         self.phoneHasTailnetInterface = hasTailnet
       }
     }
-    tailnetInterfaceScanTask = scan
-    return scan
+  }
+
+  /// Returns once the newest interface scan has applied its result, including
+  /// one started while this waited.
+  private func latestTailnetScan() async {
+    while let scan = tailnetInterfaceScanTask {
+      let generation = tailnetInterfaceScanGeneration
+      await scan.value
+      if generation == tailnetInterfaceScanGeneration { return }
+    }
   }
 
   /// True when the "iPhone isn't on Tailscale" hint should show on connection
@@ -9285,17 +9294,17 @@ final class SyncService: ObservableObject {
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
-    let tailnetScan = refreshPhoneTailnetInterfaceState()
+    refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard let previous else { return }
     if syncNetworkPathInterfacesChanged(previous: previous, next: snapshot), snapshot.isSatisfied {
       machineFleet?.networkChanged()
     }
     // The roam decision reads `phoneHasTailnetInterface`, so it waits for the
-    // scan this path change started; a newer path change supersedes it.
+    // newest interface scan; a newer path change supersedes it.
     pathChangeRoamTask?.cancel()
     pathChangeRoamTask = Task { @MainActor [weak self] in
-      await tailnetScan.value
+      await self?.latestTailnetScan()
       guard let self, !Task.isCancelled, self.lastNetworkPathSnapshot == snapshot else { return }
       self.applyNetworkPathRoamDecision(previous: previous, snapshot: snapshot)
     }
@@ -19086,7 +19095,7 @@ final class SyncService: ObservableObject {
     roamTask = nil
     clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
-    let tailnetScan = refreshPhoneTailnetInterfaceState()
+    refreshPhoneTailnetInterfaceState()
     let machineName = syncTrimmedNonEmptyName(profile?.hostName)
       ?? syncTrimmedNonEmptyName(hostName)
       ?? "this machine"
@@ -19098,7 +19107,7 @@ final class SyncService: ObservableObject {
     // The message names Tailscale only when this phone is off the tailnet;
     // say it again once the scan above has the current answer.
     Task { @MainActor [weak self] in
-      await tailnetScan.value
+      await self?.latestTailnetScan()
       guard let self, self.connectionState == .error, self.lastError == message else { return }
       let refreshed = self.unreachableMessage(machineName: machineName)
       guard refreshed != message else { return }
