@@ -1,13 +1,12 @@
-import { isWebClientMode } from "../lib/webClientMode";
 
 /**
  * What fills the window behind the top bar, the welcome screen and the new
  * chat page.
  *  - `gradient`: the theme's animated mesh.
- *  - `plain`: the theme's flat background, no picture and no motion.
+ *  - `plain`: the theme's flat background, no picture and no motion (the default).
  *  - `image`: one picture, bundled (`ade:<id>`) or the user's own (`user:<id>`).
  *  - `shuffle`: a picture from the library, changed on `shuffleEvery`
- *    (the default: a new one each time the computer wakes).
+ *    (by default a new one each time the computer wakes).
  * With `showImage` off a picture only lends its colours to the mesh.
  */
 export type SceneMode = "gradient" | "plain" | "image" | "shuffle";
@@ -42,12 +41,18 @@ export type ScenePreferences = {
  */
 export const SCENE_DEFAULTS_REVISION = 1;
 
+/**
+ * The shipped default on every client: the theme's flat background, no picture
+ * and no motion. A picture behind the whole UI is a look the user opts into in
+ * Settings → Appearance; as a first impression it fought the UI for contrast.
+ * The dim and texture below are what a picture gets once the user picks one.
+ */
 export const DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
-  mode: "shuffle",
+  mode: "plain",
   imageId: null,
   showImage: true,
   texture: "dots",
-  dim: 12,
+  dim: 30,
   matchTheme: true,
   shuffleEvery: "wake",
   shuffleExclude: [],
@@ -55,37 +60,25 @@ export const DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
   defaultsRevision: SCENE_DEFAULTS_REVISION,
 };
 
-/**
- * The hosted web client's default: the theme's flat background, no picture and
- * no motion. A browser tab that paints a picture on every load spends its
- * first paint on a fetch and a palette sample, and a visitor has not chosen a
- * wallpaper. Desktop never reads this.
- *
- * It is chosen at read time and never written under its own revision, so the
- * stored revision stays `SCENE_DEFAULTS_REVISION` on both clients.
- */
-export const WEB_DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
-  ...DEFAULT_SCENE_PREFERENCES,
-  mode: "plain",
-};
+/** The veil the picture-shuffle default shipped with, before `plain` became the default. */
+const SHUFFLE_DEFAULT_DIM = 12;
 
 const MAX_EXCLUDED = 200;
 
 /**
- * The shipped shuffle default, untouched. The web client persisted it on its
- * first load, so it is not a choice and reads as the web default. Any pick the
+ * The old shipped shuffle default, untouched. Every client persisted it on its
+ * first load, so it is not a choice and reads as today's default. Any pick the
  * user made (`choiceMade`) stands, even when it is Shuffle again. So does any
  * tuned look (texture, dim, matchTheme, showImage) on top of that shuffle.
  */
 function isUntouchedShuffleDefault(raw: Record<string, unknown>): boolean {
-  const defaults = DEFAULT_SCENE_PREFERENCES;
   return raw.choiceMade !== true
     && raw.mode === "shuffle"
     && !(typeof raw.imageId === "string" && raw.imageId.trim())
     && raw.shuffleEvery !== "launch" && raw.shuffleEvery !== "hour" && raw.shuffleEvery !== "day"
     && !(Array.isArray(raw.shuffleExclude) && raw.shuffleExclude.length > 0)
     && raw.texture !== "none" && raw.texture !== "grain"
-    && (raw.dim === undefined || raw.dim === defaults.dim)
+    && (raw.dim === undefined || raw.dim === SHUFFLE_DEFAULT_DIM)
     && raw.matchTheme !== false
     && raw.showImage !== false;
 }
@@ -93,14 +86,10 @@ function isUntouchedShuffleDefault(raw: Record<string, unknown>): boolean {
 export function normalizeScenePreferences(value: unknown): ScenePreferences {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const stale = raw.defaultsRevision !== SCENE_DEFAULTS_REVISION;
-  if (isWebClientMode()) {
-    if (stale || isUntouchedShuffleDefault(raw)) return { ...WEB_DEFAULT_SCENE_PREFERENCES, shuffleExclude: [] };
-  } else if (stale) {
-    return { ...DEFAULT_SCENE_PREFERENCES, shuffleExclude: [] };
-  }
+  if (stale || isUntouchedShuffleDefault(raw)) return { ...DEFAULT_SCENE_PREFERENCES, shuffleExclude: [] };
   const mode: SceneMode = raw.mode === "image" || raw.mode === "shuffle" || raw.mode === "gradient" || raw.mode === "plain"
     ? raw.mode
-    : "shuffle";
+    : DEFAULT_SCENE_PREFERENCES.mode;
   const imageId = typeof raw.imageId === "string" && raw.imageId.trim() ? raw.imageId.trim().slice(0, 120) : null;
   const texture: SceneTexture = raw.texture === "none" || raw.texture === "grain" ? raw.texture : "dots";
   const dimRaw = typeof raw.dim === "number" && Number.isFinite(raw.dim) ? raw.dim : DEFAULT_SCENE_PREFERENCES.dim;
