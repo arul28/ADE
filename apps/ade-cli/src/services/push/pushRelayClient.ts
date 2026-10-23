@@ -316,6 +316,17 @@ export function createPushRelayClient(args: {
       if (reason instanceof Error && reason.name !== "TimeoutError") return reason;
       return new PushRelayUnreachableError("timeout", { cause: reason });
     };
+    /** `work`, or the deadline error the moment the deadline fires. */
+    const untilDeadline = <T>(work: Promise<T> | undefined): Promise<T | undefined> => {
+      if (deadline.signal.aborted) return Promise.reject(deadlineError());
+      return new Promise<T | undefined>((resolve, reject) => {
+        const onAbort = (): void => reject(deadlineError());
+        deadline.signal.addEventListener("abort", onAbort, { once: true });
+        Promise.resolve(work).then(resolve, reject).finally(() => {
+          deadline.signal.removeEventListener("abort", onAbort);
+        });
+      });
+    };
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResponse> => {
       const expectedAccountUserId = options?.expectedAccountUserId;
       const headers: Record<string, string> = {};
@@ -345,11 +356,13 @@ export function createPushRelayClient(args: {
             body: { error: "ADE account changed before the request was authorized" },
           };
         }
-        const token = await args.getAccountAccessToken?.({
+        // The deadline is the only clock on the token wait. A token
+        // `timeoutMs` racing the same deadline could win by a tick and come
+        // back as a plain null, which would read as "signed out" below.
+        const token = await untilDeadline(args.getAccountAccessToken?.({
           ...(forceRefresh ? { forceRefresh: true } : {}),
           signal: deadline.signal,
-          timeoutMs: Math.max(1, remainingMs()),
-        });
+        }));
         // A token wait cut off by the deadline is not "signed out": the token
         // helper swallows the abort into null, so ask the deadline directly.
         if (deadline.signal.aborted) throw deadlineError();

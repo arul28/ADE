@@ -4053,6 +4053,14 @@ describe("createPushRelayClient", () => {
     {
       name: "a token wait that never ends",
       // The brain's token broker had its own 30s budget and ignored ours.
+      token: () => new Promise<string | null>(() => {}),
+      fetch: undefined,
+      code: "timeout",
+    },
+    {
+      name: "a token wait that gives up as null at the deadline",
+      // The real token helper swallows its own abort into null; that must not
+      // read as "signed out".
       token: (options?: { signal?: AbortSignal }) => new Promise<string | null>((resolve) => {
         options?.signal?.addEventListener("abort", () => resolve(null));
       }),
