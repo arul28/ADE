@@ -53,14 +53,12 @@ describe("preload provider runtime contracts", () => {
 
   it("normalizes every provider instance runtime wrapper to its IPC shape", async () => {
     const instance = { id: "codex:one", provider: "codex", label: "Work" };
-    const renamedInstance = { ...instance, label: "Renamed" };
     const settings = { enabled: true, accountLabel: "Work" };
     const loginCommand = { command: "codex", args: ["login"] };
     const results: Record<string, unknown> = {
       list: { instances: [instance] },
       create: { instance, created: true },
       remove: { removed: true },
-      rename: { instance: renamedInstance },
       setDefault: { instance },
       setAccent: { instance },
       getSettings: { settings },
@@ -80,7 +78,6 @@ describe("preload provider runtime contracts", () => {
     await expect(bridge.providerInstances.list({ provider: "codex" })).resolves.toEqual([instance]);
     await expect(bridge.providerInstances.create({ provider: "codex", label: "Work" })).resolves.toEqual(results.create);
     await expect(bridge.providerInstances.remove({ id: instance.id })).resolves.toEqual(results.remove);
-    await expect(bridge.providerInstances.rename({ id: instance.id, label: "Renamed" })).resolves.toEqual(renamedInstance);
     await expect(bridge.providerInstances.setDefault({ id: instance.id })).resolves.toEqual(instance);
     await expect(bridge.providerInstances.setAccent({ id: instance.id, accentColor: "#0000ff" })).resolves.toEqual(instance);
     await expect(bridge.providerInstances.getSettings({ provider: "codex" })).resolves.toEqual(settings);
@@ -95,7 +92,6 @@ describe("preload provider runtime contracts", () => {
       "list",
       "create",
       "remove",
-      "rename",
       "setDefault",
       "setAccent",
       "getSettings",

@@ -457,6 +457,47 @@ the limit is still live burns the attempt and re-parks the chat. Action:
 `chat.resumeUsageLimitNow`. To stop auto-resuming altogether, or to turn it back
 on after a pause, use `chat.updateSession` with `autoContinueAtUsageLimit`.
 
+### Usage limits: when the user asks about them
+
+Don't track usage limits on your own. Read them only when the user asks you to:
+"work until 5% is left", "start it on the account with the most room",
+"split this across my machines", "how much Claude do I have left?".
+
+```bash
+ade usage limits --text                       # this machine, every account
+ade usage limits --provider claude --text     # one provider
+ade usage limits --machine "Mac mini" --text  # another machine (must be online)
+ade usage limits --all-machines --text        # every machine in one table
+ade chat status "$ADE_CHAT_SESSION_ID" --text # `account` row: the account you run on
+```
+
+Each row is one window of one account: `account` is the id
+`ade chat create --instance` takes (Claude and Codex, the providers with several
+logins), then `left`, `resets`, and `pace` (`lasts to reset` or
+`runs out in 3h`). `(this chat)` marks your own account and `(next chat)` the
+account smart balance would start a new chat on; with smart balance on, a chat
+started without `--instance` goes there by itself. A `note` says when a row can't
+be trusted or used: `signed out` (can't take a chat), `login expired` (renews on
+its next chat), a failed check showing the last numbers, or a reading more than
+10 minutes old. `--json` gives the same report with ISO times and minutes.
+
+The numbers are the machine's cached poll (about every 1–5 minutes), so read them
+between steps rather than in a loop. Common requests:
+
+- **Work until X% is left, then continue after the reset.** Check between steps.
+  At X%, finish the step you are in, then
+  `ade chat scheduled-work create --at <the window's reset time> --prompt "Limits reset; continue <task>"`
+  and stop. Reset times come from `--json` (`windows[].resetsAt`).
+- **Start a chat on the account with the most room.**
+  `ade chat create --lane <lane> --provider claude --instance <account> --prompt "…"`.
+- **Use another machine's accounts.** Read them with `--machine <name>`, then
+  start the chat there: `ade chat create --machine <name> --lane <lane there> --instance <account> …`.
+  An offline machine answers with an error and can't take chats either.
+
+The same login on two machines is one quota; `--all-machines` says so under the
+table. Providers without a limits source (Droid, Qwen, Pi, Devin, Antigravity,
+generic ACP) are not listed.
+
 ### Lane branch drift
 
 A lane's worktree HEAD can drift from the branch ADE recorded (someone runs

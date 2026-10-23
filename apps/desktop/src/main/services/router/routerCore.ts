@@ -213,7 +213,14 @@ export type PlanState = {
   pressure: number;
   blockedReason: string | null;
   windows: Array<{ windowType: string; percentUsed: number | null; resetsAt: string | null }>;
+  /** The login's email, stamped by the usage service from its snapshot when it knows it. */
+  accountEmail?: string | null;
 };
+
+/** Whether any of the account's windows has a reading that has not reset yet. */
+function hasLiveReading(state: PlanState): boolean {
+  return state.windows.some((window) => window.percentUsed != null);
+}
 
 /** Quota providers are named after the harness; OpenCode's windows are the Go plan's. */
 export function quotaProviderForPlan(plan: string): string {
@@ -292,14 +299,21 @@ export function accountStatesFromBurnRates(rates: readonly AdeQuotaBurnRate[], n
 
 /**
  * The live state of each plan. A plan with several accounts is as good as its
- * best account: unblocked first, then the lowest pressure.
+ * best account: unblocked first, then one with a current reading, then the
+ * lowest pressure. An account whose every reading has reset (a login that was
+ * removed or renamed, still in the 30-day ledger) has no pressure and no block
+ * to show, so ranked on those alone it would beat every live account; a
+ * blocked live account still loses to it, since a free login beats a full one.
  */
 export function planStatesFromAccountStates(accounts: ReadonlyMap<string, PlanState>): Map<string, PlanState> {
   const states = new Map<string, PlanState>();
   for (const plan of ROUTER_PLANS) {
     const own = [...accounts.values()]
       .filter((state) => state.plan === plan)
-      .sort((a, b) => Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason)) || a.pressure - b.pressure);
+      .sort((a, b) =>
+        Number(Boolean(a.blockedReason)) - Number(Boolean(b.blockedReason))
+        || Number(hasLiveReading(b)) - Number(hasLiveReading(a))
+        || a.pressure - b.pressure);
     states.set(plan, own[0] ?? { plan, accountId: null, usdPerPercent: null, rateWindow: null, burnConfidence: "none", pressure: 1, blockedReason: null, windows: [] });
   }
   return states;

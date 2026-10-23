@@ -45,7 +45,10 @@ export type ProviderInstance = {
   /** Stable machine-local id. The default instance's id IS the provider slug. */
   id: string;
   provider: ProviderInstanceProvider;
-  /** User-facing name. "Default" for the synthesized pre-existing identity. */
+  /**
+   * What every surface calls the account: its signed-in email, else its id.
+   * Set by the host; accounts have no names of their own.
+   */
   label: string;
   /** `#rrggbb`, chosen by the user to tell accounts apart at a glance. */
   accentColor?: string;
@@ -187,7 +190,8 @@ export type ProviderInstanceListArgs = {
 
 export type ProviderInstanceCreateArgs = {
   provider: ProviderInstanceProvider;
-  label: string;
+  /** Optional; only shapes the id. Accounts are shown by their email, else their id. */
+  label?: string;
   accentColor?: string;
 };
 
@@ -206,11 +210,6 @@ export type ProviderInstanceRemoveResult = {
   configHome: string;
   /** Why the sign-out before the removal failed; the login is still in `configHome`. */
   signOutError?: string;
-};
-
-export type ProviderInstanceRenameArgs = {
-  id: string;
-  label: string;
 };
 
 export type ProviderInstanceSetDefaultArgs = {

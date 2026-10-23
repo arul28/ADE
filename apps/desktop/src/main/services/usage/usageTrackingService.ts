@@ -5201,8 +5201,20 @@ export function createUsageTrackingService({
   const getModelCatalog = (args: ModelCatalogArgs = {}) => requireModelRouter().catalog(args);
   /** The same models organized by task kind, with scores, tiers and plain-English notes. */
   const getModelSheet = (args: ModelCatalogArgs = {}) => requireModelRouter().sheet(args);
-  /** The route the router would pick for one task, without running anything. */
-  const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
+  /**
+   * The route the router would pick for one task, without running anything.
+   * Each plan names its account by id and by the login's email, never only by
+   * the id, which reads like a label.
+   */
+  const previewModelRoute = async (args: RouterPreviewArgs) => {
+    const preview = await requireModelRouter().preview(args);
+    const emailById = new Map((getUsageSnapshot().accounts ?? []).map((account) => [account.id, account.email ?? null]));
+    const plans = Object.fromEntries(Object.entries(preview.plans).map(([plan, state]) => [
+      plan,
+      state.accountId ? { ...state, accountEmail: emailById.get(state.accountId) ?? null } : state,
+    ]));
+    return { ...preview, plans };
+  };
   /** What the shadow router would have changed over the last days. */
   const getRouterShadowSummary = (args: { days?: number } = {}) => requireModelRouter().shadowSummary(args);
   /** What the router would have saved against what ran: ledger threads replayed, plus shadow-logged subagents. */

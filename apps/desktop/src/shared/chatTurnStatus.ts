@@ -44,6 +44,11 @@ export type ChatTurnStatusSnapshot = {
   sessionId: string;
   phase: ChatTurnStatusPhase;
   provider?: string;
+  /**
+   * The provider account the chat runs on (`ade chat create --instance` takes
+   * it). Claude and Codex only, the providers with several logins.
+   */
+  instanceId?: string;
   turnElapsedMs?: number | null;
   lastActivityMsAgo?: number | null;
   currentTool?: ChatTurnStatusTool | null;
@@ -67,6 +72,7 @@ export type ChatTurnStatusSnapshot = {
 export type DeriveChatTurnStatusInput = {
   sessionId: string;
   provider?: string;
+  instanceId?: string | null;
   sessionStatus?: string;
   currentTurnStartedAt?: string | null;
   lastActivityAt?: string | null;
@@ -122,6 +128,7 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
     sessionId: input.sessionId,
     phase,
     ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.instanceId?.trim() ? { instanceId: input.instanceId.trim() } : {}),
     turnElapsedMs: turnStartedMs == null ? null : Math.max(0, nowMs - turnStartedMs),
     lastActivityMsAgo: lastActivityMs == null ? null : Math.max(0, nowMs - lastActivityMs),
     currentTool: input.currentTool ?? null,
@@ -191,6 +198,9 @@ export function formatChatTurnStatus(
     `${marker} ${phaseLabel.padEnd(9)} ${headlineBits.join(" · ")}`.trimEnd(),
   ];
 
+  if (status.instanceId) {
+    lines.push(chatTurnStatusRow("account", `${status.provider ?? "provider"} ${status.instanceId}`));
+  }
   if (status.currentTool) {
     const detail = status.currentTool.detail?.trim();
     lines.push(chatTurnStatusRow("tool", `${status.currentTool.name}${detail ? ` · ${detail}` : ""}`));

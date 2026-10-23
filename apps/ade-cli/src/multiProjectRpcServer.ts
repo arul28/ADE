@@ -2834,7 +2834,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!scope) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          "machines.call scope must be repo (originUrl), project (selector), personal, or machine.",
+          "machines.call scope must be repo (originUrl), project (selector), anyProject, personal, or machine.",
         );
       }
       // The caller's chat is this connection's own claim, exactly the trust

@@ -375,6 +375,7 @@ import {
   claudeAccountPromptCacheEnv,
   claudeAccountStopsOnExtraUsage,
   providerInstanceEnvPatch,
+  resolveChatInstanceId,
   resolveProviderInstanceForLaunch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
@@ -21952,7 +21953,8 @@ export function createAgentChatService(args: {
       await sendMessage({
         sessionId: created.id,
         text: usageLimitHandoffPrompt({
-          accountLabel: alternate.label,
+          // The id, not the label: the label is the login's email now.
+          accountLabel: alternate.instanceId,
           title: managed.autoTitleSeed,
           task: managed.session.goal,
           summary: managed.continuitySummary,
@@ -64588,9 +64590,17 @@ export function createAgentChatService(args: {
       : 0;
     const snapshots = await getTrackedSubagents(trimmed);
     const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
+    // The account is extra: an unreadable registry leaves it off, logged.
+    let instanceId: string | null = null;
+    try {
+      instanceId = resolveChatInstanceId(summary.provider, summary.instanceId);
+    } catch (error) {
+      logger.warn("chat.status_account_unavailable", { sessionId: summary.sessionId, error: getErrorMessage(error) });
+    }
     return deriveChatTurnStatus({
       sessionId: summary.sessionId,
       provider: summary.provider,
+      instanceId,
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,

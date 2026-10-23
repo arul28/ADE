@@ -38,7 +38,6 @@ export function pinnedProviderInstances(pin: OpenProjectBinding | null): Provide
     list: (args) => api.list(args, pin),
     create: (args) => api.create(args, pin),
     remove: (args) => api.remove(args, pin),
-    rename: (args) => api.rename(args, pin),
     setDefault: (args) => api.setDefault(args, pin),
     setAccent: (args) => api.setAccent(args, pin),
     dismissReplaced: (args) => api.dismissReplaced(args, pin),

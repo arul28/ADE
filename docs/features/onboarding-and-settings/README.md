@@ -2558,13 +2558,20 @@ file, so they have exactly one identity per machine.
 - **Removing an account deletes nothing on disk.** It is forgotten from the
   registry and the config home is returned so the user can be told what is still
   there. The machine's own login and the current default both refuse removal.
+- **Accounts have no names.** Every surface shows an account as its signed-in
+  email, else its id (`ProviderInstance.label` is that value, set by the host:
+  `providerInstanceDisplayLabel`). The id is what `--instance` takes and never
+  changes; a new account gets the next free `<provider>-<n>`. `create` takes no
+  label (an optional one from an older phone or script only shapes the id), and
+  desktop, web, iOS and the CLI no longer offer Rename. The `rename` action stays
+  for older phones; what it stores is not shown.
 - **Action domain `provider_instances`** carries `list`, `create`, `remove`,
-  `rename`, `setDefault`, `setAccent`, `getSettings`, `setSettings`,
-  `loginCommand`, and `refresh` — on the agent tier for reads *and* mutations,
-  with no CTO gate, because an account is a directory path and a label, never a
-  token. Reachable from the desktop IPC surface, the preload three-way route
-  (pinned runtime → project runtime → local IPC), the daemon action bus, and
-  `ade providers accounts list|add|remove|rename|default`. `setAccent` and the
+  `rename` (older phones only), `setDefault`, `setAccent`, `getSettings`,
+  `setSettings`, `loginCommand`, and `refresh` — on the agent tier for reads
+  *and* mutations, with no CTO gate, because an account is a directory path,
+  never a token. Reachable from the desktop IPC surface, the preload three-way
+  route (pinned runtime → project runtime → local IPC), the daemon action bus,
+  and `ade providers accounts list|add|remove|default`. `setAccent` and the
   stored `accentColor` field are retained for compatibility only: no desktop,
   web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the

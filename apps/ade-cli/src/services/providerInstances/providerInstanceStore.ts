@@ -53,8 +53,8 @@ import {
  * it cannot open. The registry is machine-local by nature, so it lives where the
  * other machine-local facts live.
  *
- * What is NOT in this file: credentials. An instance is a directory path plus a
- * label; the provider CLI writes its own tokens inside that directory and ADE
+ * What is NOT in this file: credentials. An instance is a directory path plus an
+ * id; the provider CLI writes its own tokens inside that directory and ADE
  * never reads or copies them. That is also why `remove` deletes nothing on disk.
  */
 
@@ -147,6 +147,22 @@ function slugForLabel(label: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 24);
   return slug.length ? slug : "account";
+}
+
+/**
+ * The account a Claude or Codex chat runs on: its recorded account, or the
+ * provider's default when it has none or that account was removed (a launch
+ * falls back the same way). Null for providers with one login. Throws when
+ * the account registry cannot be read.
+ */
+export function resolveChatInstanceId(provider: string, instanceId: string | null | undefined): string | null {
+  if (!isProviderInstanceProvider(provider)) return null;
+  return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
+}
+
+/** What every surface calls an account: its email, else its id. */
+export function providerInstanceDisplayLabel(instance: { id: string; account?: { email?: string } }): string {
+  return instance.account?.email?.trim() || instance.id;
 }
 
 function normalizeLabel(value: unknown): string {
@@ -412,7 +428,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
-      label: stored.label,
+      // An account is named by its login, not by a name someone typed: the
+      // email once it has signed in, its id until then.
+      label: providerInstanceDisplayLabel(stored),
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
       configHome: stored.configHome,
       isDefault: defaultIdFor(stored.provider, file) === stored.id,
@@ -532,31 +550,49 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return { instance, command: { ...loginCommandFor(instance), args } };
   }
 
-  function uniqueInstanceId(provider: ProviderInstanceProvider, label: string, file: RegistryFile): string {
+  function uniqueInstanceId(provider: ProviderInstanceProvider, label: string | null, file: RegistryFile): string {
     const taken = new Set<string>([
       ...PROVIDER_INSTANCE_PROVIDERS,
       ...file.instances.map((instance) => instance.id),
     ]);
+    // A removed account's config home stays on disk with its old login and
+    // history, so its id is never handed to a new account.
+    const free = (candidate: string): boolean =>
+      !taken.has(candidate) && !fs.existsSync(path.join(options.adeDir, INSTANCE_HOMES_DIR, provider, candidate));
+    // No name: the next short id an agent can type (`claude-2`, `claude-3`).
+    if (!label) {
+      for (let index = 2; index < 1000; index += 1) {
+        const candidate = `${provider}-${index}`;
+        if (free(candidate)) return candidate;
+      }
+      return `${provider}-${randomBytes(8).toString("hex")}`;
+    }
     const base = slugForLabel(label);
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const candidate = attempt === 0 && !taken.has(base)
-        ? base
-        : `${base}-${randomBytes(3).toString("hex")}`;
-      if (!taken.has(candidate)) return candidate;
+      const candidate = attempt === 0 ? base : `${base}-${randomBytes(3).toString("hex")}`;
+      // The same rule as an unnamed account: a removed account's home stays on
+      // disk with its login, so a typed label (an older phone or script) must
+      // not pick that id back up either.
+      if (free(candidate)) return candidate;
     }
     return `${provider}-${randomBytes(8).toString("hex")}`;
   }
 
   function create(args: {
     provider: unknown;
-    label: unknown;
+    /**
+     * Optional, and only shapes the id: accounts are shown by their email.
+     * Older phones and scripts still send one.
+     */
+    label?: unknown;
     accentColor?: unknown;
   }): { instance: ProviderInstance; loginCommand: ProviderInstanceLoginCommand } {
     const provider = requireProvider(args.provider);
-    const label = normalizeLabel(args.label);
+    const typedLabel = typeof args.label === "string" && args.label.trim() ? normalizeLabel(args.label) : null;
     const accentColor = normalizeProviderInstanceAccent(args.accentColor);
     const file = readFile();
-    const id = uniqueInstanceId(provider, label, file);
+    const id = uniqueInstanceId(provider, typedLabel, file);
+    const label = typedLabel ?? id;
     const configHome = path.join(options.adeDir, INSTANCE_HOMES_DIR, provider, id);
     // 0o700: the provider CLI is about to write its own credentials in here.
     // Use the same best-effort POSIX and owner-only Windows policy as every
@@ -601,6 +637,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return toPublic(next, file);
   }
 
+  /**
+   * Kept for older phones, which still offer Rename. The stored name is no
+   * longer shown anywhere: an account reads as its email.
+   */
   function rename(id: string, label: unknown): ProviderInstance {
     const nextLabel = normalizeLabel(label);
     return mutateRecord(id, "rename", (record) => ({ ...record, label: nextLabel }));
@@ -665,8 +705,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
-    // An instance id is a label slug and can be reused: recreating an account
-    // with the same label mints the same id, so a stale entry here would report
+    // An instance id can be reused (an older label slug is minted again when
+    // the same label comes back), so a stale entry here would report
     // the fresh account as signed out until its next poll.
     brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });

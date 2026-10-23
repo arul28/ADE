@@ -206,7 +206,6 @@ import type {
   ProviderInstanceRefreshArgs,
   ProviderInstanceRemoveArgs,
   ProviderInstanceRemoveResult,
-  ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
   ProviderInstanceDismissReplacedArgs,
   ProviderLoginRefArgs,
@@ -11135,17 +11134,6 @@ const adeBridge = {
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesRemove, args),
       ),
-    rename: async (
-      args: ProviderInstanceRenameArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<ProviderInstance> =>
-      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
-        pin,
-        "provider_instances",
-        "rename",
-        { args: { ...args } },
-        () => ipcRenderer.invoke(IPC.providerInstancesRename, args),
-      ).then(normalizeProviderInstanceResult),
     setDefault: async (
       args: ProviderInstanceSetDefaultArgs,
       pin?: OpenProjectBinding | null,

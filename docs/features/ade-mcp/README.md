@@ -13,7 +13,7 @@ Next to it, **typed tools** cover the everyday reads with named inputs a client
 can check before calling (`projects_list`, `lanes_list`, `lanes_show`,
 `files_tree`, `files_read`, `files_search`, `diff_changes`, `diff_patch`,
 `git_status`, `prs_list`, `prs_show`, `prs_checks`, `chat_list`, `chat_read`,
-`chat_status`, `chat_wait`). Each one only builds the words of an `ade`
+`chat_status`, `chat_wait`, `usage_limits`). Each one only builds the words of an `ade`
 command; the service runs them through the same policy check and runner as the
 `ade` tool, so a typed tool can never do more than the connection's scope. They
 ask the CLI for JSON and return it as `structuredContent`, trimmed: the CLI's

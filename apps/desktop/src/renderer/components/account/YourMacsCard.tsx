@@ -1107,14 +1107,14 @@ export function YourMacsCard() {
                                 </div>
                                 <div className="ade-acct-provider-body">
                                   {provider.accounts.map((account) => {
-                                    const accountMeta = [account.email, account.plan].filter(Boolean).join(" · ");
+                                    // An account is its login: the email (an older machine
+                                    // may still send a typed name), then its id.
+                                    const accountMeta = [account.plan, account.isDefault ? "default" : null].filter(Boolean).join(" · ");
                                     return (
                                       <div key={account.instanceId} className="ade-acct-line">
                                         <div className="ade-acct-line-main">
-                                          {account.label}
-                                          {account.isDefault && account.label !== "Default" ? (
-                                            <span style={{ color: "var(--kit-text-3)" }}> · default</span>
-                                          ) : null}
+                                          {account.email || account.label}
+                                          <span style={{ color: "var(--kit-text-3)" }}> · {account.instanceId}</span>
                                         </div>
                                         {accountMeta ? (
                                           <div style={{ color: "var(--kit-text-3)" }}>{accountMeta}</div>

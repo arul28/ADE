@@ -1103,6 +1103,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",
+    "getUsageLimits",
     "getUsageSnapshot",
     "noteQuotaDemand",
     "refreshHistory",

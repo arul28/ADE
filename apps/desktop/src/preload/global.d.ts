@@ -169,7 +169,6 @@ import type {
   ProviderInstanceRefreshArgs,
   ProviderInstanceRemoveArgs,
   ProviderInstanceRemoveResult,
-  ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
   ProviderInstanceDismissReplacedArgs,
   ProviderLoginRefArgs,
@@ -3990,10 +3989,6 @@ declare global {
           args: ProviderInstanceRemoveArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstanceRemoveResult>;
-        rename: (
-          args: ProviderInstanceRenameArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<ProviderInstance>;
         setDefault: (
           args: ProviderInstanceSetDefaultArgs,
           pin?: OpenProjectBinding | null,

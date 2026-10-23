@@ -75,7 +75,7 @@ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
 ade chat create --lane <lane> --provider claude --credential openrouter
 
 # A specific account, without a preset.
-ade chat create --lane <lane> --provider claude --instance work
+ade chat create --lane <lane> --provider claude --instance claude-2
 
 # OpenCode Go's DeepSeek inside Claude Code, chat or CLI, no preset.
 ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
