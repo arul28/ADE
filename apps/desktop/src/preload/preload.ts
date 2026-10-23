@@ -164,6 +164,7 @@ import type {
 } from "../shared/types/archive";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -4925,6 +4926,10 @@ const adeBridge = {
     runMaintenanceNow: async (pin?: OpenProjectBinding | null): Promise<MaintenanceRunReport> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "runMaintenanceNow", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageRunMaintenanceNow),
+      ),
+    deletedLaneChatsSummary: async (pin?: OpenProjectBinding | null): Promise<DeletedLaneChatsSummary> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "storage", "deletedLaneChatsSummary", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.storageDeletedLaneChatsSummary),
       ),
     cleanupPreview: async (
       targets: StorageCleanupTarget[],

@@ -118,7 +118,20 @@ export type StorageCleanupTarget =
   // Screenshots, recordings, and attachments under `.ade/artifacts` or
   // `.ade/attachments`. Removing these also drops the matching proof records,
   // so the drawer never lists an item whose bytes are gone.
-  | { kind: "proof_attachments"; path: string };
+  | { kind: "proof_attachments"; path: string }
+  // Transcripts and records of chats whose lane was deleted (the session rows
+  // went with the lane; nothing in ADE opens them again). `path` is the
+  // project's chat transcript directory; only qualifying files inside it are
+  // removed, never the directory.
+  | { kind: "deleted_lane_chats"; path: string }
+  // The Claude and Codex session files ADE started for those chats, in the
+  // providers' own folders. `path` is the project's chat-session record
+  // directory (where the provider session ids are read from); only the
+  // providers' files are removed, never that directory.
+  | { kind: "deleted_lane_provider_sessions"; path: string };
+
+/** `StorageItem.id` of the "Chats from deleted lanes" row in the chats & history category. */
+export const DELETED_LANE_CHATS_ITEM_ID = "chats_history:deleted_lane_chats";
 
 export type StorageCleanupPreview = {
   // `identity` binds a confirmation to the exact file generation the user
@@ -153,6 +166,13 @@ export type StorageLedgerEntry = {
   policyClass: StoragePolicyClass;
   policy: StorageLedgerPolicy;
   enforcement: "write_time" | "doctor" | "both" | "manual";
+};
+
+/** What one storage-doctor step did. */
+export type MaintenanceStepResult = {
+  itemsAffected: number;
+  bytesReclaimed: number;
+  skippedReason?: string | null;
 };
 
 export type MaintenanceActionKind =
@@ -225,6 +245,31 @@ export type StorageSnapshotExtras = {
   maintenance: StorageMaintenanceInfo;
   safeReclaimableBytes: number;
   policyChips: Partial<Record<StorageCategoryId, string>>;
+  /** Each agent provider's own session history on this machine (all projects). Absent on older builds. */
+  providerHistory?: ProviderHistoryEntry[];
+  /** Provider session files ADE started for this project's chats from deleted lanes. Absent when there are none. */
+  deletedLaneProviderCopies?: { chatCount: number; bytes: number; chatSessionsDir: string };
+};
+
+export type ProviderHistoryEntry = {
+  provider: string;
+  label: string;
+  /** The provider's own folders that were measured. */
+  paths: string[];
+  bytes: number;
+  fileCount: number;
+  /** The scan stopped early; `bytes` is a lower bound. */
+  partial?: boolean;
+  /** Who manages these files and how long they are kept. */
+  note: string;
+};
+
+/** What the deleted-chats reminder needs: cheap to compute, no full storage scan. */
+export type DeletedLaneChatsSummary = {
+  chatCount: number;
+  bytes: number;
+  /** Where the transcripts are on the machine that owns the project. */
+  directory: string;
 };
 
 export type RuntimeHealthSnapshot = {

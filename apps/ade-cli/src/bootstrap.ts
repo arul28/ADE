@@ -3407,6 +3407,10 @@ export async function createAdeRuntime(args: {
         || ptyService.isTranscriptPathActive(filePath)
         || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
       projectId,
+      // The index file is held open by the search service; it compacts on request.
+      compactSearchIndex: () =>
+        searchServiceHolder.current?.compactIndex()
+        ?? { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" },
       laneService,
       projectConfigService,
       releaseLaneRuntimeResources: (laneId) => {

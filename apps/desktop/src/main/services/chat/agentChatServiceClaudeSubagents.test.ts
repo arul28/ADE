@@ -34,6 +34,7 @@ import {
   waitForEvent,
   waitForSessionTitle,
   writePersistedChatState,
+  dedicatedTranscriptPath,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -1455,7 +1456,7 @@ describe("createAgentChatService", () => {
       // reads the child's done event from disk. Wait on the transcript write
       // queue (its real completion signal) instead of polling the file, so a
       // slow append under load cannot fail on a timing guess.
-      const childTranscriptPath = String(sessionService.get(child.id)?.transcriptPath);
+      const childTranscriptPath = dedicatedTranscriptPath(child.id);
       await flushAllQueuedTranscriptWrites();
       expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
 

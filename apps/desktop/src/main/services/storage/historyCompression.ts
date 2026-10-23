@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Transform, Writable, type TransformCallback } from "node:stream";
+import { Transform, Writable, type Readable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip, gunzipSync, type ZlibOptions } from "node:zlib";
 import type { Logger } from "../logging/logger";
@@ -118,6 +118,24 @@ export function readHistoryFileSync(filePath: string): Buffer {
   return filePath.endsWith(".gz")
     ? readCompressedHistoryFileSync(filePath)
     : fs.readFileSync(filePath);
+}
+
+/**
+ * A stream of a history file's logical (decompressed) bytes, for line-by-line
+ * readers. `plainEnd` bounds a plain file's read (inclusive byte offset); a
+ * `.gz` is read through gunzip and the caller stops early by destroying the
+ * returned stream, which also closes the file. A source read error surfaces on
+ * the returned stream.
+ */
+export function openHistoryReadStream(filePath: string, options: { plainEnd?: number } = {}): Readable {
+  if (!filePath.endsWith(".gz")) {
+    return fs.createReadStream(filePath, options.plainEnd == null ? {} : { end: options.plainEnd });
+  }
+  const source = fs.createReadStream(filePath);
+  const gunzip = createGunzip();
+  source.on("error", (error) => gunzip.destroy(error));
+  gunzip.on("close", () => source.destroy());
+  return source.pipe(gunzip);
 }
 
 /** Prefer the plain append target, then its transparent gzip replacement. */
@@ -762,6 +780,12 @@ export function createHistoryCompressor(deps: {
   diskPressure?: DiskPressureMonitor | null;
   isPathActive: (path: string) => boolean;
   minAgeDays?: number;
+  /**
+   * A shorter idle age for files known to be finished (an archived or long-
+   * settled chat, a chat whose lane was deleted). Returning null or nothing
+   * keeps the default age. Read once per candidate listing.
+   */
+  minAgeMsFor?: (filePath: string, kind: CompressionCandidate["kind"]) => number | null | undefined;
   /** Test seam for verification-failure coverage. */
   createGzipStream?: (options: ZlibOptions) => NodeJS.ReadWriteStream;
   betweenFilesDelayMs?: number;
@@ -770,9 +794,9 @@ export function createHistoryCompressor(deps: {
   const gzipFactory = deps.createGzipStream ?? ((options: ZlibOptions) => createGzip(options));
 
   const listCandidates = async (roots: CompressionRoots): Promise<CompressionCandidate[]> => {
-    const candidates: Array<CompressionCandidate & { mtimeMs: number }> = [];
+    const candidates: Array<CompressionCandidate & { mtimeMs: number; early: boolean }> = [];
     const seen = new Set<string>();
-    const oldBefore = Date.now() - minAgeMs;
+    const now = Date.now();
 
     for (const root of roots) {
       const pending = [path.resolve(root.path)];
@@ -799,24 +823,28 @@ export function createHistoryCompressor(deps: {
           continue;
         }
         const normalized = path.resolve(current);
+        if (!stat.isFile() || seen.has(normalized) || !isEligibleName(normalized, root.kind)) continue;
+        const earlyAgeMs = deps.minAgeMsFor?.(normalized, root.kind);
+        const early = typeof earlyAgeMs === "number" && earlyAgeMs >= 0 && earlyAgeMs < minAgeMs;
         if (
-          !stat.isFile()
-          || seen.has(normalized)
-          || stat.mtimeMs >= oldBefore
+          stat.mtimeMs >= now - (early ? earlyAgeMs : minAgeMs)
           || stat.size > MAX_TRANSPARENT_HISTORY_BYTES
-          || !isEligibleName(normalized, root.kind)
           || deps.isPathActive(normalized)
         ) {
           continue;
         }
         seen.add(normalized);
-        candidates.push({ path: normalized, bytes: stat.size, kind: root.kind, mtimeMs: stat.mtimeMs });
+        candidates.push({ path: normalized, bytes: stat.size, kind: root.kind, mtimeMs: stat.mtimeMs, early });
       }
     }
 
+    // Finished chats first, so a backlog of ordinary old files cannot starve them.
     return candidates
-      .sort((left, right) => left.mtimeMs - right.mtimeMs || left.path.localeCompare(right.path))
-      .map(({ mtimeMs: _mtimeMs, ...candidate }) => candidate);
+      .sort((left, right) =>
+        Number(right.early) - Number(left.early)
+        || left.mtimeMs - right.mtimeMs
+        || left.path.localeCompare(right.path))
+      .map(({ mtimeMs: _mtimeMs, early: _early, ...candidate }) => candidate);
   };
 
   const compressOne = async (
@@ -865,6 +893,10 @@ export function createHistoryCompressor(deps: {
         return { ok: false, reason: "verification_failed" };
       }
 
+      // The compressed copy keeps the source's last-write time: age-based
+      // rules (finished-chat cleanup, the snapshot's old-file totals) must see
+      // when the history was last written, not when it was compressed.
+      await fs.promises.utimes(partialPath, before.atime, before.mtime);
       await fs.promises.rename(partialPath, gzipPath);
       createdGzip = true;
       if (deps.isPathActive(sourcePath)) {

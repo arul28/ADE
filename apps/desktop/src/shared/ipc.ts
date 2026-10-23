@@ -31,6 +31,7 @@ export const IPC = {
   storageRunMaintenanceNow: "ade.storage.runMaintenanceNow",
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",
+  storageDeletedLaneChatsSummary: "ade.storage.deletedLaneChatsSummary",
   archiveList: "ade.archive.list",
   archiveSummary: "ade.archive.summary",
   archiveRestore: "ade.archive.restore",

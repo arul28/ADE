@@ -1068,6 +1068,7 @@ import type { ProjectHealthService } from "../../../../../ade-cli/src/services/p
 import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
+  DeletedLaneChatsSummary,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -4355,6 +4356,11 @@ export function registerIpc({
   ipcMain.handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.runMaintenanceNow();
+  });
+
+  ipcMain.handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.deletedLaneChatsSummary();
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (

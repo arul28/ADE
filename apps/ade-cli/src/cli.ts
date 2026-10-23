@@ -3883,6 +3883,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade storage compress --text                   Losslessly compress old chat/terminal history
     $ ade --role cto storage maintenance --text     Run the policy-driven maintenance sweep now (CTO)
     $ ade storage actions --text                    List raw storage service actions
+    $ ade storage action deletedLaneChatsSummary --text   Chats from deleted lanes still on disk, and where
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
 `,
