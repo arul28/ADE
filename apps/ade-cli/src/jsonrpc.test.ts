@@ -372,7 +372,7 @@ describe("internal error replies", () => {
     await waitForDrain();
     stop();
     return jsonlResponses(transport)[0] as {
-      error: { code: number; message: string; data?: { code?: string; errorId?: string } };
+      error: { code: number; message: string; data?: { code?: string; errorId?: string }; expected?: string };
     };
   }
 

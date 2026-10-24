@@ -9114,6 +9114,9 @@ export function AgentChatPane({
     // custom Codex `config.toml` model, a model newer than this build. A
     // fallback here would switch the chat to another model on the next send.
     if (selectedSessionId && modelId === selectedSessionModelId) return;
+    // A model the person picked in this chat (a Custom preset's model this
+    // catalog does not list) is kept until Send applies it.
+    if (selectedSessionId && deferredComposerSessionIdRef.current === selectedSessionId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;

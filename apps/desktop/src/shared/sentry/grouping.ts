@@ -25,8 +25,9 @@ const GROUPING_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\\\\[^\s'"`),;]+/g, "<path>"],
   // POSIX and home paths: a slash that starts a word, so `ade/actions/call` stays.
   [/(^|[\s('"`=:])~?\/[^\s'"`),;]*/g, "$1<path>"],
-  // Quoted names: a branch, a secret, a key.
-  [/'[^'\n]{1,200}'/g, "'<...>'"],
+  // Quoted names: a branch, a secret, a key. Not the property in "(reading
+  // 'x')": two different properties read off undefined are two different bugs.
+  [/(?<!reading )'[^'\n]{1,200}'/g, "'<...>'"],
   [/"[^"\n]{1,200}"/g, "\"<...>\""],
   // Any word with a digit in it, six characters or longer: tab-..., bs-..., project_..., hex.
   [/\b(?=[\w-]*\d)[\w-]{6,}\b/g, "<id>"],

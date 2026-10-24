@@ -12000,8 +12000,10 @@ function buildChatPlan(args: string[]): CliPlan {
     // The session can come from the positional, --session, --input-json, or
     // the caller's own chat, so it is required only after they are merged.
     const update = withSession(readChatUpdateFields(args));
+    // Only an omitted session falls back to the caller's own chat; an empty
+    // one given on purpose is refused rather than updating the wrong chat.
     update.sessionId = requireValue(
-      asString(update.sessionId) ?? asString(process.env.ADE_CHAT_SESSION_ID),
+      update.sessionId === undefined ? asString(process.env.ADE_CHAT_SESSION_ID) : asString(update.sessionId),
       "sessionId",
     );
     return {
