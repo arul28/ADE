@@ -27,6 +27,20 @@ scope `all`, key `mcp/<server>/env/<NAME>` or `mcp/<server>/header/<NAME>`
 (`mcpSecretVaultKey`). Settings rows are stored and synced as readable JSON;
 the vault is sealed.
 
+**A launch never puts a secret on a command line.** The Claude Agent SDK hands
+the Claude CLI every MCP server, env values and headers included, as one inline
+`--mcp-config <json>` argument, which any process on the machine can read with
+`ps` and which the subprocess reaper wrote to its registry file. ADE's Claude
+spawn (`claudeSubprocessReaper.spawnClaudeCodeProcess`) moves that JSON into a
+file only the user can read (`$TMPDIR/ade-claude-mcp-config/<uuid>.json`, folder
+0700, file 0600; `moveClaudeMcpConfigOffArgv`) and passes its path, which the
+CLI reads the same way, `${NAME}` expansion included (checked with the pinned
+CLI: the same server env and `Authorization` header arrive both ways). The file
+is deleted when the process exits; when a brain starts, files that no running
+process names are deleted too (one `ps` read; on Windows, files older than
+seven days). Tracked Claude terminals already used a private file
+(`trackedCliUserMcp.ts`).
+
 Two things are not secrets in this model and do sync in the list as written: a
 command's arguments, and a URL. A token passed as an argument or in a query
 string is stored in the list. Put it in an env variable or a header instead.
@@ -58,7 +72,8 @@ not editable afterwards. The dialog says so; renaming is remove and add again.
   have in their own settings, with the providers each came from and an Import
   button. Servers already in the registry (by name) are left out.
 - **Who gets them.** Which agents the registry reaches, read off
-  `CALLER_MCP_SUPPORT`, the table the launch path uses.
+  `registryMcpSupport` (`shared/callerMcpServers.ts`), which the launch path
+  uses too.
 
 Status on each row is about this computer:
 
@@ -181,9 +196,15 @@ missing or malformed file contributes nothing.
 | Cursor | `~/.cursor/mcp.json` | `mcpServers` |
 | OpenCode | `~/.config/opencode/opencode.json` or `.jsonc` (`$XDG_CONFIG_HOME`) | `mcp` |
 | Droid | `~/.factory/mcp.json` | `mcpServers` |
+| Pi | `<Pi agent dir>/mcp.json`: `$PI_CODING_AGENT_DIR` when set, else `~/.pi/agent` (the directory ADE's Pi chats run on) | `mcpServers` |
 
 Muse Code is not scanned. A Muse chat still receives the registry's servers;
 only importing servers from Muse's own config files is missing.
+
+Pi's project file (`.pi/mcp.json`) is not scanned: it comes with the
+repository. An env or header value that is a Pi reference (`${NAME}`, or a
+`!command` that prints the value) imports as written: the vault gets the
+reference text, not what Pi would resolve it to.
 
 The same name in two providers is one row; the first definition found wins
 (the order above) and the others add their provider to the row. A name the
@@ -210,9 +231,10 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 |---|---|
 | Claude, Cursor, Droid, OpenCode | Every server that is on. |
 | Codex | Every server that is on, except SSE ones. Codex has no SSE client. |
-| Pi | None. The Pi SDK has no MCP configuration. |
+| Pi | Every server that is on, except SSE ones (Pi has no legacy SSE client). The chat worker registers them in Pi's own MCP support (`pi.registerMcpServer`), values over the worker IPC only; the servers in Pi's own `mcp.json` load too. None in plan mode or a side chat. MCP calls ask in the modes where `bash` asks and in edit mode; full access runs them. See [Agent Routing › Pi MCP servers](../chat/agent-routing.md#pi-mcp-servers). |
+| Kimi | Every server that is on (stdio, HTTP and SSE), through ACP `session/new`. The servers in Kimi's own config also load, and a same-named one there wins. |
 | Copilot | ADE's own servers and the registry's, through the SDK's `mcpServers`. Servers the user configured in their Copilot config still run in interactive chats. ADE hands a registry sign-in to Copilot, so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
-| Grok, Kimi, Qwen, Devin | None yet. |
+| Grok, Qwen, Devin, Antigravity | None yet. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
 
 A change reaches chats started after it. A running chat keeps what it started
@@ -227,6 +249,15 @@ same-named server from the launch (each probed: one process, the launch's
 command), Cursor documents that an inline server wins over its config layers,
 and OpenCode merges its config by name, so those get the registry's.
 
+Pi is the other way round, by its own documented rule: a server in Pi's
+`mcp.json` (the agent directory's, or a trusted project's) takes precedence
+over a registered one of the same name, and the registered one does not start
+(confirmed in Pi 1.4's MCP extension: `registeredServers` skips every name
+`mcp.json` defines, an `enabled: false` entry included, and Pi counts names
+that differ only in `-` and `_` as one). ADE therefore hands Pi every
+registry server and lets Pi drop the duplicate; it does not need a
+`providerOwnMcpServerNames` entry.
+
 | Provider | Own MCP config ADE reads for that check |
 |---|---|
 | Droid | `<FACTORY_HOME_OVERRIDE or ~>/.factory/mcp.json`, `.factory/mcp.json` in the folder and every folder above it |
@@ -237,9 +268,8 @@ and OpenCode merges its config by name, so those get the registry's.
 | Devin | `mcp_config.json` / `mcp_config.local.json` (3000.3+) and `config.json` / `config.local.json` (older) under `~/.config/devin` (`%APPDATA%\devin`) and `.devin` |
 | Antigravity | `~/.gemini/config/mcp_config.json`, `.agents/mcp_config.json` |
 
-ADE hands Qwen, Kimi, Grok, Devin and Antigravity chats no servers today (the
-ACP session gets an empty list), so for them the check only matters once it
-does.
+ADE hands Qwen, Grok, Devin and Antigravity chats no servers today (the ACP
+session gets an empty list), so for them the check only matters once it does.
 
 ## Your servers on ADE accounts
 
@@ -318,7 +348,7 @@ Which servers it applies to, per provider:
 | Claude | Re-pointed through the launch's MCP config: a server named there replaces the same name from the user and local scopes, and the user's other servers still load. Only for an entry that is just `command` and `args` (an `env` would have to be copied onto a command line), not for a name the project's `.mcp.json` declares or that the user switched off for the folder, and not in strict mode. | Re-pointed |
 | Copilot, Cursor, OpenCode | Re-pointed through the servers ADE hands the chat (Copilot session `mcpServers`, Cursor inline `mcpServers`, OpenCode's shared-server config): a server of that name replaces the user's (Copilot probed; Cursor documents inline first; OpenCode merges by key). Only an entry that is just a command (plus Copilot's `tools`), not a name a workspace or project file overrides, and not in strict mode. | Re-pointed |
 | Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
-| Pi | No MCP. | No MCP. |
+| Pi | Unchanged. Pi starts the servers in its own `mcp.json` itself, and stops a stdio server's whole process group, `npx` wrappers included. | Re-pointed (ADE hands these over itself) |
 
 Cursor one-shots (titles and other background utilities) run in strict MCP
 mode, which drops the project and plugin layers' servers; user-level ones
@@ -330,7 +360,8 @@ provider has no switch for it: Cursor (user layer, above), Droid
 configs by default) and Muse (a fresh `muse serve` loads its global
 servers). Claude (`--strict-mcp-config`), Codex (by name), Copilot (config
 discovery off and every configured name disabled), Qwen (`--safe-mode`), Pi
-(no MCP) and OpenCode (reuses the one shared server) start none.
+(`pi -p --no-extensions`, which also turns off Pi's built-in MCP support) and
+OpenCode (reuses the one shared server) start none.
 
 Codex runs that need none of the user's servers start none of the
 config.toml ones: background utilities (`codex exec`, chat titles and the
@@ -348,7 +379,7 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/shared/types/mcpRegistry.ts` | The wire types of `window.ade.mcpRegistry`. |
 | `apps/desktop/src/main/services/mcp/mcpRegistryService.ts` | Context, this-computer checks, the vault path, scan, import and sign-in. |
 | `apps/desktop/src/main/services/mcp/mcpOAuth.ts` | The browser sign-in: the probe, discovery, client registration, the loopback redirect, the token exchange and renewal. |
-| `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the five provider configs, including the Codex TOML tables. |
+| `apps/desktop/src/main/services/mcp/mcpProviderConfigScan.ts` | Reading the six provider configs, including the Codex TOML tables. |
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
 | `apps/desktop/src/main/services/mcp/chatUserMcp.ts` | The seam the chat service calls at each launch step: registry servers minus double copies, the user's own servers per provider, the Codex overlay and the two Claude halves. |

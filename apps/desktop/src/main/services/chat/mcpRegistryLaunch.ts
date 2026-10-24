@@ -6,7 +6,7 @@
  * launched offline still gets the servers this machine already knows about.
  */
 
-import { callerMcpSupport, type CallerMcpServers } from "../../../shared/callerMcpServers";
+import { registryMcpSupport, type CallerMcpServers } from "../../../shared/callerMcpServers";
 import { mcpRegistryToCallerServers } from "../../../shared/mcpRegistry";
 import type { AgentChatProvider } from "../../../shared/types/chat";
 import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
@@ -31,14 +31,14 @@ export function resolveMcpRegistryForLaunch(args: {
   /** One vault value by key, or null when this machine does not hold it. */
   readSecret: (vaultKey: string) => string | null;
 }): McpRegistryLaunch {
-  const support = callerMcpSupport(args.provider);
+  const support = registryMcpSupport(args.provider);
   // A provider with no MCP surface gets nothing, silently: the registry is
   // "every agent that can", not a reason to refuse a chat.
-  if (!support || support.level === "unsupported") return NONE;
+  if (!support) return NONE;
   const { cached } = readCachedMcpRegistry(args.adeHome, args.projectRoot);
   if (!cached?.servers.length) return NONE;
   const { servers: all, off } = cached;
-  const blockedTransports: readonly string[] = support.unsupportedTransports ?? [];
+  const blockedTransports: readonly string[] = support.unsupportedTransports;
   const unsupported = all.filter((server) => blockedTransports.includes(server.transport)).map((server) => server.name);
   const deliverable = all.filter((server) => !blockedTransports.includes(server.transport));
   const resolved = mcpRegistryToCallerServers(deliverable, off, args.readSecret);

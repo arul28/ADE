@@ -189,8 +189,8 @@ const VENDOR_PINNED_TOOLS = [
       files: {
         module: { path: "node_modules/@earendil-works/pi-coding-agent/dist/index.js" },
         // The package's `bin.pi`, which a terminal runs under the pinned `node`.
-        // Re-check on a Pi bump: 1.x moved it to dist/bundle/cli.js.
-        cli: { path: "node_modules/@earendil-works/pi-coding-agent/dist/cli.js" },
+        // Pi 1.x ships it as the bundled runtime; re-check on a Pi bump.
+        cli: { path: "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" },
       },
     },
   },

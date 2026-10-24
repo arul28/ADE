@@ -6,6 +6,8 @@ import type {
   AgentChatCreateScheduledWorkResult,
   AgentChatDispatchSteerResult,
   AgentChatHandoffResult,
+  AgentChatStartSideChatResult,
+  AgentChatEndSideChatResult,
   AgentChatInterruptResult,
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
@@ -307,6 +309,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     handoff: async (args, pin) => {
       guardPin("handoff", pin);
       return await callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args);
+    },
+    startSideChat: async (args, pin) => {
+      guardPin("startSideChat", pin);
+      return await callRequiredMutation<AgentChatStartSideChatResult>("chat.startSideChat", args);
+    },
+    endSideChat: async (args, pin) => {
+      guardPin("endSideChat", pin);
+      return await callRequiredMutation<AgentChatEndSideChatResult>("chat.endSideChat", args);
     },
     // The cross-machine handoff trio is a real sync command surface
     // (`chat.prepareCrossMachineHandoff` / `validateCrossMachineSource` /

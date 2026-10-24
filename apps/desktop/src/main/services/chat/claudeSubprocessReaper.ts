@@ -7,6 +7,27 @@ import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sd
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTree, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
+import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
+
+/**
+ * Every process's command line, for the MCP config sweep; null on Windows or
+ * when `ps` fails. Skipped when the folder holds nothing to sweep.
+ */
+function readLiveCommandLines(platform: NodeJS.Platform): string | null {
+  if (platform === "win32") return null;
+  try {
+    if (!fs.readdirSync(CLAUDE_MCP_CONFIG_DIR).length) return null;
+  } catch {
+    return null;
+  }
+  const result = spawnSync("ps", ["-axww", "-o", "args="], { encoding: "utf8", timeout: 3_000, maxBuffer: 32 * 1024 * 1024 });
+  return result.status === 0 && typeof result.stdout === "string" ? result.stdout : null;
+}
+
+/** Where each Claude process's MCP config file lives while it runs. */
+const CLAUDE_MCP_CONFIG_DIR = path.join(os.tmpdir(), "ade-claude-mcp-config");
+/** A file this old outlived the brain that wrote it. */
+const CLAUDE_MCP_CONFIG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;
@@ -198,6 +219,7 @@ export function createClaudeSubprocessReaper(args: {
   const platform = args.platform ?? process.platform;
   const isWindows = platform === "win32";
   const killGraceMs = args.killGraceMs ?? 5_000;
+  pruneStaleClaudeMcpConfigFiles(CLAUDE_MCP_CONFIG_DIR, CLAUDE_MCP_CONFIG_MAX_AGE_MS, readLiveCommandLines(platform));
   const spawnProcess = args.spawnProcess ?? spawn;
   const setTimer = args.setTimer ?? setTimeout;
   const clearTimer = args.clearTimer ?? clearTimeout;
@@ -522,25 +544,42 @@ export function createClaudeSubprocessReaper(args: {
     // Node refuses it with EINVAL unless it goes through a command interpreter.
     // `resolveCliSpawnInvocation` produces the correctly quoted cmd.exe (or
     // PowerShell, for `.ps1`) invocation and is a no-op for a plain `.exe`.
-    const invocation = resolveCliSpawnInvocation(options.command, options.args, options.env, platform);
-    const child = spawnProcess(invocation.command, invocation.args, {
-      cwd: options.cwd,
-      env: options.env,
-      signal: options.signal,
-      stdio: ["pipe", "pipe", "ignore"],
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      windowsHide: true,
-      // POSIX only: put the Claude binary in its own process group so a
-      // teardown can signal `-pid` and take its MCP servers (2-4 per SDK
-      // process, each with children of its own) down with it. Without this the
-      // reaper kills one pid and orphans several hundred MB of node processes
-      // per session — the exact leak this reaper exists to prevent, one level
-      // deeper. `detached` on Windows means "own console window", which is
-      // both wrong and unnecessary there: `taskkill /T /F` already walks the
-      // tree by parent link.
-      detached: !isWindows,
-    }) as ClaudeChildProcess;
-    register(child, metadata, options.command, options.args, { groupLeader: !isWindows });
+    // The SDK's inline MCP JSON carries secrets; the command line and the
+    // registry below get a private file's path instead.
+    const mcpConfig = moveClaudeMcpConfigOffArgv(options.args, CLAUDE_MCP_CONFIG_DIR);
+    const invocation = resolveCliSpawnInvocation(options.command, mcpConfig.args, options.env, platform);
+    let spawned: ClaudeChildProcess;
+    try {
+      spawned = spawnProcess(invocation.command, invocation.args, {
+        cwd: options.cwd,
+        env: options.env,
+        signal: options.signal,
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
+        // POSIX only: put the Claude binary in its own process group so a
+        // teardown can signal `-pid` and take its MCP servers (2-4 per SDK
+        // process, each with children of its own) down with it. Without this the
+        // reaper kills one pid and orphans several hundred MB of node processes
+        // per session — the exact leak this reaper exists to prevent, one level
+        // deeper. `detached` on Windows means "own console window", which is
+        // both wrong and unnecessary there: `taskkill /T /F` already walks the
+        // tree by parent link.
+        detached: !isWindows,
+      }) as ClaudeChildProcess;
+    } catch (error) {
+      removeClaudeMcpConfigFiles(mcpConfig.files);
+      throw error;
+    }
+    const child = spawned;
+    if (mcpConfig.files.length) {
+      // Kept for the whole life of the process: Claude reads the file at
+      // start, and a reconnect may read it again.
+      const cleanup = (): void => removeClaudeMcpConfigFiles(mcpConfig.files);
+      child.once("exit", cleanup);
+      child.once("error", cleanup);
+    }
+    register(child, metadata, options.command, mcpConfig.args, { groupLeader: !isWindows });
     return child;
   };
 

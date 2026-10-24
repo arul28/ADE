@@ -58,6 +58,7 @@ import type {
   OperatorNavigationSuggestion,
   TurnDiffSummary,
 } from "../../../shared/types";
+import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
@@ -2887,7 +2888,9 @@ function renderEvent(
       : null;
     const remoteMcpLabel = typeof event.metadata?.remoteMcp?.label === "string"
       ? event.metadata.remoteMcp.label.trim()
-      : "";
+      : event.metadata?.sideChat
+        ? "your side chat"
+        : "";
     // A brief handoff's first message is the hidden brief. The thread marks it
     // with a line, like the fork line, not with a label inside the bubble.
     const handoffBriefLabel = metadataKind === "handoff"
@@ -3052,7 +3055,7 @@ function renderEvent(
         {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
         <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 text-[length:var(--chat-font-size)] leading-[1.7]">
           <AssistantTextBody
-            text={event.text}
+            text={sideChatSendBlocksToMarkdown(event.text)}
             paced={options?.pacedTextReveal === true}
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             // NOT the render key. A scene's still is filed on disk under this

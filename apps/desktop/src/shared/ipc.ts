@@ -410,6 +410,8 @@ export const IPC = {
   agentChatThreadCommentsUpdate: "ade.agentChat.threadComments.update",
   agentChatThreadCommentsDelete: "ade.agentChat.threadComments.delete",
   agentChatHandoff: "ade.agentChat.handoff",
+  agentChatStartSideChat: "ade.agentChat.startSideChat",
+  agentChatEndSideChat: "ade.agentChat.endSideChat",
   agentChatPrepareCrossMachineHandoff: "ade.agentChat.prepareCrossMachineHandoff",
   agentChatValidateCrossMachineSource: "ade.agentChat.validateCrossMachineSource",
   agentChatMarkCrossMachineHandoff: "ade.agentChat.markCrossMachineHandoff",

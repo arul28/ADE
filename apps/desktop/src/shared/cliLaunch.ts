@@ -1408,6 +1408,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),
       ...piThinkingFlags(args.reasoningEffort),
       ...piToolFlags(permissionMode),
+      ...PI_TERMINAL_TUI_FLAGS,
       "--append-system-prompt",
       guidance,
     ];
@@ -1769,15 +1770,32 @@ export function resolvePiCliModelForLaunch(model: string | null | undefined): st
 
 export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   const mode = permissionMode ?? "default";
-  // Pi's built-in tool names are exactly read, bash, edit, and write. Keep
-  // the allowlist limited to those names; unknown names make Pi reject the
-  // launch instead of merely disabling an optional tool.
+  // Only Pi built-in names: an unknown name makes Pi reject the launch instead
+  // of merely disabling an optional tool. Every mode that can read also gets
+  // Pi's read-only search tools (`grep`, `find`, `ls`).
   return mode === "full-auto"
-    ? ["read", "bash", "edit", "write"]
+    ? ["read", "bash", "edit", "write", ...PI_SEARCH_TOOLS]
     : mode === "edit"
-      ? ["read", "edit", "write"]
-      : ["read"];
+      ? ["read", "edit", "write", ...PI_SEARCH_TOOLS]
+      : ["read", ...PI_SEARCH_TOOLS];
 }
+
+/**
+ * Pi's read-only search built-ins. They never ask: like `read`, they cannot
+ * change the workspace. They run ripgrep and fd (see the Pi chat docs for how
+ * ADE keeps Pi from downloading those).
+ */
+export const PI_SEARCH_TOOLS = ["grep", "find", "ls"] as const;
+
+/** `read` plus Pi's search tools: what a Pi session that may only read runs with. */
+const PI_READ_TOOLS: readonly string[] = ["read", ...PI_SEARCH_TOOLS];
+
+/**
+ * How a Pi chat treats MCP tools: `off` loads no MCP support at all, `ask`
+ * puts every MCP tool call behind the same approval card as a gated `bash`,
+ * `allow` runs them.
+ */
+export type PiSdkMcpPolicy = "off" | "ask" | "allow";
 
 /**
  * Tool policy for a Pi SDK chat session, where ADE can gate each call behind an
@@ -1790,26 +1808,53 @@ export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode
  */
 export function piSdkToolPolicyForPermissionMode(
   permissionMode: AgentChatPermissionMode | null | undefined,
-): { tools: string[]; approvalTools: string[]; readOnly: boolean } {
+  /**
+   * The platform the chat's worker runs on (the brain's `process.platform`).
+   * On Windows Pi also has a `powershell` tool, granted and gated exactly
+   * like `bash`. Omitted means no `powershell`.
+   */
+  platform?: string | null,
+): { tools: string[]; approvalTools: string[]; readOnly: boolean; mcp: PiSdkMcpPolicy } {
   const mode = permissionMode ?? "default";
-  if (mode === "full-auto") return { tools: ["read", "bash", "edit", "write"], approvalTools: [], readOnly: false };
-  if (mode === "edit") return { tools: ["read", "edit", "write"], approvalTools: [], readOnly: false };
+  const shells = platform === "win32" ? ["bash", "powershell"] : ["bash"];
+  if (mode === "full-auto") {
+    return { tools: ["read", ...shells, "edit", "write", ...PI_SEARCH_TOOLS], approvalTools: [], readOnly: false, mcp: "allow" };
+  }
+  // Edit mode grants file edits outright but no shell. An MCP tool can do
+  // anything a shell can, so it asks, as Claude's accept-edits mode does.
+  if (mode === "edit") return { tools: ["read", "edit", "write", ...PI_SEARCH_TOOLS], approvalTools: [], readOnly: false, mcp: "ask" };
   // Plan mode is a review posture: reading is enough, and nothing to approve.
   // `readOnly` is stated rather than inferred from the tool list, because
   // callers gate real capabilities on it and adding a future read-only tool
-  // must not silently flip them.
-  if (mode === "plan") return { tools: ["read"], approvalTools: [], readOnly: true };
+  // must not silently flip them. No MCP: its tools can change anything.
+  if (mode === "plan") return { tools: [...PI_READ_TOOLS], approvalTools: [], readOnly: true, mcp: "off" };
   // default, auto, and config-toml all land here. Anything that changes the
   // workspace is offered rather than silently allowed or silently withheld.
-  return { tools: ["read", "bash", "edit", "write"], approvalTools: ["bash", "edit", "write"], readOnly: false };
+  return {
+    tools: ["read", ...shells, "edit", "write", ...PI_SEARCH_TOOLS],
+    approvalTools: [...shells, "edit", "write"],
+    readOnly: false,
+    mcp: "ask",
+  };
 }
+
+/**
+ * Pi 1.0 opens its terminal UI fullscreen, which takes the screen over and
+ * leaves ADE's terminal with no scrollback. The regular mode prints the
+ * transcript into the terminal, so the user scrolls it as in any CLI.
+ */
+export const PI_TERMINAL_TUI_FLAGS = ["--tui-mode", "regular"] as const;
 
 export function piToolFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   // Passing no allowlist lets Pi's own settings decide, which is what the
   // user asked for by picking config-toml.
   if (permissionMode === "config-toml") return [];
   const tools = piToolsForPermissionMode(permissionMode);
-  return ["--tools", tools.join(",")];
+  // Pi 1.0.4+ keeps MCP tools through a `--tools` allowlist unless an entry
+  // names one, and an MCP tool can change the workspace. A read-only mapping
+  // therefore turns MCP off for the run as well.
+  const readOnly = tools.every((tool) => PI_READ_TOOLS.includes(tool));
+  return ["--tools", tools.join(","), ...(readOnly ? ["--no-mcp"] : [])];
 }
 
 /**
@@ -2722,6 +2767,7 @@ function buildProviderResumeLaunchCommand(
       ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),
       ...piThinkingFlags(reasoningEffort),
       ...piToolFlags(permissionMode),
+      ...PI_TERMINAL_TUI_FLAGS,
     ];
     // Pi's supported native continuation target is a session id/file passed to
     // --session. When ADE has not captured a concrete id, it starts a fresh

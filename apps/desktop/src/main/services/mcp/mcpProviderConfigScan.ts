@@ -315,6 +315,11 @@ function rawSources(args: Required<Pick<ProviderMcpScanArgs, "env" | "homeDir">>
   }
 
   sources.push({ provider: "droid", table: readJson(path.join(homeDir, ".factory", "mcp.json"))?.mcpServers });
+
+  // Pi: `mcp.json` in its agent directory, the one ADE's Pi chats run on. A
+  // project's `.pi/mcp.json` comes with the repository and is not read.
+  const piAgentDir = env.PI_CODING_AGENT_DIR?.trim() || path.join(homeDir, ".pi", "agent");
+  sources.push({ provider: "pi", table: readJson(path.join(piAgentDir, "mcp.json"))?.mcpServers });
   return sources;
 }
 
@@ -322,7 +327,7 @@ function rawSources(args: Required<Pick<ProviderMcpScanArgs, "env" | "homeDir">>
  * Every server the provider configs on this computer declare, one per name.
  *
  * The same name in two providers is one row: the first definition found is the
- * one kept (Claude, Codex, Cursor, OpenCode, Droid, in that order) and the rest
+ * one kept (Claude, Codex, Cursor, OpenCode, Droid, Pi, in that order) and the rest
  * only add their provider to `providers`.
  */
 export function scanProviderMcpConfigs(args: ProviderMcpScanArgs = {}): ProviderMcpScan {

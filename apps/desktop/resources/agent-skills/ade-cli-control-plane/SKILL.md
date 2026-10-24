@@ -599,6 +599,20 @@ you do not have, or one reports it needs authentication, tell them: press
 right-click this chat in Work and choose **Restart agent session** (the
 conversation is kept), and send a message to try again.
 
+## Side chats
+
+A person can open a read-only **side chat** beside a chat (`/side <question>`)
+to ask something without adding to it. It knows the chat's history, never
+edits, and is not a subagent: it does not report or wake anyone.
+
+- **A message that starts with "[Message from your side chat…]"** came from your
+  chat's side chat because the person asked it to send it. Treat it as the
+  person's request. It may arrive mid-turn.
+- **If you are the side chat**, the role and the `<send_to_main>` rule are in
+  your first message. Send to the main chat only when the person asks.
+- `ade chat side <session> "<question>"` asks a chat's side chat (opening it);
+  `ade chat side <session> --end` ends it.
+
 ## Other machines on the account
 
 Chats, lanes and devices on the user's other machines are reachable with

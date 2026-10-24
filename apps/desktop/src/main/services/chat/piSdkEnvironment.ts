@@ -5,7 +5,7 @@ import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 /**
  * The environment keys the Pi worker classifies a turn's account from, by Pi
  * provider. It mirrors pi-ai's own provider-to-variable map
- * (`getApiKeyEnvVars` in `@earendil-works/pi-ai` 0.84 `env-api-keys.js`), so a
+ * (`getApiKeyEnvVars` in `@earendil-works/pi-ai` 1.4 `env-api-keys.js`), so a
  * variable counts only for the provider Pi itself reads it for, limited to
  * the keys the worker already receives (see `PI_STANDARD_ENVIRONMENT_KEYS`).
  * Usage telemetry never widens what Pi can authenticate with, so a provider
@@ -94,6 +94,48 @@ function configEnvironmentNames(value: string): string[] {
 
 function declaredPiEnvironmentNames(agentDir: string | undefined): Set<string> {
   if (!agentDir) return new Set();
+  const names = declaredPiModelEnvironmentNames(agentDir);
+  for (const name of declaredPiMcpEnvironmentNames(agentDir)) names.add(name);
+  return names;
+}
+
+/**
+ * The `$NAME` references in the user's own Pi `mcp.json` (`env`, `headers`
+ * and `oauth.clientSecret` values), so a server configured with
+ * `"Authorization": "Bearer ${DOCS_TOKEN}"` resolves in an ADE chat as it does
+ * in `pi`. Only the agent directory's file: a project's `.pi/mcp.json` comes
+ * with the repository and must not choose which variables reach Pi.
+ */
+function declaredPiMcpEnvironmentNames(agentDir: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentDir, "mcp.json"), "utf8")) as unknown;
+    const servers = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).mcpServers : null;
+    if (!servers || typeof servers !== "object") return names;
+    const collect = (value: unknown): void => {
+      if (typeof value === "string") {
+        for (const name of configEnvironmentNames(value)) {
+          if (!isBlockedPiEnvironmentName(name)) names.add(name);
+        }
+      } else if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const child of Object.values(value)) if (typeof child === "string") collect(child);
+      }
+    };
+    for (const server of Object.values(servers as Record<string, unknown>)) {
+      if (!server || typeof server !== "object") continue;
+      const entry = server as Record<string, unknown>;
+      collect(entry.env);
+      collect(entry.headers);
+      const oauth = entry.oauth;
+      if (oauth && typeof oauth === "object") collect((oauth as Record<string, unknown>).clientSecret);
+    }
+  } catch {
+    // No readable mcp.json: nothing to add.
+  }
+  return names;
+}
+
+function declaredPiModelEnvironmentNames(agentDir: string): Set<string> {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(agentDir, "models.json"), "utf8")) as unknown;
     const names = new Set<string>();

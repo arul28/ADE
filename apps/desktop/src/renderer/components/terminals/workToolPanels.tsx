@@ -21,6 +21,7 @@ import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { IssuesToolPanel } from "../issues/IssuesToolPanel";
+import { SideChatToolPanel } from "../chat/SideChatToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
@@ -648,6 +649,21 @@ function WorkIssuesTool({ laneId, canInsertContext, onAddContextAttachment }: Wo
   );
 }
 
+/**
+ * The read-only side chat of the chat the pane serves (`/side`). It runs on
+ * that chat's machine, so it takes the chat's pin.
+ */
+function WorkSideChatTool({ laneId, activeSession, panelSessionId, runtimePin }: WorkToolPanelProps) {
+  return (
+    <SideChatToolPanel
+      mainSessionId={panelSessionId}
+      rowSideChatSessionId={activeSession?.id === panelSessionId ? activeSession?.sideChatSessionId ?? null : null}
+      laneId={laneId}
+      runtimePin={runtimePin}
+    />
+  );
+}
+
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
   terminal: WorkTerminalTool,
   browser: WorkBrowserTool,
@@ -659,4 +675,5 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   "windows-desktop": WorkWindowsDesktopTool,
   pr: WorkPrTool,
   issues: WorkIssuesTool,
+  "side-chat": WorkSideChatTool,
 };

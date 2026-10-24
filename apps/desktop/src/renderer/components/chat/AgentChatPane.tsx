@@ -294,6 +294,14 @@ import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeM
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { SideChatHeaderButton } from "./SideChatBadge";
+import {
+  noteSideChat,
+  noteSideChatStartFailed,
+  noteSideChatStarting,
+  resolveSideChatView,
+} from "./sideChatState";
+import { SIDE_CHAT_UNSUPPORTED_MESSAGE, parseSideSlashCommand, providerSupportsSideChat } from "../../../shared/sideChat";
 import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
@@ -9948,6 +9956,10 @@ export function AgentChatPane({
         if (meta.orchestrationParentSessionId !== undefined) {
           summaryPatch.orchestrationParentSessionId = meta.orchestrationParentSessionId ?? undefined;
         }
+        if (meta.sideChatSessionId !== undefined) {
+          summaryPatch.sideChatSessionId = meta.sideChatSessionId ?? undefined;
+          noteSideChat(envelope.sessionId, meta.sideChatSessionId);
+        }
         if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
@@ -13787,6 +13799,35 @@ export function AgentChatPane({
     selectedSessionId,
   ]);
 
+  /**
+   * `/side <question>`: ask the chat's read-only side chat (opening it when the
+   * chat has none) in the Work tools pane, instead of sending to this chat. The
+   * side chat runs on this chat's machine, so the call carries its pin. Inside
+   * a side chat it is sent as typed.
+   */
+  const openSideChatFromComposer = useCallback((prompt: string): boolean => {
+    const mainSessionId = selectedSessionId;
+    if (!mainSessionId || selectedSession?.sideChatParentSessionId) return false;
+    if (!providerSupportsSideChat(selectedSession?.provider ?? sessionProvider)) {
+      setError(SIDE_CHAT_UNSUPPORTED_MESSAGE);
+      return true;
+    }
+    const pin = chatRuntimePinRef.current;
+    setError(null);
+    updateComposerDraft("");
+    const alreadyOpen = resolveSideChatView(mainSessionId, selectedSession?.sideChatSessionId ?? null).kind === "open";
+    if (!alreadyOpen) noteSideChatStarting(mainSessionId, prompt);
+    workSidebar.setTool("side-chat");
+    void window.ade.agentChat.startSideChat({ sessionId: mainSessionId, text: prompt }, pin)
+      .then((result) => noteSideChat(mainSessionId, result.session.id))
+      .catch((startError: unknown) => {
+        const message = errorMessage(startError);
+        if (alreadyOpen) setError(message);
+        else noteSideChatStartFailed(mainSessionId, prompt, message);
+      });
+    return true;
+  }, [selectedSession?.provider, selectedSession?.sideChatParentSessionId, selectedSession?.sideChatSessionId, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -13842,6 +13883,8 @@ export function AgentChatPane({
       }
       return;
     }
+    const sideCommand = selectedSessionId && !attachments.length ? parseSideSlashCommand(draft) : null;
+    if (sideCommand && openSideChatFromComposer(sideCommand.prompt)) return;
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";
@@ -14735,6 +14778,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    openSideChatFromComposer,
     isPersonalPane, attachments,
     ambientTurnContext,
     buildNativeControlPayload,
@@ -16821,6 +16865,11 @@ export function AgentChatPane({
       <AgentBrowserPresenceHeaderButton
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
+      />
+      <SideChatHeaderButton
+        mainSessionId={selectedSession?.sideChatParentSessionId ? null : selectedSessionId}
+        rowSideChatSessionId={selectedSession?.sideChatSessionId ?? null}
+        onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
       {hasAttachedTerminal ? (

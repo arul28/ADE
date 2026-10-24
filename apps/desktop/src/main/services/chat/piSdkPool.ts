@@ -18,6 +18,8 @@ import {
   type PiSdkAccount,
   type PiSdkCompactPayload,
   type PiSdkContextUsage,
+  type PiSdkForkPayload,
+  type PiSdkForkResult,
   type PiSdkModelRef,
   type PiSdkPackageLocation,
   type PiSdkPromptPayload,
@@ -63,6 +65,7 @@ type PiSdkRequestArgs<K extends PiSdkRequestType> = K extends
   | "set_thinking"
   | "login"
   | "ui_response"
+  | "fork"
   ? [payload: PiSdkRequestPayload<K>]
   : K extends "compact"
     ? [payload?: PiSdkRequestPayload<K>]
@@ -75,6 +78,8 @@ type PiSdkRequestResult<K extends PiSdkRequestType> = K extends "init" | "set_mo
       ? JsonValue
     : K extends "context_usage"
       ? PiSdkContextUsage | null
+    : K extends "fork"
+      ? PiSdkForkResult
     : JsonValue | undefined;
 
 export type PiSdkPooled = {
@@ -106,6 +111,17 @@ export type PiSdkPooled = {
    */
   login: (payload: PiSdkLoginPayload) => Promise<JsonValue | undefined>;
   cancelLogin: () => void;
+  /**
+   * Copy a native Pi session's history into a new session file in this
+   * worker's cwd and session store, cut at `entryId` or, when omitted, at the
+   * source's last finished turn. Reads the source without writing it, so the
+   * source may be live and mid-turn in another worker. Works on any
+   * initialized worker, including an `inventoryOnly` one; this worker's own
+   * session is untouched. Open the result by acquiring a worker with
+   * `session: { sessionFile, sessionId }` (and `readOnly: true` for a side
+   * chat).
+   */
+  fork: (payload: PiSdkForkPayload) => Promise<PiSdkForkResult>;
   /** Answer a `onUiRequest`. Fire-and-forget; the worker owns the waiter. */
   respondToUi: (requestId: string, response: PiSdkUiResponsePayload) => void;
   dispose: () => void;
@@ -132,6 +148,10 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   compaction?: ProviderCompactionSettings;
   askUserTool?: boolean;
   approvalTools?: string[];
+  /** Tools that cannot change the workspace only; see `PiSdkWorkerInit.readOnly`. */
+  readOnly?: boolean;
+  /** Pi's MCP support for this session; see `PiSdkWorkerInit.mcp`. Carries registry secrets: IPC only. */
+  mcp?: PiSdkWorkerInit["mcp"];
   /** Usually process.env; never put auth.json or API keys in this payload. */
   baseEnv?: NodeJS.ProcessEnv;
   /** Passed only when this chat can run the session-scoped ADE activity command. */
@@ -179,6 +199,8 @@ const REQUEST_TIMEOUTS: Partial<Record<PiSdkRequestType, { ms: number; fatal: bo
   set_model: { ms: 30_000, fatal: true },
   set_thinking: { ms: 15_000, fatal: true },
   abort: { ms: 10_000, fatal: true },
+  // Local file work only. A failed or slow fork must not cost the worker it ran on.
+  fork: { ms: 30_000, fatal: false },
 };
 const moduleDir = typeof __dirname === "string" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 
@@ -312,6 +334,8 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     ...(args.compaction ? { compaction: args.compaction } : {}),
     ...(args.askUserTool ? { askUserTool: true } : {}),
     ...(args.approvalTools?.length ? { approvalTools: args.approvalTools } : {}),
+    ...(args.readOnly ? { readOnly: true } : {}),
+    ...(args.mcp ? { mcp: args.mcp } : {}),
   };
   const initMessage: PiSdkWorkerRequest = { protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "init", requestId: randomUUID(), payload: initPayload };
   const validationError = validatePiSdkWorkerRequest(initMessage);
@@ -452,6 +476,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     },
     requestAuth: () => worker.request("auth"),
     login: (payload) => worker.request("login", payload),
+    fork: (payload) => worker.request("fork", payload),
     cancelLogin: () => {
       send({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "login_cancel", requestId: randomUUID() });
     },

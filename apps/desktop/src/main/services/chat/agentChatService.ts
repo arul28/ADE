@@ -112,7 +112,10 @@ import {
 import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
+  resolveClaudeSdkTranscriptPath,
 } from "./claudeThinkingTranscriptRepair";
+import { claudeSideChatCut } from "./sideChatClaudeCut";
+import { piForkCutBeforePrompt } from "./piForkCut";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { readClaudeWorkflowAgentMessages } from "./claudeWorkflowTranscript";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
@@ -164,6 +167,16 @@ import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
 import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import { forkCodexThreadInEphemeralAppServer } from "./codexEphemeralFork";
+import {
+  SIDE_CHAT_READ_ONLY_MESSAGE,
+  SIDE_CHAT_UNSUPPORTED_MESSAGE,
+  SIDE_CHAT_WAIT_FOR_TURN_MESSAGE,
+  buildSideChatFirstPrompt,
+  buildSideChatMainMessage,
+  extractSideChatSendToMain,
+  providerSupportsSideChat,
+  providerSupportsSideChatWhileBusy,
+} from "../../../shared/sideChat";
 import { createClaudePluginUiService } from "./claudePluginUiService";
 import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
 import {
@@ -577,6 +590,10 @@ import type {
   AgentChatFileRef,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatStartSideChatArgs,
+  AgentChatStartSideChatResult,
+  AgentChatEndSideChatArgs,
+  AgentChatEndSideChatResult,
   AgentChatReplayForkDisclosure,
   AgentChatIdentityKey,
   AgentChatImportedFrom,
@@ -964,7 +981,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
-import { piSdkToolPolicyForPermissionMode, piThinkingLevel } from "../../../shared/cliLaunch";
+import { piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
@@ -1384,7 +1401,7 @@ import {
   releasePiSdkConnection,
   type PiSdkPooled,
 } from "./piSdkPool";
-import type { PiSdkUiRequestPayload } from "./piSdkProtocol";
+import type { PiSdkMcpInit, PiSdkMcpServer, PiSdkUiRequestPayload } from "./piSdkProtocol";
 import { acquirePiSessionLease, type PiSessionLease } from "./piSessionLease";
 import { recordPiSessionOwner } from "./piSessionOwnership";
 import { classifyPiSessionFile, piSessionStoreForEnvironment, resolvePiSessionFile } from "./piSessionStore";
@@ -1607,10 +1624,12 @@ import {
   normalizeCallerMcpServers,
   parseCallerMcpServers,
   redactCallerMcpText,
+  registryMcpSupport,
   withholdCallerMcpHeaderValues,
   type CallerMcpDeliveryProblem,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
+import type { AcpMcpServer } from "./acpHost/acpProtocolTypes";
 import {
   CLAUDE_SETTING_SOURCE_MAP,
   normalizeHostInstructions,
@@ -1636,6 +1655,7 @@ import {
 import {
   claudeBuiltInIsReadOnly,
   claudeToolAllowedInPlanMode,
+  claudeToolAllowedInSideChat,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
   normalizeToolNameForApproval,
@@ -2371,6 +2391,10 @@ type PersistedChatState = {
   crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
   crossMachineArrival?: AgentChatCrossMachineArrival | null;
   subagentTakeoverPromptShownAt?: string | null;
+  /** See SpawnLineageSessionFields.sideChatParentSessionId. */
+  sideChatParentSessionId?: string;
+  /** See SpawnLineageSessionFields.sideChatSessionId. */
+  sideChatSessionId?: string;
   pendingTranscriptReplay?: string | null;
   /** See ManagedChatSession.claudeFreshThreadPending. */
   claudeFreshThreadPending?: true;
@@ -2982,6 +3006,13 @@ type ClaudeRuntime = {
    */
   apiKeySource?: string | null;
   forkFromSdkSessionId: string | null;
+  /**
+   * With `forkFromSdkSessionId`: keep the source history only through this
+   * entry (`resumeSessionAt`). A side chat opened while its main chat is mid-turn
+   * forks at the last finished turn. In memory only: the side chat's first
+   * message starts the query that consumes it.
+   */
+  forkResumeSessionAt?: string | null;
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
   /** In-flight query start. Concurrent ensureClaudeQuery callers latch onto
@@ -10074,6 +10105,8 @@ const SPAWN_LINEAGE_FIELD_NAMES = [
   "crossMachineOrigin",
   "crossMachineArrival",
   "subagentTakeoverPromptShownAt",
+  "sideChatParentSessionId",
+  "sideChatSessionId",
 ] as const;
 
 type SpawnLineageFieldSource = Partial<Record<(typeof SPAWN_LINEAGE_FIELD_NAMES)[number], unknown>>;
@@ -10130,6 +10163,10 @@ function hydrateSpawnLineageFields(
   if (typeof shownAt === "string" && shownAt.trim().length) {
     out.subagentTakeoverPromptShownAt = shownAt.trim();
   }
+  const sideParentId = record.sideChatParentSessionId;
+  if (typeof sideParentId === "string" && sideParentId.trim().length) out.sideChatParentSessionId = sideParentId.trim();
+  const sideChatId = record.sideChatSessionId;
+  if (typeof sideChatId === "string" && sideChatId.trim().length) out.sideChatSessionId = sideChatId.trim();
   return out;
 }
 
@@ -13591,6 +13628,14 @@ export function createAgentChatService(args: {
       : null;
     if (policyDecision === "deny") {
       return { behavior: "deny", message: "Denied by the host permission policy." };
+    }
+
+    // ── Side-chat fence ──
+    // A side chat is read-only. A call reaches this callback only when Claude
+    // would ask, which a read-only command never does, so anything here that
+    // is not on the side-chat list would change something.
+    if (managed.session.sideChatParentSessionId && !claudeToolAllowedInSideChat(toolName)) {
+      return { behavior: "deny", message: SIDE_CHAT_READ_ONLY_MESSAGE };
     }
 
     // ── Plan-mode fence ──
@@ -17888,6 +17933,9 @@ export function createAgentChatService(args: {
     }).catch(() => undefined);
   };
 
+  /** Pi's read-only built-ins (`PiSdkWorkerInit.readOnly`). */
+  const PI_SIDE_CHAT_TOOLS = ["read", "grep", "find", "ls"] as const;
+
   const startPiRuntime = async (managed: ManagedChatSession): Promise<PiRuntime> => {
     if (piRuntimeSetupInterruptRequested.get(managed)) {
       piRuntimeSetupInterruptRequested.delete(managed);
@@ -17911,7 +17959,13 @@ export function createAgentChatService(args: {
     // Pi's tool allowlist and extension binding are fixed when the worker is
     // created, so a session switched from default to plan would keep its write
     // tools until something else restarted it. Restart on any policy change.
-    const piToolPolicy = piSdkToolPolicyForPermissionMode(managed.session.permissionMode);
+    // A side chat gets Pi's read-only allowlist (`readOnly`), whatever its mode.
+    const piSideChat = Boolean(managed.session.sideChatParentSessionId);
+    // `process.platform` is the chat's machine: this runs in the brain that
+    // owns the chat. On Windows it adds `powershell`, gated like `bash`.
+    const piToolPolicy = piSideChat
+      ? { tools: [...PI_SIDE_CHAT_TOOLS] as string[], approvalTools: [] as string[], mcp: "off" as const }
+      : piSdkToolPolicyForPermissionMode(managed.session.permissionMode, process.platform);
     const piActivityRuntime = resolveSessionActivityRuntime(
       managed.session,
       process.platform !== "win32"
@@ -17929,7 +17983,8 @@ export function createAgentChatService(args: {
             : {}),
         }
       : null;
-    const piExtensionsEnabled = piChatExtensionsEnabled(managed);
+    const piExtensionsEnabled = !piSideChat && piChatExtensionsEnabled(managed);
+    const piMcpMode = piMcpModeFor(managed, piToolPolicy.mcp, piSideChat);
     const piActivityScopeKey = piActivityScope
       ? createHash("sha256").update(JSON.stringify({
           cliPath: pathKey(piActivityScope.cliPath),
@@ -17945,6 +18000,10 @@ export function createAgentChatService(args: {
       piToolPolicy.approvalTools.join(","),
       piExtensionsEnabled ? "ext" : "no-ext",
       piActivityScopeKey,
+      // The mode only: a running chat keeps the servers it started with, as
+      // every provider does, so a renewed sign-in or an edited server does
+      // not restart the worker between turns.
+      piMcpMode ? `mcp:${piMcpMode.approval ? "ask" : "allow"}:${piMcpMode.userConfig ? "user" : "no-user"}` : "no-mcp",
     ].join("|");
     if (managed.runtime?.kind === "pi") {
       // `runtimeInvalidated` is checked here, not only on teardown: a session
@@ -18033,13 +18092,15 @@ export function createAgentChatService(args: {
           }),
           buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
         ].filter(Boolean).join("\n\n");
-    // Pi's built-in tool registry only contains read, bash, edit, and write.
-    // Passing ADE's generic grep/find/ls names would make the SDK launch fail.
+    // Only Pi's own built-in names (read, bash, edit, write, grep, find, ls,
+    // and powershell on Windows): an unknown name fails the launch.
     //
     // The SDK policy is read from the session's own mode rather than the
     // collapsed harness mode: in chat ADE can gate each call behind an approval
     // card, so `default` keeps the write tools available but asks first.
     const piTools = piToolPolicy.tools;
+    // Resolved only when a worker starts, since Pi binds servers then.
+    const piMcp = piMcpMode ? piMcpInitWithRegistry(managed, piMcpMode) : undefined;
     let acquired: Awaited<ReturnType<typeof acquirePiSdkConnection>>;
     try {
       acquired = await acquirePiSdkConnection({
@@ -18057,6 +18118,8 @@ export function createAgentChatService(args: {
         // express. Personal chats get it too — it is how the model checks in.
         askUserTool: true,
         ...(piExtensionsEnabled ? { extensions: true } : {}),
+        ...(piSideChat ? { readOnly: true } : {}),
+        ...(piMcp ? { mcp: piMcp } : {}),
         ...(piProviderId && piModelId ? { modelRef: { provider: piProviderId, id: piModelId } } : {}),
         // Pi accepts only its own levels; an effort carried over from another
         // provider (Codex `none`, Claude `ultracode`) failed every launch.
@@ -18241,7 +18304,8 @@ export function createAgentChatService(args: {
     // an unchanged default should not add a notice to every Pi chat.
     for (const event of piExtensionLoadNotice(
       piExtensionsEnabled ? acquired.pooled.ready?.extensions : undefined,
-      piExtensionsEnabled ? acquired.pooled.ready?.extensionsError : null,
+      // MCP servers that could not be added are reported here too.
+      piExtensionsEnabled || piMcp ? acquired.pooled.ready?.extensionsError : null,
       acquired.pooled.ready?.ungateableTools ?? [],
     )) {
       emitChatEvent(managed, event);
@@ -18482,6 +18546,54 @@ export function createAgentChatService(args: {
    * Pi extensions load in ADE chat by default, matching `pi` in a terminal.
    * They are bound to ADE's limited UI bridge rather than Pi's TUI.
    */
+  /**
+   * Pi's MCP support for one chat, or undefined for none.
+   *
+   * Pi reads the user's own servers from its `mcp.json`, and ADE adds the
+   * registry's (`registryMcpServersForLaunch`, the servers Claude gets, with
+   * their vault values and sign-in tokens); a same-named server in Pi's file
+   * wins. Plan mode and side chats get no MCP (`readOnly` refuses it), since
+   * an MCP tool can change anything. Strict MCP chats, the light profile and
+   * an SDK host's personal chat load none of the user's own config, as for
+   * Claude; the registry has its own rule for each of those. Runs in the
+   * brain that owns the chat, so every file read here is that machine's.
+   */
+  const piMcpModeFor = (
+    managed: ManagedChatSession,
+    mcpPolicy: PiSdkMcpPolicy,
+    sideChat: boolean,
+  ): Pick<PiSdkMcpInit, "approval" | "userConfig"> | undefined => {
+    if (sideChat || mcpPolicy === "off" || managed.session.interactionMode === "plan") return undefined;
+    // Every chat that skips the user's own config (strict, light, personal)
+    // also gets no registry servers, so it gets no MCP at all.
+    const userConfig = !chatMcpTarget(managed).ignoresUserMcp && !isEmbeddedPersonalSession(managed.session);
+    return userConfig ? { approval: mcpPolicy === "ask", userConfig } : undefined;
+  };
+
+  /** The MCP init a starting Pi worker gets: the mode plus the registry's servers. */
+  const piMcpInitWithRegistry = (
+    managed: ManagedChatSession,
+    mode: Pick<PiSdkMcpInit, "approval" | "userConfig">,
+  ): PiSdkMcpInit => {
+    const servers: Record<string, PiSdkMcpServer> = {};
+    for (const [name, server] of Object.entries(registryMcpServersForLaunch(managed) ?? {})) {
+      if (server.type === "stdio") {
+        servers[name] = {
+          command: server.command,
+          ...(server.args?.length ? { args: server.args } : {}),
+          ...(server.env && Object.keys(server.env).length ? { env: server.env } : {}),
+        };
+      } else if (server.type === "http") {
+        servers[name] = {
+          url: server.url,
+          ...(server.headers && Object.keys(server.headers).length ? { headers: server.headers } : {}),
+        };
+      }
+      // SSE never gets here: `registryMcpSupport` leaves it out for Pi, which has no SSE client.
+    }
+    return { ...mode, ...(Object.keys(servers).length ? { servers } : {}) };
+  };
+
   const piChatExtensionsEnabled = (managed: ManagedChatSession): boolean => {
     // An SDK-host personal chat loads none of the user's own configuration
     // unless the host asks. An `assistant` chat is the user's own, so their
@@ -20762,7 +20874,7 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string; copilotSdkSessionId?: string; piSessionId?: string; acpSessionId?: string; museSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; copilotSdkSessionId?: string; piSessionId?: string; piSessionFile?: string; acpSessionId?: string; museSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
@@ -20770,6 +20882,7 @@ export function createAgentChatService(args: {
     if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
     if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
     if (patch.piSessionId) managed.seededPiSessionId = patch.piSessionId;
+    if (patch.piSessionFile) managed.seededPiSessionFile = patch.piSessionFile;
     if (patch.acpSessionId) managed.seededAcpSessionId = patch.acpSessionId;
     if (patch.museSessionId) managed.session.museSessionId = patch.museSessionId;
     const sessionId = managed.session.id;
@@ -23492,6 +23605,9 @@ export function createAgentChatService(args: {
       // completion notice. Causality and dedupe are derived from persisted
       // transcript metadata, so process restarts do not sever the channel.
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status, "done", normalizedEvent.turnId);
+      if (managed.session.sideChatParentSessionId && normalizedEvent.status === "completed") {
+        forwardSideChatSendsToMain(managed, normalizedEvent.turnId);
+      }
       if (normalizedEvent.status === "failed") {
         managed.turnFailureMarked = true;
         sessionService.markLastTurnFailed(managed.session.id);
@@ -34117,6 +34233,8 @@ export function createAgentChatService(args: {
    * rather than on the runtime: a card must survive the runtime it came from
    * long enough to be answered.
    */
+  const ACP_SIDE_CHAT_REFUSED_KINDS: ReadonlySet<string> = new Set(["edit", "delete", "move", "switch_mode"]);
+
   const presentAcpPermissionRequest = (
     managed: ManagedChatSession,
     runtime: AcpRuntime,
@@ -34136,6 +34254,18 @@ export function createAgentChatService(args: {
     // be keyed by the same value or the answer lands nowhere and the agent
     // waits forever behind a card the user already dismissed.
     const cardItemId = request.itemId ?? request.requestId;
+
+    // ── Side-chat fence ──
+    // A side chat is read-only: an edit, a delete, a move or leaving plan mode
+    // is refused here, whatever the agent's own mode lets through. Commands
+    // still reach the user, as they do in a Claude side chat.
+    if (managed.session.sideChatParentSessionId && ACP_SIDE_CHAT_REFUSED_KINDS.has(String(pending.toolCall.kind ?? ""))) {
+      const reject = pending.options.find((option) => option.kind === "reject_once")
+        ?? pending.options.find((option) => option.kind === "reject_always");
+      if (reject) pending.select(reject.optionId);
+      else pending.cancel();
+      return;
+    }
 
     if (acpAutoApprovesPermissions(runtime.dialect, runtime.permissionMode)) {
       // Full auto on a dialect ADE could not configure server-side. Answer the
@@ -34211,6 +34341,26 @@ export function createAgentChatService(args: {
    * not rearrangeable: dialect, spawn plan, then `openAcpSession`, then persist
    * the id the agent minted. Nothing in here writes a provider's config home.
    */
+  /**
+   * The MCP servers an ACP chat opens with: the registry's, for a provider
+   * that takes them (`registryMcpSupport`: Kimi). A side chat gets none.
+   */
+  const acpMcpServersFor = (managed: ManagedChatSession): AcpMcpServer[] => {
+    if (managed.session.sideChatParentSessionId) return [];
+    if (!registryMcpSupport(managed.session.provider)) return [];
+    const servers: AcpMcpServer[] = [];
+    for (const [name, server] of Object.entries(callerMcpServersForLaunch(managed) ?? {})) {
+      const pairs = (record: Record<string, string> | undefined) =>
+        Object.entries(record ?? {}).map(([key, value]) => ({ name: key, value }));
+      if (server.type === "stdio" && server.command) {
+        servers.push({ name, command: server.command, args: [...(server.args ?? [])], env: pairs(server.env) });
+      } else if ((server.type === "http" || server.type === "sse") && server.url) {
+        servers.push({ type: server.type, name, url: server.url, headers: pairs(server.headers) });
+      }
+    }
+    return servers;
+  };
+
   const ensureAcpSessionRuntime = async (managed: ManagedChatSession): Promise<AcpRuntime> => {
     const provider = managed.session.provider;
     if (!isAcpChatProvider(provider)) {
@@ -34318,7 +34468,7 @@ export function createAgentChatService(args: {
       existingSessionId,
       supervisionPreflight,
       supervisionAlreadyNotified: managed.acpSupervisionNoticeShown === true,
-      mcpServers: [],
+      mcpServers: acpMcpServersFor(managed),
       logger,
       runtimeBudget,
       existingRuntime: existing?.kind === "acp" ? existing : null,
@@ -43960,6 +44110,29 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
   ): NonNullable<ClaudeSDKOptions["hooks"]> => ({
+    // A side chat refuses edits, subagents and MCP tools even when the user's
+    // allow rules would run them without asking (`canUseTool` never sees
+    // those). Bash is left to the permission flow; see the side-chat fence.
+    ...(managed.session.sideChatParentSessionId
+      ? {
+          PreToolUse: [{ hooks: [async (input: HookInput) => {
+            if (
+              input.hook_event_name === "PreToolUse"
+              && input.tool_name !== "Bash"
+              && !claudeToolAllowedInSideChat(input.tool_name)
+            ) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse" as const,
+                  permissionDecision: "deny" as const,
+                  permissionDecisionReason: SIDE_CHAT_READ_ONLY_MESSAGE,
+                },
+              };
+            }
+            return { continue: true };
+          }] }],
+        }
+      : {}),
     PostCompact: [{ hooks: [async (input: HookInput) => {
       if (input.hook_event_name === "PostCompact") runtime.compactionSummary = input.compact_summary;
       return { continue: true };
@@ -44977,6 +45150,7 @@ export function createAgentChatService(args: {
       });
       runtime.sdkSessionId = null;
       runtime.forkFromSdkSessionId = null;
+      runtime.forkResumeSessionAt = null;
       // The hydrate-time fallback must not resurrect an older thread either.
       if (!managed.claudeBackgroundJobShort) managed.claudeBackgroundResumeSessionId = null;
       managed.runtimeInvalidated = true;
@@ -45365,6 +45539,7 @@ export function createAgentChatService(args: {
       options.resume = runtime.forkFromSdkSessionId;
       options.forkSession = true;
       options.sessionId = runtime.sdkSessionId;
+      if (runtime.forkResumeSessionAt) options.resumeSessionAt = runtime.forkResumeSessionAt;
     } else if (runtime.sdkSessionId) {
       options.resume = runtime.sdkSessionId;
     } else if (!runtime.warmQuery) {
@@ -45426,6 +45601,7 @@ export function createAgentChatService(args: {
     observeClaudeInitializationResult(managed, sessionQuery);
     if (runtime.forkFromSdkSessionId) {
       runtime.forkFromSdkSessionId = null;
+      runtime.forkResumeSessionAt = null;
       persistChatState(managed);
     }
     return sessionQuery;
@@ -45789,6 +45965,7 @@ export function createAgentChatService(args: {
           options.resume = runtime.forkFromSdkSessionId;
           options.forkSession = true;
           options.sessionId = runtime.sdkSessionId;
+          if (runtime.forkResumeSessionAt) options.resumeSessionAt = runtime.forkResumeSessionAt;
         } else if (runtime.sdkSessionId) {
           options.resume = runtime.sdkSessionId;
         } else {
@@ -48695,7 +48872,7 @@ export function createAgentChatService(args: {
     const nativeFork = handoffMode === "fork"
       && providerSupportsHandoffFork(sourceProvider)
       && targetProvider === sourceProvider
-      && (!forkFromEarlierTurn || codexForkBeforeTurnId != null || sourceProvider === "copilot");
+      && (!forkFromEarlierTurn || codexForkBeforeTurnId != null || sourceProvider === "copilot" || sourceProvider === "pi");
     // Cursor's "native" fork is native only in the sense that it stays on the
     // same provider — there is no SDK fork API, so the new chat starts on a
     // fresh agent and needs the same full transcript replay a cross-provider
@@ -48837,6 +49014,32 @@ export function createAgentChatService(args: {
       if (!newSessionId) throw new Error("Muse fork did not return a new session id.");
       sourceMuseForkSessionId = newSessionId;
     }
+    let sourcePiFork: { sessionFile: string; sessionId: string } | null = null;
+    if (nativeFork && sourceProvider === "pi") {
+      let entryId: string | null = null;
+      if (forkFromEarlierTurn) {
+        // Cut just before the first turn the fork leaves out.
+        const nextMessage = readTranscriptEnvelopes(managed, { includeBuffered: true })
+          .find((envelope) => envelope.event.type === "user_message" && envelope.event.turnId === forkPoint?.nextTurnId)?.event;
+        if (!nextMessage || nextMessage.type !== "user_message") throw new Error("Could not find the selected Pi turn; fork the full chat instead.");
+        const piRuntime = managed.runtime?.kind === "pi" ? managed.runtime : await startPiRuntime(managed);
+        const sourceFile = piRuntime.sdk.sessionFile?.trim() || "";
+        const selectedText = nextMessage.text.trim();
+        const ordinal = readTranscriptEnvelopes(managed, { includeBuffered: true })
+          .filter((envelope) => envelope.event.type === "user_message" && envelope.event.text.trim().endsWith(selectedText))
+          .findIndex((envelope) => envelope.event.type === "user_message" && envelope.event.messageId === nextMessage.messageId);
+        const cut = sourceFile && fs.existsSync(sourceFile)
+          ? piForkCutBeforePrompt(fs.readFileSync(sourceFile, "utf8"), selectedText, ordinal < 0 ? 0 : ordinal)
+          : { kind: "not_found" as const };
+        if (cut.kind !== "cut") throw new Error("Could not find the selected Pi turn; fork the full chat instead.");
+        entryId = cut.entryId;
+      }
+      sourcePiFork = await forkPiSession(managed, entryId);
+    }
+    let sourceKimiForkSessionId: string | null = null;
+    if (nativeFork && sourceProvider === "kimi") {
+      sourceKimiForkSessionId = await forkKimiSession(managed);
+    }
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
       targetDescriptor,
@@ -48965,6 +49168,12 @@ export function createAgentChatService(args: {
         seedForkedProviderPointer(createdManaged, { museSessionId: sourceMuseForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:muse:${created.id}`);
       }
+      if (createdManaged.session.provider === "pi" && sourcePiFork) {
+        seedPiForkPointer(createdManaged, sourcePiFork);
+      }
+      if (createdManaged.session.provider === "kimi" && sourceKimiForkSessionId) {
+        seedForkedProviderPointer(createdManaged, { acpSessionId: sourceKimiForkSessionId });
+      }
       if (createdManaged.session.provider === "cursor") {
         // No provider-side pointer to seed: a Cursor thread cannot be resumed
         // twice, so the fork starts on a fresh agent and the source
@@ -49078,6 +49287,495 @@ export function createAgentChatService(args: {
       usedFallbackSummary: handoffMode === "brief" ? usedFallbackSummary : false,
       ...(replayForkDisclosure ? { replayFork: replayForkDisclosure } : {}),
     };
+  };
+
+  // --- Side chats (`/side`, shared/sideChat.ts) ------------------------------
+  // A read-only fork of a chat, shown inside it. Its parent link is its own
+  // pair of fields (`sideChatParentSessionId` / `sideChatSessionId`), never
+  // the spawn lineage: a side chat is not a child that reports, wakes or nests.
+
+  /** One start per main chat at a time: a phone and a desktop racing `/side` get one side chat. */
+  const sideChatStartsInFlight = new Map<string, Promise<ManagedChatSession>>();
+  /** `<side>:<turn>` already delivered to the main chat. */
+  const sideChatForwardedTurns = new Set<string>();
+
+  /**
+   * A side chat's first message carries its role (`buildSideChatFirstPrompt`)
+   * ahead of what the user typed, whichever surface sent it. The transcript
+   * shows only the user's text.
+   */
+  const withSideChatRole = (managed: ManagedChatSession, args: AgentChatSendArgs): AgentChatSendArgs => {
+    if (!managed.session.sideChatParentSessionId) return args;
+    if (args.metadata?.sideChatRole === true) return args;
+    const hasUserTurn = managed.recentConversationEntries.some((entry) => entry.role === "user")
+      || readTranscriptEnvelopes(managed, { includeBuffered: true }).some((envelope) => envelope.event.type === "user_message");
+    if (hasUserTurn) return args;
+    return {
+      ...args,
+      text: buildSideChatFirstPrompt(args.text),
+      displayText: args.displayText ?? args.text,
+      metadata: { ...(args.metadata ?? {}), hideFullPrompt: true, sideChatRole: true },
+    };
+  };
+
+  const sideChatLineageOf = (sessionId: string): { sideChatParentSessionId?: string; sideChatSessionId?: string } | null =>
+    managedSessions.get(sessionId)?.session ?? readPersistedState(sessionId) ?? null;
+
+  /**
+   * Point a main chat at its side chat, or clear it. The lineage merge in
+   * `persistChatState` falls back to the file for a key the live session lacks,
+   * so the file is rewritten first; otherwise an idle main chat would keep
+   * showing a side chat that was ended.
+   */
+  const writeSideChatPointer = (parent: ManagedChatSession, sideSessionId: string | null): void => {
+    if (parent.deleted) return;
+    const current = readPersistedState(parent.session.id);
+    if (current && (current.sideChatSessionId ?? null) !== sideSessionId) {
+      const next: PersistedChatState = { ...current, updatedAt: nowIso() };
+      if (sideSessionId) next.sideChatSessionId = sideSessionId;
+      else delete next.sideChatSessionId;
+      try {
+        writeJsonWithPrevious(metadataPathFor(parent.session.id), next, {
+          validate: isPersistedChatStateShape,
+          fsync: true,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.side_chat_pointer_write_failed", {
+          sessionId: parent.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (sideSessionId) parent.session.sideChatSessionId = sideSessionId;
+    else delete parent.session.sideChatSessionId;
+    persistChatState(parent);
+    emitTransientChatEnvelope(parent.session.id, { type: "session_meta_updated", sideChatSessionId: sideSessionId });
+  };
+
+  /** The main chat's live side chat, or null. A pointer to a chat that is gone is cleared. */
+  const liveSideChatOf = (parent: ManagedChatSession): ManagedChatSession | null => {
+    const sideSessionId = parent.session.sideChatSessionId?.trim();
+    if (!sideSessionId) return null;
+    const row = sessionService.get(sideSessionId);
+    const side = row ? managedSessions.get(sideSessionId) ?? ensureManagedSession(sideSessionId) : null;
+    if (!side || side.deleted || side.session.sideChatParentSessionId !== parent.session.id) {
+      writeSideChatPointer(parent, null);
+      return null;
+    }
+    return side;
+  };
+
+  /** Provider settings that keep a side chat read-only. Applied at creation and held by `updateSession`. */
+  const sideChatReadOnlySettings = (provider: AgentChatProvider): Partial<AgentChatCreateInternalArgs> => {
+    switch (provider) {
+      case "claude":
+        return { claudePermissionMode: "default", interactionMode: "default" };
+      case "codex":
+        return { codexApprovalPolicy: "never", codexSandbox: "read-only", codexConfigSource: "flags" };
+      case "opencode":
+        return { opencodePermissionMode: "plan" };
+      case "droid":
+        return { droidPermissionMode: "read-only" };
+      case "copilot":
+        return { copilotPermissionMode: "plan" };
+      case "muse":
+        return { musePermissionMode: "denyUnmatched" };
+      case "pi":
+        return { permissionMode: "plan" };
+      case "kimi":
+        // Kimi's plan mode refuses Write and Edit itself; the ACP fence in
+        // `presentAcpPermissionRequest` refuses leaving it.
+        return { acpPermissionMode: "plan" };
+      default:
+        return {};
+    }
+  };
+
+  type SideChatFork = (created: ManagedChatSession) => Promise<void>;
+
+  /**
+   * Fork a Pi chat's session with Pi's own `createBranchedSession` (the
+   * worker's `fork`): through `entryId`, or, with none, to the last settled
+   * entry. The worker reads a snapshot of the file, so the source chat's
+   * session is never written, even mid-turn.
+   */
+  const forkPiSession = async (
+    source: ManagedChatSession,
+    entryId: string | null,
+  ): Promise<{ sessionFile: string; sessionId: string }> => {
+    const piRuntime = source.runtime?.kind === "pi" ? source.runtime : await startPiRuntime(source);
+    const sourceFile = piRuntime.sdk.sessionFile?.trim() || "";
+    const sourceId = piRuntime.sdk.sessionId?.trim() || "";
+    // Pi writes a new session's file with its first answer.
+    if (!sourceFile || !sourceId || !fs.existsSync(sourceFile)) {
+      throw new Error("This Pi chat has no finished turn yet. Send it a message first.");
+    }
+    const forked = await piRuntime.sdk.fork({ sessionFile: sourceFile, sessionId: sourceId, ...(entryId ? { entryId } : {}) });
+    if (!forked.sessionFile || !forked.sessionId) throw new Error("Pi did not return a session for the fork.");
+    return { sessionFile: forked.sessionFile, sessionId: forked.sessionId };
+  };
+
+  const seedPiForkPointer = (created: ManagedChatSession, forked: { sessionFile: string; sessionId: string }): void => {
+    created.session.piSessionFile = forked.sessionFile;
+    created.session.piSessionId = forked.sessionId;
+    seedForkedProviderPointer(created, { piSessionId: forked.sessionId, piSessionFile: forked.sessionFile });
+    sessionService.setResumeCommand(created.session.id, `chat:pi:${created.session.id}`);
+  };
+
+  /**
+   * Fork a Kimi chat's whole session with ACP `session/fork` and answer the
+   * new session's id. Kimi refuses while the source runs a turn.
+   */
+  const forkKimiSession = async (source: ManagedChatSession): Promise<string> => {
+    const acpRuntime = await ensureAcpSessionRuntime(source);
+    const connection = acpRuntime.session.connection;
+    const forked = await connection.request<{ sessionId?: string } | null>("session/fork", {
+      sessionId: acpRuntime.session.sessionId,
+      cwd: source.laneWorktreePath,
+      mcpServers: [],
+    });
+    const forkedId = typeof forked?.sessionId === "string" ? forked.sessionId.trim() : "";
+    if (!forkedId) throw new Error("Kimi did not return a session for the fork.");
+    // The fork opens live in the source chat's process, which then holds
+    // Kimi's session lock (2.3.0+); release it so the new chat's own process
+    // can resume it.
+    await connection.request("session/close", { sessionId: forkedId }, { timeoutMs: 10_000 }).catch((error: unknown) => {
+      logger.warn("agent_chat.kimi_fork_close_failed", {
+        sessionId: source.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return forkedId;
+  };
+
+  /**
+   * Fork the main chat's provider history for its side chat, before the side
+   * chat exists, and return how to point the new chat at the fork. A main chat
+   * mid-turn forks at its last finished turn where the provider can cut there.
+   */
+  const forkMainChatForSide = async (parent: ManagedChatSession): Promise<SideChatFork> => {
+    const provider = parent.session.provider;
+    const busy = parent.session.status === "active" || runtimeMidTurn(parent);
+    if (busy && !providerSupportsSideChatWhileBusy(provider)) {
+      throw turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
+    }
+    const needsHistory = "The main chat has no finished turn yet. Send it a message first, then open a side chat.";
+    switch (provider) {
+      case "claude": {
+        const runtime = ensureClaudeSessionRuntime(parent);
+        const sourceSdkSessionId = writtenClaudeSessionId(runtime);
+        if (!sourceSdkSessionId) throw new Error(needsHistory);
+        let resumeAt: string | null = null;
+        if (busy) {
+          const running = findLastTurnUserMessage(readTranscriptEnvelopes(parent, { includeBuffered: true }));
+          const transcriptPath = resolveClaudeSdkTranscriptPath(sourceSdkSessionId, parent.laneWorktreePath, sessionConfigHome(parent));
+          if (running && transcriptPath) {
+            const cut = claudeSideChatCut(fs.readFileSync(transcriptPath, "utf8"), running.event.text);
+            if (cut.kind === "no_finished_turn") throw new Error(needsHistory);
+            if (cut.kind === "cut") resumeAt = cut.uuid;
+          }
+        }
+        return async (created) => {
+          const createdRuntime = ensureClaudeSessionRuntime(created);
+          await resetClaudeQuerySession(created, createdRuntime, "session_reset", { clearSdkSessionId: true });
+          createdRuntime.forkFromSdkSessionId = sourceSdkSessionId;
+          createdRuntime.forkResumeSessionAt = resumeAt;
+          created.claudeBackgroundResumeSessionId = sourceSdkSessionId;
+          mirrorClaudeSessionPointer(created, sourceSdkSessionId);
+        };
+      }
+      case "codex": {
+        const sourceThreadId = parent.session.threadId?.trim()
+          || readPersistedState(parent.session.id)?.threadId?.trim()
+          || "";
+        if (!sourceThreadId) throw new Error(needsHistory);
+        const runtime = await ensureCodexSessionRuntime(parent);
+        let beforeTurnId: string | null = null;
+        if (busy) {
+          beforeTurnId = activeTurnIdForManaged(parent);
+          if (!beforeTurnId || !codexServerSupportsForkBeforeTurn(runtime.serverVersion)) {
+            throw turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
+          }
+        }
+        const forkEnv = buildAgentRuntimeEnv(parent);
+        const forkExecutable = resolveCodexExecutable({ env: forkEnv }).path;
+        if (!forkExecutable) throw pinnedToolNotReadyError("codex", "Codex");
+        const forkedThreadId = await forkCodexThreadInEphemeralAppServer({
+          executable: forkExecutable,
+          env: forkEnv,
+          cwd: parent.laneWorktreePath,
+          forkParams: {
+            threadId: sourceThreadId,
+            excludeTurns: true,
+            ...(beforeTurnId ? { beforeTurnId } : {}),
+            ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion) ? { deferGoalContinuation: true } : {}),
+          },
+          timeoutMs: CODEX_EPHEMERAL_FORK_TIMEOUT_MS,
+          logger,
+          sessionId: parent.session.id,
+        });
+        if (!forkedThreadId) throw new Error("Codex did not return a thread for the side chat.");
+        return async (created) => {
+          created.session.threadId = forkedThreadId;
+          if (created.runtime?.kind === "codex") {
+            created.runtime.threadResumed = false;
+            created.runtime.canAttachResumedTurnStart = false;
+          }
+          sessionService.setResumeCommand(created.session.id, `chat:codex:${forkedThreadId}`);
+          persistChatState(created);
+          // The fork carries the main chat's goal; a side chat has none.
+          try {
+            const createdRuntime = await ensureCodexSessionRuntime(created);
+            const threadId = await ensureCodexControlThread(created, createdRuntime, "side chat goal cleanup");
+            await createdRuntime.request("thread/goal/clear", codexGoalClearParams(
+              threadId,
+              "automatic",
+              createdRuntime.serverVersion,
+            ), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+            clearKnownCodexGoal(created, createdRuntime);
+          } catch (error) {
+            logger.warn("agent_chat.side_chat_goal_clear_failed", {
+              sessionId: created.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        };
+      }
+      case "muse": {
+        const museRuntime = await ensureMuseRuntime(parent);
+        let forkedId = "";
+        try {
+          // Muse's own side chat: a fork it can take while the main session works.
+          const side = await museRuntime.host.command<{ session?: { sessionId?: string } }>("session/sideChat", {
+            sessionId: museRuntime.museSessionId,
+          });
+          forkedId = side.session?.sessionId?.trim() ?? "";
+        } catch (error) {
+          if (busy) throw error;
+          const forked = await museRuntime.host.command<{ session?: { sessionId?: string } }>("session/fork", {
+            sessionId: museRuntime.museSessionId,
+            excludeItems: true,
+          });
+          forkedId = forked.session?.sessionId?.trim() ?? "";
+        }
+        if (!forkedId) throw new Error("Muse did not return a session for the side chat.");
+        return async (created) => {
+          seedForkedProviderPointer(created, { museSessionId: forkedId });
+          sessionService.setResumeCommand(created.session.id, `chat:muse:${created.session.id}`);
+        };
+      }
+      case "opencode": {
+        if (parent.runtime?.kind !== "opencode") await startOpenCodeSessionRuntime(parent);
+        if (parent.runtime?.kind !== "opencode") throw new Error("Unable to start OpenCode to fork the main chat.");
+        const handle = parent.runtime.handle;
+        const forked = await handle.client.session.fork({ sessionID: handle.sessionId });
+        const forkedId = forked.id?.trim() ?? "";
+        if (!forkedId) throw new Error("OpenCode did not return a session for the side chat.");
+        return async (created) => {
+          seedForkedProviderPointer(created, { providerSessionId: forkedId });
+          sessionService.setResumeCommand(created.session.id, `chat:opencode:${created.session.id}`);
+        };
+      }
+      case "droid": {
+        const droidRuntime = await ensureDroidRuntime(parent);
+        const forkResult = await droidRuntime.sdk.request<{ newSessionId?: string }>("fork_session");
+        const forkedId = typeof forkResult?.newSessionId === "string" ? forkResult.newSessionId.trim() : "";
+        if (!forkedId) throw new Error("Droid did not return a session for the side chat.");
+        return async (created) => {
+          seedForkedProviderPointer(created, { droidSdkSessionId: forkedId });
+          sessionService.setResumeCommand(created.session.id, `chat:droid:${created.session.id}`);
+        };
+      }
+      case "copilot": {
+        const copilotRuntime = await ensureCopilotRuntime(parent);
+        if (copilotRuntime.busy) throw turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
+        const forkedId = await copilotRuntime.sdk.forkSession(parent.session.id, copilotRuntime.sdkSessionId, {});
+        return async (created) => {
+          seedForkedProviderPointer(created, { copilotSdkSessionId: forkedId });
+          sessionService.setResumeCommand(created.session.id, `chat:copilot:${created.session.id}`);
+        };
+      }
+      case "pi": {
+        // The worker handles requests concurrently, so this runs beside a
+        // turn, cutting at the last settled entry.
+        const forked = await forkPiSession(parent, null);
+        return async (created) => seedPiForkPointer(created, forked);
+      }
+      case "kimi": {
+        // Kimi forks only an idle session, so the busy check above already
+        // sent a mid-turn request away.
+        const forkedId = await forkKimiSession(parent);
+        return async (created) => {
+          seedForkedProviderPointer(created, { acpSessionId: forkedId });
+        };
+      }
+      default:
+        throw unsupportedError(SIDE_CHAT_UNSUPPORTED_MESSAGE);
+    }
+  };
+
+  const createSideChat = async (
+    parent: ManagedChatSession,
+    runtimeActor: AgentChatStartSideChatArgs["runtimeActor"],
+  ): Promise<ManagedChatSession> => {
+    const pointToFork = await forkMainChatForSide(parent);
+    const parentSession = parent.session;
+    const instanceId = resolveSessionInstance(parent)?.id;
+    const created = await createSessionInternal({
+      laneId: parentSession.laneId,
+      ...(runtimeActor ? { runtimeActor } : {}),
+      provider: parentSession.provider,
+      model: parentSession.model,
+      ...(parentSession.modelId ? { modelId: parentSession.modelId } : {}),
+      ...(instanceId ? { instanceId } : {}),
+      ...(parentSession.presetId ? { presetId: parentSession.presetId } : {}),
+      ...(parentSession.credentialId ? { credentialId: parentSession.credentialId } : {}),
+      title: "Side chat",
+      sessionProfile: parentSession.sessionProfile,
+      reasoningEffort: parentSession.reasoningEffort ?? null,
+      fastMode: parentSession.fastMode === true,
+      ...(parentSession.fastMode === true && parentSession.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+      ...(parentSession.copilotContextTier ? { copilotContextTier: parentSession.copilotContextTier } : {}),
+      ...sideChatReadOnlySettings(parentSession.provider),
+      surface: parentSession.surface,
+      rememberLaunchDefaults: false,
+    });
+    const side = ensureManagedSession(created.id);
+    side.session.sideChatParentSessionId = parentSession.id;
+    persistChatState(side);
+    try {
+      await pointToFork(side);
+      persistChatState(side);
+    } catch (error) {
+      await deleteSession({ sessionId: side.session.id }).catch(() => undefined);
+      throw error;
+    }
+    writeSideChatPointer(parent, side.session.id);
+    logger.info("agent_chat.side_chat_started", {
+      sessionId: side.session.id,
+      parentSessionId: parentSession.id,
+      provider: parentSession.provider,
+    });
+    return side;
+  };
+
+  const startSideChat = async (args: AgentChatStartSideChatArgs): Promise<AgentChatStartSideChatResult> => {
+    const parentId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!parentId) throw new Error("A chat is required to open a side chat.");
+    const text = typeof args.text === "string" ? args.text.trim() : "";
+    assertChatRuntimeOwnedHere(parentId, "open a side chat for");
+    const parent = ensureManagedSession(parentId);
+    if (parent.session.sideChatParentSessionId) {
+      throw new Error("This is a side chat. Open side chats from the main chat.");
+    }
+    if ((parent.session.surface ?? "work") !== "work" || parent.session.identityKey) {
+      throw unsupportedError("Side chats are available in Work chats.");
+    }
+    if (!providerSupportsSideChat(parent.session.provider)) throw unsupportedError(SIDE_CHAT_UNSUPPORTED_MESSAGE);
+
+    let side = liveSideChatOf(parent);
+    let created = false;
+    if (!side) {
+      let start = sideChatStartsInFlight.get(parentId);
+      if (!start) {
+        start = createSideChat(parent, args.runtimeActor);
+        sideChatStartsInFlight.set(parentId, start);
+        created = true;
+        void start.finally(() => sideChatStartsInFlight.delete(parentId)).catch(() => undefined);
+      }
+      side = await start;
+    }
+    if (text) {
+      await sendMessage({ sessionId: side.session.id, text }, { routeActiveToSteer: true });
+    }
+    return { session: side.session, created };
+  };
+
+  const endSideChat = async (args: AgentChatEndSideChatArgs): Promise<AgentChatEndSideChatResult> => {
+    const id = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!id) throw new Error("A chat is required to end its side chat.");
+    const lineage = sideChatLineageOf(id);
+    const sideId = lineage?.sideChatParentSessionId ? id : lineage?.sideChatSessionId?.trim() || null;
+    if (!sideId) return { endedSessionId: null };
+    await deleteSession({ sessionId: sideId });
+    return { endedSessionId: sideId };
+  };
+
+  /**
+   * When a side chat finishes a turn, deliver each `<send_to_main>` block in
+   * its reply to its main chat. A running main turn is steered; an idle main
+   * chat starts one.
+   */
+  const deliverSideChatMessageToMain = async (sideSessionId: string, parentId: string, message: string): Promise<void> => {
+    if (!parentChatStillExists(parentId)) throw new Error("The main chat is gone.");
+    const parent = ensureManagedSession(parentId);
+    if (parent.deleted) throw new Error("The main chat is gone.");
+    const text = buildSideChatMainMessage(message);
+    const metadata: AgentChatEventMetadata = { sideChat: { sideSessionId }, hideFullPrompt: true };
+    const active = parent.session.status === "active" || runtimeMidTurn(parent);
+    if (active || hasLivePendingInput(parent)) {
+      const provider = parent.session.provider;
+      const dispatchMode = !cursorSessionRunsInCloud(parent.session) && supportsActiveTurnDispatchMode(provider, "inline")
+        ? "inline"
+        : active ? defaultActiveTurnDispatchMode(provider) : "queue";
+      const result = await steerWithOptions({
+        sessionId: parentId,
+        text,
+        displayText: message,
+        metadata,
+        ...(dispatchMode === "queue" ? {} : { dispatchMode }),
+      }, { allowPendingInput: true });
+      if (result.reason === "queue_full") throw new Error("The main chat's queue is full.");
+      return;
+    }
+    await sendMessage({ sessionId: parentId, text, displayText: message, metadata }, { routeActiveToSteer: true });
+  };
+
+  const forwardSideChatSendsToMain = (side: ManagedChatSession, turnId: string | undefined): void => {
+    const parentId = side.session.sideChatParentSessionId?.trim();
+    if (!parentId) return;
+    const resolvedTurnId = turnId?.trim()
+      || [...side.recentConversationEntries].reverse().find((entry) => entry.role === "assistant")?.turnId?.trim()
+      || "";
+    if (!resolvedTurnId) return;
+    const key = `${side.session.id}:${resolvedTurnId}`;
+    if (sideChatForwardedTurns.has(key)) return;
+    const reply = side.recentConversationEntries
+      .filter((entry) => entry.role === "assistant" && entry.turnId === resolvedTurnId)
+      .map((entry) => entry.text)
+      .join("\n");
+    const messages = extractSideChatSendToMain(reply);
+    if (!messages.length) return;
+    sideChatForwardedTurns.add(key);
+    void (async () => {
+      for (const message of messages) {
+        try {
+          await deliverSideChatMessageToMain(side.session.id, parentId, message);
+          emitChatEvent(side, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Sent to the main chat.",
+            turnId: resolvedTurnId,
+          });
+          logger.info("agent_chat.side_chat_sent_to_main", { sessionId: side.session.id, parentSessionId: parentId });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          emitChatEvent(side, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "Couldn't send this to the main chat.",
+            detail: reason,
+            turnId: resolvedTurnId,
+          });
+          logger.warn("agent_chat.side_chat_send_to_main_failed", {
+            sessionId: side.session.id,
+            parentSessionId: parentId,
+            error: reason,
+          });
+        }
+      }
+    })();
   };
 
   const destinationGitEnv = async (): Promise<NodeJS.ProcessEnv> => {
@@ -59487,6 +60185,7 @@ export function createAgentChatService(args: {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     assertChatNotMovedAway(args.sessionId, "send_message");
     const managed = ensureManagedSession(args.sessionId);
+    args = withSideChatRole(managed, args);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
     const reviewed = takeThreadReviewForSend(args);
     // Only an explicit `compactFirst: true` compacts first. The pill sends it,
@@ -60115,6 +60814,25 @@ export function createAgentChatService(args: {
     }
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+    }
+    // ACP has no mid-turn message, so "interrupt" on an ACP chat (Kimi) is
+    // ADE's own: stop the running turn, wait for it to settle, then send the
+    // message as the next turn. Nothing is staged.
+    if (dispatchMode === "interrupt" && managed.runtime?.kind === "acp" && managed.runtime.busy) {
+      await interruptAndContinueTurn(managed, {
+        sessionId,
+        text: trimmed,
+        ...(displayText != null && displayText !== trimmed ? { displayText } : {}),
+        attachments,
+        contextAttachments,
+        metadata,
+        reasoningEffort,
+        executionMode,
+        interactionMode,
+        mentionsAlreadyExpanded: true,
+        pastedPromptAlreadyMaterialized: true,
+      });
+      return { steerId, queued: false };
     }
     // OpenCode runtime steer. OpenCode's inbox owns every message sent while a
     // turn runs: `steer` is delivered at the next step boundary, `queue` after
@@ -61965,6 +62683,59 @@ export function createAgentChatService(args: {
           }));
         },
       });
+    }
+    // ACP (Kimi): a staged row promoted to "interrupt" stops the running turn
+    // and runs as the next one, the same redirect a new message takes.
+    if (runtime.kind === "acp" && mode === "interrupt") {
+      const acpQueue = runtime.pendingSteers;
+      const acpIdx = acpQueue.findIndex((entry) => entry.steerId === steerId);
+      if (acpIdx === -1) return { dispatchedAt: null };
+      const [promoted] = acpQueue.splice(acpIdx, 1);
+      claimSteerSettlement(managed, steerId);
+      const acceptedRow = takeAcceptedSteerRow(managed, steerId);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Delivering your queued message...",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      try {
+        await interruptAndContinueTurn(managed, {
+          sessionId,
+          text: promoted.text,
+          ...(promoted.displayText != null && promoted.displayText !== promoted.text
+            ? { displayText: promoted.displayText }
+            : {}),
+          attachments: promoted.attachments,
+          contextAttachments: promoted.contextAttachments,
+          ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+          reasoningEffort: promoted.reasoningEffort,
+          executionMode: promoted.executionMode,
+          interactionMode: promoted.interactionMode,
+          mentionsAlreadyExpanded: true,
+          pastedPromptAlreadyMaterialized: true,
+        });
+      } catch (error) {
+        // Put the row back so the user's message is never silently lost.
+        if (!acpQueue.some((entry) => entry.steerId === steerId)) {
+          acpQueue.splice(Math.min(acpIdx, acpQueue.length), 0, promoted);
+          reopenSteerSettlement(managed, steerId);
+          restoreAcceptedSteerRow(managed, steerId, acceptedRow);
+          emitSteerUserRow(managed, promoted, "queued", runtime.activeTurnId ?? undefined);
+          persistChatState(managed);
+        }
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          provider: runtime.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      return { dispatchedAt: Date.now() };
     }
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
@@ -64461,7 +65232,14 @@ export function createAgentChatService(args: {
 
   const listSessions = async (
     laneId?: string,
-    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean; sessionIds?: readonly string[] },
+    options?: {
+      includeIdentity?: boolean;
+      includeAutomation?: boolean;
+      includeArchived?: boolean;
+      /** Side chats live inside their main chat and are left out unless asked for. */
+      includeSideChats?: boolean;
+      sessionIds?: readonly string[];
+    },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
@@ -64481,11 +65259,13 @@ export function createAgentChatService(args: {
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
+    const includeSideChats = options?.includeSideChats === true;
 
     // One scope for the whole call: the config, the accounts and each owner are read once, not per row.
     const scope = createSummaryCallScope();
     return (await Promise.all(summarizedRows.map((row) => summarizeSessionRow(row, scope))))
       .filter((summary) => includeIdentity || !summary.identityKey)
+      .filter((summary) => includeSideChats || !summary.sideChatParentSessionId)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
   };
@@ -67949,6 +68729,33 @@ export function createAgentChatService(args: {
       }
     }
 
+    // A side chat goes with its main chat, and a main chat stops pointing at a
+    // side chat that is deleted.
+    const sideLineage = sideChatLineageOf(trimmedSessionId);
+    const ownSideChatId = sideLineage?.sideChatSessionId?.trim();
+    if (ownSideChatId && ownSideChatId !== trimmedSessionId) {
+      await deleteSession({ sessionId: ownSideChatId }).catch((error) => {
+        logger.warn("agent_chat.side_chat_delete_with_main_failed", {
+          sessionId: trimmedSessionId,
+          sideSessionId: ownSideChatId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    const sideParentId = sideLineage?.sideChatParentSessionId?.trim();
+    if (sideParentId && sessionService.get(sideParentId)) {
+      try {
+        const sideParent = ensureManagedSession(sideParentId);
+        if (sideParent.session.sideChatSessionId === trimmedSessionId) writeSideChatPointer(sideParent, null);
+      } catch (error) {
+        logger.warn("agent_chat.side_chat_pointer_clear_failed", {
+          sessionId: trimmedSessionId,
+          parentSessionId: sideParentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     // Report a child stop before tombstoning it. The reporter intentionally
     // ignores deleted sessions so late provider events cannot recreate lineage
     // after deletion.
@@ -68068,6 +68875,17 @@ export function createAgentChatService(args: {
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
+    // Archiving a main chat ends its side chat: a side chat has no life of its own.
+    const archivedSideChatId = sideChatLineageOf(trimmedSessionId)?.sideChatSessionId?.trim();
+    if (archivedSideChatId && archivedSideChatId !== trimmedSessionId) {
+      await deleteSession({ sessionId: archivedSideChatId }).catch((error) => {
+        logger.warn("agent_chat.side_chat_delete_with_main_failed", {
+          sessionId: trimmedSessionId,
+          sideSessionId: archivedSideChatId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
     await scheduledWorkReady;
     if (scheduledWorkScheduler) {
       const providerSchedules = scheduledWorkScheduler.list(trimmedSessionId).filter((schedule) =>
@@ -68750,6 +69568,17 @@ export function createAgentChatService(args: {
     const touchesPermissions = permissionMode !== undefined
       || interactionMode !== undefined
       || Object.keys(nativePermissionPatch).length > 0;
+    // A side chat stays read-only, on its main chat's model, for its whole life.
+    if (managed.session.sideChatParentSessionId) {
+      const readOnly = sideChatReadOnlySettings(managed.session.provider) as Record<string, unknown>;
+      const raisesAccess = Object.entries(nativePermissionPatch)
+        .some(([key, value]) => value !== (readOnly[key] ?? (managed.session as Record<string, unknown>)[key]))
+        || (permissionMode !== undefined && permissionMode !== managed.session.permissionMode)
+        || (interactionMode !== undefined && interactionMode !== null && interactionMode !== "default");
+      const movesModel = (modelId !== undefined && modelId !== managed.session.modelId)
+        || requestedPresetIdArg !== undefined;
+      if (raisesAccess || movesModel) throw new Error(SIDE_CHAT_READ_ONLY_MESSAGE);
+    }
     // Identity-pinned sessions ignore permission changes, so there is nothing
     // an agent could raise there.
     if (
@@ -69928,7 +70757,31 @@ export function createAgentChatService(args: {
     return deriveSessionCapabilities(managed);
   };
 
+  /**
+   * ADE's own `/side` (shared/sideChat.ts), offered in a Work chat whose
+   * provider can fork natively, and never inside a side chat. Every client
+   * handles it before sending: it opens the side chat instead.
+   */
   const getSlashCommands = async (args: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
+    const commands = await getProviderSlashCommands(args);
+    const managed = args.sessionId?.trim() ? managedSessions.get(args.sessionId.trim()) ?? null : null;
+    if (
+      !managed
+      || managed.session.sideChatParentSessionId
+      || managed.session.identityKey
+      || (managed.session.surface ?? "work") !== "work"
+      || !providerSupportsSideChat(managed.session.provider)
+      || commands.some((command) => command.name === "/side")
+    ) {
+      return commands;
+    }
+    return [
+      ...commands,
+      { name: "/side", description: "Ask a read-only side chat, without adding to this chat.", source: "local", argumentHint: "<question>" },
+    ];
+  };
+
+  const getProviderSlashCommands = async (args: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const requestedSessionId = args.sessionId?.trim() ?? "";
     const managed = requestedSessionId.length ? managedSessions.get(requestedSessionId) ?? null : null;
     if (requestedSessionId.length && !managed && !args.provider) return [];
@@ -73120,6 +73973,8 @@ export function createAgentChatService(args: {
     suggestLaneNameFromPrompt,
     generateAutoLaneIdentity,
     handoffSession,
+    startSideChat,
+    endSideChat,
     prepareCrossMachineHandoff,
     validateCrossMachineSource,
     preflightCrossMachineDestination,

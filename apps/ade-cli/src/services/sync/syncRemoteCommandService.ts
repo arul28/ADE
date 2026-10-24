@@ -85,6 +85,8 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
   AgentChatHandoffArgs,
+  AgentChatStartSideChatArgs,
+  AgentChatEndSideChatArgs,
   AgentChatLaunchArgs,
   AgentChatListArgs,
   AgentChatMainTranscriptArgs,
@@ -1287,6 +1289,17 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
   };
+}
+
+function parseStartSideChatArgs(value: Record<string, unknown>): AgentChatStartSideChatArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.startSideChat requires sessionId."),
+    text: typeof value.text === "string" ? value.text : "",
+  };
+}
+
+function parseEndSideChatArgs(value: Record<string, unknown>): AgentChatEndSideChatArgs {
+  return { sessionId: requireString(value.sessionId, "chat.endSideChat requires sessionId.") };
 }
 
 function parseFastForwardCrossMachineHandoffLaneArgs(
@@ -5249,6 +5262,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),
+    ));
+  register("chat.startSideChat", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").startSideChat(
+      parseStartSideChatArgs(payload),
+    ));
+  register("chat.endSideChat", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").endSideChat(
+      parseEndSideChatArgs(payload),
     ));
   register("chat.prepareCrossMachineHandoff", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").prepareCrossMachineHandoff(

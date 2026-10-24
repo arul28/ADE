@@ -65,6 +65,8 @@ export type RosterProjectRegistry = {
 export type RosterLiveSession = {
   sessionId: string;
   status: "active" | "idle" | "ended";
+  /** The main chat's side chat (`shared/sideChat.ts`); the side chat itself is never a roster row. */
+  sideChatSessionId?: string | null;
   awaitingInput?: boolean;
   provider?: string | null;
   model?: string | null;
@@ -458,6 +460,10 @@ type Sidecar = {
   awaitingInput?: boolean;
   /** Persisted CTO/identity marker; see `RosterLiveSession.identityKey`. */
   identityKey?: string | null;
+  /** Set on a side chat: its main chat. Side chats are never roster rows. */
+  sideChatParentSessionId?: string | null;
+  /** Set on a main chat that has a side chat. */
+  sideChatSessionId?: string | null;
   /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
   eventSequence?: number | null;
   historyGeneration?: number | null;
@@ -477,6 +483,8 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       model: typeof parsed.model === "string" ? parsed.model : null,
       awaitingInput: parsed.awaitingInput === true,
       identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
+      sideChatParentSessionId: typeof parsed.sideChatParentSessionId === "string" ? parsed.sideChatParentSessionId.trim() || null : null,
+      sideChatSessionId: typeof parsed.sideChatSessionId === "string" ? parsed.sideChatSessionId.trim() || null : null,
       eventSequence: positiveInteger(parsed.eventSequence),
       historyGeneration: positiveInteger(parsed.historyGeneration),
     };
@@ -664,6 +672,8 @@ async function buildRosterProject(
     // must never become ordinary project-roster rows or contribute to Hub
     // counts, even when their sidecar is the only identity signal available.
     if (identitySessionIds.has(row.id)) continue;
+    // A side chat lives inside its main chat; clients reach it from there.
+    if (sidecar?.sideChatParentSessionId) continue;
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
@@ -745,6 +755,9 @@ async function buildRosterProject(
       toolType: row.tool_type,
       status,
       ...(identityKey ? { identityKey } : {}),
+      ...((live ? live.sideChatSessionId : sidecar?.sideChatSessionId)
+        ? { sideChatSessionId: (live ? live.sideChatSessionId : sidecar?.sideChatSessionId)! }
+        : {}),
       ...(awaitingInput ? { awaitingInput: true } : {}),
       ...(row.pinned ? { pinned: true } : {}),
       lastActivityAt,

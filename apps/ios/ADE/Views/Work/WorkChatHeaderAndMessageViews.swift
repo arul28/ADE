@@ -458,6 +458,9 @@ struct WorkChatMessageBubble: View, Equatable {
     return HStack(alignment: .top, spacing: 8) {
       Spacer(minLength: 0)
       VStack(alignment: .trailing, spacing: 6) {
+        if message.fromSideChat, segment?.isFirst ?? true {
+          WorkSideChatFromLabel()
+        }
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
@@ -1158,6 +1161,21 @@ func workAssistantMessagePreview(
   knownCharacterCount: Int? = nil,
   knownMarkdownHasCarriageReturn: Bool? = nil
 ) -> WorkAssistantMessagePreview {
+  // A side chat's `<send_to_main>` blocks draw as a "Sent to the main chat"
+  // note, never as raw tags (desktop `sideChatSendBlocksToMarkdown`). The
+  // counts the caller knew describe the raw text, so they are recomputed.
+  var markdown = markdown
+  var classification = classification
+  var knownLineCount = knownLineCount
+  var knownCharacterCount = knownCharacterCount
+  var knownMarkdownHasCarriageReturn = knownMarkdownHasCarriageReturn
+  if workSideChatTextHasSendBlock(markdown) {
+    markdown = workSideChatSendBlocksToMarkdown(markdown)
+    classification = nil
+    knownLineCount = nil
+    knownCharacterCount = nil
+    knownMarkdownHasCarriageReturn = nil
+  }
   // `replacingOccurrences` allocates a second copy of the whole message even
   // when there is nothing to replace, which is the overwhelmingly common case
   // (host transcripts are LF). Scan first, copy only when it would change

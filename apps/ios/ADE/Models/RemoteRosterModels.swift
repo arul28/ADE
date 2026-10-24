@@ -120,6 +120,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
   var identityKey: String? = nil
+  /// This chat's side chat (`/side`) while it has one. Side chats are never
+  /// roster rows of their own; this drives the row's side-chat mark and the
+  /// chat's Side chat chip. Older hosts omit it.
+  var sideChatSessionId: String? = nil
   /// `chatLogV2` hosts: newest durable envelope `sequence` in this chat's log,
   /// so the phone can tell which cached threads are current without asking.
   var maxSequence: Int? = nil
@@ -200,6 +204,7 @@ extension RemoteRosterChat {
     merged.toolType = nonEmptyRosterValue(toolType) ?? local.toolType
     merged.chatSessionId = nonEmptyRosterValue(chatSessionId) ?? local.chatSessionId
     merged.identityKey = nonEmptyRosterValue(identityKey) ?? local.identityKey
+    merged.sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) ?? local.sideChatSessionId
     merged.applyLocalSnoozeOverlay(local)
     return merged
   }
@@ -755,7 +760,8 @@ extension RemoteRosterChat {
       resumeMetadata: nil,
       chatIdleSinceAt: nil,
       chatSessionId: chatSessionId,
-      pendingInputItemId: nil
+      pendingInputItemId: nil,
+      sideChatSessionId: nonEmptyRosterValue(sideChatSessionId)
     )
   }
 }
@@ -792,6 +798,7 @@ extension RemoteRosterChat {
     if let title = nonEmptyTrimmed(title) { payload["title"] = title }
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
+    if let sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) { payload["sideChatSessionId"] = sideChatSessionId }
     guard let data = try? JSONSerialization.data(withJSONObject: payload),
           var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
     else { return nil }

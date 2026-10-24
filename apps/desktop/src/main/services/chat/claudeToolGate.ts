@@ -105,6 +105,30 @@ export function claudeToolAllowedInPlanMode(toolName: string): boolean {
 }
 
 /**
+ * Tools a side chat (`shared/sideChat.ts`) may call on its own: Claude's
+ * read-only built-ins, questions, skills and to-do bookkeeping. Everything
+ * else — edits, subagents, MCP tools, killing shells — is refused, whatever
+ * the user's allow rules say. `Bash` is not here: Claude runs a command it
+ * judges read-only without asking, and a command that would change something
+ * reaches `canUseTool`, which refuses it for a side chat.
+ */
+export const CLAUDE_SIDE_CHAT_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+  ...CLAUDE_READ_ONLY_TOOLS,
+  "ask_user",
+  "askuserquestion",
+  "notebookread",
+  "skill",
+  "todowrite",
+  "taskcreate",
+  "taskupdate",
+  "bashoutput",
+]);
+
+export function claudeToolAllowedInSideChat(toolName: string): boolean {
+  return CLAUDE_SIDE_CHAT_ALLOWED_TOOLS.has(normalizeToolNameForApproval(toolName));
+}
+
+/**
  * Input keys a Claude tool uses to name a file.
  *
  * A fixed list, and strings only. It feeds `sandboxRoot` containment, and a

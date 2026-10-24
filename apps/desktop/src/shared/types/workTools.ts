@@ -44,6 +44,9 @@ export const WORK_TOOL_IDS = [
   "windows-desktop",
   "pr",
   "issues",
+  // A chat's read-only side chat (`shared/sideChat.ts`). Only offered for a
+  // chat that has one; never in the picker otherwise.
+  "side-chat",
 ] as const;
 
 export type WorkToolId = (typeof WORK_TOOL_IDS)[number];

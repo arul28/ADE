@@ -14,6 +14,7 @@ import { isDesktopWorkTool } from "./workTools";
 import { subscribeRemoteRuntimeIdentityChanges, subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
 import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
 import { confirmMacDesktopToolClose } from "../chat/MacDesktopStopConfirm";
+import { confirmSideChatToolClose } from "../chat/sideChatState";
 
 /**
  * The scope key is the store's own — `laneWorkViewScopeKey`. Re-exported under
@@ -261,6 +262,14 @@ export function useWorkSidebarTool(
        * Mac Desktop asks too, while a display runs, and has a third answer:
        * "Keep running" closes the tab and leaves the display up.
        */
+      // Closing the Side chat tab asks whether to hide it or end it. Either
+      // way the tab goes; Hide keeps the chat for Tools to bring back.
+      if (target === "side-chat") {
+        void confirmSideChatToolClose({ mainSessionId: chatSessionId, runtimePin }).then((close) => {
+          if (close) drop(false);
+        });
+        return;
+      }
       if (isDesktopWorkTool(target)) {
         void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
           if (answer === "stop") drop();

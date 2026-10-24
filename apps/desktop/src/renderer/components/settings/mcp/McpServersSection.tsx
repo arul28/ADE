@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
-import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
+import { CALLER_MCP_SUPPORT, registryMcpSupport } from "../../../../shared/callerMcpServers";
 import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
   MCP_TRANSPORT_LABEL,
@@ -569,7 +569,7 @@ function MissingSecret({
 /**
  * Which agents the registry reaches.
  *
- * The shipped providers are read off `CALLER_MCP_SUPPORT`, the table the launch
+ * The shipped providers are read off `registryMcpSupport`, which the launch
  * path itself consults, so a provider that gains or loses a transport changes
  * this page without an edit here. The last row is {@link NOT_SERVED_YET}, which
  * no table knows.
@@ -586,9 +586,10 @@ function WhoGetsThem() {
     const all: string[] = [];
     const partial: Array<{ id: string; transports: string[] }> = [];
     const none: string[] = [];
-    for (const [id, support] of Object.entries(CALLER_MCP_SUPPORT)) {
-      const blocked: readonly string[] = "unsupportedTransports" in support ? support.unsupportedTransports : [];
-      if (support.level === "unsupported") none.push(id);
+    for (const id of Object.keys(CALLER_MCP_SUPPORT)) {
+      const support = registryMcpSupport(id);
+      const blocked: readonly string[] = support?.unsupportedTransports ?? [];
+      if (!support) none.push(id);
       else if (blocked.length) partial.push({ id, transports: blocked.map((transport) => transport.toUpperCase()) });
       else all.push(id);
     }

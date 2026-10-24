@@ -21,7 +21,7 @@ type ChatProjectionServices = {
   agentChatService?: {
     listSessions(
       laneId?: string,
-      options?: { includeIdentity?: boolean; includeAutomation?: boolean; sessionIds?: readonly string[] },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeSideChats?: boolean; sessionIds?: readonly string[] },
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
@@ -199,6 +199,7 @@ export function projectChatOntoSession(
       ? { parentIdentityKey: parentIdentityKey ?? chat.parentIdentityKey }
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
+    ...(chat.sideChatSessionId ? { sideChatSessionId: chat.sideChatSessionId } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),
@@ -269,7 +270,7 @@ export function projectChatSummariesOntoSessions(
   sessions: TerminalSessionSummary[],
   allChats: AgentChatSessionSummary[],
 ): TerminalSessionSummary[] {
-  const identitySessionIds = new Set<string>();
+  const hiddenSessionIds = new Set<string>();
   /**
    * Identity sessions, by id, so a CHILD can be told who its parent is.
    *
@@ -282,8 +283,13 @@ export function projectChatSummariesOntoSessions(
   const identityKeyBySessionId = new Map<string, string>();
   const chatSummaryBySessionId = new Map<string, AgentChatSessionSummary>();
   for (const chat of allChats) {
+    // A side chat lives inside its main chat, so it is never a roster row.
+    if (chat.sideChatParentSessionId) {
+      hiddenSessionIds.add(chat.sessionId);
+      continue;
+    }
     if (chat.identityKey) {
-      identitySessionIds.add(chat.sessionId);
+      hiddenSessionIds.add(chat.sessionId);
       identityKeyBySessionId.set(chat.sessionId, chat.identityKey);
     } else {
       chatSummaryBySessionId.set(chat.sessionId, chat);
@@ -291,7 +297,7 @@ export function projectChatSummariesOntoSessions(
   }
 
   return sessions
-    .filter((session) => !identitySessionIds.has(session.id))
+    .filter((session) => !hiddenSessionIds.has(session.id))
     .map((session) => {
       if (!isChatToolType(session.toolType)) return session;
       const chat = chatSummaryBySessionId.get(session.id);
@@ -342,6 +348,7 @@ export async function listSessionsWithChatProjection(
       allChats = await services.agentChatService.listSessions(laneId || undefined, {
         includeIdentity: true,
         includeAutomation: true,
+        includeSideChats: true,
         sessionIds: shownChatIds,
       });
       const summarized = new Set(allChats.map((chat) => chat.sessionId));

@@ -2019,6 +2019,9 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
   weak var syncService: SyncService?
+  /// ADE's own `/side` command leads the `/` menu when this chat can open a
+  /// side chat. It is not a provider command, so no host registry lists it.
+  var offersSideChat = false
   /// The chat this composer belongs to, so the @ menu never offers the chat to
   /// itself. Nil on surfaces with no session yet.
   var sessionId: String?
@@ -2100,11 +2103,12 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// Rows for the active `/` trigger: the host registry once fetched, else the
   /// minimal static catalog. Also kicks off the one-shot host fetch.
   private func refreshSlashSuggestions(query: String) {
-    suggestions = WorkComposerSlashRegistry.suggestions(
-      host: hostSlashCommands,
-      provider: provider,
-      query: query
-    )
+    suggestions = workSideChatSlashSuggestions(offered: offersSideChat, query: query)
+      + WorkComposerSlashRegistry.suggestions(
+        host: hostSlashCommands,
+        provider: provider,
+        query: query
+      )
     fetchSlashRegistryIfNeeded()
   }
 
@@ -2134,18 +2138,22 @@ final class WorkComposerSuggestionController: ObservableObject {
     slashFetchTask = Task { [weak self] in
       defer { self?.slashFetchTask = nil }
       do {
+        // `/side` is the phone's own row (`workSideChatSlashSuggestions`); a
+        // host that also lists it must not draw it twice.
         let commands = try await syncService.getSlashCommands(provider: provider, laneId: laneId)
+          .filter { $0.name != "/side" }
         guard let self, !Task.isCancelled else { return }
         guard self.laneGeneration == generation, self.provider == provider else { return }
         self.hostSlashCommands = commands
         // The transcript chips `/name` only for commands this chat can run.
         WorkThreadEntityDirectory.shared.record(skillNames: commands.map(\.name))
         if let match = self.activeMatch, match.kind == .slash {
-          self.suggestions = WorkComposerSlashRegistry.suggestions(
-            host: commands,
-            provider: provider,
-            query: match.query
-          )
+          self.suggestions = workSideChatSlashSuggestions(offered: self.offersSideChat, query: match.query)
+            + WorkComposerSlashRegistry.suggestions(
+              host: commands,
+              provider: provider,
+              query: match.query
+            )
         }
       } catch {
         guard let self, !Task.isCancelled else { return }

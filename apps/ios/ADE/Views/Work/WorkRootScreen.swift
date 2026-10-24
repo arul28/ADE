@@ -184,6 +184,8 @@ struct WorkRootSyncInputs: Equatable {
   var workProjectionRevision: Int?
   var rosterRevision = 0
   var chatLaunchRevision = 0
+  /// Side chats opened or ended live: the rows' marks and hiding follow.
+  var sideChatRevision = 0
   var pendingChatCreations: [PendingChatCreation] = []
   var laneGithubPrItems: [GitHubPrListItem] = []
   var pendingLaneDeletionIds: Set<String> = []
@@ -237,6 +239,7 @@ struct WorkRootSyncInputs: Equatable {
     let activeProject = sync.activeProject
     rosterRevision = sync.rosterRevision(for: activeProject)
     chatLaunchRevision = sync.chatLaunchRevision
+    sideChatRevision = sync.sideChatRevision
     pendingChatCreations = sync.pendingChatCreations
     laneGithubPrItems = sync.laneGithubPrItems
     pendingLaneDeletionIds = sync.pendingLaneDeletionIds

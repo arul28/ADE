@@ -86,9 +86,9 @@ has them in `node_modules`, so it never downloads them.
 | `copilot-cli` | 1.0.98 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `droid` | 0.244.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `grok` | 1.0.46 | `npm-tarball` + brotli step | npm sha512 SRI | `registry.npmjs.org` |
-| `pi` | 0.84.0 | `npm-tree` (about 136 packages per target) | npm sha512 SRI per package | `registry.npmjs.org` |
+| `pi` | 1.4.0 | `npm-tree` (about 119 packages per target, hoisted flat since Pi stopped shipping `npm-shrinkwrap.json` in 1.0.2) | npm sha512 SRI per package | `registry.npmjs.org` |
 | `qwen` | 0.25.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHA256SUMS`, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
-| `kimi` | 2.1.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
+| `kimi` | 2.3.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
 | `devin` | 3000.11.3 | `archive` (tar.gz, win zip) | vendor `manifest.json` sha256 | `static.devin.ai` |
 | `antigravity` | 1.4.1 | `archive` (zip) | sha256 computed by `tools:pin` (Google publishes none) | `dl.google.com` |
 | `cursor-cli` | 2026.10.16-e3cb207 | `archive` (tar.gz, win zip, strip 1) | sha256 computed by `tools:pin` (Cursor publishes none) | `downloads.cursor.com` |
@@ -212,7 +212,7 @@ without unpacking the tarball.
 | `kimi` | `kimi` | `kimi.exe` |
 | `devin` | `bin/devin` | `bin/devin.exe` |
 | `antigravity` | `agy_acp_server.par` + file `harness` = `localharness_external` | `agy_acp_server.exe`, `localharness_external.exe` |
-| `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/cli.js` | same |
+| `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/bundle/cli.js` | same |
 | `cursor-cli` | `node` (Cursor's bundled Node) + file `script` = `index.js` | `node.exe` |
 | `node` | `bin/node` | `node.exe` |
 
@@ -220,9 +220,10 @@ Node-run tools are spawned as `<entry> <script> …`, never through a `.cmd` shi
 or Electron-as-Node: Qwen `<node> <cli-entry.js> --acp`; Cursor
 `<node> [--use-system-ca] <index.js> --disable-auto-update …` with
 `CURSOR_INVOKED_AS=cursor-agent` (`--use-system-ca` is POSIX only, like Cursor's
-own launcher); the Pi terminal `<pinned node> <pi dist/cli.js>`. The ACP spawn
-context carries these leading args as `binaryArgs`. Pi's `dist/cli.js` path is
-for 0.84; a Pi bump must re-check it (1.x moved it to `dist/bundle/cli.js`).
+own launcher); the Pi terminal `<pinned node> <pi dist/bundle/cli.js>`. The ACP spawn
+context carries these leading args as `binaryArgs`. `dist/bundle/cli.js` is the
+package's `bin.pi` since 1.x (the bundled runtime; `dist/cli.js` still exists
+but loads the slower modular runtime); a Pi bump must re-check it.
 
 ## Muse: a direct-file pin
 
@@ -298,7 +299,7 @@ profile — 650 MB must never roam.
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.300/
   @opencode/cli-darwin-arm64/2.0.29/
   devin-darwin-arm64/3000.11.3/
-  pi-coding-agent-darwin-arm64/0.84.0/node_modules/…
+  pi-coding-agent-darwin-arm64/1.4.0/node_modules/…
   .staging/
   .locks/
   .installed-packages.json
@@ -1067,8 +1068,9 @@ needs only Node built-ins (plus the `npm` CLI for Pi's tree); no `npm ci`.
 | `node` | newest Node 24 LTS in `nodejs.org/dist/index.json` (`NODE_MAJOR` in the script) | `SHASUMS256.txt` |
 
 `qwen` and `kimi` use the GitHub API (60 unauthenticated requests an hour per
-IP); set `GITHUB_TOKEN`. Pinning Pi to 1.x needs more than a re-pin: its CLI
-path moved (see [Entry paths](#entry-paths)) and ADE was built against 0.84.
+IP); set `GITHUB_TOKEN`. A Pi bump needs more than a re-pin: re-check its CLI
+path (see [Entry paths](#entry-paths)) and the SDK surface the worker uses
+(`piSdkWorker.ts`). ADE is built against Pi 1.4.
 
 The scheduled workflow `.github/workflows/agent-tool-pins.yml` runs daily at
 01:37 UTC (after Dependabot) and on `workflow_dispatch` (optional `tool` input).

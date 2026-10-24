@@ -285,6 +285,11 @@ struct WorkChatSummaryRenderContext: Equatable {
   let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
   /// Batch move waiting for approval in this chat, projected by the host.
   let crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval?
+  /// This chat is a side chat (`/side`): read-only on its main chat's model,
+  /// so the composer shows no model or access controls.
+  var isSideChat = false
+  /// The composer offers `/side` (a Work chat on a provider that can fork).
+  var offersSideChat = false
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -370,6 +375,8 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
+    self.isSideChat = summary.sideChatParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
   }
 
   var currentModelId: String {
@@ -726,6 +733,9 @@ struct WorkChatSessionView: View {
   var crossMachineHandoffActions: WorkCrossMachineHandoffActions? = nil
   /// Approve or deny a pending batch move projected onto this caller chat.
   var crossMachineBatchMoveApprovalActions: WorkCrossMachineBatchMoveApprovalActions? = nil
+  /// Opens this chat's side chat. Set only while the chat has one; the badge
+  /// row then shows a Side chat chip (never otherwise).
+  var onOpenSideChat: (() -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// A thread link ("3 proof filed") opens the proof drawer narrowed to the
@@ -1110,7 +1120,7 @@ struct WorkChatSessionView: View {
   /// Lane tool chips: the lane's running simulator, browser tabs and App
   /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
   var showsComposerLaneToolChips: Bool {
-    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
+    inputLockMessage == nil && !isPersonalChat && !chatSummaryContext.isSideChat && !laneTools.chips.isEmpty
   }
 
   /// The thread-comments chip: only while the chat has at least one comment
@@ -1131,7 +1141,12 @@ struct WorkChatSessionView: View {
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
-      || showsComposerThreadCommentsChip
+      || showsComposerThreadCommentsChip || showsComposerSideChatChip
+  }
+
+  /// The Side chat chip: only for a chat that has a side chat.
+  var showsComposerSideChatChip: Bool {
+    inputLockMessage == nil && onOpenSideChat != nil
   }
 
   /// Chat-info / PR / lane tool badges: small glass capsules sitting just
@@ -1147,6 +1162,9 @@ struct WorkChatSessionView: View {
           ADEHaptics.light()
           threadCommentsSheetPresented = true
         }
+      }
+      if showsComposerSideChatChip, let onOpenSideChat {
+        WorkSideChatChip(onOpen: onOpenSideChat)
       }
       if showsComposerChatInfoBadge, let onOpenChatInfo {
         WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
@@ -1832,12 +1850,14 @@ struct WorkChatSessionView: View {
           }
         },
         onOpenModelPicker: !chatSummaryContext.isAvailable
+          || chatSummaryContext.isSideChat
           || (isPersonalChat && (
             !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
           ))
           ? nil
           : { modelPickerPresented = true },
         onSelectRuntimeMode: !chatSummaryContext.isAvailable
+          || chatSummaryContext.isSideChat
           || (isPersonalChat && !personalSessionUpdatesAvailable)
           ? nil
           : { mode in
@@ -2418,7 +2438,8 @@ struct WorkChatSessionView: View {
       model: laneTools,
       laneId: session.laneId,
       chatSessionId: session.id,
-      enabled: !isPersonalChat
+      // A side chat's lane tools are its main chat's, already polled there.
+      enabled: !isPersonalChat && !chatSummaryContext.isSideChat
     )
     #if DEBUG
     presenter.preview = previewLaneTools
@@ -3130,13 +3151,16 @@ private struct WorkChatComposerDraftInput: View {
           composerOverflowMenu()
         },
         controls: {
-          WorkComposerChipStrip(
-            chatSummary: chatSummary,
-            settingsMutationInFlight: settingsMutationInFlight,
-            codexFastModeOverride: codexFastModeOverride,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectRuntimeMode: onSelectRuntimeMode
-          )
+          // A side chat is fixed: read-only, on its main chat's model.
+          if !chatSummary.isSideChat {
+            WorkComposerChipStrip(
+              chatSummary: chatSummary,
+              settingsMutationInFlight: settingsMutationInFlight,
+              codexFastModeOverride: codexFastModeOverride,
+              onOpenModelPicker: onOpenModelPicker,
+              onSelectRuntimeMode: onSelectRuntimeMode
+            )
+          }
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
         },
@@ -3197,6 +3221,7 @@ private struct WorkChatComposerDraftInput: View {
       configureSuggestionController()
     }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
+    .onChange(of: chatSummary.offersSideChat) { _, _ in configureSuggestionController() }
     // Focus goes back to the composer field only when it is actually editable.
     // While a question is open the field is locked, so pushing focus there would
     // raise a keyboard over a field that rejects every keystroke; the tray and
@@ -3520,6 +3545,7 @@ private struct WorkChatComposerDraftInput: View {
 
   private func configureSuggestionController() {
     suggestionController.provider = chatSummary.provider
+    suggestionController.offersSideChat = chatSummary.offersSideChat
     suggestionController.laneId = laneId.isEmpty ? nil : laneId
     suggestionController.syncService = syncService
     suggestionController.sessionId = sessionId.isEmpty ? nil : sessionId

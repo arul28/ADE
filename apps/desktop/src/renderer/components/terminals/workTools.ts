@@ -1,4 +1,5 @@
 import {
+  ChatsCircle,
   Desktop,
   FolderOpen,
   WindowsLogo,
@@ -105,6 +106,17 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     icon: Ticket,
     color: "#a5b4fc",
     hint: "Read an issue beside the chat",
+  },
+  {
+    // Opened by `/side` in a chat's composer, and shown only for a chat that
+    // has a side chat (`workToolAvailability`), so it never sits in the
+    // picker as a card you could open with nothing behind it.
+    id: "side-chat",
+    label: "Side chat",
+    tabTooltip: "This chat's read-only side chat",
+    icon: ChatsCircle,
+    color: "#5eead4",
+    hint: "Ask without cluttering the chat",
   },
   {
     id: "files",
@@ -241,6 +253,11 @@ export type WorkToolContext = {
    * drive a real machine have nothing to drive there.
    */
   cloudLane?: "devin" | "cursor" | null;
+  /**
+   * The chat the pane serves has a side chat (or one is starting). The Side
+   * chat tool exists only for that chat, and only while it has one.
+   */
+  hasSideChat?: boolean;
 };
 
 export type WorkToolAvailability =
@@ -298,10 +315,15 @@ export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext)
 
 const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "mac-desktop", "windows-desktop", "app-control"]);
 
+export const SIDE_CHAT_TOOL_UNAVAILABLE_REASON = "This chat has no side chat. Type /side and a question in its composer.";
+
 export function workToolAvailability(
   id: WorkSidebarTab,
   context: WorkToolContext,
 ): WorkToolAvailability {
+  if (id === "side-chat") {
+    return context.hasSideChat ? AVAILABLE : { available: false, reason: SIDE_CHAT_TOOL_UNAVAILABLE_REASON };
+  }
   if (context.cloudLane && CLOUD_MACHINE_TOOLS.has(id)) {
     const cloud = context.cloudLane === "devin" ? "Devin Cloud" : "Cursor Cloud";
     return {
@@ -356,9 +378,10 @@ export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolCont
   return false;
 }
 
-/** The tool cards this host can show, in catalogue order. */
+/** The tool cards this host can show, in catalogue order. A chat without a side chat shows no Side chat card. */
 export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WORK_TOOL_DEFINITIONS {
-  return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context));
+  return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context)
+    && (definition.id !== "side-chat" || context.hasSideChat === true));
 }
 
 /** The lane-screen tools: one per host platform, never both. */

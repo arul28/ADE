@@ -1323,6 +1323,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   hostContinuation?: AgentChatHostContinuationMetadata;
   /** Marks a request the user spoke in a Codex voice conversation. */
   voiceInput?: { realtimeSessionId: string };
+  /** Marks a message a side chat sent to its main chat because the user asked it to. */
+  sideChat?: { sideSessionId: string };
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
@@ -2441,6 +2443,8 @@ export type AgentChatEvent =
       subagentTakeoverPromptShownAt?: string | null;
       /** The chat's parent changed; null means it no longer has one. */
       orchestrationParentSessionId?: string | null;
+      /** This chat's side chat opened (its id) or ended (null). See `shared/sideChat.ts`. */
+      sideChatSessionId?: string | null;
       /**
        * The chat's full list of pending thread comments, sent after every
        * change. Absent means this patch is about something else.
@@ -2785,6 +2789,14 @@ export type SpawnLineageSessionFields = {
    * the takeover banner instead of resurrecting it against a dead parent.
    */
   orchestrationParentReachable?: boolean;
+  /**
+   * Set on a side chat: the main chat it was opened from. A side chat is a
+   * read-only fork that lives inside its main chat (`shared/sideChat.ts`); it
+   * is never listed on its own and is not a spawned child.
+   */
+  sideChatParentSessionId?: string;
+  /** Set on a main chat while it has a side chat: that side chat's id. */
+  sideChatSessionId?: string;
 };
 export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation" | "personal";
@@ -4427,13 +4439,16 @@ export type AgentChatRuntimeMode = "interactive" | "print";
  * the same replay used when an agent rotates. Fork requires source and target
  * on the same provider; the model may still change within that provider.
  *
- * The ACP providers (qwen, kimi, grok, devin) are deliberately absent. ACP
- * has no fork method, and ADE cannot replay a transcript into an ACP session
- * without a per-dialect load/resume path it does not yet have, so a handoff
- * from one of them is brief-only. Adding one here would promise a copied thread
- * that no dialect can produce.
+ * Pi forks with its own `createBranchedSession` (the worker's `fork`), also
+ * from an earlier turn. Kimi forks with ACP `session/fork`, whole sessions
+ * only: ACP carries no cut point, so "Fork from here" on Kimi replays the kept
+ * turns instead.
+ *
+ * The other ACP providers (qwen, grok, devin, antigravity) are absent: they
+ * advertise no `session/fork`, so a fork from one of them replays the
+ * transcript.
  */
-export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "copilot", "cursor", "muse"] as const;
+export const HANDOFF_FORK_PROVIDERS = ["claude", "codex", "opencode", "droid", "copilot", "cursor", "muse", "pi", "kimi"] as const;
 
 export function providerSupportsHandoffFork(provider: AgentChatProvider | null | undefined): boolean {
   return provider != null && (HANDOFF_FORK_PROVIDERS as readonly string[]).includes(provider);
@@ -4530,6 +4545,35 @@ export type AgentChatHandoffResult = {
    * input limit.
    */
   replayFork?: AgentChatReplayForkDisclosure;
+};
+
+/**
+ * Open the chat's side chat with a first message, or send the message to the
+ * side chat it already has (a chat has at most one). See `shared/sideChat.ts`.
+ */
+export type AgentChatStartSideChatArgs = {
+  /** The main chat. */
+  sessionId: string;
+  text: string;
+  /** Who made the call; see `AgentChatRuntimeActor`. Stamped by the RPC server only. */
+  runtimeActor?: AgentChatRuntimeActor;
+};
+
+export type AgentChatStartSideChatResult = {
+  /** The side chat. Lives on the main chat's machine, lane and folder. */
+  session: AgentChatSession;
+  /** False when the message went to the side chat the main chat already had. */
+  created: boolean;
+};
+
+/** End a side chat for good. Either the side chat's id or its main chat's id. */
+export type AgentChatEndSideChatArgs = {
+  sessionId: string;
+};
+
+export type AgentChatEndSideChatResult = {
+  /** The side chat that was ended, or null when there was none. */
+  endedSessionId: string | null;
 };
 
 export type AgentChatReplayForkDisclosure = {
@@ -5329,7 +5373,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  *
  * The ACP providers are stated rather than left to the fallback. ACP has no
  * mid-turn message method at all — `session/prompt` is one request per turn —
- * so queue-only is a protocol fact, not a gap waiting to be filled.
+ * so inline is a protocol fact, not a gap waiting to be filled. Kimi adds
+ * "interrupt", which ADE runs itself: `session/cancel`, then the message as
+ * the next turn (the same redirect Cursor and Muse take).
  */
 export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, readonly ActiveTurnSendMode[]>> = {
   claude: ["inline", "queue", "interrupt"],
@@ -5340,7 +5386,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   cursor: ["inline", "queue", "interrupt"],
   opencode: ["inline", "queue"],
   qwen: ["queue"],
-  kimi: ["queue"],
+  kimi: ["queue", "interrupt"],
   grok: ["queue"],
   antigravity: ["queue"],
   copilot: ["inline", "queue"],
@@ -5442,7 +5488,7 @@ export function activeTurnInlineAttachmentBlock(
  * needs it. iOS mirrors it by hand alongside the table.
  */
 export function activeTurnInterruptContinues(provider: AgentChatProvider | null | undefined): boolean {
-  return provider === "cursor" || provider === "muse";
+  return provider === "cursor" || provider === "muse" || provider === "kimi";
 }
 
 /**

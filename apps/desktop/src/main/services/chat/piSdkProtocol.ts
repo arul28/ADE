@@ -12,6 +12,12 @@ import { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
 export const PI_SDK_PROTOCOL_VERSION = 2 as const;
 export const PI_SDK_MIN_NODE = "22.19.0" as const;
 
+/**
+ * Pi's built-in tools that cannot change the workspace (`createReadOnlyTools`
+ * in the Pi package): what a `readOnly` session runs with.
+ */
+export const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
+
 // The one list of Pi thinking levels, shared with `piThinkingLevel`.
 export { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
 
@@ -88,6 +94,16 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
   tools?: string[];
   noTools?: "all" | "builtin";
   /**
+   * Run the session with tools that cannot change the workspace: Pi's
+   * read-only built-ins (`read`, `grep`, `find`, `ls`, see
+   * `PI_READ_ONLY_TOOLS`) plus `ask_user` when asked for. `tools` may narrow
+   * that set but not widen it, `approvalTools` must be empty, and extensions
+   * stay off because their tools can write. Pi's `tools` allowlist is the
+   * gate: an unlisted tool is never registered, so a forked transcript that
+   * once declared `bash` cannot call it.
+   */
+  readOnly?: boolean;
+  /**
    * Load the user's Pi extensions and bind them to ADE's UI bridge. Off by
    * default: extensions run arbitrary code, so ADE chat opts in explicitly and
    * the Pi CLI stays the unrestricted escape hatch.
@@ -101,7 +117,55 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
    * behaviour).
    */
   approvalTools?: string[];
+  /**
+   * Load Pi's MCP support (`createMcpExtension`, with `codemode` and
+   * `tool_search` for the exposures that need them). Absent means no MCP: no
+   * server connects and no MCP tool exists. Refused with `readOnly`.
+   */
+  mcp?: PiSdkMcpInit;
 };
+
+/** One MCP server ADE hands a Pi session, in the shape of a Pi `mcp.json` entry. */
+export type PiSdkMcpServer =
+  | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
+  | { url: string; headers?: Record<string, string> };
+
+export type PiSdkMcpInit = {
+  /** Every MCP tool call clears the same approval card as a gated built-in first. */
+  approval: boolean;
+  /**
+   * Load the servers in the user's Pi `mcp.json` (the agent directory's, and a
+   * project's `.pi/mcp.json` only when the user trusted that folder in Pi).
+   */
+  userConfig: boolean;
+  /**
+   * Servers registered for this session (`pi.registerMcpServer`): the MCP
+   * registry's, values included. They travel over this IPC only, never argv or
+   * a file. A server of the same name in the user's `mcp.json` wins (Pi's rule).
+   */
+  servers?: Record<string, PiSdkMcpServer>;
+};
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isPiSdkMcpServer(value: unknown): value is PiSdkMcpServer {
+  if (!isRecord(value)) return false;
+  if (nonEmptyString(value.command)) {
+    return (value.args == null || (Array.isArray(value.args) && value.args.every((arg) => typeof arg === "string")))
+      && (value.env == null || isStringRecord(value.env))
+      && (value.cwd == null || typeof value.cwd === "string");
+  }
+  return nonEmptyString(value.url) && (value.headers == null || isStringRecord(value.headers));
+}
+
+function isPiSdkMcpInit(value: unknown): value is PiSdkMcpInit {
+  if (!isRecord(value) || typeof value.approval !== "boolean" || typeof value.userConfig !== "boolean") return false;
+  if (value.servers == null) return true;
+  return isRecord(value.servers)
+    && Object.entries(value.servers).every(([name, server]) => /^[A-Za-z0-9_-]+$/u.test(name) && isPiSdkMcpServer(server));
+}
 
 /**
  * Worker-IPC image reference. Prefer `path` — never put multi-megabyte
@@ -198,6 +262,40 @@ export type PiSdkLoginPayload = {
   method?: string | null;
 };
 
+/**
+ * Copy one native Pi session's history into a new session file in the same
+ * cwd, with Pi's own branching (`SessionManager.createBranchedSession`, what
+ * Pi's `/fork` and `/clone` use). The source is read, never written, so it may
+ * belong to a live session that is mid-turn in another worker.
+ */
+export type PiSdkForkPayload = {
+  /** Absolute path of the source session file. */
+  sessionFile?: string | null;
+  /** Source Pi session id; checked against the file's header, or used to find it. */
+  sessionId?: string | null;
+  /**
+   * Cut the copy at this entry (it becomes the new session's leaf). Omitted:
+   * the last entry of the source's active branch at which no turn is in
+   * flight, so a fork taken mid-turn leaves out the unfinished turn.
+   */
+  entryId?: string | null;
+};
+
+export type PiSdkForkResult = {
+  sessionFile: string;
+  sessionId: string;
+  parentSessionFile: string;
+  parentSessionId: string;
+  /** The entry the copy ends at. */
+  entryId: string;
+  /** `requested` when the caller named `entryId`, else `last_settled`. */
+  cut: "requested" | "last_settled";
+  /** Entries copied (root to `entryId`, the header not counted). */
+  entryCount: number;
+  /** Entries of the source branch after the cut, such as an unfinished turn. */
+  omittedEntryCount: number;
+};
+
 export type PiSdkExtensionInfo = {
   id: string;
   name?: string | null;
@@ -219,7 +317,8 @@ export type PiSdkWorkerRequest =
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "compact"; requestId: string; payload?: PiSdkCompactPayload }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "context_usage"; requestId: string }
   | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "models"; requestId: string }
-  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "auth"; requestId: string };
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "auth"; requestId: string }
+  | { protocolVersion: typeof PI_SDK_PROTOCOL_VERSION; type: "fork"; requestId: string; payload: PiSdkForkPayload };
 
 export type PiSdkReady = {
   protocolVersion: typeof PI_SDK_PROTOCOL_VERSION;
@@ -239,6 +338,8 @@ export type PiSdkReady = {
   extensionsError?: string | null;
   /** Tools withheld because this Pi build cannot supply a gateable definition. */
   ungateableTools?: string[];
+  /** The tools Pi declares to the model (`getActiveToolNames()`); absent without a session. */
+  activeTools?: string[];
 };
 
 export type PiSdkLifecycleName =
@@ -390,6 +491,10 @@ function validateReadyShape(ready: Record<string, unknown>, label: string): stri
     && (!Array.isArray(ready.ungateableTools) || !ready.ungateableTools.every((tool) => nonEmptyString(tool)))) {
     return `Pi SDK ${label} ungateableTools must be an array of non-empty strings.`;
   }
+  if (ready.activeTools !== undefined
+    && (!Array.isArray(ready.activeTools) || !ready.activeTools.every((tool) => nonEmptyString(tool)))) {
+    return `Pi SDK ${label} activeTools must be an array of non-empty strings.`;
+  }
   return null;
 }
 
@@ -464,11 +569,17 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
     if (payload.askUserTool != null && typeof payload.askUserTool !== "boolean") {
       return "Pi SDK askUserTool must be a boolean.";
     }
+    if (payload.readOnly != null && typeof payload.readOnly !== "boolean") {
+      return "Pi SDK readOnly must be a boolean.";
+    }
     if (payload.approvalTools != null && (!Array.isArray(payload.approvalTools)
       || payload.approvalTools.some((tool) => !nonEmptyString(tool)))) {
       return "Pi SDK approvalTools must be an array of non-empty strings.";
     }
     if (payload.session != null && !isSessionTarget(payload.session)) return "Pi SDK session target is invalid.";
+    if (payload.mcp != null && !isPiSdkMcpInit(payload.mcp)) {
+      return "Pi SDK mcp must be {approval, userConfig, servers?} with valid server names and stdio or HTTP servers.";
+    }
     return null;
   }
   if (["send", "steer", "follow_up"].includes(type)) {
@@ -495,6 +606,12 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
     if (!isRecord(payload) || typeof payload.ok !== "boolean") return "Pi SDK ui_response requires ok.";
     if (payload.value != null && typeof payload.value !== "string") return "Pi SDK ui_response value must be a string or null.";
     if (payload.error != null && typeof payload.error !== "string") return "Pi SDK ui_response error must be a string or null.";
+  } else if (type === "fork") {
+    if (!isRecord(payload)) return "Pi SDK fork payload must be an object.";
+    for (const key of ["sessionFile", "sessionId", "entryId"] as const) {
+      if (payload[key] != null && !nonEmptyString(payload[key])) return `Pi SDK fork ${key} must be a non-empty string or null.`;
+    }
+    if (payload.sessionFile == null && payload.sessionId == null) return "Pi SDK fork requires a sessionFile or sessionId.";
   } else if (type === "compact" && payload != null && (!isRecord(payload)
     || (payload.customInstructions != null && typeof payload.customInstructions !== "string"))) {
     return "Pi SDK compact payload is invalid.";
@@ -616,6 +733,17 @@ export function validatePiSdkWorkerResult(
     return Array.isArray(result) && result.every((provider) => isJsonValue(provider))
       ? null
       : "Pi SDK auth result must be a JSON-safe array.";
+  }
+  if (type === "fork") {
+    if (!isRecord(result)) return "Pi SDK fork result must be an object.";
+    for (const key of ["sessionFile", "sessionId", "parentSessionFile", "parentSessionId", "entryId"] as const) {
+      if (!nonEmptyString(result[key])) return `Pi SDK fork result ${key} must be a non-empty string.`;
+    }
+    if (result.cut !== "requested" && result.cut !== "last_settled") return "Pi SDK fork result cut is invalid.";
+    if (!isFiniteNumber(result.entryCount) || !isFiniteNumber(result.omittedEntryCount)) {
+      return "Pi SDK fork result must count its entries.";
+    }
+    return null;
   }
   if (type === "context_usage") {
     // null is "no sample": Pi has no reading right after a compaction, or for

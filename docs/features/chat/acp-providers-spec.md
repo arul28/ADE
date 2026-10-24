@@ -20,14 +20,14 @@ handshake with a message naming the CLI and telling the user to update ADE.
 
 ### Last verified versions
 
-The current pins are grok 1.0.46, qwen 0.25.0, kimi 2.1.1 and devin 3000.11.3,
+The current pins are grok 1.0.46, qwen 0.25.0, kimi 2.3.1 and devin 3000.11.3,
 the latest verified versions below.
 
 | Provider | Latest verified | Older version checked | Scope | Date |
 |---|---|---|---|---|
 | grok | 1.0.46 | 1.0.41 | Handshake, live turn, cancel, permissions, close, resume | 2026-10-05 |
 | qwen | 0.25.0 | 0.22.3 | Handshake, config options, cancel, close; no live turn (no reachable model) | 2026-10-05 |
-| kimi | 2.1.1 | 0.39.1 | Handshake and unauthenticated methods only (no active login) | 2026-10-05 |
+| kimi | 2.3.1 | 0.39.1 | Handshake and unauthenticated methods only (no active login) | 2026-10-23 |
 | devin | 3000.11.3 | — | Handshake and unauthenticated methods only (no login; cloud relay unreachable) | 2026-10-05 |
 
 > **Copilot is out of this spec.** It is an SDK provider now, documented in
@@ -162,14 +162,19 @@ providers identically.
   !== "win32"`), same rule as Claude. The rule dates from the npm `.cmd` shim
   and is kept.
 
-### Kimi (`kimi acp`, latest verified **2.1.1**, baseline **0.39.1**,
+### Kimi (`kimi acp`, latest verified **2.3.1**, baseline **0.39.1**,
 repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
-- Caps (live-verified identical on 0.39.1 and 2.1.1, 2026-10-05): loadSession,
+- Caps (live-verified identical on 0.39.1, 2.1.1 and 2.3.1, 2026-10-23): loadSession,
   list, resume, **`session/close` (implemented; a dummy id returns `{}`)**,
   plus delete/fork/additionalDirectories. Image prompts yes, audio no. MCP
   http/sse. `agentCapabilities.auth.logout` is advertised; ADE has no ACP
-  logout yet. `fixtures/kimi.initialize.json` is captured from 2.1.1; the only
+  logout yet. `fixtures/kimi.initialize.json` is captured from 2.3.1; the only
   difference from 0.39.1 is `agentInfo.version`.
+- Fork: `session/fork` copies the whole session and opens it live in the
+  same process; it refuses mid-turn (`SESSION_FORK_ACTIVE_TURN`) and takes no
+  cut point over ACP. Side chats use it between turns. Since 2.3.0 a session is
+  locked to its process (`KIMI_CODE_SESSION_LOCK=0` turns that off), so ADE
+  closes the fork in the main chat's process before the side chat resumes it.
 - Cancel: `session_cancel` is a notification in both binaries. A
   `session/cancel` REQUEST answers `-32601` on both (verified live), so the
   dialect sends the spec notification directly. `stopReason: "cancelled"` maps
@@ -709,7 +714,9 @@ From the internal audit (all file:line refs verified 2026-08-30):
   session fields → ONE generic `acpConfigSnapshot`/`acpPermissionMode` shape
   (mirroring `cursorModeSnapshot`/`cursorConfigValues`), NOT four bespoke
   field families. `ACTIVE_TURN_DISPATCH_MODES`: all four queue-only.
-  `HANDOFF_FORK_PROVIDERS`: exclude all four (brief-only handoff).
+  `HANDOFF_FORK_PROVIDERS`: exclude all four (brief-only handoff). (Later:
+  Kimi joined it once ADE called its `session/fork`, 2026-10-24; Kimi also
+  gained an ADE-run `interrupt` mode.)
 - `shared/modelRegistry.ts`: `ProviderFamily` + `"qwen"|"moonshot"|"xai"|
   "github"` (or equivalent), `ModelProviderGroup` + the ACP providers, curated descriptors
   per provider (small set: the models users actually pick), helpers.

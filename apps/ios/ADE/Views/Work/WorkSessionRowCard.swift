@@ -217,6 +217,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let isCtoChild: Bool
   /// The chat's live goal; drawn as a quiet glyph on line 1.
   let activeGoal: SessionActiveGoal?
+  /// The chat has a side chat (`/side`); drawn as a small mark on line 1.
+  let hasSideChat: Bool
   let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
@@ -334,6 +336,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
     // summary here to ask, and nothing to derive it from.
     self.isCtoChild = session.isCtoChild
     self.activeGoal = workSessionActiveGoal(session: session, summary: chatSummary)
+    self.hasSideChat = (session.sideChatSessionId ?? chatSummary?.sideChatSessionId)?
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -582,6 +586,9 @@ struct WorkSessionRow: View, Equatable {
           .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
           .fixedSize()
           .accessibilityHidden(true)
+      }
+      if renderSignature.hasSideChat {
+        WorkSideChatPresenceMark(font: .caption2)
       }
       HStack(spacing: 5) {
         if showsLaneIdentity {
@@ -1041,6 +1048,9 @@ struct WorkSessionRow: View, Equatable {
     }
     if let goal = renderSignature.activeGoal {
       parts.append(workSessionActiveGoalTitle(goal))
+    }
+    if renderSignature.hasSideChat {
+      parts.append(workSideChatPresenceLabel.lowercased())
     }
     if let pullRequest {
       parts.append("pull request #\(pullRequest.githubPrNumber), \(lanePrStateLabel(pullRequest.state))")

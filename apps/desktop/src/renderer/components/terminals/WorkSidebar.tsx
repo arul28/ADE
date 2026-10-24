@@ -46,6 +46,7 @@ import {
   type WorkToolContext,
 } from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
+import { useSideChatView } from "../chat/sideChatState";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -193,9 +194,21 @@ export function WorkSidebar({
   } = useNativeToolFeeds();
   // A cloud lane's machine is its cloud; tools that run on a real machine say so.
   const laneCloud = useAppStore((state) => laneCloudProvider(state.lanes.find((lane) => lane.id === laneId)));
+  // The Side chat tool belongs to the chat the pane serves, and only while that
+  // chat has a side chat: another chat in the same lane gets no Side chat tab.
+  const panelChatSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
+  const sideChat = useSideChatView(
+    panelChatSessionId,
+    activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
+  );
+  const hasSideChat = sideChat.kind !== "none";
   const toolContext = useMemo(
-    () => (laneCloud ? { ...feedsToolContext, cloudLane: laneCloud } : feedsToolContext),
-    [feedsToolContext, laneCloud],
+    () => ({
+      ...feedsToolContext,
+      ...(laneCloud ? { cloudLane: laneCloud } : {}),
+      hasSideChat,
+    }),
+    [feedsToolContext, hasSideChat, laneCloud],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a

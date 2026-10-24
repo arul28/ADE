@@ -1212,3 +1212,22 @@ A server switched off for the folder stayed off. A Codex chat called
 Playwright's `browser_navigate` through the direct launch and read the page
 title back. Wall time of the side job was within noise (3.0–3.9 s against
 3.3–4.3 s, one 47.8 s outlier on the old path).
+
+## Mac Studio (M4 Max): Work with a side chat (2026-10-24)
+
+Dev build on its own socket, sync off, a throwaway project, one Claude Haiku
+chat, the Tools pane open, nothing streaming; `route-sweep.mjs none /work 12`,
+two passes each. Not the baseline machine. "No side chat" is the same branch
+with the feature idle, which is what `main` draws.
+
+| Metric | No side chat | Side chat, tab closed (marks on the row and header) | Side chat tab open | Ceiling |
+|---|---|---|---|---|
+| Work idle: main-thread work | 0.6–2.5 ms/s | 0.6–2.1 ms/s | 0.5–2.5 ms/s | 30 ms/s |
+| Work idle: renderer heap | 108–110 MB | 114–115 MB | 109–112 MB | 220 MB |
+| Work idle: page elements | 628 | 642 | 823 | 3k |
+
+Brain, `roster.bench.mts` on this machine's data (41 projects, 322 chats), two
+runs each: `main`'s roster code cold 102–105 ms, warm 8.5–11.3 ms; this branch
+cold 107–111 ms, warm 9.2–11.2 ms. The warm row's 10 ms ceiling was set with 11
+projects and 23 chats; both builds now sit at it because of the data, not the
+code. Not measured: Work while a chat streams with the side chat tab open.

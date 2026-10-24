@@ -2607,6 +2607,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Carry this conversation into a new chat (same provider)
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
+    $ ade chat side <session> "Why did we pick Redis?"
+                                                    Ask the chat's read-only side chat (opens it if needed)
+    $ ade chat side <session> --end                  End the chat's side chat for good
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
@@ -11220,6 +11223,23 @@ function buildChatPlan(args: string[]): CliPlan {
           })),
         ),
       ],
+    };
+  }
+  if (sub === "side" || sub === "side-chat") {
+    // A chat's read-only side chat (shared/sideChat.ts): open it with a
+    // question, send it another, or end it.
+    if (readFlag(args, ["--end", "--close", "--kill"])) {
+      return {
+        kind: "execute",
+        label: "chat side end",
+        steps: [actionStep("result", "chat", "endSideChat", { sessionId: requireSession() })],
+      };
+    }
+    const sideText = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "question");
+    return {
+      kind: "execute",
+      label: "chat side",
+      steps: [actionStep("result", "chat", "startSideChat", { sessionId: requireSession(), text: sideText })],
     };
   }
   if (sub === "steer") {

@@ -4,13 +4,20 @@
  * This is NOT the deprecated Python `kimi-cli`.
  *
  * Captured handshake, verified live 2026-10-05 on both the installed 0.39.1
- * baseline and the latest 2.1.1: `loadSession`, list, resume, **and
- * `session/close`** (also delete/fork/additionalDirectories). A dummy
- * `session/close` returns `{}` on both. Both implement the mode/model/thinking
+ * baseline and 2.1.1, and again 2026-10-23 on the pinned 2.3.1: `loadSession`,
+ * list, resume, **and `session/close`** (also delete/fork/additionalDirectories).
+ * A dummy `session/close` returns `{}`. All implement the mode/model/thinking
  * `session/set_config_option` dispatcher, which ADE exposes below. Image
- * prompts yes. Audio no. The two `initialize` responses are identical apart
- * from `agentInfo.version`, so `fixtures/kimi.initialize.json` is captured
- * from 2.1.1 and also describes 0.39.1.
+ * prompts yes. Audio no. The `initialize` responses are identical apart from
+ * `agentInfo.version`, so `fixtures/kimi.initialize.json` (captured from 2.3.1)
+ * describes all three.
+ *
+ * Fork (side chats): `session/fork { sessionId, cwd, mcpServers }` copies the
+ * whole session and opens the copy live in the same process. It refuses while
+ * the source runs a turn (`SESSION_FORK_ACTIVE_TURN`), and ACP has no cut
+ * point (the engine's `turnIndex` is not on the wire). Since 2.3.0 a session is
+ * locked to the process that holds it (`KIMI_CODE_SESSION_LOCK`), so a fork
+ * meant for another process is closed in this one first.
  *
  * Usage (code-verified in the 0.39.1 binary; an authenticated turn is not
  * live-verified on either version, because this machine has no usable Kimi
