@@ -101,6 +101,55 @@ describe("simHelperClient protocol", () => {
     }
   });
 
+  it("writes nothing between a gesture's steps, and frees the line when a step fails", async () => {
+    // The helper reads one line at a time: a snapshot written between a tap's
+    // begin and end held the finger down for as long as the snapshot took.
+    const child = fakeHelperProcess();
+    const client = createSimHelperClient({
+      binaryPath: __filename,
+      logger: noopLogger,
+      platform: "darwin",
+      spawnHelper: () => child,
+    });
+    const answerLast = () => {
+      const last = JSON.parse(child.lines().at(-1)!) as { id: string; type: string };
+      child.writeLine({ type: "ok", id: last.id, echo: last.type });
+    };
+    try {
+      const tap = client.sendGesture(async (send) => {
+        await send({ type: "touch", udid: "device-1", phase: "begin" });
+        await send({ type: "touch", udid: "device-1", phase: "end" });
+        return "tapped";
+      });
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(1));
+      const snapshot = client.send({ type: "ax-describe", udid: "device-2" });
+      answerLast();
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(2));
+      expect(JSON.parse(child.lines()[1]!)).toMatchObject({ type: "touch", phase: "end" });
+      answerLast();
+      expect(await tap).toBe("tapped");
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(3));
+      expect(JSON.parse(child.lines()[2]!)).toMatchObject({ type: "ax-describe" });
+      answerLast();
+      expect(await snapshot).toMatchObject({ echo: "ax-describe" });
+
+      // A gesture whose step fails does not keep later commands waiting.
+      const failed = client.sendGesture(async (send) => {
+        await send({ type: "touch", udid: "device-1", phase: "begin" });
+        throw new Error("finger slipped");
+      });
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(4));
+      answerLast();
+      await expect(failed).rejects.toThrow("finger slipped");
+      const after = client.send({ type: "ax-describe", udid: "device-2" });
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(5));
+      answerLast();
+      expect(await after).toMatchObject({ echo: "ax-describe" });
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("rejects with the helper's own code and message", async () => {
     const child = fakeHelperProcess();
     const client = createSimHelperClient({

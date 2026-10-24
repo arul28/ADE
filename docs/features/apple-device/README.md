@@ -305,8 +305,9 @@ on every `ios_simulator` call (a caller cannot set or clear it). The rules:
 - When the lane gave up its device (`device-detach`, the pane's "Choose
   another device", the tools card's Release) and that simulator is still
   installed and free, `launch`, `open-device`, `test` and every other driving
-  verb refuse with `APPLE_LANE_DEVICE_RELEASED` instead of making a new, empty
-  device. The message names the device, who released it (an agent or the
+  verb, and an agent's `start` without `--udid`, refuse with
+  `APPLE_LANE_DEVICE_RELEASED` (`AppleLaneDeviceReleasedError`) instead of
+  making a new, empty device. The message names the device, who released it (an agent or the
   pane) and the `device-attach --simulator <udid>` that takes it back. The
   release is remembered by the brain that ran it, until the lane holds a
   device again. `apple.lane_device_detached` logs `by: agent | user`.
@@ -474,11 +475,18 @@ how the phone is held. The rail's Duo menu: presets (Open, Laptop, Book,
 Tent, Closed), ±15° steps, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
 app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
-within 4°; arrow keys stay exact. The 3D body eases into every pose (hinge,
+within 4°; arrow keys stay exact. The slider is the one source of the hinge
+angle: the drawn body is that angle alone (every pose folds both halves the
+same way), an orientation press never moves it, and a device report within 2°
+(`appleDuoSameHinge`) changes nothing. A release anywhere ends the drag (the
+window hears it, off the slider or off the window). A fold that fails puts the
+slider back to the device's own angle. The 3D body eases into every pose (hinge,
 the landscape turn, the half turn that shows the cover) and the camera eases
-to each new fit; while ADE's own fold sweeps, the simulator's intermediate
-reports are held off so the hinge does not jump back. A drag on the 3D view
-leaves the device where it was let go; Reset view brings back the rest pose. ⌥[ and ⌥] fold and unfold by the step. A
+to each new fit; while ADE's own fold sweeps (up to 8 s), the simulator's
+intermediate reports are held off so the hinge does not jump back. A drag on
+the 3D view leaves the device where it was let go; Reset view brings back the
+rest pose, and so does an orientation press (also the one already pressed,
+which sends the turn again) or a slider release on Closed, Laptop or Open. ⌥[ and ⌥] fold and unfold by the step. A
 fold to closed or open reports its posture once the guest has switched panels.
 The floating player reads the posture too, so it draws the inner panel upright
 and follows folds. Screenshots of a foldable (more than one integrated panel in

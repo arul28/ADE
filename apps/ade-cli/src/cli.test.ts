@@ -16166,11 +16166,27 @@ describe("ADE CLI", () => {
       ).toBe(path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"));
     });
 
-    it("passes --out through to the screenshot action", () => {
-      expect(
-        launchArgsFor(["ios-sim", "screenshot", "--out", "shot.png"]),
-      ).toMatchObject({ outPath: "shot.png" });
-      expect(launchArgsFor(["ios-sim", "screenshot"]).outPath).toBeUndefined();
+    it("copies a screenshot to the caller's --out path", () => {
+      // The brain writes the shot where it keeps them (it refuses paths
+      // outside the build root); the CLI copies it to --out, resolved against
+      // the caller's own directory.
+      expect(launchArgsFor(["ios-sim", "screenshot", "--out", "shot.png"]).outPath).toBeUndefined();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-shot-"));
+      try {
+        const source = path.join(dir, "brain-shot.png");
+        fs.writeFileSync(source, "png-bytes");
+        const out = path.join(dir, "nested", "mine.png");
+        const plan = buildCliPlan(["ios-sim", "screenshot", "--out", out]);
+        expect(plan.kind).toBe("execute");
+        if (plan.kind !== "execute") throw new Error("expected an execute plan");
+        const shaped = plan.shapeResult?.({ result: { deviceUdid: "UDID-1", filePath: source, width: 393, height: 852 } });
+        expect(shaped).toMatchObject({ filePath: out, savedFrom: source, width: 393 });
+        expect(fs.readFileSync(out, "utf8")).toBe("png-bytes");
+        // A shot saved on another machine is named, not silently dropped.
+        expect(() => plan.shapeResult?.({ result: { filePath: path.join(dir, "missing.png") } })).toThrow(/cannot read/);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
 
       // The written path is what an agent reads next, so it prints raw and
       // untruncated rather than as a table cell.
