@@ -241,6 +241,9 @@ export function sceneIdFor(prefs: ScenePreferences): string | null {
 export function useActiveScene(): ActiveScene {
   const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
   useSyncExternalStore(subscribe, () => snapshotVersion);
+  // Moving to a display of another size re-renders, so shuffle re-checks its
+  // pick against the pictures that fit there.
+  useScreenPixels();
   const usesUserLibrary = prefs.mode === "shuffle" || isUserSceneId(prefs.imageId);
 
   useEffect(() => {
