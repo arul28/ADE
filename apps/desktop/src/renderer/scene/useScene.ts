@@ -101,7 +101,7 @@ export function sceneLibraryIds(): string[] {
 const SHUFFLE_AT_KEY = "ade.sceneShuffleAt";
 const PERIOD_MS: Record<"hour" | "day", number> = { hour: 3_600_000, day: 86_400_000 };
 
-type ShufflePrefs = Pick<ScenePreferences, "shuffleExclude" | "shuffleInclude">;
+export type ShufflePrefs = Pick<ScenePreferences, "shuffleExclude" | "shuffleInclude">;
 
 /**
  * Whether a picture is in the shuffle on this screen. Left out wins, then put
@@ -113,6 +113,22 @@ export function inShuffle(id: string, prefs: ShufflePrefs, screen: ScreenPixels)
   if (prefs.shuffleInclude.includes(id) || isUserSceneId(id)) return true;
   const bundled = findBundledScene(id);
   return bundled ? sceneFitsScreen(bundled, screen) : false;
+}
+
+/**
+ * The pool after the user clicks a picture in Settings. On → off leaves it
+ * out. Off → on drops the leave-out and, when the picture would still not be
+ * in on its own (not sized for this screen), puts it in by hand. Null when the
+ * click would leave nothing to shuffle.
+ */
+export function toggledShufflePool(id: string, prefs: ShufflePrefs, screen: ScreenPixels, libraryIds: readonly string[]): ShufflePrefs | null {
+  const next: ShufflePrefs = {
+    shuffleExclude: prefs.shuffleExclude.filter((value) => value !== id),
+    shuffleInclude: prefs.shuffleInclude.filter((value) => value !== id),
+  };
+  if (inShuffle(id, prefs, screen)) next.shuffleExclude.push(id);
+  else if (!inShuffle(id, next, screen)) next.shuffleInclude.push(id);
+  return libraryIds.some((libraryId) => inShuffle(libraryId, next, screen)) ? next : null;
 }
 
 /** The shuffle pool on the current screen. Empty when nothing fits, and the gradient shows instead. */
@@ -255,6 +271,25 @@ export function useActiveScene(): ActiveScene {
     matchTheme: prefs.matchTheme,
     palette: entry?.palette ?? null,
   };
+}
+
+// The screen's device pixels, live: moving the window to another display
+// changes which pictures fit. `getSnapshot` also runs on every render, so a
+// display change shows at the next render even without a resize.
+function subscribeScreen(onChange: () => void): () => void {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+
+let screenSnapshot: ScreenPixels = { width: 0, height: 0 };
+function readScreenSnapshot(): ScreenPixels {
+  const next = readScreenPixels();
+  if (next.width !== screenSnapshot.width || next.height !== screenSnapshot.height) screenSnapshot = next;
+  return screenSnapshot;
+}
+
+export function useScreenPixels(): ScreenPixels {
+  return useSyncExternalStore(subscribeScreen, readScreenSnapshot);
 }
 
 /** The user library, live. */

@@ -9,6 +9,8 @@
  * on the screen in use.
  */
 
+import { isCssZoomedBrowserSurface } from "../lib/webClientMode";
+
 export type BundledScene = {
   id: `ade:${string}`;
   name: string;
@@ -77,8 +79,20 @@ export function sceneFitsScreen(picture: ScreenPixels, screen: ScreenPixels): bo
   return upscale <= MAX_UPSCALE && kept >= MIN_SHAPE_KEPT;
 }
 
-/** The device pixels of the screen this window is on. */
+/**
+ * The device pixels of the screen this window is on. `devicePixelRatio`
+ * includes the app's own zoom (ADE opens at 110%) while `screen` does not, so
+ * the zoom is divided back out: zooming the UI does not make the screen bigger.
+ */
 export function readScreenPixels(): ScreenPixels {
-  const ratio = window.devicePixelRatio || 1;
+  const ratio = (window.devicePixelRatio || 1) / appZoomFactor();
   return { width: Math.round(window.screen.width * ratio), height: Math.round(window.screen.height * ratio) };
+}
+
+function appZoomFactor(): number {
+  // The hosted web client and the browser preview zoom with CSS, which leaves
+  // `devicePixelRatio` alone; only Electron's zoom is in it.
+  if (isCssZoomedBrowserSurface()) return 1;
+  const factor = window.ade?.zoom?.getFactor?.();
+  return typeof factor === "number" && Number.isFinite(factor) && factor > 0 ? factor : 1;
 }

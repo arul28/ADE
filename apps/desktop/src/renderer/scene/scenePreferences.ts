@@ -82,7 +82,8 @@ export const WEB_DEFAULT_SCENE_PREFERENCES: ScenePreferences = {
   mode: "plain",
 };
 
-function clientDefault(): ScenePreferences {
+/** This client's default: shuffle on desktop, plain on the hosted web client. */
+export function defaultScenePreferences(): ScenePreferences {
   const defaults = isWebClientMode() ? WEB_DEFAULT_SCENE_PREFERENCES : DEFAULT_SCENE_PREFERENCES;
   return { ...defaults, shuffleExclude: [], shuffleInclude: [] };
 }
@@ -121,7 +122,7 @@ function idList(value: unknown): string[] {
 export function normalizeScenePreferences(value: unknown): ScenePreferences {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const stale = raw.defaultsRevision !== SCENE_DEFAULTS_REVISION;
-  if (stale || isUntouchedPastDefault(raw)) return clientDefault();
+  if (stale || isUntouchedPastDefault(raw)) return defaultScenePreferences();
   const mode: SceneMode = raw.mode === "image" || raw.mode === "shuffle" || raw.mode === "gradient" || raw.mode === "plain"
     ? raw.mode
     : DEFAULT_SCENE_PREFERENCES.mode;

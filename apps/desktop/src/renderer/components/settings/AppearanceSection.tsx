@@ -17,7 +17,7 @@ import {
   type InterfaceMonoFont,
   type InterfaceSansFont,
 } from "../../state/appStore";
-import { DEFAULT_SCENE_PREFERENCES, type SceneShuffleEvery, type SceneTexture } from "../../scene/scenePreferences";
+import { DEFAULT_SCENE_PREFERENCES, defaultScenePreferences, type SceneShuffleEvery, type SceneTexture } from "../../scene/scenePreferences";
 import { FOCUS_GRID_MAX_CHATS_OPTIONS } from "../../state/appearanceStore";
 import type {
   ChatChromeTint,
@@ -36,8 +36,18 @@ import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
-import { BUNDLED_SCENES, readScreenPixels, sceneFitsScreen, type ScreenPixels } from "../../scene/sceneLibrary";
-import { inShuffle, reshuffleScene, useActiveScene, useSetScene, useUserScenes, type ActiveScene } from "../../scene/useScene";
+import { BUNDLED_SCENES, sceneFitsScreen, type ScreenPixels } from "../../scene/sceneLibrary";
+import {
+  inShuffle,
+  reshuffleScene,
+  toggledShufflePool,
+  useActiveScene,
+  useScreenPixels,
+  useSetScene,
+  useUserScenes,
+  type ActiveScene,
+  type ShufflePrefs,
+} from "../../scene/useScene";
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import "./AppearanceSection.css";
@@ -141,7 +151,7 @@ export function AppearanceSection() {
     setInterfacePreferences({
       sansFont: "geist",
       monoFont: "jetbrains",
-      scene: { ...DEFAULT_SCENE_PREFERENCES, choiceMade: true },
+      scene: { ...defaultScenePreferences(), choiceMade: true },
     });
   };
 
@@ -243,7 +253,7 @@ export function AppearanceSection() {
         <aside className="ade-ap-aside">
           <div className="ade-ap-aside-head">
             <span className="kit-eyebrow">Preview</span>
-            <button type="button" className="ade-ap-reset" onClick={resetAll} title="Restore ADE, dark, Geist, and the picture shuffle">
+            <button type="button" className="ade-ap-reset" onClick={resetAll} title="Restore ADE, dark, Geist, and the default background">
               <ArrowCounterClockwise size={11} weight="bold" /> Reset
             </button>
           </div>
@@ -620,22 +630,16 @@ function ShuffleOptions({
   onEvery: (next: SceneShuffleEvery) => void;
   onPool: (exclude: string[], include: string[]) => void;
 }) {
-  const pictures = [
-    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.thumb as string | null, position: scene.position })),
+  const pictures: { id: string; name: string; src: string | null; position: string }[] = [
+    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.thumb, position: scene.position })),
     ...userScenes.map((scene) => ({ id: scene.id, name: scene.name, src: null, position: "50% 50%" })),
   ];
-  const isOn = (id: string, pool = { shuffleExclude: exclude, shuffleInclude: include }) => inShuffle(id, pool, screen);
-  const included = pictures.filter((picture) => isOn(picture.id)).length;
+  const pool: ShufflePrefs = { shuffleExclude: exclude, shuffleInclude: include };
+  const included = pictures.filter((picture) => inShuffle(picture.id, pool, screen)).length;
   const toggle = (id: string) => {
-    const nextExclude = exclude.filter((value) => value !== id);
-    const nextInclude = include.filter((value) => value !== id);
-    // Off: leave it out. On: drop the leave-out, and put it in by hand when
-    // it would not be in on its own (not sized for this screen).
-    if (isOn(id)) nextExclude.push(id);
-    else if (!isOn(id, { shuffleExclude: nextExclude, shuffleInclude: nextInclude })) nextInclude.push(id);
-    // Leaving every picture out would leave nothing to shuffle; keep at least one.
-    if (!pictures.some((picture) => isOn(picture.id, { shuffleExclude: nextExclude, shuffleInclude: nextInclude }))) return;
-    onPool(nextExclude, nextInclude);
+    // Null would leave nothing to shuffle; keep at least one.
+    const next = toggledShufflePool(id, pool, screen, pictures.map((picture) => picture.id));
+    if (next) onPool(next.shuffleExclude, next.shuffleInclude);
   };
   return (
     <div className="ade-ap-shuffle">
@@ -668,7 +672,7 @@ function ShuffleOptions({
       </div>
       <div className="ade-ap-shuffle-grid" role="group" aria-label="Pictures in the shuffle">
         {pictures.map((picture) => {
-          const on = isOn(picture.id);
+          const on = inShuffle(picture.id, pool, screen);
           return (
             <button
               key={picture.id}
@@ -906,24 +910,6 @@ function PreviewBackdrop({ scene, palette }: { scene: ActiveScene; palette: Reso
       }}
     />
   );
-}
-
-// The screen's device pixels, live: moving the window to another display
-// changes which pictures fit.
-function subscribeScreen(onChange: () => void): () => void {
-  window.addEventListener("resize", onChange);
-  return () => window.removeEventListener("resize", onChange);
-}
-
-let screenSnapshot: ScreenPixels = { width: 0, height: 0 };
-function readScreenSnapshot(): ScreenPixels {
-  const next = readScreenPixels();
-  if (next.width !== screenSnapshot.width || next.height !== screenSnapshot.height) screenSnapshot = next;
-  return screenSnapshot;
-}
-
-function useScreenPixels(): ScreenPixels {
-  return useSyncExternalStore(subscribeScreen, readScreenSnapshot);
 }
 
 // The halftone texture draws only at 2x and above (see `styles/scene.css`).
