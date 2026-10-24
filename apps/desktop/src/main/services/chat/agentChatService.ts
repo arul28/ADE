@@ -1660,6 +1660,7 @@ import {
 import {
   claudeBuiltInIsReadOnly,
   claudeToolAllowedInPlanMode,
+  claudeSideChatBashIsReadOnly,
   claudeToolAllowedInSideChat,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
@@ -44129,15 +44130,18 @@ export function createAgentChatService(args: {
   ): NonNullable<ClaudeSDKOptions["hooks"]> => ({
     // A side chat refuses edits, subagents and MCP tools even when the user's
     // allow rules would run them without asking (`canUseTool` never sees
-    // those). Bash is left to the permission flow; see the side-chat fence.
+    // those). A shell command runs only when it plainly just reads
+    // (`claudeSideChatBashIsReadOnly`); any other is refused, including one
+    // the user's own allow rules would run without asking.
     ...(managed.session.sideChatParentSessionId
       ? {
           PreToolUse: [{ hooks: [async (input: HookInput) => {
-            if (
-              input.hook_event_name === "PreToolUse"
-              && input.tool_name !== "Bash"
-              && !claudeToolAllowedInSideChat(input.tool_name)
-            ) {
+            const refused = input.hook_event_name === "PreToolUse" && (
+              input.tool_name === "Bash"
+                ? !claudeSideChatBashIsReadOnly((input.tool_input as { command?: unknown } | undefined)?.command)
+                : !claudeToolAllowedInSideChat(input.tool_name)
+            );
+            if (refused) {
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse" as const,

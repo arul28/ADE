@@ -673,8 +673,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run chat.startSideChat --input-json '{\"sessionId\":\"chat-123\",\"text\":\"Why did we pick Redis?\"}' --json",
     },
     endSideChat: {
-      description: "End a side chat for good. Pass the side chat's id or its main chat's id.",
-      input: "object { sessionId: string }",
+      description: "End a side chat for good. Pass the side chat's id or its main chat's id; with expectedSideSessionId, it refuses when the main chat has a different side chat now.",
+      input: "object { sessionId: string, expectedSideSessionId?: string }",
       example: "ade actions run chat.endSideChat --input-json '{\"sessionId\":\"chat-123\"}' --json",
     },
     setScheduledWorkPaused: {

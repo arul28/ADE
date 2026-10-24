@@ -28,6 +28,13 @@ type SideChatEntry =
 const SIDE_CHAT_TRUST_MS = 30_000;
 
 const entries = new Map<string, SideChatEntry>();
+/** The side chat the Side chat tool last drew for each main chat: what End means. */
+const shownSideChats = new Map<string, string>();
+
+/** The Side chat tool calls this for the side chat it draws. */
+export function rememberShownSideChat(mainSessionId: string, sideSessionId: string): void {
+  shownSideChats.set(mainSessionId, sideSessionId);
+}
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -136,7 +143,13 @@ export async function confirmSideChatToolClose(args: {
   if (!end) return true;
   try {
     // The main chat's id: the brain ends whichever side chat it has.
-    const result = await window.ade.agentChat.endSideChat({ sessionId: mainSessionId }, runtimePin);
+    // The side chat this window shows: if another client replaced it, the
+    // brain refuses rather than deleting one the user never saw here.
+    const shown = shownSideChats.get(mainSessionId);
+    const result = await window.ade.agentChat.endSideChat(
+      { sessionId: mainSessionId, ...(shown ? { expectedSideSessionId: shown } : {}) },
+      runtimePin,
+    );
     noteSideChatEnded(mainSessionId, result.endedSessionId);
   } catch (error) {
     showToast({

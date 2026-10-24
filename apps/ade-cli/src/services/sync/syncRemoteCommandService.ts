@@ -1304,7 +1304,11 @@ function parseStartSideChatArgs(value: Record<string, unknown>): AgentChatStartS
 }
 
 function parseEndSideChatArgs(value: Record<string, unknown>): AgentChatEndSideChatArgs {
-  return { sessionId: requireString(value.sessionId, "chat.endSideChat requires sessionId.") };
+  const expected = typeof value.expectedSideSessionId === "string" ? value.expectedSideSessionId.trim() : "";
+  return {
+    sessionId: requireString(value.sessionId, "chat.endSideChat requires sessionId."),
+    ...(expected ? { expectedSideSessionId: expected } : {}),
+  };
 }
 
 function parseFastForwardCrossMachineHandoffLaneArgs(

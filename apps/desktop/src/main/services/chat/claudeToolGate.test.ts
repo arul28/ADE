@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_READ_ONLY_TOOLS,
   claudeBuiltInIsReadOnly,
+  claudeSideChatBashIsReadOnly,
   claudeToolAllowedInPlanMode,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
@@ -53,6 +54,37 @@ describe("claudeBuiltInIsReadOnly", () => {
     for (const tool of ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task"]) {
       expect(claudeBuiltInIsReadOnly(tool)).toBe(false);
     }
+  });
+});
+
+describe("claudeSideChatBashIsReadOnly", () => {
+  // A side chat refuses every command this does not call read-only, even one
+  // the user's own Claude allow rules would run unasked: a false "read-only"
+  // is a write the side chat was promised not to make.
+  it.each([
+    ["ls -la", true],
+    ["git status", true],
+    ["git log --oneline | head -5", true],
+    ["rg foo src | wc -l", true],
+    ["find . -name '*.ts'", true],
+    ["git commit -m x", false],
+    ["git push", false],
+    ["rm -rf build", false],
+    ["npm install", false],
+    ["echo hi > notes.txt", false],
+    ["cat a; rm b", false],
+    ["ls && rm x", false],
+    ["echo $(rm x)", false],
+    ["cat a | xargs rm", false],
+    ["find . -name x -delete", false],
+    ["find . -exec rm {} +", false],
+    ["git diff --output=patch.diff", false],
+    ["sort -o out.txt in.txt", false],
+    ["rg --pre ./run.sh foo", false],
+    ["ls\nrm x", false],
+    ["", false],
+  ])("%j is read-only: %s", (command, readOnly) => {
+    expect(claudeSideChatBashIsReadOnly(command)).toBe(readOnly);
   });
 });
 

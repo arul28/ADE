@@ -1,10 +1,11 @@
 import { ChatsCircle } from "@phosphor-icons/react";
+import { useEffect } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { WorkToolEmptyLine } from "../terminals/workToolChrome";
 import { SIDE_CHAT_TOOL_COLOR, SIDE_CHAT_TOOL_UNAVAILABLE_REASON } from "../terminals/workTools";
 import { Banner } from "../ui/notice";
 import { AgentChatPane } from "./AgentChatPane";
-import { SideChatTranscriptContext, useSideChatView } from "./sideChatState";
+import { SideChatTranscriptContext, rememberShownSideChat, useSideChatView } from "./sideChatState";
 
 /**
  * The Side chat tool: the read-only side chat of the chat the pane serves.
@@ -27,6 +28,10 @@ export function SideChatToolPanel({
   runtimePin: OpenProjectBinding | null;
 }) {
   const view = useSideChatView(mainSessionId, rowSideChatSessionId);
+  const shownSideSessionId = view.kind === "open" ? view.sideSessionId : null;
+  useEffect(() => {
+    if (mainSessionId && shownSideSessionId) rememberShownSideChat(mainSessionId, shownSideSessionId);
+  }, [mainSessionId, shownSideSessionId]);
   if (view.kind === "none") return <WorkToolEmptyLine title={SIDE_CHAT_TOOL_UNAVAILABLE_REASON} />;
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-work-tool="side-chat">

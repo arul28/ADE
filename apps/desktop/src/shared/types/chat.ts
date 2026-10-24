@@ -4583,6 +4583,12 @@ export type AgentChatStartSideChatResult = {
 /** End a side chat for good. Either the side chat's id or its main chat's id. */
 export type AgentChatEndSideChatArgs = {
   sessionId: string;
+  /**
+   * The side chat the caller means to end. When set and the main chat now has
+   * a different one (another client replaced it), nothing is ended and the
+   * call fails, so a window never deletes a side chat it was not showing.
+   */
+  expectedSideSessionId?: string | null;
 };
 
 export type AgentChatEndSideChatResult = {

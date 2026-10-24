@@ -224,7 +224,10 @@ func workApplySideChats(
   var resolved: [String: String?] = [:]
   for session in sessions {
     let side: String?
-    if let pointer = overrides[session.id] {
+    // This phone's own answer wins only inside its trust window; after it the
+    // roster, which the host keeps current, is the word (another device may
+    // have ended or replaced the side chat).
+    if let pointer = overrides[session.id], pointer.isTrusted() {
       side = pointer.sideSessionId
     } else {
       side = rosterPointers[session.id]
@@ -266,15 +269,17 @@ func workSideChatStubSummary(
     ?? mainSummary?.provider
     ?? workChatProviderFamilyFromToolType(mainSession?.toolType)
   guard let provider else { return nil }
-  let now = ISO8601DateFormatter().string(from: Date())
+  // Stable when the host has not answered yet: a fresh `Date()` here would
+  // change on every re-evaluation of the sheet and defeat its equatable gate.
+  let fallbackAt = mainSummary?.lastActivityAt ?? mainSummary?.startedAt ?? "1970-01-01T00:00:00.000Z"
   var payload: [String: Any] = [
     "sessionId": sideSessionId,
     "laneId": created?.laneId ?? mainSummary?.laneId ?? mainSession?.laneId ?? "",
     "provider": provider,
     "model": created?.model ?? mainSummary?.model ?? "",
     "status": created?.status ?? "idle",
-    "startedAt": created?.createdAt ?? now,
-    "lastActivityAt": created?.lastActivityAt ?? now,
+    "startedAt": created?.createdAt ?? fallbackAt,
+    "lastActivityAt": created?.lastActivityAt ?? fallbackAt,
     "title": "Side chat",
     "sideChatParentSessionId": mainSessionId,
   ]
@@ -676,7 +681,11 @@ extension WorkSessionDestinationView {
       lanes: lanes,
       isLive: isLive,
       onEnd: {
-        try await syncService.endSideChat(mainSessionId: sessionId)
+        let shownSideSessionId: String? = {
+          if case .open(let sideId, _) = sideChatPanelState { return sideId }
+          return nil
+        }()
+        try await syncService.endSideChat(mainSessionId: sessionId, expectedSideSessionId: shownSideSessionId)
         sideChatPanelState = .closed
       }
     )

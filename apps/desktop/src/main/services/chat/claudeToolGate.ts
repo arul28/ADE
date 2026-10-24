@@ -128,6 +128,45 @@ export function claudeToolAllowedInSideChat(toolName: string): boolean {
   return CLAUDE_SIDE_CHAT_ALLOWED_TOOLS.has(normalizeToolNameForApproval(toolName));
 }
 
+/** Programs that only read, and the git subcommands that only read. */
+const SIDE_CHAT_READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
+  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "echo", "which",
+  "file", "stat", "tree", "du", "df", "find", "sort", "uniq", "cut", "jq", "date", "basename",
+  "dirname", "realpath", "nl", "git",
+]);
+const SIDE_CHAT_READ_ONLY_GIT: ReadonlySet<string> = new Set([
+  "status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe", "shortlog", "grep",
+]);
+/** `find` options that write, delete or run something. */
+const FIND_WRITING_OPTIONS = /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
+/**
+ * Options that turn a reader into a writer or a runner: `git diff --output`,
+ * `sort -o`, `tree -o`, `rg --pre`. `-o` is refused for every program (grep's
+ * harmless `-o` included); a narrow list errs toward refusing.
+ */
+const WRITING_OPTIONS = /^(--output|--pre|-o)/;
+
+/**
+ * True only for a shell command a side chat can run without changing
+ * anything: one program, or a `|` pipeline of them, from a short list of
+ * readers, with no redirection, command substitution, chaining or background
+ * job. Deliberately narrow: a side chat refuses every other command, because
+ * the user's own Claude allow rules could otherwise run one without asking.
+ */
+export function claudeSideChatBashIsReadOnly(command: unknown): boolean {
+  if (typeof command !== "string" || !command.trim()) return false;
+  if (/[;&<>`\n\r]|\$\(|\|\|/.test(command)) return false;
+  return command.split("|").every((segment) => {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    const program = words[0] ?? "";
+    if (!SIDE_CHAT_READ_ONLY_PROGRAMS.has(program)) return false;
+    if (words.some((word) => WRITING_OPTIONS.test(word))) return false;
+    if (program === "git") return SIDE_CHAT_READ_ONLY_GIT.has(words[1] ?? "");
+    if (program === "find") return !words.some((word) => FIND_WRITING_OPTIONS.test(word));
+    return true;
+  });
+}
+
 /**
  * Input keys a Claude tool uses to name a file.
  *

@@ -3495,9 +3495,12 @@ What it is:
   allowlist of `read`, `grep`, `find` and `ls` with extensions off; Kimi `plan`, plus an ACP
   fence in `presentAcpPermissionRequest` that refuses edit, delete, move and
   mode-switch permission requests). `updateSession` refuses any
-  change that would raise its access or move its model or preset. Known limit:
-  a mutating shell command the user's own Claude allow rules pre-approve is not
-  seen by the fence.
+  change that would raise its access or move its model or preset. On Claude the
+  same `PreToolUse` hook lets a shell command run only when
+  `claudeSideChatBashIsReadOnly` calls it read-only (one program or a pipeline
+  of known readers, no redirection, chaining or substitution, no writing
+  flags); every other command is refused, even one the user's own allow rules
+  would run without asking.
 - **Hidden from every list.** `listSessions` leaves side chats out unless asked
   (`includeSideChats`); the session projection and the sync roster drop their
   rows, and the main chat's row carries `sideChatSessionId` for its mark.
@@ -3513,7 +3516,10 @@ message), shown as the message with a "via your side chat" label
 clients draw the block as a quoted "Sent to the main chat" note
 (`sideChatSendBlocksToMarkdown`). Nothing else is reachable from a side chat.
 
-Ending: `endSideChat` (the side chat's id or its main chat's) deletes it.
+Ending: `endSideChat` (the side chat's id or its main chat's) deletes it. The
+desktop tool and the iOS panel pass `expectedSideSessionId`, the side chat they
+show; when another client has replaced it meanwhile, the brain refuses rather
+than delete a side chat that was never shown there.
 Deleting or archiving the main chat deletes its side chat.
 
 On screen (desktop and web): `/side` opens the **Side chat** tool in the Work

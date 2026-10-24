@@ -13909,7 +13909,7 @@ export function AgentChatPane({
     if (hasAttachments) {
       // Sending `/side …` on to the main chat as a prompt would be the one
       // thing the user did not ask for.
-      setError("Side chats take text only. Remove the attachments, then send /side again.");
+      setError("Side chats take text only. Remove the attachments and context, then send /side again.");
       return true;
     }
     const pin = chatRuntimePinRef.current;
@@ -13992,7 +13992,14 @@ export function AgentChatPane({
       return;
     }
     const sideCommand = selectedSessionId ? parseSideSlashCommand(draft) : null;
-    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft, attachments.length > 0)) return;
+    // Anything besides the text (files, context chips, picked elements) is
+    // something a side chat cannot take, so `/side` with it is refused.
+    const sideCommandCarriesContext = attachments.length > 0
+      || contextAttachments.length > 0
+      || iosElementContextItems.length > 0
+      || appControlContextItems.length > 0
+      || builtInBrowserContextItems.length > 0;
+    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft, sideCommandCarriesContext)) return;
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";

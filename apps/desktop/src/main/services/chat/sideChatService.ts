@@ -417,6 +417,10 @@ export function createSideChatService<
     const lineage = sideChatLineageOf(id);
     const sideId = lineage?.sideChatParentSessionId ? id : lineage?.sideChatSessionId?.trim() || null;
     if (!sideId) return { endedSessionId: null };
+    const expected = typeof args.expectedSideSessionId === "string" ? args.expectedSideSessionId.trim() : "";
+    if (expected && expected !== sideId) {
+      throw new Error("This chat has a different side chat now. Reopen it from Tools, then end it there.");
+    }
     await deps.deleteSession({ sessionId: sideId });
     return { endedSessionId: sideId };
   };

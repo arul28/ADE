@@ -26702,6 +26702,12 @@ extension SyncService {
 struct SyncSideChatPointer: Equatable {
   var sideSessionId: String?
   var learnedAt: Date
+
+  /// Still the newer word: inside the trust window the host's own answers
+  /// (summaries, the roster) may not have caught up. After it, they win.
+  func isTrusted(at now: Date = Date()) -> Bool {
+    now.timeIntervalSince(learnedAt) <= SyncService.sideChatPointerTrustWindow
+  }
 }
 
 /// `chat.startSideChat` answer: the side chat, and whether this call made it.
@@ -26748,13 +26754,17 @@ extension SyncService {
   /// `chat.endSideChat`, sent with the MAIN chat's id (the brain takes either)
   /// so it rides the main chat's routing, which is always registered.
   @discardableResult
-  func endSideChat(mainSessionId: String) async throws -> String? {
+  /// `expectedSideSessionId` is the side chat the panel shows: when another
+  /// device replaced it, the host refuses instead of ending one never shown here.
+  func endSideChat(mainSessionId: String, expectedSideSessionId: String? = nil) async throws -> String? {
     let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     try requireInvokableChatAction("chat.endSideChat", sessionId: mainId)
     let scope = chatCommandScope(for: mainId)
+    var args: [String: Any] = ["sessionId": mainId]
+    if let expected = syncNonEmpty(expectedSideSessionId) { args["expectedSideSessionId"] = expected }
     let result = try await sendDecodableCommand(
       action: chatActionName("chat.endSideChat", sessionId: mainId),
-      args: ["sessionId": mainId],
+      args: args,
       disconnectOnTimeout: false,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
@@ -26775,6 +26785,13 @@ extension SyncService {
       if summary.sideChatParentSessionId?.isEmpty == false { ids.insert(id) }
       if let side = summary.sideChatSessionId, !side.isEmpty { ids.insert(side) }
     }
+    // The host leaves side chats out of the roster and names each one on its
+    // main chat's row, which may be all this phone knows of it.
+    for project in rosterProjects {
+      for chat in project.chats {
+        if let side = chat.sideChatSessionId, !side.isEmpty { ids.insert(side) }
+      }
+    }
     return ids
   }
 
@@ -26792,7 +26809,7 @@ extension SyncService {
   func sideChatSessionId(forMainSession mainSessionId: String, summary: AgentChatSessionSummary? = nil) -> String? {
     let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !mainId.isEmpty else { return nil }
-    if let pointer = sideChatPointerOverrides[mainId] {
+    if let pointer = sideChatPointerOverrides[mainId], pointer.isTrusted() {
       return pointer.sideSessionId
     }
     if let known = summary ?? chatSummaryCache[mainId] {
@@ -26827,12 +26844,14 @@ extension SyncService {
     if let side = syncNonEmpty(summary.sideChatSessionId) {
       knownSideChatSessionIds.insert(side)
     }
-    guard summary.rosterDerived != true,
-          let pointer = sideChatPointerOverrides[summary.sessionId]
-    else { return }
+    guard let pointer = sideChatPointerOverrides[summary.sessionId] else { return }
     let hostSide = syncNonEmpty(summary.sideChatSessionId)
     let agrees = hostSide == pointer.sideSessionId
-    let aged = Date().timeIntervalSince(pointer.learnedAt) > Self.sideChatPointerTrustWindow
+    let aged = !pointer.isTrusted()
+    // A roster-derived summary carries the roster's pointer, which is the
+    // host's word once the trust window has passed (a side chat another device
+    // ended); inside the window it may simply not have caught up yet.
+    if summary.rosterDerived == true && !aged { return }
     guard agrees || aged else { return }
     sideChatPointerOverrides.removeValue(forKey: summary.sessionId)
     if !agrees { sideChatRevision &+= 1 }
