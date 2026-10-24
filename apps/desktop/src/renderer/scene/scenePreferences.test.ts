@@ -1,27 +1,43 @@
 /* @vitest-environment jsdom */
 import { afterEach, expect, it } from "vitest";
-import { DEFAULT_SCENE_PREFERENCES, normalizeScenePreferences } from "./scenePreferences";
+import { SCENE_DEFAULTS_REVISION, normalizeScenePreferences } from "./scenePreferences";
 
 afterEach(() => { delete window.__adeWebClient; });
 
-// What both clients stored before `plain` became the default.
-const OLD_SHUFFLE_DEFAULT = { ...DEFAULT_SCENE_PREFERENCES, mode: "shuffle", dim: 12 };
+// What clients stored before today's defaults: the first shuffle, then the
+// plain background #1883 made the default.
+const OLD_SHUFFLE_DEFAULT = {
+  mode: "shuffle",
+  imageId: null,
+  showImage: true,
+  texture: "dots",
+  dim: 12,
+  matchTheme: true,
+  shuffleEvery: "wake",
+  shuffleExclude: [],
+  choiceMade: false,
+  defaultsRevision: SCENE_DEFAULTS_REVISION,
+};
+const OLD_PLAIN_DEFAULT = { ...OLD_SHUFFLE_DEFAULT, mode: "plain", dim: 30 };
 
 it.each([
-  [true, undefined, "plain", true],
-  [false, undefined, "plain", true],
-  [true, {}, "plain", true],
-  [false, {}, "plain", true],
-  [true, { choiceMade: true }, "shuffle", true],
-  [false, { choiceMade: true }, "shuffle", true],
-  [true, { texture: "grain" }, "shuffle", true],
-  [false, { dim: 20 }, "shuffle", true],
-  [true, { matchTheme: false }, "shuffle", true],
-  [false, { showImage: false }, "shuffle", false],
-  [true, { mode: "image", imageId: "ade:lake", choiceMade: true }, "image", true],
-])("keeps a chosen scene on web=%s with %j", (web, preference, mode, showImage) => {
+  [true, null, undefined, "plain", true],
+  [false, null, undefined, "shuffle", true],
+  [true, OLD_SHUFFLE_DEFAULT, {}, "plain", true],
+  [false, OLD_SHUFFLE_DEFAULT, {}, "shuffle", true],
+  [true, OLD_PLAIN_DEFAULT, {}, "plain", true],
+  [false, OLD_PLAIN_DEFAULT, {}, "shuffle", true],
+  [false, OLD_PLAIN_DEFAULT, { choiceMade: true }, "plain", true],
+  [true, OLD_SHUFFLE_DEFAULT, { choiceMade: true }, "shuffle", true],
+  [false, OLD_SHUFFLE_DEFAULT, { choiceMade: true }, "shuffle", true],
+  [true, OLD_SHUFFLE_DEFAULT, { texture: "grain" }, "shuffle", true],
+  [false, OLD_SHUFFLE_DEFAULT, { dim: 20 }, "shuffle", true],
+  [true, OLD_SHUFFLE_DEFAULT, { matchTheme: false }, "shuffle", true],
+  [false, OLD_SHUFFLE_DEFAULT, { showImage: false }, "shuffle", false],
+  [true, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "ade:lake", choiceMade: true }, "image", true],
+])("keeps a chosen scene on web=%s from %j with %j", (web, stored, preference, mode, showImage) => {
   window.__adeWebClient = web;
-  const normalized = normalizeScenePreferences(preference === undefined ? undefined : { ...OLD_SHUFFLE_DEFAULT, ...preference });
+  const normalized = normalizeScenePreferences(stored === null ? undefined : { ...stored, ...preference });
   expect(normalized.mode).toBe(mode);
   expect(normalized.showImage).toBe(showImage);
   expect(normalized.choiceMade).toBe((preference as { choiceMade?: boolean } | undefined)?.choiceMade === true);

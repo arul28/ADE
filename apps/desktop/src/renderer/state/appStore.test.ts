@@ -1741,8 +1741,8 @@ describe("appStore", () => {
 
   describe("background (scene) preferences", () => {
     // The release that ships pictures puts every user on the shipped default
-    // once — the theme's plain background, with the shuffle settings back to their
-    // defaults — whatever they had before. After that, their own choice
+    // once — on desktop a shuffle of the pictures that fit the screen, with the
+    // shuffle settings back to their defaults — whatever they had before. After that, their own choice
     // survives a relaunch.
     it("resets older preferences to the shipped default once, then keeps the user's choice", async () => {
       mockStorage.set("ade.userPreferences.v1", JSON.stringify({
@@ -1753,7 +1753,7 @@ describe("appStore", () => {
       vi.resetModules();
       const firstLoad = await import("./appStore");
       const reset = firstLoad.useAppStore.getState().interfacePreferences.scene;
-      expect(reset).toMatchObject({ mode: "plain", shuffleEvery: "wake", shuffleExclude: [], matchTheme: true });
+      expect(reset).toMatchObject({ mode: "shuffle", shuffleEvery: "wake", shuffleExclude: [], matchTheme: true });
 
       firstLoad.useAppStore.getState().setInterfacePreferences({
         scene: { ...reset, mode: "gradient", shuffleExclude: ["ade:storm-field"] },
