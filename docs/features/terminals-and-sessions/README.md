@@ -198,11 +198,12 @@ and in tests.
   post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
-- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — archives the
-  dead shells an agent started under a chat. It reads the machine-local
+- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — deletes the
+  dead shells App Control launched. It reads the machine-local
   `agent_shell_cleanup` ledger (excluded from CRR: it records this machine's own
-  launches and typing), sweeps joined `terminal_sessions` rows, and archives
-  through `sessionService.archiveSession` only when the row is eligible. See
+  launches and typing), sweeps joined `terminal_sessions` rows, and deletes the
+  row (`sessionService.deleteSession`) only when it is eligible; `ptyService`
+  removes the transcript files once the shell's close work settles. It also answers whether a relaunch may reuse a shell. See
   [Dead agent shells](#dead-agent-shells).
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
@@ -3074,21 +3075,40 @@ so explicitly rather than asserting a tier ADE never set.
 
 ## Dead agent shells
 
-A shell an agent started under a chat does not linger in the Work sidebar once
-it is dead. `agentShellCleanup` (wired by `ptyService`) tracks the shells this
-machine launched (`markAgentLaunched`), what was typed into them
-(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then archives
-the eligible ones. A shell is eligible only when an agent started it, it is
-attached to a chat, it has ended (not `running`/`detached`), and nobody typed
-into it. When it goes depends on how it ended: an App Control relaunch archives
-it at once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits
-until the chat settles, so a failure stays in view.
+A shell App Control launched does not linger once it is dead, and a relaunch
+does not make a new one. `agentShellCleanup` (wired by `ptyService`) tracks the
+shells this machine launched (`markAgentLaunched`), what was typed into them
+(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then deletes
+the eligible ones: the row and its transcript. A shell is eligible only when App
+Control started it (`launchedBy: "agent"`, with or without a chat), it has ended
+(not `running`/`detached`), it is not archived, and nobody typed into it. When it
+goes depends on how it ended: one replaced by a launch in a new shell goes at
+once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits until the
+chat settles, so a failure stays in view. A chatless shell's crash has no chat to
+settle, so it stays until a relaunch reuses the shell.
+
+Deletion, not archive, because hidden rows still fill every `session.list` page:
+another machine reads only the newest 60 of them, and a pile of archived App
+Control shells once pushed a live chat out of its Work list. That read now also
+passes `includeArchived: false`, so archived rows cannot use up the page either.
+
+**Relaunch reuses the shell.** When the same chat (or, chatless, no chat)
+launches again on the lane, App Control waits up to 5 seconds for the old app's
+process to exit, checks the shell is still eligible (`canRelaunchIn`: same lane
+and chat, ended, untouched, not archived), and runs the new process in that row
+(`ptyService.create` with `sessionId`, `freshRun`). `hold` keeps the sweep off the
+row in between, and launches on one lane run one at a time, so two cannot claim
+the same row. A fresh run gets a new start time, its own failure state (not the
+resume path's restored end state), the new title, and a fresh transcript: it
+waits for the old run's close work, then removes the old log, so
+`ade app-control logs` shows only the current run. The ledger marks the relaunch
+only after the new process holds the row. `ade app-control launch --new-shell`
+opts out.
 
 Typing into a shell the person owns it — `terminal.write { fromUser }` from a
-user client, or a hand resume — and it is never archived. The RPC server strips
-`fromUser` from a non-user caller, so an agent cannot claim its own shell to keep
-it around. The ledger is per machine and never replicates; nothing is ever
-deleted, only hidden.
+user client, or a hand resume — and it is never deleted or reused. The RPC
+server strips `fromUser` from a non-user caller, so an agent cannot claim its
+own shell to keep it around. The ledger is per machine and never replicates.
 
 A shell is a tool of the chat that ran it, so deleting that chat stops and
 archives its shells (`sessionService.listAttachedShellIds` /

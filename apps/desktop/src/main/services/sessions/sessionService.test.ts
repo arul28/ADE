@@ -722,6 +722,48 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("leaves archived rows out before applying the session list limit", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "live-chat",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Live chat",
+      startedAt: "2026-03-17T00:00:00.000Z",
+      transcriptPath: "/tmp/live-chat.log",
+      toolType: "codex-chat",
+    });
+    for (let i = 0; i < 3; i++) {
+      service.create({
+        sessionId: `archived-shell-${i}`,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: `Archived shell ${i}`,
+        startedAt: new Date(Date.UTC(2026, 2, 17, 0, 10, i)).toISOString(),
+        transcriptPath: `/tmp/archived-shell-${i}.log`,
+        toolType: "shell",
+      });
+    }
+    db.run("update terminal_sessions set archived_at = ? where id like 'archived-shell-%'", ["2026-03-17T00:30:00.000Z"]);
+
+    // A plain page is still mostly archived rows: this is the read that filled
+    // another machine's Work list with dead shells and pushed live chats out.
+    expect(service.list({ laneId: "lane-1", limit: 2 }).map((row) => row.id))
+      .toEqual(["archived-shell-2", "archived-shell-1"]);
+    // The filter runs in SQL, before `limit`, so the live row is still in the page.
+    expect(service.list({ laneId: "lane-1", limit: 2, includeArchived: false }).map((row) => row.id))
+      .toEqual(["live-chat"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("repairs legacy droid chat rows from their resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

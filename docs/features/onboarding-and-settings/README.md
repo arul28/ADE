@@ -3109,18 +3109,21 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 
 ## Archive
 
-Archiving **hides** a lane, chat, or shell; ADE never deletes one on its own.
+Archiving **hides** a lane, chat, or shell; ADE never deletes an archived item
+on its own. The one thing ADE deletes by itself is a dead App Control shell
+(below), which it removes instead of archiving.
 The archive is the one place the three kinds are listed together, so it has a
 Project → Storage & cleanup → Archive page, an `ade archive` CLI, an ADE Code
 weekly notice, and a weekly desktop banner that all read the same
 `archive.list` / `archive.summary` result.
 
-- **Dead agent shells auto-archive.** A shell an agent started under a chat
-  (`launchedBy: "agent"` with a `chat_session_id`) and nobody typed into is
-  archived once dead: at once when App Control relaunches it, after a
-  10-minute grace on a clean exit or an ADE stop, and only once its chat settles
-  after a crash. Typing into it (`terminal.write { fromUser }` from a user client,
-  or a hand resume) makes it the person's, and it is never archived. See
+- **Dead App Control shells are deleted.** A shell App Control started
+  (`launchedBy: "agent"`) that nobody typed into is deleted, with its
+  transcript, once dead: at once when a launch in a new shell replaces it, after
+  a 10-minute grace on a clean exit or an ADE stop, and only once its chat
+  settles after a crash. A relaunch by the same chat reuses the shell instead.
+  Typing into it (`terminal.write { fromUser }` from a user client, or a hand
+  resume) makes it the person's, and it is never deleted. See
   [terminals and sessions](../terminals-and-sessions/README.md#dead-agent-shells).
 - **Delete is the person's alone.** `archive.delete` is `ADE_ACTION_USER_ONLY`
   and `archive.restore` is `ADE_ACTION_CTO_ONLY`, so an agent or automation can

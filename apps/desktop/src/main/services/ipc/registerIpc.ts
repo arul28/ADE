@@ -3169,6 +3169,8 @@ export function registerIpc({
     if (chatSessionId !== undefined) args.chatSessionId = chatSessionId;
     const force = optionalAppControlBoolean(record, "force", channel);
     if (force !== undefined) args.force = force;
+    const newShell = optionalAppControlBoolean(record, "newShell", channel);
+    if (newShell !== undefined) args.newShell = newShell;
     return args;
   };
 
