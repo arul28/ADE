@@ -521,7 +521,7 @@ struct WorkSessionDestinationView: View {
   @State var composerDraftRestore: WorkChatComposerDraftRestore?
   /// The side-chat panel (`/side`) over this chat, and what it shows.
   @State var sideChatPanelPresented = false
-  @State var sideChatPanelState: WorkSideChatPanelState = .starting(prompt: "")
+  @State var sideChatPanelState: WorkSideChatPanelState = .closed
 
   var initialOpeningPromptNeedsManualRetry: Bool {
     initialOpeningPromptDispatchHandled

@@ -297,11 +297,10 @@ import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPrese
 import { SideChatHeaderButton } from "./SideChatBadge";
 import {
   noteSideChat,
-  noteSideChatStartFailed,
   noteSideChatStarting,
   resolveSideChatView,
 } from "./sideChatState";
-import { SIDE_CHAT_UNSUPPORTED_MESSAGE, parseSideSlashCommand, providerSupportsSideChat } from "../../../shared/sideChat";
+import { parseSideSlashCommand, sideChatUnavailableReason } from "../../../shared/sideChat";
 import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
@@ -13805,11 +13804,12 @@ export function AgentChatPane({
    * side chat runs on this chat's machine, so the call carries its pin. Inside
    * a side chat it is sent as typed.
    */
-  const openSideChatFromComposer = useCallback((prompt: string): boolean => {
+  const openSideChatFromComposer = useCallback((prompt: string, draftText: string): boolean => {
     const mainSessionId = selectedSessionId;
-    if (!mainSessionId || selectedSession?.sideChatParentSessionId) return false;
-    if (!providerSupportsSideChat(selectedSession?.provider ?? sessionProvider)) {
-      setError(SIDE_CHAT_UNSUPPORTED_MESSAGE);
+    if (!mainSessionId) return false;
+    const unavailable = sideChatUnavailableReason(selectedSession ?? { provider: sessionProvider });
+    if (unavailable) {
+      setError(unavailable);
       return true;
     }
     const pin = chatRuntimePinRef.current;
@@ -13822,11 +13822,19 @@ export function AgentChatPane({
       .then((result) => noteSideChat(mainSessionId, result.session.id))
       .catch((startError: unknown) => {
         const message = errorMessage(startError);
-        if (alreadyOpen) setError(message);
-        else noteSideChatStartFailed(mainSessionId, prompt, message);
+        if (!alreadyOpen) {
+          noteSideChatStarting(mainSessionId, prompt, message);
+          return;
+        }
+        setError(message);
+        // The question went nowhere: put it back, unless the user has typed
+        // something new or moved to another chat meanwhile.
+        if (!draftValueRef.current.trim() && selectedSessionIdRef.current === mainSessionId) {
+          updateComposerDraft(draftText);
+        }
       });
     return true;
-  }, [selectedSession?.provider, selectedSession?.sideChatParentSessionId, selectedSession?.sideChatSessionId, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
+  }, [selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
 
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
@@ -13883,8 +13891,14 @@ export function AgentChatPane({
       }
       return;
     }
-    const sideCommand = selectedSessionId && !attachments.length ? parseSideSlashCommand(draft) : null;
-    if (sideCommand && openSideChatFromComposer(sideCommand.prompt)) return;
+    const sideCommand = selectedSessionId ? parseSideSlashCommand(draft) : null;
+    if (sideCommand && attachments.length) {
+      // A side chat takes text only; sending `/side …` on to the main chat as
+      // a prompt would be the one thing the user did not ask for.
+      setError("Side chats take text only. Remove the attachments, then send /side again.");
+      return;
+    }
+    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft)) return;
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";

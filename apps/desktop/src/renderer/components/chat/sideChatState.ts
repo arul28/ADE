@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { createContext, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
@@ -10,14 +10,22 @@ import { confirmDialog } from "../ui/dialog";
  * answer, but it arrives with the next list refresh. A `/side` that just opened
  * a side chat, a `session_meta_updated` from the brain, or an End answered here
  * must show at once, so this holds the newer answer per main chat: a side
- * chat's id, `null` for "ended", or a start still in flight. A row value wins
- * again as soon as it agrees with nothing here to override.
+ * chat's id, an ended one, or a start still in flight. Once the row has had
+ * time to catch up (`SIDE_CHAT_TRUST_MS`), a row that disagrees wins, so a
+ * side chat another client ended or replaced shows as it is.
  */
 type SideChatEntry =
-  | { kind: "open"; sideSessionId: string }
-  /** The side chat this window ended; a different one on the row is newer. */
-  | { kind: "ended"; sideSessionId: string | null }
-  | { kind: "starting"; prompt: string; error?: string | null };
+  | { kind: "open"; sideSessionId: string; at: number }
+  /** The side chat this window ended (null when it did not know which). */
+  | { kind: "ended"; sideSessionId: string | null; at: number }
+  | { kind: "starting"; prompt: string; error?: string };
+
+/**
+ * How long this window's own answer outranks a session row that disagrees:
+ * the time a row needs to catch up. After it, the row wins, so a side chat
+ * another client ended or replaced shows as it is. iOS uses the same window.
+ */
+const SIDE_CHAT_TRUST_MS = 30_000;
 
 const entries = new Map<string, SideChatEntry>();
 const listeners = new Set<() => void>();
@@ -35,23 +43,35 @@ function subscribe(listener: () => void): () => void {
 
 const getVersion = (): number => version;
 
+/** The main chat's side chat as this window just learned it; null for "ended". */
 export function noteSideChat(mainSessionId: string, sideSessionId: string | null): void {
-  const previous = entries.get(mainSessionId);
-  entries.set(mainSessionId, sideSessionId
-    ? { kind: "open", sideSessionId }
-    : { kind: "ended", sideSessionId: previous?.kind === "open" ? previous.sideSessionId : null });
+  if (!sideSessionId) {
+    const previous = entries.get(mainSessionId);
+    noteSideChatEnded(mainSessionId, previous?.kind === "open" ? previous.sideSessionId : null);
+    return;
+  }
+  entries.set(mainSessionId, { kind: "open", sideSessionId, at: Date.now() });
   emit();
 }
 
-export function noteSideChatStarting(mainSessionId: string, prompt: string): void {
-  entries.set(mainSessionId, { kind: "starting", prompt });
+/** This window ended `endedSessionId` (the id `endSideChat` answered). */
+export function noteSideChatEnded(mainSessionId: string, endedSessionId: string | null): void {
+  entries.set(mainSessionId, { kind: "ended", sideSessionId: endedSessionId, at: Date.now() });
   emit();
 }
 
-export function noteSideChatStartFailed(mainSessionId: string, prompt: string, error: string): void {
-  entries.set(mainSessionId, { kind: "starting", prompt, error });
+/** A start in flight for `prompt`, or one that failed with `error`. */
+export function noteSideChatStarting(mainSessionId: string, prompt: string, error?: string): void {
+  entries.set(mainSessionId, error ? { kind: "starting", prompt, error } : { kind: "starting", prompt });
   emit();
 }
+
+/**
+ * True inside the Side chat tool's transcript, where an assistant reply's
+ * `<send_to_main>` block is drawn as a "Sent to the main chat" note. Other
+ * transcripts show a reply as written.
+ */
+export const SideChatTranscriptContext = createContext(false);
 
 export type SideChatView =
   | { kind: "none" }
@@ -62,15 +82,22 @@ export type SideChatView =
 export function resolveSideChatView(
   mainSessionId: string | null | undefined,
   rowSideSessionId: string | null | undefined,
+  now = Date.now(),
 ): SideChatView {
   if (!mainSessionId) return { kind: "none" };
+  const row = rowSideSessionId?.trim() || null;
   const entry = entries.get(mainSessionId);
-  if (entry?.kind === "starting") return { kind: "starting", prompt: entry.prompt, error: entry.error ?? null };
-  if (entry?.kind === "open") return { kind: "open", sideSessionId: entry.sideSessionId };
-  if (entry?.kind === "ended" && (!rowSideSessionId || !entry.sideSessionId || rowSideSessionId === entry.sideSessionId)) {
-    return { kind: "none" };
+  const fromRow = (): SideChatView => (row ? { kind: "open", sideSessionId: row } : { kind: "none" });
+  if (!entry) return fromRow();
+  if (entry.kind === "starting") return { kind: "starting", prompt: entry.prompt, error: entry.error ?? null };
+  const trusted = now - entry.at < SIDE_CHAT_TRUST_MS;
+  if (entry.kind === "open") {
+    return row === entry.sideSessionId || trusted ? { kind: "open", sideSessionId: entry.sideSessionId } : fromRow();
   }
-  return rowSideSessionId ? { kind: "open", sideSessionId: rowSideSessionId } : { kind: "none" };
+  // Ended here: the row still naming that chat (or, unknown which, any chat
+  // during the trust window) is the row not having caught up.
+  if (!row || row === entry.sideSessionId || (entry.sideSessionId == null && trusted)) return { kind: "none" };
+  return fromRow();
 }
 
 export function useSideChatView(
@@ -103,8 +130,8 @@ export async function confirmSideChatToolClose(args: {
   if (!end) return true;
   try {
     // The main chat's id: the brain ends whichever side chat it has.
-    await window.ade.agentChat.endSideChat({ sessionId: mainSessionId }, runtimePin);
-    noteSideChat(mainSessionId, null);
+    const result = await window.ade.agentChat.endSideChat({ sessionId: mainSessionId }, runtimePin);
+    noteSideChatEnded(mainSessionId, result.endedSessionId);
   } catch (error) {
     showToast({
       tone: "error",

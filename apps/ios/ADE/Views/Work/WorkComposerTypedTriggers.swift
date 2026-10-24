@@ -2141,7 +2141,7 @@ final class WorkComposerSuggestionController: ObservableObject {
         // `/side` is the phone's own row (`workSideChatSlashSuggestions`); a
         // host that also lists it must not draw it twice.
         let commands = try await syncService.getSlashCommands(provider: provider, laneId: laneId)
-          .filter { $0.name != "/side" }
+          .filter { WorkComposerSlashRegistry.normalizedName($0.name).lowercased() != "/side" }
         guard let self, !Task.isCancelled else { return }
         guard self.laneGeneration == generation, self.provider == provider else { return }
         self.hostSlashCommands = commands

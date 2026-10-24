@@ -36,6 +36,7 @@ import {
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
+import { PI_READ_ONLY_TOOLS, PI_SEARCH_TOOLS } from "./piTools";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { grokSupervisionEnv } from "./grokSupervision";
 import { decodeOpenCodeRegistryId, decodePiRegistryId } from "./modelRegistry";
@@ -1785,10 +1786,8 @@ export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode
  * change the workspace. They run ripgrep and fd (see the Pi chat docs for how
  * ADE keeps Pi from downloading those).
  */
-export const PI_SEARCH_TOOLS = ["grep", "find", "ls"] as const;
-
-/** `read` plus Pi's search tools: what a Pi session that may only read runs with. */
-const PI_READ_TOOLS: readonly string[] = ["read", ...PI_SEARCH_TOOLS];
+export { PI_READ_ONLY_TOOLS, PI_SEARCH_TOOLS } from "./piTools";
+const PI_READ_TOOLS: readonly string[] = PI_READ_ONLY_TOOLS;
 
 /**
  * How a Pi chat treats MCP tools: `off` loads no MCP support at all, `ask`

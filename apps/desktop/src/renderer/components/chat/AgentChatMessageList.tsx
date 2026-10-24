@@ -59,6 +59,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
+import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
@@ -2701,6 +2702,8 @@ function renderEvent(
     pacedTextReveal?: boolean;
     /** This reasoning row is the newest row of the live turn and still streaming. */
     liveThinking?: boolean;
+    /** The row is in a side chat's transcript (`SideChatTranscriptContext`). */
+    sideChatTranscript?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -3043,6 +3046,9 @@ function renderEvent(
 
   /* ── Agent text ── */
   if (event.type === "text") {
+    // In a side chat, a send block reads as a "Sent to the main chat" note,
+    // and Copy takes the same text the row shows.
+    const shownText = options?.sideChatTranscript ? sideChatSendBlocksToMarkdown(event.text) : event.text;
     return (
       <motion.div
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
@@ -3055,7 +3061,7 @@ function renderEvent(
         {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
         <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 text-[length:var(--chat-font-size)] leading-[1.7]">
           <AssistantTextBody
-            text={sideChatSendBlocksToMarkdown(event.text)}
+            text={shownText}
             paced={options?.pacedTextReveal === true}
             onOpenWorkspacePath={options?.onOpenWorkspacePath}
             // NOT the render key. A scene's still is filed on disk under this
@@ -3090,7 +3096,7 @@ function renderEvent(
             {event.originTimestamp || envelope.timestampSynthetic !== true
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
               : null}
-            <MessageCopyButton value={event.text} iconOnly />
+            <MessageCopyButton value={shownText} iconOnly />
           </div>
         </div>
       </motion.div>
@@ -5067,6 +5073,7 @@ const EventRow = React.memo(function EventRow({
   onForkFromTurn,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
+  const sideChatTranscript = React.useContext(SideChatTranscriptContext);
   const doneTurnId = envelope.event.type === "done" ? envelope.event.turnId : null;
   return (
     <div
@@ -5173,6 +5180,7 @@ const EventRow = React.memo(function EventRow({
             onStopSubagent,
             pacedTextReveal,
             liveThinking,
+            sideChatTranscript,
           })}
       {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider

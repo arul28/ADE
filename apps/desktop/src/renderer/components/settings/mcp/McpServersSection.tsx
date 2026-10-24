@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
-import { CALLER_MCP_SUPPORT, registryMcpSupport } from "../../../../shared/callerMcpServers";
+import { REGISTRY_MCP_PROVIDER_IDS, registryMcpSupport } from "../../../../shared/callerMcpServers";
 import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
   MCP_TRANSPORT_LABEL,
@@ -53,6 +53,7 @@ const PROVIDER_NAME: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  kimi: "Kimi",
 };
 
 function providerName(id: string): string {
@@ -567,6 +568,13 @@ function MissingSecret({
 }
 
 /**
+ * The agents ADE does not hand registry servers to yet. Written by hand: it
+ * is the one row here that `REGISTRY_MCP_PROVIDER_IDS` does not drive, so it changes
+ * only when someone edits it.
+ */
+const NOT_SERVED_YET = "Copilot, Grok, Qwen, Devin, and personal chats";
+
+/**
  * Which agents the registry reaches.
  *
  * The shipped providers are read off `registryMcpSupport`, which the launch
@@ -574,19 +582,12 @@ function MissingSecret({
  * this page without an edit here. The last row is {@link NOT_SERVED_YET}, which
  * no table knows.
  */
-/**
- * The agents ADE does not hand registry servers to yet. Written by hand: it
- * is the one row here that `CALLER_MCP_SUPPORT` does not drive, so it changes
- * only when someone edits it.
- */
-const NOT_SERVED_YET = "Copilot, Grok, Kimi, Qwen, Devin, and personal chats";
-
 function WhoGetsThem() {
   const groups = useMemo(() => {
     const all: string[] = [];
     const partial: Array<{ id: string; transports: string[] }> = [];
     const none: string[] = [];
-    for (const id of Object.keys(CALLER_MCP_SUPPORT)) {
+    for (const id of REGISTRY_MCP_PROVIDER_IDS) {
       const support = registryMcpSupport(id);
       const blocked: readonly string[] = support?.unsupportedTransports ?? [];
       if (!support) none.push(id);

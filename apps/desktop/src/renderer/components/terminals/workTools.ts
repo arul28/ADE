@@ -68,6 +68,9 @@ export type WorkToolHeaderContext = {
   status: { line: string | null } | null;
 };
 
+/** The Side chat tool's color, shared with its marks on the header and the session card. */
+export const SIDE_CHAT_TOOL_COLOR = "#5eead4";
+
 export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   {
     id: "terminal",
@@ -115,7 +118,7 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "Side chat",
     tabTooltip: "This chat's read-only side chat",
     icon: ChatsCircle,
-    color: "#5eead4",
+    color: SIDE_CHAT_TOOL_COLOR,
     hint: "Ask without cluttering the chat",
   },
   {

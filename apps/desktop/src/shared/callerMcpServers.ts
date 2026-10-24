@@ -186,6 +186,12 @@ const REGISTRY_ONLY_MCP_SUPPORT: Readonly<Record<string, { unsupportedTransports
   kimi: { unsupportedTransports: [] },
 };
 
+/** Every provider the registry can reach: the caller-MCP table plus the registry-only rows. */
+export const REGISTRY_MCP_PROVIDER_IDS: readonly string[] = [
+  ...Object.keys(CALLER_MCP_SUPPORT),
+  ...Object.keys(REGISTRY_ONLY_MCP_SUPPORT).filter((id) => !Object.prototype.hasOwnProperty.call(CALLER_MCP_SUPPORT, id)),
+];
+
 /**
  * Whether a provider gets the MCP registry's servers, and which transports it
  * cannot take; null when it gets none. The launch path and Settings › MCP

@@ -1,5 +1,5 @@
-import type { SessionMessage as ClaudeSdkSessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import { findClaudePromptIndex } from "./chatRerunLastTurn";
+import { findClaudePromptIndex, type ClaudePromptEntry } from "./chatRerunLastTurn";
+import { sessionEntryChain } from "./sessionEntryChain";
 
 /**
  * Where a side chat forks a Claude session whose main chat is mid-turn.
@@ -62,42 +62,24 @@ function parseEntries(jsonl: string): JsonlEntry[] {
   return entries;
 }
 
-/**
- * The conversation the session resumes: the chain from its last main-thread
- * message back to the root. A rewind or a compaction leaves other branches in
- * the file; they are not part of it.
- */
-function mainChain(entries: readonly JsonlEntry[]): JsonlEntry[] {
-  const byUuid = new Map(entries.map((entry) => [entry.uuid, entry]));
-  let leaf: JsonlEntry | null = null;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!;
-    if (!entry.isSidechain && (entry.type === "user" || entry.type === "assistant")) {
-      leaf = entry;
-      break;
-    }
-  }
-  const chain: JsonlEntry[] = [];
-  const seen = new Set<string>();
-  for (let cursor = leaf; cursor && !seen.has(cursor.uuid); cursor = cursor.parentUuid ? byUuid.get(cursor.parentUuid) ?? null : null) {
-    seen.add(cursor.uuid);
-    chain.push(cursor);
-  }
-  return chain.reverse();
-}
-
 /** `runningPromptText` is the text ADE sent for the running turn (never its display text). */
 export function claudeSideChatCut(jsonl: string, runningPromptText: string): ClaudeSideChatCut {
-  const chain = mainChain(parseEntries(jsonl));
+  // A rewind or a compaction leaves other branches in the file; the leaf is
+  // the last main-thread message.
+  const chain = sessionEntryChain(
+    parseEntries(jsonl),
+    (entry) => entry.uuid,
+    (entry) => entry.parentUuid,
+    (entry) => !entry.isSidechain && (entry.type === "user" || entry.type === "assistant"),
+  );
   const conversation = chain
     .map((entry, chainIndex) => ({ entry, chainIndex }))
     .filter(({ entry }) => entry.type === "user" || entry.type === "assistant");
-  const messages = conversation.map(({ entry }) => ({
-    type: entry.type,
-    uuid: entry.uuid,
+  const messages: ClaudePromptEntry[] = conversation.map(({ entry }) => ({
+    type: entry.type as ClaudePromptEntry["type"],
     message: entry.message,
     parent_tool_use_id: null,
-  }) as unknown as ClaudeSdkSessionMessage);
+  }));
   const promptIndex = findClaudePromptIndex(messages, runningPromptText);
   if (promptIndex < 0) return { kind: "full" };
   const chainIndex = conversation[promptIndex]!.chainIndex;

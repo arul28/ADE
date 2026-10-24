@@ -249,6 +249,14 @@ export function useWorkSidebarTool(
           workSidebarOpenTools: next.openTools,
         });
       };
+      // Closing the Side chat tab asks whether to hide it or end it. Either
+      // way the tab goes; Hide keeps the chat for Tools to bring back.
+      if (target === "side-chat") {
+        void confirmSideChatToolClose({ mainSessionId: chatSessionId, runtimePin }).then((close) => {
+          if (close) drop(false);
+        });
+        return;
+      }
       /*
        * Closing the Apple tab POWERS THE DEVICE OFF, so it asks
        * first — but only when there is something to power off.
@@ -262,14 +270,6 @@ export function useWorkSidebarTool(
        * Mac Desktop asks too, while a display runs, and has a third answer:
        * "Keep running" closes the tab and leaves the display up.
        */
-      // Closing the Side chat tab asks whether to hide it or end it. Either
-      // way the tab goes; Hide keeps the chat for Tools to bring back.
-      if (target === "side-chat") {
-        void confirmSideChatToolClose({ mainSessionId: chatSessionId, runtimePin }).then((close) => {
-          if (close) drop(false);
-        });
-        return;
-      }
       if (isDesktopWorkTool(target)) {
         void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
           if (answer === "stop") drop();

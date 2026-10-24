@@ -13,6 +13,7 @@ import {
   type PiSdkUiResponsePayload,
 } from "./piSdkProtocol";
 import { finiteNumberOrNull, toOptionalString } from "../shared/utils";
+import { parseMcpToolName } from "../../../shared/permissionPolicy";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -139,20 +140,6 @@ function mapAssistantMessageEnd(
   }];
 }
 
-/**
- * Pi names an MCP tool `mcp__<server>__<tool>`, with characters other than
- * letters, digits and `_` replaced by `_`. The server is the part up to the
- * next `__`, so a server name that itself held `__` reads short; the label is
- * for display only.
- */
-function piMcpToolSource(toolName: string): { server: string; tool: string } | null {
-  if (!toolName.startsWith("mcp__")) return null;
-  const rest = toolName.slice("mcp__".length);
-  const split = rest.indexOf("__");
-  if (split <= 0 || split + 2 >= rest.length) return null;
-  return { server: rest.slice(0, split), tool: rest.slice(split + 2) };
-}
-
 /** Translate untrusted Pi SDK events into ADE's durable chat event contract. */
 export function mapPiSdkEventToChatEvents(
   event: unknown,
@@ -192,7 +179,7 @@ export function mapPiSdkEventToChatEvents(
   if (type === "tool_execution_start") {
     const tool = typeof record.toolName === "string" ? record.toolName : "pi_tool";
     const parentItemId = toOptionalString(record.parentToolCallId);
-    const mcp = piMcpToolSource(tool);
+    const mcp = parseMcpToolName(tool);
     return [{
       type: "tool_call",
       tool,
@@ -208,7 +195,7 @@ export function mapPiSdkEventToChatEvents(
     const failed = record.isError === true;
     const tool = typeof record.toolName === "string" ? record.toolName : "pi_tool";
     const parentItemId = toOptionalString(record.parentToolCallId);
-    const mcp = piMcpToolSource(tool);
+    const mcp = parseMcpToolName(tool);
     return [{
       type: "tool_result",
       tool,

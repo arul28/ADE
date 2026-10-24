@@ -7,6 +7,7 @@ import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sd
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTree, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -16,7 +17,7 @@ import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaud
 function readLiveCommandLines(platform: NodeJS.Platform): string | null {
   if (platform === "win32") return null;
   try {
-    if (!fs.readdirSync(CLAUDE_MCP_CONFIG_DIR).length) return null;
+    if (!fs.readdirSync(claudeMcpConfigDir()).length) return null;
   } catch {
     return null;
   }
@@ -24,10 +25,16 @@ function readLiveCommandLines(platform: NodeJS.Platform): string | null {
   return result.status === 0 && typeof result.stdout === "string" ? result.stdout : null;
 }
 
-/** Where each Claude process's MCP config file lives while it runs. */
-const CLAUDE_MCP_CONFIG_DIR = path.join(os.tmpdir(), "ade-claude-mcp-config");
-/** A file this old outlived the brain that wrote it. */
-const CLAUDE_MCP_CONFIG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+/**
+ * Where each Claude process's MCP config file lives while it runs: ADE's own
+ * private folder, beside the tracked terminals' (`mcp-launch`), never the
+ * shared temp folder another user could create first.
+ */
+function claudeMcpConfigDir(): string {
+  return path.join(resolveMachineAdeLayout().adeDir, "mcp-launch", "chat");
+}
+/** Where no command line can be read (Windows), a file this old is stale. */
+const CLAUDE_MCP_CONFIG_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;
@@ -219,7 +226,7 @@ export function createClaudeSubprocessReaper(args: {
   const platform = args.platform ?? process.platform;
   const isWindows = platform === "win32";
   const killGraceMs = args.killGraceMs ?? 5_000;
-  pruneStaleClaudeMcpConfigFiles(CLAUDE_MCP_CONFIG_DIR, CLAUDE_MCP_CONFIG_MAX_AGE_MS, readLiveCommandLines(platform));
+  pruneStaleClaudeMcpConfigFiles(claudeMcpConfigDir(), CLAUDE_MCP_CONFIG_MAX_AGE_MS, readLiveCommandLines(platform));
   const spawnProcess = args.spawnProcess ?? spawn;
   const setTimer = args.setTimer ?? setTimeout;
   const clearTimer = args.clearTimer ?? clearTimeout;
@@ -546,11 +553,11 @@ export function createClaudeSubprocessReaper(args: {
     // PowerShell, for `.ps1`) invocation and is a no-op for a plain `.exe`.
     // The SDK's inline MCP JSON carries secrets; the command line and the
     // registry below get a private file's path instead.
-    const mcpConfig = moveClaudeMcpConfigOffArgv(options.args, CLAUDE_MCP_CONFIG_DIR);
+    const mcpConfig = moveClaudeMcpConfigOffArgv(options.args, claudeMcpConfigDir());
     const invocation = resolveCliSpawnInvocation(options.command, mcpConfig.args, options.env, platform);
-    let spawned: ClaudeChildProcess;
+    let child: ClaudeChildProcess;
     try {
-      spawned = spawnProcess(invocation.command, invocation.args, {
+      child = spawnProcess(invocation.command, invocation.args, {
         cwd: options.cwd,
         env: options.env,
         signal: options.signal,
@@ -571,7 +578,6 @@ export function createClaudeSubprocessReaper(args: {
       removeClaudeMcpConfigFiles(mcpConfig.files);
       throw error;
     }
-    const child = spawned;
     if (mcpConfig.files.length) {
       // Kept for the whole life of the process: Claude reads the file at
       // start, and a reconnect may read it again.

@@ -7,6 +7,7 @@ import type { ProviderCompactionSettings } from "../../../shared/compactionSetti
  */
 
 import type { AgentChatUsageAccountKind } from "../../../shared/types/chat";
+import type { CallerMcpServers } from "../../../shared/callerMcpServers";
 import { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
 
 export const PI_SDK_PROTOCOL_VERSION = 2 as const;
@@ -16,7 +17,7 @@ export const PI_SDK_MIN_NODE = "22.19.0" as const;
  * Pi's built-in tools that cannot change the workspace (`createReadOnlyTools`
  * in the Pi package): what a `readOnly` session runs with.
  */
-export const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
+export { PI_READ_ONLY_TOOLS } from "../../../shared/piTools";
 
 // The one list of Pi thinking levels, shared with `piThinkingLevel`.
 export { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
@@ -129,6 +130,30 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
 export type PiSdkMcpServer =
   | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
   | { url: string; headers?: Record<string, string> };
+
+/**
+ * ADE's MCP servers (the registry's, in `CallerMcpServers` form) as the
+ * servers a Pi session registers. Empty values are left out.
+ */
+export function piSdkMcpServersFromCaller(servers: CallerMcpServers | null): Record<string, PiSdkMcpServer> {
+  const out: Record<string, PiSdkMcpServer> = {};
+  for (const [name, server] of Object.entries(servers ?? {})) {
+    if (server.type === "stdio") {
+      out[name] = {
+        command: server.command,
+        ...(server.args?.length ? { args: server.args } : {}),
+        ...(server.env && Object.keys(server.env).length ? { env: server.env } : {}),
+      };
+    } else if (server.type === "http") {
+      out[name] = {
+        url: server.url,
+        ...(server.headers && Object.keys(server.headers).length ? { headers: server.headers } : {}),
+      };
+    }
+    // SSE never gets here: `registryMcpSupport` leaves it out for Pi, which has no SSE client.
+  }
+  return out;
+}
 
 export type PiSdkMcpInit = {
   /** Every MCP tool call clears the same approval card as a gated built-in first. */

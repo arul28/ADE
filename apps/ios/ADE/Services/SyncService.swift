@@ -23790,6 +23790,8 @@ extension SyncService {
     // still evict the whole cache via `resetChatEventState(clearHistory: true)`.
     for (sessionId, summary) in summaries {
       chatSummaryCache[sessionId] = withCrossMachineHandoffClearApplied(summary)
+      // A side chat ended on another device clears this phone's override too.
+      reconcileSideChatPointer(withHostSummary: summary)
     }
     // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
     // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
@@ -23969,7 +23971,7 @@ extension SyncService {
     // `allAgents`.
     let runningRecencyCutoff = now.addingTimeInterval(-120)
     // Side chats live inside their main chat, so they are hidden the same way.
-    let identitySessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
+    let hiddenSessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
 
     for session in sessions {
       let isChat = isWorkChatToolType(session.toolType)
@@ -23980,7 +23982,7 @@ extension SyncService {
       // The CTO has its own tab and attention path. A stale local session row
       // may survive before the next roster refresh, so the identity marker is
       // enforced again at the activity/widget projection boundary.
-      guard !identitySessionIds.contains(session.id) else { continue }
+      guard !hiddenSessionIds.contains(session.id) else { continue }
       let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
       let status = session.status.lowercased()
       let isFailedStatus = canonical.phase == .failed
@@ -25126,11 +25128,11 @@ extension SyncService {
     let visibleLaneIds = Set(lanes.map(\.id))
     let sessions = localSessions()
     // Side chats live inside their main chat, so they are hidden the same way.
-    let identitySessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
+    let hiddenSessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
     let scopedSessions = sessions.filter { session in
       session.archivedAt == nil
         && visibleLaneIds.contains(session.laneId)
-        && !identitySessionIds.contains(session.id)
+        && !hiddenSessionIds.contains(session.id)
     }
     let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))
     let visibleSessions = scopedSessions.filter { session in

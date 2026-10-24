@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { ensurePrivateDirectory, writePrivateFile } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
  * Moves the Agent SDK's inline `--mcp-config <json>` off the Claude command
@@ -12,7 +13,9 @@ import path from "node:path";
  * subprocess reaper writes the arguments to its registry file. The Claude CLI
  * takes the same flag as a file path (`--mcp-config <configs...>`: "JSON files
  * or strings") and reads it the same way, `${NAME}` expansion included, so the
- * JSON goes into a file only this user can read and the path takes its place.
+ * JSON goes into a file only this user can read (`ensurePrivateDirectory` and
+ * `writePrivateFile`: mode 0700/0600 on POSIX, an owner-only ACL on Windows,
+ * as the tracked Claude terminals do) and the path takes its place.
  *
  * Only a value that is inline JSON moves; a path is left as it is. The caller
  * deletes the files when the process exits.
@@ -23,33 +26,38 @@ export function moveClaudeMcpConfigOffArgv(
 ): { args: string[]; files: string[] } {
   const files: string[] = [];
   const toFile = (json: string): string => {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (process.platform !== "win32") fs.chmodSync(dir, 0o700);
+    ensurePrivateDirectory(dir);
     const file = path.join(dir, `${randomUUID()}.json`);
-    fs.writeFileSync(file, json, { mode: 0o600, flag: "wx" });
+    writePrivateFile(file, json);
     files.push(file);
     return file;
   };
   const isInlineJson = (value: string): boolean => value.trimStart().startsWith("{");
   const out: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--mcp-config") {
-      out.push(arg);
-      // A variadic flag: its values run until the next flag.
-      while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
-        index += 1;
-        const value = args[index]!;
-        out.push(isInlineJson(value) ? toFile(value) : value);
+  try {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      if (arg === "--mcp-config") {
+        out.push(arg);
+        // A variadic flag: its values run until the next flag.
+        while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+          index += 1;
+          const value = args[index]!;
+          out.push(isInlineJson(value) ? toFile(value) : value);
+        }
+        continue;
       }
-      continue;
+      if (arg.startsWith("--mcp-config=")) {
+        const value = arg.slice("--mcp-config=".length);
+        out.push(isInlineJson(value) ? `--mcp-config=${toFile(value)}` : arg);
+        continue;
+      }
+      out.push(arg);
     }
-    if (arg.startsWith("--mcp-config=")) {
-      const value = arg.slice("--mcp-config=".length);
-      out.push(isInlineJson(value) ? `--mcp-config=${toFile(value)}` : arg);
-      continue;
-    }
-    out.push(arg);
+  } catch (error) {
+    // A later write failed: the files already written hold secrets too.
+    removeClaudeMcpConfigFiles(files);
+    throw error;
   }
   return { args: out, files };
 }

@@ -1,6 +1,7 @@
 import { ChatsCircle } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
+import { SIDE_CHAT_TOOL_COLOR } from "../terminals/workTools";
 import { useSideChatView } from "./sideChatState";
 
 /** One sentence, everywhere the mark appears. */
@@ -30,7 +31,8 @@ export function SideChatBadge({
       role="img"
       title={SIDE_CHAT_PRESENCE_LABEL}
       aria-label={SIDE_CHAT_PRESENCE_LABEL}
-      className={cn("inline-flex shrink-0 items-center justify-center text-[#5eead4]", className)}
+      className={cn("inline-flex shrink-0 items-center justify-center", className)}
+      style={{ color: SIDE_CHAT_TOOL_COLOR }}
     >
       <ChatsCircle size={size} weight="bold" />
     </span>

@@ -13,7 +13,8 @@ import SwiftUI
 // MARK: - Contract mirror
 
 /// Providers with a native fork (or, for Muse, a native side chat). Mirrors
-/// `SIDE_CHAT_PROVIDERS`.
+/// `SIDE_CHAT_PROVIDERS` (`HANDOFF_FORK_PROVIDERS` without Cursor, whose fork
+/// replays the transcript).
 let workSideChatProviders: Set<String> = ["claude", "codex", "muse", "opencode", "droid", "copilot", "kimi", "pi"]
 
 func workProviderSupportsSideChat(_ provider: String?) -> Bool {
@@ -25,10 +26,13 @@ func workProviderSupportsSideChat(_ provider: String?) -> Bool {
 
 /// Byte-identical to `SIDE_CHAT_UNSUPPORTED_MESSAGE`.
 let workSideChatUnsupportedMessage =
-  "Side chats need a provider that can fork its own history (Claude, Codex, Muse, OpenCode, Droid, Copilot, Kimi or Pi). Ask the main chat instead."
+  "Side chats need a provider that can fork its own history, and this one cannot. Ask the main chat instead."
 
-/// The brain's own refusal for a CTO or personal chat.
+/// Byte-identical to `SIDE_CHAT_WORK_ONLY_MESSAGE`: the brain's refusal for a CTO or personal chat.
 let workSideChatWorkOnlyMessage = "Side chats are available in Work chats."
+
+/// Byte-identical to `SIDE_CHAT_OF_SIDE_CHAT_MESSAGE`.
+let workSideChatOfSideChatMessage = "This is a side chat. Open side chats from the main chat."
 
 /// One sentence, everywhere the mark appears (desktop `SIDE_CHAT_PRESENCE_LABEL`).
 let workSideChatPresenceLabel = "Has a side chat"
@@ -236,11 +240,7 @@ func workSideChatStubSummary(
     "sideChatParentSessionId": mainSessionId,
   ]
   if let modelId = created?.modelId ?? mainSummary?.modelId { payload["modelId"] = modelId }
-  guard let data = try? JSONSerialization.data(withJSONObject: payload),
-        var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
-  else { return nil }
-  summary.rosterDerived = true
-  return summary
+  return rosterDerivedChatSummary(payload)
 }
 
 /// The side chat's session row stand-in: its main chat's lane, as a chat.
@@ -330,6 +330,8 @@ struct WorkSideChatFromLabel: View {
 
 /// What the side-chat panel shows.
 enum WorkSideChatPanelState: Equatable {
+  /// No side chat is shown: none was opened yet, or it was just ended.
+  case closed
   /// `chat.startSideChat` is in flight (the brain forks the main chat's history).
   case starting(prompt: String)
   case open(sideSessionId: String, created: AgentChatSession?)
@@ -378,6 +380,8 @@ struct WorkSideChatPanel: View {
   @ViewBuilder
   private var content: some View {
     switch state {
+    case .closed:
+      Color.clear
     case .starting(let prompt):
       VStack(spacing: 12) {
         ProgressView()
@@ -551,9 +555,10 @@ extension WorkSessionDestinationView {
     return syncService.sideChatSessionId(forMainSession: sessionId, summary: composerChatSummary)
   }
 
-  /// Why `/side` cannot open here, or nil when it can.
+  /// Why `/side` cannot open here, or nil when it can (desktop
+  /// `sideChatUnavailableReason`).
   var sideChatUnavailableReason: String? {
-    if isSideChatSurface { return nil }
+    if isSideChatSurface { return workSideChatOfSideChatMessage }
     if personalChat || compactComposer { return workSideChatWorkOnlyMessage }
     let provider = composerChatSummary?.provider
       ?? workChatProviderFamilyFromToolType((session ?? initialSession)?.toolType)
@@ -567,7 +572,7 @@ extension WorkSessionDestinationView {
   /// The composer offers `/side`: a Work chat whose provider can fork, on a
   /// brain that has the command.
   var offersSideChat: Bool {
-    !isSideChatSurface && sideChatUnavailableReason == nil
+    sideChatUnavailableReason == nil
   }
 
   /// Slides the panel up onto the chat's side chat (header mark, Tools chip).
@@ -633,7 +638,7 @@ extension WorkSessionDestinationView {
       isLive: isLive,
       onEnd: {
         try await syncService.endSideChat(mainSessionId: sessionId)
-        sideChatPanelState = .starting(prompt: "")
+        sideChatPanelState = .closed
       }
     )
     .environmentObject(syncService)

@@ -745,6 +745,7 @@ async function buildRosterProject(
         historyGeneration: sidecar.historyGeneration ?? 1,
       };
     }
+    const sideChatSessionId = live ? live.sideChatSessionId : sidecar?.sideChatSessionId;
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -755,9 +756,7 @@ async function buildRosterProject(
       toolType: row.tool_type,
       status,
       ...(identityKey ? { identityKey } : {}),
-      ...((live ? live.sideChatSessionId : sidecar?.sideChatSessionId)
-        ? { sideChatSessionId: (live ? live.sideChatSessionId : sidecar?.sideChatSessionId)! }
-        : {}),
+      ...(sideChatSessionId ? { sideChatSessionId } : {}),
       ...(awaitingInput ? { awaitingInput: true } : {}),
       ...(row.pinned ? { pinned: true } : {}),
       lastActivityAt,

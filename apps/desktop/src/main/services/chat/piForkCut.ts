@@ -1,3 +1,5 @@
+import { sessionEntryChain } from "./sessionEntryChain";
+
 /**
  * Where "Fork from here" cuts a Pi session: the entry just before the prompt
  * of the first turn the fork leaves out.
@@ -56,15 +58,7 @@ function parseEntries(jsonl: string): PiEntry[] {
 }
 
 export function piForkCutBeforePrompt(jsonl: string, promptText: string, ordinal: number): PiForkCut {
-  const entries = parseEntries(jsonl);
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const chain: PiEntry[] = [];
-  const seen = new Set<string>();
-  for (let cursor = entries.at(-1) ?? null; cursor && !seen.has(cursor.id); cursor = cursor.parentId ? byId.get(cursor.parentId) ?? null : null) {
-    seen.add(cursor.id);
-    chain.push(cursor);
-  }
-  chain.reverse();
+  const chain = sessionEntryChain(parseEntries(jsonl), (entry) => entry.id, (entry) => entry.parentId);
   const wanted = promptText.trim();
   if (!wanted) return { kind: "not_found" };
   const matches = chain

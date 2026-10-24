@@ -19,10 +19,18 @@
  * mirrors the parsing in Swift (`WorkSideChat.swift`).
  */
 
-import type { AgentChatProvider } from "./types/chat";
+import {
+  HANDOFF_FORK_PROVIDERS,
+  providerForkReplaysTranscript,
+  type AgentChatProvider,
+} from "./types/chat";
 
-/** Providers with a native fork (or, for Muse, a native side chat). */
-export const SIDE_CHAT_PROVIDERS = ["claude", "codex", "muse", "opencode", "droid", "copilot", "kimi", "pi"] as const;
+/**
+ * Providers with a native fork (Muse also has a native side chat): every
+ * forkable provider except one whose fork replays the transcript (Cursor).
+ */
+export const SIDE_CHAT_PROVIDERS: readonly AgentChatProvider[] =
+  HANDOFF_FORK_PROVIDERS.filter((provider) => !providerForkReplaysTranscript(provider));
 
 /**
  * Providers whose fork can be cut at the last finished turn while the main
@@ -42,7 +50,27 @@ export function providerSupportsSideChatWhileBusy(provider: AgentChatProvider | 
 }
 
 export const SIDE_CHAT_UNSUPPORTED_MESSAGE =
-  "Side chats need a provider that can fork its own history (Claude, Codex, Muse, OpenCode, Droid, Copilot, Kimi or Pi). Ask the main chat instead.";
+  "Side chats need a provider that can fork its own history, and this one cannot. Ask the main chat instead.";
+
+export const SIDE_CHAT_WORK_ONLY_MESSAGE = "Side chats are available in Work chats.";
+
+export const SIDE_CHAT_OF_SIDE_CHAT_MESSAGE = "This is a side chat. Open side chats from the main chat.";
+
+/**
+ * Why `session` cannot have a side chat, or null when it can. The brain's
+ * start, the slash menu and the desktop composer read this; iOS mirrors it.
+ */
+export function sideChatUnavailableReason(session: {
+  provider?: AgentChatProvider | string | null;
+  surface?: string | null;
+  identityKey?: string | null;
+  sideChatParentSessionId?: string | null;
+}): string | null {
+  if (session.sideChatParentSessionId) return SIDE_CHAT_OF_SIDE_CHAT_MESSAGE;
+  if ((session.surface ?? "work") !== "work" || session.identityKey) return SIDE_CHAT_WORK_ONLY_MESSAGE;
+  if (!providerSupportsSideChat(session.provider)) return SIDE_CHAT_UNSUPPORTED_MESSAGE;
+  return null;
+}
 
 export const SIDE_CHAT_WAIT_FOR_TURN_MESSAGE =
   "This provider opens a side chat between turns. Try again when the main chat finishes this turn.";
@@ -70,29 +98,64 @@ export type SideChatTextPart =
   | { kind: "send"; text: string; complete: boolean };
 
 /**
+ * Where code sits in a reply (fenced blocks and inline spans), so a tag the
+ * side chat quotes or explains is never taken for a send.
+ */
+function codeRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const fence = /(^|\n)(```|~~~)[^\n]*\n[\s\S]*?(?:\n\2[^\n]*(?=\n|$)|$)/g;
+  for (let match = fence.exec(text); match; match = fence.exec(text)) {
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+  const inline = /`[^`\n]+`/g;
+  for (let match = inline.exec(text); match; match = inline.exec(text)) {
+    const at = match.index;
+    if (!ranges.some(([from, to]) => at >= from && at < to)) ranges.push([at, at + match[0].length]);
+  }
+  return ranges;
+}
+
+/**
  * Splits a side chat's reply into prose and send-to-main blocks, so a client
- * draws a block as a "Sent to the main chat" card instead of raw tags. An open
- * tag with no close yet (a reply still streaming) is a pending block.
+ * draws a block as a "Sent to the main chat" card instead of raw tags. Only
+ * blocks that end the reply count (the role prompt asks for exactly that), and
+ * never one inside code. An open tag with no close yet, at the end of a reply
+ * still streaming, is a pending block.
  */
 export function splitSideChatSendBlocks(text: string): SideChatTextPart[] {
-  const parts: SideChatTextPart[] = [];
+  const code = codeRanges(text);
+  const inCode = (at: number) => code.some(([from, to]) => at >= from && at < to);
+  const blocks: Array<{ open: number; end: number; body: string; complete: boolean }> = [];
   let cursor = 0;
   while (cursor < text.length) {
     const open = text.indexOf(SIDE_CHAT_SEND_OPEN_TAG, cursor);
-    if (open < 0) {
-      parts.push({ kind: "text", text: text.slice(cursor) });
-      break;
+    if (open < 0) break;
+    if (inCode(open)) {
+      cursor = open + SIDE_CHAT_SEND_OPEN_TAG.length;
+      continue;
     }
-    if (open > cursor) parts.push({ kind: "text", text: text.slice(cursor, open) });
     const bodyStart = open + SIDE_CHAT_SEND_OPEN_TAG.length;
     const close = text.indexOf(SIDE_CHAT_SEND_CLOSE_TAG, bodyStart);
     if (close < 0) {
-      parts.push({ kind: "send", text: text.slice(bodyStart).trim(), complete: false });
+      blocks.push({ open, end: text.length, body: text.slice(bodyStart).trim(), complete: false });
       break;
     }
-    parts.push({ kind: "send", text: text.slice(bodyStart, close).trim(), complete: true });
-    cursor = close + SIDE_CHAT_SEND_CLOSE_TAG.length;
+    const end = close + SIDE_CHAT_SEND_CLOSE_TAG.length;
+    blocks.push({ open, end, body: text.slice(bodyStart, close).trim(), complete: true });
+    cursor = end;
   }
+  // The trailing run: blocks with only whitespace between them and after.
+  let first = blocks.length;
+  let tail = text.length;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (text.slice(blocks[index]!.end, tail).trim()) break;
+    first = index;
+    tail = blocks[index]!.open;
+  }
+  if (first === blocks.length) return text ? [{ kind: "text", text }] : [];
+  const parts: SideChatTextPart[] = [];
+  if (blocks[first]!.open > 0) parts.push({ kind: "text", text: text.slice(0, blocks[first]!.open) });
+  for (const block of blocks.slice(first)) parts.push({ kind: "send", text: block.body, complete: block.complete });
   return parts.filter((part) => part.kind === "send" || part.text.length > 0);
 }
 

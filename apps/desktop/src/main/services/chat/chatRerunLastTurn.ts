@@ -85,13 +85,16 @@ export function findLastTurnUserMessage(envelopes: readonly AgentChatEventEnvelo
 }
 
 /** The content of a top-level Claude SDK user entry, or null for any other entry. */
-function claudeSdkUserContent(message: ClaudeSdkSessionMessage): { content: unknown } | null {
+/** The parts of a Claude SDK session entry the prompt lookup reads. */
+export type ClaudePromptEntry = Pick<ClaudeSdkSessionMessage, "type" | "message" | "parent_tool_use_id">;
+
+function claudeSdkUserContent(message: ClaudePromptEntry): { content: unknown } | null {
   if (message.type !== "user" || message.parent_tool_use_id) return null;
   return { content: (message.message as { content?: unknown } | null)?.content };
 }
 
 /** The text of a Claude SDK user entry, or null for a tool result or an entry with no text. */
-function claudeSdkUserPromptText(message: ClaudeSdkSessionMessage): string | null {
+function claudeSdkUserPromptText(message: ClaudePromptEntry): string | null {
   const content = claudeSdkUserContent(message)?.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
@@ -107,7 +110,7 @@ function claudeSdkUserPromptText(message: ClaudeSdkSessionMessage): string | nul
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, " ");
 
 /** A top-level user entry that is not only tool results: a prompt, with or without text. */
-function isClaudeSdkUserPrompt(message: ClaudeSdkSessionMessage): boolean {
+function isClaudeSdkUserPrompt(message: ClaudePromptEntry): boolean {
   const entry = claudeSdkUserContent(message);
   if (!entry) return false;
   const content = entry.content;
@@ -128,7 +131,7 @@ function isClaudeSdkUserPrompt(message: ClaudeSdkSessionMessage): boolean {
  * the last prompt entry, and only when that entry has no text of its own;
  * otherwise -1.
  */
-export function findClaudePromptIndex(messages: readonly ClaudeSdkSessionMessage[], promptText: string): number {
+export function findClaudePromptIndex(messages: readonly ClaudePromptEntry[], promptText: string): number {
   const needle = collapseWhitespace(promptText).trim().slice(0, CLAUDE_PROMPT_MATCH_CHARS);
   if (!needle) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {

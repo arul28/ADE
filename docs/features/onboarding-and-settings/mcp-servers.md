@@ -32,13 +32,15 @@ the Claude CLI every MCP server, env values and headers included, as one inline
 `--mcp-config <json>` argument, which any process on the machine can read with
 `ps` and which the subprocess reaper wrote to its registry file. ADE's Claude
 spawn (`claudeSubprocessReaper.spawnClaudeCodeProcess`) moves that JSON into a
-file only the user can read (`$TMPDIR/ade-claude-mcp-config/<uuid>.json`, folder
-0700, file 0600; `moveClaudeMcpConfigOffArgv`) and passes its path, which the
+file only the user can read (`<ADE home>/mcp-launch/chat/<uuid>.json` through
+`ensurePrivateDirectory` and `writePrivateFile`: 0700/0600 on POSIX, an
+owner-only ACL on Windows; `moveClaudeMcpConfigOffArgv`) and passes its path, which the
 CLI reads the same way, `${NAME}` expansion included (checked with the pinned
 CLI: the same server env and `Authorization` header arrive both ways). The file
 is deleted when the process exits; when a brain starts, files that no running
-process names are deleted too (one `ps` read; on Windows, files older than
-seven days). Tracked Claude terminals already used a private file
+process names are deleted too (one `ps` read; on Windows, where no command
+line can be read, files older than a day). Tracked Claude terminals already
+used a private file in the same folder
 (`trackedCliUserMcp.ts`).
 
 Two things are not secrets in this model and do sync in the list as written: a

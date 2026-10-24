@@ -25,6 +25,7 @@ type ChatProjectionServices = {
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
+    getSessionSideChatParentId(sessionId: string): Promise<string | null>;
   } | null;
   logger: {
     warn(event: string, data: Record<string, unknown>): void;
@@ -339,8 +340,9 @@ export async function listSessionsWithChatProjection(
       // Only the chats this page lists are summarized. The list reads only the
       // newest chats (of the lane, when one is given). A page chat it did not return
       // and a spawn parent it did not return (outside the page, in another lane, or
-      // older than that window) are checked by id. Only an identity row is then
-      // summarized and kept: it is hidden from the roster and indexed as a parent.
+      // older than that window) are checked by id. Only an identity row or a side
+      // chat is then summarized and kept: it is hidden from the roster (and an
+      // identity row indexed as a parent).
       // Any other chat outside the window keeps its unprojected row, as on main.
       const shownChatIds = sessions
         .filter((session) => isChatToolType(session.toolType))
@@ -358,7 +360,9 @@ export async function listSessionsWithChatProjection(
         if (parentId && !summarized.has(parentId)) readIds.add(parentId);
       }
       for (const id of readIds) {
-        if (!(await services.agentChatService.getSessionIdentityKey(id))) continue;
+        const hidden = Boolean(await services.agentChatService.getSessionIdentityKey(id))
+          || Boolean(await services.agentChatService.getSessionSideChatParentId(id));
+        if (!hidden) continue;
         const chat = await services.agentChatService.getSessionSummary(id);
         if (chat) allChats.push(chat);
       }

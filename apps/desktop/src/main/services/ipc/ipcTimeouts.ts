@@ -93,6 +93,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   chat: {
     handoffSession: IPC.agentChatHandoff,
     prepareCrossMachineHandoff: IPC.agentChatPrepareCrossMachineHandoff,
+    startSideChat: IPC.agentChatStartSideChat,
   },
   // A GitHub Stack merge polls GitHub, then cleans up each merged PR,
   // whichever runtime answers it.
@@ -226,6 +227,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // "timed out but later succeeded" failure can't reappear via this layer.
     case IPC.agentChatHandoff:
     case IPC.agentChatPrepareCrossMachineHandoff:
+    // A side chat forks the provider's history (a Codex fork alone can take
+    // 30s) and then sends its first message.
+    case IPC.agentChatStartSideChat:
       return 150_000;
     // A brain restart waits through the service install, then for the
     // replacement brain to rebind (20s) and answer a ping (20s). The install

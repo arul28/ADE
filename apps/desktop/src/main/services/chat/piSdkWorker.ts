@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -13,19 +12,23 @@ import {
   toPiSdkJson,
   type JsonValue,
   type PiSdkContextUsage,
-  type PiSdkForkPayload,
-  type PiSdkForkResult,
   type PiSdkModelRef,
   type PiSdkReady,
   type PiSdkSessionTarget,
   type PiSdkImage,
-  type PiSdkMcpServer,
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
   type PiSdkWorkerResponse,
 } from "./piSdkProtocol";
 import { materializeWorkerImages, withOmittedImageHints } from "./workerAttachmentImages";
-import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore";
+import { authorizedSessionFileForId, forkSession, validatedSessionFile } from "./piSdkWorkerFork";
+import { createPiWorkerAuth } from "./piSdkWorkerAuth";
+import {
+  ADE_MCP_APPROVAL_EXTENSION,
+  PI_MCP_DISCOVERY_TOOLS,
+  PI_MCP_RESOURCE_TOOLS,
+  buildMcpExtensions,
+} from "./piSdkWorkerMcp";
 import { createPiAccountReader, withPiTurnAccount } from "./piSdkAuth";
 import {
   PI_FALLBACK_THINKING_LEVEL,
@@ -38,7 +41,6 @@ import {
   PI_ASK_USER_TOOL_NAME,
   createPiApprovalGate,
   createPiAskUserTool,
-  createPiAuthInteraction,
   createPiExtensionUiContext,
   createPiUiBridge,
   withPiApproval,
@@ -73,7 +75,6 @@ let lastAssistantError: string | null = null;
  */
 let defaultThinkingLevel: string = PI_FALLBACK_THINKING_LEVEL;
 /** Cap on the post-sign-in catalog refresh; the credential is already stored. */
-const PI_LOGIN_REFRESH_TIMEOUT_MS = 15_000;
 /** Root-exported factory per gateable built-in tool, used to rebuild it behind an approval gate. */
 const PI_TOOL_DEFINITION_FACTORIES: Record<string, string> = {
   read: "createReadToolDefinition",
@@ -95,19 +96,20 @@ const PI_GRANTABLE_TOOLS = new Set([...PI_GATEABLE_TOOLS, ...PI_READ_ONLY_TOOLS]
  * `excludeTools`, and the setting can name any built-in.
  */
 const PI_ALL_BUILTIN_TOOLS = [...PI_GRANTABLE_TOOLS];
-/** The tools Pi's built-in MCP support needs to reach servers with `codemode` and `deferred` exposure. */
-const PI_MCP_DISCOVERY_TOOLS = ["codemode", "tool_search"] as const;
-/** Pi's MCP resource tools; they count as MCP tools (`isMcpToolName` in Pi). */
-const PI_MCP_RESOURCE_TOOLS = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
-/** The inline extension that puts MCP calls behind ADE's approval card; its load failing fails the chat start. */
-const ADE_MCP_APPROVAL_EXTENSION = "ade-mcp-approval";
 let unsubscribe: (() => void) | null = null;
 let disposed = false;
 let loadedExtensions: Array<{ id: string; name?: string | null }> = [];
 let ungateableTools: string[] = [];
 let extensionsError: string | null = null;
-let activeLogin: { providerId: string; controller: AbortController } | null = null;
 const uiBridge: PiUiBridge = createPiUiBridge(post, () => randomUUID());
+const piAuth = createPiWorkerAuth({
+  getModelRuntime: () => modelRuntime as Record<string, unknown> | null,
+  getPi: () => pi,
+  getInit: () => initState,
+  uiBridge,
+  forgetAccount: (providerId) => accountReader.forget(providerId),
+  errorMessage,
+});
 /**
  * One approval gate per worker, shared by the gated built-ins and MCP tools,
  * so "allow for this chat" on a tool holds wherever the call comes from (a
@@ -117,10 +119,6 @@ let approvalGate: PiApprovalGate | null = null;
 function sharedApprovalGate(): PiApprovalGate {
   approvalGate ??= createPiApprovalGate(uiBridge);
   return approvalGate;
-}
-
-function isPiMcpToolName(name: string): boolean {
-  return name.startsWith("mcp__") || PI_MCP_RESOURCE_TOOLS.has(name);
 }
 
 function post(message: PiSdkWorkerResponse): void {
@@ -293,58 +291,6 @@ async function availableModels(): Promise<JsonValue[]> {
   return modelInventory;
 }
 
-async function authInventory(): Promise<JsonValue> {
-  if (!modelRuntime) throw new Error("Pi SDK model runtime is not initialized.");
-  const runtime = modelRuntime as Record<string, unknown>;
-  const providersValue = typeof runtime.getProviders === "function"
-    ? await (runtime.getProviders as Callable).call(modelRuntime)
-    : [];
-  const providers = Array.isArray(providersValue) ? providersValue : [];
-  const result: Record<string, JsonValue>[] = [];
-  for (const providerValue of providers) {
-    const provider = record(providerValue);
-    const id = nonEmpty(provider?.id);
-    if (!id) continue;
-    const auth = record(provider?.auth);
-    const oauth = record(auth?.oauth);
-    const apiKey = record(auth?.apiKey);
-    // An api-key provider with no interactive `login` resolves ambiently (env
-    // var, cloud profile), so ADE must not offer to sign into it.
-    const authTypes = [
-      ...(oauth ? ["oauth"] : []),
-      ...(apiKey && typeof apiKey.login === "function" ? ["api_key"] : []),
-    ];
-    const item: Record<string, JsonValue> = {
-      id,
-      ...(nonEmpty(provider?.name) ? { name: nonEmpty(provider?.name)! } : {}),
-      ...(authTypes.length ? { authTypes } : {}),
-      ...(nonEmpty(oauth?.loginLabel) ? { loginLabel: nonEmpty(oauth?.loginLabel)! } : {}),
-      ...(oauth?.isSubscription === true ? { isSubscription: true } : {}),
-    };
-    try {
-      const status = typeof runtime.getProviderAuthStatus === "function"
-        ? await (runtime.getProviderAuthStatus as Callable).call(modelRuntime, id)
-        : typeof runtime.checkAuth === "function"
-          ? await (runtime.checkAuth as Callable).call(modelRuntime, id)
-          : undefined;
-      const statusRecord = record(status);
-      if (statusRecord) {
-        // Pi 0.84+ reports the authoritative auth state as `configured`, with
-        // `source`/`label` describing how the provider was resolved. Keep the
-        // older aliases too so ADE can read compatible Pi installations without
-        // manufacturing an auth result from the presence of a provider row.
-        for (const key of ["configured", "authenticated", "isAuthenticated", "type", "status", "source", "label", "expiresAt"] as const) {
-          if (statusRecord[key] !== undefined) item[key] = toPiSdkJson(statusRecord[key]);
-        }
-      }
-    } catch (error) {
-      item.error = errorMessage(error);
-    }
-    result.push(item);
-  }
-  return result;
-}
-
 async function resolveModel(ref: PiSdkModelRef): Promise<unknown> {
   if (!pi || !modelRuntime) throw new Error("Pi SDK is not initialized.");
   // Exact provider + id only; never Pi's fuzzy CLI resolver. See piSdkSelection.
@@ -353,43 +299,6 @@ async function resolveModel(ref: PiSdkModelRef): Promise<unknown> {
 
 function sessionTarget(init: PiSdkWorkerInit): PiSdkSessionTarget {
   return init.session ?? {};
-}
-
-function sessionFileIsAuthorized(filePath: string, sessionRoot: string | null): boolean {
-  if (!sessionRoot) return true;
-  try {
-    // `.native` on both sides, matching piSessionLease: on Windows the JS
-    // realpath keeps 8.3 short names and junction casing, so one spelling of a
-    // directory fails containment against another spelling of itself.
-    const resolvedFile = fs.realpathSync.native(filePath);
-    const resolvedDir = fs.realpathSync.native(sessionRoot);
-    const relative = path.relative(resolvedDir, resolvedFile);
-    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
-  } catch {
-    return false;
-  }
-}
-
-function validatedSessionFile(
-  filePath: string,
-  sessionRoot: string | null,
-  expectedId: string | null,
-  expectedCwd: string,
-): string | null {
-  let resolved: string;
-  try {
-    resolved = fs.realpathSync.native(path.resolve(filePath));
-  } catch {
-    return null;
-  }
-  if (!sessionFileIsAuthorized(resolved, sessionRoot)) return null;
-  // A native file may be inside the authorized Pi root while belonging to a
-  // different project. Require a non-empty, exact normalized header cwd at
-  // this worker boundary; blank cwd must never act as a wildcard.
-  const header = readPiSessionHeader(resolved);
-  if (!header || !piSessionHeaderMatchesCwd(header, expectedCwd)) return null;
-  if (expectedId && header.id !== expectedId) return null;
-  return resolved;
 }
 
 async function openSessionManager(init: PiSdkWorkerInit, sdk: PiModule): Promise<PiSessionManager> {
@@ -425,7 +334,7 @@ async function openSessionManager(init: PiSdkWorkerInit, sdk: PiModule): Promise
       }
     }
     if (resumeId) {
-      const authorizedFoundPath = await authorizedSessionFileForId(manager, init, resumeId);
+      const authorizedFoundPath = await authorizedSessionFileForId(manager, init, resumeId, method);
       if (!authorizedFoundPath) {
         throw new Error(`Pi session "${resumeId}" was not found in the authorized session directory.`);
       }
@@ -437,173 +346,6 @@ async function openSessionManager(init: PiSdkWorkerInit, sdk: PiModule): Promise
     return method(manager, "create").call(manager, init.cwd, storageDir) as PiSessionManager;
   } catch (error) {
     throw new Error(`Pi session could not be opened${resumeFile ? ` at ${resumeFile}` : ""}: ${errorMessage(error)}`);
-  }
-}
-
-/**
- * The authorized native file of Pi session `id` in this worker's cwd, or null.
- * Pi 1.x's `findById` reads only headers; older builds list every session.
- */
-async function authorizedSessionFileForId(
-  manager: Record<string, unknown>,
-  init: PiSdkWorkerInit,
-  id: string,
-): Promise<string | null> {
-  const storageDir = nonEmpty(init.sessionStorageDir) ?? undefined;
-  let foundPath: string | null;
-  if (typeof manager.findById === "function") {
-    foundPath = nonEmpty((manager.findById as Callable).call(manager, init.cwd, id, storageDir));
-  } else {
-    const list = await method(manager, "list").call(manager, init.cwd, storageDir);
-    const found = (Array.isArray(list) ? list : []).find((item) => record(item)?.id === id);
-    foundPath = nonEmpty(record(found)?.path);
-  }
-  return foundPath ? validatedSessionFile(foundPath, nonEmpty(init.sessionRoot), id, init.cwd) : null;
-}
-
-/** Assistant stop reasons that end a turn. `toolUse` hands over to tool results; `pending`/`deferred` are unfinished. */
-const PI_TURN_ENDING_STOP_REASONS = new Set(["stop", "length", "error", "aborted"]);
-
-/**
- * Whether no turn is in flight after `entry`, given the state before it.
- *
- * Pi persists each message at its `message_end`: the user prompt as a turn
- * starts, then each assistant response and tool result. A turn is settled
- * from an assistant response that does not hand over to tools until the next
- * user prompt or steering message. Every other entry (model and thinking
- * changes, labels, compaction, system and custom messages) keeps the state.
- */
-function piEntryLeavesTurnSettled(entry: unknown, settledBefore: boolean): boolean {
-  const item = record(entry);
-  if (item?.type !== "message") return settledBefore;
-  const message = record(item.message);
-  if (message?.role === "assistant") return PI_TURN_ENDING_STOP_REASONS.has(String(message.stopReason));
-  if (message?.role === "user" || message?.role === "toolResult") return false;
-  return settledBefore;
-}
-
-/**
- * The bytes of a session file up to its last complete line.
- *
- * The source may be a live session another worker is appending to, so the
- * last line can be half written. Pi's own loader (`SessionManager.open`,
- * `forkFrom`) repairs such a file by appending a newline to it, which on a
- * live file would split the writer's line in two. Copying the complete lines
- * first means Pi only ever opens ADE's private snapshot.
- */
-function completeSessionLines(filePath: string): Buffer {
-  const bytes = fs.readFileSync(filePath);
-  const lastNewline = bytes.lastIndexOf(0x0a);
-  return lastNewline < 0 ? Buffer.alloc(0) : bytes.subarray(0, lastNewline + 1);
-}
-
-/** Point a fork's header at its real source instead of the snapshot Pi branched from. */
-function rewriteForkParent(forkFile: string, parentSessionFile: string): void {
-  const content = fs.readFileSync(forkFile, "utf8");
-  const newline = content.indexOf("\n");
-  const headerLine = newline < 0 ? content : content.slice(0, newline);
-  const header = record(JSON.parse(headerLine));
-  if (header?.type !== "session") throw new Error(`Pi fork ${forkFile} has no session header.`);
-  header.parentSession = parentSessionFile;
-  const staged = `${forkFile}.${process.pid}.tmp`;
-  fs.writeFileSync(staged, `${JSON.stringify(header)}${newline < 0 ? "\n" : content.slice(newline)}`, { flag: "wx", mode: 0o600 });
-  fs.renameSync(staged, forkFile);
-}
-
-/**
- * Copy a session's history into a new session in this worker's cwd, with
- * Pi's own branching (`createBranchedSession`, which `/fork` and `/clone` use:
- * the root-to-cut path of the active branch, labels kept, a fresh id, and a
- * `parentSession` header). The source is only read, so it may be live and
- * mid-turn in another worker; without `entryId` the cut is the last point at
- * which no turn was in flight, so the copy never ends in a half-finished
- * tool loop. This worker's own session, if any, is untouched.
- */
-async function forkSession(payload: PiSdkForkPayload): Promise<PiSdkForkResult> {
-  if (!pi || !initState || disposed) throw new Error("Pi SDK worker is not initialized or has been disposed.");
-  const init = initState;
-  const SessionManager = pi.SessionManager;
-  if (!SessionManager || typeof SessionManager !== "function") throw new Error("Pi SDK export SessionManager is unavailable.");
-  const manager = SessionManager as unknown as Record<string, unknown>;
-
-  const requestedFile = nonEmpty(payload.sessionFile);
-  const requestedId = nonEmpty(payload.sessionId);
-  let sourceFile: string | null = null;
-  if (requestedFile) {
-    assertAbsolute("sessionFile", requestedFile);
-    sourceFile = validatedSessionFile(requestedFile, nonEmpty(init.sessionRoot), requestedId, init.cwd);
-    if (!sourceFile && !requestedId) {
-      throw new Error(`Pi session file "${requestedFile}" is missing, outside the authorized session directory, or belongs to another project.`);
-    }
-  }
-  if (!sourceFile && requestedId) {
-    sourceFile = await authorizedSessionFileForId(manager, init, requestedId);
-    if (!sourceFile) throw new Error(`Pi session "${requestedId}" was not found in the authorized session directory.`);
-  }
-  if (!sourceFile) throw new Error("Pi fork needs a source sessionFile or sessionId.");
-  const sourceHeader = readPiSessionHeader(sourceFile);
-  if (!sourceHeader) throw new Error(`Pi session file "${sourceFile}" has no valid header.`);
-
-  // The fork lands where this worker's sessions land: the configured store,
-  // or Pi's per-cwd directory, which is the source's own directory.
-  const destinationDir = nonEmpty(init.sessionStorageDir) ?? path.dirname(sourceFile);
-  const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-fork-"));
-  try {
-    const snapshotFile = path.join(snapshotDir, "source.jsonl");
-    fs.writeFileSync(snapshotFile, completeSessionLines(sourceFile), { flag: "wx", mode: 0o600 });
-    const snapshot = method(manager, "open").call(manager, snapshotFile, destinationDir, init.cwd) as PiSessionManager;
-    const branch = method(snapshot, "getBranch").call(snapshot);
-    const entries = Array.isArray(branch) ? branch : [];
-
-    let cutId: string | null = null;
-    let cutIndex = -1;
-    const requestedEntry = nonEmpty(payload.entryId);
-    if (requestedEntry) {
-      if (!record(method(snapshot, "getEntry").call(snapshot, requestedEntry))) {
-        throw new Error(`Pi session "${sourceHeader.id}" has no entry "${requestedEntry}".`);
-      }
-      cutId = requestedEntry;
-      cutIndex = entries.findIndex((entry) => record(entry)?.id === requestedEntry);
-    } else {
-      let settled = true;
-      let finishedTurn = false;
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index];
-        settled = piEntryLeavesTurnSettled(entry, settled);
-        if (settled && record(record(entry)?.message)?.role === "assistant") finishedTurn = true;
-        const id = nonEmpty(record(entry)?.id);
-        if (settled && finishedTurn && id) {
-          cutId = id;
-          cutIndex = index;
-        }
-      }
-      if (!cutId) throw new Error(`Pi session "${sourceHeader.id}" has no finished turn to fork yet.`);
-    }
-
-    const forkFile = nonEmpty(method(snapshot, "createBranchedSession").call(snapshot, cutId));
-    // Pi writes the file only when the copied path holds a message.
-    if (!forkFile || !fs.existsSync(forkFile)) {
-      throw new Error(`Pi could not fork session "${sourceHeader.id}" at "${cutId}": the copy would hold no messages.`);
-    }
-    rewriteForkParent(forkFile, sourceFile);
-    const forkHeader = readPiSessionHeader(forkFile);
-    if (!forkHeader || !validatedSessionFile(forkFile, nonEmpty(init.sessionRoot), forkHeader.id, init.cwd)) {
-      fs.rmSync(forkFile, { force: true });
-      throw new Error(`Pi wrote the fork of "${sourceHeader.id}" outside the authorized session directory.`);
-    }
-    const forkEntries = method(snapshot, "getEntries").call(snapshot);
-    return {
-      sessionFile: fs.realpathSync.native(forkFile),
-      sessionId: forkHeader.id,
-      parentSessionFile: sourceFile,
-      parentSessionId: sourceHeader.id,
-      entryId: cutId,
-      cut: requestedEntry ? "requested" : "last_settled",
-      entryCount: Array.isArray(forkEntries) ? forkEntries.length : 0,
-      omittedEntryCount: cutIndex >= 0 ? entries.length - cutIndex - 1 : 0,
-    };
-  } finally {
-    fs.rmSync(snapshotDir, { recursive: true, force: true });
   }
 }
 
@@ -699,152 +441,6 @@ function buildCustomTools(
     tools.push(finish(withPiApproval(definition, gate)));
   }
   return { tools, ungateable };
-}
-
-/**
- * A literal value as Pi's config resolution keeps it: Pi reads `$NAME`,
- * `${NAME}` and a leading `!command` in `env` and `headers` values, and a
- * registry value is a secret as written, never a reference or a command.
- * `$$` is Pi's literal `$` and `$!` its literal `!`.
- */
-function piLiteralConfigValue(value: string): string {
-  const escaped = value.replace(/\$/gu, "$$$$");
-  return escaped.startsWith("!") ? `$${escaped}` : escaped;
-}
-
-function piLiteralConfigValues(values: Record<string, string> | undefined): Record<string, string> | undefined {
-  if (!values || !Object.keys(values).length) return undefined;
-  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, piLiteralConfigValue(value)]));
-}
-
-/** A server ADE hands the session, as a Pi `mcp.json` entry. */
-function piMcpServerConfig(server: PiSdkMcpServer): Record<string, unknown> {
-  if ("command" in server) {
-    const env = piLiteralConfigValues(server.env);
-    return {
-      command: server.command,
-      ...(server.args?.length ? { args: server.args } : {}),
-      ...(env ? { env } : {}),
-      ...(server.cwd ? { cwd: server.cwd } : {}),
-    };
-  }
-  const headers = piLiteralConfigValues(server.headers);
-  return { url: server.url, ...(headers ? { headers } : {}) };
-}
-
-/**
- * How Pi's MCP support reads the user's `mcp.json`.
- *
- * ADE marks every project untrusted (see `initWorker`), so Pi's own loader
- * reads only the agent directory's file. A project's `.pi/mcp.json` loads too
- * when the user trusted that folder in Pi itself: Pi's `trust.json`, the
- * answer its CLI asked for. Pi's internal loader is used for that, so a Pi
- * build without it falls back to the agent directory's file only.
- */
-async function piMcpConfigLoader(init: PiSdkWorkerInit, sdk: PiModule): Promise<((ctx: unknown) => unknown) | undefined> {
-  if (init.mcp?.userConfig !== true) return () => ({ servers: [], errors: [] });
-  let trusted = false;
-  try {
-    const Store = sdk.ProjectTrustStore;
-    if (typeof Store === "function") {
-      const store = new (Store as new (agentDir: string) => Record<string, unknown>)(init.agentDir);
-      trusted = (method(store, "get").call(store, init.cwd)) === true;
-    }
-  } catch {
-    trusted = false;
-  }
-  if (!trusted || !piRoot) return undefined;
-  try {
-    const configModule = await import(pathToFileURL(path.join(piRoot, "dist", "extensions", "mcp", "config.js")).href) as Record<string, unknown>;
-    const load = configModule.loadMcpConfig;
-    if (typeof load !== "function") return undefined;
-    return (ctx: unknown) => (load as Callable)({
-      agentDir: init.agentDir,
-      cwd: nonEmpty(record(ctx)?.cwd) ?? init.cwd,
-      projectTrusted: true,
-    });
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The inline extensions that give a session Pi's MCP support, or none.
- *
- * Pi's SDK loads no built-in extension, so ADE adds `createMcpExtension()`
- * (which connects the servers on `session_start`) with `codemode` and
- * `tool_search`, the tools that reach servers with Pi's default `codemode`
- * and `deferred` exposure. They load as inline factories, so the user's own
- * extensions stay off unless the chat enabled them; replaceable, as in Pi's
- * CLI, so a user extension that brings its own MCP support replaces Pi's.
- *
- * Every MCP call runs through Pi's `tool_call` hooks, codemode's nested calls
- * included, so one hook puts each behind the approval card when the session's
- * mode asks before a shell.
- */
-async function buildMcpExtensions(
-  init: PiSdkWorkerInit,
-  sdk: PiModule,
-  registrationErrors: string[],
-): Promise<unknown[] | null> {
-  const mcp = init.mcp;
-  if (!mcp) return null;
-  const createMcp = sdk.createMcpExtension;
-  const createCodemode = sdk.createCodemodeExtension;
-  const createToolSearch = sdk.createToolSearchExtension;
-  if (typeof createMcp !== "function" || typeof createCodemode !== "function" || typeof createToolSearch !== "function") {
-    registrationErrors.push("This Pi build has no MCP support for embedded sessions, so MCP servers stayed off.");
-    return null;
-  }
-  const loadConfig = await piMcpConfigLoader(init, sdk);
-  const servers = Object.entries(mcp.servers ?? {});
-  const factories: unknown[] = [];
-  if (mcp.approval) {
-    factories.push({
-      name: ADE_MCP_APPROVAL_EXTENSION,
-      hidden: true,
-      factory: (api: Record<string, unknown>) => {
-        method(api, "on").call(api, "tool_call", async (event: unknown, ctx: unknown) => {
-          const toolName = nonEmpty(record(event)?.toolName);
-          if (!toolName || !isPiMcpToolName(toolName)) return undefined;
-          const signal = record(ctx)?.signal;
-          const allowed = await sharedApprovalGate().check(
-            toolName,
-            record(event)?.input,
-            signal instanceof AbortSignal ? signal : undefined,
-          );
-          return allowed
-            ? undefined
-            : { block: true, reason: `The user denied this ${toolName} call. Ask before trying it again, or take a different approach.` };
-        });
-      },
-    });
-  }
-  if (servers.length) {
-    factories.push({
-      name: "ade-mcp-servers",
-      hidden: true,
-      factory: (api: Record<string, unknown>) => {
-        for (const [name, server] of servers) {
-          // One bad registration (Pi treats names that differ only in `-` and
-          // `_` as one server) must not take the others down with it.
-          try {
-            method(api, "registerMcpServer").call(api, name, piMcpServerConfig(server));
-          } catch (error) {
-            registrationErrors.push(`MCP server "${name}" could not be added: ${errorMessage(error)}`);
-          }
-        }
-      },
-    });
-  }
-  factories.push(
-    // `models: false`: a script must not run paid classifier or image models
-    // on the user's credentials without a card the user answers.
-    { name: "codemode", hidden: true, replaceable: true, factory: (createCodemode as Callable)({ models: false }) },
-    { name: "tool-search", hidden: true, replaceable: true, factory: (createToolSearch as Callable)() },
-    { name: "mcp", hidden: true, replaceable: true, factory: (createMcp as Callable)(loadConfig ? { loadConfig } : {}) },
-  );
-  return factories;
 }
 
 function ready(): PiSdkReady {
@@ -1087,7 +683,12 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   // commands.
   const mcpRegistrationErrors: string[] = [];
   const mcpExtensions = !readOnly && settingsManager !== null
-    ? await buildMcpExtensions(init, pi, mcpRegistrationErrors)
+    ? await buildMcpExtensions(init, pi, mcpRegistrationErrors, {
+      piRoot,
+      method,
+      errorMessage,
+      approvalGate: sharedApprovalGate,
+    })
     : null;
   if (init.mcp && settingsManager === null) {
     mcpRegistrationErrors.push("This Pi build does not let ADE mark the project untrusted, so MCP servers stayed off.");
@@ -1277,163 +878,10 @@ async function contextUsage(): Promise<PiSdkContextUsage | null> {
   return normalizePiSdkContextUsage(await method(active, "getContextUsage").call(active));
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
-/**
- * `LoginOptions` for `ModelRuntime.login`, with the installation id Pi's
- * "Sign in with ChatGPT" (Pi 0.99+, on the `openai` provider) sends to OpenAI
- * as its agent host id. Pi refuses that sign-in without one.
- *
- * The id is the `deviceId` in the user's global Pi settings, the one the Pi
- * CLI's own /login reads, so ADE and the CLI sign in as one installation. When
- * the profile has none yet, Pi's own settings manager creates it: one field,
- * written under Pi's lock. That is the only settings write the worker makes,
- * and it happens only when a login asks for the id. `flush` waits for it.
- */
-function piLoginOptions(sdk: PiModule, init: PiSdkWorkerInit): { options: Record<string, unknown>; flush: () => Promise<void> } {
-  let writer: Record<string, unknown> | null = null;
-  const getDeviceId = (): string => {
-    try {
-      const settings = record(JSON.parse(fs.readFileSync(path.join(init.agentDir, "settings.json"), "utf8")));
-      const existing = nonEmpty(settings?.deviceId);
-      if (existing && UUID_PATTERN.test(existing)) return existing;
-    } catch {
-      // No readable settings yet; Pi creates the file below.
-    }
-    const ctor = sdk.SettingsManager as unknown as Record<string, unknown> | undefined;
-    if (ctor && typeof ctor.create === "function") {
-      writer = record((ctor.create as Callable).call(ctor, init.cwd, init.agentDir, { projectTrusted: false }));
-      const created = typeof writer?.getOrCreateDeviceId === "function"
-        ? nonEmpty((writer.getOrCreateDeviceId as Callable).call(writer))
-        : null;
-      if (created) return created;
-    }
-    // A Pi build that cannot store one still signs in, as a new installation.
-    return randomUUID();
-  };
-  return {
-    options: { getDeviceId },
-    flush: async () => {
-      const flush = writer?.flush;
-      if (typeof flush === "function") await Promise.resolve((flush as Callable).call(writer)).catch(() => undefined);
-    },
-  };
-}
-
-/**
- * Run Pi's native login for one provider.
- *
- * Credentials stay Pi's: `ModelRuntime.login` persists them through Pi's own
- * `AuthStorage`, under its cross-process lock. ADE only renders the prompts and
- * relays what the user typed, and never receives or stores a token.
- */
-async function loginProvider(providerId: string, method?: string | null): Promise<JsonValue> {
-  if (!modelRuntime) throw new Error("Pi SDK model runtime is not initialized.");
-  const runtime = modelRuntime as Record<string, unknown>;
-  const login = runtime.login;
-  if (typeof login !== "function") {
-    throw new Error("This Pi build does not expose ModelRuntime.login(). Update Pi, or sign in with the Pi CLI.");
-  }
-
-  const provider = typeof runtime.getProvider === "function"
-    ? record((runtime.getProvider as Callable).call(runtime, providerId))
-    : null;
-  const auth = record(provider?.auth);
-  // Pi only has two login types. An api-key provider without an interactive
-  // `login` is ambient-only (env var, cloud profile) and has nothing to run.
-  const requested = nonEmpty(method);
-  const authType = requested === "api_key" || requested === "oauth"
-    ? requested
-    : auth?.oauth
-      ? "oauth"
-      : "api_key";
-  if (authType === "oauth" && auth && !auth.oauth) {
-    throw new Error(`Pi provider "${providerId}" does not support OAuth sign-in.`);
-  }
-  if (authType === "api_key" && auth) {
-    const apiKeyAuth = record(auth.apiKey);
-    if (!apiKeyAuth) throw new Error(`Pi provider "${providerId}" does not support API key sign-in.`);
-    if (typeof apiKeyAuth.login !== "function") {
-      throw new Error(`Pi provider "${providerId}" reads its API key from the environment, so there is nothing to sign in to.`);
-    }
-  }
-
-  if (activeLogin) {
-    // Aborting the old flow rejects its in-flight prompt, but a card already
-    // on screen belongs to the bridge — settle it so the superseded sign-in
-    // cannot leave an unanswerable prompt next to the new one.
-    activeLogin.controller.abort();
-    uiBridge.drain("auth");
-  }
-  const controller = new AbortController();
-  activeLogin = { providerId, controller };
-  const loginOptions = piLoginOptions(pi ?? {}, initState!);
-  try {
-    await (login as Callable).call(
-      modelRuntime,
-      providerId,
-      authType,
-      createPiAuthInteraction(uiBridge, providerId, controller.signal),
-      loginOptions.options,
-    );
-  } catch (error) {
-    // Credentials were written but Pi could not resync its local snapshot.
-    // That is a successful sign-in with a stale catalog, not a failed login.
-    if (error instanceof Error && error.name === "CredentialSynchronizationError") {
-      uiBridge.notify({
-        origin: "auth",
-        level: "warn",
-        message: "Signed in, but Pi could not refresh its model list. Reopen settings to retry.",
-        sourceId: providerId,
-      });
-    } else {
-      throw error;
-    }
-  } finally {
-    if (activeLogin?.controller === controller) activeLogin = null;
-    // The sign-in may have changed this provider's credential.
-    accountReader.forget(providerId);
-    await loginOptions.flush();
-  }
-
-  // login() settles once local credential state is consistent, but not once
-  // remote catalogs are fresh. Refresh so newly unlocked models appear.
-  //
-  // Bounded: the credential is already written by this point, so a slow
-  // network catalog fetch must not keep the sign-in RPC — and the card the
-  // user is watching — pending behind it.
-  if (typeof runtime.refresh === "function") {
-    try {
-      // The refresh keeps running after the timeout wins the race, so its
-      // rejection has to stay observed — an unhandled one would take down the
-      // worker over a catalog fetch the sign-in no longer depends on.
-      const refreshed = Promise.resolve(
-        (runtime.refresh as Callable).call(modelRuntime, { allowNetwork: true, providers: [providerId] }),
-      ).catch(() => undefined);
-      await Promise.race([
-        refreshed,
-        new Promise((resolve) => {
-          const timer = setTimeout(resolve, PI_LOGIN_REFRESH_TIMEOUT_MS);
-          timer.unref?.();
-        }),
-      ]);
-    } catch {
-      // Only a synchronous throw from refresh() reaches here; an async
-      // rejection is already absorbed above. Either way a stale catalog is
-      // reported through the model list, not as a failed sign-in.
-    }
-  }
-  // Deliberately does not return the model inventory: the credential is
-  // already written, so letting an inventory read throw here would report a
-  // completed sign-in as a failure. `refresh` above owns catalog freshness.
-  return toPiSdkJson({ ok: true, providerId, authType });
-}
-
 async function disposeWorker(): Promise<void> {
   if (disposed) return;
   disposed = true;
-  activeLogin?.controller.abort();
-  activeLogin = null;
+  piAuth.abort();
   // Every awaiting Pi callback resolves to "no answer" rather than hanging a
   // teardown that is already underway.
   uiBridge.close();
@@ -1483,10 +931,9 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
       post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "aborted", requestId: request.requestId });
       return null;
     }
-    case "login": return await loginProvider(request.payload.providerId, request.payload.method);
+    case "login": return await piAuth.loginProvider(request.payload.providerId, request.payload.method);
     case "login_cancel": {
-      activeLogin?.controller.abort();
-      activeLogin = null;
+      piAuth.abort();
       uiBridge.drain("auth");
       return null;
     }
@@ -1499,8 +946,11 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
     case "compact": return await compact(request.payload?.customInstructions);
     case "context_usage": return toPiSdkJson(await contextUsage());
     case "models": return toPiSdkJson(await availableModels());
-    case "auth": return await authInventory();
-    case "fork": return toPiSdkJson(await forkSession(request.payload));
+    case "auth": return await piAuth.authInventory();
+    case "fork": {
+      if (!pi || !initState || disposed) throw new Error("Pi SDK worker is not initialized or has been disposed.");
+      return toPiSdkJson(await forkSession(request.payload, { pi, init: initState, method, assertAbsolute }));
+    }
     case "dispose": await disposeWorker(); post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "disposed", requestId: request.requestId }); return null;
   }
 }

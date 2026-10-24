@@ -50,6 +50,12 @@ export type AcpRuntimeState<TSteer = unknown> = {
   /** Set when the agent process died underneath a live turn. */
   processFailed: boolean;
   pendingSteers: TSteer[];
+  /**
+   * Staged messages being redirected into an interrupt right now. While any
+   * is set, the turn boundary does not drain the queue into a turn the
+   * redirect is about to cancel.
+   */
+  dispatchingSteerIds: Set<string>;
   /** Slash commands the agent last advertised, already dialect-filtered. */
   slashCommands: AcpSlashCommand[];
   /** Config options the agent last reported, folded into the session snapshot. */
@@ -470,6 +476,7 @@ export async function createAcpRuntime<TSteer>(
     interrupted: false,
     processFailed: false,
     pendingSteers: [],
+    dispatchingSteerIds: new Set<string>(),
     slashCommands: [],
     configOptions: session.initialConfigOptions,
     currentModeId: session.initialModeId,

@@ -204,7 +204,10 @@ extension RemoteRosterChat {
     merged.toolType = nonEmptyRosterValue(toolType) ?? local.toolType
     merged.chatSessionId = nonEmptyRosterValue(chatSessionId) ?? local.chatSessionId
     merged.identityKey = nonEmptyRosterValue(identityKey) ?? local.identityKey
-    merged.sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) ?? local.sideChatSessionId
+    // The roster is authoritative here: every host that sends this field omits
+    // it once the side chat ends, and a host too old to send it has none. A
+    // local fallback would bring an ended side chat back.
+    merged.sideChatSessionId = nonEmptyRosterValue(sideChatSessionId)
     merged.applyLocalSnoozeOverlay(local)
     return merged
   }
@@ -799,10 +802,17 @@ extension RemoteRosterChat {
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
     if let sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) { payload["sideChatSessionId"] = sideChatSessionId }
-    guard let data = try? JSONSerialization.data(withJSONObject: payload),
-          var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
-    else { return nil }
-    summary.rosterDerived = true
-    return summary
+    return rosterDerivedChatSummary(payload)
   }
+}
+
+/// A chat summary built from what this phone already knows (a roster row, or a
+/// side chat's main chat), marked `rosterDerived` so the composer claims no
+/// access mode for it. Nil when the payload lacks a required field.
+func rosterDerivedChatSummary(_ payload: [String: Any]) -> AgentChatSessionSummary? {
+  guard let data = try? JSONSerialization.data(withJSONObject: payload),
+        var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+  else { return nil }
+  summary.rosterDerived = true
+  return summary
 }

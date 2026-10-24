@@ -181,6 +181,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A provider fork, then the side chat's first send.
+  ["chat.startSideChat", 120_000],
   // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
   ["pr.land", 120_000],
   // Replay-safe, but two forced GitHub snapshots and up to 25 PR refreshes do
