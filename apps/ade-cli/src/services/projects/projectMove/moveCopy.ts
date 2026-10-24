@@ -64,21 +64,42 @@ export async function trackedDependencyDirs(root: string, laneRelativePaths: rea
   return [...dirs];
 }
 
-/** Bytes a folder takes on disk (`du`), optionally leaving out `node_modules`. */
-export async function diskUsageBytes(root: string, options: { ignoreDependencies?: boolean } = {}): Promise<number> {
+/** `du`'s own limit. A project that takes longer is not measured, and the move check says so. */
+export const DISK_USAGE_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Bytes under `root` (`du`), optionally leaving out `node_modules`, or null
+ * when the run ended without a total. `du -sk` prints its one total line at
+ * the end, so a run killed at the limit prints nothing: reading that as 0 B
+ * would tell the move there is room it never checked.
+ */
+async function duBytes(root: string, options: { ignoreDependencies?: boolean } = {}): Promise<number | null> {
   const args = options.ignoreDependencies ? ["-skI", "node_modules", root] : ["-sk", root];
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("/usr/bin/du", args, { timeout: 10 * 60_000, maxBuffer: 1024 * 1024 }));
+    ({ stdout } = await execFileAsync("/usr/bin/du", args, { timeout: DISK_USAGE_TIMEOUT_MS, maxBuffer: 1024 * 1024 }));
   } catch (error) {
-    // du exits 1 when a few files are unreadable and still prints a total.
+    // du exits 1 when a few files are unreadable and still prints a total; a
+    // run killed at its limit prints none, which is not the same as 0 B.
     stdout = (error as { stdout?: string }).stdout ?? "";
   }
-  return (Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10) || 0) * 1024;
+  const kilobytes = Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "", 10);
+  return Number.isFinite(kilobytes) ? kilobytes * 1024 : null;
 }
 
+/** Bytes a folder takes on disk (`du`), optionally leaving out `node_modules`. An unmeasurable folder counts as 0 B; the move check asks `measureProject` when it needs to know. */
+export async function diskUsageBytes(root: string, options: { ignoreDependencies?: boolean } = {}): Promise<number> {
+  return (await duBytes(root, options)) ?? 0;
+}
+
+/** Bytes the copy will write, bytes of dependency folders it leaves out, and whether `du` measured them. */
+export type ProjectMeasurement =
+  | { measured: true; copyBytes: number; dependencyBytes: number }
+  /** `du` ended without a total; there are no byte counts to read, only the fact that they are unknown. */
+  | { measured: false };
+
 /** `doneAt` is null while `du` still runs: every check joins that run instead of starting another. */
-const measureCache = new Map<string, { doneAt: number | null; value: Promise<{ copyBytes: number; dependencyBytes: number }> }>();
+const measureCache = new Map<string, { doneAt: number | null; value: Promise<ProjectMeasurement> }>();
 /**
  * The move dialog re-checks on every destination change; a finished size is
  * reused for a minute. The minute counts from when `du` finished, not when it
@@ -87,17 +108,20 @@ const measureCache = new Map<string, { doneAt: number | null; value: Promise<{ c
  */
 const MEASURE_CACHE_MS = 60_000;
 
-/** Bytes the copy will write, and bytes of dependency folders it leaves out. */
-export function measureProject(root: string): Promise<{ copyBytes: number; dependencyBytes: number }> {
+export function measureProject(root: string): Promise<ProjectMeasurement> {
   const cached = measureCache.get(root);
   if (cached && (cached.doneAt === null || Date.now() - cached.doneAt < MEASURE_CACHE_MS)) return cached.value;
-  const entry: { doneAt: number | null; value: Promise<{ copyBytes: number; dependencyBytes: number }> } = {
+  const entry: { doneAt: number | null; value: Promise<ProjectMeasurement> } = {
     doneAt: null,
-    value: Promise.all([diskUsageBytes(root, { ignoreDependencies: true }), diskUsageBytes(root)])
-      .then(([withoutDependencies, total]) => ({
-        copyBytes: withoutDependencies,
-        dependencyBytes: Math.max(0, total - withoutDependencies),
-      }))
+    value: Promise.all([duBytes(root, { ignoreDependencies: true }), duBytes(root)])
+      .then(([withoutDependencies, total]): ProjectMeasurement => {
+        if (withoutDependencies === null || total === null) return { measured: false };
+        return {
+          measured: true,
+          copyBytes: withoutDependencies,
+          dependencyBytes: Math.max(0, total - withoutDependencies),
+        };
+      })
       .finally(() => {
         entry.doneAt = Date.now();
       }),
