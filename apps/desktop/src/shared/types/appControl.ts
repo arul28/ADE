@@ -111,6 +111,12 @@ export type AppControlLaunchArgs = {
   label?: string | null;
   chatSessionId?: string | null;
   force?: boolean | null;
+  /**
+   * Run in a new terminal session. By default a chat's relaunch on a lane runs
+   * in the shell its previous launch used, so an edit/relaunch loop keeps one
+   * shell instead of one per launch.
+   */
+  newShell?: boolean | null;
 };
 
 export type AppControlConnectArgs = {

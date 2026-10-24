@@ -22,6 +22,10 @@ between `ade apple`, `ade mac-desktop`, `ade app-control` and `ade browser`.
 - **`launch` refuses when your lane already has a live session.** Check
   `status` first. Use the running app, or `stop` it, or pass `--force` to
   replace it. `--force` only replaces a session in your own lane.
+- **A relaunch reuses your launch terminal.** After `stop` (or with
+  `--force`), your next `launch` runs in the same terminal session, so a
+  rebuild-and-relaunch loop leaves one shell. Pass `--new-shell` only when you
+  truly need a separate terminal.
 - **Check each step before you report it.** An act that returns `ok` only
   means ADE sent the input. Read the `hit:` and `effect:` lines and the new
   observation. Report only what you confirmed.

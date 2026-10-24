@@ -131,7 +131,12 @@ const UNREACHABLE_CEILING_MS = 120_000;
  * for a day is clutter.
  */
 const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
-/** Foreign session reads are a sidebar preview, not an archive. */
+/**
+ * Foreign session reads are a sidebar preview, not an archive. Archived rows are
+ * left out on the remote side (`excludeArchived`), so they cannot use up the
+ * page: a pile of archived shells once pushed a live chat past it, and opening
+ * that chat from the Lanes tab found nothing.
+ */
 const FOREIGN_SESSION_LIMIT = 60;
 /** Match the local optimistic-session window while a foreign list catches up. */
 const FOREIGN_OPTIMISTIC_SESSION_TTL_MS = 2 * 60 * 1000;
@@ -1470,7 +1475,7 @@ async function readMachine(
         callAction(targetId, projectId, {
           domain: "session",
           action: "list",
-          args: { limit: FOREIGN_SESSION_LIMIT },
+          args: { limit: FOREIGN_SESSION_LIMIT, excludeArchived: true },
         }),
         MACHINE_READ_TIMEOUT_MS,
         `session.list on ${machineName}`,
@@ -1583,7 +1588,7 @@ async function readThisMachine(
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
-          { limit: FOREIGN_SESSION_LIMIT },
+          { limit: FOREIGN_SESSION_LIMIT, excludeArchived: true },
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,

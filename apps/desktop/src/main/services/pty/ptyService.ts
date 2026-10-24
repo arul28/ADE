@@ -6328,7 +6328,8 @@ export function createPtyService({
       // died; capturing that stale state would make closeEntry restore a dead
       // relaunch to `running`. Leaving it null makes closeEntry persist the new
       // failure, while detached/completed/failed restore byte-for-byte.
-      const priorEndState = existingSession && existingSession.status !== "running"
+      const freshRun = args.freshRun === true && Boolean(existingSession);
+      const priorEndState = existingSession && existingSession.status !== "running" && !freshRun
         ? {
           status: existingSession.status,
           exitCode: existingSession.exitCode ?? null,
@@ -6608,7 +6609,7 @@ export function createPtyService({
           ownerProcessStartedAt,
         });
         setRuntimeState(sessionId, "running");
-        if (args.launchedBy === "agent" && chatSessionId) {
+        if (args.launchedBy === "agent") {
           try {
             sessionService.agentShells.markAgentLaunched(sessionId);
           } catch (error) {
@@ -6647,6 +6648,18 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
+      } else if (args.launchedBy === "agent" && freshRun) {
+        // App Control is running its app again in this shell: tracked again,
+        // with its earlier stop or replacement forgotten.
+        try {
+          sessionService.agentShells.markAgentRelaunched(sessionId);
+          // A relaunch may run a different command; the row names what runs now.
+          if (freshRun && title && existingSession.title !== title && !existingSession.manuallyNamed) {
+            sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
+          }
+        } catch (error) {
+          logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
+        }
       } else if (args.launchedBy !== "agent") {
         // Someone resumed this shell by hand: it is theirs now, so the
         // dead-shell cleanup must not archive it later. A no-op for any shell
@@ -7168,7 +7181,7 @@ export function createPtyService({
         sessionService.reattach({
           sessionId,
           ptyId,
-          startedAt: existingSession.startedAt,
+          startedAt: freshRun ? startedAt : existingSession.startedAt,
           ...(ownerPid != null ? { ownerPid } : {}),
           ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
         });
@@ -7238,7 +7251,9 @@ export function createPtyService({
         processOutputData: null,
         lastUserInputAt: 0,
         userInputGeneration: 0,
-        agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
+        // A relaunch in an ended App Control shell is the agent's again: its
+        // exit sweeps and a keystroke still claims it for the user.
+        agentShellCleanupCandidate: (!existingSession || freshRun) && args.launchedBy === "agent",
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         shellPromptVisible: false,
@@ -8120,6 +8135,30 @@ export function createPtyService({
       const { flight } = getOrCreateResumeFlight(resumableSession, resumeLaunch, args);
       const created = await flight;
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
+    },
+
+    /**
+     * Whether App Control may run its next launch in this ended shell. See
+     * `agentShellCleanup.canRelaunchIn`; also false while a process still
+     * holds the shell.
+     */
+    canRelaunchAgentShell(sessionId: string, scope: { laneId: string; chatSessionId: string | null }): boolean {
+      if (!sessionId || liveEntryBySessionId(sessionId)) return false;
+      try {
+        return sessionService.agentShells.canRelaunchIn(sessionId, scope);
+      } catch (error) {
+        logger.warn("pty.agent_shell_relaunch_check_failed", { sessionId, error: String(error) });
+        return false;
+      }
+    },
+
+    /** Keeps the dead-shell sweep off a shell a relaunch is about to reuse. */
+    holdAgentShell(sessionId: string): () => void {
+      try {
+        return sessionService.agentShells.hold(sessionId);
+      } catch {
+        return () => {};
+      }
     },
 
     /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */

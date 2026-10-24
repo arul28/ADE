@@ -631,10 +631,17 @@ export type PtyCreateArgs = {
   launchedBySessionId?: string | null;
   /**
    * `"agent"` when an agent started this shell for its chat (App Control). Such
-   * a shell is archived once it is dead and nobody typed into it; see
+   * a shell is deleted once it is dead and nobody typed into it; see
    * `agentShellCleanup`. Omitted means the user started it.
    */
   launchedBy?: "agent";
+  /**
+   * With `sessionId` naming an ended shell: run a brand-new process in that
+   * row instead of resuming it. The row's start time is now, and a process
+   * that dies at once records its own failure rather than restoring the
+   * earlier end state the way a resume does. App Control's relaunch.
+   */
+  freshRun?: boolean;
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
@@ -944,6 +951,13 @@ export type ListSessionsArgs = {
    * caller's to filter, exactly as they are for every other list.
    */
   chatSessionId?: string;
+  /**
+   * Leave archived rows out before `limit` is applied. Without it a page of
+   * the newest rows can be mostly archived shells, and a caller that drops
+   * them afterwards (another machine's Work list) gets a short page that
+   * misses live chats.
+   */
+  excludeArchived?: boolean;
 };
 
 /**

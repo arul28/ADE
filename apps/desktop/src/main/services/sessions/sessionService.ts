@@ -878,7 +878,7 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes, chatSessionId }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId, excludeArchived }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
@@ -898,6 +898,7 @@ export function createSessionService({
       where.push("s.chat_session_id = ?");
       params.push(trimmedChatSessionId);
     }
+    if (excludeArchived === true) where.push("s.archived_at is null");
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
     const fetchRows = (
       extraWhere: string[] = [],
@@ -1435,7 +1436,61 @@ export function createSessionService({
     return ids;
   };
 
-  const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
+  const deleteSession = (sessionId: string): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    db.run("delete from terminal_sessions where id = ?", [trimmed]);
+    statusNoteUpdatedAtById.delete(trimmed);
+    // Reap the lifecycle token with its row. ADE has been bitten before by a
+    // local table with no reaper, and every other session-keyed side table is
+    // already cascaded here.
+    settleLifecycle.forget(trimmed);
+    clearSettleResidue(trimmed);
+    // PR links are routing metadata for one chat; a link outliving its chat
+    // pins its lane's PR (the primary lane can never shed those). The row is
+    // already gone, so a failed purge must not report the delete as failed —
+    // but it still says so, because the orphan it leaves is otherwise invisible.
+    try {
+      deletePullRequestChatLinksForSessions(db, [trimmed]);
+    } catch (error) {
+      logger?.warn("sessions.pr_chat_link_purge_failed", {
+        sessionId: trimmed,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    emitChanged({ sessionId: trimmed, reason: "deleted" });
+    return true;
+  };
+
+  /**
+   * The agent-shell cleanup's delete: the row, then its transcript. A dead App
+   * Control shell's log is noise once the shell is gone; leaving it would only
+   * move the pile from the session list onto the disk.
+   */
+  const deleteAgentShell = (sessionId: string): boolean => {
+    const transcriptPath = db.get<{ transcriptPath: string | null }>(
+      "select transcript_path as transcriptPath from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    )?.transcriptPath?.trim() ?? "";
+    if (!deleteSession(sessionId)) return false;
+    if (transcriptPath) {
+      for (const filePath of [transcriptPath, `${transcriptPath}.gz`]) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          // Already gone, or never written: the row is what mattered.
+        }
+      }
+    }
+    return true;
+  };
+
+  const agentShells = createAgentShellCleanup({ db, deleteSession: deleteAgentShell });
 
   const settledAtMs = (sessionId: string): number | null => {
     const row = db.get<{ settledAt: string | null }>(
@@ -2810,36 +2865,7 @@ export function createSessionService({
       return changed;
     },
 
-    deleteSession(sessionId: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run("delete from terminal_sessions where id = ?", [trimmed]);
-      statusNoteUpdatedAtById.delete(trimmed);
-      // Reap the lifecycle token with its row. ADE has been bitten before by a
-      // local table with no reaper, and every other session-keyed side table is
-      // already cascaded here.
-      settleLifecycle.forget(trimmed);
-      clearSettleResidue(trimmed);
-      // PR links are routing metadata for one chat; a link outliving its chat
-      // pins its lane's PR (the primary lane can never shed those). The row is
-      // already gone, so a failed purge must not report the delete as failed —
-      // but it still says so, because the orphan it leaves is otherwise invisible.
-      try {
-        deletePullRequestChatLinksForSessions(db, [trimmed]);
-      } catch (error) {
-        logger?.warn("sessions.pr_chat_link_purge_failed", {
-          sessionId: trimmed,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      emitChanged({ sessionId: trimmed, reason: "deleted" });
-      return true;
-    },
+    deleteSession,
 
     async readTranscriptTail(
       transcriptPath: string,
