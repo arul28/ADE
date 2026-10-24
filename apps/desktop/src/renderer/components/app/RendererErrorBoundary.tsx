@@ -10,6 +10,7 @@ import {
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { reloadForStaleChunk } from "../../lib/staleChunkReload";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
@@ -43,6 +44,9 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
   private autoReported = false;
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
+    // Web client after a deploy: a lazy screen's old chunk is gone. The page
+    // reloads into the new build; nothing here is broken.
+    if (reloadForStaleChunk(error)) return;
     if (!this.autoReported) {
       this.autoReported = true;
       captureError(error, {

@@ -20,6 +20,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import { markExpected } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,6 +29,7 @@ import type { Logger } from "../logging/logger";
 /** Helper lines that mean ScreenCaptureKit stopped answering this process. */
 const CAPTURE_STALL_PATTERN = /ScreenCaptureKit did not answer|SCStreamErrorDomain Code=-3805/;
 import {
+  MAC_DESKTOP_ANSWER_CODES,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   type MacDesktopDriverHealth,
 } from "../../../shared/types/macDesktop";
@@ -242,6 +244,7 @@ export class MacDesktopDriverError extends Error {
     super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopDriverError";
     this.code = code;
+    if (MAC_DESKTOP_ANSWER_CODES.has(code)) markExpected(this, "user");
   }
 }
 

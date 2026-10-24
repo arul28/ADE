@@ -7707,7 +7707,7 @@ app.whenReady().then(async () => {
     const asked = trustGitOwnership && webContentsId != null ? pendingGitTrustPrompts.get(webContentsId) ?? null : null;
     if (trustGitOwnership && webContentsId != null) pendingGitTrustPrompts.delete(webContentsId);
     try {
-      return await resolveRepoRoot(selectedPath);
+      return await resolveRepoRoot(selectedPath, { userChosen: true });
     } catch (error) {
       const problem = gitUntrustedFolderProblem(error);
       if (!problem) throw error;
@@ -7736,7 +7736,7 @@ app.whenReady().then(async () => {
         added: trusted.added,
       });
       try {
-        return await resolveRepoRoot(selectedPath);
+        return await resolveRepoRoot(selectedPath, { userChosen: true });
       } catch (retryError) {
         // Still refused after trusting (git spells the folder differently, or
         // a parent needs it too): say so plainly rather than asking again.

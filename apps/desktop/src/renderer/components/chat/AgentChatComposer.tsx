@@ -2323,6 +2323,7 @@ function AgentChatComposerImpl({
   onJumpToThreadComment,
   sdkSlashCommands = [],
   modelId,
+  modelEmptyLabel,
   activeHarnessPresetId = null,
   availableModelIds,
   mentionModelIds,
@@ -2515,6 +2516,8 @@ function AgentChatComposerImpl({
   onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
+  /** The model picker's label while `modelId` is empty (see `ModelPicker.emptyLabel`). */
+  modelEmptyLabel?: string;
   /**
    * The saved harness preset this chat launched from, when there is one. The
    * model trigger then shows the preset's logo and name instead of the model's
@@ -8387,6 +8390,7 @@ function AgentChatComposerImpl({
               <>
                 <ModelPicker
                   value={modelId}
+                  emptyLabel={modelEmptyLabel}
                   onChange={handleModelPickerChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   activePresetId={activeHarnessPresetId}

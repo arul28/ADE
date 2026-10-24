@@ -48,6 +48,7 @@ import {
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { markExpected } from "../../../shared/expectedError";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
 export type FileServiceLaneAdapter = Pick<
@@ -432,6 +433,11 @@ function ensureSafePath(
   } catch (error) {
     if (isPathEscapeError(error)) {
       throw new Error("Refusing to access path outside workspace");
+    }
+    // Files paths come from the user or an agent (a tab on a deleted
+    // worktree, a guessed name): a missing one is an answer, not a fault.
+    if (error instanceof Error && error.message.startsWith("Path does not exist:")) {
+      throw markExpected(error, "user");
     }
     throw error;
   }

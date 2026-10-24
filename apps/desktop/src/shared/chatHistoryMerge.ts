@@ -222,6 +222,22 @@ const NO_REPLACED_INDEXES: readonly number[] = [];
 const liveAppendByList = new WeakMap<readonly AgentChatEventEnvelope[], AgentChatLiveAppend>();
 
 /**
+ * Record `append` for `list`, and forget the relation its base had.
+ *
+ * A relation is one hop. Its value holds `base` strongly, so a base that kept
+ * its own relation would keep the list before it, and so on: the newest list
+ * then held every earlier copy of the transcript alive (and, through the
+ * per-list caches in {@link foldedOverAppends}, everything folded from each
+ * copy). On a long streamed chat that was gigabytes of event arrays and the
+ * renderer died out of memory (ADE-DESKTOP-7A/64/68/6M/72/77). A list asked
+ * about after a newer one was made from it just folds again.
+ */
+function setLiveAppend(list: readonly AgentChatEventEnvelope[], append: AgentChatLiveAppend): void {
+  liveAppendByList.delete(append.base);
+  liveAppendByList.set(list, append);
+}
+
+/**
  * The append that produced `events`, or null when the list came from anywhere
  * else (a history snapshot, a trim, an out-of-order arrival). A value derived
  * from the base list can be carried forward by looking at the appended events
@@ -239,7 +255,7 @@ export function recordAgentChatLiveAppend(
   events: readonly AgentChatEventEnvelope[],
   append: AgentChatLiveAppend,
 ): void {
-  liveAppendByList.set(events, append);
+  setLiveAppend(events, append);
 }
 
 /**
@@ -330,7 +346,7 @@ function appendToToolCallDedupedList(
       if (resend.tookPayload) sources.set(key, entry);
     }
   }
-  liveAppendByList.set(result, { base: existing, appendedFrom: existing.length, replacedIndexes });
+  setLiveAppend(result, { base: existing, appendedFrom: existing.length, replacedIndexes });
   return result;
 }
 
@@ -376,7 +392,7 @@ export function mergeAgentChatLiveEvents(
     } else {
       // New entries sit after every stored tool call, so its positions hold.
       appended = [...existing, ...fresh];
-      liveAppendByList.set(appended, {
+      setLiveAppend(appended, {
         base: existing,
         appendedFrom: existing.length,
         replacedIndexes: NO_REPLACED_INDEXES,

@@ -58,6 +58,7 @@ import {
 } from "./laneDeviceRows";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { deleteAppleSimulator } from "./simulatorPower";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 /**
  * One simulator per lane, many per machine.
@@ -720,9 +721,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     // binding it twice is how one row deletes it under the other.
     const extraHolder = readExtras(null).find((device) => device.udid === match.udid);
     if (extraHolder) {
-      throw new Error(
+      throw new AdeExpectedError(
         `${APPLE_DEVICE_IS_EXTRA_CODE}: ${match.name} (${match.udid}) is an extra device of lane `
         + `${laneNameFor(extraHolder.laneId) ?? extraHolder.laneId}. Drive it with --device ${match.udid}.`,
+        "user",
       );
     }
     /*

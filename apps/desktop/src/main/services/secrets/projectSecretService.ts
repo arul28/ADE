@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -584,18 +585,22 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   const getLocal = (args: ProjectSecretGetArgs, refresh: AccountRefresh = "not_linked"): ProjectSecretValueResult => {
     const name = normalizeSecretName(args?.name);
-    const notFound = (): Error => new Error(
+    // A secret nobody saved is the caller's answer, not a fault in the store.
+    const notFound = (): Error => new AdeExpectedError(
       refresh === "fresh"
         ? `ADE secret '${name}' was not found on this machine or in your account for this repository.`
         : refresh === "unreachable"
           ? `ADE secret '${name}' was not found on this machine, and ADE could not reach your account just now to check for a copy saved on another machine.`
           : `ADE secret '${name}' was not found.`,
+      "user",
     );
     const index = readIndex();
     const entry = index.entries[name];
     if (!entry) throw notFound();
     const value = store.getSync(valueKey(name));
-    if (value == null) throw notFound();
+    // Indexed but with no stored value: the store lost it, which is a fault
+    // worth a report, not an answer.
+    if (value == null) throw new Error(notFound().message);
     return {
       ...toSummary(name, entry, resolveStorage(entry)),
       value,

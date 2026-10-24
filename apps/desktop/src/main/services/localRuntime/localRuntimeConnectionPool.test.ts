@@ -1703,6 +1703,60 @@ describe("local runtime connection pool", () => {
     expect(call).toHaveBeenCalledTimes(2);
   });
 
+  it("registers a folder again when the brain forgets its project id, once for concurrent calls", async () => {
+    // The pool caches the brain's id for each folder. A brain that drops or
+    // re-keys its record answered "Unknown projectId" to every later call
+    // from that window (ADE-DESKTOP-2P). The brain refuses before running the
+    // action, so even a non-replayable send may run again on the fresh id.
+    const rootPath = path.resolve("/repo");
+    let knownProjectId = "project_bbb";
+    const registration = {
+      projectId: "project_bbb",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 2,
+      gitOriginUrl: null,
+    };
+    const call = vi.fn(async (method: string, params: { projectId?: string; arguments?: { action?: string } }) => {
+      if (method === "projects.add") return registration;
+      if (method !== "ade/actions/call") throw new Error(`Unexpected method ${method}`);
+      if (params.projectId !== knownProjectId) {
+        throw new Error(`Remote ADE service method ade/actions/call failed (code -32603): Unknown projectId: ${params.projectId}`);
+      }
+      return { domain: "chat", action: params.arguments?.action, result: { ok: true }, statusHints: {} };
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      ...registration,
+      projectId: "project_aaa",
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    const results = await Promise.all([
+      pool.callActionForRoot(rootPath, { domain: "chat", action: "send", args: { sessionId: "chat-1", text: "a" } }),
+      pool.callActionForRoot(rootPath, { domain: "chat", action: "send", args: { sessionId: "chat-2", text: "b" } }),
+    ]);
+    expect(results.map((result) => result.result)).toEqual([{ ok: true }, { ok: true }]);
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+
+    // A brain that also refuses the fresh registration fails the call once,
+    // instead of re-registering on every poll.
+    knownProjectId = "project_ccc";
+    await expect(pool.callActionForRoot(rootPath, { domain: "chat", action: "send", args: { sessionId: "chat-3", text: "c" } }))
+      .rejects.toThrow("Unknown projectId: project_bbb");
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+  });
+
   it("logs daemon action envelopes that fail after a successful RPC response", async () => {
     const logger = {
       debug: vi.fn(),

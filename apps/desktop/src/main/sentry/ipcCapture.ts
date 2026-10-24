@@ -6,13 +6,16 @@
  * trace logger only runs in dev and perf builds. This wraps `ipcMain.handle`
  * before any handler registers (the ones in `main.ts` register before
  * `registerIpc` installs its own wrapper), so each failure becomes one Sentry
- * issue per channel (per runtime action for the brain's action channel) and
- * error type. Slow calls leave a breadcrumb for whatever fails next.
+ * issue per channel and error type (for the brain's action channels, per
+ * error and normalized message, with the action as a tag). Slow calls leave a
+ * breadcrumb for whatever fails next.
  */
 import { app, ipcMain, powerMonitor } from "electron";
 import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
 import { parseCodedErrorMessage } from "../../shared/codedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../shared/sentry/expectedFailure";
+import { runtimeActionFingerprint } from "../../shared/sentry/grouping";
+import { IPC } from "../../shared/ipc";
 import { forwardLogToSentry } from "../../shared/sentry/logBridge";
 import { runInCapturedIpcCall } from "./ipcCallScope";
 
@@ -38,20 +41,36 @@ function watchResume(): void {
   });
 }
 
+/** Asleep this long during one call means the call straddled a sleep. */
+const SLEPT_DURING_CALL_MS = 5_000;
+
 /**
- * A timeout whose deadline passed while the machine slept: it woke after the
- * deadline, so the timer fired late and nothing hung. A short sleep before the
- * deadline leaves a real hang reported.
+ * A timeout whose call straddled a sleep: nothing hung, the machine was off.
+ *
+ * Two signals, because the `resume` event alone misses most of them: on wake,
+ * the overdue timer fires before `resume` is delivered, and a dark wake
+ * (Power Nap) emits no `resume` at all. Timers and `performance.now()` run on
+ * the monotonic clock, which stops while macOS sleeps; the wall clock does
+ * not. A gap between the two is time spent asleep (Sentry saw 30s timeouts
+ * reported 5 to 55 minutes after the call began). Where the monotonic clock
+ * counts sleep, the gap stays 0 and only the `resume` check applies.
  */
-function sleptThroughTimeout(error: unknown, startedAt: number): boolean {
+function sleptThroughTimeout(error: unknown, startedAt: number, startedMono: number): boolean {
   const limitMs = Number(IPC_TIMEOUT_MESSAGE.exec(error instanceof Error ? error.message : "")?.[1]);
-  return limitMs > 0 && lastResumeAt >= startedAt + limitMs;
+  if (!(limitMs > 0)) return false;
+  if (lastResumeAt >= startedAt + limitMs) return true;
+  const asleepMs = (Date.now() - startedAt) - (performance.now() - startedMono);
+  return asleepMs >= SLEPT_DURING_CALL_MS;
 }
+
+/** The channels that carry every brain action; `labelFor` names the action. */
+const RUNTIME_ACTION_CHANNELS: ReadonlySet<string> = new Set([IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction]);
 
 /**
  * `labelFor` names a call more precisely than its channel when it can (the
- * brain's action channel carries every action); it returns the channel
- * otherwise. Supplied by the caller so this wrapper knows no channel.
+ * brain's action channels carry every action); it returns the channel
+ * otherwise. Supplied by the caller, which knows how each channel's args
+ * name the call.
  */
 export function installIpcErrorCapture(labelFor: (channel: string, args: readonly unknown[]) => string): void {
   const target = ipcMain as PatchedIpcMain;
@@ -61,6 +80,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
   target.handle = ((channel: string, listener: Parameters<typeof ipcMain.handle>[1]) =>
     originalHandle(channel, async (event, ...args) => {
       const startedAt = Date.now();
+      const startedMono = performance.now();
       watchResume();
       try {
         const result = await runInCapturedIpcCall(() => listener(event, ...args));
@@ -72,7 +92,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
-        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt)) {
+        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt, startedMono)) {
           // An answer ("Lane not found", "Can't reach …"): a Sentry Log, not an issue.
           forwardLogToSentry("warn", `ipc.expected.${label}`, {
             message: error instanceof Error ? error.message : String(error),
@@ -84,14 +104,18 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
         if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";
           const code = parseCodedErrorMessage(error).code ?? null;
+          const runtimeAction = RUNTIME_ACTION_CHANNELS.has(channel);
           captureError(error, {
             tags: {
               "ipc.channel": channel,
-              ...(label !== channel ? { "runtime.action": label } : {}),
+              ...(runtimeAction ? { "runtime.action": label } : {}),
               ...(code ? { "error.code": code } : {}),
             },
             extra: { durationMs },
-            fingerprint: ["ipc", label, code ?? errorName],
+            // A runtime action's failure is rebuilt from the brain's reply and
+            // has no stack of its own: group it by what failed, not by which
+            // action hit it, or one fault is an issue per screen that asked.
+            fingerprint: runtimeAction ? runtimeActionFingerprint(error, label) : ["ipc", label, code ?? errorName],
           });
         }
         throw error;

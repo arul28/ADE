@@ -4313,6 +4313,68 @@ describe("AgentChatPane submit recovery", () => {
     }
   });
 
+  it("shows a locked chat's last-turn model while its summary cannot be read", async () => {
+    // The summary is the chat's usual source of its model. When it cannot be
+    // read, the composer must not fall back to an empty "Select model": the
+    // chat's own transcript records the model of each finished turn.
+    const session = buildSession("session-transcript-model", { status: "idle", title: "Finished chat" });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [
+          { sessionId: session.sessionId, timestamp: "2026-03-24T05:57:45.700Z", event: { type: "user_message", text: "hi", turnId: "t1" } },
+          { sessionId: session.sessionId, timestamp: "2026-03-24T05:57:47.700Z", event: { type: "done", turnId: "t1", status: "completed", modelId: "openai/gpt-5.5" } },
+        ],
+        truncated: false,
+        sessionFound: true,
+      } as any,
+    });
+    const getSummary = vi.mocked(window.ade.agentChat.getSummary);
+    getSummary.mockImplementation(async () => { throw new Error("brain restarting"); });
+    const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
+    expect(getSummary).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /current: Select model/ })).toBeNull();
+  });
+
+  it("keeps a chat's own model that no catalog lists, and a send does not switch it", async () => {
+    // A custom Codex config.toml model, or one newer than this build: the
+    // summary names it but the registry cannot. The composer shows the raw
+    // id, and the next message goes to the chat on that same model.
+    const session = buildSession("session-unlisted-model", {
+      status: "idle",
+      title: "Custom model chat",
+      modelId: undefined,
+      model: "my-custom-codex-model",
+    });
+    installAdeMocks({ sessions: [session] });
+    vi.mocked(window.ade.agentChat.getSummary).mockResolvedValue(session);
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId={session.laneId} lockSessionId={session.sessionId} hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: /current: my-custom-codex-model/ })).toBeTruthy();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "next step" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(window.ade.agentChat.send).toHaveBeenCalled());
+    const modelUpdates = vi.mocked(window.ade.agentChat.updateSession).mock.calls
+      .filter(([args]) => "modelId" in (args as object) || "model" in (args as object));
+    expect(modelUpdates).toEqual([]);
+    expect(screen.getByRole("button", { name: /current: my-custom-codex-model/ })).toBeTruthy();
+  });
+
   it("restores the idle summary and composer after send dispatch fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({

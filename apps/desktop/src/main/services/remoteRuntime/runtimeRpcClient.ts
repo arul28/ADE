@@ -1,6 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { syntheticCallerId } from "../../../shared/syntheticCallerId";
+import { markExpectedFromWire } from "../../../shared/expectedError";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
@@ -332,13 +333,13 @@ export class RuntimeRpcClient {
     if (!pending) return;
     const error = response.error;
     if (error && typeof error === "object" && !Array.isArray(error)) {
-      const rpcError = error as { code?: unknown; message?: unknown; data?: unknown };
+      const rpcError = error as { code?: unknown; message?: unknown; data?: unknown; expected?: unknown };
       const message = String(rpcError.message ?? "Remote ADE service request failed.");
       const code = typeof rpcError.code === "number" ? ` (code ${rpcError.code})` : "";
       const data = formatRpcErrorData(rpcError.data);
-      pending.reject(new Error(
+      pending.reject(markExpectedFromWire(new Error(
         `Remote ADE service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,
-      ));
+      ), rpcError.expected));
       return;
     }
     pending.resolve(response.result);

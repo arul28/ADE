@@ -7,6 +7,7 @@ import type { MachineResetOptions, MachineResetPlan } from "../../../shared/type
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { AdeExpectedError, expectedErrorKind } from "../../../shared/expectedError";
 import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -76,7 +77,7 @@ import {
 } from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
-import { PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE, resolveWithinAllowedDirs } from "./allowedRendererPath";
+import { pathOutsideAllowedDirsError, resolveWithinAllowedDirs } from "./allowedRendererPath";
 import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
@@ -2728,6 +2729,7 @@ export function registerIpc({
               // Analytics capture must never mask the original IPC error.
             }
           }
+          const kind = expectedErrorKind(error);
           if (traceIpcInvokes || didTimeout) {
             const logger = traceLogger ?? getTraceLogger();
             logger.warn("ipc.invoke.failed", {
@@ -2735,6 +2737,16 @@ export function registerIpc({
               channel,
               winId,
               durationMs,
+              err: getErrorMessage(error),
+            });
+          } else if (kind) {
+            // An answer Sentry no longer keeps as an issue (`shared/expectedError.ts`):
+            // this line is its record on this machine.
+            getTraceLogger().info("ipc.invoke.expected_failure", {
+              callId,
+              channel,
+              durationMs,
+              kind,
               err: getErrorMessage(error),
             });
           }
@@ -2753,9 +2765,14 @@ export function registerIpc({
   };
 
   const ensureIosSimulator = (): NonNullable<AppContext["iosSimulatorService"]> => {
-    const service = getCtx().iosSimulatorService;
+    const ctx = getCtx();
+    const service = ctx.iosSimulatorService;
     if (!service) {
-      throw new Error("iOS Simulator service is not available.");
+      const message = "iOS Simulator service is not available.";
+      // Expected only in the no-project window, which has no simulator
+      // service. A project context without one is a wiring bug: report it.
+      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
     }
     return service;
   };
@@ -2945,7 +2962,8 @@ export function registerIpc({
         count: bucket.count,
         windowMs: limit.windowMs,
       });
-      throw new Error("Too many browser requests. Try again shortly.");
+      // Logged above, which keeps it searchable; the caller is told to wait.
+      throw new AdeExpectedError("Too many browser requests. Try again shortly.", "user");
     }
     bucket.count += 1;
   };
@@ -3919,7 +3937,7 @@ export function registerIpc({
     if (path.isAbsolute(inputPath)) return path.resolve(inputPath);
     // A relative path names a file in the project. With no project open there
     // is nothing to resolve it against (not the process's working directory).
-    if (!projectRoot?.trim()) throw new Error(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE);
+    if (!projectRoot?.trim()) throw pathOutsideAllowedDirsError();
     return path.resolve(projectRoot, inputPath);
   };
 
@@ -4009,7 +4027,7 @@ export function registerIpc({
       }
     });
     if (!allowed) {
-      throw new Error("Path is outside allowed directories.");
+      throw pathOutsideAllowedDirsError();
     }
     shell.showItemInFolder(normalized);
   });
@@ -4036,7 +4054,7 @@ export function registerIpc({
       allowed = piConfigPaths.some((candidate) => pathsEqual(candidate, normalized));
     }
     if (!allowed) {
-      throw new Error("Path is outside allowed directories.");
+      throw pathOutsideAllowedDirsError();
     }
     const errorMessage = await shell.openPath(normalized);
     if (errorMessage) {
@@ -5510,7 +5528,7 @@ export function registerIpc({
         }),
         raw,
       );
-      if (!resolved) throw new Error("Path is outside allowed directories.");
+      if (!resolved) throw pathOutsideAllowedDirsError();
       shell.showItemInFolder(resolved);
     },
   );
@@ -11235,9 +11253,14 @@ export function registerIpc({
   });
 
   const requirePtyService = (): ReturnType<typeof createPtyService> => {
-    const service = getCtx().ptyService;
+    const ctx = getCtx();
+    const service = ctx.ptyService;
     if (!service) {
-      throw new Error("ADE terminal service is not available for this project window. Reopen the project and try again.");
+      const message = "ADE terminal service is not available for this project window. Reopen the project and try again.";
+      // Expected only in the no-project window, which has no terminals. A
+      // project context without one is a wiring bug: report it.
+      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
     }
     return service;
   };

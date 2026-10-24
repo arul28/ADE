@@ -11,6 +11,7 @@ import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -474,6 +475,9 @@ function resolveCandidatePath(
       continue;
     }
     if (!opts.allowMissing) {
+      // Not marked expected here: most callers are ADE's own and pass paths
+      // that should exist. Boundaries that take a user's or agent's path
+      // (Files, `resolveWithinAllowedRoots`) mark it themselves.
       throw new Error(`Path does not exist: ${candidate}`);
     }
     cursor = nextPath;
@@ -670,12 +674,15 @@ export function resolveWithinAllowedRoots(
       ownRootFailure = real === null
         ? rootError
         : walk.failure.missing
-          ? new Error(`Path does not exist: ${candidate}`)
+          // Every caller resolves a path the renderer or an agent sent, so a
+          // missing one is their answer, not a fault.
+          ? new AdeExpectedError(`Path does not exist: ${candidate}`, "user")
           : walk.failure.error;
     }
   }
   if (sawEscape || ownRootFailure === null) {
-    throw new Error(refusalMessage);
+    // The refusal is the guard doing its job on a path the caller chose.
+    throw new AdeExpectedError(refusalMessage, "user");
   }
   throw ownRootFailure;
 }

@@ -61,7 +61,9 @@ export function createPendingRequestChannel<T>(noncePrefix: string): PendingRequ
 
   return {
     request: (payload) => {
-      const carried = (payload as unknown as { nonce?: unknown }).nonce;
+      // `T` may be `void` (a bare "open the pane" ping sends `undefined`), so
+      // the payload is not always an object to read a nonce from.
+      const carried = payload == null ? undefined : (payload as unknown as { nonce?: unknown }).nonce;
       const next = (typeof carried === "string" && carried.length > 0
         ? payload
         : { ...payload, nonce: nextNonce() }) as Request;

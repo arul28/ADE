@@ -1011,7 +1011,9 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("reports each failed run_ade_action as its own Sentry issue, named by domain.action", async () => {
+  // A brain error has its own stack, so Sentry groups it by where it was
+  // thrown; the action that hit it is a tag, not part of the issue's identity.
+  it("reports each failed run_ade_action tagged with its domain.action, grouped by its stack", async () => {
     const captured: Array<{ error: unknown; tags: Record<string, string>; fingerprint: string[] }> = [];
     connectSentry({
       withScope(callback) {
@@ -1043,8 +1045,8 @@ describe("adeRpcServer", () => {
       expect(watch.isError, "setup: watchWorkspace failed").toBe(true);
       expect(stop.isError, "setup: stopWatching failed").toBe(true);
       expect(captured.map(({ tags, fingerprint }) => [tags["runtime.action"], fingerprint])).toEqual([
-        ["file.watchWorkspace", ["runtime-action", "file.watchWorkspace", "Error"]],
-        ["file.stopWatching", ["runtime-action", "file.stopWatching", "Error"]],
+        ["file.watchWorkspace", []],
+        ["file.stopWatching", []],
       ]);
       expect((captured[1]!.error as Error).message).toBe("watcher refused to stop");
     } finally {

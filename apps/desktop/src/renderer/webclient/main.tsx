@@ -9,6 +9,7 @@ import { WebClientRoot } from "./shell/WebClientRoot";
 import { installScrollingIndicator } from "../lib/scrollingIndicator";
 import { installAnimationPhaseAlignment } from "../lib/animationPhaseAlignment";
 import { isAdeUnavailableError } from "../lib/adeAvailability";
+import { installStaleChunkReload, reloadForStaleChunk } from "../lib/staleChunkReload";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
 // (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
@@ -69,7 +70,10 @@ installAnimationPhaseAlignment();
 // console line or a crash report.
 window.addEventListener("unhandledrejection", (event) => {
   if (isAdeUnavailableError(event.reason)) event.preventDefault();
+  // A chunk a deploy removed: reload once for the new build.
+  else if (reloadForStaleChunk(event.reason)) event.preventDefault();
 });
+installStaleChunkReload();
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,

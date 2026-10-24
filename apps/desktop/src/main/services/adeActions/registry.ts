@@ -1,4 +1,5 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1701,7 +1702,12 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         alertBody: optionalNonEmptyString(record.alertBody),
       });
       if (!raised) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        // This action and the two after it are only asked for by agents and
+        // the CLI (`ade` status/attention), which can name a session that is
+        // gone: their answer, not a fault. The settle/snooze actions below
+        // also serve ADE's own Work UI on every machine, where "not found"
+        // can be a misrouted call (the wrong machine), so they stay reported.
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1712,7 +1718,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("setSessionStatusNote requires a string `note` field.");
       }
       if (!sessionService.setStatusNote(sessionId, record.note || null)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1724,7 +1730,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("setSessionActivity requires a supported string `value` or null.");
       }
       if (!sessionService.setSessionActivity(sessionId, value)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, value };
     },

@@ -578,6 +578,7 @@ ade lanes action initEnv --arg laneId=lane-id              # re-run the full env
 ade lanes delete lane-id --force --delete-branch
 ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <model> --no-parent
 ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
+ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent
 ade chat list --personal --text

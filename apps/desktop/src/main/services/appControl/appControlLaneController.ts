@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -2004,7 +2005,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     requireSupportedDriver(connectArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !connectArgs.force) {
-      throw new Error("App Control already has an active session on this lane. Pass force=true to replace it.");
+      throw new AdeExpectedError("App Control already has an active session on this lane. Pass force=true to replace it.", "user");
     }
     if (activeSession) await stop({ force: true });
     const projectRoot = normalizeProjectRoot(connectArgs.projectRoot, args.projectRoot);
@@ -2059,7 +2060,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
-      throw new Error("App Control already has an active session on this lane. Pass --force to replace it.");
+      throw new AdeExpectedError("App Control already has an active session on this lane. Pass --force to replace it.", "user");
     }
     if (!args.ptyService) {
       throw new Error("App Control terminal launch requires the ADE terminal service.");

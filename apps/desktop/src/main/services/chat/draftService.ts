@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   MAX_DRAFT_ATTACHMENTS,
   MAX_DRAFT_GRACE_SECONDS,
@@ -605,7 +606,7 @@ export function claimDraft(db: DraftDb, id: string): DraftEntry | null {
   // cancel a send the user is still expecting; the scheduler must be the one
   // to consume it.
   if (entry.kind === "scheduled" && entry.status !== "sent" && entry.status !== "cancelled") {
-    throw new Error("This is a scheduled send. Cancel its schedule before attaching it.");
+    throw new AdeExpectedError("This is a scheduled send. Cancel its schedule before attaching it.", "user");
   }
   db.run("delete from prompt_stashes where id = ?", [normalizedId]);
   return entry;

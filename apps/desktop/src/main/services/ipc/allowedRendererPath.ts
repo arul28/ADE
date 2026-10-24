@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { resolveWithinAllowedRoots } from "../shared/utils";
 
 /**
@@ -7,6 +8,11 @@ import { resolveWithinAllowedRoots } from "../shared/utils";
  * both key off it.
  */
 export const PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE = "Path is outside allowed directories.";
+
+/** The refusal itself: an answer to a path the renderer was given, never a fault. */
+export function pathOutsideAllowedDirsError(): Error {
+  return new AdeExpectedError(PATH_OUTSIDE_ALLOWED_DIRS_MESSAGE, "user");
+}
 
 /**
  * Resolve a renderer-supplied path against the allowed directories, accepting

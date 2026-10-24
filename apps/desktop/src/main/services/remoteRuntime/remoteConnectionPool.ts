@@ -62,6 +62,7 @@ import {
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
+import { markExpectedFromWire } from "../../../shared/expectedError";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -1058,9 +1059,7 @@ export class RemoteConnectionPool {
           this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
           return optionalFallback;
         }
-        throw new Error(
-          message,
-        );
+        throw markExpectedFromWire(new Error(message), error.expected);
       }
       return {
         domain:

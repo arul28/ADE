@@ -1,4 +1,5 @@
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
@@ -65517,7 +65518,7 @@ export function createAgentChatService(args: {
       .list(normalizedSessionId)
       .find((schedule) => schedule.id === normalizedScheduleId);
     if (!existing) {
-      throw new Error(`Scheduled work '${normalizedScheduleId}' was not found in chat '${normalizedSessionId}'.`);
+      throw new AdeExpectedError(`Scheduled work '${normalizedScheduleId}' was not found in chat '${normalizedSessionId}'.`, "user");
     }
     if (isAutoResumeScheduledWork(existing)) {
       autoResume.noteScheduleDismissed(normalizedSessionId);
@@ -70325,6 +70326,11 @@ export function createAgentChatService(args: {
 
   /** The public update: a person changing a chat's settings also moves the machine defaults. */
   const updateSessionAndRememberDefaults = async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    // An action call with no arguments arrives as `undefined`; say what is
+    // missing instead of failing on a property read.
+    if (!args || typeof args !== "object" || typeof args.sessionId !== "string" || !args.sessionId.trim()) {
+      throw new AdeExpectedError("chat.updateSession needs { sessionId, ...fields }, e.g. `ade chat update <session> --title \"New title\"`.", "user");
+    }
     // A parent sent here used to be dropped without a word, so the caller
     // believed the chat was relinked.
     const loose = args as Record<string, unknown>;

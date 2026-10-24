@@ -16,6 +16,7 @@ import {
   isUnsupportedAdeActionError,
   parseCodedErrorMessage,
 } from "../codedError";
+import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
@@ -124,7 +125,12 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^Lane delete is already running: /,
   /^Color already in use by lane /,
   // Apple simulator answers: a device another lane owns, one that is off, a path outside the build.
-  /\b(?:APPLE_DEVICE_(?:NOT_LANE_OWNED|OFF|EXISTS)|IOS_SIMULATOR_(?:OUT_PATH_OUTSIDE_ROOT|NO_BUILDABLE_TARGET)):/,
+  // (IS_EXTRA is marked where it is thrown now; the code stays for older brains.)
+  /\b(?:APPLE_DEVICE_(?:NOT_LANE_OWNED|OFF|EXISTS|IS_EXTRA)|IOS_SIMULATOR_(?:OUT_PATH_OUTSIDE_ROOT|NO_BUILDABLE_TARGET)):/,
+  // An agent's Apple call on a lane that has no device yet; the answer says how
+  // to make one. Marked where it is thrown now (shared/expectedError.ts); the
+  // text stays for older brains, whose errors arrive without the mark.
+  /^This lane has no Apple device yet\. /,
   // The web client while its computer reconnects or the user switches project.
   /^Reconnecting to this computer\. Try again when connected\.$/,
   /^Project connection changed\.$/,
@@ -199,8 +205,14 @@ export function isExpectedOutcomeText(text: string): boolean {
  */
 const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving"]);
 
-/** An answer the caller gets, worth a Sentry Log but not an issue. */
+/**
+ * An answer the caller gets, worth a Sentry Log but not an issue. The throw
+ * site's own mark (`shared/expectedError.ts`) decides first; the text patterns
+ * above are for errors thrown before that mark existed, or by code that
+ * cannot carry one.
+ */
 export function isExpectedOutcome(error: unknown): boolean {
+  if (expectedErrorKind(error)) return true;
   const text = failureText(error);
   if (isExpectedOutcomeText(text)) return true;
   const code = parseCodedErrorMessage(error).code;

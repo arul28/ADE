@@ -147,7 +147,7 @@ import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
-import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
@@ -180,6 +180,7 @@ import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../share
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -604,10 +605,33 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const SIMCTL_SCREENSHOT_TIMEOUT_MS = 30_000;
+
 function isTerminatedByTimeout(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as { killed?: unknown; signal?: unknown };
   return record.killed === true && record.signal === "SIGTERM";
+}
+
+/**
+ * A failed `simctl io … screenshot`. It often exits with nothing on stderr but
+ * its "Note: No display specified" line, so the error says how it ended (a
+ * timeout, an exit code, a signal) instead of only echoing the command.
+ */
+function simctlScreenshotFailure(error: unknown, deviceName: string, timeoutMs: number): Error {
+  if (isTerminatedByTimeout(error)) {
+    return new Error(`Simulator ${deviceName} did not return a screenshot within ${Math.round(timeoutMs / 1000)}s. CoreSimulator may be stuck; shut that simulator down and try again.`);
+  }
+  if (!(error instanceof Error)) return new Error(String(error));
+  const record = error as { code?: unknown; signal?: unknown };
+  const ending = typeof record.code === "number"
+    ? `exit code ${record.code}`
+    : typeof record.signal === "string" && record.signal
+      ? `signal ${record.signal}`
+      : null;
+  if (!ending || error.message.includes(ending)) return error;
+  error.message = `${error.message.trimEnd()}\n(simctl ended with ${ending})`;
+  return error;
 }
 
 function outputToString(value: unknown): string {
@@ -2696,6 +2720,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     run: (command, commandArgs, options) => run(command, commandArgs, options),
     powerOffDevice: (udid) => power.powerOffDevice(udid, "delete"),
     listInstalledSimulators,
+    // Same rule as the simulators: no `xcrun` spawn off a Mac or on a Mac
+    // with no `simctl`, where the answer is "none" (the picker asks on open).
+    listInstalledRuntimes: async () => {
+      if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
+      if (simctlMissingAt && Date.now() - simctlMissingAt < SIMCTL_MISSING_RECHECK_MS) return [];
+      try {
+        const { stdout } = await run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
+        simctlMissingAt = 0;
+        return parseAppleInstalledRuntimes(stdout);
+      } catch (error) {
+        if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+        if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
+        simctlMissingAt = Date.now();
+        return [];
+      }
+    },
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
     projectRoot: args.projectRoot,
@@ -4780,7 +4820,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let buffer: Buffer;
     try {
       const display = await duo.screenshotDisplayArgs(device.udid);
-      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: 30_000 });
+      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: SIMCTL_SCREENSHOT_TIMEOUT_MS })
+        .catch((error: unknown) => { throw simctlScreenshotFailure(error, device.name, SIMCTL_SCREENSHOT_TIMEOUT_MS); });
       buffer = await fs.promises.readFile(capturePath);
     } finally {
       await fs.promises.rm(capturePath, { force: true }).catch(() => {});
@@ -6468,9 +6509,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // `device-create` makes, so nobody else's device is booted or used.
         laneDevice = await laneDevices.deviceCreate({ laneId });
       } else {
-        throw new Error(
+        throw new AdeExpectedError(
           "This lane has no Apple device yet. Run `ade apple device-create` to give it its own, "
             + "or `ade apple start --udid <udid>` to attach an installed simulator.",
+          "user",
         );
       }
       // A new device is a simulator the cached device list has never seen.
@@ -6769,7 +6811,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
     const laneDevice = await ensureLaneDevice(runtime);
-    if (!laneDevice) throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+    if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
     const device = await resolveDevice(laneDevice.udid, runtime);
     await ensureDeviceBooted(device);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
@@ -7007,10 +7049,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         const extra = explicit && explicit !== laneDevice?.udid ? laneDevices.findExtra(runtime.key, explicit) : null;
         if (extra) {
           if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
-            throw new Error(
+            throw new AdeExpectedError(
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
               + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
               + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+              "user",
             );
           }
           if (mode === "drive") await bootExtraDevice(extra);
@@ -7024,7 +7067,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
             laneDevice = await ensureLaneDevice(runtime);
           } else {
-            throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+            throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
           }
         }
         const pinned = mode === "drive" && laneDevice ? { ...callArgs, deviceUdid: laneDevice.udid } : callArgs;

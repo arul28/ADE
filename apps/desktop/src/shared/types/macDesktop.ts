@@ -112,6 +112,31 @@ export type MacDesktopErrorCode =
   | typeof WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE
   | typeof WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE;
 
+/**
+ * Codes that answer the caller (an agent's bad argument, a refusal that names
+ * what to do, a state the user resolves) rather than report a fault in ADE.
+ * `MacDesktopError` and `MacDesktopDriverError` mark these expected, so Sentry
+ * keeps them as logs. The lowercase and `QUIT`/`BELONGS_TO_USER` codes come
+ * from the driver (`DriverProtocol.swift`).
+ */
+export const MAC_DESKTOP_ANSWER_CODES: ReadonlySet<string> = new Set<string>([
+  "invalid_argument",
+  "MAC_DESKTOP_QUIT_WOULD_CLOSE_USER_WINDOWS",
+  "MAC_DESKTOP_WINDOW_BELONGS_TO_USER",
+  MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
+  MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
+  MAC_DESKTOP_NO_DISPLAY_CODE,
+  MAC_DESKTOP_NO_WINDOW_CODE,
+  MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+  MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+  MAC_DESKTOP_HANDLE_EXPIRED_CODE,
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+  MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
+  MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
+  MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+]);
+
 /** The one sentence every non-macOS rejection carries. */
 export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";

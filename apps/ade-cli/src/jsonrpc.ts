@@ -7,6 +7,7 @@ import {
   stripElectronErrorWrapper,
   UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "../../desktop/src/shared/codedError";
+import { carryExpected, expectedErrorKind, type ExpectedErrorKind } from "../../desktop/src/shared/expectedError";
 
 export type JsonRpcId = string | number | null;
 
@@ -57,6 +58,12 @@ export type JsonRpcFailure = {
     code: number;
     message: string;
     data?: unknown;
+    /**
+     * Set when the failure is an answer, not a defect (`shared/expectedError.ts`),
+     * so the caller's Sentry gate can tell. Beside `data`, not in it: a client
+     * that prints `data` keeps printing the same text, and older ones ignore it.
+     */
+    expected?: ExpectedErrorKind;
   };
 };
 
@@ -216,7 +223,7 @@ function annotateFailingPath(error: unknown): { error: unknown; path?: string } 
   annotated.stack = [`${annotated.name}: ${annotated.message}`, ...frames].join("\n");
   const source = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown };
   return {
-    error: Object.assign(annotated, {
+    error: Object.assign(carryExpected(error, annotated), {
       ...(source.code !== undefined ? { code: source.code } : {}),
       ...(source.errno !== undefined ? { errno: source.errno } : {}),
       ...(source.syscall !== undefined ? { syscall: source.syscall } : {}),
@@ -241,6 +248,16 @@ function writeMessage(
 }
 
 function toErrorResponse(
+  id: JsonRpcId,
+  error: unknown,
+  context: { method: string; onInternalError?: JsonRpcInternalErrorReporter },
+): JsonRpcFailure {
+  const response = buildErrorResponse(id, error, context);
+  const expected = expectedErrorKind(error);
+  return expected ? { ...response, error: { ...response.error, expected } } : response;
+}
+
+function buildErrorResponse(
   id: JsonRpcId,
   error: unknown,
   context: { method: string; onInternalError?: JsonRpcInternalErrorReporter },

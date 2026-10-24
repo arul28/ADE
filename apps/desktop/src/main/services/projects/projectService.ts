@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { runGit, runGitOrThrow } from "../git/git";
+import { gitCommandError, runGit } from "../git/git";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectInfo } from "../../../shared/types";
 import {
@@ -8,11 +10,36 @@ import {
   normalizeProjectRootPath,
 } from "../../../../../ade-cli/src/services/projects/projectRoots";
 
-export async function resolveRepoRoot(selectedPath: string): Promise<string> {
+/**
+ * The repository root containing `selectedPath`. `userChosen` is set only when
+ * the user picked the folder (the open-project flow): then git's "not a
+ * repository" is their choice, not a fault. Every other caller passes a path
+ * ADE expects to be a repository, so the same failure still reports.
+ */
+export async function resolveRepoRoot(selectedPath: string, opts: { userChosen?: boolean } = {}): Promise<string> {
   const managedWorktree = findAdeManagedWorktreeRoot(selectedPath);
   if (managedWorktree) return managedWorktree.projectRoot;
-  const out = await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
-  return normalizeProjectRootPath(out.trim());
+  const res = await runGit(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
+  if (res.exitCode !== 0) {
+    const error = gitCommandError(res.stderr.trim() || res.stdout.trim() || "git rev-parse --show-toplevel failed");
+    // Exit 128 with no `.git` anywhere above the folder is git's "not a
+    // repository" (in the user's own language, so the text is never matched):
+    // the user picked a plain folder. A `.git` that git still refuses is a
+    // broken repository, which stays reportable.
+    if (opts.userChosen && res.exitCode === 128 && !expectedErrorKind(error) && !hasGitEntryAbove(selectedPath)) {
+      throw markExpected(error, "user");
+    }
+    throw error;
+  }
+  return normalizeProjectRootPath(res.stdout.trim());
+}
+
+/** Whether `start` or a folder above it holds a `.git` directory or file. */
+function hasGitEntryAbove(start: string): boolean {
+  for (let dir = path.resolve(start); ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, ".git"))) return true;
+    if (path.dirname(dir) === dir) return false;
+  }
 }
 
 export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {

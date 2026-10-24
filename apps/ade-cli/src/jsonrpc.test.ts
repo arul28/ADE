@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
+import { AdeExpectedError } from "../../desktop/src/shared/expectedError";
 import {
   startJsonRpcServer,
   type JsonRpcHandler,
@@ -371,7 +372,7 @@ describe("internal error replies", () => {
     await waitForDrain();
     stop();
     return jsonlResponses(transport)[0] as {
-      error: { code: number; message: string; data?: { code?: string; errorId?: string } };
+      error: { code: number; message: string; data?: { code?: string; errorId?: string }; expected?: string };
     };
   }
 
@@ -466,6 +467,12 @@ describe("internal error replies", () => {
       "storage_read_failed: ADE couldn't read this project's data at /tmp/p/.ade/ade.db.",
     );
     expect(response.error.data?.code).toBe("storage_read_failed");
+    // An answer marked expected carries the mark beside `data`, so the caller
+    // can keep it out of Sentry; an unmarked failure carries none.
+    expect(response.error.expected).toBeUndefined();
+    const answer = await failWith(new AdeExpectedError("Branch 'x' not found locally or on any remote", "user"));
+    expect(answer.error.expected).toBe("user");
+    expect(answer.error.message).toBe("Branch 'x' not found locally or on any remote");
   });
 
   it("keeps a message that merely starts with an identifier and a colon", async () => {

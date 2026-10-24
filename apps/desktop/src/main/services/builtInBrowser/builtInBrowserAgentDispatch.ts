@@ -5,6 +5,7 @@ import {
 import {
   isBuiltInBrowserDesktopBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { carryExpected } from "../../../shared/expectedError";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 
@@ -102,10 +103,12 @@ export async function dispatchBuiltInBrowserAgentCall(
       });
     }
     if (error instanceof JsonRpcError) throw error;
-    throw new JsonRpcError(
+    // The browser's answers ("Browser tab not found") stay marked across the
+    // bridge, so the brain does not report them as its own failures.
+    throw carryExpected(error, new JsonRpcError(
       JsonRpcErrorCode.internalError,
       error instanceof Error ? error.message : String(error),
-    );
+    ));
   }
 }
 
