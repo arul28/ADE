@@ -60,6 +60,11 @@ import {
 } from "./services/deeplinks/protocolHandler";
 import { buildDeeplink } from "../shared/deeplinks";
 import {
+  createDesktopAlertPresenter,
+  readDesktopAlertEvent,
+  type DesktopAlert,
+} from "./services/attention/desktopAlertPresenter";
+import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
   ownerNavigationFailureCopy,
@@ -243,6 +248,7 @@ import {
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
 import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
+import { decodeProjectIconUpload, importProjectIconBytes } from "./services/projects/projectIconResolver";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -258,6 +264,7 @@ import type {
   AppNavigationRequest,
   AgentChatInterruptedChatRef,
   AttentionItem,
+  AttentionPreferences,
   AppMenuCommand,
   AppZoomCommand,
   CloneProjectInput,
@@ -273,6 +280,8 @@ import type {
   SyncMobileProjectSummary,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
+  SyncProjectSetIconRequestPayload,
+  SyncProjectSetIconResultPayload,
   SyncProjectOpenRequestPayload,
   SyncPeerConnectionState,
   SyncProjectConnectionPayload,
@@ -5668,6 +5677,7 @@ app.whenReady().then(async () => {
         cloneProject: (input: CloneProjectInput) =>
           cloneMobileSyncProject(input, projectScaffoldService),
         forgetProject: forgetMobileSyncProject,
+        setProjectIcon: setMobileSyncProjectIcon,
         listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
           projectScaffoldService.listMyGitHubRepos(input),
       },
@@ -6623,6 +6633,111 @@ app.whenReady().then(async () => {
    * The brain exposes usage per project scope, so the bridge borrows any booted
    * scope; every scope is fed by the same machine-level poller.
    */
+  /**
+   * Desktop notifications for agents that need the user, failed, reached a
+   * goal, or sent the user a message. Fed by this computer's brain (below, on
+   * the machine event bridge) and by the account snapshots windows poll (for
+   * chats on other machines). See `desktopAlertPresenter.ts`.
+   */
+  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
+  /** Electron drops a click on a notification nothing references any more. */
+  const liveDesktopAlertNotifications = new Set<Notification>();
+  let desktopAlertClickOwner: string | null | undefined;
+  /**
+   * Alerts a window was asked to toast, by item id. The toast's Open sends
+   * back only the id, and main opens what it recorded, so a window cannot
+   * name an arbitrary chat or item to open or mark seen.
+   */
+  const toastedDesktopAlerts = new Map<string, { alert: DesktopAlert; ownerId: string | null }>();
+  const rememberToastedDesktopAlert = (alert: DesktopAlert): void => {
+    toastedDesktopAlerts.delete(alert.itemId);
+    toastedDesktopAlerts.set(alert.itemId, { alert, ownerId: readAccountOwnerId() });
+    while (toastedDesktopAlerts.size > 32) {
+      const oldest = toastedDesktopAlerts.keys().next();
+      if (oldest.done) break;
+      toastedDesktopAlerts.delete(oldest.value);
+    }
+  };
+  /**
+   * `ownerId` is the account signed in when the alert was shown. Opening an
+   * old alert after a switch does nothing: its chat and item ids belong to the
+   * account that showed it, so handing them to the new account's renderer
+   * would open the wrong thing (and the same item id can exist under the new
+   * account).
+   */
+  const openDesktopAlert = (alert: DesktopAlert, ownerId: string | null): void => {
+    if (ownerId !== readAccountOwnerId()) return;
+    // Opening it is seeing it: the phone, still waiting out desktop-first,
+    // stays quiet. Best effort; a failure only means the phone gets it later.
+    void ipcBridge?.markAttentionItemSeen(alert.itemId, alert.alertFingerprint ?? null).catch((error: unknown) => {
+      logMachineEvent("info", "attention.desktop_alert_mark_seen_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (alert.item) {
+      void navigateFromAttentionItem(alert.item, attentionItemNavigationRequest(alert.item))
+        .catch((error) => logMachineEvent("warn", "attention.desktop_alert_open_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return;
+    }
+    handleDeeplinkUrl(
+      buildDeeplink({ kind: "session", sessionId: alert.sessionId }, { form: "ade" }),
+      "notification:attention",
+      dispatchOrQueueAppNavigationRequest,
+    );
+  };
+  const desktopAlertPresenter = createDesktopAlertPresenter({
+    isSupported: () => Notification.isSupported(),
+    isAppFocused: () => Boolean(BrowserWindow.getFocusedWindow()),
+    getDeviceId: () => ipcBridge?.getLocalMachineIdentity().deviceId ?? null,
+    getAccountOwnerId: () => readAccountOwnerId(),
+    getPreferences: () => {
+      const ownerId = readAccountOwnerId();
+      return ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
+        ? attentionPreferencesForAlerts.preferences
+        : null;
+    },
+    show: (alert, onClick) => {
+      try {
+        const ownerId = readAccountOwnerId();
+        const notification = new Notification({ title: alert.title, ...(alert.body ? { body: alert.body } : {}) });
+        liveDesktopAlertNotifications.add(notification);
+        const release = () => liveDesktopAlertNotifications.delete(notification);
+        notification.on("click", () => {
+          release();
+          // `open` runs synchronously inside onClick and reads this, so the
+          // account the notification was shown under travels with the click.
+          desktopAlertClickOwner = ownerId;
+          try {
+            onClick();
+          } finally {
+            desktopAlertClickOwner = undefined;
+          }
+        });
+        notification.on("close", release);
+        notification.show();
+        // A notification the user never touches still has to let go.
+        setTimeout(release, 10 * 60_000).unref?.();
+      } catch (error) {
+        logMachineEvent("warn", "attention.desktop_alert_failed", {
+          kind: alert.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    toastInFocusedWindow: (alert) => {
+      const focused = BrowserWindow.getFocusedWindow();
+      if (!focused || focused.isDestroyed()) return;
+      rememberToastedDesktopAlert(alert);
+      focused.webContents.send(IPC.attentionAlert, alert);
+    },
+    open: (alert) => openDesktopAlert(
+      alert,
+      desktopAlertClickOwner !== undefined ? desktopAlertClickOwner : readAccountOwnerId(),
+    ),
+  });
+
   let machineUsageEventRoot: string | null = null;
   let machineUsageEventCleanup: (() => void) | null = null;
   let machineUsageEventRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -6700,6 +6815,11 @@ app.whenReady().then(async () => {
         { category: "runtime", replay: false },
         (event) => {
           if (machineUsageEventRoot !== root) return;
+          if (event.payload?.type === "attention_alert") {
+            const alert = readDesktopAlertEvent(event.payload);
+            if (alert) desktopAlertPresenter.presentLocal(alert);
+            return;
+          }
           if (event.payload?.type !== "usage") return;
           const snapshot = event.payload.snapshot;
           if (!isUsageSnapshot(snapshot)) return;
@@ -7194,6 +7314,55 @@ app.whenReady().then(async () => {
   ): Promise<SyncMobileProjectSummary> {
     const result = await scaffoldService.cloneRepository(input);
     return await mobileProjectSummaryForRoot(result.rootPath);
+  }
+
+  /**
+   * A phone's "Change icon…" for a project this desktop hosts: the same store
+   * the desktop's own icon editor writes, so the next catalog carries it.
+   */
+  async function setMobileSyncProjectIcon(
+    input: SyncProjectSetIconRequestPayload,
+  ): Promise<SyncProjectSetIconResultPayload> {
+    const requestedProjectId = typeof input.projectId === "string" && input.projectId.trim()
+      ? input.projectId.trim()
+      : null;
+    const requestedRoot = typeof input.rootPath === "string" && input.rootPath.trim()
+      ? normalizeProjectRoot(input.rootPath)
+      : null;
+    const localRecents = (readGlobalState(globalStatePath).recentProjects ?? []).filter((entry) => !entry.remote);
+    const knownRoots = new Set([
+      ...localRecents.map((entry) => normalizeProjectRoot(entry.rootPath)),
+      ...projectContexts.keys(),
+    ]);
+    const rootFromId = requestedProjectId == null
+      ? null
+      : [...projectContexts.entries()].find(([, ctx]) => ctx.projectId === requestedProjectId)?.[0] ?? null;
+    const root = requestedRoot && knownRoots.has(requestedRoot) ? requestedRoot : rootFromId;
+    if (!root) {
+      return {
+        ok: false,
+        message: "That project is not on this ADE machine.",
+        projectId: requestedProjectId,
+        rootPath: requestedRoot,
+      };
+    }
+    try {
+      const upload = decodeProjectIconUpload(input, "project_set_icon_request");
+      importProjectIconBytes(root, upload.fileName, upload.data);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
+        projectId: requestedProjectId,
+        rootPath: root,
+      };
+    }
+    return {
+      ok: true,
+      projectId: requestedProjectId,
+      rootPath: root,
+      iconDataUrl: mobileProjectIconDataUrl(root),
+    };
   }
 
   async function forgetMobileSyncProject(
@@ -9794,6 +9963,28 @@ app.whenReady().then(async () => {
     captureGestureNow: (): boolean => captureHelper?.captureNow() ?? false,
     openAttentionItem: async (item: AttentionItem) => {
       await navigateFromAttentionItem(item, attentionItemNavigationRequest(item));
+    },
+    onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
+    onAttentionPreferences: (ownerId, preferences) => {
+      attentionPreferencesForAlerts = { ownerId, preferences };
+      desktopAlertPresenter.preferencesLoaded();
+    },
+    onAttentionSessionMuted: (ownerId, sessionId, muted) => {
+      const cached = attentionPreferencesForAlerts;
+      if (!cached || cached.ownerId !== ownerId) return;
+      const others = cached.preferences.mutedSessionIds.filter((id) => id !== sessionId);
+      attentionPreferencesForAlerts = {
+        ownerId,
+        preferences: {
+          ...cached.preferences,
+          mutedSessionIds: muted ? [...others, sessionId] : others,
+        },
+      };
+    },
+    openDesktopAlert: (itemId) => {
+      const record = typeof itemId === "string" ? toastedDesktopAlerts.get(itemId) : undefined;
+      if (!record) throw new Error("That notification is no longer available. Open the chat from Activity.");
+      openDesktopAlert(record.alert, record.ownerId);
     },
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),

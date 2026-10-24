@@ -55,129 +55,153 @@ struct WorkImportActionBar: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      if importedRef != nil {
-        Label("Already in ADE", systemImage: "checkmark.circle.fill")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.success)
-      }
-
-      if hasPlanActions {
-        configuration
+    VStack(alignment: .leading, spacing: 8) {
+      if hasPlanActions || importedRef != nil {
+        // One line when it fits (desktop's action bar); else the mode and
+        // lane on the first line and the buttons under them.
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            configuration
+            Spacer(minLength: 8)
+            buttons(fill: false)
+          }
+          VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+              configuration
+              Spacer(minLength: 0)
+            }
+            buttons(fill: true)
+          }
+        }
+      } else {
+        Text("Nothing to do for this session here.")
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
       }
 
       if let primary = actions.primary, isConfirming(primary) {
         Label("It may be open elsewhere. Tap again to continue anyway.", systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
+          .font(.footnote)
           .foregroundStyle(ADEColor.warning)
           .fixedSize(horizontal: false, vertical: true)
-      } else if let note {
+      } else if let note = displayedNote {
         Text(note)
-          .font(.caption)
+          .font(.footnote)
           .foregroundStyle(actions.primary?.confirmBeforeRun == true ? ADEColor.warning : ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       }
 
       if let error {
         Label(error, systemImage: "xmark.octagon.fill")
-          .font(.caption)
+          .font(.footnote)
           .foregroundStyle(ADEColor.danger)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityLabel("Error: \(error)")
       }
-
-      buttons
     }
-    .padding(14)
-    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+    .padding(.horizontal, 16)
+    .padding(.top, 10)
+    .padding(.bottom, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background {
+      ADEColor.pageBackground
+        .ignoresSafeArea(edges: .bottom)
+        .overlay(alignment: .top) {
+          Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+        }
     }
   }
 
+  /// The plan's note, or why the lane is locked (a phone has no tooltip).
+  private var displayedNote: String? {
+    if let note { return note }
+    if importedRef == nil, plan.laneLocked, let lockReason = plan.lockReason {
+      return "\(lockReason) \(workExternalSessionProviderName(session.provider)) can only reopen a session in the folder it ran in."
+    }
+    if importedRef == nil, plan.surface == nil, let planNote = plan.note { return planNote }
+    return nil
+  }
+
+  /// "Chat | CLI in <lane>". An imported session shows only where it is.
   @ViewBuilder
   private var configuration: some View {
-    if plan.surfaces.count > 1 {
-      Picker("Open as", selection: $surface) {
-        ForEach(plan.surfaces, id: \.self) { value in
-          Text(workImportSurfaceLabel(value)).tag(value)
+    if importedRef != nil {
+      Label("Already in ADE", systemImage: "checkmark.circle.fill")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.success)
+        .lineLimit(1)
+        .fixedSize()
+    } else if let current = plan.surface {
+      HStack(spacing: 8) {
+        if plan.surfaces.count > 1 {
+          ADEKitSegmented(
+            selection: Binding(
+              get: { current },
+              set: { surface = $0 }
+            ),
+            options: plan.surfaces.map { (value: $0, title: workImportSurfaceLabel($0)) }
+          )
+          .frame(width: 150)
+          .disabled(importDisabled)
+        } else {
+          Text(workImportSurfaceLabel(current))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize()
         }
-      }
-      .pickerStyle(.segmented)
-      .disabled(importDisabled)
-      .accessibilityLabel("Open as")
-    } else if let only = plan.surface {
-      Text("Opens as \(workImportSurfaceLabel(only))")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-
-    if plan.surface != nil {
-      HStack(alignment: .center, spacing: 8) {
         Text("in")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize()
         if plan.laneLocked {
           lockedChip
         } else {
-          WorkLanePickerDropdown(
-            lanes: lanes,
-            selectedLaneId: $targetLaneId,
-            showsAutoCreateOption: false
-          )
+          Menu {
+            Picker("Import into lane", selection: $targetLaneId) {
+              ForEach(lanes) { lane in
+                Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name)").tag(lane.id)
+              }
+            }
+          } label: {
+            WorkImportPillLabel(
+              symbol: "square.stack.3d.up",
+              laneMark: lanes.first(where: { $0.id == targetLaneId }),
+              title: lanes.first(where: { $0.id == targetLaneId })?.name ?? "Choose lane"
+            )
+          }
           .disabled(importDisabled)
+          .accessibilityLabel("Import into lane")
+          .accessibilityValue(lanes.first(where: { $0.id == targetLaneId })?.name ?? "")
         }
-        Spacer(minLength: 0)
-      }
-      if plan.laneLocked, let lockReason = plan.lockReason {
-        // Why the lane can't change, in the open: a phone has no tooltip.
-        Label {
-          // A lane locks only when every CLI action needs the session's own
-          // folder (the provider cannot resume or fork it anywhere else).
-          Text("\(lockReason) \(workExternalSessionProviderName(session.provider)) can only reopen a session in the folder it ran in.")
-        } icon: {
-          Image(systemName: "lock.fill")
-        }
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
       }
     }
   }
 
   @ViewBuilder
-  private var buttons: some View {
+  private func buttons(fill: Bool) -> some View {
     if let importedRef {
-      HStack(spacing: 10) {
+      HStack(spacing: 8) {
         if let copy = actions.primary {
-          secondaryButton(copy)
+          secondaryButton(copy, fill: fill)
         }
-        mainButton(label: "Open in ADE", tint: ADEColor.accent) {
+        mainButton(label: "Open in ADE", warning: false, fill: fill) {
           onOpenExisting(importedRef)
         }
       }
     } else if let primary = actions.primary {
-      HStack(spacing: 10) {
+      HStack(spacing: 8) {
         if let secondary = actions.secondary {
-          secondaryButton(secondary)
+          secondaryButton(secondary, fill: fill)
         }
         let confirming = isConfirming(primary)
-        mainButton(
-          label: confirming ? "Continue anyway" : primary.label,
-          tint: confirming ? ADEColor.warning : ADEColor.accent
-        ) {
+        mainButton(label: confirming ? "Continue anyway" : primary.label, warning: confirming, fill: fill) {
           onRun(primary)
         }
       }
-    } else {
-      Text("Nothing to do for this session here.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textMuted)
     }
   }
 
-  private func mainButton(label: String, tint: Color, action: @escaping () -> Void) -> some View {
+  private func mainButton(label: String, warning: Bool, fill: Bool, action: @escaping () -> Void) -> some View {
     Button(action: action) {
       HStack(spacing: 6) {
         if importing {
@@ -186,32 +210,26 @@ struct WorkImportActionBar: View {
             .tint(.white)
         }
         Text(label)
-          .font(.subheadline.weight(.semibold))
-          .lineLimit(1)
-          .minimumScaleFactor(0.85)
       }
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 4)
+      .frame(maxWidth: fill ? .infinity : nil, minHeight: 34)
+      .padding(.horizontal, 4)
     }
-    .buttonStyle(.borderedProminent)
-    .controlSize(.large)
-    .tint(tint)
+    .buttonStyle(ADEKitButtonStyle(prominent: true, brand: warning ? ADEColor.warning : nil))
     .disabled(importDisabled)
+    .fixedSize(horizontal: !fill, vertical: false)
   }
 
-  private func secondaryButton(_ action: WorkImportPlanAction) -> some View {
+  private func secondaryButton(_ action: WorkImportPlanAction, fill: Bool) -> some View {
     Button {
       onRun(action)
     } label: {
       Text(action.label)
-        .font(.subheadline.weight(.semibold))
-        .lineLimit(1)
-        .padding(.vertical, 4)
+        .frame(minHeight: 34)
+        .padding(.horizontal, 4)
     }
-    .buttonStyle(.bordered)
-    .controlSize(.large)
-    .tint(ADEColor.textPrimary)
+    .buttonStyle(ADEKitButtonStyle())
     .disabled(importDisabled)
+    .fixedSize()
     // The phone sends no model: for a chat copy (`needsModel`) the machine
     // picks the session's own model family, else that provider's default.
     .accessibilityHint(action.needsModel
@@ -236,9 +254,8 @@ struct WorkImportActionBar: View {
         .foregroundStyle(ADEColor.textMuted)
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(ADEColor.textPrimary.opacity(0.04), in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
+    .frame(height: 34)
+    .adeKitPill()
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Lane \(name), locked")
     .accessibilityHint(plan.lockReason ?? "")

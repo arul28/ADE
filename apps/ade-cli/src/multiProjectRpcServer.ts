@@ -2,11 +2,6 @@ import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeServi
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import {
-  PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
-  PROJECT_ICON_TYPE_ERROR,
-  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
-} from "../../desktop/src/shared/projectIcons";
 import { randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -56,6 +51,7 @@ import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
+  decodeProjectIconUpload,
   importProjectIconBytes,
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   removeProjectIconOverride,
@@ -85,6 +81,7 @@ import {
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
+import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
@@ -115,7 +112,7 @@ import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
-import type { AttentionItem } from "../../desktop/src/shared/types/attention";
+import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -592,57 +589,14 @@ function readProjectIconUpload(params: Record<string, unknown>): {
   fileName: string;
   data: Buffer;
 } {
-  const fileName = readOptionalString(params.fileName);
-  if (!fileName) {
+  try {
+    return decodeProjectIconUpload(params, "projects.setIcon");
+  } catch (error) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "projects.setIcon requires fileName.",
+      error instanceof Error ? error.message : String(error),
     );
   }
-  // Only the last path segment matters; the extension picks the format.
-  const baseName = fileName.split(/[\\/]/).pop() ?? "";
-  const extension = path.extname(baseName).toLowerCase();
-  const allowedMimeTypes = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension];
-  if (!allowedMimeTypes) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      PROJECT_ICON_TYPE_ERROR,
-    );
-  }
-  const mimeType = readOptionalString(params.mimeType)?.toLowerCase();
-  if (mimeType && !allowedMimeTypes.includes(mimeType)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Project icon type ${mimeType} does not match a ${extension} file.`,
-    );
-  }
-  const dataBase64 = typeof params.dataBase64 === "string" ? params.dataBase64.trim() : "";
-  // Reject before decoding so an oversized upload is never materialized.
-  // base64 expands 3 bytes to 4 characters.
-  if (!dataBase64 || dataBase64.length > Math.ceil(REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / 3) * 4) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      dataBase64
-        ? `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`
-        : "projects.setIcon requires dataBase64.",
-    );
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      "projects.setIcon dataBase64 is not valid base64.",
-    );
-  }
-  const data = Buffer.from(dataBase64, "base64");
-  if (data.length === 0 || data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      data.length === 0
-        ? "Project icon file is empty."
-        : `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`,
-    );
-  }
-  return { fileName: baseName, data };
 }
 
 function readProjectBrowseInput(
@@ -2589,13 +2543,32 @@ export function createMultiProjectRpcRequestHandler(
           "Notifications are unavailable until the ADE brain has a project open.",
         );
       }
+      // Run inside a chat (`ADE_CHAT_SESSION_ID`, or `--session`), the push is
+      // that chat's message: an Activity Inbox row on every device, a line in
+      // the chat, the chat's mute and "at the computer" respected. Only a chat
+      // this brain does not hold falls through to the plain push below.
+      // An agent's own chat always wins over `--session`, so no chat can post
+      // under another chat's name; `--session` is for a person's terminal.
+      const notifyArgs = isRecord(params.args) ? params.args : {};
+      const chatSessionId = callerChatSessionId()
+        ?? (typeof notifyArgs.sessionId === "string" ? notifyArgs.sessionId.trim() : "");
       const send = buildSendNotificationAction(
         runtime,
         (notification) => publisher.sendCustomNotification(notification),
         { projectRoot: registeredRoot },
       );
       try {
-        return await send(isRecord(params.args) ? params.args : {});
+        if (chatSessionId) {
+          const chatMessage = await sendNotifyAsChatMessage({
+            publisher,
+            sessionId: chatSessionId,
+            args: notifyArgs,
+            callerScopeKey: runtime.projectId ?? null,
+            analytics: runtime.productAnalyticsService,
+          });
+          if (chatMessage) return chatMessage;
+        }
+        return await send(notifyArgs);
       } catch (error) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -2632,7 +2605,9 @@ export function createMultiProjectRpcRequestHandler(
         return await publisher.getAttentionSnapshot(since, streamId);
       }
       if (action === "getMachineSnapshot") {
-        return await publisher.getMachineAttentionSnapshot();
+        return await publisher.getMachineAttentionSnapshot({
+          includeMessages: args.include === ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+        });
       }
       if (action === "acknowledge") {
         const itemIds = Array.isArray(args.itemIds)

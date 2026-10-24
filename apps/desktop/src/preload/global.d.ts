@@ -2066,9 +2066,26 @@ declare global {
           machineKey: string,
           preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
         ) => Promise<void>;
+        /**
+         * Mute one chat's notifications on every device. Account-scoped, so it
+         * takes no pin: the chat's machine is not involved.
+         */
+        setSessionMuted?: (
+          accountOwnerId: string,
+          sessionId: string,
+          muted: boolean,
+        ) => Promise<void>;
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
+        /**
+         * An agent's message to show as a toast in this (focused) window. Desktop
+         * only: the hosted web client has no main process to raise it.
+         */
+        onAlert?: (
+          cb: (alert: import("../shared/types").AttentionDesktopAlert) => void,
+        ) => () => void;
+        openAlert?: (alert: import("../shared/types").AttentionDesktopAlert) => Promise<void>;
       };
       /**
        * The global capture gesture. Optional on the whole namespace, like
@@ -2493,6 +2510,16 @@ declare global {
             args: AgentChatSetParallelLaunchStateArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<void>;
+        };
+        /**
+         * The account's Fast-mode permission, for hosts with no account-settings
+         * bridge (the hosted web client). The desktop preload leaves it absent
+         * and the renderer writes the account store directly; the web adapter
+         * forwards it to the host's `chat.*FastModeEnabled` commands.
+         */
+        fastModePolicy?: {
+          get: () => Promise<boolean>;
+          set: (enabled: boolean) => Promise<boolean>;
         };
         handoff: (
           args: AgentChatHandoffArgs,

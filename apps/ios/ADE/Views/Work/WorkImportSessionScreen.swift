@@ -12,9 +12,82 @@ private let workImportLiveConfirmNanos: UInt64 = 4_000_000_000
 /// Every provider failing at once is a host that is still starting; wait and
 /// scan once more before showing the error (desktop: 2.5 s).
 private let workImportScanRetryNanos: UInt64 = 2_500_000_000
+/// From this width the list and the preview sit side by side (desktop's
+/// browser); below it the preview is a step after the list.
+private let workImportSplitMinWidth: CGFloat = 640
+/// From this width the filter controls fit on the one row above both columns.
+private let workImportOneRowControlsMinWidth: CGFloat = 760
 
+// MARK: - Host hooks
+
+private struct WorkImportClaimsFullWidthKey: EnvironmentKey {
+  static let defaultValue: ((Bool) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+  /// Set by a wide Work layout: the import browser calls it with `true` while
+  /// it is open so the sessions column steps aside and the browser gets the
+  /// whole screen (list | preview), as desktop's dialog does.
+  var workImportClaimsFullWidth: ((Bool) -> Void)? {
+    get { self[WorkImportClaimsFullWidthKey.self] }
+    set { self[WorkImportClaimsFullWidthKey.self] = newValue }
+  }
+}
+
+/// The machine the browser scans. Every call for its sessions goes there: the
+/// list and the import through its namespaced lane ids, the conversation
+/// through its marked project.
+struct WorkImportSource: Equatable {
+  /// Nil: the machine this project tab is bound to.
+  var machineKey: String?
+  var markedProjectId: String?
+  var rootPath: String?
+
+  static let primary = WorkImportSource(machineKey: nil, markedProjectId: nil, rootPath: nil)
+}
+
+extension SyncService {
+  /// Whether `source` can send a whole external conversation.
+  func workImportSupportsDetail(_ source: WorkImportSource) -> Bool {
+    guard let key = source.machineKey else { return supportsExternalSessionDetail }
+    return machineFleet?.connection(for: key)?.commandDescriptors
+      .contains { $0.action == "work.getExternalSessionDetail" } == true
+  }
+
+  /// `getExternalSessionDetail` on the machine that has the session.
+  func workImportSessionDetail(
+    provider: String,
+    sessionId: String,
+    before: String? = nil,
+    source: WorkImportSource
+  ) async throws -> ExternalSessionDetail {
+    guard source.machineKey != nil, let projectId = source.markedProjectId else {
+      return try await getExternalSessionDetail(provider: provider, sessionId: sessionId, before: before)
+    }
+    var args: [String: Any] = ["provider": provider, "sessionId": sessionId]
+    if let before, !before.isEmpty { args["before"] = before }
+    return try await sendDecodableCommand(
+      action: "work.getExternalSessionDetail",
+      args: args,
+      targetProjectId: projectId,
+      targetProjectRootPath: source.rootPath,
+      fallbackToActiveProjectScope: false,
+      as: ExternalSessionDetail.self
+    )
+  }
+}
+
+// MARK: - Screen
+
+/// Desktop's import browser on iOS: filters, the session list, the preview
+/// and one action bar. Wide (Duo inner display, iPad): list | preview side by
+/// side. Compact (any iPhone, the Duo's outer display): the list, then the
+/// preview as a step.
 struct WorkImportSessionScreen: View {
   @EnvironmentObject var syncService: SyncService
+  @Environment(\.dismiss) private var dismiss
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+  @Environment(\.workImportClaimsFullWidth) private var claimsFullWidth
 
   let lane: LaneSummary
   let lanes: [LaneSummary]
@@ -24,25 +97,34 @@ struct WorkImportSessionScreen: View {
   @State private var sessions: [ExternalSessionSummary] = []
   @State private var providerFilter = workImportAllProvidersFilter
   @State private var scope = "project"
-  /// Nil until the user picks: the filter then follows the origin lane while
-  /// it has (or may still get) sessions, else "All lanes".
-  @State private var laneFilterChoice: String?
+  @State private var laneFilter = workImportAllLanesFilter
   /// Providers whose scan has not answered yet.
   @State private var pendingProviders: Set<String> = []
+  /// Providers the host refused by name (an older host): not offered.
+  @State private var unsupportedProviders: Set<String> = []
   @State private var scanDone = false
   @State private var loadError: String?
   @State private var failedProviders: [String] = []
   @State private var loadSeq = 0
   @State private var importError: String?
   @State private var importingSessionId: String?
-  @State private var selectedSession: ExternalSessionSummary?
-  /// Where the import goes. Defaults to the session's home lane when it opens.
-  @State private var targetLaneId: String
+  /// The chosen row (wide: shown in the preview; compact: opened).
+  @State private var selectedKey: String?
+  /// Compact only: the preview step is open.
+  @State private var showsDetail = false
+  /// Where each session's import goes, once the user picked a lane.
+  @State private var targetChoices: [String: String] = [:]
   /// Mode picked on this screen, per provider. Falls back to the stored
   /// preference, then to the plan's first surface.
   @State private var surfaceChoices: [String: String] = [:]
   /// Action key waiting on a second tap (continuing a session that may be live).
   @State private var confirmingKey: String?
+
+  // The machine being browsed.
+  @State private var sourceKey: String?
+  @State private var remoteLanes: [LaneSummary] = []
+  @State private var remoteLanesLoading = false
+  @State private var sourceError: String?
 
   init(
     lane: LaneSummary,
@@ -54,47 +136,78 @@ struct WorkImportSessionScreen: View {
     self.lanes = lanes
     self.onCliImported = onCliImported
     self.onChatImported = onChatImported
-    _targetLaneId = State(initialValue: lane.id)
+  }
+
+  // MARK: - Machine
+
+  private var machineOptions: [WorkNewChatMachineOption] {
+    if let fleet = syncService.machineFleet {
+      return workNewChatMachineOptions(syncService: syncService, fleet: fleet)
+    }
+    let name = syncService.focusedMachineDisplayName
+    return [WorkNewChatMachineOption(
+      machineKey: nil,
+      name: name,
+      symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: name),
+      isLive: syncService.connectionState == .connected
+    )]
+  }
+
+  private var selectedMachine: WorkNewChatMachineOption {
+    let options = machineOptions
+    return options.first { $0.machineKey == sourceKey } ?? options[0]
+  }
+
+  private var remoteRepo: WorkRemoteMachineRepo? {
+    sourceKey.flatMap { syncService.remoteLaneRepo(machineKey: $0) }
+  }
+
+  private var source: WorkImportSource {
+    guard let sourceKey, let repo = remoteRepo else { return .primary }
+    return WorkImportSource(machineKey: sourceKey, markedProjectId: repo.markedProjectId, rootPath: repo.rootPath)
+  }
+
+  private var isRemoteSource: Bool { sourceKey != nil }
+
+  /// The lanes of the machine being browsed.
+  private var activeLanes: [LaneSummary] {
+    sourceKey == nil ? lanes : remoteLanes
+  }
+
+  /// The lane the scan is asked about: the page's lane here, the primary lane
+  /// of another machine (its id carries the machine, which routes the scan).
+  private var originLaneId: String? {
+    sourceKey == nil ? lane.id : workNewChatPrimaryLane(remoteLanes)?.id
+  }
+
+  private var scanTaskKey: String {
+    "\(scope)|\(sourceKey ?? "-")|\(originLaneId ?? "-")"
   }
 
   // MARK: - Derived list state
 
   private var scanProviders: [String] {
-    workImportScanProviders(hostKnowsAcpProviders: syncService.supportsExternalSessionDetail)
+    workImportScanProviders(hostKnowsAcpProviders: syncService.workImportSupportsDetail(source))
   }
 
   private var loading: Bool {
-    !pendingProviders.isEmpty || (!scanDone && loadError == nil)
+    !pendingProviders.isEmpty || (!scanDone && loadError == nil) || remoteLanesLoading
   }
 
   private var liveLaneIds: Set<String> {
-    Set(lanes.map(\.id))
+    Set(activeLanes.map(\.id))
   }
 
   private func laneName(_ laneId: String) -> String? {
-    lanes.first(where: { $0.id == laneId })?.name
+    activeLanes.first(where: { $0.id == laneId })?.name
   }
 
   private func bucket(_ session: ExternalSessionSummary) -> String {
-    session.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: lane.id)
+    session.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: originLaneId ?? lane.id)
   }
 
   private var scanLaneKeys: Set<String> {
     Set(sessions.map(bucket))
-  }
-
-  /// The origin lane while the scan can still find its sessions, else All lanes.
-  private var laneFilter: String {
-    if let laneFilterChoice { return laneFilterChoice }
-    return scanLaneKeys.contains(lane.id) || loading ? lane.id : workImportAllLanesFilter
-  }
-
-  /// A provider filter with no sessions left falls back to All.
-  private var effectiveProviderFilter: String {
-    guard providerFilter != workImportAllProvidersFilter else { return providerFilter }
-    return sessions.contains(where: { workExternalSessionProviderKey($0.provider) == providerFilter })
-      ? providerFilter
-      : workImportAllProvidersFilter
   }
 
   private func matchesLane(_ session: ExternalSessionSummary) -> Bool {
@@ -102,8 +215,7 @@ struct WorkImportSessionScreen: View {
   }
 
   private func matchesProvider(_ session: ExternalSessionSummary) -> Bool {
-    let filter = effectiveProviderFilter
-    return filter == workImportAllProvidersFilter || workExternalSessionProviderKey(session.provider) == filter
+    providerFilter == workImportAllProvidersFilter || workExternalSessionProviderKey(session.provider) == providerFilter
   }
 
   private var inLane: [ExternalSessionSummary] {
@@ -132,14 +244,16 @@ struct WorkImportSessionScreen: View {
     return counts
   }
 
-  /// Only providers with a session under the lane filter get a chip; the
-  /// chosen one keeps its chip so the filter can be cleared.
+  /// Every agent the machine was asked about gets a chip, so the filter
+  /// always names all of them: the ones with sessions first, then the ones
+  /// with none here (dimmed, still tappable: their empty state points to
+  /// where else to look).
   private var providerChips: [WorkImportProviderCount] {
     let counts = providerCounts
-    let filter = effectiveProviderFilter
-    return scanProviders
-      .filter { (counts[$0] ?? 0) > 0 || $0 == filter }
-      .map { WorkImportProviderCount(provider: $0, count: counts[$0] ?? 0) }
+    let offered = scanProviders.filter { !unsupportedProviders.contains($0) }
+    let withSessions = offered.filter { (counts[$0] ?? 0) > 0 }
+    let without = offered.filter { (counts[$0] ?? 0) == 0 }
+    return (withSessions + without).map { WorkImportProviderCount(provider: $0, count: counts[$0] ?? 0) }
   }
 
   private var visibleSessions: [ExternalSessionSummary] {
@@ -169,7 +283,7 @@ struct WorkImportSessionScreen: View {
   private var laneFilterName: String {
     switch laneFilter {
     case workImportOtherFoldersFilter: return "other folders"
-    case workImportAllLanesFilter: return "any lane"
+    case workImportAllLanesFilter: return scope == "project" ? "this project" : "any folder"
     default: return laneName(laneFilter) ?? "this lane"
     }
   }
@@ -183,132 +297,307 @@ struct WorkImportSessionScreen: View {
     return "\(names) couldn't be scanned."
   }
 
-  /// The empty state names what was checked and, when some scans failed, which
-  /// ones: "no sessions" must not hide a provider that never answered.
   private var emptyScanDetail: String {
-    let checked = scanProviders
-      .filter { !failedProviders.contains($0) }
-      .map(workExternalSessionProviderName)
-      .joined(separator: ", ")
     let place = scope == "project" ? "in this project" : "in every folder"
-    let summary = checked.isEmpty ? "" : "Checked \(checked) \(place)."
-    return [summary, failedNotice].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " ")
+    let summary = "Checked \(selectedMachine.name) \(place)."
+    return [summary, failedNotice].compactMap { $0 }.joined(separator: " ")
+  }
+
+  /// The row the preview shows: the chosen one, else the newest.
+  private var activeSession: ExternalSessionSummary? {
+    let visible = visibleSessions
+    if let selectedKey, let row = visible.first(where: { $0.importIdentity == selectedKey }) { return row }
+    return visible.first
+  }
+
+  /// The compact step's row: the chosen one while it still exists.
+  private var openedSession: ExternalSessionSummary? {
+    guard let selectedKey else { return nil }
+    return sessions.first(where: { $0.importIdentity == selectedKey })
   }
 
   // MARK: - Body
 
   var body: some View {
-    Group {
-      if let selectedSession {
-        detail(selectedSession)
-      } else {
-        browser
+    GeometryReader { proxy in
+      let split = horizontalSizeClass == .regular && proxy.size.width >= workImportSplitMinWidth
+      Group {
+        if split {
+          splitBody(proxy: proxy)
+        } else {
+          compactBody
+        }
       }
     }
     .adeScreenBackground()
     .adeNavigationGlass()
-    .navigationTitle(selectedSession == nil ? "Import session" : "Session")
+    .navigationTitle(compactDetailShown ? "Session" : "Import session")
     .navigationBarTitleDisplayMode(.inline)
-    // The detail is a step inside this screen, so the system back button
-    // (which would leave the whole screen) gives way to "Sessions".
-    .navigationBarBackButtonHidden(selectedSession != nil)
+    // The system back button would land on the Duo's edge bar as a lone
+    // circle; back lives in the page header instead (and, on the compact
+    // preview step, goes back to the list).
+    .navigationBarBackButtonHidden(true)
+    .modifier(WorkImportBackItem(
+      title: compactDetailShown ? "Sessions" : "Back",
+      disabled: importingSessionId != nil,
+      action: goBack
+    ))
     .toolbar {
-      if selectedSession != nil {
-        ToolbarItem(placement: .topBarLeading) {
-          Button {
-            closeDetail()
-          } label: {
-            Label("Sessions", systemImage: "chevron.left")
-              .labelStyle(.titleAndIcon)
-          }
-          .disabled(importingSessionId != nil)
-          .accessibilityLabel("Back to sessions")
-        }
-      }
+      DuoAppTabsToolbar(includesUtilities: false)
     }
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
-    .task(id: scope) {
+    .task(id: scanTaskKey) {
       await loadSessions(resetting: true)
     }
+    .onAppear { claimsFullWidth?(true) }
+    .onDisappear { claimsFullWidth?(false) }
   }
 
-  // MARK: - Browser
+  private var compactDetailShown: Bool {
+    horizontalSizeClass != .regular && showsDetail && openedSession != nil
+  }
 
-  private var browser: some View {
+  private func goBack() {
+    if showsDetail && horizontalSizeClass != .regular {
+      closeDetail()
+    } else {
+      dismiss()
+    }
+  }
+
+  // MARK: - Wide: list | preview
+
+  @ViewBuilder
+  private func splitBody(proxy: GeometryProxy) -> some View {
+    let fold = DuoFoldReading.fold(in: proxy)
+    let foldRect: CGRect? = {
+      if case .sideBySide(let rect) = fold { return rect }
+      return nil
+    }()
+    let width = proxy.size.width
+    // Book: the list is the left page. Flat: desktop's proportions.
+    let listWidth = foldRect.map { max(280, $0.minX) } ?? min(420, max(300, width * 0.4))
+    let oneRow = foldRect == nil && width >= workImportOneRowControlsMinWidth
     VStack(spacing: 0) {
-      controls
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-
-      if let failedNotice, !sessions.isEmpty {
-        Label(failedNotice, systemImage: "exclamationmark.triangle")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(maxWidth: .infinity, alignment: .leading)
+      if oneRow {
+        controls(oneRow: true)
           .padding(.horizontal, 16)
-          .padding(.bottom, 6)
+          .padding(.top, 8)
+          .padding(.bottom, 10)
+        Divider().overlay(ADEKit.rule)
       }
-
-      browserContent
+      HStack(spacing: 0) {
+        VStack(spacing: 0) {
+          if !oneRow {
+            controls(oneRow: false)
+              .padding(.horizontal, 16)
+              .padding(.top, 8)
+              .padding(.bottom, 10)
+          }
+          listContent(selectable: true)
+        }
+        .frame(width: listWidth)
+        DuoSeam(axis: .vertical, foldRect: foldRect)
+        previewColumn
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
     }
   }
 
   @ViewBuilder
-  private var controls: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 8) {
-          WorkImportProviderChip(
-            provider: workImportAllProvidersFilter,
-            count: inLane.count,
-            selected: effectiveProviderFilter == workImportAllProvidersFilter,
-            action: { providerFilter = workImportAllProvidersFilter }
-          )
-          ForEach(providerChips) { chip in
-            WorkImportProviderChip(
-              provider: chip.provider,
-              count: chip.count,
-              selected: effectiveProviderFilter == chip.provider,
-              action: { providerFilter = chip.provider }
-            )
+  private var previewColumn: some View {
+    if let session = activeSession {
+      sessionPreview(session)
+        .id(session.importIdentity)
+    } else if loading {
+      WorkImportCenterState(systemImage: nil, tint: ADEColor.textMuted, title: "Scanning sessions…", detail: nil, actionTitle: nil, action: nil, showsProgress: true)
+    } else {
+      // Nothing under the filters: the list says why and what to do.
+      Color.clear
+    }
+  }
+
+  // MARK: - Compact: list, then the preview
+
+  @ViewBuilder
+  private var compactBody: some View {
+    if showsDetail, let session = openedSession {
+      sessionPreview(session)
+    } else {
+      VStack(spacing: 0) {
+        controls(oneRow: false)
+          .padding(.horizontal, 16)
+          .padding(.top, 8)
+          .padding(.bottom, 10)
+        listContent(selectable: false)
+      }
+    }
+  }
+
+  // MARK: - Controls (machine, lane, scope, agents)
+
+  @ViewBuilder
+  private func controls(oneRow: Bool) -> some View {
+    if oneRow {
+      HStack(spacing: 8) {
+        pickers
+          .fixedSize()
+        providerFilterBar
+        scanIndicator
+      }
+    } else {
+      // Two rows: the pickers, then the agents. When the three pickers do not
+      // fit on one line, "where to look" leads the agents' row instead.
+      ViewThatFits(in: .horizontal) {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(spacing: 8) {
+            pickers
+            Spacer(minLength: 0)
+            scanIndicator
+          }
+          providerFilterBar
+        }
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(spacing: 8) {
+            machinePicker
+            laneFilterPicker
+            Spacer(minLength: 0)
+            scanIndicator
+          }
+          HStack(spacing: 8) {
+            scopePicker
+              .fixedSize()
+            providerFilterBar
           }
         }
-        .padding(.vertical, 1)
       }
-
-      HStack(spacing: 10) {
-        WorkImportLaneFilterMenu(
-          lanes: lanes,
-          scanKeys: scanLaneKeys,
-          counts: laneCounts,
-          totalCount: inProvider.count,
-          selection: Binding(
-            get: { laneFilter },
-            set: { laneFilterChoice = $0 }
-          )
-        )
-        Spacer(minLength: 0)
-        if loading && !sessions.isEmpty {
-          ProgressView()
-            .controlSize(.small)
-            .accessibilityLabel("Scanning sessions")
-        }
-      }
-
-      Picker("Where to look", selection: $scope) {
-        Text("This project").tag("project")
-        Text("All folders").tag("all")
-      }
-      .pickerStyle(.segmented)
-      .accessibilityLabel("Where to look")
     }
   }
 
+  private var pickers: some View {
+    HStack(spacing: 8) {
+      machinePicker
+      laneFilterPicker
+      scopePicker
+    }
+  }
+
+  /// The new-chat page's machine menu (same sections, same pill), as a
+  /// label that can shorten in a narrow column.
+  private var machinePicker: some View {
+    let options = machineOptions
+    let selected = selectedMachine
+    return Menu {
+      Section("Connected") {
+        ForEach(options.filter { $0.isPrimary || $0.isLive }) { option in
+          Button {
+            selectMachine(option)
+          } label: {
+            Label(option.isPrimary ? "\(option.name) · Primary" : option.name, systemImage: option.symbol)
+          }
+        }
+      }
+      let notLive = options.filter { !$0.isPrimary && !$0.isLive }
+      if !notLive.isEmpty {
+        Section("Not connected · tap to reconnect") {
+          ForEach(notLive) { option in
+            Button {
+              selectMachine(option)
+            } label: {
+              Label(option.name, systemImage: option.symbol)
+            }
+          }
+        }
+      }
+    } label: {
+      WorkImportPillLabel(symbol: selected.symbol, title: selected.name)
+    }
+    .disabled(importingSessionId != nil)
+    .accessibilityLabel("Import from")
+    .accessibilityValue(selected.name)
+  }
+
+  private var laneFilterPicker: some View {
+    WorkImportLaneFilterMenu(
+      lanes: activeLanes,
+      scanKeys: scanLaneKeys,
+      counts: laneCounts,
+      totalCount: inProvider.count,
+      selection: $laneFilter
+    )
+  }
+
+  private var scopePicker: some View {
+    Menu {
+      Picker("Where to look", selection: $scope) {
+        Label("This project", systemImage: "folder").tag("project")
+        Label("All folders", systemImage: "externaldrive").tag("all")
+      }
+    } label: {
+      WorkImportPillLabel(
+        symbol: scope == "project" ? "folder" : "externaldrive",
+        title: scope == "project" ? "This project" : "All folders"
+      )
+    }
+    .accessibilityLabel("Where to look")
+    .accessibilityValue(scope == "project" ? "This project" : "All folders")
+  }
+
   @ViewBuilder
-  private var browserContent: some View {
-    if let loadError, sessions.isEmpty, !loading {
+  private var scanIndicator: some View {
+    if loading && !sessions.isEmpty {
+      ProgressView()
+        .controlSize(.small)
+        .accessibilityLabel("Scanning sessions")
+    }
+  }
+
+  private var providerFilterBar: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 2) {
+        WorkImportProviderSegment(
+          provider: workImportAllProvidersFilter,
+          count: inLane.count,
+          selected: providerFilter == workImportAllProvidersFilter,
+          action: { selectProvider(workImportAllProvidersFilter) }
+        )
+        ForEach(providerChips) { chip in
+          WorkImportProviderSegment(
+            provider: chip.provider,
+            count: chip.count,
+            selected: providerFilter == chip.provider,
+            action: { selectProvider(chip.provider) }
+          )
+        }
+      }
+      .adeKitSegmentTrack()
+    }
+    // A scroller wants its whole content's width; it takes whatever the row
+    // leaves instead, so the row layout above never picks around it.
+    .frame(minWidth: 120, idealWidth: 120, maxWidth: .infinity)
+  }
+
+  private func selectProvider(_ provider: String) {
+    providerFilter = provider
+    selectedKey = nil
+    confirmingKey = nil
+  }
+
+  // MARK: - List
+
+  @ViewBuilder
+  private func listContent(selectable: Bool) -> some View {
+    if let sourceError, !remoteLanesLoading {
+      WorkImportCenterState(
+        systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+        tint: ADEColor.warning,
+        title: "Can't browse \(selectedMachine.name)",
+        detail: sourceError,
+        actionTitle: "Try again",
+        action: { retrySource() }
+      )
+    } else if let loadError, sessions.isEmpty, !loading {
       WorkImportCenterState(
         systemImage: "exclamationmark.triangle",
         tint: ADEColor.warning,
@@ -318,138 +607,167 @@ struct WorkImportSessionScreen: View {
         action: { Task { await loadSessions() } }
       )
     } else if visibleSessions.isEmpty && loading {
-      VStack(spacing: 10) {
-        Spacer()
-        ProgressView()
-          .controlSize(.regular)
-        Text("Scanning sessions…")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer()
-      }
-      .frame(maxWidth: .infinity)
+      WorkImportCenterState(systemImage: nil, tint: ADEColor.textMuted, title: "Scanning \(selectedMachine.name)…", detail: nil, actionTitle: nil, action: nil, showsProgress: true)
     } else if sessions.isEmpty {
       WorkImportCenterState(
         systemImage: "tray",
         tint: ADEColor.textMuted,
         title: "No sessions found",
         detail: emptyScanDetail,
-        actionTitle: "Scan again",
-        action: { Task { await loadSessions() } }
+        actionTitle: scope == "project" ? "Look in all folders" : "Scan again",
+        action: {
+          if scope == "project" { scope = "all" } else { Task { await loadSessions() } }
+        }
       )
     } else if visibleSessions.isEmpty {
-      if laneFilter != workImportAllLanesFilter {
-        WorkImportCenterState(
-          systemImage: "tray",
-          tint: ADEColor.textMuted,
-          title: "No sessions in \(laneFilterName)",
-          detail: nil,
-          actionTitle: "Show all lanes",
-          action: { laneFilterChoice = workImportAllLanesFilter }
-        )
-      } else {
-        WorkImportCenterState(
-          systemImage: "tray",
-          tint: ADEColor.textMuted,
-          title: "No matching sessions",
-          detail: nil,
-          actionTitle: "Show all providers",
-          action: { providerFilter = workImportAllProvidersFilter }
-        )
-      }
+      emptyFilterState
     } else {
-      List {
-        ForEach(visibleGroups) { group in
-          Text(group.label)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .accessibilityAddTraits(.isHeader)
-            .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 0, trailing: 16))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-          ForEach(group.rows, id: \.importIdentity) { session in
-            Button {
-              open(session)
-            } label: {
-              WorkImportSessionSummaryRow(session: session, lanes: lanes, showsLane: rowsShowLane)
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 0) {
+          ForEach(visibleGroups) { group in
+            Text(group.label)
+              .font(.footnote.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .accessibilityAddTraits(.isHeader)
+              .padding(.horizontal, 16)
+              .padding(.top, 14)
+              .padding(.bottom, 4)
+            ForEach(group.rows, id: \.importIdentity) { session in
+              let key = session.importIdentity
+              Button {
+                open(session, pushes: !selectable)
+              } label: {
+                WorkImportSessionSummaryRow(
+                  session: session,
+                  lanes: activeLanes,
+                  showsLane: rowsShowLane,
+                  selected: selectable && activeSession?.importIdentity == key,
+                  showsChevron: !selectable
+                )
+              }
+              .buttonStyle(.plain)
+              .padding(.horizontal, 8)
             }
-            .buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+          }
+          if let failedNotice {
+            Label(failedNotice, systemImage: "exclamationmark.triangle")
+              .font(.caption)
+              .foregroundStyle(ADEColor.warning)
+              .padding(.horizontal, 16)
+              .padding(.vertical, 12)
           }
         }
+        .padding(.bottom, 16)
       }
-      .listStyle(.plain)
       .scrollContentBackground(.hidden)
-      .refreshable {
-        await loadSessions()
-      }
+      .refreshable { await loadSessions() }
     }
   }
 
-  // MARK: - Detail
-
-  private func detail(_ session: ExternalSessionSummary) -> some View {
-    let plan = plan(for: session)
-    return ScrollView {
-      WorkImportSessionRow(session: session, lanes: lanes)
-        .padding(16)
-    }
-    .refreshable { await loadSessions() }
-    // Pinned like the desktop action bar: the one action is always on screen,
-    // however long the preview is.
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      WorkImportActionBar(
-        session: session,
-        plan: plan,
-        lanes: lanes,
-        targetLaneId: Binding(
-          get: { targetLaneId },
-          set: { newValue in
-            targetLaneId = newValue
-            confirmingKey = nil
-          }
-        ),
-        surface: Binding(
-          get: { plan.surface ?? "chat" },
-          set: { newValue in
-            let provider = workExternalSessionProviderKey(session.provider)
-            surfaceChoices[provider] = newValue
-            workSetImportSurfacePreference(provider, surface: newValue)
-            confirmingKey = nil
-          }
-        ),
-        confirmingKey: confirmingKey,
-        importing: importingSessionId == session.importIdentity,
-        importDisabled: importingSessionId != nil,
-        error: importError,
-        onRun: { action in
-          run(action, for: session)
-        },
-        onOpenExisting: { ref in
-          Task { await openExisting(session, ref: ref) }
-        }
+  /// Nothing under the filters. Names the filter, and the one way out.
+  @ViewBuilder
+  private var emptyFilterState: some View {
+    let providerName = providerFilter == workImportAllProvidersFilter
+      ? nil
+      : workExternalSessionProviderName(providerFilter)
+    let title = providerName.map { "No \($0) sessions in \(laneFilterName)" } ?? "No sessions in \(laneFilterName)"
+    if laneFilter != workImportAllLanesFilter {
+      WorkImportCenterState(
+        systemImage: "tray", tint: ADEColor.textMuted, title: title, detail: nil,
+        actionTitle: "Show all lanes",
+        action: { laneFilter = workImportAllLanesFilter }
       )
-      .padding(.horizontal, 12)
-      .padding(.top, 8)
-      .padding(.bottom, 8)
+    } else if scope == "project" {
+      WorkImportCenterState(
+        systemImage: "tray", tint: ADEColor.textMuted, title: title,
+        detail: "\(selectedMachine.name) may have \(providerName ?? "other") sessions in folders outside this project.",
+        actionTitle: "Look in all folders",
+        action: { scope = "all" }
+      )
+    } else {
+      WorkImportCenterState(
+        systemImage: "tray", tint: ADEColor.textMuted, title: title, detail: nil,
+        actionTitle: "Show all agents",
+        action: { selectProvider(workImportAllProvidersFilter) }
+      )
     }
+  }
+
+  // MARK: - Preview + action bar
+
+  private func sessionPreview(_ session: ExternalSessionSummary) -> some View {
+    let plan = plan(for: session)
+    return VStack(spacing: 0) {
+      WorkImportSessionHeader(session: session, lanes: activeLanes)
+        .padding(.leading, 20)
+        .padding(.trailing, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+      Divider().overlay(ADEKit.rule)
+      WorkImportSessionPreview(session: session, source: source)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      actionBar(session, plan: plan)
+    }
+    // The action bar's buttons end level with the edge bar's last capsule.
+    .duoEdgeBarAlignedBottom(contentBottomPadding: 10)
+  }
+
+  private func actionBar(_ session: ExternalSessionSummary, plan: WorkImportPlan) -> some View {
+    WorkImportActionBar(
+      session: session,
+      plan: plan,
+      lanes: activeLanes,
+      targetLaneId: Binding(
+        get: { plan.targetLaneId ?? targetLaneId(for: session) },
+        set: { newValue in
+          targetChoices[session.importIdentity] = newValue
+          confirmingKey = nil
+        }
+      ),
+      surface: Binding(
+        get: { plan.surface ?? "chat" },
+        set: { newValue in
+          let provider = workExternalSessionProviderKey(session.provider)
+          surfaceChoices[provider] = newValue
+          workSetImportSurfacePreference(provider, surface: newValue)
+          confirmingKey = nil
+        }
+      ),
+      confirmingKey: confirmingKey,
+      importing: importingSessionId == session.importIdentity,
+      importDisabled: importingSessionId != nil,
+      error: importError,
+      onRun: { action in
+        run(action, for: session)
+      },
+      onOpenExisting: { ref in
+        Task { await openExisting(session, ref: ref) }
+      }
+    )
   }
 
   private func closeDetail() {
-    selectedSession = nil
+    showsDetail = false
     confirmingKey = nil
     importError = nil
   }
 
-  /// Opens a row: the target starts on its home lane, the mode on the last
-  /// one used for this provider (else the first the plan offers).
-  private func open(_ session: ExternalSessionSummary) {
-    targetLaneId = session.defaultImportTargetLaneId(liveLaneIds: liveLaneIds) ?? lane.id
-    confirmingKey = nil
-    importError = nil
-    selectedSession = session
+  private func open(_ session: ExternalSessionSummary, pushes: Bool) {
+    if selectedKey != session.importIdentity {
+      confirmingKey = nil
+      importError = nil
+    }
+    selectedKey = session.importIdentity
+    if pushes { showsDetail = true }
+  }
+
+  /// The lane an import goes to: the user's pick, else the session's home
+  /// lane, else the lane the page was opened for.
+  private func targetLaneId(for session: ExternalSessionSummary) -> String {
+    if let choice = targetChoices[session.importIdentity] { return choice }
+    return session.defaultImportTargetLaneId(liveLaneIds: liveLaneIds) ?? originLaneId ?? lane.id
   }
 
   private func requestedSurface(for session: ExternalSessionSummary) -> String? {
@@ -458,20 +776,31 @@ struct WorkImportSessionScreen: View {
   }
 
   private func plan(for session: ExternalSessionSummary) -> WorkImportPlan {
-    workPlanImport(
+    var plan = workPlanImport(
       session,
-      surface: requestedSurface(for: session),
-      targetLaneId: targetLaneId,
-      // The list was scanned for this screen's lane.
-      originLaneId: lane.id,
+      surface: isRemoteSource ? "chat" : requestedSurface(for: session),
+      targetLaneId: targetLaneId(for: session),
+      originLaneId: originLaneId,
       laneName: laneName
     )
+    // Terminals of another machine do not stream to the phone yet (the
+    // new-chat page says the same): from there only chat imports are offered.
+    if isRemoteSource {
+      plan.surfaces = plan.surfaces.filter { $0 == "chat" }
+      if plan.surface != "chat" {
+        plan.surface = nil
+        plan.primary = nil
+        plan.secondary = nil
+        plan.note = "This session opens only as a CLI, and the phone runs CLI sessions on \(syncService.focusedMachineDisplayName) only."
+      }
+    }
+    return plan
   }
 
   private func run(_ action: WorkImportPlanAction, for session: ExternalSessionSummary) {
     guard importingSessionId == nil else { return }
     let plan = plan(for: session)
-    let laneId = plan.targetLaneId ?? targetLaneId
+    let laneId = plan.targetLaneId ?? targetLaneId(for: session)
     // Same guard, same words as the host: never send an import it would refuse.
     if let reason = workImportRejectionReason(session, target: action.target, mode: action.mode, laneId: laneId) {
       ADEHaptics.error()
@@ -493,21 +822,84 @@ struct WorkImportSessionScreen: View {
     Task { await importSession(session, action: action, laneId: laneId) }
   }
 
+  // MARK: - Machine switching
+
+  private func selectMachine(_ option: WorkNewChatMachineOption) {
+    guard option.machineKey != sourceKey, importingSessionId == nil else { return }
+    sourceKey = option.machineKey
+    loadSeq += 1
+    sessions = []
+    pendingProviders = []
+    unsupportedProviders = []
+    failedProviders = []
+    loadError = nil
+    sourceError = nil
+    scanDone = false
+    selectedKey = nil
+    showsDetail = false
+    targetChoices = [:]
+    laneFilter = workImportAllLanesFilter
+    providerFilter = workImportAllProvidersFilter
+    confirmingKey = nil
+    importError = nil
+    remoteLanes = []
+    if let key = option.machineKey {
+      Task { await loadRemoteLanes(machineKey: key) }
+    }
+  }
+
+  private func retrySource() {
+    guard let key = sourceKey else { return }
+    sourceError = nil
+    Task { await loadRemoteLanes(machineKey: key) }
+  }
+
+  /// Another machine's lanes: connect it if needed, then read its checkout of
+  /// this project. The scan starts once its primary lane is known.
+  @MainActor
+  private func loadRemoteLanes(machineKey: String) async {
+    remoteLanesLoading = true
+    defer { if sourceKey == machineKey { remoteLanesLoading = false } }
+    let live = await syncService.machineFleet?.connect(machineKey: machineKey) ?? false
+    guard sourceKey == machineKey else { return }
+    guard let repo = syncService.remoteLaneRepo(machineKey: machineKey) else {
+      sourceError = "That machine has no checkout of this project."
+      return
+    }
+    guard live else {
+      sourceError = "Can’t reach \(repo.machineName) right now."
+      return
+    }
+    do {
+      let snapshots = try await syncService.fetchRemoteLaneSnapshots(
+        repo: repo,
+        timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
+      )
+      guard sourceKey == machineKey else { return }
+      remoteLanes = snapshots.map(\.lane).filter { $0.archivedAt == nil }
+      if remoteLanes.isEmpty { sourceError = "\(repo.machineName) has no lanes in this project." }
+    } catch {
+      guard sourceKey == machineKey else { return }
+      sourceError = "Can’t read \(repo.machineName)’s lanes: \(error.localizedDescription)"
+    }
+  }
+
   // MARK: - Loading
 
   /// Scans every provider in parallel, like the desktop dialog, so the chips
   /// can show counts. A refresh swaps each provider's rows in place, so the
-  /// list never blanks; a scope change starts from an empty list.
+  /// list never blanks; a scope or machine change starts from an empty list.
   @MainActor
   private func loadSessions(resetting: Bool = false, attempt: Int = 0) async {
     loadSeq += 1
     let seq = loadSeq
     let requestedScope = scope
-    let originLaneId = lane.id
     if resetting {
       sessions = []
       scanDone = false
     }
+    // Another machine's lanes are still loading (or failed): nothing to scan yet.
+    guard let scanLaneId = originLaneId else { return }
     let providers = scanProviders
     loadError = nil
     failedProviders = []
@@ -519,9 +911,11 @@ struct WorkImportSessionScreen: View {
       for provider in providers {
         group.addTask {
           do {
+            // A lane of another machine carries its machine in its id, so
+            // this scan goes to that machine.
             let rows = try await syncService.listExternalSessions(
               providers: [provider],
-              laneId: originLaneId,
+              laneId: scanLaneId,
               scope: requestedScope,
               limit: workImportBrowseLimitPerProvider
             )
@@ -540,7 +934,10 @@ struct WorkImportSessionScreen: View {
         } else if let error, !(error is CancellationError) {
           // An older host that does not know this provider refuses it by
           // name; that is "not supported here", not a failed scan.
-          if error.localizedDescription.contains("requires a valid provider") { continue }
+          if error.localizedDescription.contains("requires a valid provider") {
+            unsupportedProviders.insert(provider)
+            continue
+          }
           failures += 1
           lastError = error.localizedDescription
           failedProviders.append(provider)
@@ -557,20 +954,31 @@ struct WorkImportSessionScreen: View {
     }
     scanDone = true
     if failures == providers.count {
-      loadError = lastError ?? "The machine didn't answer. Check that it has this project open, then try again."
-    }
-    // Keep an open detail on the fresh copy of its row.
-    if let current = selectedSession,
-       let fresh = sessions.first(where: { $0.importIdentity == current.importIdentity }) {
-      selectedSession = fresh
+      loadError = lastError ?? "\(selectedMachine.name) didn't answer. Check that it has this project open, then try again."
     }
   }
 
   // MARK: - Import
 
+  /// The chat lives on the machine it was imported on: its reads, sends and
+  /// stream go there.
+  private func adoptChatScope(sessionId: String) {
+    guard let repo = remoteRepo else { return }
+    syncService.setRemoteMachineChatScope(
+      sessionId: sessionId,
+      machineKey: repo.machineKey,
+      projectId: repo.projectId,
+      projectRootPath: repo.rootPath
+    )
+  }
+
   @MainActor
   private func importSession(_ session: ExternalSessionSummary, action: WorkImportPlanAction, laneId: String) async {
     guard importingSessionId == nil else { return }
+    if isRemoteSource && action.target != "chat" {
+      importError = "The phone runs CLI sessions on \(syncService.focusedMachineDisplayName) only."
+      return
+    }
     importingSessionId = session.importIdentity
     importError = nil
     defer { importingSessionId = nil }
@@ -583,6 +991,7 @@ struct WorkImportSessionScreen: View {
         mode: action.mode
       )
       if result.kind == "chat", let chatSessionId = result.chatSessionId {
+        adoptChatScope(sessionId: chatSessionId)
         let chatSummary: AgentChatSessionSummary
         if let returnedSummary = result.chatSummary {
           chatSummary = returnedSummary
@@ -644,8 +1053,9 @@ struct WorkImportSessionScreen: View {
       return
     }
 
-    ADEHaptics.medium()
     if kind == "chat" {
+      ADEHaptics.medium()
+      adoptChatScope(sessionId: sessionId)
       do {
         let summary = try await syncService.fetchChatSummary(sessionId: sessionId)
         syncService.cacheChatSummary(summary)
@@ -654,7 +1064,11 @@ struct WorkImportSessionScreen: View {
         ADEHaptics.error()
         importError = "The imported ADE chat is not available yet. \(error.localizedDescription)"
       }
+    } else if isRemoteSource {
+      ADEHaptics.error()
+      importError = "This CLI session runs on \(selectedMachine.name). Open it from there."
     } else {
+      ADEHaptics.medium()
       if let terminal = await syncService.ensureSessionRowHydrated(sessionId: sessionId) {
         await onCliImported(terminal)
       } else {
@@ -699,6 +1113,41 @@ struct WorkImportSessionScreen: View {
   }
 }
 
+/// Back in the page header's leading slot. Held landscape on the Duo it stays
+/// in the top row beside the title instead of becoming a lone circle on the
+/// edge bar.
+private struct WorkImportBackItem: ViewModifier {
+  let title: String
+  let disabled: Bool
+  let action: () -> Void
+
+  func body(content: Content) -> some View {
+    #if compiler(>=6.4)
+    if #available(iOS 27.1, *) {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { button }
+          .axisBehavior(.horizontalOnly)
+      }
+    } else {
+      content.toolbar {
+        ToolbarItem(placement: .topBarLeading) { button }
+      }
+    }
+    #else
+    content.toolbar {
+      ToolbarItem(placement: .topBarLeading) { button }
+    }
+    #endif
+  }
+
+  private var button: some View {
+    Button(title, systemImage: "chevron.left", action: action)
+      .disabled(disabled)
+      .accessibilityLabel(title == "Sessions" ? "Back to sessions" : "Back")
+      .accessibilityIdentifier("Work.Import.Back")
+  }
+}
+
 private struct WorkImportProviderCount: Identifiable {
   let provider: String
   let count: Int
@@ -714,43 +1163,81 @@ private struct WorkImportSessionGroup: Identifiable {
 
 /// A centered empty/error state with one way forward, never a dead end.
 private struct WorkImportCenterState: View {
-  let systemImage: String
+  let systemImage: String?
   let tint: Color
   let title: String
   let detail: String?
   let actionTitle: String?
   let action: (() -> Void)?
+  var showsProgress = false
 
   var body: some View {
-    ScrollView {
-      VStack(spacing: 8) {
+    VStack(spacing: 8) {
+      if showsProgress {
+        ProgressView()
+          .controlSize(.regular)
+      } else if let systemImage {
         Image(systemName: systemImage)
           .font(.title3)
           .foregroundStyle(tint)
           .accessibilityHidden(true)
-        Text(title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .multilineTextAlignment(.center)
-        if let detail {
-          Text(detail)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        if let actionTitle, let action {
-          Button(actionTitle, action: action)
-            .font(.subheadline.weight(.semibold))
-            .buttonStyle(.bordered)
-            .tint(ADEColor.accent)
-            .padding(.top, 4)
-        }
       }
-      .frame(maxWidth: .infinity)
-      .padding(.horizontal, 32)
-      .padding(.vertical, 48)
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(showsProgress ? ADEColor.textSecondary : ADEColor.textPrimary)
+        .multilineTextAlignment(.center)
+      if let detail {
+        Text(detail)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .buttonStyle(ADEKitButtonStyle())
+          .padding(.top, 6)
+      }
     }
+    .frame(maxWidth: 360)
+    .padding(.horizontal, 24)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
+/// The calm kit pill every filter control here uses (34pt, like the machine
+/// and lane controls on the new-chat page).
+struct WorkImportPillLabel: View {
+  var symbol: String?
+  var laneMark: LaneSummary?
+  let title: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if let laneMark {
+        WorkLaneLogoMark(
+          color: LaneColorPalette.displayColor(forHex: laneMark.color, fallback: ADEColor.textSecondary),
+          laneIcon: laneMark.icon,
+          emoji: laneMark.emoji,
+          size: 12
+        )
+      } else if let symbol {
+        Image(systemName: symbol)
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      Text(title)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 12)
+    .frame(height: 34)
+    .adeKitPill()
+    .contentShape(Capsule(style: .continuous))
   }
 }
 
@@ -791,86 +1278,60 @@ private struct WorkImportLaneFilterMenu: View {
         }
       }
     } label: {
-      HStack(spacing: 6) {
-        if let selectedLane {
-          WorkLaneLogoMark(
-            color: LaneColorPalette.displayColor(forHex: selectedLane.color, fallback: ADEColor.textSecondary),
-            laneIcon: selectedLane.icon,
-            emoji: selectedLane.emoji,
-            size: 12
-          )
-        } else {
-          Image(systemName: selection == workImportOtherFoldersFilter ? "folder" : "square.stack.3d.up")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        Image(systemName: "chevron.up.chevron.down")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-      }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
-      .overlay(Capsule(style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
+      WorkImportPillLabel(
+        symbol: selection == workImportOtherFoldersFilter ? "folder" : "square.stack.3d.up",
+        laneMark: selectedLane,
+        title: title
+      )
     }
     .accessibilityLabel("Lane filter")
     .accessibilityValue(title)
   }
 }
 
-private struct WorkImportProviderChip: View {
+/// One option of the agent filter: one kit segmented track, each option a
+/// logo, a name and its count (desktop's provider filter). Agents with no
+/// sessions here stay listed, dimmed.
+private struct WorkImportProviderSegment: View {
   let provider: String
   let count: Int
   let selected: Bool
   let action: () -> Void
 
   private var name: String {
-    provider == workImportAllProvidersFilter ? "All" : providerDisplayName(provider)
+    provider == workImportAllProvidersFilter ? "All" : workExternalSessionProviderName(provider)
   }
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 6) {
+      HStack(spacing: 5) {
         if provider != workImportAllProvidersFilter {
-          providerLogo
+          WorkProviderBareLogo(
+            provider: provider,
+            fallbackSymbol: providerIcon(provider),
+            tint: workImportProviderTint(provider),
+            size: 14
+          )
+          .opacity(count == 0 && !selected ? 0.45 : 1)
         }
         Text(name)
-          .font(.caption.weight(.semibold))
+          .font(.system(size: 12.5, weight: selected ? .semibold : .medium))
+          .foregroundStyle(selected ? ADEColor.textPrimary : (count == 0 ? ADEColor.textMuted : ADEColor.textSecondary))
         Text("\(count)")
-          .font(.caption2.weight(.semibold).monospacedDigit())
+          .font(.adeMono(11.5, weight: .medium))
           .foregroundStyle(ADEColor.textMuted)
       }
-      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
       .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(selected ? ADEColor.surfaceBackground.opacity(0.88) : ADEColor.recessedBackground.opacity(0.5), in: Capsule())
-      .overlay {
-        Capsule()
-          .stroke(selected ? ADEColor.glassBorder : Color.clear, lineWidth: 0.6)
+      .frame(minHeight: 30)
+      .background {
+        if selected { ADEKitSegmentThumb() }
       }
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(name), \(count) \(count == 1 ? "session" : "sessions")")
     .accessibilityAddTraits(selected ? .isSelected : [])
   }
-
-  @ViewBuilder
-  private var providerLogo: some View {
-    WorkProviderBareLogo(
-      provider: provider,
-      fallbackSymbol: providerIcon(provider),
-      tint: ADEColor.providerChatAccent(for: provider),
-      size: 18
-    )
-  }
-}
-
-private func providerDisplayName(_ provider: String) -> String {
-  workExternalSessionProviderName(provider)
 }
 
 private func workImportToolType(provider: String) -> String {

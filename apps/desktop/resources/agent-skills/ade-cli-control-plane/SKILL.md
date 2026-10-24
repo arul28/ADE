@@ -330,10 +330,17 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
-- **`ade notify --title "<t>" [--body "<b>"] [--open <ade link>]` pushes to the
-  user's phone**, only when they asked to be told (for example "tell me when the
-  deploy is done"). The account allows 60 an hour; the command exits non-zero
-  past that or when signed out.
+- **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
+  asked to hear about**, and only then: "tell me when the deploy is done",
+  "ping me if the tests fail". Never on your own initiative; ADE already alerts
+  the user when you need them, fail, or finish. Run from your chat, it is your
+  chat's message: the chat shows "Notified you", Activity's Inbox lists it on
+  every device, a tap opens your chat, and the phone stays quiet while the user
+  is at the computer or has muted the chat. Lead with what they would act on
+  ("Deploy failed on step 3, rolling back"), not "Done". A chat may send 6 an
+  hour, and the same words twice within ten minutes go out once; past the limit
+  the command exits non-zero and says when to try again. It is not a question:
+  if you need an answer, `ask`.
 
 #### Activity detail on the card
 

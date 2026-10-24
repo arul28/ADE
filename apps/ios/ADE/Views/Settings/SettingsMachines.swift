@@ -522,12 +522,11 @@ struct SettingsMachineSections: View {
       Button { presentedSheet = .ssh } label: { Label("Connect over SSH", systemImage: "terminal") }
     } label: {
       Label("Add", systemImage: "plus")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .background(ADEKit.track, in: Capsule(style: .continuous))
+        .font(.subheadline.weight(.semibold))
     }
+    .buttonStyle(.bordered)
+    .buttonBorderShape(.capsule)
+    .controlSize(.small)
     .accessibilityLabel("Add machine")
   }
 }

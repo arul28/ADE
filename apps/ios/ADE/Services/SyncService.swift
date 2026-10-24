@@ -4722,6 +4722,8 @@ final class SyncService: ObservableObject {
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
+  /// The focused machine answers `project_set_icon_request`.
+  @Published private(set) var supportsProjectIcon = false
   private var supportsChatStreaming = false
   private var supportsChatHistoryPaging = false
   /// `hello.features.macDesktopStream`: the host can push the lane's Mac
@@ -5530,6 +5532,37 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Stores a project's icon on the focused machine (`project_set_icon_request`),
+  /// the store the desktop's icon editor writes, so every device shows it
+  /// from the next catalog. Callers send the same icon to each other machine
+  /// the project is on through `MachineConnection.setProjectIcon`.
+  func setProjectIcon(_ project: MobileProjectSummary, png: Data) async throws {
+    guard supportsProjectIcon, canSendLiveRequests() else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "This machine can’t change project icons. Update ADE on it.",
+      ])
+    }
+    let requestId = makeRequestId()
+    let payload = mobileProjectSetIconPayload(projectId: project.id, rootPath: project.rootPath, png: png)
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out changing the project icon.",
+      timeoutNanoseconds: 20_000_000_000
+    ) {
+      self.sendEnvelope(type: "project_set_icon_request", requestId: requestId, payload: payload)
+    }
+    let result = try decode(raw, as: MobileProjectSetIconResultPayload.self)
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The machine could not change the icon.",
+      ])
+    }
+    // The host re-sends its catalog on success; ask the roster too, so the
+    // project card picks the icon up without waiting.
+    requestRosterSnapshot()
+  }
+
   func forgetProject(_ project: MobileProjectSummary) {
     let wasActive = isActiveProject(project)
     rememberHiddenProject(project)
@@ -6220,6 +6253,10 @@ final class SyncService: ObservableObject {
   }
 
   private func setActiveProjectId(_ projectId: String?, rootPath: String? = nil) {
+    #if DEBUG
+    // A fixture screen owns the active project for the life of the process.
+    if let pinned = previewPinnedProjectId, normalizedProjectId(projectId) != pinned { return }
+    #endif
     let previousProjectId = normalizedProjectId(activeProjectId)
     let previousRootPath = normalizedProjectRoot(activeProjectRootPath)
     let nextProjectId = normalizedProjectId(projectId)
@@ -12338,6 +12375,22 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Files' cached reads, off the main actor and with no request: the
+  /// workspaces and a folder's last listing. The tab paints from these at once,
+  /// and a projection bump (which this tab's own cache writes cause) re-reads
+  /// them instead of asking the machine again.
+  func cachedFilesWorkspaces() async -> [FilesWorkspace] {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) { database.listWorkspaces() }.value
+  }
+
+  func cachedDirectoryListing(workspaceId: String, parentPath: String, includeIgnored: Bool) async -> [FileTreeNode]? {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) {
+      database.fetchDirectorySnapshot(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeIgnored)
+    }.value
+  }
+
   func listTree(workspaceId: String, parentPath: String = "", includeIgnored: Bool = false) async throws -> [FileTreeNode] {
     do {
       let nodes = try decode(
@@ -15759,6 +15812,22 @@ final class SyncService: ObservableObject {
     return try? await sendDecodableCommand(
       action: "chat.getLaunchDefaults",
       as: AgentChatLaunchDefaults?.self
+    )
+  }
+
+  /// The account's Fast permission, over the sync host. The phone reads it with
+  /// the launch defaults too; this is the write path behind Settings › Chat.
+  func getFastModeEnabled() async -> Bool {
+    guard supportsRemoteAction("chat.getFastModeEnabled") else { return false }
+    let raw = try? await sendCommand(action: "chat.getFastModeEnabled", args: [:])
+    return (raw as? [String: Any])?["enabled"] as? Bool == true
+  }
+
+  func setFastModeEnabled(_ enabled: Bool) async throws {
+    _ = try await sendCommand(
+      action: "chat.setFastModeEnabled",
+      args: ["enabled": enabled],
+      attemptedLiveFailurePolicy: .preserveForManualRetry
     )
   }
 
@@ -20152,6 +20221,23 @@ final class SyncService: ObservableObject {
     resetOutboundCursorStateForActiveProject()
   }
 
+  #if DEBUG
+  /// The project a fixture screen pinned; see `pinActiveProjectForPreview`.
+  private var previewPinnedProjectId: String?
+
+  /// A fixture screen's project, kept active for the life of the process.
+  ///
+  /// On a signed-in simulator the app's cached projects load beside the
+  /// fixture, and `normalizeActiveProjectSelection` cleared any active project
+  /// that is not one of them. The `duo-work-*` fixtures then drew an empty
+  /// Work list. While a project is pinned, nothing switches away from it.
+  func pinActiveProjectForPreview(projectId: String) {
+    previewPinnedProjectId = nil
+    setActiveProjectForTesting(projectId: projectId, rootPath: nil)
+    previewPinnedProjectId = normalizedProjectId(projectId)
+  }
+  #endif
+
   func setCtoAttentionForTesting(_ attention: CtoAttention) {
     ctoAttention = attention
   }
@@ -20752,6 +20838,7 @@ final class SyncService: ObservableObject {
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
+    supportsProjectIcon = featureEnabled("projectIcon", "project_icon")
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
     supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
@@ -21188,6 +21275,7 @@ final class SyncService: ObservableObject {
          "project_create_result",
          "project_clone_result",
          "project_forget_result",
+         "project_set_icon_result",
          "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":

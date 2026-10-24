@@ -2414,6 +2414,19 @@ describe("matchElements ordering and selection", () => {
 });
 
 describe("matchElements failure reasons", () => {
+  it.each([
+    ["one label starts with the words", ["Work, 3 need you", "Workspace"], "Work", true, "Work, 3 need you"],
+    ["two labels start with the words", ["Delete draft", "Delete account"], "Delete", true, null],
+    ["the caller takes exact labels only", ["Work, 3 need you"], "Work", false, null],
+    ["an exact label beside a longer one", ["Save", "Save draft"], "Save", true, "Save"],
+  ])("a label prefix: %s", (_case, labels, wanted, labelPrefix, selected) => {
+    const elements = labels.map((label, index) => elemMakeElement({ id: `accessibility:0.${index}`, label }));
+    const outcome = matchElements(elements, { label: wanted }, { labelPrefix });
+    expect(outcome.selected?.label ?? null).toBe(selected);
+    expect(outcome.matches).toHaveLength(selected === null ? 0 : 1);
+    if (selected === null) expect(outcome.reason).toMatch(/No element has the label/);
+  });
+
   it("names the closest near miss", () => {
     const elements = [
       elemMakeElement({ id: "accessibility:0.1", label: "Continue with Apple" }),

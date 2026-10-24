@@ -387,7 +387,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --start-x <n> --start-y <n> Required start coordinates.
     --end-x <n> --end-y <n>     Required end coordinates.
-    --duration-ms <n>           Swipe duration in milliseconds.
+    --duration-ms <n>           Swipe duration in milliseconds, at most 5000.
     --device, --udid <id>       Simulator device.
 `,
   type: `${ADE_BANNER}
@@ -757,11 +757,17 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     $ ade --socket apple find --role Button --index 1 --text
 
   Flags:
-    --ref <id>             Element ref from the last snapshot.
+    --ref <ref>            Element ref from a snapshot (its ref column). Refs come
+                           from the identifier or the label, so they stay the same
+                           between snapshots; the tree id (accessibility:0.1.2) works
+                           only while the layout does not move.
     --identifier <id>      Accessibility identifier.
-    --label <text>         Exact accessibility label.
+    --label <text>         Accessibility label, case-insensitive. With no exact match,
+                           find, tap and fill take the one label that starts with
+                           these words ("Work" finds "Work, 3 need you").
     --text <text>          Case-insensitive substring of the label or value.
-                           --text-match spells the same thing unambiguously.
+                           --contains (or --text-match) spells the same thing without
+                           meeting the --text output flag.
     --role <name>          Element role, such as Button or TextField.
     --index <n>            Which match to take when several match.
     --device, --udid <id>  Simulator device.
@@ -1247,7 +1253,9 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     $ ade apple lease release --token <t> --text
     $ ade apple lease status --text
 
-  acquired no means another holder has it (named, with when it lapses).
+  acquired no means another holder has it (named, with when it lapses), and
+  the command exits 1, so "lease --wait 300 && <device work>" never runs the
+  work without the lease.
 
   Flags:
     --wait <seconds>       How long to wait in line; default 0 (answer at once). Max 540.

@@ -302,6 +302,15 @@ on every `ios_simulator` call (a caller cannot set or clear it). The rules:
 - An agent may make its lane's ONE device without asking (`start`, `launch`,
   `open-device`, `test` and `device-create` do it). A second is
   `APPLE_DEVICE_EXISTS`.
+- When the lane gave up its device (`device-detach`, the pane's "Choose
+  another device", the tools card's Release) and that simulator is still
+  installed and free, `launch`, `open-device`, `test` and every other driving
+  verb, and an agent's `start` without `--udid`, refuse with
+  `APPLE_LANE_DEVICE_RELEASED` (`AppleLaneDeviceReleasedError`) instead of
+  making a new, empty device. The message names the device, who released it (an agent or the
+  pane) and the `device-attach --simulator <udid>` that takes it back. The
+  release is remembered by the brain that ran it, until the lane holds a
+  device again. `apple.lane_device_detached` logs `by: agent | user`.
 - An agent may `device-attach` (or `start --udid`) an installed simulator that
   no lane holds — the user naming a device for the lane. A simulator another
   lane holds is refused with `APPLE_DEVICE_NOT_LANE_OWNED`, and nothing is
@@ -402,7 +411,10 @@ so on a hinged device the helper's `orientation` command sends CoreDevice's
 orientations, the cover's Home Screen only portrait. `rotate` on a Duo is
 verified from the guest's report of the live panel, not the framebuffer read
 the rigid path uses (that always names the cover, and the inner panel's
-framebuffer never changes shape); the answer carries the posture. The rail's
+framebuffer never changes shape); the answer carries the posture. When the
+picture has not turned by the settle deadline, the turn is sent once more and
+waited for again (`apple.rotate_resent`): right after a fold the guest can drop
+it. The rail's
 orientation control shows how the phone is held (CoreDevice names the
 device's orientation, the control the interface's, so the landscapes swap).
 The posture watcher also reports a change of the live panel's turn.
@@ -463,11 +475,18 @@ how the phone is held. The rail's Duo menu: presets (Open, Laptop, Book,
 Tent, Closed), ±15° steps, and **App Store screenshots** (both
 panels at App Store Connect's sizes, filed as proof; `ade apple
 app-store-shots`). A drag on the slider settles on Closed, Laptop and Open
-within 4°; arrow keys stay exact. The 3D body eases into every pose (hinge,
+within 4°; arrow keys stay exact. The slider is the one source of the hinge
+angle: the drawn body is that angle alone (every pose folds both halves the
+same way), an orientation press never moves it, and a device report within 2°
+(`appleDuoSameHinge`) changes nothing. A release anywhere ends the drag (the
+window hears it, off the slider or off the window). A fold that fails puts the
+slider back to the device's own angle. The 3D body eases into every pose (hinge,
 the landscape turn, the half turn that shows the cover) and the camera eases
-to each new fit; while ADE's own fold sweeps, the simulator's intermediate
-reports are held off so the hinge does not jump back. A drag on the 3D view
-leaves the device where it was let go; Reset view brings back the rest pose. ⌥[ and ⌥] fold and unfold by the step. A
+to each new fit; while ADE's own fold sweeps (up to 8 s), the simulator's
+intermediate reports are held off so the hinge does not jump back. A drag on
+the 3D view leaves the device where it was let go; Reset view brings back the
+rest pose, and so does an orientation press (also the one already pressed,
+which sends the turn again) or a slider release on Closed, Laptop or Open. ⌥[ and ⌥] fold and unfold by the step. A
 fold to closed or open reports its posture once the guest has switched panels.
 The floating player reads the posture too, so it draws the inner panel upright
 and follows folds. Screenshots of a foldable (more than one integrated panel in
@@ -672,7 +691,25 @@ ade --socket apple key return --text
 (`snapshot` does). It files the shot as proof and prints its `cite:` line; a later
 `proof attach` of the same bytes is refused as `PROOF_DUPLICATE` and that
 refusal names the earlier proof's `cite:` line. `--no-proof` takes a scratch
-shot that files nothing, for a validation loop.
+shot that files nothing, for a validation loop. `--out <path>` resolves
+against the caller's directory, and the CLI copies the shot there, so any path
+the caller can write (`/tmp` included) works; on a brain on another machine it
+says the file stayed there.
+
+`snapshot --text` lists every element with its `ref`, role, label and frame
+(device points). The `ref` comes from the identifier, else the label, so it is
+the same in the next snapshot; `tap-element --ref` takes it, and also the tree
+`id` (`accessibility:0.1.2`), which moves with the layout. `--label` matches
+the whole label first. With no exact match, `find-element`, `tap-element` and
+`fill` take the one label that starts with those words ("Work" finds "Work, 3
+need you"); two such labels are no match, and `wait` and `assert-visible` take
+exact labels only. `--contains` is `--text` without the
+clash with the `--text` output flag.
+
+A tap's touch-down and touch-up, and a drag's steps, go to the helper as one
+block (`sendGesture`): a `snapshot` from another caller can no longer run
+between them and turn a tap into a long press, or a slow drag into a tap.
+`drag`, `swipe` and `scroll` answer with their own `action`.
 
 `launch` builds `Debug` unless `--configuration` names another (an app whose
 Debug and Release reach different backends needs the one under test), and
@@ -690,7 +727,9 @@ hands the device to the next holder, and a lease nobody renews lapses after
 `--ttl`. It is advisory: no command checks it, so the pane and an agent that
 never asked are not blocked. `status` and a busy answer name the holder but
 never its token. The lane's device hint (`laneAppleDeviceDirective.ts`) tells every
-agent in the lane to take one before a run of builds, folds and shots.
+agent in the lane to take one before a run of builds, folds and shots. A lease
+that was not granted (`acquired no`) exits 1, so `lease --wait N && <work>`
+never runs the work without it.
 
 `type --submit` presses Return after the text, so a search or form submits.
 With `--submit` and no text, it presses Return alone. `key` presses one named

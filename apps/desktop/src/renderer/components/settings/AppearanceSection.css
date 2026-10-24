@@ -485,6 +485,7 @@
 }
 .ade-ap-shuffle-now:hover, .ade-ap-shuffle-all:hover { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
 .ade-ap-shuffle-all { height: 22px; font-size: 11px; margin-left: auto; }
+.ade-ap-shuffle-all + .ade-ap-shuffle-all { margin-left: 0; }
 .ade-ap-shuffle-label { display: flex; align-items: center; gap: 8px; }
 .ade-ap-shuffle-label .kit-num { font-size: 11px; color: var(--color-muted-fg); }
 .ade-ap-shuffle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; }

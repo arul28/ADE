@@ -386,6 +386,15 @@ struct WorkSessionRow: View, Equatable {
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
   var waitingOnSubagent: Bool = false
+  /// A card on the Duo's board: drawn in the Duo row's shape (`duoBody`),
+  /// without the status slot, because the board's column is the status.
+  var boardCard: Bool = false
+  /// A row in the Duo's sessions column: the provider mark leading, the title
+  /// on up to two lines, the latest word on one, then one meta line (lane,
+  /// machine, PR, status and time). The column is wide enough to say all of it.
+  var duoRow: Bool = false
+  /// The machine a row from another machine lives on (Duo meta line only).
+  var machineName: String?
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -401,8 +410,14 @@ struct WorkSessionRow: View, Equatable {
     compact: Bool = false,
     nestedSubagent: Bool = false,
     showsLaneIdentity: Bool = true,
-    waitingOnSubagent: Bool = false
+    waitingOnSubagent: Bool = false,
+    boardCard: Bool = false,
+    duoRow: Bool = false,
+    machineName: String? = nil
   ) {
+    self.boardCard = boardCard
+    self.duoRow = duoRow
+    self.machineName = machineName
     self.session = session
     self.lane = lane
     self.pullRequest = pullRequest
@@ -434,12 +449,20 @@ struct WorkSessionRow: View, Equatable {
 
   static func == (lhs: WorkSessionRow, rhs: WorkSessionRow) -> Bool {
     lhs.renderSignature == rhs.renderSignature
+      && lhs.boardCard == rhs.boardCard
+      && lhs.duoRow == rhs.duoRow
+      && lhs.machineName == rhs.machineName
   }
 
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.workRowBody)
     if compact {
       compactBody
+    } else if duoRow || boardCard {
+      WorkSessionRowLayoutSwitch(
+        standard: { duoBody },
+        accessible: { accessibleBody }
+      )
     } else {
       // The Dynamic Type branch lives in a leaf rather than in this view because
       // `WorkSessionRow` is rendered through `.equatable()`: an environment
@@ -553,6 +576,154 @@ struct WorkSessionRow: View, Equatable {
         launchRailLine
       }
     }
+  }
+
+  /// The Duo's row (and board card): provider mark leading like an avatar,
+  /// then title (two lines), the latest word (one line) and the meta line.
+  private var duoBody: some View {
+    sessionCardSurface {
+      HStack(alignment: .top, spacing: 10) {
+        if !boardCard {
+          WorkProviderBareLogo(
+            provider: chatSummary?.provider ?? session.toolType,
+            fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
+            tint: providerTintColor,
+            size: 20
+          )
+          .fixedSize()
+          .padding(.top, 1)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
+        }
+        VStack(alignment: .leading, spacing: 3) {
+          titleView(lineLimit: 2)
+          if duoMetaHasLeading || renderSignature.previewText == nil {
+            if renderSignature.previewText != nil {
+              previewView(lineLimit: 1)
+            }
+            duoMetaLine
+              .padding(.top, 2)
+          } else {
+            // Under a lane header the meta line would hold only the status:
+            // it rides at the end of the latest-word line instead of taking a
+            // line of its own.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+              previewView(lineLimit: 1)
+              duoStatus
+            }
+          }
+          launchRailLine
+        }
+      }
+    }
+  }
+
+  /// Lane, machine, PR, then status and time hard against the trailing edge.
+  /// The lane and PR only where no lane header above already says them.
+  ///
+  /// Nothing on this line may draw over anything else: when it does not fit,
+  /// the PR tag goes first, then the lane's git state, then the machine; the
+  /// lane name truncates last.
+  private var duoMetaLine: some View {
+    HStack(spacing: 6) {
+      ViewThatFits(in: .horizontal) {
+        duoMetaItems(pr: true, git: true, machine: true)
+        duoMetaItems(pr: false, git: true, machine: true)
+        duoMetaItems(pr: false, git: false, machine: true)
+        duoMetaItems(pr: false, git: false, machine: false)
+      }
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+      .clipped()
+
+      duoStatus
+    }
+  }
+
+  private func duoMetaItems(pr: Bool, git: Bool, machine: Bool) -> some View {
+    HStack(spacing: 6) {
+      if session.pinned {
+        Image(systemName: "pin.fill")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if isMuted {
+        Image(systemName: "bell.slash")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if let goal = renderSignature.activeGoal {
+        Image(systemName: "target")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(goal.status == "active" ? ADEColor.warning : ADEColor.textMuted)
+          .accessibilityHidden(true)
+      }
+      lineageMark(font: .caption2)
+      if showsLaneIdentity {
+        HStack(spacing: 4) {
+          Circle()
+            .fill(laneTint)
+            .frame(width: 7, height: 7)
+          Text(renderSignature.laneName)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        .layoutPriority(-1)
+        if git {
+          laneGitState
+        }
+      }
+      if machine, let machineName, !machineName.isEmpty {
+        Label(machineName, systemImage: "desktopcomputer")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .labelStyle(.titleAndIcon)
+          .lineLimit(1)
+          .layoutPriority(-1)
+      }
+      if pr, showsLaneIdentity, let pullRequest {
+        WorkLanePrIndicator(tag: pullRequest)
+          .fixedSize()
+      }
+      if let exitCode = failedExitCode {
+        Text("EXIT \(exitCode)")
+          .font(.caption2.monospaced().weight(.semibold))
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize()
+      }
+    }
+  }
+
+  /// Whether the meta line has anything before the status.
+  private var duoMetaHasLeading: Bool {
+    session.pinned || isMuted || renderSignature.activeGoal != nil
+      || nestedSubagent || showsSubagentIdentity || showsCtoLineage
+      || showsLaneIdentity || !(machineName ?? "").isEmpty || failedExitCode != nil
+  }
+
+  /// The status (or, on a board card, the time) hard against the trailing edge.
+  @ViewBuilder
+  private var duoStatus: some View {
+    HStack(spacing: 0) {
+      if isPendingSyncCreation {
+        Text("Pending sync")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize()
+      } else if isArchived {
+        Text("ARCHIVED")
+          .font(.caption2.monospaced().weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize()
+      } else if boardCard {
+        Text(relativeTimestampCompact(renderSignature.activityTimestamp))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize()
+      } else {
+        statusSlot(wraps: false)
+      }
+    }
+    .fixedSize()
   }
 
   /// Leading chrome glyphs, the lane and its git state (headerless rows only),
@@ -764,13 +935,16 @@ struct WorkSessionRow: View, Equatable {
   /// Status now lives in exactly one place: the right-anchored slot on line 1.
   private func sessionCardSurface<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     content()
-      .padding(.horizontal, 4)
-      .padding(.vertical, 10)
+      .padding(.horizontal, duoRow ? 10 : 4)
+      .padding(.vertical, duoRow ? 11 : 10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(surfaceFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .background(surfaceFill, in: RoundedRectangle(cornerRadius: duoRow ? 14 : 12, style: .continuous))
       .contentShape(Rectangle())
       .overlay {
-        if isSelectedTransitionSource {
+        // The Duo's column keeps its selection as a soft tinted rectangle,
+        // the system's own selected-row look; the phone's transient
+        // open-transition highlight keeps its edge.
+        if isSelectedTransitionSource, !duoRow {
           RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(ADEColor.accent.opacity(0.38), lineWidth: 1)
         }
@@ -794,7 +968,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   private var surfaceFill: Color {
-    isSelectedTransitionSource ? ADEColor.accent.opacity(0.12) : .clear
+    isSelectedTransitionSource ? ADEColor.accent.opacity(duoRow ? 0.14 : 0.12) : .clear
   }
 
   /// Non-prominent states recede to 70%, which is how the few rows that want a

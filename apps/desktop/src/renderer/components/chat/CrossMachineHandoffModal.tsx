@@ -46,6 +46,7 @@ import {
   type PermissionModeTone,
 } from "../shared/PermissionModePicker";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { useFastModeEnabled } from "../../lib/fastModePolicy";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
   BlockedActionButton,
@@ -162,6 +163,7 @@ export function CrossMachineHandoffModal({
   /** Machine to select on open (key or name), e.g. from the session menu. */
   preselectedMachine?: string | null;
 }) {
+  const fastModeAllowed = useFastModeEnabled();
   const [stage, setStage] = useState<ModalStage>("choose");
   const [loading, setLoading] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -595,9 +597,10 @@ export function CrossMachineHandoffModal({
             onOpenSignIn: (family?: ProviderFamily) => onOpenSignIn(family, selectedMachineBinding),
           } : {})}
           {...(!selectedMachineBinding ? { hideSignInFamilies: ["anthropic"] as const } : {})}
-          fastMode={Boolean(fastMode)}
+          fastMode={fastModeAllowed && Boolean(fastMode)}
           fastTier={fastTier}
           fastModeSupported={destinationFastModeSupported}
+          fastModeAllowed={fastModeAllowed}
           {...(onFastModeChange ? { onFastModeChange } : {})}
         />
         {onReasoningEffortChange ? (

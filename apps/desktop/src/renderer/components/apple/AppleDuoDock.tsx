@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { DeviceMobile } from "@phosphor-icons/react";
 import { APPLE_DEVICE_POSE_TARGETS, type AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
 import { appleOrientationIconDegrees, appleOrientationLabel } from "./appleDeviceState";
@@ -52,17 +52,40 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 function HingeSlider({ angle, onPreview, onCommit }: {
   angle: number;
   onPreview: (angle: number) => void;
-  onCommit: (angle: number) => void;
+  /** `onDetent`: the release landed on Closed, Laptop or Open. */
+  onCommit: (angle: number, onDetent: boolean) => void;
 }) {
   const [value, setValue] = useState(Math.round(angle));
   const [dragging, setDragging] = useState(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
   useEffect(() => {
     if (!dragging) setValue(Math.round(angle));
   }, [angle, dragging]);
-  const commit = () => {
+  const releaseRef = useRef<(() => void) | null>(null);
+  const commit = useCallback(() => {
+    releaseRef.current?.();
+    releaseRef.current = null;
     setDragging(false);
-    onCommit(value);
+    const angle = valueRef.current;
+    onCommitRef.current(angle, DETENTS.some((detent) => detent.angle === angle));
+  }, []);
+  // The slider holds its own value only while the pointer is down. The
+  // release is heard on the window, so one the input never sees (off the
+  // window, a lost pointer) still ends the drag: a held value kept the slider
+  // on Closed while the phone was open.
+  const startDrag = () => {
+    setDragging(true);
+    if (releaseRef.current) return;
+    const events = ["pointerup", "pointercancel", "blur"] as const;
+    for (const name of events) window.addEventListener(name, commit);
+    releaseRef.current = () => {
+      for (const name of events) window.removeEventListener(name, commit);
+    };
   };
+  useEffect(() => () => releaseRef.current?.(), []);
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2.5">
       <div className="relative w-[clamp(120px,28cqw,260px)] min-w-0">
@@ -75,16 +98,14 @@ function HingeSlider({ angle, onPreview, onCommit }: {
           aria-label="Hinge angle"
           aria-valuetext={`${value} degrees`}
           className="block w-full accent-accent"
-          onPointerDown={() => setDragging(true)}
+          onPointerDown={startDrag}
           onChange={(event) => {
             const raw = Number(event.currentTarget.value);
             const next = dragging ? snapToDetent(raw) : raw;
+            valueRef.current = next;
             setValue(next);
             onPreview(next);
           }}
-          onPointerUp={commit}
-          // A cancelled drag (the window lost the pointer) still lets go.
-          onPointerCancel={commit}
           onKeyUp={(event) => {
             if (event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) commit();
           }}
@@ -123,7 +144,7 @@ export function AppleDuoDock({
   /** What the simulator reports, for the quiet readout on the right. */
   reported: { angle: number | null; wide: boolean | null } | null;
   onPreviewAngle: (angle: number) => void;
-  onCommitAngle: (angle: number) => void;
+  onCommitAngle: (angle: number, onDetent: boolean) => void;
   onScreen: (screen: AppleDuoScreen) => void;
   onTurn: (orientation: AppleDeviceOrientation) => void;
 }) {

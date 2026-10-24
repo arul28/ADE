@@ -11,6 +11,9 @@ struct CtoSettingsScreen: View {
   @State private var homeMachineSaving = false
 
   let onSnapshotChanged: (CtoSnapshot) -> Void
+  /// In the pane beside the CTO thread (a wide display): no stack and no
+  /// Done; the pane's header names it and its X closes it.
+  var embedded = false
 
   @State private var snapshot: CtoSnapshot?
   @State private var linearStatus: LinearConnectionStatus?
@@ -20,16 +23,38 @@ struct CtoSettingsScreen: View {
   @State private var errorMessage: String?
   @State private var showingIdentityEditor = false
   @State private var showingModelPicker = false
+  @State private var fastModeAllowed = true
   @State private var modelUpdateInFlight = false
   @State private var ctoSession: AgentChatSessionSummary?
 
-  init(snapshot: CtoSnapshot? = nil, onSnapshotChanged: @escaping (CtoSnapshot) -> Void) {
+  init(
+    snapshot: CtoSnapshot? = nil,
+    embedded: Bool = false,
+    onSnapshotChanged: @escaping (CtoSnapshot) -> Void
+  ) {
     _snapshot = State(initialValue: snapshot)
+    self.embedded = embedded
     self.onSnapshotChanged = onSnapshotChanged
   }
 
   var body: some View {
-    NavigationStack {
+    if embedded {
+      settingsContent
+    } else {
+      NavigationStack {
+        settingsContent
+          .navigationTitle("CTO settings")
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+              Button("Done") { dismiss() }
+            }
+          }
+      }
+    }
+  }
+
+  private var settingsContent: some View {
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
@@ -67,17 +92,13 @@ struct CtoSettingsScreen: View {
       }
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
-      .navigationTitle("CTO settings")
       .adeAnalyticsScreen(.ctoSettings)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button("Done") { dismiss() }
-        }
-      }
       .tint(ADEColor.ctoAccent)
       .refreshable { await reload() }
       .task {
+        if let defaults = await syncService.fetchChatLaunchDefaults() {
+          fastModeAllowed = defaults.fastModeAllowed ?? true
+        }
         guard snapshot == nil else {
           // Still refresh the side data (Linear, memory) even if identity was
           // seeded from the parent snapshot.
@@ -99,7 +120,8 @@ struct CtoSettingsScreen: View {
           currentModelId: currentModelId,
           currentProvider: currentProvider,
           currentReasoningEffort: currentReasoningEffort,
-          currentCodexFastMode: currentFastMode,
+          currentCodexFastMode: fastModeAllowed && currentFastMode,
+          fastModeAllowed: fastModeAllowed,
           lanes: [],
           commandScope: .project,
           isBusy: modelUpdateInFlight,
@@ -120,7 +142,6 @@ struct CtoSettingsScreen: View {
           }
         )
       }
-    }
   }
 
   // MARK: - Home machine
@@ -164,9 +185,13 @@ struct CtoSettingsScreen: View {
               .foregroundStyle(ADEColor.textMuted)
           }
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
       }
       .disabled(homeMachineSaving || !canChooseHomeMachine)
+      // A card like Identity and Model below it; bare, it read as stray text.
+      .adeKitCard(padding: nil)
       if !canChooseHomeMachine {
         // A brain without the command cannot store the choice for the account.
         Text("Update ADE on \(options.first?.name ?? "the primary machine") to choose the CTO's home machine from the phone.")

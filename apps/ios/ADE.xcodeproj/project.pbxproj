@@ -7,6 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DV1000000000000000000001 /* LiveInspectModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000001 /* LiveInspectModels.swift */; };
+		DV1000000000000000000002 /* LiveInspectGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000002 /* LiveInspectGeometry.swift */; };
+		DV1000000000000000000003 /* LiveInspectStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000003 /* LiveInspectStage.swift */; };
+		DV1000000000000000000004 /* DuoChatRail.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000004 /* DuoChatRail.swift */; };
+		DV1000000000000000000005 /* DuoHomeWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000005 /* DuoHomeWidgets.swift */; };
+		DV1000000000000000000006 /* DuoLanesSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000006 /* DuoLanesSplit.swift */; };
+		DV1000000000000000000007 /* DuoSplitPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000007 /* DuoSplitPreviews.swift */; };
+		DU1000000000000000000001 /* DuoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000001 /* DuoLayout.swift */; };
+		DU1000000000000000000002 /* DuoShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000002 /* DuoShell.swift */; };
+		DU1000000000000000000003 /* DuoHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000003 /* DuoHome.swift */; };
+		DU1000000000000000000004 /* DuoWorkSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000004 /* DuoWorkSplit.swift */; };
+		DU1000000000000000000005 /* DuoToolsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000005 /* DuoToolsPane.swift */; };
+		DU1000000000000000000006 /* DuoSplitScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000006 /* DuoSplitScreens.swift */; };
+		DU1000000000000000000007 /* DuoFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000007 /* DuoFold.swift */; };
+		DU1000000000000000000008 /* DuoWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000008 /* DuoWindows.swift */; };
+		DU1000000000000000000009 /* LiveInspectMarkup.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU0000000000000000000009 /* LiveInspectMarkup.swift */; };
+		DU100000000000000000000A /* DuoPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = DU000000000000000000000A /* DuoPreviews.swift */; };
 		CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */; };
 		CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */; };
 		CA1A00000000000000000017 /* WorkChatLaunchSetupCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */; };
@@ -470,6 +487,23 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		DV0000000000000000000001 /* LiveInspectModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectModels.swift; path = ADE/Views/Duo/LiveInspectModels.swift; sourceTree = "<group>"; };
+		DV0000000000000000000002 /* LiveInspectGeometry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectGeometry.swift; path = ADE/Views/Duo/LiveInspectGeometry.swift; sourceTree = "<group>"; };
+		DV0000000000000000000003 /* LiveInspectStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectStage.swift; path = ADE/Views/Duo/LiveInspectStage.swift; sourceTree = "<group>"; };
+		DV0000000000000000000004 /* DuoChatRail.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoChatRail.swift; path = ADE/Views/Duo/DuoChatRail.swift; sourceTree = "<group>"; };
+		DV0000000000000000000005 /* DuoHomeWidgets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoHomeWidgets.swift; path = ADE/Views/Duo/DuoHomeWidgets.swift; sourceTree = "<group>"; };
+		DV0000000000000000000006 /* DuoLanesSplit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoLanesSplit.swift; path = ADE/Views/Duo/DuoLanesSplit.swift; sourceTree = "<group>"; };
+		DV0000000000000000000007 /* DuoSplitPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoSplitPreviews.swift; path = ADE/Views/Duo/DuoSplitPreviews.swift; sourceTree = "<group>"; };
+		DU0000000000000000000001 /* DuoLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoLayout.swift; path = ADE/Views/Duo/DuoLayout.swift; sourceTree = "<group>"; };
+		DU0000000000000000000002 /* DuoShell.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoShell.swift; path = ADE/Views/Duo/DuoShell.swift; sourceTree = "<group>"; };
+		DU0000000000000000000003 /* DuoHome.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoHome.swift; path = ADE/Views/Duo/DuoHome.swift; sourceTree = "<group>"; };
+		DU0000000000000000000004 /* DuoWorkSplit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoWorkSplit.swift; path = ADE/Views/Duo/DuoWorkSplit.swift; sourceTree = "<group>"; };
+		DU0000000000000000000005 /* DuoToolsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoToolsPane.swift; path = ADE/Views/Duo/DuoToolsPane.swift; sourceTree = "<group>"; };
+		DU0000000000000000000006 /* DuoSplitScreens.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoSplitScreens.swift; path = ADE/Views/Duo/DuoSplitScreens.swift; sourceTree = "<group>"; };
+		DU0000000000000000000007 /* DuoFold.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoFold.swift; path = ADE/Views/Duo/DuoFold.swift; sourceTree = "<group>"; };
+		DU0000000000000000000008 /* DuoWindows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoWindows.swift; path = ADE/Views/Duo/DuoWindows.swift; sourceTree = "<group>"; };
+		DU0000000000000000000009 /* LiveInspectMarkup.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectMarkup.swift; path = ADE/Views/Duo/LiveInspectMarkup.swift; sourceTree = "<group>"; };
+		DU000000000000000000000A /* DuoPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DuoPreviews.swift; path = ADE/Views/Duo/DuoPreviews.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ChatLaunch.swift"; path = "ADE/Services/SyncService+ChatLaunch.swift"; sourceTree = "<group>"; };
 		CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+MachineInventory.swift"; path = "ADE/Services/SyncService+MachineInventory.swift"; sourceTree = "<group>"; };
 		CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchSetupCard.swift; path = ADE/Views/Work/WorkChatLaunchSetupCard.swift; sourceTree = "<group>"; };
@@ -939,6 +973,30 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		DU0000000000000000000GRP /* Duo */ = {
+			isa = PBXGroup;
+			children = (
+				DV0000000000000000000001 /* LiveInspectModels.swift */,
+				DV0000000000000000000002 /* LiveInspectGeometry.swift */,
+				DV0000000000000000000003 /* LiveInspectStage.swift */,
+				DV0000000000000000000004 /* DuoChatRail.swift */,
+				DV0000000000000000000005 /* DuoHomeWidgets.swift */,
+				DV0000000000000000000006 /* DuoLanesSplit.swift */,
+				DV0000000000000000000007 /* DuoSplitPreviews.swift */,
+				DU0000000000000000000001 /* DuoLayout.swift */,
+				DU0000000000000000000002 /* DuoShell.swift */,
+				DU0000000000000000000003 /* DuoHome.swift */,
+				DU0000000000000000000004 /* DuoWorkSplit.swift */,
+				DU0000000000000000000005 /* DuoToolsPane.swift */,
+				DU0000000000000000000006 /* DuoSplitScreens.swift */,
+				DU0000000000000000000007 /* DuoFold.swift */,
+				DU0000000000000000000008 /* DuoWindows.swift */,
+				DU0000000000000000000009 /* LiveInspectMarkup.swift */,
+				DU000000000000000000000A /* DuoPreviews.swift */,
+			);
+			name = Duo;
+			sourceTree = "<group>";
+		};
 		D2A00000000000000000CA /* CursorCloud */ = {
 			isa = PBXGroup;
 			children = (
@@ -1042,6 +1100,7 @@
 				D20000000000000000000041 /* Files */,
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
+				DU0000000000000000000GRP /* Duo */,
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
 				D2A00000000000000000CA /* CursorCloud */,
@@ -1903,6 +1962,23 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DV1000000000000000000001 /* LiveInspectModels.swift in Sources */,
+				DV1000000000000000000002 /* LiveInspectGeometry.swift in Sources */,
+				DV1000000000000000000003 /* LiveInspectStage.swift in Sources */,
+				DV1000000000000000000004 /* DuoChatRail.swift in Sources */,
+				DV1000000000000000000005 /* DuoHomeWidgets.swift in Sources */,
+				DV1000000000000000000006 /* DuoLanesSplit.swift in Sources */,
+				DV1000000000000000000007 /* DuoSplitPreviews.swift in Sources */,
+				DU1000000000000000000001 /* DuoLayout.swift in Sources */,
+				DU1000000000000000000002 /* DuoShell.swift in Sources */,
+				DU1000000000000000000003 /* DuoHome.swift in Sources */,
+				DU1000000000000000000004 /* DuoWorkSplit.swift in Sources */,
+				DU1000000000000000000005 /* DuoToolsPane.swift in Sources */,
+				DU1000000000000000000006 /* DuoSplitScreens.swift in Sources */,
+				DU1000000000000000000007 /* DuoFold.swift in Sources */,
+				DU1000000000000000000008 /* DuoWindows.swift in Sources */,
+				DU1000000000000000000009 /* LiveInspectMarkup.swift in Sources */,
+				DU100000000000000000000A /* DuoPreviews.swift in Sources */,
 				E20000000000000000000091 /* LinearBrand.swift in Sources */,
 				E2A00000000000000000C1 /* CursorCloudModels.swift in Sources */,
 				E2A00000000000000000C2 /* CursorCloudPaneStore.swift in Sources */,

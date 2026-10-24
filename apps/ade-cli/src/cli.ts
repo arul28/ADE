@@ -310,7 +310,11 @@ import type {
 } from "../../desktop/src/shared/types/core";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
-import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
+import {
+  decodeProjectIconUpload,
+  importProjectIconBytes,
+  resolveRemoteProjectIcon,
+} from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
@@ -426,6 +430,8 @@ import {
   type SyncPairingConnectInfo,
   type SyncProjectForgetRequestPayload,
   type SyncProjectForgetResultPayload,
+  type SyncProjectSetIconRequestPayload,
+  type SyncProjectSetIconResultPayload,
   type SyncProjectOpenRequestPayload,
   type SyncProjectSwitchRequestPayload,
   type SyncProjectSwitchResultPayload,
@@ -1570,6 +1576,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   from a terminal, from an agent ("tell me when the deploy is done"), or from
   an automation. The text arrives exactly as written; nothing is added.
 
+  Run by an agent inside an ADE chat, it is that chat's message: the chat shows
+  "Notified you", Activity's Inbox lists it on every device, a tap opens the
+  chat, and the phone stays quiet while you are at your computer or if you
+  muted the chat. A chat can send 6 an hour; the same words twice within ten
+  minutes go out once.
+
     $ ade notify --title "Deploy finished"
     $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
     $ ade notify --title "Review ready" --open "ade://pr/1514"
@@ -1588,6 +1600,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     Phones that turned notifications off, are in quiet hours, or muted this
     machine stay quiet. An account can send 60 an hour; past that the command
     exits non-zero and says when to try again.
+    --session <chat id> sends as that chat from a terminal; an agent always
+    sends as its own chat.
 `,
   auth: `${ADE_BANNER}
   ADE Account
@@ -2310,6 +2324,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     block) is uploaded into the text. Prints what a reader will miss.
     $ ade prs body <pr> --body-file pr.md           Replace the PR text; same upload and same notes
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
+    $ ade prs create --lane <lane> --allow-dirty    Create it even with uncommitted or untracked files in the lane;
+                                                    the PR holds the lane's commits only
     $ ade prs land <pr> --method squash             Merge; keeps the remote branch
     $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
     $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
@@ -8606,6 +8622,9 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
       "--close-linear",
       "--fixes-linear-issue",
     ]);
+    // Uncommitted or untracked files in the lane do not go into the PR, which
+    // is made from its commits; without this flag the CLI could only refuse.
+    if (readFlag(args, ["--allow-dirty", "--allow-dirty-worktree", "--continue"])) input.allowDirtyWorktree = true;
     const createArgs = collectGenericObjectArgs(args, input);
     const citedProof = prBodyProofIds(body);
     return {
@@ -14236,6 +14255,31 @@ function readIosSimulatorOutPath(args: string[]): JsonObject {
 }
 
 /**
+ * `apple screenshot --out <path>`: the brain writes the shot where it keeps
+ * them, and this copies it to the caller's path. The brain refuses to write
+ * outside the build root, so a `/tmp` path was refused; the copy runs as the
+ * caller, so any path the caller can write to works. A brain on another
+ * machine answers with a path this machine does not have, and that says so.
+ */
+function copyAppleScreenshotTo(outPath: string, value: unknown): unknown {
+  const record = unwrapActionEnvelope(value);
+  const shot = isRecord(record) ? record : {};
+  const source = asString(shot.filePath);
+  if (!source) return value;
+  if (path.resolve(source) === outPath) return value;
+  if (!fs.existsSync(source)) {
+    throw new CliToolError(
+      `apple screenshot: the shot was saved on the machine that runs the device, at ${source}, `
+        + "which this machine cannot read. Leave out --out, or run the command on that machine.",
+      undefined,
+    );
+  }
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.copyFileSync(source, outPath);
+  return { ...shot, filePath: outPath, savedFrom: source };
+}
+
+/**
  * The device flag every ios-sim subcommand accepts.
  *
  * Thirty-one branches read the same two spellings. One reader keeps them
@@ -14388,7 +14432,7 @@ function buildIosSimulatorPlan(
     label: string,
     method: string,
     payload: JsonObject = {},
-  ): CliPlan => ({
+  ): Extract<CliPlan, { kind: "execute" }> => ({
     kind: "execute" as const,
     label,
     steps: [
@@ -14491,12 +14535,17 @@ function buildIosSimulatorPlan(
     // Filed as proof by default; `--no-proof` is a scratch shot for an agent's
     // own eyes, so a validation loop does not flood the proof drawer.
     const noProof = readFlag(args, ["--no-proof"]);
-    return iosAction("iOS simulator screenshot", "screenshot", {
-      deviceUdid: readIosSimulatorDevice(args),
-      ...rootArgs(),
-      ...readIosSimulatorOutPath(args),
-      ...(noProof ? { proof: false } : {}),
-    });
+    // Resolved against the caller's directory: the copy runs here, not on the brain.
+    const outValue = readValue(args, ["--out", "--out-path", "--output"]);
+    const outPath = outValue ? path.resolve(outValue) : null;
+    return {
+      ...iosAction("iOS simulator screenshot", "screenshot", {
+        deviceUdid: readIosSimulatorDevice(args),
+        ...rootArgs(),
+        ...(noProof ? { proof: false } : {}),
+      }),
+      ...(outPath ? { shapeResult: (values: JsonObject) => copyAppleScreenshotTo(outPath, values.result) } : {}),
+    };
   }
   if (sub === "proof" || sub === "promote") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
@@ -15594,12 +15643,18 @@ function buildIosSimulatorPlan(
     if (verb !== "acquire" && verb !== "take") {
       throw new CliUsageError(`ios-sim lease: unknown action '${verb}'. Use acquire (the default), release or status.`);
     }
-    return iosAction("Apple device lease", "deviceLease", {
-      ...scope,
-      ...(holder ? { holder } : {}),
-      ...(waitSeconds != null ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
-      ...(ttlSeconds != null ? { ttlMs: Math.round(ttlSeconds * 1000) } : {}),
-    });
+    return {
+      ...iosAction("Apple device lease", "deviceLease", {
+        ...scope,
+        ...(holder ? { holder } : {}),
+        ...(waitSeconds != null ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
+        ...(ttlSeconds != null ? { ttlMs: Math.round(ttlSeconds * 1000) } : {}),
+      }),
+      // A lease that was not granted (busy, or the wait ran out) exits 1, so a
+      // script that runs `lease --wait N && install` never builds over another
+      // holder's device.
+      exitCodeFromResult: (result: unknown) => (appleLeaseNotAcquired(result) ? 1 : 0),
+    };
   }
   if (sub === "posture" || sub === "get-posture" || sub === "hinge") {
     return iosAction("Apple device posture", "getPosture", {
@@ -21383,6 +21438,7 @@ function buildCliPlan(
     const title = readValue(args, ["--title", "-t"]) ?? firstStandalonePositional(args) ?? "";
     const body = readValue(args, ["--body", "-b"]);
     const open = readValue(args, ["--open", "--link"]);
+    const session = readValue(args, ["--session"]);
     const problem = customNotificationProblem({ title, body, open });
     if (problem) {
       throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
@@ -21403,6 +21459,7 @@ function buildCliPlan(
             title: title.trim(),
             ...(body?.trim() ? { body: body.trim() } : {}),
             ...(open?.trim() ? { open: open.trim() } : {}),
+            ...(session?.trim() ? { sessionId: session.trim() } : {}),
           },
           projectRoot: resolveRoots({ projectRoot: options.projectRoot, workspaceRoot: null } as GlobalOptions).projectRoot,
         },
@@ -26380,7 +26437,7 @@ async function runServe(
     return await registerHeadlessMobileProject(result.rootPath);
   };
   const resolveHeadlessMobileProjectRequest = (
-    input: SyncProjectForgetRequestPayload | SyncProjectSwitchRequestPayload,
+    input: { projectId?: string | null; rootPath?: string | null },
   ): {
     requestedId: string;
     requestedRootPath: string;
@@ -26445,6 +26502,52 @@ async function runServe(
       ok: true,
       projectId: record.projectId,
       rootPath: record.rootPath,
+    };
+  };
+  // A phone's "Change icon…": the same store a desktop's icon editor writes
+  // (`projects.setIcon`), so the catalog every device reads carries it next.
+  const setHeadlessMobileProjectIcon = async (
+    input: SyncProjectSetIconRequestPayload,
+  ): Promise<SyncProjectSetIconResultPayload> => {
+    const { requestedId, requestedRootPath, record, conflict } = resolveHeadlessMobileProjectRequest(input);
+    if (!requestedId && !requestedRootPath) {
+      return { ok: false, message: "Project id or path is required." };
+    }
+    if (conflict) {
+      return { ok: false, message: "projectId and rootPath refer to different projects." };
+    }
+    if (!record) {
+      return {
+        ok: false,
+        message: "That project is not on this ADE machine.",
+        projectId: requestedId || null,
+        rootPath: requestedRootPath || null,
+      };
+    }
+    if (!fs.existsSync(record.rootPath)) {
+      return {
+        ok: false,
+        message: "That project's folder is missing on this machine.",
+        projectId: record.projectId,
+        rootPath: record.rootPath,
+      };
+    }
+    try {
+      const upload = decodeProjectIconUpload(input, "project_set_icon_request");
+      importProjectIconBytes(record.rootPath, upload.fileName, upload.data);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
+        projectId: record.projectId,
+        rootPath: record.rootPath,
+      };
+    }
+    return {
+      ok: true,
+      projectId: record.projectId,
+      rootPath: record.rootPath,
+      iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
@@ -26591,6 +26694,7 @@ async function runServe(
     createProject: createHeadlessMobileProject,
     cloneProject: cloneHeadlessMobileProject,
     forgetProject: forgetHeadlessMobileProject,
+    setProjectIcon: setHeadlessMobileProjectIcon,
     listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
       createHeadlessProjectScaffoldService().listMyGitHubRepos(input),
   };
@@ -28539,6 +28643,15 @@ function unwrapToolResult(result: unknown): unknown {
     return result.structuredContent;
   }
   return result;
+}
+
+/** True when an `ade apple lease` answer says the lease was not granted. */
+function appleLeaseNotAcquired(result: unknown): boolean {
+  let value = unwrapActionEnvelope(result);
+  if (isRecord(value) && !Object.prototype.hasOwnProperty.call(value, "acquired") && isRecord(value.result)) {
+    value = unwrapActionEnvelope(value.result);
+  }
+  return isRecord(value) && value.acquired === false;
 }
 
 export function unwrapActionEnvelope(value: unknown): unknown {
@@ -32016,21 +32129,29 @@ function formatIosSimSnapshot(value: unknown): string {
     // is refused as a duplicate.
     ...(proofArtifactId ? [`cite: ${proofCitationMarkdown(proofArtifactId, "Simulator screenshot")}`] : []),
     elements.length ? "" : "",
+    // Every element, not the first 20: rows further down and toolbar items
+    // were missing while `tap-element` could still find them. `ref` is what
+    // `tap-element --ref` takes; `frame` is in device points, for `tap`.
     elements.length
       ? renderTable(
-          ["id", "source", "label", "source file"],
-          elements
-            .slice(0, 20)
-            .map((element) => [
-              element.id,
-              element.source,
-              element.label ?? element.identifier ?? element.componentId,
+          ["ref", "role", "label", "frame", "source file"],
+          elements.map((element) => {
+            const frame = isRecord(element.frame) ? element.frame : null;
+            return [
+              asString(element.ref) ?? element.id,
+              element.role ?? element.elementType,
+              element.label ?? element.identifier ?? element.componentId ?? element.value,
+              frame && typeof frame.x === "number" && typeof frame.y === "number"
+                && typeof frame.width === "number" && typeof frame.height === "number"
+                ? `${Math.round(frame.x)},${Math.round(frame.y)} ${Math.round(frame.width)}x${Math.round(frame.height)}`
+                : "",
               element.sourceFile
                 ? `${element.sourceFile}${element.sourceLine ? `:${element.sourceLine}` : ""}`
                 : "",
-            ]),
+            ];
+          }),
           "",
-          { fullColumns: ["id"] },
+          { fullColumns: ["ref", "label", "frame"] },
         )
       : "",
   ]

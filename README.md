@@ -1,256 +1,153 @@
 <p align="center">
   <a href="https://ade-app.dev">
-    <img src="assets/logo.png" alt="ADE" width="240" />
+    <img src="assets/logo.png" alt="ADE" width="200" />
   </a>
 </p>
 
 <p align="center">
-  <strong>Your workspace for every AI coding agent.</strong><br />
-  <em>macOS, Windows, iOS, and CLI all synced in real time. (android mobile app almost ready)</em>
+  <strong>Every AI coding tool. One app that runs everywhere.</strong>
 </p>
 
 <p align="center">
-  <a href="https://ade-app.dev/download/mac-arm64"><img src="https://img.shields.io/badge/Download_for_macOS-7C3AED?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" /></a>
-  &nbsp;
-  <a href="https://ade-app.dev/download/windows"><img src="https://img.shields.io/badge/Download_for_Windows-12101a?style=for-the-badge&logo=windows&logoColor=a78bfa" alt="Download for Windows" /></a>
-  &nbsp;
-  <a href="https://testflight.apple.com/join/ZSdJGKPy"><img src="https://img.shields.io/badge/Download_for_iOS-12101a?style=for-the-badge&logo=apple&logoColor=a78bfa" alt="Download for iOS" /></a>
-  &nbsp;
-  <a href="https://ade-app.dev"><img src="https://img.shields.io/badge/Website-12101a?style=for-the-badge&logo=googlechrome&logoColor=a78bfa" alt="Website" /></a>
-  &nbsp;
-  <a href="https://ade-app.dev/docs"><img src="https://img.shields.io/badge/Docs-12101a?style=for-the-badge&logo=readthedocs&logoColor=a78bfa" alt="Docs" /></a>
-  &nbsp;
-  <a href="https://github.com/arul28/ADE"><img src="https://img.shields.io/badge/GitHub-12101a?style=for-the-badge&logo=github&logoColor=a78bfa" alt="GitHub" /></a>
+  <a href="https://ade-app.dev/download/mac-arm64">macOS</a> ·
+  <a href="https://ade-app.dev/download/windows">Windows</a> ·
+  <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
+  <a href="https://app.ade-app.dev">Web</a> ·
+  <a href="https://ade-app.dev/docs">Docs</a> ·
+  <a href="https://www.ade-app.dev/docs/changelog">Changelog</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/github/v/release/arul28/ADE?style=flat-square&label=release&labelColor=12101a&color=a78bfa" alt="Latest release" /></a>
   <a href="https://github.com/arul28/ADE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arul28/ADE/ci.yml?branch=main&style=flat-square&label=CI&labelColor=12101a&color=7c3aed" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-7c3aed?style=flat-square&labelColor=12101a" alt="AGPL-3.0" /></a>
-  <img src="https://img.shields.io/github/downloads/arul28/ADE/total?style=flat-square&label=downloads&labelColor=12101a&color=a78bfa" alt="Downloads" />
   <a href="https://github.com/arul28/ADE/stargazers"><img src="https://img.shields.io/github/stars/arul28/ADE?style=flat-square&labelColor=12101a&color=a78bfa" alt="Stars" /></a>
-  <img src="https://img.shields.io/badge/macOS-13%2B-efe6d0?style=flat-square&labelColor=12101a" alt="macOS 13+" />
-  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64-efe6d0?style=flat-square&labelColor=12101a" alt="Windows 10/11 x64" />
 </p>
 
 <p align="center">
-  <a href="https://ade-app.dev"><img src="assets/readme/hero.png" alt="ADE — every AI coding tool, one app that runs everywhere" width="900" /></a>
+  <img src="assets/readme/hero.png" alt="ADE on a Mac, a server, and a phone" width="900" />
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** (more coming soon) in one workspace that you can open from any machine you own, the web, or a mobile app. The best part? It's completely free.
+ADE puts Claude Code, Codex, Cursor, Factory Droid, and OpenCode in one app. You use the plans you already pay for.
 
-Simply sign in to ADE on a machine you own, and you can magically run and manage agents from any other ADE client. In real time, every single ADE chat or CLI session (yes even your CLI sessions) syncs to every other device.
+It runs on your own machines. Sign in on each one, and you can reach all of them from the desktop app, the terminal, the web, or your phone. Every chat and terminal session stays in sync. I start a task on my desktop at home, check on it from my phone at the gym, and finish it in a browser on a friend's laptop.
 
-I can start a thread on my desktop at home, pick it up on my phone at the gym, and then finish it off from a website on my friend's computer. It works like magic, and removes the friction of managing agents on the go.
+It's also a full dev environment: git worktrees, a code editor, pull requests, and history. And it's free.
 
-Beyond agent management, ADE (like the name implies) offers a full development environment. This means git management, a full file editing/viewing experience like VS Code, PR management, automations, GitKraken inspired history, and more. This one app is meant to replace every single modern dev tool.
+## What it looks like
 
----
+**Pick any agent and any model.**
+
+<img src="assets/readme/start.gif" alt="Choosing a model in ADE" width="100%" />
+
+**Run agents together.** Here Claude hands three jobs to GPT, Claude Haiku, and DeepSeek, and they report back.
+
+<img src="assets/readme/compose.gif" alt="Claude starting three subagents in ADE" width="100%" />
+
+**Use every machine you own.** One chat checks the same branch on a Mac Studio and a Windows PC.
+
+<img src="assets/readme/machines.gif" alt="Running checks on two machines from one chat" width="100%" />
+
+**Same work, any screen.** Desktop, terminal, and phone show the same chat.
 
 <table>
 <tr>
-<td width="50%" valign="top">
-  <img src="assets/readme/grid-view.gif" alt="ADE desktop app — parallel agents in grid view" width="100%" />
-
-**Desktop app**
-
-The full workspace. Every agent and every worktree, tiled side by side. macOS and Windows.
-
-</td>
-<td width="50%" valign="top">
-  <img src="assets/readme/web-client.png" alt="ADE web client running in a browser" width="100%" />
-
-**Web client**
-
-The same workspace in a browser at [app.ade-app.dev](https://app.ade-app.dev). Nothing to install — sign in and your machines are there.
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-  <img src="assets/readme/ade-code-tui.gif" alt="ade code — the terminal-native TUI" width="100%" />
-
-**Terminal**
-
-`ade code` is ADE, terminal-native — the same worktrees, chats, and PRs in a fast TUI. Works over SSH.
-
-</td>
-<td width="50%" valign="top" align="center">
-  <img src="assets/readme/mobile-chat.webp" alt="ADE on iOS" width="47%" />
-  &nbsp;
-  <img src="assets/readme/mobile-pr.webp" alt="ADE on iOS — pull requests" width="47%" />
-
-**Mobile app**
-
-Every worktree, agent, and PR synced to iOS. Start a task on the desktop, approve the diff from the train.
-
-</td>
+<td width="44%"><img src="assets/readme/desktop.webp" alt="ADE desktop app" width="100%" /></td>
+<td width="44%"><img src="assets/readme/terminal.webp" alt="ade code in a terminal" width="100%" /></td>
+<td width="12%"><img src="assets/readme/phone.webp" alt="ADE on iPhone" width="100%" /></td>
 </tr>
 </table>
 
-## Install
+## Get started
 
-Think of ADE as having 4 UI clients (web, desktop app, terminal, and mobile app) you can interact and work with. Each one of those clients needs to connect to a machine, and it does that via "ADE Brain". You can install the Brain to any machine, and magically it will then be accessible and controllable by any of those UI clients. The machine just needs to stay on, and suddenly you get a full agentic development experience from anywhere. 
-
-This one command below installs the **ADE brain** — the always-on engine that every ADE UI client talks to. Running this command will also optionally ask you to install the desktop app, which is one of the four UI clients, and the most powerful one. This command will also ask you to sign up or login to your ADE account. Your ADE account is what lets you seamlessly connect to all other machines you use. The desktop app, the web client, and the mobile app need that account. Without an account, the Brain and `ade code` still work on the machine itself. 
-
-**macOS and Linux**
+**1. Install it.** This installs ADE's background service (the "Brain") and the `ade` command. It also asks whether you want the desktop app.
 
 ```bash
+# macOS and Linux
 curl -fsSL https://ade-app.dev/install.sh | sh
 ```
 
-**Windows (PowerShell)**
-
 ```powershell
+# Windows
 irm https://ade-app.dev/install.ps1 | iex
 ```
 
-**Want to install the full Desktop App + Brain via a dmg or exe file?** Download it from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) or [ade-app.dev](https://ade-app.dev) instead. That gets you the same thing as the above command, but with the above command you can opt out of the desktop app and only install the Brain, these download files bundle it all together. Note - linux doesnt have a desktop app yet, only Brain.
+Or download the desktop app for [Apple Silicon](https://ade-app.dev/download/mac-arm64), [Intel](https://ade-app.dev/download/mac-x64), or [Windows](https://ade-app.dev/download/windows). It includes the Brain. On Homebrew: `brew install --cask arul28/ade/ade`.
 
-If you already have the Brain installed, and want the desktop app, you can safely run the command above, or install the appropriate download file. 
-
-### Sign in
-
-One command signs a machine in and puts it on your account:
+**2. Sign in.** The installer asks you to. If you skipped it, run:
 
 ```bash
 ade connect
 ```
 
-It is safe to run again at any time. It does only the steps that are not done: a machine that is signed in is not asked to sign in again, and a service that runs is left alone.
+Your account is what links your machines. Run `ade connect` on each one you want to reach: your laptop, a desktop at home, a Linux server. A machine with no browser shows a QR code; scan it with your phone and sign in there.
 
-It gives you two ways to finish. Use the one that fits:
+You can skip the account. ADE still works on that one machine, but you can't reach it from anywhere else.
 
-- **On this machine.** Your browser opens. Sign in there.
-- **On another device.** The terminal prints a QR code, a link, and a short code. Scan the QR code with your phone, or open the link on a different computer. This machine signs in when you finish. Your password is never typed on this machine, which is what you want on a VM or a shared computer. If ADE Mobile is on the phone and signed in, the scan opens the app: tap **Approve**, then **Allow**, and type no password at all.
+**3. Open a client.** Open the desktop app, run `ade code` in a terminal, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines are already there.
 
-A machine with no browser (an SSH session, a headless server) shows only the second way. The desktop app has the same choice: select **Sign in with your phone or another device** on the sign-in card.
+**4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://www.ade-app.dev/docs/quickstart) walks through it.
 
-| You want to | Run |
+## Set up your models
+
+Go to **Settings → AI Providers**.
+
+- **Use a subscription you already have.** Sign in to Claude, ChatGPT, Cursor, or Factory. If you're already signed in to that tool's own CLI, ADE uses it.
+- **Or paste an API key.** Anthropic, OpenAI, Google, DeepSeek, xAI, Mistral, Groq, OpenRouter, and others. OpenCode reaches 160+ more.
+- **Click Verify, then pick a default model.** You can switch models in any chat.
+- **Mix them.** Under **Advanced**, add any OpenAI- or Anthropic-compatible provider, so you can run, say, DeepSeek inside Claude Code.
+
+You don't need to install the agents. ADE downloads them the first time a machine needs one. Model calls go straight from your machine to the provider, not through ADE.
+
+More: [AI providers](https://www.ade-app.dev/docs/configuration/ai-providers).
+
+## Where it runs
+
+| | |
 | --- | --- |
-| Sign in and connect this machine | `ade connect` |
-| Sign in from another device only, and open no browser here | `ade connect --headless` |
-| See who is signed in | `ade auth status --text` |
-| Sign out | `ade logout` |
-| Sign in a CI job or an unattended host | `ade account token create`, then set `ADE_ACCOUNT_TOKEN` on that host |
-| Use the Brain with no account, on this machine only | `ade connect --no-login` |
-| See what is connected | `ade connect --status --text` |
-| List the machines on your account | `ade machines list --text` |
-| Set the PIN that pairs a phone directly | `ade sync pin generate` |
-| Open the terminal UI | `ade code` |
-| Find a problem | `ade doctor` |
-| Read the help for a command | `ade help <command>` |
+| Desktop app | macOS 13+, Windows 10/11 x64 |
+| Terminal (`ade code`) | macOS, Linux, Windows |
+| Web | Any browser, at [app.ade-app.dev](https://app.ade-app.dev) |
+| Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
+| Brain only | Linux (x64, arm64), plus everything above |
 
-### Desktop app
+There's no Linux desktop app yet, but a Linux machine can run the Brain and you can use it from any client. A few Mac features aren't on Windows yet ([details](https://www.ade-app.dev/docs/getting-started/windows)).
 
-macOS and Windows. Install it with the one-liner above, or download it directly:
-
-[**macOS · Apple Silicon**](https://ade-app.dev/download/mac-arm64) · [**macOS · Intel**](https://ade-app.dev/download/mac-x64) · [**Windows x64**](https://ade-app.dev/download/windows)
-
-Requirements: macOS 13+, or Windows 10/11 **x64** (ARM64 unsupported)
-
-Some features that work on macOS are not available on Windows because of platform differences, nothing major. PRs and bug reports are encouraged. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
-
-<sub>If you prefer Homebrew, this command installs the full desktop app + ADE Brain: `brew install --cask arul28/ade/ade`</sub>
-
-#### Linux
-
-There is no Linux desktop app yet, but it can run the Brain. You can install it on any x64 or arm64 box with the one-liner command from above, and that machine becomes reachable from any ADE UI Client. 
-
-Brain-only downloads, if you would rather not pipe a script: [`darwin-arm64`](https://ade-app.dev/download/brain/darwin-arm64) · [`darwin-x64`](https://ade-app.dev/download/brain/darwin-x64) · [`linux-arm64`](https://ade-app.dev/download/brain/linux-arm64) · [`linux-x64`](https://ade-app.dev/download/brain/linux-x64) · [`win32-x64`](https://ade-app.dev/download/brain/win32-x64).
-
-### Terminal
-
-Nothing extra to install — once you have the ADE Brain installed, either via the single command above or by installing the full desktop app, you can simply run:
+## Handy commands
 
 ```bash
-ade code
+ade code                      # open the terminal app
+ade connect --status --text   # check this machine's connection
+ade machines list --text      # list the machines on your account
+ade doctor                    # find a problem
+ade help <command>            # help for any command
 ```
 
-On macOS and Linux this binary lives in `~/.ade/bin`, and the installer asks before adding it to your `PATH`. It writes `~/.ade/env` and drops one marked line into your shell profile, so say yes and new terminals just work. Say no and nothing gets touched, or set `ADE_INSTALL_NO_PATH=1` to skip the question. Windows updates your user `PATH` the same way, and `-NoPath` skips it. Other overrides: `ADE_VERSION` to pin a release tag, `ADE_INSTALL_DIR` for the binary destination, `ADE_HOME` for the state root.
+Everything else: [CLI reference](apps/ade-cli/README.md) · [install options](https://www.ade-app.dev/docs/getting-started/install) · [connecting machines](https://www.ade-app.dev/docs/getting-started/connect-machine).
 
-With no terminal attached — CI, a provisioning script — the installer skips every prompt and prints the follow-up commands instead. `ADE_INSTALL_NO_PROMPT=1` (`-NoPrompt` for PowerShell) opts out explicitly.
-
-### Web client
-
-Nothing to install. Sign in at [**app.ade-app.dev**](https://app.ade-app.dev) and every machine on your account is right there. Any machine running the ADE brain is reachable from it, from any browser.
-
-### Mobile app
-
-Available now on [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). App Store coming soon; Android coming soon.
-
-Sign in on the phone with the same account to see your machines and connect automatically. You can also pair a phone to one machine directly, with the QR code in the desktop **Connections** panel or a Nearby LAN/Tailscale scan, and a 6-digit PIN. To maintain and relay information between machines, ADE will prefer LAN, then Tailscale, and use its own relay service as fallback to maintain mobile to machine connections. Having an account makes the discovery of machines seamless, and will also allow you to connect off wifi or without Tailscale. But if you have access to internet, or have Tailscale setup on mobile and another machine, then ADE will automatically use that to maintain the connection, it's always a bit faster. 
-
-
-
-#### What `ade connect` does
-
-It links a machine to your ADE account — nothing more. Once linked, that machine shows up in every ADe client once you are signed in. 
-
-You rarely run it yourself. The install script runs it at the end, and the desktop app does the same job when you sign in. Reach for it when you declined the sign-in prompt, installed non-interactively, or want to check or repair an existing machine:
+## Work on ADE
 
 ```bash
-ade connect                  # sign in, install the service, publish this machine
-ade connect --status --text  # report the three steps, change nothing
-ade connect --headless       # sign in from another device: QR code, link, and code
-ade connect --no-login       # service only; stay local/LAN-only
+npm run setup   # first time
+npm run dev     # build the CLI and open a dev copy of the desktop app
 ```
 
-`ade logout` undoes the account half; `ade runtime uninstall-service` removes the service.
-
-## CLI
-
-The same `ade` binary that runs the Brain is your CLI too, so once the Brain is installed you already have it. A taste of what it does:
-
-```bash
-ade desktop
-ade brain status --text
-ade code
-ade lanes create --name fix-checkout-flow
-ade prs checks 168 --text
-ade actions list --text   # discover every service action
-```
-
-[Full CLI reference →](apps/ade-cli/README.md)
-
-## Architecture
-
-ADE is local first. The Brain is the always on process that owns your project catalog, the sync websocket, and the authority to actually run things. Every UI client attaches to it, including the desktop app, `ade code`, mobile, and the web client. Project data stays in `.ade/` inside each repo, and machine wide state lives in `~/.ade`.
+The dev copy uses its own profile and its own Brain, so it won't touch the ADE you have installed.
 
 ```text
-apps/ade-cli   ADE Brain, the `ade` CLI, and the `ade code` terminal client
-apps/desktop   Electron desktop app
-apps/ios       SwiftUI mobile app
-apps/web       Website and download surface
-docs/          Product and engineering docs
+apps/ade-cli   the Brain, the ade command, and ade code
+apps/desktop   the desktop app (Electron)
+apps/ios       the iPhone app (SwiftUI)
+apps/web       ade-app.dev
+docs/          product and engineering docs
 ```
 
-Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Before you open a PR, run `npm --prefix apps/desktop run typecheck` and the tests near what you changed. The full suite is large; CI runs all of it.
 
-## Develop
-
-```bash
-npm run setup   # first time only
-npm run dev     # rebuild the CLI, refresh the dev runtime, launch desktop
-```
-
-`npm run dev` uses a temp endpoint and its own Electron profile, so it never touches your installed ADE app or the Brain it talks to.
-
-Everything else lives in [docs/development/local-development.md](docs/development/local-development.md): the full dev command matrix, running a specific lane worktree, previewing the renderer in a browser without Electron, packaging local Alpha and Beta builds, and a table of what to rebuild after a given change.
-
-Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
-
-## Links
-
-[Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [SDK](https://www.ade-app.dev/docs/sdk/overview) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog) · [Contributing](CONTRIBUTING.md)
-
-## Commit Chart
-
-[![arul28/ADE GitStock K-Line Chart](https://gitstock.org/arul28/ADE/stock.svg)](https://gitstock.org/arul28/ADE)
+More: [local development](docs/development/local-development.md) · [architecture](docs/ARCHITECTURE.md) · [contributing](CONTRIBUTING.md).
 
 ## License
 
-[AGPL-3.0](LICENSE) — © 2025 Arul Sharma. Free forever. Source on GitHub.
+[AGPL-3.0](LICENSE). © 2025 Arul Sharma. Free forever.
 
-The `@ade-dev/sdk` and `@ade-dev/chat-ui` npm packages are MIT. Shipping an unmodified ADE runtime binary inside a larger work is covered by the [ADE Runtime Embedding Exception](RUNTIME-EMBEDDING-EXCEPTION.md).
+`@ade-dev/sdk` and `@ade-dev/chat-ui` on npm are MIT. Shipping an unmodified ADE runtime inside a larger work is covered by the [runtime embedding exception](RUNTIME-EMBEDDING-EXCEPTION.md).

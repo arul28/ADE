@@ -44,7 +44,14 @@ struct ADEApp: App {
       // simulator can screenshot a design change with no pairing, no brain, and
       // no network. Absent the argument this is the normal app, and the whole
       // branch is compiled out of release.
-      if let previewScreen = ADEPreviewScreen.requested {
+      if let duoPreview = DuoPreviewRouter.requestedName {
+        DuoPreviewHost(name: duoPreview)
+          .duoLayoutRoot()
+          .environmentObject(syncService)
+          .environmentObject(machineFleet)
+          .environmentObject(dictationController)
+          .environmentObject(accountService)
+      } else if let previewScreen = ADEPreviewScreen.requested {
         ADEPreviewScreenHost(screen: previewScreen)
           .environmentObject(syncService)
           .environmentObject(machineFleet)
@@ -130,6 +137,8 @@ struct ADEApp: App {
           // Clear the badge on every foreground, independent of the sync
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }
+          // Chats muted on another device since the app was last open.
+          Task { await PushNotificationService.shared.refreshAccountMutedSessions() }
           Task { await accountService.updateAttentionAppForeground(true) }
           Task { await appUpdateAdvisor.checkForUpdates() }
           // Defense-in-depth: drain intent commands queued by an extension
@@ -186,6 +195,11 @@ struct ADEApp: App {
           .id(request.userCode)
           .environmentObject(accountService)
         }
+        // Publishes `\.duoLayout` (the inner display's width and fold) to the
+        // whole app, the same way the Duo fixture branch above does. Without it
+        // every Duo-aware view would read the default (compact, no fold) and the
+        // app would never show its wide layouts.
+        .duoLayoutRoot()
   }
 }
 

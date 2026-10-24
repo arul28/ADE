@@ -26,6 +26,7 @@ import { CtoPromptPreview } from "./CtoPromptPreview";
 import { CTO_SECTION_COLORS, CtoCard, FactRow, ctoButtonStyle, type CtoSectionKey } from "./ctoSettingsUi";
 import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
+import { useFastModeEnabled } from "../../lib/fastModePolicy";
 
 /**
  * The CTO's settings, in the same visual language as the rest of Settings.
@@ -362,6 +363,7 @@ export function CtoSettingsPage({
 }: CtoSettingsPageProps) {
   const [section, setSection] = useState<CtoSectionKey>("model");
   const hasProjectSidebar = useHasProjectSidebar();
+  const fastModeAllowed = useFastModeEnabled();
   const [name, setName] = useState(identity?.name ?? "");
   const [extra, setExtra] = useState(identity?.systemPromptExtension ?? "");
   const savedRef = useRef({ name: identity?.name ?? "", extra: identity?.systemPromptExtension ?? "" });
@@ -518,8 +520,9 @@ export function CtoSettingsPage({
             availableModelIds={availableModelIds}
             filter={ctoModelSupportsLiveRedirect}
             disabled={switchingModel}
-            fastModeActive={currentFastMode}
-            onFastModeToggle={onFastModeChange}
+            fastModeActive={fastModeAllowed ? currentFastMode : false}
+            onFastModeToggle={fastModeAllowed ? onFastModeChange : undefined}
+            fastModeAllowed={fastModeAllowed}
             onChange={(modelId) => onModelChange(modelId, currentReasoningEffort)}
             onOpenSignIn={onOpenProviderSettings}
           />
@@ -534,7 +537,7 @@ export function CtoSettingsPage({
           <ModelFacts
             modelId={currentModelId}
             reasoningEffort={currentReasoningEffort}
-            fastMode={currentFastMode}
+            fastMode={fastModeAllowed && currentFastMode}
           />
         ) : null}
 

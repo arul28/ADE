@@ -1,120 +1,6 @@
 import SwiftUI
 import UIKit
 
-struct FilesCompactSegmentedControl<Item: Identifiable & Equatable>: View {
-  let items: [Item]
-  @Binding var selection: Item
-  let label: (Item) -> String
-  var systemImage: ((Item) -> String)? = nil
-
-  var body: some View {
-    HStack(spacing: 2) {
-      ForEach(items) { item in
-        let isSelected = selection == item
-        Button {
-          guard !isSelected else { return }
-          withAnimation(.snappy(duration: 0.16)) {
-            selection = item
-          }
-        } label: {
-          HStack(spacing: 4) {
-            if let systemImage {
-              Image(systemName: systemImage(item))
-                .font(.caption2.weight(.semibold))
-            }
-            Text(label(item))
-              .font(.caption2.weight(.semibold))
-              .lineLimit(1)
-          }
-          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textMuted)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 6)
-          .background {
-            if isSelected {
-              Capsule(style: .continuous)
-                .fill(ADEKit.surface)
-                .overlay(Capsule(style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
-            }
-          }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label(item))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-      }
-    }
-    .padding(2)
-    .background(ADEKit.track, in: Capsule(style: .continuous))
-  }
-}
-
-struct FilesViewerControlStrip: View {
-  let editorModes: [FilesEditorMode]
-  @Binding var mode: FilesEditorMode
-  let showsMarkdownToggle: Bool
-  @Binding var markdownViewMode: FilesMarkdownViewMode
-  let showsLayoutToggle: Bool
-  @Binding var codeLayoutMode: FilesCodeLayoutMode
-  let showsDiffScopeToggle: Bool
-  @Binding var diffMode: FilesDiffMode
-
-  private var hasControls: Bool {
-    editorModes.count > 1 || showsMarkdownToggle || showsLayoutToggle || showsDiffScopeToggle
-  }
-
-  var body: some View {
-    if hasControls {
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 10) {
-          if editorModes.count > 1 {
-            FilesCompactSegmentedControl(
-              items: editorModes,
-              selection: $mode,
-              label: { $0.title },
-              systemImage: { $0.systemImage }
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("View mode")
-          }
-
-          if showsMarkdownToggle {
-            FilesCompactSegmentedControl(
-              items: FilesMarkdownViewMode.allCases,
-              selection: $markdownViewMode,
-              label: { $0.title },
-              systemImage: { $0.systemImage }
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Markdown mode")
-          }
-
-          if showsLayoutToggle {
-            FilesCompactSegmentedControl(
-              items: FilesCodeLayoutMode.allCases,
-              selection: $codeLayoutMode,
-              label: { $0.title },
-              systemImage: { $0.systemImage }
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Code layout")
-          }
-
-          if showsDiffScopeToggle {
-            FilesCompactSegmentedControl(
-              items: FilesDiffMode.allCases,
-              selection: $diffMode,
-              label: { $0.title },
-              systemImage: { $0.systemImage }
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Diff scope")
-          }
-        }
-        .padding(.horizontal, 16)
-      }
-    }
-  }
-}
-
 struct FilesCompactBanner: View {
   let symbol: String
   let tint: Color
@@ -162,12 +48,13 @@ struct FilesContentFallback: View {
   let message: String
 
   var body: some View {
-    VStack(spacing: 12) {
+    // Calm, in the viewer's own space: no card, centred where the code
+    // would be.
+    VStack(spacing: 8) {
       Image(systemName: symbol)
-        .font(.system(size: 24, weight: .semibold))
+        .font(.system(size: 28, weight: .light))
         .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 50, height: 50)
-        .background(ADEKit.track, in: Circle())
+        .padding(.bottom, 2)
 
       Text(title)
         .font(.headline)
@@ -179,8 +66,9 @@ struct FilesContentFallback: View {
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
     }
+    .frame(maxWidth: 420)
+    .padding(.vertical, 48)
     .frame(maxWidth: .infinity)
-    .adeKitCard(padding: 24)
   }
 }
 
@@ -408,24 +296,40 @@ struct FilesDetailsSheet: View {
   }
 }
 
+/// The highlighter stamps every run with a body-size font, which beat the
+/// view's footnote size (code drew at 17pt, larger than the tree). The
+/// viewer keeps the highlighter's colours and one code size.
+func filesCodeAttributed(_ text: String, as language: FilesLanguage) -> AttributedString {
+  var attributed = SyntaxHighlighter.highlightedAttributedString(text, as: language)
+  attributed.font = .system(.footnote, design: .monospaced)
+  return attributed
+}
+
 struct SyntaxHighlightedCodeView: View {
   let text: String
   let language: FilesLanguage
   let focusLine: Int?
   let layoutMode: FilesCodeLayoutMode
   var fillsContainer: Bool = false
+  /// Split once per view value, not on every read: the body used to split the
+  /// whole file twice per render.
+  private let lines: [String]
+  private let lineNumberWidth: CGFloat
 
-  private var lines: [String] {
+  init(text: String, language: FilesLanguage, focusLine: Int?, layoutMode: FilesCodeLayoutMode, fillsContainer: Bool = false) {
+    self.text = text
+    self.language = language
+    self.focusLine = focusLine
+    self.layoutMode = layoutMode
+    self.fillsContainer = fillsContainer
     let split = splitPreservingEmptyLines(text)
-    return split.isEmpty ? [""] : split
+    let lines = split.isEmpty ? [""] : split
+    self.lines = lines
+    self.lineNumberWidth = min(max(CGFloat(String(lines.count).count) * 7.5 + 8, 22), 52)
   }
 
   private var wrapsLines: Bool {
     layoutMode == .wrap
-  }
-
-  private var lineNumberWidth: CGFloat {
-    min(max(CGFloat(String(lines.count).count) * 8 + 14, 28), 58)
   }
 
   var body: some View {
@@ -456,29 +360,56 @@ struct SyntaxHighlightedCodeView: View {
 
   private var codeRows: some View {
     LazyVStack(alignment: .leading, spacing: 0) {
-      ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-        HStack(alignment: .top, spacing: wrapsLines ? 8 : 12) {
+      ForEach(lines.indices, id: \.self) { index in
+        let line = lines[index]
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
           Text("\(index + 1)")
-            .font(.caption2.monospaced())
-            .foregroundStyle(ADEColor.textMuted)
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted.opacity(0.8))
             .frame(width: lineNumberWidth, alignment: .trailing)
-          Text(SyntaxHighlighter.highlightedAttributedString(line.isEmpty ? " " : line, as: language))
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(nil)
-            .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
-            .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
-            .textSelection(.enabled)
+            .accessibilityHidden(true)
+          codeLine(line)
         }
         .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background((focusLine == index + 1 ? ADEColor.accent.opacity(0.12) : Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1.5)
+        .background(focusLine == index + 1 ? ADEColor.accent.opacity(0.14) : Color.clear)
         .id(index + 1)
       }
     }
-    .padding(10)
+    .padding(.vertical, 8)
+    .padding(.horizontal, 4)
     .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+  }
+
+  /// One line of code. Wrapped, a long line's continuation keeps the line's
+  /// own indent (an editor's hanging indent) instead of falling back to the
+  /// text column's edge, where it read as a new line.
+  @ViewBuilder
+  private func codeLine(_ line: String) -> some View {
+    let indent = wrapsLines ? String(line.prefix { $0 == " " || $0 == "\t" }) : ""
+    if indent.isEmpty || indent.count == line.count || indent.count > 24 {
+      codeText(line.isEmpty ? " " : line)
+    } else {
+      HStack(alignment: .firstTextBaseline, spacing: 0) {
+        Text(verbatim: indent.replacingOccurrences(of: "\t", with: "    "))
+          .font(.system(.footnote, design: .monospaced))
+          .fixedSize()
+          .accessibilityHidden(true)
+        codeText(String(line.dropFirst(indent.count)))
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func codeText(_ text: String) -> some View {
+    Text(filesCodeAttributed(text, as: language))
+      .font(.system(.footnote, design: .monospaced))
+      .foregroundStyle(ADEColor.textPrimary)
+      .lineLimit(nil)
+      .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
+      .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
+      .textSelection(.enabled)
   }
 }
 
@@ -539,8 +470,8 @@ struct FilesInlineDiffView: View {
         HStack(alignment: .top, spacing: wrapsLines ? 8 : 12) {
           diffLineNumber(line.originalLineNumber)
           diffLineNumber(line.modifiedLineNumber)
-          Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
-            .font(.system(.body, design: .monospaced))
+          Text(filesCodeAttributed(line.text.isEmpty ? " " : line.text, as: language))
+            .font(.system(.footnote, design: .monospaced))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(nil)
             .fixedSize(horizontal: !wrapsLines, vertical: wrapsLines)
@@ -548,12 +479,13 @@ struct FilesInlineDiffView: View {
             .textSelection(.enabled)
         }
         .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(diffBackground(for: line.kind), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1.5)
+        .background(diffBackground(for: line.kind))
       }
     }
-    .padding(10)
+    .padding(.vertical, 8)
+    .padding(.horizontal, 4)
     .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
   }
 
@@ -715,11 +647,24 @@ struct FilesProofArtifactSheet: View {
   }
 }
 
+extension EnvironmentValues {
+  /// Set where the viewer runs under the Duo's edge bar: the scroll view
+  /// reaches the screen edge, and its content stops this far short of it.
+  @Entry var filesViewerTrailingMargin: CGFloat? = nil
+}
+
 private struct FilesPreviewContainerStyle: ViewModifier {
   let fillsContainer: Bool
+  @Environment(\.filesViewerTrailingMargin) private var trailingMargin
 
   func body(content: Content) -> some View {
-    if fillsContainer {
+    if fillsContainer, let trailingMargin {
+      content
+        .contentMargins(.trailing, trailingMargin, for: .scrollContent)
+        .contentMargins(.trailing, trailingMargin, for: .scrollIndicators)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .ignoresSafeArea(.container, edges: .trailing)
+    } else if fillsContainer {
       content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     } else {
       content.adeKitCard(padding: 0)

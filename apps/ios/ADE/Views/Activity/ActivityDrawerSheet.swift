@@ -20,16 +20,27 @@ struct ActivityDrawerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bucket: ActivityBucket = .sessions
+    @ObservedObject private var duoNavigation = DuoAppNavigation.shared
     /// The row currently waking its machine, so the wait is attached to the
     /// thing that caused it rather than to a modal over the whole sheet.
     @State private var connectingRowId: String?
     @State private var connectFailureRowId: String?
+    /// Set on the Duo's inner display, where Activity is a trailing inspector
+    /// column rather than a sheet: native segmented controls in place of the
+    /// phone's chips, and Done closes the column.
+    var onCloseInspector: (() -> Void)? = nil
+
+    private var isInspector: Bool { onCloseInspector != nil }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                bucketPicker
-                if bucket == .sessions, !drawer.sessions.isEmpty {
+                if isInspector {
+                    DuoActivityInspectorFilters(bucket: $bucket)
+                } else {
+                    bucketPicker
+                }
+                if bucket == .sessions, !drawer.sessions.isEmpty, !isInspector {
                     HubRosterFilterBar(
                         counts: HubRosterFilter.counts(from: drawer.columnCounts),
                         selection: Binding(
@@ -52,8 +63,21 @@ struct ActivityDrawerSheet: View {
             .navigationTitle("Activity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
+                if let onCloseInspector {
+                    // The Duo's column: a close symbol, and the state filter
+                    // as a menu, both in the edge bar beside the column.
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close Activity", systemImage: "xmark", action: onCloseInspector)
+                    }
+                    if bucket == .sessions, !drawer.sessions.isEmpty {
+                        ToolbarItem(placement: .primaryAction) {
+                            DuoActivityStateMenu()
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -72,6 +96,13 @@ struct ActivityDrawerSheet: View {
                         Image(systemName: "ellipsis.circle")
                     }
                     .accessibilityLabel("Activity actions")
+                }
+                if isInspector, duoNavigation.hasEdgeBar {
+                    // The column now has the curved edge, so its rail ends in
+                    // the five tabs, as every in-project rail does. Without an
+                    // edge bar (an iPad) the screen beside it keeps the tab
+                    // menu; a second one here read as another Home button.
+                    DuoAppTabsToolbar()
                 }
             }
             .adeScreenBackground()
@@ -340,7 +371,7 @@ struct ActivityDrawerSheet: View {
                 "checkmark.seal",
                 ADESharedTheme.statusSuccess,
                 "Nothing needs you.",
-                "Pull requests, checks, and finished runs land here."
+                "Pull requests, checks, agent messages, and finished runs land here."
             )
         }
     }
@@ -762,7 +793,25 @@ enum ActivityPreviewData {
       item("c5", title: "Rewrite the pairing guide", phase: .stale, tier: "idle", column: "waiting", reason: "snoozed", minutesAgo: 30),
       item("c6", title: "Release notes for 1.4", phase: .completed, tier: "idle", column: "done", minutesAgo: 120),
       item("c7", title: "Widget freshness tag", phase: .completed, tier: "idle", column: "done", minutesAgo: 600),
+      message,
     ]
+  )
+
+  /// An agent's `ade notify` message: Inbox only, never counted.
+  static let message = AccountAttentionItem(
+    id: "message:studio:m1", revision: 1, fingerprint: "m1", kind: .message,
+    eventKind: .agentMessage, phase: .completed, activityTier: "signal",
+    machine: machine,
+    project: AccountAttentionProject(projectId: "preview-ade", name: "ADE"),
+    title: "Migration finished",
+    preview: "All 14 tables moved; two need a manual index rebuild.",
+    privacyPreview: "An ADE agent sent you a message.",
+    detail: "Fix the sync retry",
+    destination: .session(sessionId: "c4", itemId: nil, eventId: nil),
+    actions: [AccountAttentionAction(id: "open", kind: .open, label: "Open")],
+    occurredAt: now.addingTimeInterval(-240),
+    updatedAt: now.addingTimeInterval(-240),
+    expiresAt: now.addingTimeInterval(86_400)
   )
 }
 

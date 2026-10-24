@@ -104,7 +104,10 @@ struct WorkNewChatMachineDropdown: View {
           .foregroundStyle(selected.isLive ? ADEColor.textSecondary : ADEColor.textMuted)
         Text(selected.name)
           .font(.system(size: 13, weight: .semibold))
+          // As wide as the name, up to 140: the pill hugs "This machine"
+          // instead of stretching, so the lane pill sits right beside it.
           .frame(maxWidth: 140, alignment: .leading)
+          .fixedSize(horizontal: true, vertical: false)
           .foregroundStyle(selected.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
           .lineLimit(1)
         Image(systemName: "chevron.up.chevron.down")

@@ -238,65 +238,15 @@ struct PrRowCard: View {
         .foregroundStyle(prStateColor(data.state))
         .frame(width: 16, height: 18)
         .accessibilityHidden(true)
-      VStack(alignment: .leading, spacing: 5) {
+      VStack(alignment: .leading, spacing: 4) {
         Text("\(Text(verbatim: "#\(data.prNumber)").font(.adeMono(13, weight: .medium)).foregroundStyle(ADEColor.textMuted)) \(data.title)")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .frame(maxWidth: .infinity, alignment: .leading)
-
-        HStack(spacing: 6) {
-          if let branch = data.branchLine {
-            Text(verbatim: branch)
-              .font(.adeMono(11))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-          PrLaneChip(
-            laneName: data.laneLabel,
-            ghostLaneName: data.detached?.laneName,
-            machineName: data.laneMachineName
-          )
-          .frame(maxWidth: 150, alignment: .leading)
-          .fixedSize(horizontal: false, vertical: true)
-          if data.isExternal {
-            Text(verbatim: "\(data.repoOwner)/\(data.repoName)")
-              .font(.adeMono(10.5))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-          Spacer(minLength: 4)
-          if data.needsBranchCleanup {
-            Image(systemName: "arrow.triangle.branch")
-              .font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(ADEColor.warning)
-              .accessibilityLabel("Remote branch still exists")
-          }
-          if let additions = data.additions, let deletions = data.deletions, additions + deletions > 0 {
-            PrDiffStat(additions: additions, deletions: deletions, abbreviated: true, size: 10.5)
-          }
-          if !data.isTerminal, let ci = data.ciIndicator {
-            PrRowCiGlyph(indicator: ci)
-              .font(.system(size: 11))
-          }
-          if !data.isTerminal, let review = PrRowReviewGlyph(status: data.reviewStatus) {
-            review
-          }
-          // When it last moved (merged/closed: when it landed), so a stale PR
-          // reads as stale without opening it.
-          let age = prCompactRelativeTime(data.isTerminal ? (data.mergedAt ?? data.updatedAt) : data.updatedAt)
-          if !age.isEmpty {
-            Text(verbatim: age)
-              .font(.adeMono(10.5))
-              .foregroundStyle(ADEColor.textMuted)
-              .fixedSize()
-          }
-        }
+        metaLine
       }
-      PrAvatar(login: data.authorLogin, isBot: data.isBot ? true : nil, size: 20)
-        .padding(.top, 1)
     }
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
@@ -312,6 +262,63 @@ struct PrRowCard: View {
         "role": "row"
       ]
     )
+  }
+
+  /// One quiet line: where it merges from and to (the lane when it has one,
+  /// else the head branch, which gives way first), when it last moved, who
+  /// opened it, then the CI and review signals.
+  private var metaLine: some View {
+    let age = prCompactRelativeTime(data.isTerminal ? (data.mergedAt ?? data.updatedAt) : data.updatedAt)
+    let author: String? = data.authorLogin.flatMap { login in
+      guard !login.isEmpty else { return nil }
+      let identity = PrAuthorIdentity.classify(login, accountIsBot: data.isBot ? true : nil)
+      return identity.isBot ? identity.displayName : login
+    }
+    var tail: [String] = []
+    if let base = data.baseBranch, !base.isEmpty { tail.append("→ \(base)") }
+    if !age.isEmpty { tail.append(age) }
+    if let author { tail.append(author) }
+    if data.isExternal { tail.append("\(data.repoOwner)/\(data.repoName)") }
+    let source = data.laneLabel ?? (data.isTerminal ? nil : data.headBranch)
+    return HStack(spacing: 5) {
+      if let laneLabel = data.laneLabel {
+        Image(systemName: data.laneMachineName == nil ? "arrow.triangle.branch" : "desktopcomputer")
+          .font(.system(size: 9.5, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .accessibilityHidden(true)
+        Text(laneLabel)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      } else if let ghost = data.detached?.laneName, !ghost.isEmpty, data.isTerminal {
+        Text("was: \(ghost)")
+          .lineLimit(1)
+          .truncationMode(.tail)
+      } else if let source, !source.isEmpty {
+        Text(source)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Text(tail.joined(separator: " · "))
+        .lineLimit(1)
+        .fixedSize()
+        .layoutPriority(1)
+      Spacer(minLength: 0)
+      if data.needsBranchCleanup {
+        Image(systemName: "arrow.triangle.branch")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(ADEColor.warning)
+          .accessibilityLabel("Remote branch still exists")
+      }
+      if !data.isTerminal, let review = PrRowReviewGlyph(status: data.reviewStatus) {
+        review
+      }
+      if !data.isTerminal, let ci = data.ciIndicator {
+        PrRowCiGlyph(indicator: ci)
+      }
+    }
+    .font(.caption)
+    .foregroundStyle(ADEColor.textMuted)
   }
 
   private var accessibilitySummary: String {

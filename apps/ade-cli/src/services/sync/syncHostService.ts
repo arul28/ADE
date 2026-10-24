@@ -1,3 +1,4 @@
+import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
@@ -83,6 +84,8 @@ import type {
   SyncProjectCatalogPayload,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
+  SyncProjectSetIconRequestPayload,
+  SyncProjectSetIconResultPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
   ListMyGitHubReposInput,
@@ -1081,6 +1084,8 @@ export type SyncProjectCatalogProvider = {
   cloneProject?: (args: CloneProjectInput) => Promise<SyncMobileProjectSummary>;
   listMyGitHubRepos?: (args: ListMyGitHubReposInput) => Promise<ListMyGitHubReposResult>;
   forgetProject?: (args: SyncProjectForgetRequestPayload) => Promise<SyncProjectForgetResultPayload>;
+  /** Stores a project's icon from bytes a phone uploaded (`project_set_icon_request`). */
+  setProjectIcon?: (args: SyncProjectSetIconRequestPayload) => Promise<SyncProjectSetIconResultPayload>;
 };
 
 export type { SyncRosterProvider } from "./syncRosterFanout";
@@ -1618,6 +1623,8 @@ export function buildSyncHostHelloOkPayload(args: {
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
+  /** Advertise `projectIcon` only where `project_set_icon_request` is answered. */
+  projectIconEnabled?: boolean;
   crossProjectChatEnabled: boolean;
   /** Advertise `roster` only when this ingress answers `roster_subscribe`. */
   rosterEnabled?: boolean;
@@ -1758,6 +1765,14 @@ export function buildSyncHostHelloOkPayload(args: {
       projectActions: {
         enabled: args.projectActionsEnabled,
       },
+      ...(args.projectIconEnabled
+        ? {
+            projectIcon: {
+              enabled: true as const,
+              maxBytes: REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
+            },
+          }
+        : {}),
       changesetAck: {
         enabled: true,
       },
@@ -5296,6 +5311,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  async function handleProjectSetIconRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: SyncProjectSetIconRequestPayload | null,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider?.setProjectIcon) {
+      sendRequired(peer, "project_set_icon_result", {
+        ok: false,
+        message: "Changing project icons is not available from this machine.",
+      } satisfies SyncProjectSetIconResultPayload, requestId);
+      return;
+    }
+    try {
+      const result = await args.projectCatalogProvider.setProjectIcon(
+        payload ?? ({} as SyncProjectSetIconRequestPayload),
+      );
+      sendRequired(peer, "project_set_icon_result", result, requestId);
+      // Every device on this machine shows the new icon from its catalog.
+      if (result.ok) {
+        broadcastProjectCatalogToConnectedPeers(await buildProjectCatalogPayload());
+      }
+    } catch (error) {
+      sendRequired(peer, "project_set_icon_result", {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies SyncProjectSetIconResultPayload, requestId);
+    }
+  }
+
   function broadcastProjectCatalogToConnectedPeers(
     projectCatalog: SyncProjectCatalogPayload,
   ): void {
@@ -8020,6 +8064,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
+        projectIconEnabled: Boolean(args.projectCatalogProvider?.setProjectIcon),
         crossProjectChatEnabled: Boolean(args.foreignChatProvider),
         rosterEnabled: rosterFanout.enabled,
         remoteCommandSupportedActions: remoteCommandService.getSupportedActions(),
@@ -8193,6 +8238,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       case "project_forget_request": {
         await handleProjectForgetRequest(peer, envelope.requestId, envelope.payload as SyncProjectForgetRequestPayload);
+        break;
+      }
+      case "project_set_icon_request": {
+        await handleProjectSetIconRequest(peer, envelope.requestId, envelope.payload as SyncProjectSetIconRequestPayload);
         break;
       }
       case "project_browse_request": {

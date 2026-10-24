@@ -218,6 +218,9 @@ import { SceneReplyContext } from "./SceneFrame";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { useGoTo } from "../onboarding/spotlight/useGoTo";
+import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
+import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
@@ -3037,14 +3040,19 @@ function buildLastLaunchConfig(
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
-  const { fastMode, controls } = launchFastModeAndControls(source.fastMode === true, source, defaults);
+  // Fold legacy Cursor fast config values into the Fast bit and then drop the
+  // bit: the fold removes the legacy option so it cannot ride along as a model
+  // param, but a launch config is never the place Fast is remembered.
+  const { controls } = launchFastModeAndControls(source.fastMode === true, source, defaults);
   return {
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    fastMode,
-    ...(fastMode && source.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
-    cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
+    fastMode: false,
+    // Fast is not remembered across chats, and neither is the cloud tier that
+    // rides with it: a Cursor Cloud create from remembered state must ask for
+    // Standard, or Cursor's own fast default would bill the tier.
+    cursorCloudServiceTier: null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt,
@@ -3082,7 +3090,10 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const { fastMode, controls } = launchFastModeAndControls(
+  // Fold a legacy Cursor fast option out of the stored controls, then ignore
+  // the stored Fast bit: a config written by an older build must not carry
+  // Fast into this draft.
+  const { controls } = launchFastModeAndControls(
     readStoredFastMode(value),
     isRecord(value.controls) ? value.controls : {},
     defaults,
@@ -3093,9 +3104,10 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    fastMode,
-    ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
-    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
+    fastMode: false,
+    // The remembered launch memory no longer carries a cloud tier: a new chat
+    // asks for Standard and the per-chat choice is the only way to Fast.
+    cursorCloudServiceTier: null,
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
@@ -3351,7 +3363,9 @@ function normalizeStoredComposerDraft(
     reasoningEffort: nonEmptyString(value.reasoningEffort),
     fastMode,
     ...(fastMode && value.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
-    cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
+    // A cloud fast tier only belongs to a draft whose Fast is on. A draft with
+    // Fast off must not carry a stored "fast" tier forward.
+    cursorCloudServiceTier: fastMode ? readStoredCursorCloudServiceTier(value) : null,
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     attachments,
@@ -5015,6 +5029,42 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // The account's Fast permission for this composer. A chat on any machine
+  // carries its owning brain's answer (`fastModeAllowed`); a draft uses this
+  // window's copy, which is the same account row. Absent means an older host
+  // that cannot enforce it, so the control stays usable.
+  const accountFastModeEnabled = useFastModeEnabled();
+  // A chat carries its owning brain's answer; a draft uses this window's copy
+  // of the same account row. The brain refuses Fast either way.
+  const fastModeAllowedForComposer = selectedSession
+    ? (selectedSession.fastModeAllowed ?? true)
+    : accountFastModeEnabled;
+  // A ref so permission changes do not change applyLaunchConfigToComposer's
+  // identity: that callback gates draft-content hydration, and a new identity
+  // there re-reads an older stored snapshot over pending edits.
+  const fastModeAllowedForComposerRef = useRef(fastModeAllowedForComposer);
+  fastModeAllowedForComposerRef.current = fastModeAllowedForComposer;
+  // Fast slots, a mounted Fast draft, and its Cursor Cloud tier are cleared
+  // when the permission goes away. Every create path gates again; this keeps
+  // the visible state honest too.
+  useEffect(() => {
+    if (fastModeAllowedForComposer) return;
+    setParallelModelSlots((prev) => {
+      if (!prev.some((slot) => slot.fastMode === true || slot.fastTier != null)) return prev;
+      return prev.map((slot) => ({ ...slot, fastMode: false, fastTier: null }));
+    });
+    setFastModeState(false, null);
+    setCursorCloudServiceTier(null);
+  }, [fastModeAllowedForComposer, setFastModeState]);
+  const goTo = useGoTo();
+  const openFastModeSetting = useCallback(() => {
+    // The same "show me" path ADE Tips uses: land on the row, then ring it.
+    goTo("/settings?tab=chat#fast-mode");
+    showSpotlight({
+      spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
+      waitMs: 5_000,
+    });
+  }, [goTo]);
   // Which atomic active-turn dispatch modes this session's backend accepts,
   // read off the canonical table in shared/types/chat.ts rather than restated
   // here.
@@ -6967,7 +7017,7 @@ export function AgentChatPane({
   // composer (picked, or restored with the launch config); the permission
   // ladder below never overwrites them.
   const visitedLadderFamiliesRef = useRef<Set<PermissionLadderFamily>>(new Set());
-  const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
+  const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig, options?: { preserveFast?: boolean }) => {
     setModelId(config.modelId);
     // The restored model's own permissions were chosen when it launched. With
     // full access as the default, "equals the default" no longer tells a
@@ -6984,15 +7034,26 @@ export function AgentChatPane({
     // the composer machine changes. It is a dependency of the composer-draft
     // hydration effect, which would otherwise re-read the persisted snapshot
     // and clobber live typing / attachments.
+    const preserveFastChoice = options?.preserveFast === true && fastModeAllowedForComposerRef.current;
     const reconciledControls = reconcileDraftModelControls(
       resolveScopedModelDescriptor(config.modelId, modelCatalogScopeKeyRef.current),
-      { reasoningEffort: config.reasoningEffort, fastMode: config.fastMode },
+      // Fast is a per-chat choice. A NEW chat starts Standard; a draft or a
+      // failed launch restores the choice the user made for that same attempt
+      // (`preserveFast`) — unless the account has since forbidden Fast, in
+      // which case restoring it would send a request the brain refuses.
+      {
+        reasoningEffort: config.reasoningEffort,
+        fastMode: preserveFastChoice ? config.fastMode : false,
+      },
     );
     setReasoningEffort(reconciledControls.reasoningEffort);
-    // The stored tier is kept as chosen: the catalog that says whether this
-    // model offers Ultrafast may not have loaded yet, and send time checks it.
-    setFastModeState(reconciledControls.fastMode, config.fastTier ?? null);
-    setCursorCloudServiceTier(config.cursorCloudServiceTier ?? null);
+    setFastModeState(
+      reconciledControls.fastMode,
+      reconciledControls.fastMode ? config.fastTier ?? null : null,
+    );
+    // The Cursor Cloud tier is part of the same Fast choice: a new chat, or a
+    // draft whose account has since forbidden Fast, asks for no fast tier.
+    setCursorCloudServiceTier(preserveFastChoice ? config.cursorCloudServiceTier ?? null : null);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -7066,7 +7127,13 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
-    setFastModeState(session.fastMode === true, session.fastTier === "ultrafast" ? "ultrafast" : null);
+    // The owning brain's answer on this chat wins over this window's last
+    // account read — it is the machine that will enforce it.
+    noteFastModeAllowedFromHost(session.fastModeAllowed);
+    setFastModeState(
+      session.fastMode === true && (session.fastModeAllowed ?? true),
+      session.fastTier === "ultrafast" ? "ultrafast" : null,
+    );
     setCursorCloudServiceTier(session.cursorCloudServiceTier ?? null);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
@@ -7577,8 +7644,8 @@ export function AgentChatPane({
     // capsule, and the destination silently inherits the source's tier.
     ...(remoteHandoffTargetDescriptor && modelSupportsFastMode(remoteHandoffTargetDescriptor)
       ? {
-        fastMode: handoffFastMode,
-        fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(remoteHandoffTargetDescriptor)
+        fastMode: fastModeAllowedForComposer && handoffFastMode,
+        fastTier: fastModeAllowedForComposer && handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(remoteHandoffTargetDescriptor)
           ? "ultrafast" as const
           : null,
       }
@@ -7594,6 +7661,7 @@ export function AgentChatPane({
     cursorModeId: handoffCursorModeId,
     cursorConfigValues: handoffCursorConfigValues,
   }), [
+    fastModeAllowedForComposer,
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
@@ -9302,8 +9370,10 @@ export function AgentChatPane({
   useEffect(() => {
     if (handoffFormActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
-      setHandoffFastMode(fastMode);
-      setHandoffFastTier(fastMode ? fastTierRef.current : null);
+      // A handoff creates a new chat, so it starts Standard. The form's own
+      // Fast control is the only way to turn it on for this target.
+      setHandoffFastMode(false);
+      setHandoffFastTier(null);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
@@ -11061,7 +11131,7 @@ export function AgentChatPane({
           executionMode: saved.executionMode,
           controls: saved.controls,
           updatedAt: saved.updatedAt,
-        });
+        }, { preserveFast: true });
       }
       setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
@@ -11294,7 +11364,9 @@ export function AgentChatPane({
     // remembered family effort when nothing explicit is set, and the launch
     // must carry the value the user can actually see.
     const launchReasoningEffort = launchState?.reasoningEffort ?? effectiveReasoningEffort;
-    const launchFastMode = launchState?.fastMode ?? fastMode;
+    // A locked account cannot send a Fast launch even when a stale composer
+    // state remembers one; the visible control is the only authority.
+    const launchFastMode = fastModeAllowedForComposer && (launchState?.fastMode ?? fastMode);
     const launchFastTier = launchFastMode && (launchState ? launchState.fastTier : fastTier) === "ultrafast"
       ? "ultrafast" as const
       : null;
@@ -11530,7 +11602,7 @@ export function AgentChatPane({
         executionMode: snapshot.executionMode,
         controls: snapshot.nativeControls,
         updatedAt: new Date().toISOString(),
-      });
+      }, { preserveFast: true });
     }
   }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey, setAttachments]);
 
@@ -12294,15 +12366,13 @@ export function AgentChatPane({
     const provider = resolvedProvider;
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
     const supportsFastMode = modelSupportsFastMode(desc);
-    const launchFastMode = supportsFastMode
+    const launchFastMode = fastModeAllowedForComposer && supportsFastMode
       ? prepared.fastMode
-      : provider === "claude"
-        ? false
-        : undefined;
+      : false;
     const launchModel = desc.family === "cursor"
       ? resolveCursorCliModelVariant(desc, {
           reasoningEffort: prepared.reasoningEffort,
-          fastMode: supportsFastMode && prepared.fastMode,
+          fastMode: fastModeAllowedForComposer && supportsFastMode && prepared.fastMode,
         })
       : runtimeModel;
     const permissionMode = cliPermissionModeFromNativeControls(provider, prepared.nativeControls);
@@ -12335,7 +12405,7 @@ export function AgentChatPane({
       },
       tracked: true,
     };
-  }, [harnessPresets, modelCatalogScopeKey]);
+  }, [fastModeAllowedForComposer, harnessPresets, modelCatalogScopeKey]);
 
   const startDraftCliLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
@@ -12959,7 +13029,7 @@ export function AgentChatPane({
         startingRef,
         modelId: cloudModelId || null,
         reasoningEffort: snapshot.reasoningEffort,
-        ...(snapshot.cursorCloudServiceTier
+        ...(fastModeAllowedForComposer && snapshot.cursorCloudServiceTier
           ? { serviceTier: snapshot.cursorCloudServiceTier }
           : {}),
         autoCreatePR: prFields.autoCreatePR,
@@ -13379,12 +13449,12 @@ export function AgentChatPane({
         ...(mode === "fork" && handoffForkPoint ? { throughTurnId: handoffForkPoint.turnId } : {}),
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
-          ? { fastMode: handoffFastMode }
+          ? { fastMode: fastModeAllowedForComposer && handoffFastMode }
           : {}),
         // Named either way, so a handoff never inherits a tier the modal hid.
         ...(handoffTargetProvider === "codex"
           ? {
-            fastTier: handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(handoffTargetDescriptor)
+            fastTier: fastModeAllowedForComposer && handoffFastMode && handoffFastTier === "ultrafast" && modelSupportsUltrafast(handoffTargetDescriptor)
               ? "ultrafast" as const
               : null,
           }
@@ -14077,6 +14147,9 @@ export function AgentChatPane({
           }), launchBinding);
           const provider = resolveChatRuntimeProvider(desc);
           const model = provider === "opencode" ? slot.modelId : runtimeFacingModelId(desc, slot.modelId);
+          // The account gate applies to every slot at creation, even one
+          // configured while Fast was allowed.
+          const slotFastMode = fastModeAllowedForComposer && slot.fastMode === true;
           const created = await agentChatApiRef.current.create({
             laneId: childLane.id,
             provider,
@@ -14084,8 +14157,8 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
-            fastMode: slot.fastMode,
-            ...(provider === "codex" && slot.fastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+            fastMode: slotFastMode,
+            ...(provider === "codex" && slotFastMode && slot.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
@@ -15783,6 +15856,9 @@ export function AgentChatPane({
       void agentChatApiRef.current.launchDefaults?.(draftExecutionBindingRef.current ?? null)
         .then((defaults) => {
           if (cancelled) return;
+          // The machine that will run this draft also owns the account policy
+          // it enforces. Adopt its answer for the locked lightning.
+          noteFastModeAllowedFromHost(defaults?.fastModeAllowed);
           const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
           setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
         })
@@ -16320,15 +16396,26 @@ export function AgentChatPane({
               type="button"
               className={cn(
                 "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
-                handoffFastMode
-                  ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
-                  : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/62 hover:bg-fg/[0.06] hover:text-fg/78",
+                !fastModeAllowedForComposer
+                  ? "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/45 hover:border-fg/[0.14] hover:bg-fg/[0.05] hover:text-muted-fg/75"
+                  : handoffFastMode
+                    ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
+                    : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/62 hover:bg-fg/[0.06] hover:text-fg/78",
               )}
-              aria-pressed={handoffFastMode}
-              aria-label="Fast mode for handoff"
-              onClick={() => handleHandoffFastModeChange(!handoffFastMode)}
+              aria-pressed={fastModeAllowedForComposer ? handoffFastMode : undefined}
+              aria-label={fastModeAllowedForComposer
+                ? "Fast mode for handoff"
+                : "Fast mode is off for your account. Open Settings to turn it on."}
+              title={fastModeAllowedForComposer ? undefined : "Fast mode is off for your account. Click to turn it on."}
+              onClick={() => {
+                if (!fastModeAllowedForComposer) {
+                  openFastModeSetting();
+                  return;
+                }
+                handleHandoffFastModeChange(!handoffFastMode);
+              }}
             >
-              <Lightning size={12} weight="fill" />
+              <Lightning size={12} weight={fastModeAllowedForComposer ? "fill" : "regular"} />
               Fast
             </button>
           ) : null}
@@ -17416,6 +17503,8 @@ export function AgentChatPane({
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={subagentComposerModel?.modelId ?? modelId}
+            fastModeAllowed={fastModeAllowedForComposer}
+            {...(!fastModeAllowedForComposer ? { onFastModeLocked: openFastModeSetting } : {})}
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={activeHarnessPresetId}

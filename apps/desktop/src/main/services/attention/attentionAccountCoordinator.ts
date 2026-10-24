@@ -4,6 +4,7 @@ import {
   PushRelayUnreachableError,
 } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   runAcknowledgmentChunks,
   unreachedOutcomeFields,
@@ -24,7 +25,7 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
-> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">> & {
+> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences" | "setAttentionSessionMuted">> & {
   /**
    * Purge every Activity row a removed machine published (relay
    * `DELETE /attention/account/machines/:machineKey`). Optional so a relay
@@ -43,6 +44,12 @@ type AttentionAccountCoordinatorOptions = {
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   accountAttentionClient?: AccountAttentionClient | null;
   getCurrentAccountOwnerId: () => string | null;
+  /** Every account snapshot a window loaded (desktop notifications read these). */
+  onAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
+  /** The account preferences a window loaded, with the owner they belong to. */
+  onPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  /** A mute the relay accepted; desktop notifications apply it at once. */
+  onSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
 };
 
 type AttentionSnapshotRequest = {
@@ -273,6 +280,13 @@ export class AttentionAccountCoordinator {
             },
           };
           this.rememberSnapshot(accountSnapshot, accountOwnerId);
+          try {
+            this.options.onAccountSnapshot?.(accountSnapshot);
+          } catch (error) {
+            this.options.getLogger().warn("attention.snapshot_observer_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           return accountSnapshot;
         }
       } catch (error) {
@@ -300,7 +314,7 @@ export class AttentionAccountCoordinator {
         const snapshot = await withDeadline(
           pool.callAttention<AttentionSnapshot>(
             "getMachineSnapshot",
-            {},
+            { include: ATTENTION_SNAPSHOT_INCLUDE_MESSAGES },
             { timeoutMs: remainingMs },
           ),
           remainingMs,
@@ -573,9 +587,11 @@ export class AttentionAccountCoordinator {
       if (this.relayBackingOff()) return null;
       try {
         const preferences =
-          await this.options.accountAttentionClient.getAttentionPreferences(accountOwnerId);
+          await this.options.accountAttentionClient.getAttentionPreferences(accountOwnerId)
+          ?? DEFAULT_ATTENTION_PREFERENCES;
         this.noteRelayAvailable();
-        return preferences ?? DEFAULT_ATTENTION_PREFERENCES;
+        this.options.onPreferences?.(accountOwnerId, preferences);
+        return preferences;
       } catch (error) {
         if (!isRelayUnavailable(error)) throw error;
         this.noteRelayUnavailable("preferences", error);
@@ -641,6 +657,47 @@ export class AttentionAccountCoordinator {
       normalizedMachineKey,
       partial as Partial<AttentionPreferenceScope>,
     );
+  }
+
+  /**
+   * Mute or unmute one chat's notifications on every device. The mute lives in
+   * the account's Activity preferences, so it needs no route to the machine the
+   * chat runs on.
+   */
+  async setSessionMuted(
+    sessionId: unknown,
+    muted: unknown,
+    expectedAccountOwnerId?: unknown,
+  ): Promise<void> {
+    const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!normalizedSessionId || typeof muted !== "boolean") {
+      throw new Error("A chat and a mute setting are required.");
+    }
+    const accountOwnerId = expectedAccountOwnerId === undefined
+      ? this.currentAccountOwnerId()
+      : this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!accountOwnerId) {
+      throw new Error("Sign in to mute a chat's notifications.");
+    }
+    if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
+      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+    }
+    await this.options.accountAttentionClient.setAttentionSessionMuted(
+      accountOwnerId,
+      normalizedSessionId,
+      muted,
+    );
+    // Desktop notifications read the last loaded preferences; apply the mute
+    // to them now so a message arriving right after it stays quiet. A throw
+    // here must not fail a mute the relay already saved — the renderer would
+    // roll back and say it could not mute a chat that is muted.
+    try {
+      this.options.onSessionMuted?.(accountOwnerId, normalizedSessionId, muted);
+    } catch (error) {
+      this.options.getLogger().warn("attention.session_mute_observer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**

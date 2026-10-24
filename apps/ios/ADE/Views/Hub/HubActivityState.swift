@@ -123,26 +123,44 @@ func hubTreeStateCounts(_ tally: [ActivityBoardColumn: Int]) -> [HubStateCount] 
 /// lane name into truncation on a phone.
 struct HubStateSummary: View {
   let counts: [HubStateCount]
+  /// A project tile: the full row would push the tile past its grid cell, so
+  /// drop the least urgent counts from the end (done first) until it fits.
+  /// VoiceOver still hears every count.
+  var fitsWidth = false
 
   @ViewBuilder
   var body: some View {
     if !counts.isEmpty {
-      HStack(spacing: 6) {
-        ForEach(counts) { entry in
-          HStack(spacing: 2) {
-            Image(systemName: entry.column.systemImage)
-              .font(.system(size: 9, weight: .semibold))
-            Text("\(entry.count)")
-              .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
+      Group {
+        if fitsWidth {
+          ViewThatFits(in: .horizontal) {
+            ForEach((1...counts.count).reversed(), id: \.self) { visible in
+              row(Array(counts.prefix(visible)))
+            }
           }
-          .foregroundStyle(activityToneColor(entry.column.tone))
+        } else {
+          row(counts)
         }
       }
-      .lineLimit(1)
-      .fixedSize()
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(hubStateSummaryLabel(counts))
     }
+  }
+
+  private func row(_ entries: [HubStateCount]) -> some View {
+    HStack(spacing: 6) {
+      ForEach(entries) { entry in
+        HStack(spacing: 2) {
+          Image(systemName: entry.column.systemImage)
+            .font(.system(size: 9, weight: .semibold))
+          Text("\(entry.count)")
+            .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
+        }
+        .foregroundStyle(activityToneColor(entry.column.tone))
+      }
+    }
+    .lineLimit(1)
+    .fixedSize()
   }
 }
 

@@ -42,39 +42,28 @@ extension FilesRootScreen {
     }
   }
 
+  /// Lists the workspaces. The phone's cached list paints first; `live`
+  /// then asks this machine, then the other live machines (in parallel, each
+  /// slow or failing one adds nothing), repainting as each answers. Without
+  /// `live` (a projection bump) only the cache is re-read.
   @MainActor
-  func reload(refreshRemote: Bool = false) async {
+  func reload(refreshRemote: Bool = false, live: Bool = true) async {
+    if !live || localWorkspaces.isEmpty {
+      let cached = await syncService.cachedFilesWorkspaces()
+      if !cached.isEmpty || !live {
+        applyWorkspaces(local: cached, localLanes: nil, final: !live && hasLoadedWorkspaces)
+      }
+    }
+    guard live else { return }
+    let previousSelectedWorkspaceId = selectedWorkspaceId
     do {
       if refreshRemote {
         try? await syncService.refreshLaneSnapshots()
       }
-      let previousSelectedWorkspaceId = selectedWorkspaceId
-      async let loadedWorkspacesTask = syncService.listWorkspaces()
       async let loadedLanesTask = syncService.fetchLanes()
-      let localWorkspaces = try await loadedWorkspacesTask
-      let localLanes = try await loadedLanesTask
-      // Lanes of this project on the other live machines, read in parallel; a
-      // machine that fails or is slow adds nothing.
-      async let remoteTask = filesRemoteMachineWorkspaces(syncService: syncService)
-      let remote = await remoteTask
-      let loadedWorkspaces = localWorkspaces + remote.workspaces
-      let loadedLanes = localLanes + remote.lanes
-      if workspaces != loadedWorkspaces {
-        workspaces = loadedWorkspaces
-      }
-      if lanes != loadedLanes {
-        lanes = loadedLanes
-      }
-      let nextSelectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
-        loadedWorkspaces.contains(where: { $0.id == candidate }) ? candidate : nil
-      } ?? loadedWorkspaces.first?.id
-      if selectedWorkspaceId != nextSelectedWorkspaceId {
-        selectedWorkspaceId = nextSelectedWorkspaceId
-      }
-      if previousSelectedWorkspaceId == nextSelectedWorkspaceId {
-        await loadProofArtifacts()
-        lastHandledProofArtifactsReloadKey = proofArtifactsReloadKey
-      }
+      let loadedWorkspaces = try await syncService.listWorkspaces()
+      let loadedLanes = (try? await loadedLanesTask) ?? localLanes
+      applyWorkspaces(local: loadedWorkspaces, localLanes: loadedLanes, final: false)
       if errorMessage != nil {
         errorMessage = nil
       }
@@ -83,6 +72,40 @@ extension FilesRootScreen {
       if errorMessage != message {
         errorMessage = message
       }
+    }
+    let remote = await filesRemoteMachineWorkspaces(syncService: syncService)
+    if remoteWorkspaces != remote.workspaces { remoteWorkspaces = remote.workspaces }
+    if remoteLanes != remote.lanes { remoteLanes = remote.lanes }
+    applyWorkspaces(local: localWorkspaces, localLanes: nil, final: true)
+    hasLoadedWorkspaces = true
+    if previousSelectedWorkspaceId == selectedWorkspaceId {
+      await loadProofArtifacts()
+      lastHandledProofArtifactsReloadKey = proofArtifactsReloadKey
+    }
+  }
+
+  /// Merges this machine's and the other machines' lists and keeps the
+  /// selection. Before the other machines have answered (`final` false) a
+  /// selected workspace that is not listed yet stays selected.
+  @MainActor
+  func applyWorkspaces(local: [FilesWorkspace], localLanes nextLocalLanes: [LaneSummary]?, final: Bool) {
+    if localWorkspaces != local { localWorkspaces = local }
+    if let nextLocalLanes, localLanes != nextLocalLanes { localLanes = nextLocalLanes }
+    let merged = localWorkspaces + remoteWorkspaces
+    if workspaces != merged { workspaces = merged }
+    let mergedLanes = localLanes + remoteLanes
+    if lanes != mergedLanes { lanes = mergedLanes }
+    // A pane opens on the chat's own lane workspace; every other caller keeps
+    // the first workspace (or the one the user already chose).
+    let preferredLaneWorkspaceId = preferredLaneId.flatMap { laneId in
+      merged.first(where: { $0.laneId == laneId })?.id
+    }
+    let current = selectedWorkspaceId.flatMap { candidate in
+      merged.contains(where: { $0.id == candidate }) || !final ? candidate : nil
+    }
+    let next = current ?? preferredLaneWorkspaceId ?? merged.first?.id
+    if selectedWorkspaceId != next {
+      selectedWorkspaceId = next
     }
   }
 
@@ -158,13 +181,18 @@ extension FilesRootScreen {
     syncService.requestedFilesNavigation = nil
   }
 
+  /// Shows a folder: the tree expands down to it (and the phone pops back to
+  /// the tree).
   func openDirectory(_ parentPath: String, in workspace: FilesWorkspace) {
     if selectedWorkspaceId != workspace.id {
       suppressNextWorkspaceNavigationReset = true
     }
     selectedWorkspaceId = workspace.id
-    selectedFileTransitionPath = nil
-    navigationPath = routesForDirectory(parentPath, workspace: workspace)
+    treeModel.attach(syncService)
+    treeModel.reveal(parentPath, isDirectory: true, in: workspace.id)
+    if !duoLayout.isWide || embeddedInPane {
+      navigationPath = []
+    }
   }
 
   func openFile(_ relativePath: String, in workspace: FilesWorkspace, focusLine: Int?) {
@@ -173,21 +201,10 @@ extension FilesRootScreen {
     }
     selectedWorkspaceId = workspace.id
     selectedFileTransitionPath = relativePath
-    navigationPath = routesForFile(relativePath, workspace: workspace, focusLine: focusLine)
-  }
-
-  func routesForDirectory(_ parentPath: String, workspace: FilesWorkspace) -> [FilesRoute] {
-    let components = pathComponents(parentPath)
-    guard !components.isEmpty else { return [] }
-    return components.indices.map { index in
-      .directory(workspaceId: workspace.id, parentPath: components[0...index].joined(separator: "/"))
-    }
-  }
-
-  func routesForFile(_ relativePath: String, workspace: FilesWorkspace, focusLine: Int?) -> [FilesRoute] {
-    var routes = routesForDirectory(parentDirectory(of: relativePath), workspace: workspace)
-    routes.append(.editor(workspaceId: workspace.id, relativePath: relativePath, focusLine: focusLine))
-    return routes
+    treeModel.attach(syncService)
+    treeModel.reveal(relativePath, isDirectory: false, in: workspace.id)
+    treeModel.noteOpened(relativePath, in: workspace.id)
+    navigationPath = [.editor(workspaceId: workspace.id, relativePath: relativePath, focusLine: focusLine)]
   }
 }
 

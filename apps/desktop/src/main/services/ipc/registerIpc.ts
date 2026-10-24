@@ -81,6 +81,8 @@ import { resolveWithinAllowedProjectRoots } from "./allowedProjectRoot";
 import { redactIpcArgsForChannel, shouldRedactIpcKey } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
+  AttentionPreferences,
+  AttentionSnapshot,
 } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { createSyncStatusReaders } from "../sync/syncStatusReaders";
@@ -976,6 +978,10 @@ import type {
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../../shared/types/accountSettings";
+import {
+  FAST_MODE_SETTING_KEY,
+  FAST_MODE_SETTING_SCOPE,
+} from "../../../shared/fastModePolicy";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
@@ -1938,6 +1944,10 @@ export function registerIpc({
   retryCaptureGesture,
   captureGestureNow,
   openAttentionItem,
+  onAttentionAccountSnapshot,
+  onAttentionPreferences,
+  onAttentionSessionMuted,
+  openDesktopAlert,
   getCurrentAccountOwnerId,
   accountAttentionClient,
   attemptedProjectRoots,
@@ -2016,6 +2026,12 @@ export function registerIpc({
   retryCaptureGesture?: () => import("../../../shared/types/captureGesture").CaptureGestureHealth;
   captureGestureNow?: () => boolean;
   openAttentionItem?: (item: AttentionItem) => Promise<void>;
+  /** Account Activity snapshots and preferences, for desktop notifications. */
+  onAttentionAccountSnapshot?: (snapshot: AttentionSnapshot) => void;
+  onAttentionPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
+  onAttentionSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
+  /** Open what a toasted desktop alert points at, by its item id. */
+  openDesktopAlert?: (itemId: unknown) => void;
   getCurrentAccountOwnerId?: () => string | null;
   accountAttentionClient?: Pick<
     PushRelayClient,
@@ -2025,6 +2041,7 @@ export function registerIpc({
     | "getAttentionPreferences"
     | "putAttentionPreferences"
     | "putActivityMachinePreferences"
+    | "setAttentionSessionMuted"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -2077,6 +2094,9 @@ export function registerIpc({
     localRuntimeConnectionPool,
     accountAttentionClient,
     getCurrentAccountOwnerId: resolveCurrentAttentionAccountOwnerId,
+    onAccountSnapshot: onAttentionAccountSnapshot,
+    onPreferences: onAttentionPreferences,
+    onSessionMuted: onAttentionSessionMuted,
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -3578,6 +3598,24 @@ export function registerIpc({
       );
     },
   );
+
+  ipcMain.handle(
+    IPC.attentionSetSessionMuted,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { accountOwnerId?: unknown; sessionId?: unknown; muted?: unknown }
+        : {};
+      return attentionAccountCoordinator.setSessionMuted(
+        request.sessionId,
+        request.muted,
+        request.accountOwnerId,
+      );
+    },
+  );
+
+  ipcMain.handle(IPC.attentionOpenAlert, async (_event, itemId: unknown) => {
+    openDesktopAlert?.(itemId);
+  });
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const item = parseAttentionItem(input);
@@ -12380,13 +12418,20 @@ export function registerIpc({
     async (
       _event,
       args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
-    ): Promise<AccountSettingsResult<null>> =>
-      await accountSettingsSyncService.set(
+    ): Promise<AccountSettingsResult<null>> => {
+      const result = await accountSettingsSyncService.set(
         args.scope,
         args.key,
         args.value,
         { expectedAccountUserId: args.expectedAccountUserId },
-      ),
+      );
+      // The chat service reads the same cache file on its next action; this is
+      // the immediate pass so a live chat does not send one more Fast turn.
+      if (result.ok && args.scope === FAST_MODE_SETTING_SCOPE && args.key === FAST_MODE_SETTING_KEY) {
+        getCtx().agentChatService?.applyFastModePolicy();
+      }
+      return result;
+    },
   );
 
   ipcMain.handle(
@@ -14194,6 +14239,20 @@ export function registerIpc({
 
   return {
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
+    /**
+     * The user opened this item from a desktop notification: mark it seen on
+     * the account, so the phone (waiting out desktop-first) stays quiet.
+     */
+    async markAttentionItemSeen(itemId: string, alertFingerprint?: string | null): Promise<void> {
+      await attentionAccountCoordinator.acknowledge({
+        itemIds: [itemId],
+        // Fenced to the alert the notification showed, so clicking an old one
+        // cannot mark a newer question on the same chat as seen.
+        ...(alertFingerprint ? { alertFingerprints: { [itemId]: alertFingerprint } } : {}),
+        seenAt: new Date().toISOString(),
+        expectedAccountOwnerId: resolveCurrentAttentionAccountOwnerId(),
+      });
+    },
     /** The account machine directory, for the in-process `@mac:` mention path. */
     listAccountMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,

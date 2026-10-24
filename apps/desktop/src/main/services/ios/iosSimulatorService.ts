@@ -144,8 +144,9 @@ import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
-import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError } from "./appleDeviceErrors";
-import { createLaneDeviceRegistry } from "./laneDeviceRegistry";
+import { buildElementRef } from "./iosSemanticActions";
+import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
+import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
 import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
@@ -239,6 +240,10 @@ function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
 
 /** How long to let iOS finish a rotation before calling it refused. */
 const APPLE_ROTATE_SETTLE_TIMEOUT_MS = 3_000;
+/** A Duo turn may wait twice (it resends once), so its control slot is longer than the default. */
+const APPLE_ROTATE_CONTROL_TIMEOUT_MS = 12_000;
+/** The longest drag the helper performs: under the 8 s control slot, which a gesture must not outlive. */
+const MAX_SWIPE_DURATION_MS = 5_000;
 
 /**
  * The framebuffer's pixel size, read from the device rather than from ADE.
@@ -5131,7 +5136,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const getScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> => {
     assertDarwin();
     const runtime = resolveRuntime(snapshotArgs);
-    return captureScreenSnapshot(
+    const snapshot = await captureScreenSnapshot(
       snapshotArgs,
       await resolveScopedRootForSession({
         projectRoot: snapshotArgs.projectRoot,
@@ -5139,6 +5144,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       }, runtime),
       runtime,
     );
+    // Each element carries the ref `tap-element --ref` matches, so a caller
+    // never has to pass the tree-position `id`, which moves with the layout.
+    return { ...snapshot, elements: snapshot.elements.map((element) => ({ ...element, ref: buildElementRef(element) })) };
   };
 
   /**
@@ -5826,6 +5834,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /* ───────────────────────── input ───────────────────────── */
 
   /**
+   * Run a gesture's steps with nothing else written between them (see
+   * `SimHelperClient.sendGesture`): a snapshot or a screenshot from another
+   * caller can no longer hold the finger down between a tap's begin and end.
+   */
+  const helperGesture = <T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T> =>
+    helper().sendGesture(gesture);
+
+  /**
    * A tap, as the helper wants it: a begin and an end at the same point.
    *
    * The helper's wire unit is DEVICE POINTS (`Protocol.swift`'s `DevicePoint`,
@@ -5834,9 +5850,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * coordinates when the engine did.
    */
   const helperTap = async (deviceUdid: string, x: number, y: number, space: HelperPointSpace): Promise<void> => {
-    const client = helper();
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
+    await helperGesture(async (send) => {
+      await send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
+      await send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
+    });
   };
 
   const helperType = async (deviceUdid: string, text: string): Promise<void> => {
@@ -5857,25 +5874,29 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null },
     space: HelperPointSpace,
   ): Promise<void> => {
-    const durationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
-    if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
-    const client = helper();
+    const requestedMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
+    if (!Number.isFinite(requestedMs)) throw new Error("durationMs must be a number.");
+    // A gesture holds the helper for every simulator on this Mac, so it ends
+    // well inside the control slot's timeout.
+    const durationMs = Math.min(requestedMs, MAX_SWIPE_DURATION_MS);
     const steps = Math.max(2, Math.min(60, Math.round(Math.max(durationMs, 1) / DRAG_STEP_MS)));
     const stepDelayMs = Math.max(0, Math.round(durationMs / steps));
-    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY, space });
-    for (let step = 1; step < steps; step += 1) {
-      const progress = step / steps;
-      await client.send({
-        type: "touch",
-        udid: deviceUdid,
-        phase: "move",
-        x: input.startX + ((input.endX - input.startX) * progress),
-        y: input.startY + ((input.endY - input.startY) * progress),
-        space,
-      });
-      if (stepDelayMs > 0) await delay(stepDelayMs);
-    }
-    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY, space });
+    await helperGesture(async (send) => {
+      await send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY, space });
+      for (let step = 1; step < steps; step += 1) {
+        const progress = step / steps;
+        await send({
+          type: "touch",
+          udid: deviceUdid,
+          phase: "move",
+          x: input.startX + ((input.endX - input.startX) * progress),
+          y: input.startY + ((input.endY - input.startY) * progress),
+          space,
+        });
+        if (stepDelayMs > 0) await delay(stepDelayMs);
+      }
+      await send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY, space });
+    });
   };
 
   const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
@@ -6080,7 +6101,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         frameBefore,
         frameAfter,
       };
-    });
+    }, APPLE_ROTATE_CONTROL_TIMEOUT_MS);
   };
 
   /**
@@ -6126,7 +6147,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // source is carried through so a person scrolling the pane does not look
       // like an agent and start a recording.
       noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source });
-      return { ok: true as const, direction, deltaX, deltaY };
+      return { ok: true as const, action: "scroll" as const, direction, deltaX, deltaY };
     });
   };
 
@@ -6142,7 +6163,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const drag = async (input: IosSimulatorDragArgs): Promise<{ ok: true }> => {
+  const drag = async (input: IosSimulatorDragArgs, action: "drag" | "swipe" = "drag"): Promise<{ ok: true; action: "drag" | "swipe" }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
@@ -6162,7 +6183,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
       noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
-      return { ok: true };
+      // Named, so the answer does not read as a tap.
+      return { ok: true, action };
     });
   };
 
@@ -6437,6 +6459,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else if (requestedUdid) {
         laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid, agentCaller });
       } else if (agentCaller) {
+        // A device the user released is not replaced behind their back: the
+        // agent hears where it went and how to take it back.
+        const released = await releasedLaneDeviceStillInstalled(laneId);
+        if (released) throw new AppleLaneDeviceReleasedError(released, Date.now());
         // An agent gets its lane's own device rather than an error it has to
         // translate into a second command: a new, empty one, the same one
         // `device-create` makes, so nobody else's device is booted or used.
@@ -6588,6 +6614,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       disk: deviceArgs.disk,
       runtimes: deviceArgs.runtimes,
     });
+  };
+
+  /**
+   * The device this lane released, when it is still installed and no lane
+   * holds it. An ADE device the cleanup pass deleted, or one another lane
+   * took, is gone from the lane's point of view, so this answers null.
+   */
+  const releasedLaneDeviceStillInstalled = async (laneId: string): Promise<AppleLaneDeviceRelease | null> => {
+    const release = laneDevices.lastReleased(laneId);
+    if (!release) return null;
+    if (laneDevices.list().some((device) => device.udid === release.udid)) return null;
+    const installed = await listDevices().catch(() => null);
+    // No device list: say nothing rather than block the call on a guess.
+    if (!installed?.some((device) => device.udid === release.udid)) return null;
+    return release;
   };
 
   /**
@@ -6978,6 +7019,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
+          const released = await releasedLaneDeviceStillInstalled(runtime.key);
+          if (released) throw new AppleLaneDeviceReleasedError(released, Date.now());
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
             laneDevice = await ensureLaneDevice(runtime);
           } else {
@@ -7042,7 +7085,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     renderComplete: duo.renderComplete,
     typeText,
     drag,
-    swipe: drag,
+    swipe: (input: IosSimulatorDragArgs) => drag(input, "swipe"),
     /** The helper's re-anchoring scroll gesture, by viewport direction. */
     scroll,
     selectPoint,

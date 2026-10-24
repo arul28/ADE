@@ -142,13 +142,13 @@ export function createProceduralDuoBody(
   };
 
   writePanelUvs(THREE, options.layout);
-  applyPose(options.pose ?? { angle: 180, lowerFlat: false });
+  applyPose(options.pose ?? { angle: 180 });
 
   const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
   const duo: DuoBodyControls = {
-    setHinge(angle, lowerFlat) {
-      applyPose({ angle, lowerFlat });
+    setHinge(angle) {
+      applyPose({ angle });
     },
     pickInner(raycaster) {
       const hits = raycaster.intersectObjects([upper.screen, lower.screen], false);

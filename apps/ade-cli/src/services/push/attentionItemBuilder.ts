@@ -1,5 +1,6 @@
 import {
   ATTENTION_CONTRACT_VERSION,
+  ATTENTION_MESSAGE_EVENT_KIND,
   sanitizeAttentionPreview,
   type AttentionEventKind,
   type AttentionItem,
@@ -18,6 +19,7 @@ import type {
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import { scheduledWakeState } from "../../../../desktop/src/shared/sessionStatusPresentation";
 import { withActivityFingerprints } from "./activityFingerprint";
+import type { StoredUserMessage } from "./pushRegistrationStore";
 
 /**
  * The Activity projection: `(runs, recentRuns, prActivities, roster)` in, wire
@@ -543,7 +545,70 @@ export type AttentionItemBuildContext = {
   /** Monotonic revision floors, so a republished row never moves backwards. */
   lastPublishedRevisionById: ReadonlyMap<string, number>;
   remoteAcknowledgedRevisionById: ReadonlyMap<string, number>;
+  /** Messages agents sent the user (`ade notify` from a chat), unexpired. */
+  userMessages?: readonly StoredUserMessage[];
 };
+
+/** The Activity id of one agent message. */
+export function userMessageItemId(machineKey: string, messageId: string): string {
+  return `message:${machineKey}:${messageId}`;
+}
+
+/**
+ * Messages are Inbox rows, never agent rows: the chat that sent one keeps its
+ * own row in its column. Each is its own alert (the id is unique), stays until
+ * it is seen, dismissed or a day old, and links to the chat that sent it.
+ */
+function buildMessageItems(
+  context: AttentionItemBuildContext,
+  machine: AttentionItem["machine"],
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  for (const message of context.userMessages ?? []) {
+    const sentAtMs = Date.parse(message.sentAt);
+    const expiresAtMs = Date.parse(message.expiresAt);
+    if (!Number.isFinite(sentAtMs) || !(expiresAtMs > context.nowMs)) continue;
+    const scope = context.scopes.get(message.scopeKey);
+    const title = sanitizeAttentionPreview(message.title, 64) || "Message";
+    items.push(withActivityFingerprints({
+      contractVersion: ATTENTION_CONTRACT_VERSION,
+      id: userMessageItemId(context.machineKey, message.id),
+      revision: sentAtMs,
+      fingerprint: "",
+      activityTier: "signal",
+      kind: "message",
+      eventKind: ATTENTION_MESSAGE_EVENT_KIND,
+      phase: "completed",
+      machine,
+      project: attentionProjectRef(
+        message.scopeKey,
+        scope?.projectName ?? "ADE project",
+        scope?.projectRoot,
+        context.canonicalProjectId,
+      ),
+      laneId: message.laneId,
+      laneName: message.laneName,
+      provider: message.provider,
+      model: message.model,
+      title,
+      preview: sanitizeAttentionPreview(message.body?.trim() || title, 320),
+      privacyPreview: "An ADE agent sent you a message.",
+      // The chat that sent it, so a row can say where it came from.
+      detail: message.chatTitle ? sanitizeAttentionPreview(message.chatTitle, 160) : null,
+      recentActivity: [],
+      planProgress: null,
+      destination: { kind: "session", sessionId: message.sessionId, itemId: null },
+      actions: [{ id: "open", kind: "open", label: "Open" }],
+      occurredAt: message.sentAt,
+      updatedAt: message.sentAt,
+      statusSince: message.sentAt,
+      seenAt: null,
+      dismissedAt: null,
+      expiresAt: message.expiresAt,
+    }));
+  }
+  return items;
+}
 
 function buildRunItems(context: AttentionItemBuildContext, machine: AttentionItem["machine"]): AttentionItem[] {
   const attentionRuns = new Map<string, AgentRunState>([
@@ -926,6 +991,7 @@ export async function buildAttentionItems(
   const snoozedItemIds = new Set<string>();
   const rosterItems = await buildRosterItems(context, machine, snoozedItemIds);
   const prItems = buildPrItems(context, machine);
+  const messageItems = buildMessageItems(context, machine);
 
   const agentItems = new Map<string, AttentionItem>();
   for (const item of rosterItems) agentItems.set(item.id, item);
@@ -947,7 +1013,7 @@ export async function buildAttentionItems(
     if (shouldKeepRosterItem(rosterItem, item, snoozedItemIds)) continue;
     agentItems.set(item.id, withRosterWait(item, rosterItem));
   }
-  return [...agentItems.values(), ...prItems].map((item) => {
+  return [...agentItems.values(), ...prItems, ...messageItems].map((item) => {
     const revision = Math.max(
       item.revision,
       context.lastPublishedRevisionById.get(item.id) ?? 0,

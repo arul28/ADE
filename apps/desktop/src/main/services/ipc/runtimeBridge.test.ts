@@ -2961,7 +2961,7 @@ describe("registerIpc sync bridge", () => {
         recovery: "sign_in",
       },
     });
-    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {}, expect.anything());
+    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", { include: "message" }, expect.anything());
   });
 
   it("sanitizes account auth failures and names the machine fallback", async () => {

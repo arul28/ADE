@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
@@ -24,7 +25,7 @@ import type {
   PushNotificationPrefs,
   PushQuietHours,
 } from "../../../../desktop/src/shared/types/push";
-import type { PushRegistrationStore } from "./pushRegistrationStore";
+import type { PushRegistrationStore, StoredUserMessage } from "./pushRegistrationStore";
 import type {
   AccountNotificationResult,
   ActivityPublishResult,
@@ -48,6 +49,7 @@ import {
   providerDisplayName,
   runHasBackgroundWork,
   runSubject,
+  userMessageItemId,
 } from "./attentionItemBuilder";
 import type {
   AccountMachineIdentity,
@@ -107,6 +109,7 @@ const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
 export const ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE = 300;
 export const ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE = 100;
+
 export const ACTIVITY_PUBLISH_PAGE_ITEMS = 48;
 /**
  * Full-roster republish interval. Freshness is NOT its job any more — the 30 s
@@ -163,6 +166,47 @@ const ATTENTION_HEARTBEAT_MS = 30_000;
 const HEARTBEAT_ROSTER_SETTLE_REBUILDS = 4;
 const HEARTBEAT_ROSTER_MAX_SKIPPED = 3;
 const APNS_HEALTH_CACHE_MS = 24 * 60 * 60 * 1000;
+/** How long an agent message stays in Activity when nobody opens it. */
+const USER_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * Per-chat ceiling on agent messages in any rolling hour. The user asked to be
+ * told about something, so a few is plenty; a looping agent stops here.
+ */
+export const USER_MESSAGES_PER_CHAT_PER_HOUR = 6;
+/** Machine-wide ceiling, across every chat, in any rolling hour. */
+export const USER_MESSAGES_PER_MACHINE_PER_HOUR = 30;
+/**
+ * Messages one machine keeps (newest first). The oldest leaves for good when a
+ * newer one arrives past this, so it never comes back from behind a tombstone.
+ */
+const USER_MESSAGES_KEPT = 50;
+/** The same words again inside this window are a repeat, not news. */
+const USER_MESSAGE_REPEAT_WINDOW_MS = 10 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+/** What `sendChatMessage` did. `null` from it means the chat is not on this machine. */
+export type ChatMessageSendResult =
+  | {
+    status: "sent";
+    messageId: string;
+    itemId: string;
+    sessionId: string;
+    chatTitle: string | null;
+    /** False when this machine is signed out: the chat and this computer still show it, phones do not. */
+    accountSignedIn: boolean;
+  }
+  | {
+    status: "repeat";
+    messageId: string;
+    sessionId: string;
+  }
+  | {
+    status: "rate_limited";
+    sessionId: string;
+    limit: number;
+    scope: "chat" | "machine";
+    retryAfterSeconds: number;
+  };
 
 /** The OSC 133-derived terminal state pushed by ptyService.onSessionRuntimeSignal. */
 export type PushCliRuntimeSignal = {
@@ -209,11 +253,15 @@ type PendingAlert = {
    * it is delivered even when the same flush published Activity.
    */
   standalone?: boolean;
+  /** Already announced to this machine's desktop; copied onto phone retries. */
+  desktopAnnounced?: boolean;
 };
 
 type PushAgentChatService = {
   subscribeToEvents: (cb: (event: AgentChatEventEnvelope) => void) => () => void;
   getSessionSummary: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
+  /** The chat's "Notified you" line; see `sendChatMessage`. */
+  recordUserNotification?: (args: { sessionId: string; title: string; body?: string | null }) => void;
 };
 
 type PushPtyService = {
@@ -249,8 +297,34 @@ export type PushPublisherDeps = {
  * the aggregate "agent-runs" Live Activity merges runs across all projects
  * instead of each project clobbering the phone's one shared activity.
  */
+/**
+ * What this machine's desktop app should pop a notification for, the moment it
+ * happens. Read by `readDesktopAlertEvent` in the desktop's
+ * `desktopAlertPresenter.ts`, which decides whether to show it.
+ */
+export type PushDesktopAlert = {
+  itemId: string;
+  kind: "needs_you" | "failed" | "goal" | "message";
+  sessionId: string;
+  title: string;
+  body: string | null;
+  at: string;
+  accountMachineKey: string | null;
+  /** This machine's push identity, which keys "mute this machine". */
+  machineKey: string;
+  /** The project (scope) the chat belongs to, which keys project settings. */
+  projectId: string | null;
+  /** The Activity alert this is, when published; fences the click's "seen". */
+  alertFingerprint?: string | null;
+};
+
 export type PushPublisherSources = {
   agentChatService?: PushAgentChatService | null;
+  /**
+   * Announce a desktop alert on this scope's runtime event stream. Every
+   * attached scope gets it; the desktop listens to one.
+   */
+  onDesktopAlert?: ((alert: PushDesktopAlert) => void) | null;
   ptyService?: PushPtyService | null;
   /** Injected bridge over prPollingService's `pr-notification` events. */
   subscribePrNotifications?: (cb: (event: PushPrNotification) => void) => () => void;
@@ -437,7 +511,35 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastPublishedRevisionById = new Map<string, number>(
     Object.entries(persistedPublishedRevisions?.revisions ?? {}),
   );
+  /**
+   * The Activity ids of messages the relay already holds. A restart's first
+   * publish is a reconcile, and the relay treats a reconcile as authoritative:
+   * it tombstones every row the roster omits, and a tombstone blocks that id's
+   * revision for good (`message:` revisions are the send time, so they never
+   * clear it). `relayAcceptsMessages` only becomes true after the relay
+   * advertises the feature, so without this a restart would delete the
+   * messages it had already delivered. A message that was never published is
+   * absent here: it waits for the feature list instead.
+   */
+  const persistedMessageItemIds = new Set(
+    Object.keys(persistedPublishedRevisions?.revisions ?? {})
+      .filter((id) => id.startsWith("message:")),
+  );
   const lastOverflowRevisionById = new Map<string, number>();
+  /**
+   * The alert identity each item last went out with, so a desktop alert can
+   * name the exact alert it shows and a click on an old one cannot mark a
+   * newer question seen. Overwritten per item, so bounded by the roster.
+   */
+  const lastAlertFingerprintById = new Map<string, string>();
+  /** Agent messages still inside their lifetime, oldest first (durable). */
+  let userMessages: StoredUserMessage[] = deps.store.listUserMessages?.() ?? [];
+  /**
+   * Whether the relay said it accepts `message` items. Until it does they stay
+   * out of publishes: an older relay rejects a whole publish carrying a kind it
+   * does not know, which would freeze this machine's Activity for a day.
+   */
+  let relayAcceptsMessages = false;
   let activityProtocol = deps.store.getActivityProtocol?.() ?? null;
   let activityRosterProvider = deps.activityRosterProvider ?? null;
   let rosterCache: { at: number; projects: ActivityRosterProject[] } | null = null;
@@ -497,6 +599,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   type AttachedScope = {
     agentChatService?: PushAgentChatService | null;
+    onDesktopAlert?: ((alert: PushDesktopAlert) => void) | null;
     resolveLaneName?: (laneId: string) => string | null | undefined;
     resolveCliSession?: PushPublisherSources["resolveCliSession"];
     projectName: string;
@@ -744,11 +847,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   /**
    * Project the publisher's live state into wire items. The projection itself
    * lives in `attentionItemBuilder.ts` — this seam only hands it the state it
-   * reads, so the rules are testable without booting a publisher.
+   * reads, so the rules are testable without booting a publisher. `messages`
+   * is what may go on the wire at all: the legacy feed and older readers get
+   * none, and a publish made before the relay negotiates `message` gets only
+   * the messages it already holds (see `messagesForPublish`).
    */
   const buildAttentionItems = async (
     nowMs: number,
     includeRoster: boolean,
+    messages: readonly StoredUserMessage[] = messagesForPublish(nowMs),
   ): Promise<AttentionItem[]> => {
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
     return await projectAttentionItems({
@@ -765,11 +872,93 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       loadRoster: () => loadActivityRoster(nowMs),
       canonicalProjectId,
       lastPublishedRevisionById,
+      userMessages: messages,
       remoteAcknowledgedRevisionById: new Map(
         (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
           .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
       ),
     });
+  };
+
+  const emitDesktopAlert = (
+    alert: Omit<PushDesktopAlert, "accountMachineKey" | "machineKey">,
+  ): void => {
+    const full: PushDesktopAlert = {
+      ...alert,
+      accountMachineKey: deps.getAccountMachineIdentity?.()?.machineKey?.trim() || null,
+      machineKey: deps.store.getOrCreateIdentity().machineKey,
+    };
+    for (const scope of scopes.values()) {
+      try {
+        scope.onDesktopAlert?.(full);
+      } catch (error) {
+        logWarn("attention.desktop_alert_emit_failed", error);
+      }
+    }
+  };
+
+  /**
+   * The desktop's half of each new Needs you, failure and goal alert, announced once
+   * whether or not a phone is registered or the account is signed in.
+   */
+  const announceDesktopAlerts = (alerts: readonly PendingAlert[], nowMs: number): void => {
+    const machineKey = deps.store.getOrCreateIdentity().machineKey;
+    for (const alert of alerts) {
+      if (alert.desktopAnnounced || !alert.sessionId) continue;
+      const kind = /:(approval|question)$/.test(alert.dedupeKey)
+        ? "needs_you" as const
+        : /:failed$/.test(alert.dedupeKey)
+          ? "failed" as const
+          : /:goal$/.test(alert.dedupeKey)
+            ? "goal" as const
+            : null;
+      if (!kind) continue;
+      alert.desktopAnnounced = true;
+      const copy = alert.render();
+      const itemId = `agent:${machineKey}:${alert.sessionId}`;
+      emitDesktopAlert({
+        itemId,
+        alertFingerprint: kind === "goal" ? null : lastAlertFingerprintById.get(itemId) ?? null,
+        kind,
+        sessionId: alert.sessionId,
+        projectId: (runs.get(alert.sessionId) ?? recentRuns.get(alert.sessionId))?.scopeKey ?? null,
+        title: copy.title,
+        body: copy.body,
+        at: new Date(nowMs).toISOString(),
+      });
+    }
+  };
+
+  /** Drop expired messages, persisting only when something left. */
+  const liveUserMessages = (nowMs: number): StoredUserMessage[] => {
+    const live = userMessages.filter((message) => Date.parse(message.expiresAt) > nowMs);
+    if (live.length !== userMessages.length) {
+      userMessages = live;
+      deps.store.setUserMessages?.(live);
+    }
+    return live;
+  };
+
+  /**
+   * The messages a publish may carry. Once the relay advertises `message` every
+   * live message goes out. Before that — a fresh process, whose first publish
+   * is the authoritative reconcile — only the messages the relay already holds
+   * are included, so that reconcile cannot tombstone them; a message it has
+   * never seen waits for the feature list instead of risking a rejected publish
+   * on a relay that does not know the kind.
+   */
+  const messagesForPublish = (nowMs: number): StoredUserMessage[] => {
+    const live = liveUserMessages(nowMs);
+    if (relayAcceptsMessages) return live;
+    const machineKey = deps.store.getOrCreateIdentity().machineKey;
+    return live.filter((message) =>
+      persistedMessageItemIds.has(userMessageItemId(machineKey, message.id)));
+  };
+
+  /** Seconds until the oldest of `sentAts` leaves the rolling hour. */
+  const retryAfterSeconds = (sentAts: number[], nowMs: number): number => {
+    const oldest = Math.min(...sentAts);
+    return Math.max(1, Math.ceil((oldest + HOUR_MS - nowMs) / 1_000));
   };
 
   const mergeMachineAcknowledgments = (items: AttentionItem[]): AttentionItem[] => {
@@ -1083,6 +1272,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       activityProtocol = protocol;
       deps.store.setActivityProtocol?.(protocol);
     }
+    const acceptsMessages = result.features?.includes("message") === true;
+    if (acceptsMessages !== relayAcceptsMessages) {
+      relayAcceptsMessages = acceptsMessages;
+      // Messages already waiting go out on the next flush.
+      if (acceptsMessages && userMessages.length > 0) scheduleFlush(true);
+    }
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
     const acknowledgments = result.acks ?? [];
     if (acknowledgments.length > 0) {
@@ -1112,7 +1307,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     selected: AttentionItem[];
     overflow: AttentionItem[];
   } => {
-    const ordered = sortAttentionItems(items);
+    // A message is done once seen or dismissed: it leaves the Inbox, so it
+    // leaves the roster too.
+    const ordered = sortAttentionItems(items).filter((item) =>
+      item.kind !== "message" || (!item.seenAt && !item.dismissedAt));
     const foreground = ordered.filter((item) => item.activityTier !== "idle");
     const idle = ordered
       .filter((item) => item.activityTier === "idle")
@@ -1142,7 +1340,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     force: boolean,
   ): Promise<"published" | "unchanged" | "unavailable" | "protocol2"> => {
     const items = mergeMachineAcknowledgments(
-      sortAttentionItems(await buildAttentionItems(nowMs, false))
+      sortAttentionItems(await buildAttentionItems(nowMs, false, []))
         .slice(0, LEGACY_ATTENTION_PUBLISH_MAX_ITEMS),
     );
     const fingerprint = JSON.stringify(
@@ -1221,9 +1419,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     lastPublishedFingerprintById.clear();
     lastPublishedRevisionById.clear();
     lastOverflowRevisionById.clear();
+    lastAlertFingerprintById.clear();
     for (const item of items) {
       lastPublishedFingerprintById.set(item.id, activityPublishFingerprint(item));
       lastPublishedRevisionById.set(item.id, item.revision);
+      if (item.alertFingerprint) lastAlertFingerprintById.set(item.id, item.alertFingerprint);
     }
     for (const item of overflow) {
       lastOverflowRevisionById.set(item.id, item.revision);
@@ -1312,9 +1512,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         lastPublishedFingerprintById.set(item.id, activityPublishFingerprint(item));
         lastPublishedRevisionById.set(item.id, item.revision);
         lastOverflowRevisionById.delete(item.id);
+        if (item.alertFingerprint) lastAlertFingerprintById.set(item.id, item.alertFingerprint);
       }
       for (const tombstone of pageTombstones) {
         lastPublishedFingerprintById.delete(tombstone.id);
+        lastAlertFingerprintById.delete(tombstone.id);
         lastPublishedRevisionById.delete(tombstone.id);
         const overflowItem = overflowById.get(tombstone.id);
         if (overflowItem) lastOverflowRevisionById.set(tombstone.id, overflowItem.revision);
@@ -1491,6 +1693,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     await refreshChatRunMeta(nowMs);
     const attentionPublishResult = await publishActivity(nowMs, presenceOnly);
     const accountAttentionPublished = attentionPublishResult === "published";
+    // Before the phone gate: the desktop is told even when no phone is paired.
+    // Best effort, and never allowed to stop the phone delivery below.
+    if (!machineRevoked) {
+      try {
+        announceDesktopAlerts(pendingAlerts, nowMs);
+      } catch (error) {
+        logWarn("attention.desktop_alert_announce_failed", error);
+      }
+    }
     if (isGated()) {
       pendingAlerts = [];
       return;
@@ -2040,6 +2251,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     runs.delete(sessionId);
     recentRuns.delete(sessionId);
     pendingAlerts = pendingAlerts.filter((alert) => alert.sessionId !== sessionId);
+    // Its messages link to a chat that no longer exists.
+    const keptMessages = userMessages.filter(
+      (message) => !(message.sessionId === sessionId && message.scopeKey === scopeKey),
+    );
+    if (keptMessages.length !== userMessages.length) {
+      userMessages = keptMessages;
+      deps.store.setUserMessages?.(keptMessages);
+    }
     // The roster is read from disk behind a 10s cache; without dropping it the
     // deleted row would be republished from the stale snapshot.
     rosterCache = null;
@@ -2335,6 +2554,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       scopes.set(scopeKey, {
         agentChatService: sources.agentChatService ?? null,
+        onDesktopAlert: sources.onDesktopAlert ?? null,
         resolveLaneName: sources.resolveLaneName,
         resolveCliSession: sources.resolveCliSession,
         projectName: sources.projectName?.trim() || "ADE project",
@@ -2525,11 +2745,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       };
     },
 
-    async getMachineAttentionSnapshot(): Promise<AttentionSnapshot> {
+    /**
+     * This machine's own Activity. `includeMessages` is for readers that know
+     * the `message` kind; every older reader rejects a snapshot carrying it.
+     */
+    async getMachineAttentionSnapshot(options: { includeMessages?: boolean } = {}): Promise<AttentionSnapshot> {
       const nowMs = now();
       const { machineKey } = deps.store.getOrCreateIdentity();
       const built = mergeMachineAcknowledgments(
-        await buildAttentionItems(nowMs, activityProtocol != null && activityProtocol >= 2),
+        await buildAttentionItems(
+          nowMs,
+          activityProtocol != null && activityProtocol >= 2,
+          options.includeMessages === true ? liveUserMessages(nowMs) : [],
+        ),
       );
       const items = selectActivityRoster(built).selected;
       const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
@@ -2684,6 +2912,126 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           : null,
         machineKey: deps.store.getOrCreateIdentity().machineKey,
       });
+    },
+
+    /**
+     * A message an agent sends the user from its chat (`ade notify` run inside
+     * a chat). The chat shows "Notified you", and the message becomes an
+     * Activity Inbox row on every signed-in device and a
+     * push the relay delivers like any other alert — muted chats, quiet hours,
+     * notifications off and "at the computer" all apply — and it never changes
+     * the chat's own state.
+     *
+     * Returns null when no chat with that id is attached to this brain, so the
+     * caller can fall back to a plain push.
+     */
+    async sendChatMessage(args: {
+      sessionId: string;
+      title: string;
+      body?: string | null;
+      /** The scope to look in first (the caller's project), when known. */
+      scopeKey?: string | null;
+    }): Promise<ChatMessageSendResult | null> {
+      const sessionId = args.sessionId.trim();
+      const title = args.title.trim();
+      const body = args.body?.trim() || null;
+      if (!sessionId || !title) return null;
+      const scopeKeys = [...scopes.keys()].sort((left, right) =>
+        (left === args.scopeKey ? 0 : 1) - (right === args.scopeKey ? 0 : 1));
+      let found: { scopeKey: string; scope: AttachedScope; summary: AgentChatSessionSummary } | null = null;
+      let lookupError: unknown = null;
+      for (const scopeKey of scopeKeys) {
+        const scope = scopes.get(scopeKey);
+        if (!scope?.agentChatService) continue;
+        try {
+          const summary = await scope.agentChatService.getSessionSummary(sessionId);
+          if (summary) {
+            found = { scopeKey, scope, summary };
+            break;
+          }
+        } catch (error) {
+          logWarn("attention.chat_message_lookup_failed", error);
+          lookupError = error;
+        }
+      }
+      // A failed read is not "this chat is elsewhere": falling back to a plain
+      // push would skip the chat's line, its Inbox row and its mute.
+      if (!found && lookupError) {
+        throw new Error("ADE could not read this chat to send its notification. Try again in a moment.");
+      }
+      if (!found) return null;
+
+      const nowMs = now();
+      const live = liveUserMessages(nowMs);
+      const lastHour = live.filter((message) => nowMs - Date.parse(message.sentAt) < HOUR_MS);
+      const chatLastHour = lastHour.filter((message) => message.sessionId === sessionId);
+      const repeat = chatLastHour.find((message) =>
+        nowMs - Date.parse(message.sentAt) < USER_MESSAGE_REPEAT_WINDOW_MS
+        && message.title === title
+        && message.body === body);
+      if (repeat) return { status: "repeat", messageId: repeat.id, sessionId };
+      if (chatLastHour.length >= USER_MESSAGES_PER_CHAT_PER_HOUR) {
+        return {
+          status: "rate_limited",
+          sessionId,
+          limit: USER_MESSAGES_PER_CHAT_PER_HOUR,
+          scope: "chat",
+          retryAfterSeconds: retryAfterSeconds(chatLastHour.map((message) => Date.parse(message.sentAt)), nowMs),
+        };
+      }
+      if (lastHour.length >= USER_MESSAGES_PER_MACHINE_PER_HOUR) {
+        return {
+          status: "rate_limited",
+          sessionId,
+          limit: USER_MESSAGES_PER_MACHINE_PER_HOUR,
+          scope: "machine",
+          retryAfterSeconds: retryAfterSeconds(lastHour.map((message) => Date.parse(message.sentAt)), nowMs),
+        };
+      }
+
+      const { summary, scope, scopeKey } = found;
+      const chatTitle = summary.title?.trim() || null;
+      const message: StoredUserMessage = {
+        id: randomUUID(),
+        sessionId,
+        scopeKey,
+        title,
+        body,
+        chatTitle,
+        laneId: summary.laneId || null,
+        laneName: scope.resolveLaneName?.(summary.laneId) ?? null,
+        provider: providerDisplayName(summary.provider),
+        model: summary.model ?? null,
+        sentAt: new Date(nowMs).toISOString(),
+        expiresAt: new Date(nowMs + USER_MESSAGE_TTL_MS).toISOString(),
+      };
+      userMessages = [...live, message].slice(-USER_MESSAGES_KEPT);
+      deps.store.setUserMessages?.(userMessages);
+      scheduleFlush(true);
+      try {
+        scope.agentChatService?.recordUserNotification?.({ sessionId, title, body });
+      } catch (error) {
+        // The message is already out; a missing transcript line is not worth failing it.
+        logWarn("attention.user_notification_notice_failed", error);
+      }
+      const itemId = userMessageItemId(deps.store.getOrCreateIdentity().machineKey, message.id);
+      emitDesktopAlert({
+        itemId,
+        kind: "message",
+        sessionId,
+        projectId: scopeKey,
+        title,
+        body,
+        at: message.sentAt,
+      });
+      return {
+        status: "sent",
+        messageId: message.id,
+        itemId,
+        sessionId,
+        chatTitle,
+        accountSignedIn: Boolean(deps.getAccountOwnerId?.()?.trim()),
+      };
     },
 
     async getAttentionPreferences(accountOwnerId: string): Promise<AttentionPreferences> {

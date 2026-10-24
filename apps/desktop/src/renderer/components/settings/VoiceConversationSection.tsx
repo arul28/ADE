@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Waveform } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import {
   CODEX_VOICE_NAMES,
@@ -106,9 +107,11 @@ export function VoiceConversationSection() {
 
   return (
     <ModernSection
-      group="Voice conversations"
+      group="Voice"
       title="Voice conversations"
       hint="Talk with a chat out loud. Runs on your Codex sign-in and applies from the next conversation."
+      icon={<Waveform size={16} weight="bold" />}
+      tone="pink"
     >
       <ModernRows>
         <ModernRow

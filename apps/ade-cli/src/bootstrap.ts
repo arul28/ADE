@@ -1288,6 +1288,10 @@ export async function createAdeRuntime(args: {
       logger,
     });
     const accountStoreAdeDir = resolveMachineAdeLayout().adeDir;
+    // A sync pull can turn Fast off; the chat service is built later, so the
+    // account callback reaches it through this ref instead of a TDZ-prone
+    // forward reference.
+    let applyFastModePolicyRef: (() => void) | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1314,7 +1318,10 @@ export async function createAdeRuntime(args: {
       logger,
       accountAuthService,
       getAccountAccessToken,
-      onAccountSettingsChanged: () => pushEvent("runtime", { type: "account_settings_changed" }),
+      onAccountSettingsChanged: () => {
+        pushEvent("runtime", { type: "account_settings_changed" });
+        applyFastModePolicyRef?.();
+      },
       getContexts: () => [{
         project: { rootPath: projectRoot },
         linearCredentialService: linearCredentialServiceForAccount,
@@ -2612,6 +2619,7 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({
@@ -3270,6 +3278,8 @@ export async function createAdeRuntime(args: {
         ptyService,
         projectName: project.displayName,
         projectRoot,
+        // The desktop app pops a notification from this; see desktopAlertPresenter.
+        onDesktopAlert: (alert) => pushEvent("runtime", { type: "attention_alert", alert }),
         subscribePrNotifications: (cb) => {
           pushPrNotificationSubscribers.add(cb);
           return () => pushPrNotificationSubscribers.delete(cb);

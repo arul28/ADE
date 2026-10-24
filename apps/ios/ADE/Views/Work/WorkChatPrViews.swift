@@ -85,6 +85,7 @@ func workChatLinkableCatalog(
 
 struct WorkChatPrActivePopup: View {
   let badge: WorkChatPrBadgeModel
+  var isSelected: Bool? = nil
   let onOpen: () -> Void
 
   private var tint: Color {
@@ -137,6 +138,7 @@ struct WorkChatPrActivePopup: View {
       tint: tint,
       strokeOpacity: 0.24,
       accessibilityLabel: accessibilityText,
+      selection: isSelected,
       onOpen: onOpen
     ) {
       // No text label: the chip is icon + CI glyph + state tint. Everything the
@@ -203,6 +205,14 @@ struct WorkChatPrDetailsSheet: View {
   var onDismissStackOffer: () -> Void = {}
   var onLinkPr: (String, Bool) -> Void = { _, _ in }
   var onUnlink: () -> Void = {}
+  /// In the Duo's tools pane: the pane header carries the title (as its
+  /// status line) and Refresh, so the sheet's own centered title row goes.
+  var embedded = false
+  /// The chat's Watch / Ship control for this PR. On the phone it rides the
+  /// composer's PR chip; in the Duo's pane, where that chip row is gone, it
+  /// sits in this page's header.
+  var prWatch: WorkChatPrWatchModel? = nil
+  var onSetPrWatch: ((String?) -> Void)? = nil
 
   @State private var linkPickerOpen = false
 
@@ -239,8 +249,25 @@ struct WorkChatPrDetailsSheet: View {
   }
 
   var body: some View {
+    if embedded {
+      content
+        .duoPaneHeader(status: sheetTitle) {
+          if let prWatch, let onSetPrWatch {
+            WorkChatPrWatchChip(model: prWatch, onSelect: onSetPrWatch, opensDownward: true)
+          }
+          DuoPaneActionButton(title: "Refresh pull request details", systemImage: "arrow.clockwise", action: onRefresh)
+            .disabled(isRefreshing)
+        }
+    } else {
+      content
+    }
+  }
+
+  private var content: some View {
     VStack(spacing: 0) {
-      topBar
+      if !embedded {
+        topBar
+      }
 
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
@@ -251,6 +278,7 @@ struct WorkChatPrDetailsSheet: View {
             emptyPrContent
           }
         }
+        .padding(.top, embedded ? 8 : 0)
       }
       .scrollIndicators(.hidden)
     }
@@ -860,6 +888,9 @@ func workPrWatchRelativeTime(_ iso: String?, now: Date = Date()) -> String? {
 struct WorkChatPrWatchChip: View {
   let model: WorkChatPrWatchModel
   let onSelect: (String?) -> Void
+  /// In a header (the Duo's PR page) the menu opens downward, so it lists
+  /// top-down instead of bottom-up.
+  var opensDownward = false
 
   @State private var pulse = false
 
@@ -877,6 +908,16 @@ struct WorkChatPrWatchChip: View {
     ("ship", "Ship", "Fix and merge"),
   ]
 
+  @ViewBuilder
+  private var statusSections: some View {
+    if let error = model.error {
+      Section { Text(error) }
+    }
+    if let status = model.statusLine() {
+      Section { Text(status) }
+    }
+  }
+
   private var modeName: String {
     switch model.mode {
     case "ship": return "shipping"
@@ -888,14 +929,11 @@ struct WorkChatPrWatchChip: View {
   var body: some View {
     Menu {
       // Written bottom-up: the menu opens upward from the composer row.
-      if let error = model.error {
-        Section { Text(error) }
-      }
-      if let status = model.statusLine() {
-        Section { Text(status) }
+      if !opensDownward {
+        statusSections
       }
       Section("PR #\(model.prNumber)") {
-        ForEach(Self.choices.reversed(), id: \.label) { choice in
+        ForEach(opensDownward ? Self.choices : Self.choices.reversed(), id: \.label) { choice in
           Button {
             guard choice.mode != model.mode || model.unknown else { return }
             ADEHaptics.light()
@@ -908,6 +946,9 @@ struct WorkChatPrWatchChip: View {
             }
           }
         }
+      }
+      if opensDownward {
+        statusSections
       }
     } label: {
       HStack(spacing: 4) {
@@ -931,8 +972,9 @@ struct WorkChatPrWatchChip: View {
           .foregroundStyle(ADEColor.textMuted)
       }
       .foregroundStyle(tint)
-      .padding(.horizontal, 9)
-      .frame(minHeight: workChatComposerChipRowHeight)
+      .padding(.horizontal, opensDownward ? 12 : 9)
+      // In a header it stands level with the header's glass buttons.
+      .frame(minHeight: opensDownward ? 38 : workChatComposerChipRowHeight)
       .workChatGlass(in: Capsule(style: .continuous), interactive: true)
       .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.24), lineWidth: 0.75))
       .contentShape(Capsule(style: .continuous))

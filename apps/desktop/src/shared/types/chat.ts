@@ -516,6 +516,13 @@ export type SpawnCompletedNotice = {
 };
 
 /**
+ * `system_notice.status` of the line a chat shows when its agent sent the user
+ * a message (`ade notify` from that chat). `message` is "Notified you: <title>",
+ * `detail` the body.
+ */
+export const USER_NOTIFIED_NOTICE_STATUS = "user_notified";
+
+/**
  * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
  * completion, in EITHER wording: the current sentence, and the pre-rename
  * `Peer "<title>" turn finished` that persisted transcripts still hold and are
@@ -3243,6 +3250,13 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   reasoningEffort?: string | null;
   fastMode?: boolean;
   /**
+   * Whether this ADE account allows Fast mode at all, as the brain that owns
+   * the chat reports it. Absent on an older host (which cannot enforce the
+   * permission), so clients treat absence as allowed. False locks every Fast
+   * affordance for this chat and leads to Settings → Chat → Fast mode.
+   */
+  fastModeAllowed?: boolean;
+  /**
    * The faster tier Fast asks for: "ultrafast" (Codex, on accounts whose
    * catalog offers it) or absent/null for plain Fast. Only read when fastMode
    * is on and the model lists the tier; otherwise Fast is plain Fast.
@@ -5838,6 +5852,13 @@ export type AgentChatLaunchDefaults = {
   modelId: string;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /**
+   * Whether this ADE account allows Fast mode at all. Not persisted with the
+   * defaults; the brain fills it on every read so a phone opening a new chat
+   * knows the permission without a settings screen of its own. Absent on an
+   * older host, which cannot enforce it — clients treat that as allowed.
+   */
+  fastModeAllowed?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
   permissionMode?: AgentChatPermissionMode | null;

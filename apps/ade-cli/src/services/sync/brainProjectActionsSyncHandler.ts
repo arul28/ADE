@@ -23,6 +23,8 @@ import type {
   SyncPeerMetadata,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
+  SyncProjectSetIconRequestPayload,
+  SyncProjectSetIconResultPayload,
   SyncProjectCatalogPayload,
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
@@ -793,6 +795,34 @@ export function createBrainProjectActionsSyncHandler(
             ok: false,
             message: error instanceof Error ? error.message : String(error),
           } satisfies SyncProjectForgetResultPayload, envelope.requestId);
+        }
+        break;
+      }
+      case "project_set_icon_request": {
+        if (!args.projectCatalogProvider.setProjectIcon) {
+          send(peer.ws, "project_set_icon_result", {
+            ok: false,
+            message: "Changing project icons is not available from this machine.",
+          } satisfies SyncProjectSetIconResultPayload, envelope.requestId);
+          break;
+        }
+        try {
+          const result = await args.projectCatalogProvider.setProjectIcon(
+            (envelope.payload ?? {}) as SyncProjectSetIconRequestPayload,
+          );
+          if (!isCurrent()) return;
+          send(peer.ws, "project_set_icon_result", result, envelope.requestId);
+          if (result.ok) {
+            const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
+            if (!isCurrent()) return;
+            sendProjectCatalog(peer.ws, catalog);
+          }
+        } catch (error) {
+          if (!isCurrent()) return;
+          send(peer.ws, "project_set_icon_result", {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          } satisfies SyncProjectSetIconResultPayload, envelope.requestId);
         }
         break;
       }
@@ -1714,6 +1744,7 @@ export function createBrainProjectActionsSyncHandler(
             rosterEnabled: rosterFanout.enabled,
             chunkedEnvelopes,
             projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
+            projectIconEnabled: Boolean(args.projectCatalogProvider.setProjectIcon),
             remoteCommandSupportedActions: [
               ...personalDescriptors.map((entry) => entry.action),
               ...routedDescriptors.map((entry) => entry.action),

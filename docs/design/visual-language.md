@@ -100,10 +100,11 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
 - **Modes.** `plain` (the theme's flat background: no picture, no mesh),
   `gradient` (the theme's animated mesh), `image` (one picture) or `shuffle` (a
   picture from the library, changed on launch, wake, hourly or daily). The
-  shipped default on every client is `plain`; a picture is something the user
-  turns on. A saved preference that is still the old untouched shuffle default
-  reads as `plain`; a pick (`choiceMade`) or a tuned look stands. A picture the
-  user turns on starts with a 30% veil. Bumping `SCENE_DEFAULTS_REVISION` in
+  desktop default is `shuffle` with no texture and a 30% veil; the hosted web
+  client defaults to `plain`, chosen at read time and never persisted. A saved
+  preference that is still an earlier untouched default (the first shuffle at a
+  12% veil, or the `plain` that replaced it) reads as today's default; a pick
+  (`choiceMade`) or a tuned look stands. Bumping `SCENE_DEFAULTS_REVISION` in
   `scenePreferences.ts` puts every user back on the default once; use it only
   for a deliberate product reset.
 - **Fine textures need a 2x screen.** The Halftone texture (0.75px dots on a
@@ -113,9 +114,20 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   Halftone is picked on such a screen. The Phosphor theme's scanlines layer,
   drawn over the UI, is off at fractional scales (1.01–1.99 dppx) for the same
   reason. Any new repeating pattern finer than a few pixels needs the same gate.
-- **Pictures.** Bundled pictures are `public/scenes/*.jpg`, listed in
-  `sceneLibrary.ts`. Users add their own; they are re-encoded to at most 3840px
-  JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in sync.
+- **Pictures.** Bundled pictures are `public/scenes/*.jpg` with a 480×300 copy
+  in `public/scenes/thumbs/` for Settings tiles, listed in `sceneLibrary.ts`
+  with their pixel size. Users add their own; they are re-encoded to at most
+  5120px JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in
+  sync.
+- **Only pictures that fit the screen shuffle by default.** `sceneFitsScreen`
+  compares a picture with the screen's device pixels: it must cover the screen
+  stretched at most 1.35×, and its shape must keep at least 60% of itself when
+  cropped. So a 32:9 ultrawide gets the 5120×1440 pictures and a laptop the
+  3840×2400 ones. The pool (`inShuffle`) is the pictures that fit plus the
+  user's own, minus `shuffleExclude`, plus `shuffleInclude` (pictures put in by
+  hand). Settings lists every picture, marks which fit this screen, and lets
+  any be put in or left out. When nothing fits (a 6K display) the gradient
+  shows instead of a stretched picture.
 - **One picture, many surfaces.** `SceneImageLayer` draws a window-aligned
   slice of the same picture behind each surface, so the top bar, the home page
   and the new chat page read as one continuous image. The Chats page and the
@@ -136,8 +148,9 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   (`BackgroundContextMenu.tsx`). Add the same hook to any new full-window
   backdrop surface.
 
-Choosing pictures to bundle: landscape, at least 3840px wide, a calm area where
-the cards will sit, no text or watermarks, and the right orientation in the
+Choosing pictures to bundle: 3840×2400 for ordinary screens and 5120×1440 for
+32:9 ultrawides (record the size in `sceneLibrary.ts`), JPEG around quality 84,
+plus a 480×300 thumbnail. A calm area where the cards will sit, no text or watermarks, and the right orientation in the
 pixels themselves (check with `sips -g pixelWidth -g pixelHeight`; EXIF rotation
 is not honoured everywhere).
 

@@ -782,7 +782,7 @@ describe("AttentionAccountCoordinator", () => {
     });
     expect(result.availability?.message).toContain("Showing work from This MacBook");
     expect(result.availability?.message).not.toMatch(/relay|bearer|401/i);
-    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {}, expect.anything());
+    expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", { include: "message" }, expect.anything());
     expect(testLogger.warn).toHaveBeenCalledWith(
       "attention.account_snapshot_failed",
       expect.objectContaining({ fallback: "local_machine" }),
@@ -905,7 +905,7 @@ describe("AttentionAccountCoordinator", () => {
       preferences: DEFAULT_ATTENTION_PREFERENCES,
     });
 
-    expect(callAttention).toHaveBeenNthCalledWith(1, "getMachineSnapshot", {}, expect.anything());
+    expect(callAttention).toHaveBeenNthCalledWith(1, "getMachineSnapshot", { include: "message" }, expect.anything());
     expect(callAttention).toHaveBeenNthCalledWith(2, "acknowledge", {
       itemIds: ["attention-1"],
       sourceRevisions: { "attention-1": 3 },

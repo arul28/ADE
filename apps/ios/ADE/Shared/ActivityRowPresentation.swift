@@ -652,6 +652,14 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let machineLastSeenAt: Date?
     public let tier: AccountActivityTier
     public let isPullRequest: Bool
+    /// An agent's message to the user (`ade notify`). Files in Inbox with the
+    /// pull requests and draws as a message, not as a session card.
+    public let isMessage: Bool
+    /// The message body, when the agent sent one beyond its title. Nil under
+    /// `hideDetails`.
+    public let messageBody: String?
+    /// The title of the chat that sent the message. Nil under `hideDetails`.
+    public let messageChatTitle: String?
     public let prNumber: Int?
     public let sessionId: String?
     /// Pending approval/input item, when the row is holding for one.
@@ -669,7 +677,13 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     /// owned by another machine must navigate instead of acting locally.
     public let inlineActionsAllowed: Bool
 
-    public init(item: AccountAttentionItem, inlineActionsAllowed: Bool = false) {
+    /// `hideDetails` only redacts message rows: they carry the agent's own
+    /// words, so they show the publisher's privacy line instead.
+    public init(
+        item: AccountAttentionItem,
+        inlineActionsAllowed: Bool = false,
+        hideDetails: Bool = false
+    ) {
         let column = activityBoardColumn(item)
         let reason = activityWaitingReason(item)
         // A Waiting row says why it waits instead of its phase: a snoozed row
@@ -690,7 +704,9 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
             )
 
         id = item.id
-        title = Self.nonEmpty(item.title) ?? "Untitled session"
+        title = item.kind == .message && hideDetails
+            ? Self.nonEmpty(item.privacyPreview) ?? "An ADE agent sent you a message."
+            : Self.nonEmpty(item.title) ?? "Untitled session"
         laneName = Self.nonEmpty(item.laneName)
         projectName = Self.nonEmpty(item.project.name) ?? "Project"
         phaseLabel = presentation.label
@@ -718,6 +734,22 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
         machineOnline = item.machine.online
         machineLastSeenAt = item.machine.lastSeenAt
         isPullRequest = item.kind == .pullRequest
+        isMessage = item.kind == .message
+        if isMessage {
+            if hideDetails {
+                messageBody = nil
+                messageChatTitle = nil
+            } else {
+                // The relay sends the title as the preview when there is no
+                // body, so a preview that repeats the title is no body at all.
+                let body = Self.nonEmpty(item.preview)
+                messageBody = body == Self.nonEmpty(item.title) ? nil : body
+                messageChatTitle = Self.nonEmpty(item.detail)
+            }
+        } else {
+            messageBody = nil
+            messageChatTitle = nil
+        }
         planProgress = item.planProgress
         recentActivity = item.recentActivity ?? []
         actions = item.actions

@@ -3,6 +3,15 @@ import SwiftUI
 struct PersonalChatsScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
+  /// The Duo's two-column Chats window: a row picks the chat for the detail
+  /// column instead of pushing it. Nil everywhere else.
+  var onSelect: ((AgentChatSessionSummary, _ machineKey: String?) -> Void)? = nil
+  /// The chat the detail column shows, drawn selected in the list.
+  var selectedSessionId: String? = nil
+  /// Back to the Hub from the Duo's Chats window; nil when the list is
+  /// pushed (the ‹ then pops it).
+  var onClose: (() -> Void)? = nil
+  @Environment(\.dismiss) private var dismiss
   @State private var searchText = ""
   @State private var loading = false
   @State private var errorMessage: String?
@@ -79,51 +88,71 @@ struct PersonalChatsScreen: View {
         chatList
       }
     }
-    .navigationTitle("Chats")
+    // Every list column's header (Work, Lanes): ‹ ADE and the title, then
+    // search with its filter inside, and New chat.
+    .navigationTitle("")
     .adeAnalyticsScreen(.personalChats)
-    .navigationBarTitleDisplayMode(.large)
-    .searchable(text: $searchText, prompt: "Search chats")
+    .navigationBarTitleDisplayMode(.inline)
+    .navigationBarBackButtonHidden(true)
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        Menu {
-          Toggle("Show archived", isOn: $showsArchived)
-        } label: {
-          Image(systemName: "ellipsis.circle")
+      ToolbarItem(placement: .topBarLeading) {
+        HStack(spacing: 6) {
+          WorkHeaderProjectButton(iconDataUrl: nil) {
+            if let onClose { onClose() } else { dismiss() }
+          }
+          .accessibilityLabel("Back to all projects")
+          Text("Chats")
+            .font(.system(size: 22, weight: .heavy, design: .rounded))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityAddTraits(.isHeader)
         }
-        .accessibilityLabel("Chat list options")
+        .padding(.horizontal, 4)
       }
-      ToolbarItem(placement: .topBarTrailing) {
+      .sharedBackgroundVisibility(.hidden)
+    }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      HStack(spacing: 8) {
+        LaneHeaderSearchField(
+          searchText: $searchText,
+          prompt: "Search chats",
+          filterLabel: "Chat filters"
+        ) {
+          Toggle("Show archived", isOn: $showsArchived)
+        } filterActive: {
+          showsArchived
+        }
         Button {
           newChatPresented = true
         } label: {
           Image(systemName: "square.and.pencil")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(canCreateChat ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 36, height: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .disabled(!canCreateChat)
         .accessibilityLabel("New chat")
         .accessibilityHint(canCreateChat
           ? "Starts a conversation that is not linked to a project."
           : "Connect to a compatible ADE machine to start a chat.")
       }
+      .padding(.horizontal, 16)
+      .padding(.bottom, 6)
+      .background(ADEColor.pageBackground.opacity(0.94))
     }
     .navigationDestination(isPresented: $newChatPresented) {
       PersonalChatNewScreen()
     }
     .safeAreaInset(edge: .top, spacing: 0) {
+      // A small tinted capsule, not a full-width band: the band also tinted
+      // the bar above it into one beige slab.
       if syncService.connectionState.isHostUnreachable {
-        Label("Offline · showing saved chats", systemImage: "wifi.slash")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 7)
-          .background(ADEColor.warning.opacity(0.08))
+        offlineNotice(Label("Offline · showing saved chats", systemImage: "wifi.slash"))
       } else if !failedMachineNames.isEmpty && !visibleSessions.isEmpty {
-        Label(failedMachinesMessage, systemImage: "exclamationmark.triangle")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-          .frame(maxWidth: .infinity)
-          .padding(.vertical, 7)
-          .background(ADEColor.warning.opacity(0.08))
+        offlineNotice(Label(failedMachinesMessage, systemImage: "exclamationmark.triangle"))
       }
     }
     .overlay(alignment: .bottom) {
@@ -150,6 +179,18 @@ struct PersonalChatsScreen: View {
     }
   }
 
+  private func offlineNotice(_ label: some View) -> some View {
+    label
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(ADEColor.warning)
+      .lineLimit(2)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .background(ADEColor.warning.opacity(0.1), in: Capsule())
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 6)
+  }
+
   private var chatList: some View {
     ScrollView {
       // One kit panel, hairlines between rows.
@@ -159,10 +200,29 @@ struct PersonalChatsScreen: View {
           if index > 0 {
             Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, 70)
           }
-          NavigationLink {
-            PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
-          } label: {
-            PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+          Group {
+            if let onSelect {
+              Button {
+                onSelect(summary, entry.machineKey)
+              } label: {
+                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+              }
+              // The selected row, as Work and Lanes mark theirs.
+              .background {
+                if summary.sessionId == selectedSessionId {
+                  RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ADEColor.accent.opacity(0.12))
+                    .padding(.horizontal, 6)
+                }
+              }
+              .accessibilityAddTraits(summary.sessionId == selectedSessionId ? .isSelected : [])
+            } else {
+              NavigationLink {
+                PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
+              } label: {
+                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+              }
+            }
           }
           .buttonStyle(ADEKitRowButtonStyle())
           .contextMenu {
@@ -190,11 +250,11 @@ struct PersonalChatsScreen: View {
           }
         }
       }
-      .adeKitCard(padding: nil)
+      // Flat rows under the header, like every other list column (no card
+      // around the list).
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      .padding(.vertical, 4)
     }
     .refreshable { await refresh() }
     .scrollIndicators(.hidden)
@@ -384,6 +444,12 @@ private struct PersonalChatRow: View {
     return "\(providerLabel(summary.provider)) · \(modelLabel)"
   }
 
+  /// Model, then the machine when the list spans several.
+  private var metaLine: String? {
+    let parts = [subtitle == modelContext ? nil : modelContext, showsMachine ? machineName : nil].compactMap { $0 }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
   private var accessibilityStatus: String {
     switch status {
     case "active": return "Working"
@@ -433,21 +499,14 @@ private struct PersonalChatRow: View {
       }
 
       VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 8) {
+        // The title gets the row: the time never wraps, and the machine moves
+        // to the quiet meta line, where a narrow column cannot squeeze both.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(title)
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          if showsMachine {
-            Text(machineName)
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 3)
-              .background(ADEKit.track, in: Capsule())
-              .accessibilityLabel("On \(machineName)")
-          }
+            .lineLimit(2)
+            .layoutPriority(1)
           if summary.archivedAt != nil {
             Image(systemName: "archivebox.fill")
               .font(.caption2)
@@ -458,13 +517,15 @@ private struct PersonalChatRow: View {
           Text(relativeTimestamp(summary.lastActivityAt))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .fixedSize()
         }
         Text(subtitle)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
-        if subtitle != modelContext {
-          Text(modelContext)
+        if let metaLine {
+          Text(metaLine)
             .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)

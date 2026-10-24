@@ -202,6 +202,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "macDesktop.stop",
   "macDesktop.streamSubscribe",
   "macDesktop.streamUnsubscribe",
+  // One accessibility observation for a viewer's frozen inspect mode.
+  // Optional: a phone hides Inspect on this surface against an older host,
+  // and the viewer keeps working.
+  "macDesktop.observe",
   // A watch-only viewer's Stop for the lane's Windows screen: `stopPrivate`
   // (private screen only, older phones) and `stopSeat` (either seat). Never a
   // Mac lane's display. Optional: the phone shows no Stop when the host does
@@ -222,6 +226,8 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "appControl.status",
   "appControl.streamSubscribe",
   "appControl.streamUnsubscribe",
+  // A frozen inspect view's tap: one host-side hit-test, no screenshot.
+  "appControl.inspectPoint",
   // Apple device environment. Optional in both directions: an older brain
   // simply omits them and the phone's Simulator card says the Mac needs an
   // update, rather than a version mismatch flipping the phone to "limited".
