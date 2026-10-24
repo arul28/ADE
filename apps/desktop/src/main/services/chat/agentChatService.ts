@@ -172,6 +172,7 @@ import {
 import { createSideChatService, sideChatReadOnlySettings } from "./sideChatService";
 import {
   createChatProviderFork,
+  type ForkedProviderPointerPatch,
   type ChatProviderForkFailure,
   type ChatProviderForkPointer,
 } from "./chatProviderFork";
@@ -189,6 +190,7 @@ import {
   codexServerSupportsThreadRollback,
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
+  codexServerSupportsForkBeforeTurn,
 } from "./codexAppServerFeatures";
 import {
   CODEX_MEMORY_RESET_RECEIPT,
@@ -2286,6 +2288,8 @@ type PersistedChatState = {
   piModelId?: string;
   sdkSessionId?: string;
   forkFromSdkSessionId?: string;
+  /** With `forkFromSdkSessionId`: the entry the fork keeps history through (a side chat opened mid-turn). */
+  forkResumeSessionAt?: string;
   providerSessionId?: string;
   claudeBackgroundJobShort?: string;
   claudeBackgroundResumeSessionId?: string;
@@ -6557,11 +6561,7 @@ export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion 
   return { major, minor, patch };
 }
 
-export function codexServerSupportsForkBeforeTurn(version: CodexServerVersion | null): boolean {
-  if (!version) return false;
-  if (version.major > 0) return true;
-  return version.minor >= 145;
-}
+export { codexServerSupportsForkBeforeTurn } from "./codexAppServerFeatures";
 
 function isCodexCompactionActive(runtime: CodexRuntime): boolean {
   return runtime.activeCompactions.size > 0;
@@ -12366,6 +12366,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "claude") {
       managed.runtime.sdkSessionId = null;
       managed.runtime.forkFromSdkSessionId = null;
+      managed.runtime.forkResumeSessionAt = null;
     }
     try {
       const persisted = readPersistedState(managed.session.id);
@@ -12374,6 +12375,7 @@ export function createAgentChatService(args: {
       delete next.threadId;
       delete next.sdkSessionId;
       delete next.forkFromSdkSessionId;
+      delete next.forkResumeSessionAt;
       delete next.providerSessionId;
       delete next.claudeBackgroundResumeSessionId;
       delete next.claudeBackgroundJobShort;
@@ -19654,8 +19656,16 @@ export function createAgentChatService(args: {
           ? { sdkSessionId: liveClaudeSdkSessionId ?? undefined }
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.forkFromSdkSessionId
-        ? { forkFromSdkSessionId: managed.runtime.forkFromSdkSessionId }
-        : prevPersisted?.forkFromSdkSessionId ? { forkFromSdkSessionId: prevPersisted.forkFromSdkSessionId } : {}),
+        ? {
+            forkFromSdkSessionId: managed.runtime.forkFromSdkSessionId,
+            ...(managed.runtime.forkResumeSessionAt ? { forkResumeSessionAt: managed.runtime.forkResumeSessionAt } : {}),
+          }
+        : prevPersisted?.forkFromSdkSessionId
+          ? {
+              forkFromSdkSessionId: prevPersisted.forkFromSdkSessionId,
+              ...(prevPersisted.forkResumeSessionAt ? { forkResumeSessionAt: prevPersisted.forkResumeSessionAt } : {}),
+            }
+          : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.approvalOverrides.size > 0
         ? { approvalOverrides: [...managed.runtime.approvalOverrides] }
         : prevPersisted?.approvalOverrides?.length ? { approvalOverrides: prevPersisted.approvalOverrides } : {}),
@@ -20095,6 +20105,9 @@ export function createAgentChatService(args: {
       const forkFromSdkSessionId = typeof record.forkFromSdkSessionId === "string" && record.forkFromSdkSessionId.trim().length
         ? record.forkFromSdkSessionId.trim()
         : undefined;
+      const forkResumeSessionAt = forkFromSdkSessionId && typeof record.forkResumeSessionAt === "string" && record.forkResumeSessionAt.trim().length
+        ? record.forkResumeSessionAt.trim()
+        : undefined;
       const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
         ? record.providerSessionId.trim()
         : undefined;
@@ -20304,6 +20317,7 @@ export function createAgentChatService(args: {
         ...(copilotSdkSessionId ? { copilotSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
+        ...(forkResumeSessionAt ? { forkResumeSessionAt } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
         ...(acpSessionId ? { acpSessionId } : {}),
         ...(acpPermissionMode ? { acpPermissionMode } : {}),
@@ -20855,7 +20869,7 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string; copilotSdkSessionId?: string; piSessionId?: string; piSessionFile?: string; acpSessionId?: string; museSessionId?: string },
+    patch: ForkedProviderPointerPatch,
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
@@ -46311,6 +46325,7 @@ export function createAgentChatService(args: {
       kind: "claude",
       sdkSessionId,
       forkFromSdkSessionId,
+      forkResumeSessionAt: forkFromSdkSessionId ? persisted?.forkResumeSessionAt ?? null : null,
       query: null,
         inputPump: null,
         queryStartPromise: null,
@@ -48806,28 +48821,33 @@ export function createAgentChatService(args: {
   });
 
   /** A handoff's own words for a provider fork the table refused. */
+  // Keyed by the failure's own provider unions, so a provider added to one is
+  // a compile error here until it has its message.
+  const HANDOFF_FORK_START_FAILED: Record<Extract<ChatProviderForkFailure, { kind: "start_failed" | "not_started" }>["provider"], string> = {
+    opencode: "Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.",
+    droid: "Unable to start the Droid session to fork this chat. Use a brief handoff instead.",
+    muse: "Unable to start the Muse session to fork this chat. Use a brief handoff instead.",
+  };
+  const HANDOFF_FORK_NO_ID: Record<Extract<ChatProviderForkFailure, { kind: "no_fork_id" }>["provider"], (sourceId: string) => string> = {
+    codex: (sourceId) => `Codex thread/fork did not return a new thread id for '${sourceId}'.`,
+    opencode: (sourceId) => `OpenCode session fork did not return a new session id for '${sourceId}'.`,
+    droid: () => "Droid fork did not return a new session id.",
+    muse: () => "Muse fork did not return a new session id.",
+  };
+
   const handoffForkFailure = (failure: ChatProviderForkFailure): Error => {
     switch (failure.kind) {
       case "no_history":
         return new Error("Full-history fork requires a Codex thread id. Send a Codex message first, then try Fork again.");
       case "start_failed":
       case "not_started":
-        switch (failure.provider) {
-          case "opencode": return new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
-          case "droid": return new Error("Unable to start the Droid session to fork this chat. Use a brief handoff instead.");
-          case "muse": return new Error("Unable to start the Muse session to fork this chat. Use a brief handoff instead.");
-        }
+        return new Error(HANDOFF_FORK_START_FAILED[failure.provider]);
       case "busy":
         return failure.provider === "copilot"
           ? new Error("Wait for the current Copilot turn to finish before forking this chat.")
           : new Error("Wait for the current Muse turn to finish before forking this chat.");
       case "no_fork_id":
-        switch (failure.provider) {
-          case "codex": return new Error(`Codex thread/fork did not return a new thread id for '${failure.sourceId}'.`);
-          case "opencode": return new Error(`OpenCode session fork did not return a new session id for '${failure.sourceId}'.`);
-          case "droid": return new Error("Droid fork did not return a new session id.");
-          case "muse": return new Error("Muse fork did not return a new session id.");
-        }
+        return new Error(HANDOFF_FORK_NO_ID[failure.provider](failure.sourceId));
     }
   };
 
@@ -49223,6 +49243,7 @@ export function createAgentChatService(args: {
     ensureManagedSession: (sessionId) => ensureManagedSession(sessionId),
     sessionRowExists: (sessionId) => sessionService.get(sessionId) != null,
     parentChatStillExists: (sessionId) => parentChatStillExists(sessionId),
+    isChatArchived: (sessionId) => Boolean(sessionService.get(sessionId)?.archivedAt),
     readPersistedState: (sessionId) => readPersistedState(sessionId),
     writePersistedState: (sessionId, next) => {
       writeJsonWithPrevious(metadataPathFor(sessionId), next, {
@@ -49249,7 +49270,6 @@ export function createAgentChatService(args: {
     assertChatRuntimeOwnedHere: (sessionId, action) => assertChatRuntimeOwnedHere(sessionId, action),
     turnInFlightError,
     unsupportedError,
-    codexSupportsForkBeforeTurn: codexServerSupportsForkBeforeTurn,
     providerFork,
     claude: {
       ensureRuntime: (managed: ManagedChatSession) => ensureClaudeSessionRuntime(managed),
@@ -59669,9 +59689,11 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
     // it first; `ade code`, `ade chat send` and SDK hosts reach here) opens the
-    // chat's side chat instead of reaching the main chat as text.
+    // chat's side chat instead of reaching the main chat as text. A chat that
+    // cannot have one (a side chat, CTO, a provider with no fork) gets the
+    // text as typed, as before side chats.
     const sideCommand = !options?.preparedMessage && !args.attachments?.length && !args.contextAttachments?.length
-      && !managed.session.sideChatParentSessionId
+      && !sideChatUnavailableReason(managed.session)
       ? parseSideSlashCommand(args.text)
       : null;
     if (sideCommand) {

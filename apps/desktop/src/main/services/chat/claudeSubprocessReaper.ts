@@ -34,7 +34,7 @@ function claudeMcpConfigDir(): string {
   return path.join(resolveMachineAdeLayout().adeDir, "mcp-launch", "chat");
 }
 /** Where no command line can be read (Windows), a file this old is stale. */
-const CLAUDE_MCP_CONFIG_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+const CLAUDE_MCP_CONFIG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;

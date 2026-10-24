@@ -117,7 +117,7 @@ export type ChatProviderForkDeps<
 export function createChatProviderFork<
   TManaged extends ForkableChat,
   TCodexRuntime extends { serverVersion: CodexAppServerVersion | null },
->(deps: ChatProviderForkDeps<TManaged, TCodexRuntime>) {
+>(deps: ChatProviderForkDeps<TManaged, TCodexRuntime>): ChatProviderFork<TManaged> {
   const { logger } = deps;
 
   /** The common pointer: seed the provider's session id and the resume command. */

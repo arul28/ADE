@@ -21,6 +21,11 @@ export function codexServerSupportsPaginatedHistory(version: CodexAppServerVersi
   return codexServerAtLeast(version, 145);
 }
 
+/** `thread/fork` with `beforeTurnId`: a fork that leaves out a running turn (0.145). */
+export function codexServerSupportsForkBeforeTurn(version: CodexAppServerVersion | null): boolean {
+  return codexServerAtLeast(version, 145);
+}
+
 export function codexServerSupportsDeferGoalContinuation(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 145);
 }

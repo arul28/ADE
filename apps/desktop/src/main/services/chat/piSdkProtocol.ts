@@ -13,10 +13,7 @@ import { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
 export const PI_SDK_PROTOCOL_VERSION = 2 as const;
 export const PI_SDK_MIN_NODE = "22.19.0" as const;
 
-/**
- * Pi's built-in tools that cannot change the workspace (`createReadOnlyTools`
- * in the Pi package): what a `readOnly` session runs with.
- */
+/** What a `readOnly` session runs with; see `shared/piTools.ts`. */
 export { PI_READ_ONLY_TOOLS } from "../../../shared/piTools";
 
 // The one list of Pi thinking levels, shared with `piThinkingLevel`.

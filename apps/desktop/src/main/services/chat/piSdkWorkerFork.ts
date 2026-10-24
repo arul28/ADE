@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PiSdkForkPayload, PiSdkForkResult, PiSdkWorkerInit } from "./piSdkProtocol";
 import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore";
+import { nonEmpty, record, type Callable, type PiSdkWorkerMethod } from "./piSdkWorkerValues";
 
 /**
  * The Pi worker's fork primitive, and the checks on which session files it
@@ -10,11 +11,7 @@ import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore
  * worker, it has no static import from Pi and gets the loaded module passed in.
  */
 
-type Callable = (...args: unknown[]) => unknown;
 type PiSessionManager = Record<string, unknown>;
-
-/** The worker's checked method lookup; its error names the loaded Pi package. */
-export type PiSdkWorkerMethod = (target: unknown, name: string) => Callable;
 
 /** What a fork needs from an initialized worker. */
 export type PiSdkWorkerForkContext = {
@@ -24,14 +21,6 @@ export type PiSdkWorkerForkContext = {
   method: PiSdkWorkerMethod;
   assertAbsolute: (label: string, value: string) => void;
 };
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 function sessionFileIsAuthorized(filePath: string, sessionRoot: string | null): boolean {
   if (!sessionRoot) return true;

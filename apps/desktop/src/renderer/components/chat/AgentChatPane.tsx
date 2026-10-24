@@ -297,6 +297,7 @@ import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPrese
 import { SideChatHeaderButton } from "./SideChatBadge";
 import {
   noteSideChat,
+  noteSideChatStartFailed,
   noteSideChatStarting,
   resolveSideChatView,
 } from "./sideChatState";
@@ -13801,15 +13802,22 @@ export function AgentChatPane({
   /**
    * `/side <question>`: ask the chat's read-only side chat (opening it when the
    * chat has none) in the Work tools pane, instead of sending to this chat. The
-   * side chat runs on this chat's machine, so the call carries its pin. Inside
-   * a side chat it is sent as typed.
+   * side chat runs on this chat's machine, so the call carries its pin. A chat
+   * that cannot have one (a side chat itself, a provider with no fork) says
+   * why, and so does a draft with attachments, which a side chat cannot take.
    */
-  const openSideChatFromComposer = useCallback((prompt: string, draftText: string): boolean => {
+  const openSideChatFromComposer = useCallback((prompt: string, draftText: string, hasAttachments: boolean): boolean => {
     const mainSessionId = selectedSessionId;
     if (!mainSessionId) return false;
     const unavailable = sideChatUnavailableReason(selectedSession ?? { provider: sessionProvider });
     if (unavailable) {
       setError(unavailable);
+      return true;
+    }
+    if (hasAttachments) {
+      // Sending `/side …` on to the main chat as a prompt would be the one
+      // thing the user did not ask for.
+      setError("Side chats take text only. Remove the attachments, then send /side again.");
       return true;
     }
     const pin = chatRuntimePinRef.current;
@@ -13823,7 +13831,7 @@ export function AgentChatPane({
       .catch((startError: unknown) => {
         const message = errorMessage(startError);
         if (!alreadyOpen) {
-          noteSideChatStarting(mainSessionId, prompt, message);
+          noteSideChatStartFailed(mainSessionId, prompt, message);
           return;
         }
         setError(message);
@@ -13892,13 +13900,7 @@ export function AgentChatPane({
       return;
     }
     const sideCommand = selectedSessionId ? parseSideSlashCommand(draft) : null;
-    if (sideCommand && attachments.length) {
-      // A side chat takes text only; sending `/side …` on to the main chat as
-      // a prompt would be the one thing the user did not ask for.
-      setError("Side chats take text only. Remove the attachments, then send /side again.");
-      return;
-    }
-    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft)) return;
+    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft, attachments.length > 0)) return;
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";

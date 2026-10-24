@@ -33,7 +33,7 @@ import { nowIso } from "../shared/utils";
 import { findLastTurnUserMessage } from "./chatRerunLastTurn";
 import type { ChatProviderFork, ChatProviderForkFailure, ChatProviderForkPointer } from "./chatProviderFork";
 import { resolveClaudeSdkTranscriptPath } from "./claudeThinkingTranscriptRepair";
-import type { CodexAppServerVersion } from "./codexAppServerFeatures";
+import { codexServerSupportsForkBeforeTurn } from "./codexAppServerFeatures";
 import { claudeSideChatCut } from "./sideChatClaudeCut";
 
 // Side chats (`/side`, shared/sideChat.ts). A read-only fork of a chat, shown
@@ -96,6 +96,8 @@ export type SideChatServiceDeps<
   sessionRowExists: (sessionId: string) => boolean;
   /** Whether a parent chat is still there to deliver to. */
   parentChatStillExists: (sessionId: string) => boolean;
+  /** The chat's row is archived (the in-memory session never carries it). */
+  isChatArchived: (sessionId: string) => boolean;
   readPersistedState: (sessionId: string) => TPersisted | null;
   /** Rewrite the chat's state file; throws when the write fails. */
   writePersistedState: (sessionId: string, next: TPersisted) => void;
@@ -115,7 +117,6 @@ export type SideChatServiceDeps<
   assertChatRuntimeOwnedHere: (sessionId: string, action: string) => void;
   turnInFlightError: (message: string) => Error;
   unsupportedError: (message: string) => Error;
-  codexSupportsForkBeforeTurn: (version: CodexAppServerVersion | null) => boolean;
   providerFork: ChatProviderFork<TManaged>;
   claude: {
     ensureRuntime: (managed: TManaged) => TClaudeRuntime;
@@ -125,6 +126,14 @@ export type SideChatServiceDeps<
     /** End the runtime's query and drop its own thread id. */
     resetQuerySession: (managed: TManaged, runtime: TClaudeRuntime) => Promise<void>;
   };
+};
+
+/** Keyed by the failure's provider union, so a new provider needs its message here. */
+const SIDE_CHAT_NO_FORK_ID: Record<Extract<ChatProviderForkFailure, { kind: "no_fork_id" }>["provider"], string> = {
+  codex: "Codex did not return a thread for the side chat.",
+  opencode: "OpenCode did not return a session for the side chat.",
+  droid: "Droid did not return a session for the side chat.",
+  muse: "Muse did not return a session for the side chat.",
 };
 
 export function createSideChatService<
@@ -270,12 +279,7 @@ export function createSideChatService<
         case "busy":
           return deps.turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
         case "no_fork_id":
-          switch (refusal.provider) {
-            case "codex": return new Error("Codex did not return a thread for the side chat.");
-            case "opencode": return new Error("OpenCode did not return a session for the side chat.");
-            case "droid": return new Error("Droid did not return a session for the side chat.");
-            case "muse": return new Error("Muse did not return a session for the side chat.");
-          }
+          return new Error(SIDE_CHAT_NO_FORK_ID[refusal.provider]);
       }
     };
     const pointer = await deps.providerFork.forkProviderHistory(parent, {
@@ -283,7 +287,7 @@ export function createSideChatService<
       codexBeforeTurnId: (serverVersion) => {
         if (!busy) return null;
         const beforeTurnId = deps.activeTurnIdFor(parent);
-        if (!beforeTurnId || !deps.codexSupportsForkBeforeTurn(serverVersion)) {
+        if (!beforeTurnId || !codexServerSupportsForkBeforeTurn(serverVersion)) {
           throw deps.turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
         }
         return beforeTurnId;
@@ -299,6 +303,9 @@ export function createSideChatService<
     parent: TManaged,
     runtimeActor: AgentChatStartSideChatArgs["runtimeActor"],
   ): Promise<TManaged> => {
+    // A main chat that was already closed (ended, or loaded idle) can still
+    // take a side chat; only one that closes while the fork runs cannot.
+    const wasClosed = parent.closed;
     const pointToFork = await forkMainChatForSide(parent);
     const parentSession = parent.session;
     const instanceId = deps.instanceIdOf(parent);
@@ -329,7 +336,7 @@ export function createSideChatService<
       deps.persistChatState(side);
       // The main chat may have been deleted or archived while the fork ran;
       // its cleanup could not see this chat yet, so it would stay hidden for good.
-      if (parent.deleted || parent.closed || parent.session.archivedAt) {
+      if (parent.deleted || (!wasClosed && parent.closed) || deps.isChatArchived(parent.session.id)) {
         throw new Error("The main chat was closed while its side chat was opening.");
       }
     } catch (error) {

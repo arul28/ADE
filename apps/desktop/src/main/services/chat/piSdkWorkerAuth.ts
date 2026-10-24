@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { toPiSdkJson, type JsonValue, type PiSdkWorkerInit } from "./piSdkProtocol";
 import { createPiAuthInteraction, type PiUiBridge } from "./piSdkUiBridge";
+import { errorMessage, nonEmpty, record, type Callable, type PiModule } from "./piSdkWorkerValues";
 
 /**
  * Pi sign-in for the chat worker: which providers can be signed into and how
@@ -12,16 +13,6 @@ import { createPiAuthInteraction, type PiUiBridge } from "./piSdkUiBridge";
  * sign-in runs at a time.
  */
 
-type PiModule = Record<string, unknown>;
-type Callable = (...args: unknown[]) => unknown;
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 const PI_LOGIN_REFRESH_TIMEOUT_MS = 15_000;
 
@@ -75,7 +66,6 @@ export function createPiWorkerAuth(deps: {
   uiBridge: PiUiBridge;
   /** The sign-in may have changed this provider's credential. */
   forgetAccount: (providerId: string) => void;
-  errorMessage: (error: unknown) => string;
 }): {
   authInventory: () => Promise<JsonValue>;
   loginProvider: (providerId: string, method?: string | null) => Promise<JsonValue>;
@@ -129,7 +119,7 @@ export function createPiWorkerAuth(deps: {
           }
         }
       } catch (error) {
-        item.error = deps.errorMessage(error);
+        item.error = errorMessage(error);
       }
       result.push(item);
     }
@@ -144,8 +134,9 @@ export function createPiWorkerAuth(deps: {
    * relays what the user typed, and never receives or stores a token.
    */
   async function loginProvider(providerId: string, method?: string | null): Promise<JsonValue> {
-      const modelRuntime = deps.getModelRuntime();
-      if (!modelRuntime) throw new Error("Pi SDK model runtime is not initialized.");
+    const modelRuntime = deps.getModelRuntime();
+    const init = deps.getInit();
+    if (!modelRuntime || !init) throw new Error("Pi SDK model runtime is not initialized.");
     const runtime = modelRuntime as Record<string, unknown>;
     const login = runtime.login;
     if (typeof login !== "function") {
@@ -184,7 +175,7 @@ export function createPiWorkerAuth(deps: {
     }
     const controller = new AbortController();
     activeLogin = { providerId, controller };
-    const loginOptions = piLoginOptions(deps.getPi() ?? {}, deps.getInit()!);
+    const loginOptions = piLoginOptions(deps.getPi() ?? {}, init);
     try {
       await (login as Callable).call(
         modelRuntime,

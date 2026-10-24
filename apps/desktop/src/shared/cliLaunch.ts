@@ -1778,16 +1778,9 @@ export function piToolsForPermissionMode(permissionMode: AgentChatPermissionMode
     ? ["read", "bash", "edit", "write", ...PI_SEARCH_TOOLS]
     : mode === "edit"
       ? ["read", "edit", "write", ...PI_SEARCH_TOOLS]
-      : ["read", ...PI_SEARCH_TOOLS];
+      : [...PI_READ_ONLY_TOOLS];
 }
 
-/**
- * Pi's read-only search built-ins. They never ask: like `read`, they cannot
- * change the workspace. They run ripgrep and fd (see the Pi chat docs for how
- * ADE keeps Pi from downloading those).
- */
-export { PI_READ_ONLY_TOOLS, PI_SEARCH_TOOLS } from "./piTools";
-const PI_READ_TOOLS: readonly string[] = PI_READ_ONLY_TOOLS;
 
 /**
  * How a Pi chat treats MCP tools: `off` loads no MCP support at all, `ask`
@@ -1826,7 +1819,7 @@ export function piSdkToolPolicyForPermissionMode(
   // `readOnly` is stated rather than inferred from the tool list, because
   // callers gate real capabilities on it and adding a future read-only tool
   // must not silently flip them. No MCP: its tools can change anything.
-  if (mode === "plan") return { tools: [...PI_READ_TOOLS], approvalTools: [], readOnly: true, mcp: "off" };
+  if (mode === "plan") return { tools: [...PI_READ_ONLY_TOOLS], approvalTools: [], readOnly: true, mcp: "off" };
   // default, auto, and config-toml all land here. Anything that changes the
   // workspace is offered rather than silently allowed or silently withheld.
   return {
@@ -1852,7 +1845,7 @@ export function piToolFlags(permissionMode: AgentChatPermissionMode | null | und
   // Pi 1.0.4+ keeps MCP tools through a `--tools` allowlist unless an entry
   // names one, and an MCP tool can change the workspace. A read-only mapping
   // therefore turns MCP off for the run as well.
-  const readOnly = tools.every((tool) => PI_READ_TOOLS.includes(tool));
+  const readOnly = tools.every((tool) => (PI_READ_ONLY_TOOLS as readonly string[]).includes(tool));
   return ["--tools", tools.join(","), ...(readOnly ? ["--no-mcp"] : [])];
 }
 

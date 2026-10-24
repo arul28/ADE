@@ -48,11 +48,10 @@ import {
   type PiToolDefinitionLike,
   type PiUiBridge,
 } from "./piSdkUiBridge";
+import { errorMessage, nonEmpty, record, type Callable, type PiModule } from "./piSdkWorkerValues";
 
 // Deliberately no static import (or type import) from Pi. This process is
 // started by ADE and loads the user's installation only after init validation.
-type PiModule = Record<string, unknown>;
-type Callable = (...args: unknown[]) => unknown;
 type PiSession = Record<string, unknown>;
 type PiRuntime = Record<string, unknown>;
 type PiSessionManager = Record<string, unknown>;
@@ -108,7 +107,6 @@ const piAuth = createPiWorkerAuth({
   getInit: () => initState,
   uiBridge,
   forgetAccount: (providerId) => accountReader.forget(providerId),
-  errorMessage,
 });
 /**
  * One approval gate per worker, shared by the gated built-ins and MCP tools,
@@ -142,19 +140,6 @@ function post(message: PiSdkWorkerResponse): void {
   }
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message.trim();
-    return message && message !== "Error" ? message : error.name || "Unknown Pi SDK error";
-  }
-  if (typeof error === "string" && error.trim()) return error.trim();
-  try {
-    return JSON.stringify(toPiSdkJson(error));
-  } catch {
-    return String(error);
-  }
-}
-
 function errorDetail(error: unknown): JsonValue {
   if (error instanceof Error) {
     const record = error as Error & { code?: unknown; status?: unknown; cause?: unknown };
@@ -178,14 +163,6 @@ function method(target: unknown, name: string): Callable {
     throw new Error(`Pi SDK object is missing ${name}().`);
   }
   return callable((target as Record<string, unknown>)[name], name);
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 /**
@@ -686,7 +663,6 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
     ? await buildMcpExtensions(init, pi, mcpRegistrationErrors, {
       piRoot,
       method,
-      errorMessage,
       approvalGate: sharedApprovalGate,
     })
     : null;

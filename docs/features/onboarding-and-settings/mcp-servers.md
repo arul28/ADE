@@ -39,7 +39,8 @@ CLI reads the same way, `${NAME}` expansion included (checked with the pinned
 CLI: the same server env and `Authorization` header arrive both ways). The file
 is deleted when the process exits; when a brain starts, files that no running
 process names are deleted too (one `ps` read; on Windows, where no command
-line can be read, files older than a day). Tracked Claude terminals already
+line can be read, files older than seven days, so a long-running chat's file
+is kept). Tracked Claude terminals already
 used a private file in the same folder
 (`trackedCliUserMcp.ts`).
 

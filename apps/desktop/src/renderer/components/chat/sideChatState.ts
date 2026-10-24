@@ -60,9 +60,15 @@ export function noteSideChatEnded(mainSessionId: string, endedSessionId: string 
   emit();
 }
 
-/** A start in flight for `prompt`, or one that failed with `error`. */
-export function noteSideChatStarting(mainSessionId: string, prompt: string, error?: string): void {
-  entries.set(mainSessionId, error ? { kind: "starting", prompt, error } : { kind: "starting", prompt });
+/** A start in flight for `prompt`. */
+export function noteSideChatStarting(mainSessionId: string, prompt: string): void {
+  entries.set(mainSessionId, { kind: "starting", prompt });
+  emit();
+}
+
+/** The start for `prompt` failed; the panel shows `error` beside it. */
+export function noteSideChatStartFailed(mainSessionId: string, prompt: string, error: string): void {
+  entries.set(mainSessionId, { kind: "starting", prompt, error });
   emit();
 }
 

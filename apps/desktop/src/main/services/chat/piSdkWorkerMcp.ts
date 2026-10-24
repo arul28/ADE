@@ -2,6 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { PiSdkMcpServer, PiSdkWorkerInit } from "./piSdkProtocol";
 import type { PiApprovalGate } from "./piSdkUiBridge";
+import { errorMessage, nonEmpty, record, type Callable, type PiModule, type PiSdkWorkerMethod } from "./piSdkWorkerValues";
 
 /**
  * How the Pi worker gives a session Pi's MCP support: ADE's servers as Pi
@@ -10,8 +11,6 @@ import type { PiApprovalGate } from "./piSdkUiBridge";
  * static import from Pi and gets the loaded module passed in.
  */
 
-type PiModule = Record<string, unknown>;
-type Callable = (...args: unknown[]) => unknown;
 
 /** The tools Pi's built-in MCP support needs to reach servers with `codemode` and `deferred` exposure. */
 export const PI_MCP_DISCOVERY_TOOLS = ["codemode", "tool_search"] as const;
@@ -25,19 +24,10 @@ export type PiSdkWorkerMcpContext = {
   /** Root of the loaded Pi package, for Pi's internal MCP config loader. */
   piRoot: string | null;
   /** The worker's checked method lookup; its error names the loaded Pi package. */
-  method: (target: unknown, name: string) => Callable;
-  errorMessage: (error: unknown) => string;
+  method: PiSdkWorkerMethod;
   /** The worker's one approval gate, shared with the gated built-ins. */
   approvalGate: () => PiApprovalGate;
 };
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 function isPiMcpToolName(name: string): boolean {
   return name.startsWith("mcp__") || PI_MCP_RESOURCE_TOOLS.has(name);
@@ -162,7 +152,7 @@ export async function buildMcpExtensions(
   registrationErrors: string[],
   context: PiSdkWorkerMcpContext,
 ): Promise<unknown[] | null> {
-  const { method, errorMessage } = context;
+  const { method } = context;
   const mcp = init.mcp;
   if (!mcp) return null;
   const createMcp = sdk.createMcpExtension;

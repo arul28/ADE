@@ -84,10 +84,10 @@ export function findLastTurnUserMessage(envelopes: readonly AgentChatEventEnvelo
   return null;
 }
 
-/** The content of a top-level Claude SDK user entry, or null for any other entry. */
 /** The parts of a Claude SDK session entry the prompt lookup reads. */
 export type ClaudePromptEntry = Pick<ClaudeSdkSessionMessage, "type" | "message" | "parent_tool_use_id">;
 
+/** The content of a top-level Claude SDK user entry, or null for any other entry. */
 function claudeSdkUserContent(message: ClaudePromptEntry): { content: unknown } | null {
   if (message.type !== "user" || message.parent_tool_use_id) return null;
   return { content: (message.message as { content?: unknown } | null)?.content };
