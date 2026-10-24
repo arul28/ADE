@@ -48,13 +48,15 @@ export const APPLE_DUO_NUDGE_DEGREES = 15;
 
 /**
  * The named postures t3code ships, in the order the control lists them. Open
- * and Closed are the extremes; Tent is symmetric; Laptop rests on a flat base.
+ * and Closed are the extremes; every stance folds both halves the same way.
  */
 export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
   { id: "open", label: "Open", angle: APPLE_DEVICE_POSE_TARGETS.open.angle, lowerFlat: false },
   // The simulator's own preset angles (APPLE_DEVICE_POSE_TARGETS): drawn at
   // anything else, the hinge jumped when the simulator's report landed.
-  { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: true },
+  // Folded the same way as every other angle, so the drawn hinge is always
+  // the slider's: a flat base drew 90° for any nudge below it.
+  { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: false },
   // Book is Laptop's angle held upright: the simulator tells them apart by
   // how the phone is held, not by the hinge.
   { id: "book", label: "Book", angle: APPLE_DEVICE_POSE_TARGETS.book.angle, lowerFlat: false },

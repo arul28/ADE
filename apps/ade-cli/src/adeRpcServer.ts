@@ -1215,6 +1215,11 @@ const TOOL_SPECS: ToolSpec[] = [
         draft: { type: "boolean", default: false },
         closeLinearIssueOnMerge: { type: "boolean", default: true },
         sessionId: { type: "string", minLength: 1 },
+        allowDirtyWorktree: {
+          type: "boolean",
+          default: false,
+          description: "Create the PR even when the lane has uncommitted or untracked files. The PR is made from the lane's commits only.",
+        },
       }
     }
   },
@@ -8118,6 +8123,7 @@ async function runTool(args: {
     if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
     if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
+    const allowDirtyWorktree = asBoolean(toolArgs.allowDirtyWorktree, false);
     // The authenticated chat identity is authoritative: an agent must not be
     // able to forge `sessionId` and link this PR to an unrelated chat. Only
     // fall back to the tool argument when the caller has no chat identity.
@@ -8132,6 +8138,14 @@ async function runTool(args: {
       ...(sessionId ? { sessionId } : {}),
       ...(baseBranch ? { baseBranch } : {}),
       ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
+      ...(allowDirtyWorktree ? { allowDirtyWorktree } : {}),
+    }).catch((error: unknown) => {
+      // The service's "explicitly continue anyway" is a button in the
+      // desktop; an agent needs the flag that does it.
+      if (error instanceof Error && error.message.includes("DIRTY_WORKTREE:")) {
+        error.message = `${error.message} From the CLI, pass --allow-dirty (the PR is made from the lane's commits only).`;
+      }
+      throw error;
     });
     return { pr, ...prLinkUrls(pr) };
   }

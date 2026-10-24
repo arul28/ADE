@@ -239,17 +239,32 @@ function normalise(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function matchesCriterion(element: IosScreenElement, criterion: QueryCriterion): boolean {
+/**
+ * True when `label` starts with `wanted` as whole words: "Work" names
+ * "Work, 3 need you" (a menu row with a subtitle) but not "Workspace".
+ */
+function labelStartsWithWords(label: string, wanted: string): boolean {
+  const left = normalise(label);
+  const right = normalise(wanted);
+  if (!right || left.length <= right.length || !left.startsWith(right)) return false;
+  return !/[\p{L}\p{N}]/u.test(left.charAt(right.length));
+}
+
+function matchesCriterion(element: IosScreenElement, criterion: QueryCriterion, labelPrefix = false): boolean {
   switch (criterion.field) {
     case "ref":
-      return buildElementRef(element) === criterion.value;
+      // The tree-position `id` is accepted too: it is what older snapshots
+      // printed, and it still names the element while the layout holds.
+      return buildElementRef(element) === criterion.value || element.id === criterion.value;
     case "identifier":
       // Exact and case-sensitive. An identifier is source code, not copy, and
       // two identifiers that differ only in case are two different elements.
       return identifiersOf(element).includes(criterion.value);
     case "label": {
       const label = nonEmpty(element.label);
-      return label !== null && label.toLowerCase() === criterion.value.toLowerCase();
+      if (label === null) return false;
+      if (label.toLowerCase() === criterion.value.toLowerCase()) return true;
+      return labelPrefix && labelStartsWithWords(label, criterion.value);
     }
     case "text": {
       const needle = normalise(criterion.value);
@@ -387,9 +402,15 @@ export function matchElements(
     };
   }
 
-  const matches = orderMatches(
-    visible.filter((element) => criteria.every((criterion) => matchesCriterion(element, criterion))),
+  const matchWith = (labelPrefix: boolean) => orderMatches(
+    visible.filter((element) => criteria.every((criterion) => matchesCriterion(element, criterion, labelPrefix))),
   );
+  let matches = matchWith(false);
+  // No exact label: a label that starts with those words, so "Work" finds the
+  // menu row "Work, 3 need you". Exact labels always win when there are any.
+  if (!matches.length && criteria.some((criterion) => criterion.field === "label")) {
+    matches = matchWith(true);
+  }
 
   if (!matches.length) {
     return { matches, selected: null, reason: noMatchReason(visible, query, criteria) };

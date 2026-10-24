@@ -933,7 +933,14 @@ final class AccountService: ObservableObject {
     // a determinate signed-in / signed-out state.
     Clerk.configure(publishableKey: key)
     observeAuthEvents()
-    syncFromClerk()
+    // A cached session shows at once. With none hydrated yet, the phase stays
+    // `.loading` until the refresh below answers: publishing `.signedOut` here
+    // made the launch gate settle on "signed out" (it decides once), so a
+    // reinstall opened on the sign-in screen while the stored session was
+    // still being restored. A paired phone can still continue while loading.
+    if accountSessionStatusAllowsAccess(Clerk.shared.session?.status), Clerk.shared.user != nil {
+      syncFromClerk()
+    }
 
     do {
       try await Clerk.shared.refreshEnvironment()

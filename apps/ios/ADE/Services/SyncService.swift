@@ -6241,6 +6241,10 @@ final class SyncService: ObservableObject {
   }
 
   private func setActiveProjectId(_ projectId: String?, rootPath: String? = nil) {
+    #if DEBUG
+    // A fixture screen owns the active project for the life of the process.
+    if let pinned = previewPinnedProjectId, normalizedProjectId(projectId) != pinned { return }
+    #endif
     let previousProjectId = normalizedProjectId(activeProjectId)
     let previousRootPath = normalizedProjectRoot(activeProjectRootPath)
     let nextProjectId = normalizedProjectId(projectId)
@@ -20204,6 +20208,24 @@ final class SyncService: ObservableObject {
     setActiveProjectId(projectId, rootPath: rootPath)
     resetOutboundCursorStateForActiveProject()
   }
+
+  #if DEBUG
+  /// The project a fixture screen pinned; see `pinActiveProjectForPreview`.
+  private var previewPinnedProjectId: String?
+
+  /// A fixture screen's project, kept active for the life of the process.
+  ///
+  /// On a signed-in simulator the app's cached projects load beside the
+  /// fixture, and `normalizeActiveProjectSelection` cleared any active project
+  /// that is not one of them. The `duo-work-*` fixtures then drew an empty
+  /// Work list. While a project is pinned, nothing switches away from it.
+  func pinActiveProjectForPreview(projectId: String) {
+    previewPinnedProjectId = nil
+    setActiveProjectId(projectId, rootPath: nil)
+    previewPinnedProjectId = normalizedProjectId(projectId)
+    resetOutboundCursorStateForActiveProject()
+  }
+  #endif
 
   func setCtoAttentionForTesting(_ attention: CtoAttention) {
     ctoAttention = attention

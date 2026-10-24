@@ -11,11 +11,13 @@ import {
 import { appleDuoPanelOrientation } from "../../../shared/appleOrientation";
 
 /** How long ADE's own fold may sweep before the simulator's reports count again. */
-const FOLD_HOLD_MS = 4_000;
+const FOLD_HOLD_MS = 8_000;
 /** A hinge drag sends its latest angle once the drag pauses, not every frame. */
 const ANGLE_DEBOUNCE_MS = 250;
 /** When the first read does not know how the phone is held, read once more after this. */
 const POSTURE_REREAD_MS = 1_500;
+/** A reported hinge this close to the drawn one is the same fold, not a move. */
+const HINGE_MATCH_DEGREES = 2;
 
 /** The Duo's inner panel is the one showing (false for every rigid device). */
 export function appleDuoInnerPanelLive(posture: AppleDevicePosture | null | undefined): boolean {
@@ -110,7 +112,7 @@ export function useAppleDuoPosture({
       if (angle === null) return;
       const fold = foldTargetRef.current;
       if (fold) {
-        if (Date.now() < fold.until && Math.abs(angle - fold.angle) > 2) return;
+        if (Date.now() < fold.until && Math.abs(angle - fold.angle) > HINGE_MATCH_DEGREES) return;
         foldTargetRef.current = null;
       }
       onAngleRef.current?.(angle);
@@ -128,8 +130,22 @@ export function useAppleDuoPosture({
     if (typeof angle === "number") foldTargetRef.current = { angle, until: Date.now() + FOLD_HOLD_MS };
     void window.ade.iosSimulator
       .setPosture({ ...scopeRef.current, ...target }, runtimePinRef.current)
+      // The answer can come while the hinge still sweeps: the slider stays
+      // where it was let go, and the fold hold above settles the rest.
       .then((result) => setPosture(result.posture))
-      .catch((cause: unknown) => onErrorRef.current?.(cause));
+      .catch((cause: unknown) => {
+        onErrorRef.current?.(cause);
+        // A fold that failed leaves the phone where it was: the drawn hinge
+        // and the slider go back to the device's angle, not the one asked for.
+        foldTargetRef.current = null;
+        void window.ade.iosSimulator
+          .getPosture({ ...scopeRef.current }, runtimePinRef.current)
+          .then((posture) => {
+            setPosture(posture);
+            if (posture.supported && posture.angle !== null) onAngleRef.current?.(posture.angle);
+          })
+          .catch(() => undefined);
+      });
   }, [runtimePinRef]);
 
   const angleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

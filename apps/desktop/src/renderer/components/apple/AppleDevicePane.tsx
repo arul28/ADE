@@ -771,7 +771,9 @@ export function AppleDevicePane({
     chatSessionId: sessionId,
     runtimePinRef,
     pinKey: runtimePin?.key ?? null,
-    onAngle: (angle) => setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
+    // Only a real fold moves the drawn hinge and the slider: a turn of the
+    // phone, or a report a degree off, leaves both where the slider put them.
+    onAngle: (angle) => setDuoState((current) => (Math.abs(current.pose.angle - angle) <= 2
       ? current
       : reduceAppleDuoState(current, { type: "angle", angle }))),
     onError: (cause) => setError(cause),
@@ -1296,13 +1298,26 @@ export function AppleDevicePane({
               turnPending={rotating}
               reported={duoPosture ? { angle: duoPosture.angle, wide: duoWide } : null}
               onPreviewAngle={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
-              onCommitAngle={(angle) => sendDuoPosture({ angle })}
+              onCommitAngle={(angle) => {
+                sendDuoPosture({ angle });
+                // A release on Closed, Laptop or Open is a preset, framed the
+                // way the menu's presets are: a turned view made a laptop
+                // read as a book and hid the cover of a closed phone.
+                if (Object.values(APPLE_DEVICE_POSE_TARGETS).some((target) => target.angle === angle)) {
+                  setViewNonce((nonce) => nonce + 1);
+                }
+              }}
               onScreen={(screen) => {
                 const angle = APPLE_DEVICE_POSE_TARGETS[screen === "cover" ? "closed" : "open"].angle;
                 setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
                 sendDuoPosture({ angle });
               }}
-              onTurn={rotateTo}
+              onTurn={(orientation) => {
+                // Also for the hold already pressed: the button is how to get
+                // back to the phone as held after a drag turned the view.
+                setViewNonce((nonce) => nonce + 1);
+                if (orientation !== duoHeld) rotateTo(orientation);
+              }}
             />
           ) : null}
 

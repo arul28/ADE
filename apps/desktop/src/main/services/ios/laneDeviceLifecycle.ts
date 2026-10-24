@@ -114,13 +114,15 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * The body of a detach, for a caller already in the lane's queue: forget
    * the binding, then release the lane's hold. Null when the lane had no device.
    */
-  const detachStep = async (runtime: R): Promise<AppleLaneDevice | null> => {
-    const detached = await deps.laneDevices.deviceDetach({ laneId: runtime.key });
+  const detachStep = async (runtime: R, by: "agent" | "user"): Promise<AppleLaneDevice | null> => {
+    const detached = await deps.laneDevices.deviceDetach({ laneId: runtime.key, by });
     if (!detached) return null;
     // After the binding is gone, so the `released` event this sends is read
     // against a registry that already says the lane has no device.
     await releaseLaneHold(detached);
-    deps.logger.info("apple.lane_device_detached_by_request", { laneId: detached.laneId, udid: detached.udid });
+    // `by` names the kind of caller, so a lane that lost its device can be
+    // traced to the pane or to an agent.
+    deps.logger.info("apple.lane_device_detached_by_request", { laneId: detached.laneId, udid: detached.udid, by });
     return detached;
   };
 
@@ -163,7 +165,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       if (!laneDevice) return null;
       assertExpectedDevice(laneDevice, detachArgs.udid);
       deps.assertSessionOwner(runtime, detachArgs);
-      return detachStep(runtime);
+      return detachStep(runtime, detachArgs.agentCaller === true ? "agent" : "user");
     });
   };
 
@@ -201,7 +203,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       if (laneDevice.origin === "attached") {
         // Refused before the stream stops, so the owner keeps a working view.
         if (!deleteArgs.force) throw new AppleDeviceAttachedNotDeletableError(laneDevice);
-        await detachStep(runtime);
+        await detachStep(runtime, deleteArgs.agentCaller === true ? "agent" : "user");
         return;
       }
       // Whatever was driving it stops first: deleting a simulator out from

@@ -880,6 +880,13 @@ export type IosScreenElement = {
   sourceFile: string | null;
   sourceLine: number | null;
   metadata: Record<string, unknown>;
+  /**
+   * The element's ref, as `tap-element --ref` and `find --ref` take it. It is
+   * built from the identifier, then the label, so it stays the same between
+   * snapshots while `id` (the tree position) moves with the layout. Set on
+   * `getScreenSnapshot` answers.
+   */
+  ref?: string;
 };
 
 export type IosScreenSnapshotProvider = {
@@ -2188,6 +2195,8 @@ export type AppleDeviceDeleteArgs = {
   force?: boolean | null;
   /** Delete for whoever is running, without claiming to be them (the Work pane). */
   ignoreOwnership?: boolean | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**
@@ -2211,6 +2220,8 @@ export type AppleDeviceDetachArgs = {
   force?: boolean | null;
   /** Detach for whoever is running, without claiming to be them (the Work pane). */
   ignoreOwnership?: boolean | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**
@@ -2326,6 +2337,8 @@ export type AppleScrollArgs = {
 
 export type AppleScrollResult = {
   ok: true;
+  /** Names the gesture, so the CLI's answer does not call it a tap. */
+  action: "scroll";
   direction: AppleScrollDirection;
   /** What the helper was told, in its own content-movement convention. */
   deltaX: number;

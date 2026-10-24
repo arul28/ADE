@@ -1993,7 +1993,7 @@ struct WorkConnectivityBannerPreviewHost: View {
     seeded = true
 
     let projectId = "ade-connectivity-preview"
-    syncService.setActiveProjectForTesting(projectId: projectId, rootPath: nil)
+    syncService.pinActiveProjectForPreview(projectId: projectId)
 
     let now = Date()
     let offline = AccountAttentionMachine(
@@ -2099,7 +2099,7 @@ struct WorkListPreviewHost: View {
   private func seed() {
     guard !seeded else { return }
     let defaults = UserDefaults.standard
-    syncService.setActiveProjectForTesting(projectId: WorkListPreviewData.projectId, rootPath: nil)
+    syncService.pinActiveProjectForPreview(projectId: WorkListPreviewData.projectId)
     let fixture = WorkListPreviewData.fixture()
     let pushAfter = defaults.double(forKey: "adeWorkFixturePushChatAfter")
     if pushAfter > 0 {
@@ -2110,13 +2110,7 @@ struct WorkListPreviewHost: View {
     // `-adeWorkFixtureMenuActions 1`: advertise every session-menu command, so
     // the long-press menu renders whole (desktop parity screenshots).
     if defaults.string(forKey: "adeWorkFixtureMenuActions") == "1" {
-      syncService.seedRemoteCommandActionsForPreview([
-        "chat.updateSession", "chat.regenerateSessionMetadata", "chat.restartSession", "chat.setSpawnKind",
-        "chat.handoff", "chat.getCrossMachineHandoffOptions", "chat.startCrossMachineHandoff",
-        "chat.cancelCrossMachineHandoff", "chat.retryCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
-        "session.settleSessions", "session.unsettleSessions", "session.setSettleOverride",
-        "session.snoozeSession", "session.wakeSession", "work.deleteSession", "lanes.rename", "lanes.updateAppearance",
-      ])
+      syncService.seedRemoteCommandActionsForPreview(WorkListPreviewData.sessionMenuActions)
     }
     WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
     if defaults.object(forKey: "adeWorkFixtureUnread") as? String != "0" {
@@ -2173,6 +2167,17 @@ struct WorkListPreviewHost: View {
 
 @MainActor
 enum WorkListPreviewData {
+  /// Every command the session menu checks for: lifecycle, hand-off, tags and
+  /// the lane items. A fixture that advertises these renders the whole menu,
+  /// and the sheets it opens can be shown.
+  static let sessionMenuActions = [
+    "chat.updateSession", "chat.regenerateSessionMetadata", "chat.restartSession", "chat.setSpawnKind",
+    "chat.handoff", "chat.getCrossMachineHandoffOptions", "chat.startCrossMachineHandoff",
+    "chat.cancelCrossMachineHandoff", "chat.retryCrossMachineHandoff", "automations.list", "automations.saveDraft", "automations.deleteRule",
+    "session.settleSessions", "session.unsettleSessions", "session.setSettleOverride",
+    "session.snoozeSession", "session.wakeSession", "work.deleteSession", "lanes.rename", "lanes.updateAppearance",
+  ]
+
   static let projectId = "ade-work-list-preview"
   static let parentChatId = "wl-parent-chat"
   static let needsYouChatId = "wl-needs-you"

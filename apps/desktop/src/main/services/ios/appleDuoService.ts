@@ -253,23 +253,36 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     // already match; wait for the picture itself to move, then settle for the
     // axis at the deadline.
     const sameAxisAtStart = pictureAxis(before) === wantedAxis(before);
-    const deadline = Date.now() + settleMs;
     let after = before;
-    for (;;) {
-      await sleep(200);
-      after = await readPosture(deviceUdid).catch((cause: unknown) => {
-        deps.logger.warn("apple.rotate_posture_unreadable", { udid: deviceUdid, error: cause instanceof Error ? cause.message : String(cause) });
-        return after;
-      });
-      const onAxis = pictureAxis(after) === wantedAxis(after);
-      const moved = after.displayOrientation !== before.displayOrientation || after.activeScreenId !== before.activeScreenId;
-      if (onAxis && (moved || !sameAxisAtStart)) {
-        return { ...base, applied: true, verification: "rotated", reason: null, detail: null, posture: after };
+    // Two rounds: right after a fold the guest is still switching panels and
+    // can drop the turn, so the first `rotate` after `fold closed` answered
+    // "applied no" and a second call worked. The second round sends the turn
+    // again and waits once more.
+    for (let round = 0; round < 2; round += 1) {
+      if (round > 0) {
+        const again = await deps.helperSend({ type: "orientation", udid: deviceUdid, value }).catch(() => null);
+        if (again?.applied !== true) break;
+        deps.logger.warn("apple.rotate_resent", { udid: deviceUdid, orientation });
       }
-      if (Date.now() >= deadline) {
-        if (onAxis) return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after };
-        break;
+      const deadline = Date.now() + settleMs;
+      for (;;) {
+        await sleep(200);
+        after = await readPosture(deviceUdid).catch((cause: unknown) => {
+          deps.logger.warn("apple.rotate_posture_unreadable", { udid: deviceUdid, error: cause instanceof Error ? cause.message : String(cause) });
+          return after;
+        });
+        const onAxis = pictureAxis(after) === wantedAxis(after);
+        const moved = after.displayOrientation !== before.displayOrientation || after.activeScreenId !== before.activeScreenId;
+        if (onAxis && (moved || !sameAxisAtStart)) {
+          return { ...base, applied: true, verification: "rotated", reason: null, detail: null, posture: after };
+        }
+        if (Date.now() >= deadline) {
+          if (onAxis) return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after };
+          break;
+        }
       }
+      // Nothing to resend for: the guest does not say how its screen sits.
+      if (!pictureAxis(after)) break;
     }
     if (!pictureAxis(after)) {
       return {

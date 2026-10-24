@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
 import { showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { navigateToAppTarget } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
 import type { AppleDeviceRenderer } from "./AppleDevice3DView";
 import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
@@ -13,7 +14,7 @@ import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderF
  */
 function renderFiledToast(
   filed: AppleRenderFiled,
-  { paneChatSessionId, local }: { paneChatSessionId: string | null; local: boolean },
+  { paneChatSessionId, laneId, local }: { paneChatSessionId: string | null; laneId: string | null; local: boolean },
 ): ToastInput {
   const count = `${filed.filed} item${filed.filed === 1 ? "" : "s"}`;
   const firstArtifact = filed.artifactIds[0] ?? null;
@@ -34,6 +35,19 @@ function renderFiledToast(
         }));
       },
     });
+  } else if (filed.chatSessionId) {
+    // Another chat's drawer: take the person to that chat, whose proof
+    // drawer holds the renders.
+    const chatSessionId = filed.chatSessionId;
+    actions.push({
+      label: "Open that chat",
+      onClick: () => navigateToAppTarget({ kind: "chat", sessionId: chatSessionId, laneId }),
+    });
+  } else if (firstArtifact) {
+    actions.push({
+      label: "Open History",
+      onClick: () => navigateToAppTarget({ kind: "artifact", artifactId: firstArtifact }),
+    });
   }
   // The files sit on the device's machine; Finder can only show them there.
   if (local && firstFile) {
@@ -52,6 +66,9 @@ function renderFiledToast(
     title: `Rendered ${count}`,
     message: local && firstFile ? `${where} Saved in ${firstFile.replace(/[/\\][^/\\]*$/u, "")}.` : where,
     ...(actions.length ? { actions } : {}),
+    // A render takes a while and the person may be looking elsewhere when it
+    // lands; the default 6 s was gone before they read where it went.
+    durationMs: 20_000,
   };
 }
 
@@ -127,7 +144,7 @@ export function useAppleRenderRequests({
       // The files are on this computer when the pane's pin (else the tab) is local.
       const binding = runtimePinRef.current ?? useAppStore.getState().projectBinding;
       const local = binding?.kind !== "remote";
-      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, local }));
+      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, laneId, local }));
       setRenderOpen(false);
       return filed;
     } catch (cause) {
