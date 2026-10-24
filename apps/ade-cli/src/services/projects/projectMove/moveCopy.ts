@@ -77,21 +77,33 @@ export async function diskUsageBytes(root: string, options: { ignoreDependencies
   return (Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "0", 10) || 0) * 1024;
 }
 
-const measureCache = new Map<string, { at: number; value: Promise<{ copyBytes: number; dependencyBytes: number }> }>();
-/** The move dialog re-checks on every destination change; the project's size is measured once a minute at most. */
+/** `doneAt` is null while `du` still runs: every check joins that run instead of starting another. */
+const measureCache = new Map<string, { doneAt: number | null; value: Promise<{ copyBytes: number; dependencyBytes: number }> }>();
+/**
+ * The move dialog re-checks on every destination change; a finished size is
+ * reused for a minute. The minute counts from when `du` finished, not when it
+ * started: lanes full of node_modules take `du` over a minute, and counting
+ * from the start threw each result away before anyone could use it.
+ */
 const MEASURE_CACHE_MS = 60_000;
 
 /** Bytes the copy will write, and bytes of dependency folders it leaves out. */
 export function measureProject(root: string): Promise<{ copyBytes: number; dependencyBytes: number }> {
   const cached = measureCache.get(root);
-  if (cached && Date.now() - cached.at < MEASURE_CACHE_MS) return cached.value;
-  const value = Promise.all([diskUsageBytes(root, { ignoreDependencies: true }), diskUsageBytes(root)])
-    .then(([withoutDependencies, total]) => ({
-      copyBytes: withoutDependencies,
-      dependencyBytes: Math.max(0, total - withoutDependencies),
-    }));
-  measureCache.set(root, { at: Date.now(), value });
-  return value;
+  if (cached && (cached.doneAt === null || Date.now() - cached.doneAt < MEASURE_CACHE_MS)) return cached.value;
+  const entry: { doneAt: number | null; value: Promise<{ copyBytes: number; dependencyBytes: number }> } = {
+    doneAt: null,
+    value: Promise.all([diskUsageBytes(root, { ignoreDependencies: true }), diskUsageBytes(root)])
+      .then(([withoutDependencies, total]) => ({
+        copyBytes: withoutDependencies,
+        dependencyBytes: Math.max(0, total - withoutDependencies),
+      }))
+      .finally(() => {
+        entry.doneAt = Date.now();
+      }),
+  };
+  measureCache.set(root, entry);
+  return entry.value;
 }
 
 /** Relative paths (`./a/b`) the copy includes, written to `listFile`. Returns how many. */

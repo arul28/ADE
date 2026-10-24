@@ -249,6 +249,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // a failure while the delete went on and later succeeded.
     case IPC.projectMoveCleanup:
       return 24 * 60 * 60_000;
+    // The checks measure the project with `du`, node_modules included. A
+    // project with 35 GB of node_modules across its lanes took 67s, and the
+    // 30s default showed a raw IPC timeout instead of the checks. `du` gives
+    // up after 10 minutes (diskUsageBytes), so this budget sits above it.
+    case IPC.projectMovePreflight:
+      return 15 * 60_000;
     // On the 30s default the renderer showed a raw IPC timeout mid-repair.
     case IPC.recoveryRepair:
     // Start fresh closes the project and waits for the background service to
