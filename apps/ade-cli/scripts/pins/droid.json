@@ -1,42 +1,42 @@
 {
   "tool": "droid",
-  "version": "0.244.0",
-  "source": "npm droid@0.244.0 platform packages",
+  "version": "0.249.0",
+  "source": "npm droid@0.249.0 platform packages",
   "targets": {
     "darwin-arm64": {
       "format": "npm-tarball",
       "package": "@factory/cli-darwin-arm64",
-      "version": "0.244.0",
-      "tarball": "https://registry.npmjs.org/@factory/cli-darwin-arm64/-/cli-darwin-arm64-0.244.0.tgz",
-      "integrity": "sha512-v4xX/WXdQ/LE6zQi84/dwBiGYG4Gqe8lW60GKfQekAJko/q7JGnvxEYtMrx0bsfIIClONCDGU8hdX4MpA8olgA=="
+      "version": "0.249.0",
+      "tarball": "https://registry.npmjs.org/@factory/cli-darwin-arm64/-/cli-darwin-arm64-0.249.0.tgz",
+      "integrity": "sha512-wr705jAZBBiuYO+0I8VRIEi/hzYVGh2J3ei5MtRZsgTHxyE4d2UIgGUIJzBO5/DuO9AWdK+5N6bUKBWTviRVUQ=="
     },
     "darwin-x64": {
       "format": "npm-tarball",
       "package": "@factory/cli-darwin-x64-baseline",
-      "version": "0.244.0",
-      "tarball": "https://registry.npmjs.org/@factory/cli-darwin-x64-baseline/-/cli-darwin-x64-baseline-0.244.0.tgz",
-      "integrity": "sha512-qL2s+1PN1IfuNGEFrCVkAKaaeYPhznMJMcf+TcPfAeUfmBA9U37z+9+c/JZi40sGP3zkEH3QPAqIu90Ly/EzWw=="
+      "version": "0.249.0",
+      "tarball": "https://registry.npmjs.org/@factory/cli-darwin-x64-baseline/-/cli-darwin-x64-baseline-0.249.0.tgz",
+      "integrity": "sha512-DJnIN86dE9R/+fbkEuZPxc8Za1yPipMfGfGynOu1thVHe39LVlVeE0jA0KrV3PqqRWoRQxCThTO/pmCJeu5kSQ=="
     },
     "linux-arm64": {
       "format": "npm-tarball",
       "package": "@factory/cli-linux-arm64",
-      "version": "0.244.0",
-      "tarball": "https://registry.npmjs.org/@factory/cli-linux-arm64/-/cli-linux-arm64-0.244.0.tgz",
-      "integrity": "sha512-ILs6mcmlGycmCXuVQj4grsM8XQBDIGRlzkzdgQ2v6Sd9s+UAM5U+WDbanEc1uC7eONpn5CqMMuSJuG2fYSbf8w=="
+      "version": "0.249.0",
+      "tarball": "https://registry.npmjs.org/@factory/cli-linux-arm64/-/cli-linux-arm64-0.249.0.tgz",
+      "integrity": "sha512-RqCmM6RaUcwdvhqNG8aMNX3DJa6XYYgV7AnLmD359z6/bcIQWDdbwTZNUhie53h+SW1E5mRPze4ceG3LZriAGg=="
     },
     "linux-x64": {
       "format": "npm-tarball",
       "package": "@factory/cli-linux-x64-baseline",
-      "version": "0.244.0",
-      "tarball": "https://registry.npmjs.org/@factory/cli-linux-x64-baseline/-/cli-linux-x64-baseline-0.244.0.tgz",
-      "integrity": "sha512-/lCTeJaxKZJHUxtEIysheLUKKaKjKL8JN7zaZ/wEiiHBqbbTFbKaidlOGOm4+NXmLo4gUtGOnDgEKSyKgXECQg=="
+      "version": "0.249.0",
+      "tarball": "https://registry.npmjs.org/@factory/cli-linux-x64-baseline/-/cli-linux-x64-baseline-0.249.0.tgz",
+      "integrity": "sha512-yr1bNKG7oBez97Wjq/wtba859hU3MisIlDLtblsusH2v/X2WRLEnw4LPsqUyoILshcs6jKPyF3jf3hL0CT3VAA=="
     },
     "win32-x64": {
       "format": "npm-tarball",
       "package": "@factory/cli-win32-x64-baseline",
-      "version": "0.244.0",
-      "tarball": "https://registry.npmjs.org/@factory/cli-win32-x64-baseline/-/cli-win32-x64-baseline-0.244.0.tgz",
-      "integrity": "sha512-+jOcSnnyaoe4QTZz9lKi8Ta2mQB3gnzH3q+cWHdtMCUAbSvbFmSAanskkDsR93K0zeT3H2bt7M++fJlGu9DvAQ=="
+      "version": "0.249.0",
+      "tarball": "https://registry.npmjs.org/@factory/cli-win32-x64-baseline/-/cli-win32-x64-baseline-0.249.0.tgz",
+      "integrity": "sha512-6SBndiv7KTQ1QBJXOII9rlx7lvUI0Df5dpKezhOVQ+TvxQtMxyyflMnWJgM0NaQMyOy9cedVPBZ52hY/SWgpzA=="
     }
   }
 }
