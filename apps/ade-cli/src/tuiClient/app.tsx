@@ -6654,9 +6654,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   useEffect(() => {
     if (rightPane.kind !== "chat-info") return;
-    if (drawerOpen && drawerPreviewSession && drawerPreviewChatInfo) return;
+    // A preview of another chat owns the pane; the active chat's own preview
+    // keeps its full Chat Info (child chats included) current.
+    if (
+      drawerOpen
+      && drawerPreviewSession
+      && drawerPreviewChatInfo
+      && drawerPreviewSession.sessionId !== activeSessionId
+    ) return;
     setRightPane({ kind: "chat-info", info: chatInfo });
-  }, [chatInfo, drawerOpen, drawerPreviewChatInfo, drawerPreviewSession, rightPane.kind]);
+  }, [activeSessionId, chatInfo, drawerOpen, drawerPreviewChatInfo, drawerPreviewSession, rightPane.kind]);
 
   useEffect(() => {
     if (!drawerOpen || activePane !== "drawer" || workSelectionKind !== "session") {

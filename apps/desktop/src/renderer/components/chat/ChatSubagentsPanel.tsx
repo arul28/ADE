@@ -1228,9 +1228,9 @@ export function ChatSubagentsPanel({
   runtimeAlive?: boolean;
   /**
    * Chat-runtime status by spawned-chat session id, for rows that are ADE
-   * chats: what self-heal reads to settle a row whose chat stopped. Filing and
-   * "needs you" come from the machine's sessions instead
-   * (`useChatChildRoster`), which also cover a chat this runtime has not loaded.
+   * chats: what self-heal reads to settle a row whose chat stopped. A child
+   * this runtime has not loaded takes its state from the machine's sessions
+   * (`useChatChildRoster`), which also give filing and "needs you".
    */
   childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
   /**
@@ -1341,12 +1341,16 @@ export function ChatSubagentsPanel({
   // The chat's filed subagents (the Work list leaves them out) and the child
   // chats its rows name, from the sessions of the machine it runs on.
   const scope = useChatRuntimeScope();
-  const { snapshots: snapshotsWithRoster, childById } = useChatChildRoster(sessionId, snapshots);
+  const { snapshots: snapshotsWithRoster, childById, childStatuses } = useChatChildRoster(
+    sessionId,
+    snapshots,
+    childChatStatuses,
+  );
   // Self-heal first, so every count, cap, grouping and label below reads the
   // truthful status rather than a "running" the event stream never closed.
   const healedSnapshots = useMemo(
-    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses }),
-    [snapshotsWithRoster, runtimeAlive, childChatStatuses],
+    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses: childStatuses }),
+    [snapshotsWithRoster, runtimeAlive, childStatuses],
   );
   // The workflow card owns these rows, so it reads the same healed status:
   // a run whose runtime died must not stay "Active" with a live Stop.

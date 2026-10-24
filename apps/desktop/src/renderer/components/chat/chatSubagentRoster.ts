@@ -6,7 +6,7 @@ import {
   filedSubagentsOf,
   spawnNestingPhase,
 } from "../../../shared/sessionSpawnNesting";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSessionStatus, TerminalSessionSummary } from "../../../shared/types";
 import { primarySessionLabel } from "../../lib/sessions";
 import { useStableIdentity } from "../../lib/stableIdentity";
 import { projectStateKeyForBinding, useAppStore } from "../../state/appStore";
@@ -23,7 +23,9 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  * - a filed subagent the transcript has no row for (a peer promoted to
  *   subagent, a grandchild, a transcript that predates or windowed away the
  *   spawn) gets a row, appended after the transcript's rows;
- * - any child-chat row whose chat is waiting on the user says so.
+ * - any child-chat row whose chat is waiting on the user says so;
+ * - the pane's self-heal learns the state of children this chat's runtime has
+ *   not loaded, so it does not close a row whose child is still working.
  *
  * Titles and liveness are not read here: the pane's own props carry them.
  */
@@ -59,6 +61,7 @@ function sameChildChat(left: ChildChat | undefined, right: ChildChat): boolean {
   return left != null
     && left.phase === right.phase
     && left.session.id === right.session.id
+    && left.session.laneId === right.session.laneId
     && primarySessionLabel(left.session) === primarySessionLabel(right.session)
     && left.session.toolType === right.session.toolType
     && left.session.startedAt === right.session.startedAt
@@ -105,6 +108,29 @@ function buildChatChildRoster(
   return byId.size === 0 ? EMPTY_ROSTER : { filed, byId };
 }
 
+/** The chat status a child in this phase has, in the self-heal's terms. */
+function phaseChatStatus(phase: CanonicalSessionPhase): AgentChatSessionStatus {
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+    case "needs_you":
+      return "active";
+    case "ready":
+    case "idle":
+      return "idle";
+    case "failed":
+    case "stopped":
+    case "ended":
+    case "settled":
+      return "ended";
+    default: {
+      const exhaustive: never = phase;
+      return exhaustive;
+    }
+  }
+}
+
 function filedSubagentRow(child: ChildChat): ChatSubagentSnapshot {
   const { session, phase } = child;
   return {
@@ -126,15 +152,19 @@ function filedSubagentRow(child: ChildChat): ChatSubagentSnapshot {
 }
 
 /**
- * The pane's rows with the chat's filed subagents added, and a lookup for the
- * child chats it names. Returns `snapshots` itself when nothing is added.
+ * The pane's rows with the chat's filed subagents added, a lookup for the
+ * child chats it names, and the child statuses the self-heal reads: the chat
+ * runtime's own (`runtimeChildStatuses`) where it has one, else the child's
+ * state on its machine. Returns the inputs themselves when nothing is added.
  */
 export function useChatChildRoster(
   parentId: string | null | undefined,
   snapshots: ChatSubagentSnapshot[],
+  runtimeChildStatuses: ReadonlyMap<string, AgentChatSessionStatus> | undefined,
 ): {
   snapshots: ChatSubagentSnapshot[];
   childById: ReadonlyMap<string, ChildChat>;
+  childStatuses: ReadonlyMap<string, AgentChatSessionStatus> | undefined;
 } {
   const sessions = useChatMachineSessions();
   // The child ids the rows name, kept stable while the rows only stream.
@@ -162,5 +192,14 @@ export function useChatChildRoster(
     const missing = roster.filed.filter((child) => !covered.has(child.session.id));
     return missing.length === 0 ? snapshots : [...snapshots, ...missing.map(filedSubagentRow)];
   }, [namedChildIds, roster, snapshots]);
-  return { snapshots: withFiled, childById: roster.byId };
+  const childStatuses = useMemo(() => {
+    let merged: Map<string, AgentChatSessionStatus> | null = null;
+    for (const [id, child] of roster.byId) {
+      if (runtimeChildStatuses?.has(id)) continue;
+      merged ??= new Map(runtimeChildStatuses ?? []);
+      merged.set(id, phaseChatStatus(child.phase));
+    }
+    return merged ?? runtimeChildStatuses;
+  }, [roster, runtimeChildStatuses]);
+  return { snapshots: withFiled, childById: roster.byId, childStatuses };
 }

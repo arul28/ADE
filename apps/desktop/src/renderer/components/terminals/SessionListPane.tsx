@@ -273,6 +273,8 @@ type ForeignLaneEntry = {
   /** Full-row partition used for stable shelving and collapse shape. */
   fullQuiet: ReturnType<typeof partitionQuietSessions>;
   nesting: WorkNesting<TerminalSessionSummary>;
+  /** Filing over the full row, for the parents' subagent marks. */
+  fullNesting: WorkNesting<TerminalSessionSummary>;
   shelf: WorkLaneShelf | null;
   /** Rolled-up lane status for the header dot; null when nothing is live. */
   focusStatus: WorkLaneFocusStatus | null;
@@ -1913,7 +1915,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (snoozedRows + settledRows === 0) return null;
       return settledRows > snoozedRows ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, fullQuiet, nesting, shelf, focusStatus: focus.status };
+    return { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf, focusStatus: focus.status };
   });
 
   // Foreign composite ids fold and return exactly like local lane ids: a
@@ -2458,6 +2460,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     /** The row's filed subagents, as one mark on the row. */
     subagentMark?: NestedSubagentMark | null;
     nesting?: WorkNesting<TerminalSessionSummary>;
+    /**
+     * Filing over the unfiltered roster, for the marks only: a search or chip
+     * that hides a child must not shrink its parent's mark, which has to agree
+     * with the actions pane. Rows still hide by `nesting`.
+     */
+    markNesting?: WorkNesting<TerminalSessionSummary>;
   };
   // A PR pill on a card or a lane divider opens the PR in that session's PR
   // tool: select the session, then hand the PR to its pane. Only PR lists go to
@@ -2617,6 +2625,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
     const nesting = options?.nesting ?? workNesting;
+    const markNesting = options?.markNesting ?? unfilteredNesting;
     const cardOptions = options?.foreignRow
       ? {
           ...options,
@@ -2629,7 +2638,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     return list
       .filter((session) => !nesting.excludedTopLevelIds.has(session.id))
       .map((session) => {
-        const subagents = nesting.subagentsByParentId.get(session.id);
+        const subagents = markNesting.subagentsByParentId.get(session.id);
         if (!subagents?.length) return renderCardCore(session, cardOptions);
         return renderCardCore(session, {
           ...cardOptions,
@@ -3348,7 +3357,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * shelve at all.
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
-    const { row, compositeLaneId, quiet, fullQuiet, nesting, shelf } = entry;
+    const { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf } = entry;
     // One resolver, one answer — including for Primary, which used to get its
     // name spelled out here on the theory that two identically-named Primaries
     // are otherwise indistinguishable. Under the physical-machine rule they are
@@ -3387,7 +3396,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     // A group WITH a header names the machine there, so its rows never repeat
     // it. A headerless group has no such header, so its lone card takes the
     // marker instead — the same trade `renderLaneGroup` makes.
-    const cardOptions: RenderCardOptions = { foreignRow: row, suppressMachineChip: true, nesting };
+    const cardOptions: RenderCardOptions = {
+      foreignRow: row,
+      suppressMachineChip: true,
+      nesting,
+      markNesting: fullNesting,
+    };
     const foreignExcluded = nesting.excludedTopLevelIds;
     const quietTop = {
       active: quiet.active.filter((session) => !foreignExcluded.has(session.id)),
@@ -3457,6 +3471,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               lanePrs,
               machineMarker: headerMarker,
               nesting,
+              markNesting: fullNesting,
               ...(singletonLaneActions ? { laneActions: singletonLaneActions } : {}),
             })
           : isQuietLaneShelf(shelf)
