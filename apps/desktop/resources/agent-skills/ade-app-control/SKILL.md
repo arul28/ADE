@@ -23,9 +23,10 @@ between `ade apple`, `ade mac-desktop`, `ade app-control` and `ade browser`.
   `status` first. Use the running app, or `stop` it, or pass `--force` to
   replace it. `--force` only replaces a session in your own lane.
 - **A relaunch reuses your launch terminal.** After `stop` (or with
-  `--force`), your next `launch` runs in the same terminal session, so a
-  rebuild-and-relaunch loop leaves one shell. Pass `--new-shell` only when you
-  truly need a separate terminal.
+  `--force`), your next `launch` usually runs in the same terminal session, so
+  a rebuild-and-relaunch loop leaves one shell. (It gets a new one when someone
+  typed into the old shell or the old app would not exit.) Pass `--new-shell`
+  only when you truly need a separate terminal.
 - **Check each step before you report it.** An act that returns `ok` only
   means ADE sent the input. Read the `hit:` and `effect:` lines and the new
   observation. Report only what you confirmed.

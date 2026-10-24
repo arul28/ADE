@@ -3334,8 +3334,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Launch runs the command in a visible terminal. When the same chat launches
   again on the lane (after a stop, or with --force), the app runs in the same
-  terminal session as before, so an edit/relaunch loop keeps one shell;
-  --new-shell starts a separate one. ADE sets
+  terminal session as before, so an edit/relaunch loop keeps one shell. It gets
+  a new one instead when someone typed into the old shell, it was archived, or
+  the old app did not exit within 5 seconds; --new-shell asks for a new one.
+  ADE sets
   ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS and forwards the
   debug flags for npm/pnpm/yarn/bun scripts and direct electron commands. A
   custom launcher must forward ADE_APP_CONTROL_DEBUG_FLAGS (or read
