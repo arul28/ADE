@@ -4110,6 +4110,7 @@ describe("registerIpc sync bridge", () => {
     expect(listSessions).toHaveBeenCalledWith(undefined, {
       includeIdentity: true,
       includeAutomation: true,
+      includeSideChats: true,
       sessionIds: ["automation-chat-1"],
     });
   });

@@ -520,11 +520,16 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// the product — but an empty send menu is a dead end and must stay
   /// impossible if some other caller ever sets the flag.
   func testQueueOnlyProviderKeepsItsRealMenuUnderTheCtoFilter() {
-    for provider in ["qwen", "kimi", "grok", "droid"] {
+    for provider in ["qwen", "grok", "droid"] {
       let filtered = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
       XCTAssertEqual(filtered, WorkActiveSendCapability.forProvider(provider), "expected \(provider) menu kept")
       XCTAssertFalse(filtered.modes.isEmpty, "expected \(provider) menu to stay non-empty")
     }
+    // Kimi is not queue-only any more: ADE runs its interrupt (stop, then send),
+    // so the filter leaves that one mode, which continues on the same thread.
+    let kimi = workChatActiveSendCapability(provider: "kimi", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
+    XCTAssertEqual(kimi.modes, [.interrupt])
+    XCTAssertTrue(kimi.interruptContinues)
   }
 
   func testOpenCodeRequiresHostInboxSteerForComposerAndStagedPromotion() {
