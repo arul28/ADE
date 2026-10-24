@@ -165,6 +165,7 @@ function fakeSimHelper(overrides: {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
+    sendGesture: (gesture) => gesture((command) => client.send(command)),
     isReady: () => true,
     pid: overrides.pid ?? (() => 4321),
     protocolVersion: () => 1,
@@ -2663,9 +2664,9 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     });
     const restoreHelper = __testSetIosSimulatorHelperFactory(() => helper.client);
     const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
-    const rotate = async (orientation: "portrait" | "portrait-upside-down" | "landscape-left" | "landscape-right") => {
+    const rotate = async (orientation: "portrait" | "portrait-upside-down" | "landscape-left" | "landscape-right", waitMs = 5_000) => {
       const answer = service.rotate({ orientation, deviceUdid: "device-1", laneId: "lane-a" });
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(waitMs);
       return answer;
     };
 
@@ -2682,9 +2683,13 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       expect(halfTurn).toMatchObject({ applied: true, verification: "rotated" });
       expect(halfTurn.posture?.displayOrientation).toBe("portrait");
 
-      // On the cover an app that keeps portrait refuses a landscape turn.
+      // On the cover an app that keeps portrait refuses a landscape turn. The
+      // turn is sent a second time (a turn dropped right after a fold) before
+      // that counts as the app's answer.
       Object.assign(duo, { screenId: 1, held: "portrait", picture: "portrait", adopts: false, lagReads: 0 });
-      const refused = await rotate("landscape-left");
+      const orientationSendsBefore = helper.sent.filter((command) => command.type === "orientation").length;
+      const refused = await rotate("landscape-left", 10_000);
+      expect(helper.sent.filter((command) => command.type === "orientation").length - orientationSendsBefore).toBe(2);
       expect(refused).toMatchObject({ applied: false, verification: "not-adopted", reason: "APPLE_ROTATE_NOT_ADOPTED" });
       expect(refused.detail).toMatch(/cover/i);
 
@@ -3044,6 +3049,15 @@ describe("iosSimulatorService boot contract", () => {
       }));
       // Nothing left to detach.
       await expect(service.deviceDetach({ laneId: "lane-b" })).resolves.toBeNull();
+
+      // An agent's start does not hand the lane a new, empty device in place
+      // of the one the user released: it is told where that device went.
+      await expect(service.deviceStart({ laneId: "lane-b", agentCaller: true }))
+        .rejects.toThrow(/APPLE_LANE_DEVICE_RELEASED.*device-created/);
+      expect((await service.deviceList({ laneId: "lane-b" })).lane).toBeNull();
+      // Naming the device takes it back.
+      await service.deviceStart({ laneId: "lane-b", udid: "device-created", agentCaller: true });
+      expect((await service.deviceList({ laneId: "lane-b" })).lane?.udid).toBe("device-created");
     } finally {
       dispose();
     }

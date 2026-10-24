@@ -1284,7 +1284,7 @@ describe("lane device lifecycle", () => {
 
       await lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-owner", force: true });
 
-      expect(laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
+      expect(laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b", by: "user" });
       expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
     });
 
@@ -1352,7 +1352,7 @@ describe("lane device lifecycle", () => {
       const forcedStart = forced.serializeDeviceLifecycle(null, async () => { forced.setBound(attached); });
       await forced.lifecycle.deviceDelete({ laneId: "lane-b", force: true });
       await forcedStart;
-      expect(forced.laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
+      expect(forced.laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b", by: "user" });
       expect(forced.laneDevices.deviceDelete).not.toHaveBeenCalled();
 
       // Unforced: refused, and the stream the start opened keeps running.

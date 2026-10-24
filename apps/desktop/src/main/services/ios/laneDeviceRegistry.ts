@@ -209,7 +209,12 @@ export type LaneDeviceRegistry = {
    *
    * Returns what was detached, or null when the lane had no device.
    */
-  deviceDetach(args: { laneId: string }): Promise<AppleLaneDevice | null>;
+  deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"] }): Promise<AppleLaneDevice | null>;
+  /**
+   * The device this lane last gave up (`deviceDetach`) in this process, while
+   * the lane has had no device since. Null once the lane holds one again.
+   */
+  lastReleased(laneId: string): AppleLaneDeviceRelease | null;
   /**
    * Delete an installed simulator by udid, for the picker's per-device menu.
    *
@@ -253,6 +258,16 @@ export type LaneDeviceRegistry = {
   tracksInstallsOn(udid: string): boolean;
   /** Remember that ADE installed `bundleId` on `udid`, when `udid` is an attached lane device. */
   noteAppInstalled(args: { udid: string; bundleId: string }): void;
+};
+
+/** A device a lane gave up, and who gave it up: a person (the pane, the tools card) or an agent. */
+export type AppleLaneDeviceRelease = {
+  laneId: string;
+  udid: string;
+  name: string;
+  origin: AppleLaneDevice["origin"];
+  releasedAt: string;
+  by: "agent" | "user";
 };
 
 /**
@@ -317,7 +332,15 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     }
   };
 
+  /**
+   * The device each lane last released, by lane id. In memory: it only has to
+   * outlive the gap between a release and the next agent call that would
+   * otherwise make the lane a new, empty device.
+   */
+  const releasedByLane = new Map<string, AppleLaneDeviceRelease>();
+
   const write = (device: AppleLaneDevice): void => {
+    releasedByLane.delete(device.laneId);
     if (!deps.store) {
       memory.set(device.laneId, device);
       return;
@@ -358,6 +381,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
    * list — they describe the simulator, and they travel with it.
    */
   const rebind = (previous: AppleLaneDevice, device: AppleLaneDevice): void => {
+    releasedByLane.delete(device.laneId);
     if (!deps.store) {
       memory.delete(previous.laneId);
       memory.set(device.laneId, device);
@@ -1095,7 +1119,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       };
     },
     deviceDelete: remove,
-    async deviceDetach(args: { laneId: string }) {
+    async deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"] }) {
       const laneId = requireLaneId(args.laneId);
       const device = readOne(laneId);
       if (!device) return null;
@@ -1128,10 +1152,27 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
           detachedAt: now().toISOString(),
         });
       }
-      deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid, origin: device.origin });
+      const by = args.by ?? "user";
+      releasedByLane.set(laneId, {
+        laneId,
+        udid: device.udid,
+        name: device.name,
+        origin: device.origin,
+        releasedAt: now().toISOString(),
+        by,
+      });
+      deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid, origin: device.origin, by });
       return device;
     },
     get: (laneId: string) => readOne(laneId),
+    lastReleased: (laneId: string) => {
+      const id = laneId.trim();
+      if (!id) return null;
+      const release = releasedByLane.get(id) ?? null;
+      // A device the lane got back some other way (another process wrote the row).
+      if (release && readOne(id)) return null;
+      return release;
+    },
     extras: (laneId: string) => {
       const id = laneId.trim();
       return id ? readExtras(id) : [];

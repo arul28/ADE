@@ -630,6 +630,7 @@ ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 w
 ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
+ade prs create --lane lane-id --base main --allow-dirty   # open it even with uncommitted files; the PR has the lane's commits only
 ade prs create --lane lane-id --title "Fix checkout flow" --body-file pr.md --text  # uploads proof the text cites; prints what a reader will miss
 ade prs body 123 --body-file pr.md --text                                        # replace the PR text; same upload and notes
 ade prs list-open --text

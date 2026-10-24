@@ -880,6 +880,13 @@ export type IosScreenElement = {
   sourceFile: string | null;
   sourceLine: number | null;
   metadata: Record<string, unknown>;
+  /**
+   * The element's ref, as `tap-element --ref` and `find --ref` take it. It is
+   * built from the identifier, then the label, so it stays the same between
+   * snapshots while `id` (the tree position) moves with the layout. Set on
+   * `getScreenSnapshot` answers.
+   */
+  ref?: string;
 };
 
 export type IosScreenSnapshotProvider = {
@@ -1642,6 +1649,8 @@ export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
  * through `deviceDelete`, which stops its stream first.
  */
 export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
+/** A lane released its device, it is still installed, and an agent call would replace it. */
+export const APPLE_LANE_DEVICE_RELEASED_CODE = "APPLE_LANE_DEVICE_RELEASED" as const;
 /**
  * An agent asked to attach a simulator that is not its lane's own device.
  *
@@ -2188,6 +2197,8 @@ export type AppleDeviceDeleteArgs = {
   force?: boolean | null;
   /** Delete for whoever is running, without claiming to be them (the Work pane). */
   ignoreOwnership?: boolean | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**
@@ -2211,6 +2222,8 @@ export type AppleDeviceDetachArgs = {
   force?: boolean | null;
   /** Detach for whoever is running, without claiming to be them (the Work pane). */
   ignoreOwnership?: boolean | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**
@@ -2326,6 +2339,8 @@ export type AppleScrollArgs = {
 
 export type AppleScrollResult = {
   ok: true;
+  /** Names the gesture, so the CLI's answer does not call it a tap. */
+  action: "scroll";
   direction: AppleScrollDirection;
   /** What the helper was told, in its own content-movement convention. */
   deltaX: number;

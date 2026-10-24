@@ -9,13 +9,18 @@ import {
   type OpenProjectBinding,
 } from "../../../shared/types";
 import { appleDuoPanelOrientation } from "../../../shared/appleOrientation";
+import { appleDuoSameHinge } from "./appleDuo";
 
 /** How long ADE's own fold may sweep before the simulator's reports count again. */
-const FOLD_HOLD_MS = 4_000;
+const FOLD_HOLD_MS = 8_000;
 /** A hinge drag sends its latest angle once the drag pauses, not every frame. */
 const ANGLE_DEBOUNCE_MS = 250;
 /** When the first read does not know how the phone is held, read once more after this. */
 const POSTURE_REREAD_MS = 1_500;
+
+function logReadFailure(cause: unknown): void {
+  logRendererDebugEvent("apple.posture_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+}
 
 /** The Duo's inner panel is the one showing (false for every rigid device). */
 export function appleDuoInnerPanelLive(posture: AppleDevicePosture | null | undefined): boolean {
@@ -78,6 +83,13 @@ export function useAppleDuoPosture({
   onErrorRef.current = onError;
   const scopeRef = useRef({ laneId, chatSessionId });
   scopeRef.current = { laneId, chatSessionId };
+  const deviceUdidRef = useRef(deviceUdid);
+  deviceUdidRef.current = deviceUdid;
+  /** Show a posture read from the device, hinge included. */
+  const showRead = useCallback((next: AppleDevicePosture) => {
+    setPosture(next);
+    if (next.angle !== null) onAngleRef.current?.(next.angle);
+  }, []);
 
   useEffect(() => {
     if (!enabled || !deviceUdid) {
@@ -91,16 +103,13 @@ export function useAppleDuoPosture({
         .getPosture({ ...scopeRef.current, deviceUdid }, runtimePinRef.current)
         .then((next) => {
           if (cancelled) return;
-          setPosture(next);
-          if (next.angle !== null) onAngleRef.current?.(next.angle);
+          showRead(next);
           // A capture that just started has not heard how the phone is held
           // yet; it does within a moment, and a still phone sends no event.
           if (again && next.supported && next.orientation === null) retry = setTimeout(() => read(false), POSTURE_REREAD_MS);
         })
         // The view draws without a posture; the events fill it in once they come.
-        .catch((cause: unknown) => {
-          logRendererDebugEvent("apple.posture_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
-        });
+        .catch(logReadFailure);
     };
     read(true);
     const unsubscribe = window.ade.iosSimulator.onEvent((event) => {
@@ -110,7 +119,7 @@ export function useAppleDuoPosture({
       if (angle === null) return;
       const fold = foldTargetRef.current;
       if (fold) {
-        if (Date.now() < fold.until && Math.abs(angle - fold.angle) > 2) return;
+        if (Date.now() < fold.until && !appleDuoSameHinge(angle, fold.angle)) return;
         foldTargetRef.current = null;
       }
       onAngleRef.current?.(angle);
@@ -120,7 +129,7 @@ export function useAppleDuoPosture({
       if (retry) clearTimeout(retry);
       unsubscribe?.();
     };
-  }, [enabled, deviceUdid, pinKey, runtimePinRef]);
+  }, [enabled, deviceUdid, pinKey, runtimePinRef, showRead]);
 
   /** Fold the real simulator to a preset or an angle; its own posture settles the view. */
   const sendPosture = useCallback((target: { pose?: AppleDevicePose; angle?: number }) => {
@@ -128,9 +137,23 @@ export function useAppleDuoPosture({
     if (typeof angle === "number") foldTargetRef.current = { angle, until: Date.now() + FOLD_HOLD_MS };
     void window.ade.iosSimulator
       .setPosture({ ...scopeRef.current, ...target }, runtimePinRef.current)
+      // The answer can come while the hinge still sweeps: the slider stays
+      // where it was let go, and the fold hold above settles the rest.
       .then((result) => setPosture(result.posture))
-      .catch((cause: unknown) => onErrorRef.current?.(cause));
-  }, [runtimePinRef]);
+      .catch((cause: unknown) => {
+        onErrorRef.current?.(cause);
+        // A fold that failed leaves the phone where it was: the drawn hinge
+        // and the slider go back to the device's angle, not the one asked for.
+        foldTargetRef.current = null;
+        const readUdid = deviceUdidRef.current;
+        if (!readUdid) return;
+        void window.ade.iosSimulator
+          .getPosture({ ...scopeRef.current, deviceUdid: readUdid }, runtimePinRef.current)
+          // A switch to another device meanwhile: its own read already ran.
+          .then((next) => { if (deviceUdidRef.current === readUdid) showRead(next); })
+          .catch(logReadFailure);
+      });
+  }, [runtimePinRef, showRead]);
 
   const angleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendAngleSoon = useCallback((angle: number) => {

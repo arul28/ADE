@@ -1744,9 +1744,12 @@ struct WorkProviderBareLogo: View {
         .aspectRatio(contentMode: .fit)
         .frame(width: size, height: size)
     } else {
+      // A provider with no bundled mark draws a symbol in its accent. Pi's
+      // accent is near-black, which drew an invisible glyph on the dark page,
+      // so a deep accent gives way to the text colour.
       Image(systemName: fallbackSymbol)
         .font(.system(size: size * 0.7, weight: .semibold))
-        .foregroundStyle(tint)
+        .foregroundStyle(ADEColor.isDeepChatAccent(tint) ? ADEColor.textPrimary : tint)
         .frame(width: size, height: size)
     }
   }

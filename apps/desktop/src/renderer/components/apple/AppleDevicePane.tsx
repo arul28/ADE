@@ -32,6 +32,7 @@ import {
   APPLE_DUO_NUDGE_DEGREES,
   clampAppleDuoAngle,
   createAppleDuoState,
+  appleDuoSameHinge,
   appleDuoStanceFor,
   type AppleDuoStanceId,
   reduceAppleDuoState,
@@ -771,7 +772,9 @@ export function AppleDevicePane({
     chatSessionId: sessionId,
     runtimePinRef,
     pinKey: runtimePin?.key ?? null,
-    onAngle: (angle) => setDuoState((current) => (Math.abs(current.pose.angle - angle) < 1
+    // Only a real fold moves the drawn hinge and the slider: a turn of the
+    // phone, or a report a degree off, leaves both where the slider put them.
+    onAngle: (angle) => setDuoState((current) => (appleDuoSameHinge(current.pose.angle, angle)
       ? current
       : reduceAppleDuoState(current, { type: "angle", angle }))),
     onError: (cause) => setError(cause),
@@ -914,7 +917,6 @@ export function AppleDevicePane({
     ? {
         enabled: true,
         angle: duoState.pose.angle,
-        lowerFlat: duoState.pose.lowerFlat,
         model: duoModel,
         activeScreenId: duoPosture?.activeScreenId ?? null,
         physicalOrientation: duoPosture?.orientation ?? null,
@@ -1296,13 +1298,25 @@ export function AppleDevicePane({
               turnPending={rotating}
               reported={duoPosture ? { angle: duoPosture.angle, wide: duoWide } : null}
               onPreviewAngle={(angle) => setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }))}
-              onCommitAngle={(angle) => sendDuoPosture({ angle })}
+              onCommitAngle={(angle, onDetent) => {
+                sendDuoPosture({ angle });
+                // A release on Closed, Laptop or Open is a preset, framed the
+                // way the menu's presets are: a turned view made a laptop
+                // read as a book and hid the cover of a closed phone.
+                if (onDetent) setViewNonce((nonce) => nonce + 1);
+              }}
               onScreen={(screen) => {
                 const angle = APPLE_DEVICE_POSE_TARGETS[screen === "cover" ? "closed" : "open"].angle;
                 setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle }));
                 sendDuoPosture({ angle });
               }}
-              onTurn={rotateTo}
+              onTurn={(orientation) => {
+                // Also for the hold already pressed: the button is how to get
+                // back to the phone as held after a drag turned the view, and
+                // it sends the turn again when the picture did not follow.
+                setViewNonce((nonce) => nonce + 1);
+                rotateTo(orientation);
+              }}
             />
           ) : null}
 

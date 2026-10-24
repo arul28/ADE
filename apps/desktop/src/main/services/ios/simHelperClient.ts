@@ -63,6 +63,13 @@ export interface SimHelperTransport {
 }
 
 export type SimHelperClient = SimHelperTransport & {
+  /**
+   * Run a multi-command gesture (a tap's begin and end, a drag's moves) with
+   * no other command written between its steps. The helper handles one line
+   * at a time, so a `snapshot` slotted between a tap's begin and end held the
+   * finger down for seconds: iOS read a long press, and a slow drag a tap.
+   */
+  sendGesture<T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T>;
   /** True once the child has spawned and announced `ready`. */
   isReady(): boolean;
   /** The running helper's pid, or null. */
@@ -395,7 +402,29 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     start();
   };
 
-  const send = (command: Record<string, unknown> & { type: string; udid?: string }): Promise<Record<string, unknown>> => {
+  /**
+   * The gesture in progress, if any. A command sent from outside it waits for
+   * it to finish, so nothing lands between a gesture's steps.
+   */
+  let gestureInFlight: Promise<unknown> | null = null;
+
+  const send = async (command: Record<string, unknown> & { type: string; udid?: string }): Promise<Record<string, unknown>> => {
+    while (gestureInFlight) await gestureInFlight.catch(() => undefined);
+    return write(command);
+  };
+
+  const sendGesture = async <T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T> => {
+    while (gestureInFlight) await gestureInFlight.catch(() => undefined);
+    const run = gesture(write);
+    gestureInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (gestureInFlight === run) gestureInFlight = null;
+    }
+  };
+
+  const write = (command: Record<string, unknown> & { type: string; udid?: string }): Promise<Record<string, unknown>> => {
     if (disposed) {
       return Promise.reject(new SimHelperError(APPLE_HELPER_UNAVAILABLE_CODE, "The simulator helper client has been disposed."));
     }
@@ -484,6 +513,7 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
       return options.binaryPath;
     },
     send,
+    sendGesture,
     onEvent(listener) {
       listeners.add(listener);
       return () => {

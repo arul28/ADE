@@ -608,8 +608,11 @@ private struct DuoWorkPreviewHost: View {
 
   private func seed() {
     guard !seeded else { return }
-    syncService.setActiveProjectForTesting(projectId: WorkListPreviewData.projectId, rootPath: nil)
+    syncService.pinActiveProjectForPreview(projectId: WorkListPreviewData.projectId)
     WorkRootPreviewFixture.active = WorkListPreviewData.duoFixture()
+    // The session menu's lifecycle, hand-off and tag items, and the sheets
+    // they open, need these advertised as a connected host would.
+    syncService.seedRemoteCommandActionsForPreview(WorkListPreviewData.sessionMenuActions)
     WorkSeenStore.stamp(WorkListPreviewData.seenSessionIds)
     // The second row of the first lane, so its selected highlight is on screen.
     DuoWorkPreviewState.sessionId = "wl-primary-running"

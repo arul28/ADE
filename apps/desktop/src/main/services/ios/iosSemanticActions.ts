@@ -239,10 +239,23 @@ function normalise(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/**
+ * True when the element's label starts with `wanted` as whole words: "Work"
+ * names "Work, 3 need you" (a menu row with a subtitle) but not "Workspace".
+ */
+function labelStartsWithWords(element: IosScreenElement, wanted: string): boolean {
+  const left = normalise(nonEmpty(element.label) ?? "");
+  const right = normalise(wanted);
+  if (!right || !left.startsWith(right)) return false;
+  return !/[\p{L}\p{N}]/u.test(left.charAt(right.length));
+}
+
 function matchesCriterion(element: IosScreenElement, criterion: QueryCriterion): boolean {
   switch (criterion.field) {
     case "ref":
-      return buildElementRef(element) === criterion.value;
+      // The tree-position `id` is accepted too: it is what older snapshots
+      // printed, and it still names the element while the layout holds.
+      return buildElementRef(element) === criterion.value || element.id === criterion.value;
     case "identifier":
       // Exact and case-sensitive. An identifier is source code, not copy, and
       // two identifiers that differ only in case are two different elements.
@@ -375,6 +388,7 @@ function singleCriterionSentence(criterion: QueryCriterion): string {
 export function matchElements(
   elements: IosScreenElement[],
   query: IosSimulatorElementQuery,
+  options: { labelPrefix?: boolean } = {},
 ): ElementMatchOutcome {
   const visible = elements.filter(isVisible);
   const criteria = criteriaOf(query);
@@ -387,9 +401,19 @@ export function matchElements(
     };
   }
 
-  const matches = orderMatches(
+  let matches = orderMatches(
     visible.filter((element) => criteria.every((criterion) => matchesCriterion(element, criterion))),
   );
+  // No exact label: one label that starts with those words, so "Work" finds
+  // the menu row "Work, 3 need you". Exact labels always win; two prefix
+  // matches are a guess, and a wait or an assert never takes one ("Save" is
+  // not gone while "Save draft" shows).
+  if (!matches.length && options.labelPrefix && criteria.some((criterion) => criterion.field === "label")) {
+    const prefixed = visible.filter((element) => criteria.every((criterion) => (
+      criterion.field === "label" ? labelStartsWithWords(element, criterion.value) : matchesCriterion(element, criterion)
+    )));
+    if (prefixed.length === 1) matches = prefixed;
+  }
 
   if (!matches.length) {
     return { matches, selected: null, reason: noMatchReason(visible, query, criteria) };
