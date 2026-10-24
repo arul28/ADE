@@ -920,7 +920,8 @@ let workSettledSectionId = "status:settled"
 /// user is never quiet, which is what keeps an attention row from being folded
 /// away behind a thin header. Settled and snoozed rows normally leave the lane
 /// for their own shelves before grouping, so this fold catches an
-/// archived-only lane and a pinned lane, which keeps its settled rows.
+/// archived-only lane. A pinned lane keeps its settled rows and is never
+/// folded quiet (the caller exempts it).
 func workLaneGroupIsQuiet(
   _ group: WorkSessionGroup,
   referenceSessions: [TerminalSessionSummary]? = nil,

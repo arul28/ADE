@@ -1720,20 +1720,20 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   // MARK: - Quiet lane sections
 
-  func testLaneGroupIsQuietOnlyWhenEverySessionIsSettled() {
-    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
-    settled.id = "s-settled"
-    settled.settledAt = iso(now.addingTimeInterval(-120))
-    var alsoSettled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
-    alsoSettled.id = "s-settled-2"
-    alsoSettled.settledAt = iso(now.addingTimeInterval(-60))
+  func testLaneGroupIsQuietOnlyWhenEverySessionIsQuiet() {
+    // Settled rows leave the lane for the Settled shelf, so the rows that stay
+    // behind and still fold a lane quiet are archived ones.
+    var archived = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    archived.id = "s-archived"
+    var alsoArchived = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    alsoArchived.id = "s-archived-2"
 
     let lane = makeLane(id: "lane-1", name: "Lane 1")
     let quietGroups = workSessionGroups(
       organization: .byLane,
-      sessions: [settled, alsoSettled],
+      sessions: [archived, alsoArchived],
       chatSummaries: [:],
-      archivedSessionIds: [],
+      archivedSessionIds: [archived.id, alsoArchived.id],
       orderedLanes: [lane],
       now: now
     )
@@ -1746,9 +1746,9 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     running.id = "s-running"
     let loudGroups = workSessionGroups(
       organization: .byLane,
-      sessions: [settled, running],
+      sessions: [archived, running],
       chatSummaries: [:],
-      archivedSessionIds: [],
+      archivedSessionIds: [archived.id],
       orderedLanes: [lane],
       now: now
     )
@@ -1758,9 +1758,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   func testLaneGroupWithAnAttentionSessionIsNeverQuiet() {
     // A row blocked on the user must never be folded behind a thin header.
-    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
-    settled.id = "s-settled"
-    settled.settledAt = iso(now.addingTimeInterval(-120))
+    var archived = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    archived.id = "s-archived"
     var blocked = makeSession(
       status: "running",
       runtimeState: "running",
@@ -1771,9 +1770,9 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
     let groups = workSessionGroups(
       organization: .byLane,
-      sessions: [settled, blocked],
+      sessions: [archived, blocked],
       chatSummaries: [:],
-      archivedSessionIds: [],
+      archivedSessionIds: [archived.id],
       orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
       now: now
     )
@@ -1783,9 +1782,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   }
 
   func testFilteredLaneGroupUsesFullRosterForQuietness() {
-    var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
-    settled.id = "s-visible-settled"
-    settled.settledAt = iso(now.addingTimeInterval(-120))
+    var archived = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
+    archived.id = "s-visible-archived"
     var hiddenNeedsYou = makeSession(
       status: "running",
       runtimeState: "running",
@@ -1796,16 +1794,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
     let groups = workSessionGroups(
       organization: .byLane,
-      sessions: [settled],
-      quietReferenceSessions: [settled, hiddenNeedsYou],
+      sessions: [archived],
+      quietReferenceSessions: [archived, hiddenNeedsYou],
       chatSummaries: [:],
-      archivedSessionIds: [],
+      archivedSessionIds: [archived.id],
       orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
       now: now
     )
 
     XCTAssertEqual(groups.count, 1)
-    XCTAssertEqual(groups[0].sessions.map(\.id), [settled.id])
+    XCTAssertEqual(groups[0].sessions.map(\.id), [archived.id])
     XCTAssertFalse(groups[0].isQuiet)
   }
 

@@ -589,15 +589,27 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertNotEqual(flat, nested)
   }
 
-  func testPinnedLaneKeepsItsHeader() {
+  func testPinnedLaneKeepsItsHeaderAndItsSettledRows() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
+    let settled = makeSession(
+      id: "s-settled",
+      laneId: lane.id,
+      status: "completed",
+      runtimeState: "idle",
+      settledAt: iso(now.addingTimeInterval(-120))
+    )
     let presentation = makePresentation(
-      sessions: [makeSession(id: "s-1", laneId: lane.id)],
+      sessions: [settled],
       lanes: [lane],
       pinnedLaneIds: ["lane-a"]
     )
 
+    // A pinned lane is never folded quiet, and its settled rows stay in it
+    // rather than leaving for the Settled shelf.
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a"])
     XCTAssertEqual(presentation.sessionGroups.first?.isHeaderless, false)
+    XCTAssertEqual(presentation.sessionGroups.first?.isQuiet, false)
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["s-settled"])
   }
 
   func testPendingHandoffKeepsTheHeader() {

@@ -28,11 +28,7 @@ export function requestChatActionsPane(sessionId: string | null | undefined): vo
   const nowMs = Date.now();
   dropExpired(nowMs);
   pendingRequestedAtMs.set(id, nowMs);
-  try {
-    window.dispatchEvent(new CustomEvent("ade:chat:open-info", { detail: { sessionId: id } }));
-  } catch {
-    /* no-op */
-  }
+  window.dispatchEvent(new CustomEvent("ade:chat:open-info", { detail: { sessionId: id } }));
 }
 
 /** Take the held request for this chat. True once per request, within its TTL. */

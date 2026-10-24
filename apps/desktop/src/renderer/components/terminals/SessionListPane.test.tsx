@@ -619,8 +619,6 @@ describe("SessionListPane", () => {
       runningFiltered: [parent, child, peer],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      // A drawer marker left from before is inert: the child never renders.
-      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
       onSelectSession,
     });
 
