@@ -34,6 +34,7 @@ import { findLastTurnUserMessage } from "./chatRerunLastTurn";
 import type { ChatProviderFork, ChatProviderForkFailure, ChatProviderForkPointer } from "./chatProviderFork";
 import { resolveClaudeSdkTranscriptPath } from "./claudeThinkingTranscriptRepair";
 import { codexServerSupportsForkBeforeTurn } from "./codexAppServerFeatures";
+import type { ChatSideChatOutcome } from "../analytics/agentTurnProductAnalytics";
 import { claudeSideChatCut } from "./sideChatClaudeCut";
 
 // Side chats (`/side`, shared/sideChat.ts). A read-only fork of a chat, shown
@@ -98,6 +99,8 @@ export type SideChatServiceDeps<
   parentChatStillExists: (sessionId: string) => boolean;
   /** The chat's row is archived (the in-memory session never carries it). */
   isChatArchived: (sessionId: string) => boolean;
+  /** Content-free analytics hook (`captureChatSideChatAnalytics`); keyed by the main chat. */
+  onSideChatOutcome?: (event: { sessionId: string; outcome: ChatSideChatOutcome; provider: string }) => void;
   readPersistedState: (sessionId: string) => TPersisted | null;
   /** Rewrite the chat's state file; throws when the write fails. */
   writePersistedState: (sessionId: string, next: TPersisted) => void;
@@ -349,6 +352,7 @@ export function createSideChatService<
       throw error;
     }
     writeSideChatPointer(parent, side.session.id);
+    deps.onSideChatOutcome?.({ sessionId: parentSession.id, outcome: "started", provider: parentSession.provider });
     logger.info("agent_chat.side_chat_started", {
       sessionId: side.session.id,
       parentSessionId: parentSession.id,
@@ -474,6 +478,7 @@ export function createSideChatService<
             turnId: resolvedTurnId,
           });
           logger.info("agent_chat.side_chat_sent_to_main", { sessionId: side.session.id, parentSessionId: parentId });
+          deps.onSideChatOutcome?.({ sessionId: parentId, outcome: "delivered", provider: side.session.provider });
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           deps.emitChatEvent(side, {
@@ -489,6 +494,7 @@ export function createSideChatService<
             parentSessionId: parentId,
             error: reason,
           });
+          deps.onSideChatOutcome?.({ sessionId: parentId, outcome: "failed", provider: side.session.provider });
         }
       }
     })();

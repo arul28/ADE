@@ -15,6 +15,9 @@ const LOCAL: WorkToolContext = {
   isWebClient: false,
 };
 
+/** Every tool but Side chat, which has a card only while the chat has one. */
+const ALWAYS_LISTED_TOOLS = WORK_TOOL_DEFINITIONS.filter((definition) => definition.id !== "side-chat");
+
 function cardFor(label: string): HTMLButtonElement {
   const card = screen.getByText(label).closest("button");
   if (!card) throw new Error(`No picker card for ${label}`);
@@ -89,9 +92,25 @@ describe("WorkToolPicker", () => {
     expect(screen.queryByRole("heading", { name: "Tools" })).toBeNull();
     expect(screen.queryByText("Pick what this lane works with")).toBeNull();
 
-    expect(screen.getAllByRole("button")).toHaveLength(WORK_TOOL_DEFINITIONS.length);
+    expect(screen.getAllByRole("button")).toHaveLength(ALWAYS_LISTED_TOOLS.length);
     expect(screen.getByText("2 shells")).toBeTruthy();
     expect(screen.getByText("3 tabs · agent")).toBeTruthy();
+    expect(document.querySelector('button[data-tool-id="side-chat"]')).toBeNull();
+  });
+
+  it("offers the Side chat card only for a chat that has a side chat", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={{ ...LOCAL, hasSideChat: true }}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+      />,
+    );
+    expect(cardById("side-chat")).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(ALWAYS_LISTED_TOOLS.length + 1);
+    expect(screen.getByText("Side chat")).toBeTruthy();
   });
 
   it("falls back to a short description only when a tool has measured nothing", () => {
@@ -363,6 +382,6 @@ describe("WorkToolPicker", () => {
     expect(card.contains(action)).toBe(false);
     expect(action.parentElement?.contains(card)).toBe(false);
     // The grid still has exactly one card button per tool.
-    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(WORK_TOOL_DEFINITIONS.length);
+    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(ALWAYS_LISTED_TOOLS.length);
   });
 });

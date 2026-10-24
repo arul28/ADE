@@ -169,6 +169,47 @@ describe("createClaudeSubprocessReaper", () => {
     ]);
   });
 
+  it("hands Claude its MCP servers in a private file, never on the command line", () => {
+    // The SDK passes every MCP server, with its headers and env values, as one
+    // inline `--mcp-config` argument: any process can read a command line, and
+    // the registry wrote it to disk. The secret must reach Claude only through
+    // a file only this user can read, gone once the process exits.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-config-"));
+    const previousHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    try {
+      const child = createProcess(5679);
+      const spawnProcess = vi.fn(() => child);
+      const reaper = createClaudeSubprocessReaper({ logger: createLogger(), platform: "darwin", spawnProcess: spawnProcess as any });
+      const config = JSON.stringify({ mcpServers: { docs: { type: "http", url: "https://mcp.example/mcp", headers: { Authorization: "Bearer SECRET-1" } } } });
+
+      reaper.spawnClaudeCodeProcess({
+        command: "/bin/claude",
+        args: ["--mcp-config", config, "--model", "sonnet"],
+        cwd: "/tmp/lane",
+        env: {},
+        signal: new AbortController().signal,
+      }, { sessionId: "chat-3", sdkSessionId: null, laneId: "lane-3", cwd: "/tmp/lane" });
+
+      const spawnedArgs = (spawnProcess.mock.calls[0] as unknown as [string, string[]])[1];
+      expect(spawnedArgs.join(" ")).not.toContain("SECRET-1");
+      expect(JSON.stringify(reaper.liveRecords())).not.toContain("SECRET-1");
+      const configPath = spawnedArgs[spawnedArgs.indexOf("--mcp-config") + 1]!;
+      expect(configPath.startsWith(path.join(adeHome, "mcp-launch", "chat"))).toBe(true);
+      expect(fs.readFileSync(configPath, "utf8")).toBe(config);
+      // POSIX mode bits; Windows gets an owner-only ACL instead.
+      if (process.platform !== "win32") expect(fs.statSync(configPath).mode & 0o077).toBe(0);
+      expect(spawnedArgs.slice(-2)).toEqual(["--model", "sonnet"]);
+
+      child.emitExit();
+      expect(fs.existsSync(configPath)).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousHome;
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
   it("signals the whole process group for a child ADE spawned detached", () => {
     // A Claude SDK process owns 2-4 MCP servers, each with children. Signalling
     // the single pid leaves all of them running and holding their memory, and a

@@ -239,6 +239,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // with less history. Never the transcript, the models, the turn counts, or
   // the share of the window it took.
   "handoff_replay",
+  // A side chat (`/side`): opened (`started`), a message it sent to its main
+  // chat on the user's request (`delivered`), or one that could not reach it
+  // (`failed`). Never the question, the reply, the message, or the model.
+  "side_chat",
   // How a move of a chat to another machine ended: continued there, failed,
   // cancelled, or unknown (the answer was lost). Never the machine, the reason,
   // the branch, or any capsule content.
@@ -477,6 +481,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
     "tool_browser", "tool_pr", "tool_mac_desktop", "tool_windows_desktop", "tool_issues",
+    "tool_side_chat",
     // Which tracker an issue made in ADE went to. Prefixed like the tool ids.
     "tracker_linear", "tracker_github", "tracker_jira",
     // The two Work Focus modes, prefixed like the tool ids so they cannot be

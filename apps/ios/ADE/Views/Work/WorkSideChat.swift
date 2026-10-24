@@ -75,33 +75,72 @@ enum WorkSideChatTextPart: Equatable {
   case send(text: String, complete: Bool)
 }
 
-/// Splits a side chat's reply into prose and send-to-main blocks. An open tag
-/// with no close yet (a reply still streaming) is a pending block. Mirrors
-/// `splitSideChatSendBlocks`.
-func workSplitSideChatSendBlocks(_ text: String) -> [WorkSideChatTextPart] {
-  var parts: [WorkSideChatTextPart] = []
-  var cursor = text.startIndex
-  while cursor < text.endIndex {
-    guard let open = text.range(of: workSideChatSendOpenTag, range: cursor..<text.endIndex) else {
-      parts.append(.text(String(text[cursor...])))
-      break
+/// Where code sits in a reply (fenced blocks and inline spans), as UTF-16
+/// offsets, so a tag the side chat quotes or explains is never taken for a
+/// send. Mirrors `codeRanges` in `shared/sideChat.ts`.
+private func workSideChatCodeRanges(_ text: String) -> [Range<Int>] {
+  let ns = text as NSString
+  var ranges: [Range<Int>] = []
+  let full = NSRange(location: 0, length: ns.length)
+  if let fence = try? NSRegularExpression(pattern: "(^|\\n)(```|~~~)[^\\n]*\\n[\\s\\S]*?(?:\\n\\2[^\\n]*(?=\\n|$)|$)") {
+    for match in fence.matches(in: text, range: full) {
+      ranges.append(match.range.location..<(match.range.location + match.range.length))
     }
-    if open.lowerBound > cursor {
-      parts.append(.text(String(text[cursor..<open.lowerBound])))
-    }
-    guard let close = text.range(of: workSideChatSendCloseTag, range: open.upperBound..<text.endIndex) else {
-      parts.append(.send(
-        text: String(text[open.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines),
-        complete: false
-      ))
-      break
-    }
-    parts.append(.send(
-      text: String(text[open.upperBound..<close.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
-      complete: true
-    ))
-    cursor = close.upperBound
   }
+  if let inline = try? NSRegularExpression(pattern: "`[^`\\n]+`") {
+    for match in inline.matches(in: text, range: full) where !ranges.contains(where: { $0.contains(match.range.location) }) {
+      ranges.append(match.range.location..<(match.range.location + match.range.length))
+    }
+  }
+  return ranges
+}
+
+/// Splits a side chat's reply into prose and send-to-main blocks. Only blocks
+/// that end the reply count, and never one inside code; an open tag with no
+/// close yet, at the end of a reply still streaming, is a pending block.
+/// Mirrors `splitSideChatSendBlocks`.
+func workSplitSideChatSendBlocks(_ text: String) -> [WorkSideChatTextPart] {
+  let ns = text as NSString
+  let code = workSideChatCodeRanges(text)
+  let inCode = { (at: Int) in code.contains { $0.contains(at) } }
+  struct Block { let open: Int; let end: Int; let body: String; let complete: Bool }
+  var blocks: [Block] = []
+  var cursor = 0
+  let openLength = (workSideChatSendOpenTag as NSString).length
+  let closeLength = (workSideChatSendCloseTag as NSString).length
+  while cursor < ns.length {
+    let open = ns.range(of: workSideChatSendOpenTag, range: NSRange(location: cursor, length: ns.length - cursor))
+    if open.location == NSNotFound { break }
+    if inCode(open.location) {
+      cursor = open.location + openLength
+      continue
+    }
+    let bodyStart = open.location + openLength
+    let close = ns.range(of: workSideChatSendCloseTag, range: NSRange(location: bodyStart, length: ns.length - bodyStart))
+    if close.location == NSNotFound {
+      let body = ns.substring(from: bodyStart).trimmingCharacters(in: .whitespacesAndNewlines)
+      blocks.append(Block(open: open.location, end: ns.length, body: body, complete: false))
+      break
+    }
+    let body = ns.substring(with: NSRange(location: bodyStart, length: close.location - bodyStart))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let end = close.location + closeLength
+    blocks.append(Block(open: open.location, end: end, body: body, complete: true))
+    cursor = end
+  }
+  // The trailing run: blocks with only whitespace between them and after.
+  var first = blocks.count
+  var tail = ns.length
+  for index in stride(from: blocks.count - 1, through: 0, by: -1) {
+    let between = ns.substring(with: NSRange(location: blocks[index].end, length: tail - blocks[index].end))
+    if !between.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { break }
+    first = index
+    tail = blocks[index].open
+  }
+  if first == blocks.count { return text.isEmpty ? [] : [.text(text)] }
+  var parts: [WorkSideChatTextPart] = []
+  if blocks[first].open > 0 { parts.append(.text(ns.substring(to: blocks[first].open))) }
+  for block in blocks[first...] { parts.append(.send(text: block.body, complete: block.complete)) }
   return parts.filter {
     if case .text(let value) = $0 { return !value.isEmpty }
     return true

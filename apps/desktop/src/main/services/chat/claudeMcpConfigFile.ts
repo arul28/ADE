@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ensurePrivateDirectory, writePrivateFile } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { captureError } from "../../../shared/sentry/capture";
 
 /**
  * Moves the Agent SDK's inline `--mcp-config <json>` off the Claude command
@@ -62,13 +63,17 @@ export function moveClaudeMcpConfigOffArgv(
   return { args: out, files };
 }
 
-/** Delete the files of processes that are gone; best-effort. */
+/**
+ * Delete the files of processes that are gone. `force` makes a file that is
+ * already gone a no-op, so anything thrown here is a secret-bearing file left
+ * on disk: reported, then left to the startup sweep.
+ */
 export function removeClaudeMcpConfigFiles(files: readonly string[]): void {
   for (const file of files) {
     try {
       fs.rmSync(file, { force: true });
-    } catch {
-      // Gone already, or the temp dir is unreachable; nothing to keep.
+    } catch (error) {
+      captureError(error, { fingerprint: ["claude", "mcp_config_file_remove_failed"] });
     }
   }
 }

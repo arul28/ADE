@@ -707,8 +707,10 @@ ade chat keep-reporting [session-id]                             # dismiss the t
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
 ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
-ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
-ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex cuts natively; others replay the kept turns)
+ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history natively (claude/codex/opencode/droid/copilot/muse/pi/kimi); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex, Copilot and Pi cut natively; others replay the kept turns)
+ade chat side session-id "why Redis?"                             # ask the chat's read-only side chat (opens it when there is none); it sends to the main chat only when asked
+ade chat side session-id --end                                    # end (delete) the chat's side chat
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded

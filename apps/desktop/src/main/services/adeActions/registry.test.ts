@@ -1219,6 +1219,8 @@ describe("runtime session actions", () => {
     expect(listSessions).toHaveBeenCalledWith("lane-1", {
       includeIdentity: true,
       includeAutomation: true,
+      // Summarized so the projection can hide them, like identity rows.
+      includeSideChats: true,
       sessionIds: ["codex-chat", "claude-chat", "opencode-chat", "cursor-chat", "droid-chat", "identity-chat"],
     });
     expect(result).toHaveLength(providers.length);

@@ -169,6 +169,7 @@ import {
   parseSideSlashCommand,
   sideChatUnavailableReason,
 } from "../../../shared/sideChat";
+import type { ChatSideChatOutcome } from "../analytics/agentTurnProductAnalytics";
 import { createSideChatService, sideChatReadOnlySettings } from "./sideChatService";
 import {
   createChatProviderFork,
@@ -11468,6 +11469,8 @@ export function createAgentChatService(args: {
     outcome: ChatHandoffReplayOutcome;
     provider: AgentChatProvider;
   }) => void;
+  /** Content-free hook for side chats: opened, or a send to the main chat delivered or lost. */
+  onSideChatOutcome?: (event: { sessionId: string; outcome: ChatSideChatOutcome; provider: string }) => void;
   /**
    * Content-free hook fired when a context compaction ends (completed or
    * failed), and once per "Compact first" send. Never token counts, the
@@ -11604,6 +11607,7 @@ export function createAgentChatService(args: {
     onChatMentionsExpanded,
     accountMachineMentions,
     onChatHandoffReplay,
+    onSideChatOutcome,
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onSessionMetadataRegenerated,
@@ -49244,6 +49248,7 @@ export function createAgentChatService(args: {
     sessionRowExists: (sessionId) => sessionService.get(sessionId) != null,
     parentChatStillExists: (sessionId) => parentChatStillExists(sessionId),
     isChatArchived: (sessionId) => Boolean(sessionService.get(sessionId)?.archivedAt),
+    onSideChatOutcome,
     readPersistedState: (sessionId) => readPersistedState(sessionId),
     writePersistedState: (sessionId, next) => {
       writeJsonWithPrevious(metadataPathFor(sessionId), next, {

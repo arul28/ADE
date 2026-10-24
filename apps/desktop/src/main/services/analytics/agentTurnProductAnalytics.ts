@@ -91,6 +91,43 @@ export function captureChatHandoffReplayAnalytics(args: {
   });
 }
 
+/** What became of a side chat step; see `side_chat` in the policy. */
+export type ChatSideChatOutcome = "started" | "delivered" | "failed";
+
+/**
+ * One coarse fact per side chat step: opened, or a message it sent to its main
+ * chat delivered or lost. The product question is whether people use side
+ * chats and whether "send this to the agent" works. `provider` is the coarse
+ * slug. Deduped per chat and outcome with a ten-minute minimum interval: a
+ * side chat is opened once and sends only when the user asks, so realistic
+ * volume is a few events per installation per day.
+ */
+export function captureChatSideChatAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: {
+    sessionId: string;
+    outcome: ChatSideChatOutcome;
+    provider: string;
+  };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId: args.event.sessionId,
+    dedupeKey: `chat_side_chat:${args.event.sessionId}:${args.event.outcome}`,
+    minimumIntervalMs: 10 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "side_chat",
+      outcome: args.event.outcome,
+      provider: args.event.provider,
+      source: "runtime",
+    },
+  });
+}
+
 /**
  * One coarse fact per ended context compaction.
  *
