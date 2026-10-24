@@ -109,6 +109,8 @@ export function cleanClaimId(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+type AppControlPtyService = ReturnType<typeof createPtyService>;
+
 export type CreateAppControlServiceArgs = {
   projectRoot: string;
   logger: Logger;
@@ -2041,7 +2043,19 @@ export function createAppControlLaneController(context: AppControlLaneController
     return activeSession;
   };
 
-  const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+  /**
+   * Launches on this lane run one at a time. Two at once (the panel always
+   * forces) would both pick the same shell to reuse and run two processes in
+   * one row; in turn, the second simply replaces the first.
+   */
+  let launchQueue: Promise<unknown> = Promise.resolve();
+  const launch = (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+    const run = launchQueue.then(() => launchNow(launchArgs));
+    launchQueue = run.catch(() => {});
+    return run;
+  };
+
+  const launchNow = async (launchArgs: AppControlLaunchArgs): Promise<AppControlSession> => {
     requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
@@ -2051,17 +2065,10 @@ export function createAppControlLaneController(context: AppControlLaneController
       throw new Error("App Control terminal launch requires the ADE terminal service.");
     }
     const ptyService = args.ptyService;
-    // A relaunch on this lane by the same chat (or, chatless, by no chat) runs
-    // in the shell the last launch used: an edit/rebuild/relaunch loop is one
-    // shell, not one per launch. `newShell` opts out. The hold keeps the
-    // dead-shell sweep from deleting that shell before the new process takes it.
-    const launchChatSessionId = cleanClaimId(launchArgs.chatSessionId);
     const previousShellId = activeSession?.terminalSessionId ?? null;
-    const reuseCandidate = previousShellId
-      && launchArgs.newShell !== true
-      && cleanClaimId(activeSession?.chatSessionId) === launchChatSessionId
-      ? previousShellId
-      : null;
+    const reuseCandidate = relaunchShellCandidate(launchArgs);
+    // The hold keeps the dead-shell sweep from deleting the shell before the
+    // new process takes it.
     const releaseShell = reuseCandidate ? ptyService.holdAgentShell(reuseCandidate) : () => {};
     try {
       if (previousShellId && !reuseCandidate) {
@@ -2069,30 +2076,54 @@ export function createAppControlLaneController(context: AppControlLaneController
         ptyService.retireAgentShell({ sessionId: previousShellId, reason: "relaunch" });
       }
       if (activeSession) await stop({ force: true });
-      let reuseShellId: string | null = null;
-      if (reuseCandidate) {
-        const exited = await waitForShellExit(reuseCandidate, RELAUNCH_SHELL_EXIT_WAIT_MS);
-        if (exited && ptyService.canRelaunchAgentShell(reuseCandidate, { laneId, chatSessionId: launchChatSessionId })) {
-          reuseShellId = reuseCandidate;
-        } else {
-          // Still running, typed into, archived or gone: launch in a new shell,
-          // and let the old one go like any replaced shell.
-          ptyService.retireAgentShell({ sessionId: reuseCandidate, reason: "relaunch" });
-        }
-      }
-      return await launchInShell(launchArgs, reuseShellId);
+      const reuseShellId = reuseCandidate
+        ? await claimShellForRelaunch(ptyService, reuseCandidate, cleanClaimId(launchArgs.chatSessionId))
+        : null;
+      return await launchInShell(ptyService, launchArgs, reuseShellId);
     } finally {
       releaseShell();
     }
   };
 
   /**
+   * The shell this launch may run in: the last launch's, when the same chat
+   * (or, chatless, no chat) launches again on this lane, so an
+   * edit/rebuild/relaunch loop is one shell rather than one per launch.
+   * `newShell` opts out.
+   */
+  const relaunchShellCandidate = (launchArgs: AppControlLaunchArgs): string | null => {
+    const previousShellId = activeSession?.terminalSessionId ?? null;
+    if (!previousShellId || launchArgs.newShell === true) return null;
+    const sameOwner = cleanClaimId(activeSession?.chatSessionId) === cleanClaimId(launchArgs.chatSessionId);
+    return sameOwner ? previousShellId : null;
+  };
+
+  /**
+   * Waits for the old app's process to leave the shell, then confirms the
+   * shell may be reused. On a no (still running, typed into, archived, or
+   * gone) the launch takes a new shell and the old one goes like any replaced
+   * shell.
+   */
+  const claimShellForRelaunch = async (
+    ptyService: AppControlPtyService,
+    shellId: string,
+    chatSessionId: string | null,
+  ): Promise<string | null> => {
+    const exited = await waitForShellExit(ptyService, shellId, RELAUNCH_SHELL_EXIT_WAIT_MS);
+    if (exited && ptyService.canRelaunchAgentShell(shellId, { laneId, chatSessionId })) return shellId;
+    ptyService.retireAgentShell({ sessionId: shellId, reason: "relaunch" });
+    return null;
+  };
+
+  /**
    * Resolves once the shell has no live process. False when it still has one
    * after `timeoutMs`: a stop that could not end the old app in time.
    */
-  const waitForShellExit = async (terminalSessionId: string, timeoutMs: number): Promise<boolean> => {
-    const ptyService = args.ptyService;
-    if (!ptyService) return false;
+  const waitForShellExit = async (
+    ptyService: AppControlPtyService,
+    terminalSessionId: string,
+    timeoutMs: number,
+  ): Promise<boolean> => {
     if (!ptyService.hasLivePty(terminalSessionId)) return true;
     return await new Promise<boolean>((resolve) => {
       let settled = false;
@@ -2112,12 +2143,10 @@ export function createAppControlLaneController(context: AppControlLaneController
   };
 
   const launchInShell = async (
+    ptyService: AppControlPtyService,
     launchArgs: AppControlLaunchArgs,
     reuseShellId: string | null,
   ): Promise<AppControlSession> => {
-    if (!args.ptyService) {
-      throw new Error("App Control terminal launch requires the ADE terminal service.");
-    }
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
     const resolved = resolveLaunch(launchArgs, debugPort);
@@ -2171,7 +2200,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     });
     emit({ type: "session-started", session });
     try {
-      const terminal = await args.ptyService.create({
+      const terminal = await ptyService.create({
         laneId,
         cwd: resolved.cwd,
         allowExternalCwd: true,

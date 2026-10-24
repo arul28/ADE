@@ -878,7 +878,7 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes, chatSessionId, excludeArchived }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
@@ -898,7 +898,7 @@ export function createSessionService({
       where.push("s.chat_session_id = ?");
       params.push(trimmedChatSessionId);
     }
-    if (excludeArchived === true) where.push("s.archived_at is null");
+    if (includeArchived === false) where.push("s.archived_at is null");
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
     const fetchRows = (
       extraWhere: string[] = [],
@@ -1467,30 +1467,7 @@ export function createSessionService({
     return true;
   };
 
-  /**
-   * The agent-shell cleanup's delete: the row, then its transcript. A dead App
-   * Control shell's log is noise once the shell is gone; leaving it would only
-   * move the pile from the session list onto the disk.
-   */
-  const deleteAgentShell = (sessionId: string): boolean => {
-    const transcriptPath = db.get<{ transcriptPath: string | null }>(
-      "select transcript_path as transcriptPath from terminal_sessions where id = ? limit 1",
-      [sessionId],
-    )?.transcriptPath?.trim() ?? "";
-    if (!deleteSession(sessionId)) return false;
-    if (transcriptPath) {
-      for (const filePath of [transcriptPath, `${transcriptPath}.gz`]) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch {
-          // Already gone, or never written: the row is what mattered.
-        }
-      }
-    }
-    return true;
-  };
-
-  const agentShells = createAgentShellCleanup({ db, deleteSession: deleteAgentShell });
+  const agentShells = createAgentShellCleanup({ db, deleteSession });
 
   const settledAtMs = (sessionId: string): number | null => {
     const row = db.get<{ settledAt: string | null }>(

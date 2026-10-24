@@ -1,7 +1,7 @@
 import type { AdeDb } from "../state/kvDb";
 
 /**
- * Deletes the dead shells an agent started under a chat, so neither the Work
+ * Deletes the dead shells App Control started, so neither the Work
  * sidebar nor the session list fills with "App Control: npm run dev…  Ended"
  * rows. The row and its transcript go: archiving only hid them, and hidden rows
  * still filled every `session.list` page (another machine reads only the newest
@@ -38,8 +38,21 @@ const AGENT_SHELL_SWEEP_INTERVAL_MS = 60_000;
 
 export type AgentShellRetireReason = "relaunch" | "stop";
 
+/** The lane and chat (null when chatless) a relaunch must share with the shell it reuses. */
+export type AgentShellRelaunchScope = { laneId: string; chatSessionId: string | null };
+
+/**
+ * An ended agent shell that is still listed and nobody typed into: the rows the
+ * sweep may delete and a relaunch may reuse. `s` is `terminal_sessions`, `c` the
+ * ledger.
+ */
+const ENDED_UNTOUCHED_AGENT_SHELL = `s.archived_at is null
+            and c.user_input_at is null
+            and s.status not in ('running', 'detached')`;
+
 type CandidateRow = {
   sessionId: string;
+  transcriptPath: string | null;
   /** The shell's owner chat id. Still set after that chat is deleted. */
   chatSessionId: string | null;
   /**
@@ -90,11 +103,13 @@ export function createAgentShellCleanup({
   deleteSession,
 }: {
   db: AdeDb;
-  /** Removes the row and its transcript; false when there was no row. */
+  /** Removes the row; false when there was no row. */
   deleteSession: (sessionId: string) => boolean;
 }) {
   let timer: ReturnType<typeof setInterval> | null = null;
   let reportError: (error: unknown) => void = () => {};
+  // The transcript files belong to the process that writes them (`start`).
+  let removeTranscript: (transcriptPath: string, sessionId: string) => void = () => {};
   /**
    * Shells a relaunch is about to run again. A sweep must not delete one
    * between the relaunch's check and its new process taking the row.
@@ -112,8 +127,12 @@ export function createAgentShellCleanup({
   const cleanup = {
     markAgentLaunched(sessionId: string): void {
       if (!sessionId) return;
+      // A new row: any ledger entry under the same id (a row recreated under a
+      // requested id) describes an earlier shell and is reset.
       db.run(
-        "insert or ignore into agent_shell_cleanup (session_id, launched_at) values (?, ?)",
+        `insert into agent_shell_cleanup (session_id, launched_at) values (?, ?)
+           on conflict(session_id) do update
+             set launched_at = excluded.launched_at, user_input_at = null, retired_reason = null`,
         [sessionId, new Date().toISOString()],
       );
     },
@@ -137,7 +156,7 @@ export function createAgentShellCleanup({
      * shell of the same lane and chat (or, both chatless, of no chat) that
      * nobody typed into, still listed.
      */
-    canRelaunchIn(sessionId: string, scope: { laneId: string; chatSessionId: string | null }): boolean {
+    canRelaunchIn(sessionId: string, scope: AgentShellRelaunchScope): boolean {
       if (!sessionId || !scope.laneId) return false;
       const row = db.get<{ present: number }>(
         `
@@ -145,12 +164,10 @@ export function createAgentShellCleanup({
           from agent_shell_cleanup c
           join terminal_sessions s on s.id = c.session_id
           where c.session_id = ?
-            and c.user_input_at is null
             and s.lane_id = ?
             and s.chat_session_id is ?
-            and s.archived_at is null
             and s.tracked = 1
-            and s.status not in ('running', 'detached')
+            and ${ENDED_UNTOUCHED_AGENT_SHELL}
           limit 1
         `,
         [sessionId, scope.laneId, scope.chatSessionId || null],
@@ -203,11 +220,15 @@ export function createAgentShellCleanup({
     sweepQuietly,
 
     /**
-     * Run the sweep on a clock. Only a process that owns PTYs starts it; a
-     * second start is a no-op.
+     * Run the sweep on a clock. Only a process that owns PTYs starts it, and it
+     * removes a deleted shell's transcript files. A second start is a no-op.
      */
-    start(onError: (error: unknown) => void): void {
-      reportError = onError;
+    start(options: {
+      onError: (error: unknown) => void;
+      removeTranscript?: (transcriptPath: string, sessionId: string) => void;
+    }): void {
+      reportError = options.onError;
+      if (options.removeTranscript) removeTranscript = options.removeTranscript;
       if (timer) return;
       timer = setInterval(sweepQuietly, AGENT_SHELL_SWEEP_INTERVAL_MS);
       timer.unref?.();
@@ -224,6 +245,7 @@ export function createAgentShellCleanup({
         `
           select
             c.session_id as sessionId,
+            s.transcript_path as transcriptPath,
             s.chat_session_id as chatSessionId,
             p.id as parentId,
             c.user_input_at as userInputAt,
@@ -236,16 +258,19 @@ export function createAgentShellCleanup({
           from agent_shell_cleanup c
           join terminal_sessions s on s.id = c.session_id
           left join terminal_sessions p on p.id = s.chat_session_id
-          where s.archived_at is null
-            and c.user_input_at is null
-            and s.status not in ('running', 'detached')
+          where ${ENDED_UNTOUCHED_AGENT_SHELL}
         `,
       );
       const deleted: string[] = [];
       for (const row of rows) {
         if (held.has(row.sessionId)) continue;
         if (!agentShellDeleteDue(row, nowMs)) continue;
-        if (deleteSession(row.sessionId)) deleted.push(row.sessionId);
+        if (!deleteSession(row.sessionId)) continue;
+        deleted.push(row.sessionId);
+        // A dead shell's log is noise once its row is gone; leaving it would
+        // only move the pile from the session list onto the disk.
+        const transcriptPath = row.transcriptPath?.trim();
+        if (transcriptPath) removeTranscript(transcriptPath, row.sessionId);
       }
       // The ledger only needs rows that may still be deleted.
       db.run(

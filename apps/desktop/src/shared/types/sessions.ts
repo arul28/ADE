@@ -630,9 +630,9 @@ export type PtyCreateArgs = {
    */
   launchedBySessionId?: string | null;
   /**
-   * `"agent"` when an agent started this shell for its chat (App Control). Such
-   * a shell is deleted once it is dead and nobody typed into it; see
-   * `agentShellCleanup`. Omitted means the user started it.
+   * `"agent"` when App Control started this shell, for a chat or chatless.
+   * Such a shell is deleted once it is dead and nobody typed into it, and a
+   * relaunch reuses it; see `agentShellCleanup`. Omitted means a plain shell.
    */
   launchedBy?: "agent";
   /**
@@ -948,16 +948,16 @@ export type ListSessionsArgs = {
   /**
    * Only the sessions attached to this chat (`chat_session_id`) — the chat
    * actions pane lists a chat's shells through it. Archived rows are the
-   * caller's to filter, exactly as they are for every other list.
+   * caller's to filter, unless `includeArchived` is false.
    */
   chatSessionId?: string;
   /**
-   * Leave archived rows out before `limit` is applied. Without it a page of
-   * the newest rows can be mostly archived shells, and a caller that drops
-   * them afterwards (another machine's Work list) gets a short page that
-   * misses live chats.
+   * `false` leaves archived rows out before `limit` is applied. Omitted keeps
+   * them, as before. Without it a page of the newest rows can be mostly
+   * archived shells, and a caller that drops them afterwards (another
+   * machine's Work list) gets a short page that misses live chats.
    */
-  excludeArchived?: boolean;
+  includeArchived?: boolean;
 };
 
 /**

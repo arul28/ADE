@@ -14,7 +14,7 @@ import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
-import { writeCarriesTypedInput, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeCarriesTypedInput, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -805,8 +805,8 @@ type PtyEntry = {
   /** Monotonic generation used to detect user takeover of deferred input. */
   userInputGeneration: number;
   /**
-   * An agent started this shell under a chat and nobody has typed into it yet,
-   * so it is still a candidate for `agentShellCleanup`. Cleared on first typing.
+   * App Control started this shell and nobody has typed into it yet, so it is
+   * still a candidate for `agentShellCleanup`. Cleared on first typing.
    */
   agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
@@ -1967,6 +1967,42 @@ function removeTranscriptRolloverTempFilesSync(transcriptPath: string): void {
       // Best-effort cleanup of a temp file left by an interrupted atomic write.
     }
   }
+}
+
+function removeTranscriptRolloverArtifactsSync(transcriptPath: string): void {
+  for (const artifactPath of [
+    transcriptRolloverStatePath(transcriptPath),
+    transcriptRolloverJournalPath(transcriptPath),
+    transcriptRolloverBackupPath(transcriptPath),
+  ]) {
+    try {
+      fs.unlinkSync(artifactPath);
+    } catch {
+      // Deletion is best effort and idempotent.
+    }
+  }
+  removeTranscriptRolloverTempFilesSync(transcriptPath);
+}
+
+/**
+ * A shell's transcript files: the log, its compressed generation, and rollover
+ * leftovers. Returns the files that exist but could not be removed (a missing
+ * file is the goal state, not a failure).
+ */
+function removeShellTranscriptFilesSync(transcriptPath: string): Array<{ path: string; code: string }> {
+  const failed: Array<{ path: string; code: string }> = [];
+  for (const filePath of [transcriptPath, `${transcriptPath}.gz`]) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      const code = typeof error === "object" && error != null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+      if (code !== "ENOENT") failed.push({ path: filePath, code });
+    }
+  }
+  removeTranscriptRolloverArtifactsSync(transcriptPath);
+  return failed;
 }
 
 function isSafeTranscriptOffset(value: unknown): value is number {
@@ -6164,8 +6200,8 @@ export function createPtyService({
   };
 
   /**
-   * The user typed into a shell an agent started: it is theirs now, so the
-   * dead-shell cleanup must never archive it. Only the user write paths call
+   * The user typed into a shell App Control started: it is theirs now, so the
+   * dead-shell cleanup must never delete or reuse it. Only the user write paths call
    * this — an agent's own `writeTerminal` input does not claim the shell.
    */
   const claimAgentShellForUser = (entry: PtyEntry, data: string): void => {
@@ -6188,9 +6224,29 @@ export function createPtyService({
     }
   };
 
-  // The process that owns the PTYs archives their dead agent shells.
-  sessionService.agentShells.start((error) => {
-    logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+  const removeShellTranscriptFiles = (transcriptPath: string): void => {
+    const failed = removeShellTranscriptFilesSync(transcriptPath);
+    if (failed.length) logger.warn("pty.shell_transcript_remove_failed", { files: failed });
+  };
+
+  // The process that owns the PTYs deletes their dead App Control shells, and
+  // owns the transcript files they leave. A shell swept from its own exit has
+  // not finished its close work yet (a rollover, the stream end), so its files
+  // go once that work settles; it is registered as soon as the exit returns.
+  sessionService.agentShells.start({
+    onError: (error) => {
+      logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+    },
+    removeTranscript: (transcriptPath, sessionId) => {
+      setImmediate(() => {
+        const pending = transcriptDependentWorkBySession.get(sessionId);
+        if (!pending) {
+          removeShellTranscriptFiles(transcriptPath);
+          return;
+        }
+        void pending.catch(() => {}).then(() => removeShellTranscriptFiles(transcriptPath));
+      });
+    },
   });
 
   const service = {
@@ -6323,12 +6379,14 @@ export function createPtyService({
       if (existingSession && !existingSession.tracked) {
         throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
+      // A fresh run (App Control's relaunch in an ended shell) is a new process,
+      // not a resume: it keeps no prior end state and gets its own start time.
+      const freshRun = args.freshRun === true && Boolean(existingSession);
       // Snapshot only a real terminal end state before reattach/backfill can
       // overwrite it. A row may still say `running` after its owning brain
       // died; capturing that stale state would make closeEntry restore a dead
       // relaunch to `running`. Leaving it null makes closeEntry persist the new
       // failure, while detached/completed/failed restore byte-for-byte.
-      const freshRun = args.freshRun === true && Boolean(existingSession);
       const priorEndState = existingSession && existingSession.status !== "running" && !freshRun
         ? {
           status: existingSession.status,
@@ -6529,6 +6587,15 @@ export function createPtyService({
       let transcriptJournalRecovered = false;
       let transcriptWriteDisabled = false;
       let transcriptLastErrorAt = 0;
+      // `args.freshRun`, not `freshRun`: a row deleted mid-relaunch is recreated
+      // under the same id and transcript path, and must not inherit its old log.
+      if (tracked && args.freshRun === true) {
+        // A fresh run starts a fresh log, so `app-control logs` shows this run
+        // and not the one it replaces. The old run's close work (rollover, stream
+        // end, summary) finishes first, so nothing it writes lands in the new log.
+        await transcriptDependentWorkBySession.get(sessionId)?.catch(() => {});
+        removeShellTranscriptFiles(transcriptPath);
+      }
       if (tracked) {
         try {
           fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
@@ -6648,21 +6715,9 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
-      } else if (args.launchedBy === "agent" && freshRun) {
-        // App Control is running its app again in this shell: tracked again,
-        // with its earlier stop or replacement forgotten.
-        try {
-          sessionService.agentShells.markAgentRelaunched(sessionId);
-          // A relaunch may run a different command; the row names what runs now.
-          if (freshRun && title && existingSession.title !== title && !existingSession.manuallyNamed) {
-            sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
-          }
-        } catch (error) {
-          logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
-        }
       } else if (args.launchedBy !== "agent") {
         // Someone resumed this shell by hand: it is theirs now, so the
-        // dead-shell cleanup must not archive it later. A no-op for any shell
+        // dead-shell cleanup must not delete it later. A no-op for any shell
         // the cleanup never tracked.
         try {
           sessionService.agentShells.markUserInput(sessionId);
@@ -7186,6 +7241,21 @@ export function createPtyService({
           ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
         });
         setRuntimeState(sessionId, "running");
+        if (freshRun && args.launchedBy === "agent") {
+          // Only once the new process holds the row: App Control is running its
+          // app again in this shell, so it is tracked again with its earlier
+          // stop or replacement forgotten. A spawn that failed above leaves the
+          // ended row exactly as it was.
+          try {
+            sessionService.agentShells.markAgentRelaunched(sessionId);
+            // A relaunch may run a different command; the row names what runs now.
+            if (title && existingSession.title !== title && !existingSession.manuallyNamed) {
+              sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
+            }
+          } catch (error) {
+            logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
+          }
+        }
         Promise.resolve()
           .then(async () => {
             const sha = await computeHeadShaBestEffort(cwd || worktreePath);
@@ -8142,7 +8212,7 @@ export function createPtyService({
      * `agentShellCleanup.canRelaunchIn`; also false while a process still
      * holds the shell.
      */
-    canRelaunchAgentShell(sessionId: string, scope: { laneId: string; chatSessionId: string | null }): boolean {
+    canRelaunchAgentShell(sessionId: string, scope: AgentShellRelaunchScope): boolean {
       if (!sessionId || liveEntryBySessionId(sessionId)) return false;
       try {
         return sessionService.agentShells.canRelaunchIn(sessionId, scope);
@@ -8154,11 +8224,7 @@ export function createPtyService({
 
     /** Keeps the dead-shell sweep off a shell a relaunch is about to reuse. */
     holdAgentShell(sessionId: string): () => void {
-      try {
-        return sessionService.agentShells.hold(sessionId);
-      } catch {
-        return () => {};
-      }
+      return sessionService.agentShells.hold(sessionId);
     },
 
     /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */
@@ -9229,18 +9295,7 @@ export function createPtyService({
     removeTranscriptRolloverArtifacts(transcriptPath: string): void {
       const normalized = typeof transcriptPath === "string" ? transcriptPath.trim() : "";
       if (!normalized) return;
-      for (const artifactPath of [
-        transcriptRolloverStatePath(normalized),
-        transcriptRolloverJournalPath(normalized),
-        transcriptRolloverBackupPath(normalized),
-      ]) {
-        try {
-          fs.unlinkSync(artifactPath);
-        } catch {
-          // Deletion is best effort and idempotent.
-        }
-      }
-      removeTranscriptRolloverTempFilesSync(normalized);
+      removeTranscriptRolloverArtifactsSync(normalized);
     },
 
     getResourceAttribution,
