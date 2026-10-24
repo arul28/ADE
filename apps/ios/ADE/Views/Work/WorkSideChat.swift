@@ -686,6 +686,8 @@ extension WorkSessionDestinationView {
           return nil
         }()
         try await syncService.endSideChat(mainSessionId: sessionId, expectedSideSessionId: shownSideSessionId)
+        // A summary read that started before End still names the side chat.
+        chatSummaryRefreshGeneration &+= 1
         // Once the pointer ages out, the lookup falls back to this view's
         // summaries, so none of them may still name the ended side chat.
         if let shownSideSessionId,
