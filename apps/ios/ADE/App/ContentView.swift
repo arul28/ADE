@@ -591,11 +591,12 @@ private struct DuoAppNavigationSync: ViewModifier {
 /// The root tab bar is hidden while a tab shows a detail screen. The tab's own
 /// content asks for it with `.adeRootTabBarHidden()` (a chat, a new chat, a
 /// file detail, a terminal); this reads that preference at the tab root and
-/// applies the ONE visibility the native `TabView` honors. Before the Duo
-/// redesign the old custom bar sat inside the Work list and was covered by a
-/// pushed chat; a native tab bar survives a push, so a chat showed the five
-/// app tabs underneath its composer. `duo.isWide` still hides the bar on the
-/// inner display, where the edge bar carries the tabs.
+/// applies the ONE visibility the native `TabView` honors, because a native
+/// tab bar survives a push and would otherwise sit under a chat's composer.
+/// `duo.isWide` also hides it on the inner display, where the edge bar carries
+/// the tabs. The bottom bar follows `duo.isWide` alone: it holds the inner
+/// display's tabs, and a detail screen hiding the tab bar must not bring it
+/// up on a phone.
 private struct ADERootTabBarVisibilityModifier: ViewModifier {
   @Environment(\.duoLayout) private var duo
   @State private var detailHidesTabBar = false
@@ -605,7 +606,8 @@ private struct ADERootTabBarVisibilityModifier: ViewModifier {
       .onPreferenceChange(ADERootTabBarHiddenPreferenceKey.self) { hidden in
         if detailHidesTabBar != hidden { detailHidesTabBar = hidden }
       }
-      .duoHidesTabBar(duo.isWide || detailHidesTabBar)
+      .toolbar(duo.isWide || detailHidesTabBar ? .hidden : .automatic, for: .tabBar)
+      .toolbar(duo.isWide ? .automatic : .hidden, for: .bottomBar)
   }
 }
 

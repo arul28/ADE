@@ -231,6 +231,7 @@ import {
   formatChatPrHeaderLabel,
   mergeSubagentSnapshots,
   snapshotFromRuntimeSubagent,
+  chatInfoRowChildId,
   withRosterSubagentSnapshots,
 } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
@@ -5406,6 +5407,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     lanes,
     sessions: (addMode ? tileableDisplaySessions : openDrawerSessions) as TuiChatSessionSummary[],
     foreign: addMode ? [] : workForeignSessions,
+    nestSubagents: !addMode,
     activeSessionId,
     draftSessionIds: workDraftSessionIds,
     expandedShelves: workExpandedShelves,
@@ -17336,14 +17338,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           }
           return;
         }
-        // A filed subagent chat opens as the chat it is (the Work list has no
-        // row for it any more), the way the desktop actions pane opens it.
-        const childChat = selectedSnapshot
-          ? displaySessionsRef.current.find((session) => (
-            session.sessionId === selectedSnapshot.id
-            && session.spawnKind === "subagent"
-            && session.orchestrationParentSessionId === activeSessionIdRef.current
-          )) ?? null
+        // A row that stands for a child chat opens as the chat it is, the way
+        // the desktop actions pane opens it (a filed subagent has no Work-list
+        // row to open it from).
+        const childChatId = selectedSnapshot ? chatInfoRowChildId(selectedSnapshot) : null;
+        const childChat = childChatId && childChatId !== activeSessionIdRef.current
+          ? displaySessionsRef.current.find((session) => session.sessionId === childChatId) ?? null
           : null;
         if (childChat) {
           if (childChat.laneId) {

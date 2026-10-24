@@ -1,8 +1,9 @@
 // node scripts/perf/ui/gpu-trace.mjs <seconds> — browser-wide CDP trace; prints draw count + main-thread rendering ms
 import { connect } from "./cdp-client.mjs";
+import { cdpUrl } from "./target.mjs";
 
 const secs = Number(process.argv[2] ?? 8);
-const info = await (await fetch("http://127.0.0.1:9222/json/version")).json();
+const info = await (await fetch(cdpUrl("/json/version"))).json();
 const cdp = await connect(info.webSocketDebuggerUrl);
 const events = [];
 cdp.on("Tracing.dataCollected", ({ value = [] }) => events.push(...value));

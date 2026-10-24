@@ -2570,9 +2570,13 @@ is the one reader of that preference; it turns the request into the single
 `.toolbar(.hidden, for: .tabBar)` the native `TabView` honors. The Work tab
 also emits the preference from its own root whenever its navigation path is
 non-empty, so every pushed route — a chat, a new chat, an import — loses the
-five-tab bar. Before the Duo redesign the old custom bar lived inside the Work
-list and a pushed chat simply covered it; a native tab bar survives a push, so
-a chat showed the app tabs under its composer. `ADEUIKitAppearance.configureTabBar()`
+five-tab bar; a native tab bar survives a push and would otherwise sit under
+the chat's composer. A display whose tabs run down an edge rail (the Duo's
+closed outer display) is exempt: there the rail is the tab bar, and hiding it
+leaves an empty glass capsule under the composer, so the chat destination and
+the Work root both stop asking for it on that display. On the Duo's inner
+display (`duo.isWide`) the tab bar is always hidden and the bottom bar carries
+the tabs; the bottom bar follows `duo.isWide` alone. `ADEUIKitAppearance.configureTabBar()`
 (called from `ContentView.onAppear`) also tunes the underlying UIKit `UITabBar`
 appearance so any system surface that still falls through (sheets,
 push-controllers built from UIKit) matches the SwiftUI chrome.
@@ -3266,13 +3270,22 @@ The iOS pieces:
 - By-status, by-time, and by-lane close with a **quiet zone**: a `Snoozed`
   shelf above a `Settled` shelf, both collapsed by default behind an inverted
   `shelf-open:<id>` marker. The `shelf-open:` namespace is deliberately separate
-  from `lane-open:`, which `pruneStaleQuietOpenMarkers` sweeps. By-lane used to
-  be exempt, keeping settled rows inside their lane; a settled singleton lane is
-  headerless, so there was no header to collapse and the finished row stayed on
-  screen permanently. Lifting it gives every finished chat the same one-tap
-  shelf, and the shelf row keeps its lane chip. Archived rows are never lifted
-  onto the Settled shelf; they stay under "Archived" so filing them twice
-  cannot hide them.
+  from `lane-open:`, which `pruneStaleQuietOpenMarkers` sweeps. In by-lane a
+  settled row is lifted too: a singleton lane is headerless, so it would have
+  no header to fold a finished row behind, and the shelf row keeps its lane
+  chip. A pinned lane keeps its settled rows, because the pin means "keep this
+  where I can see it"; a pinned lane always has a header, and when everything
+  in it is settled the quiet fold collapses it to one thin line. Snoozed rows
+  leave a pinned lane like any other. Archived rows are never lifted onto the
+  Settled shelf; they stay under "Archived" so filing them twice cannot hide
+  them.
+- The singleton (headerless) rule counts only the top-level rows that stay in
+  the lane, so a lane with one live row and several lifted settled or snoozed
+  rows renders headerless.
+- "Go to lane" frames the lane by opening it (and the Working shelf). When every
+  row of the lane sits on the Snoozed or Settled shelf, there is no lane
+  section to scroll to, so it opens both shelves for that navigation and
+  scrolls to the first shelf holding one of the lane's rows.
 - `WorkSessionGrouping.swift` also owns `WorkViewStateStore`, a versioned
   App-Group map keyed by project id plus host identity. `WorkRootScreen` swaps
   search, lane/status filters, organization, and collapsed ids when either
@@ -3333,14 +3346,23 @@ listed in [the session provider signal boundaries](../terminals-and-sessions/REA
 
 A nested same-lane subagent is not in the Work list. It lives only in its
 parent's Chat Info, like a native provider subagent, and tapping it there opens
-it. The parent row shows one mark instead: `person.2`, the child count, and the
+it. Only an agent chat nests its subagents: a subagent of a tracked CLI or a
+terminal stays a top-level row, because a terminal has no Chat Info to list it.
+The parent row shows one mark instead: `person.2`, the child count, and the
 worst child state (a red cross for failed, an amber dot for needs you, a dashed
-ring for running). VoiceOver reads it as "2 subagents, 1 needs you". Chat Info
-reads child chats from the Work list's own rows, so a nested child the
-transcript has not named yet still appears, and a child waiting on you reads
-**Needs you**. Peers stay top-level. Grandchildren flatten into the root
-parent's mark. A quiet parent (snoozed or settled) pulls not-done children up;
-done children stay nested. Cross-lane children, and children whose parent is
+ring for running). VoiceOver reads it as "2 subagents, 1 needs you" ("2 need
+you" for more than one). Chat Info reads child chats from the Work list's own
+rows on the chat's machine. It lists every session the list files under that
+chat, grandchildren included: rows the transcript already names (`chat:<id>`
+or the bare id) stay where they are, and the rest are appended oldest first.
+Any row whose child chat on that machine is waiting on you reads **Needs you**,
+peers and children in other lanes included. A child's status comes from its
+canonical phase: starting, running, stale and needs-you read running; failed;
+stopped; ready, idle, ended and settled read completed. Opening Chat Info
+rebuilds this list at once from the live summaries, before the host's roster
+answers. Peers stay top-level. Grandchildren flatten into the root parent's
+mark. A quiet parent (snoozed or settled) pulls not-done children up; done
+children stay nested. Cross-lane children, and children whose parent is
 filtered out by search, stay top-level with the lineage chip. Demote un-nests.
 Children on another machine nest the same way: roster rows carry
 `spawnKind` and `orchestrationParentSessionId` (from the live chat, its
@@ -3351,7 +3373,7 @@ sends neither, and its children stay top-level rows.
 A child opened from Chat Info, and a parent opened from a child's breadcrumb,
 both go through the Work tab's navigation request. The tab handles that request
 at its root rather than on the list, because SwiftUI cancels a list's `.task`
-while a chat is pushed over it: before, such a request waited until Back.
+while a chat is pushed over it, which would hold the request until Back.
 
 Non-prominent rows recede to 70% opacity, which is how the few rows that want a
 human stand out with no banner anywhere on screen. Settled resolves to a nil

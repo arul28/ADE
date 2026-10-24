@@ -75,7 +75,7 @@ final class WorkSessionGroupingTests: XCTestCase {
 
     XCTAssertEqual(presentation.sessionGroups.first?.isHeaderless, true)
     XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
-    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(), ["sub-1", "sub-2"])
+    XCTAssertEqual(nestedSubagentIds(presentation, parentId: "chat-1"), ["sub-1", "sub-2"])
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
@@ -102,16 +102,20 @@ final class WorkSessionGroupingTests: XCTestCase {
       lanes: [lane]
     )
 
-    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["cli-sub"])
+    XCTAssertEqual(nestedSubagentIds(presentation, parentId: "chat-1"), ["cli-sub"])
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
   func testNestedMarkAttentionDoesNotTreatUsageLimitAsFailed() throws {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let parent = makeSession(id: "chat-1", laneId: lane.id)
     var child = makeSession(
       id: "sub-1",
-      laneId: "lane-a",
+      laneId: lane.id,
       status: "ended",
-      runtimeState: "exited"
+      runtimeState: "exited",
+      spawnKind: .subagent,
+      orchestrationParentSessionId: "chat-1"
     )
     child.lastTurnFailedAt = iso(now)
     child.exitCode = 1
@@ -134,15 +138,18 @@ final class WorkSessionGroupingTests: XCTestCase {
       provider: "claude",
       fireAt: iso(now.addingTimeInterval(180))
     )
-    XCTAssertEqual(
-      workNestedSubagentDrawerAttention([child], chatSummaries: ["sub-1": summary], now: now),
-      .none
-    )
+    func markStatus() -> WorkNestedStatus? {
+      let index = workIndexNestedSubagents(
+        sessions: [parent, child],
+        chatSummaries: ["sub-1": summary],
+        now: now,
+        visibleParentIds: [parent.id, child.id]
+      )
+      return workNestedSubagentMarks(from: index, chatSummaries: ["sub-1": summary], now: now)["chat-1"]?.status
+    }
+    XCTAssertEqual(markStatus(), WorkNestedStatus.none)
     summary.usageLimitResume = nil
-    XCTAssertEqual(
-      workNestedSubagentDrawerAttention([child], chatSummaries: ["sub-1": summary], now: now),
-      .failed
-    )
+    XCTAssertEqual(markStatus(), .failed)
   }
 
   func testPresentationSignatureChangesWhenNestedUsageLimitArrives() throws {
@@ -204,11 +211,11 @@ final class WorkSessionGroupingTests: XCTestCase {
       orderedLanes: [lane],
       now: now
     )
-    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.status, .failed)
-    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.statusCount, 1)
+    XCTAssertEqual(subagentMark(failed, parentId: "chat-1")?.status, .failed)
+    XCTAssertEqual(subagentMark(failed, parentId: "chat-1")?.statusCount, 1)
     XCTAssertEqual(
-      nestedSubagentGroup(parked, parentId: "chat-1")?.status,
-      WorkNestedDrawerStatus.none
+      subagentMark(parked, parentId: "chat-1")?.status,
+      WorkNestedStatus.none
     )
     XCTAssertNotEqual(failed, parked)
   }
@@ -231,7 +238,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
 
     XCTAssertEqual(presentation.displaySessionIds, ["chat-1"])
-    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "chat-1"))
+    XCTAssertNil(nestedSubagentIds(presentation, parentId: "chat-1"))
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
@@ -319,7 +326,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(presentation.sessionGroups.map(\.id), ["status:snoozed"])
     XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
     XCTAssertEqual(
-      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(),
+      nestedSubagentIds(presentation, parentId: "chat-1"),
       ["sub-1", "sub-2"]
     )
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
@@ -347,10 +354,10 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
 
     XCTAssertEqual(
-      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id).sorted(),
+      nestedSubagentIds(presentation, parentId: "chat-1"),
       ["leaf", "mid"]
     )
-    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "mid"))
+    XCTAssertNil(nestedSubagentIds(presentation, parentId: "mid"))
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
     XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
   }
@@ -392,7 +399,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
 
     XCTAssertEqual(
-      nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id),
+      nestedSubagentIds(presentation, parentId: "chat-1"),
       ["cli-child"]
     )
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
@@ -419,9 +426,8 @@ final class WorkSessionGroupingTests: XCTestCase {
       lanes: [lane]
     )
 
-    let shells = presentation.nestedGroupsByParentId["chat-1"]?.first { $0.kind == .shells }
-    XCTAssertEqual(shells?.children.map(\.id), ["shell-1"])
-    XCTAssertNil(presentation.nestedGroupsByParentId["mid"]?.first { $0.kind == .shells })
+    XCTAssertEqual(presentation.shellDrawerByParentId["chat-1"]?.children.map(\.id), ["shell-1"])
+    XCTAssertNil(presentation.shellDrawerByParentId["mid"])
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
@@ -472,9 +478,9 @@ final class WorkSessionGroupingTests: XCTestCase {
       lanes: [lane]
     )
 
-    XCTAssertNil(nestedSubagentGroup(presentation, parentId: "chat-1"))
+    XCTAssertNil(nestedSubagentIds(presentation, parentId: "chat-1"))
     XCTAssertEqual(
-      nestedSubagentGroup(presentation, parentId: "mid")?.children.map(\.id),
+      nestedSubagentIds(presentation, parentId: "mid"),
       ["leaf"]
     )
     XCTAssertEqual(presentation.topLevelDisplaySessionIds.sorted(), ["chat-1", "mid"])
@@ -502,7 +508,10 @@ final class WorkSessionGroupingTests: XCTestCase {
       now: now
     )
 
-    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertEqual(
+      nestedSubagentIds(presentation, parentId: "chat-1", chatSummaries: [child.id: summary]),
+      ["sub-1"]
+    )
     XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
@@ -534,7 +543,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       now: now
     )
 
-    XCTAssertEqual(nestedSubagentGroup(presentation, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertEqual(nestedSubagentIds(presentation, parentId: "chat-1"), ["sub-1"])
     XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["chat-1"])
   }
 
@@ -572,8 +581,11 @@ final class WorkSessionGroupingTests: XCTestCase {
       orderedLanes: [lane],
       now: now
     )
-    XCTAssertNil(nestedSubagentGroup(flat, parentId: "chat-1"))
-    XCTAssertEqual(nestedSubagentGroup(nested, parentId: "chat-1")?.children.map(\.id), ["sub-1"])
+    XCTAssertNil(nestedSubagentIds(flat, parentId: "chat-1"))
+    XCTAssertEqual(
+      nestedSubagentIds(nested, parentId: "chat-1", chatSummaries: [child.id: summary]),
+      ["sub-1"]
+    )
     XCTAssertNotEqual(flat, nested)
   }
 
@@ -644,9 +656,9 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   // MARK: - Quiet lanes stay orthogonal
 
-  /// A settled singleton lane no longer exists as a lane group: it files onto
-  /// the Settled shelf, which is quiet and collapsed by default. This is the
-  /// shape that used to leak a permanent full row on a phone.
+  /// A settled singleton lane is not a lane group: it files onto the Settled
+  /// shelf, which is quiet and collapsed by default, so no full settled row
+  /// stays on a phone.
   func testSettledSingletonLaneFilesOntoTheSettledShelf() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let settled = makeSession(id: "s-1", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60)))
@@ -1864,16 +1876,31 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
-  private func nestedSubagentGroup(
+  /// The subagents nested under `parentId`, sorted; nil when none are.
+  private func nestedSubagentIds(
+    _ presentation: WorkRootSessionPresentation,
+    parentId: String,
+    chatSummaries: [String: AgentChatSessionSummary] = [:]
+  ) -> [String]? {
+    // The children Chat Info files under the parent, minus any the list still
+    // shows on its own.
+    let ids = workChatChildRoster(
+      parentId: parentId,
+      sessions: presentation.displaySessions,
+      chatSummaries: chatSummaries,
+      now: now
+    ).filed.map(\.id).filter { !presentation.topLevelDisplaySessionIds.contains($0) }.sorted()
+    return ids.isEmpty ? nil : ids
+  }
+
+  private func subagentMark(
     _ presentation: WorkRootSessionPresentation,
     parentId: String
-  ) -> WorkSessionChildGroup? {
-    presentation.nestedGroupsByParentId[parentId]?.first { $0.kind == .subagents }
+  ) -> WorkNestedSubagentMark? {
+    presentation.subagentMarkByParentId[parentId]
   }
 
   private func hasNestedSubagentGroups(_ presentation: WorkRootSessionPresentation) -> Bool {
-    presentation.nestedGroupsByParentId.values.contains { groups in
-      groups.contains { $0.kind == .subagents }
-    }
+    !presentation.subagentMarkByParentId.isEmpty
   }
 }

@@ -983,11 +983,7 @@ struct WorkSessionDestinationView: View {
           duoPane?.open(.proof)
         } else {
           // The proof drawer replaces this sheet.
-          chatInfoPresented = false
-          Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
-            artifactDrawerPresented = true
-          }
+          closeChatInfoThen { artifactDrawerPresented = true }
         }
       },
       embedded: embedded
@@ -2455,6 +2451,10 @@ struct WorkSessionDestinationView: View {
   @MainActor
   private func handleChatInfoPresentationChange(_ presented: Bool) {
     guard presented else { return }
+    // Now, before the host answers: the child rows come from the Work list's
+    // copy, which stops rebuilding while a chat covers it on a phone, and
+    // `refreshSubagentSnapshots` reads each child's live summary cache first.
+    refreshSubagentSnapshots()
     Task { await refreshRemoteSubagentSnapshots() }
   }
 
@@ -3010,7 +3010,9 @@ struct WorkSessionDestinationView: View {
   /// a nested one is listed nowhere but here. Tapping it opens it.
   @MainActor
   func handleSubagentSelection(_ snapshot: WorkSubagentSnapshot) async {
-    if let childId = workChatInfoChildSessionId(snapshot), openChildChat(childId) {
+    let childId = workChatInfoRosterChildId(snapshot, roster: chatChildRoster)
+      ?? workChatInfoChildSessionId(snapshot)
+    if let childId, openChildChat(childId) {
       return
     }
     toggleExpandedSubagentDetail(snapshot.taskId)
@@ -3026,7 +3028,7 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func openChildChat(_ childId: String) -> Bool {
     let laneId: String?
-    if let rowLaneId = chatChildRoster.laneIdBySessionId[childId] {
+    if let rowLaneId = chatChildRoster.childrenById[childId]?.laneId {
       laneId = rowLaneId
     } else if !isRemoteMachineChat,
               syncService.remoteMachineChat(sessionId: sessionId) == nil,
@@ -3039,15 +3041,23 @@ struct WorkSessionDestinationView: View {
     if chatInfoPresented {
       // The sheet goes first: the request replaces this chat, and a sheet
       // still up over it would be torn down mid-presentation.
-      chatInfoPresented = false
-      Task { @MainActor in
-        try? await Task.sleep(for: .milliseconds(350))
-        syncService.requestedWorkSessionNavigation = request
-      }
+      closeChatInfoThen { syncService.requestedWorkSessionNavigation = request }
     } else {
       syncService.requestedWorkSessionNavigation = request
     }
     return true
+  }
+
+  /// Dismisses Chat Info, then runs `action` once the sheet's dismissal has
+  /// finished: presenting or navigating while it is still animating out tears
+  /// it down mid-transition.
+  @MainActor
+  func closeChatInfoThen(_ action: @escaping @MainActor () -> Void) {
+    chatInfoPresented = false
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(350))
+      action()
+    }
   }
 
   @MainActor
@@ -3566,7 +3576,9 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         }
         .toolbar(displayHasEdgeRail ? .automatic : .hidden, for: .tabBar)
         .toolbar(controlsOnRail ? .automatic : .hidden, for: .navigationBar)
-        .adeRootTabBarHidden()
+        // The root applies the tab bar the native `TabView` honors, so it must
+        // hear the same edge-rail exemption the line above makes.
+        .adeRootTabBarHidden(!displayHasEdgeRail)
     case .column:
       content
         // Floats over the thread exactly as the pushed header does; only the

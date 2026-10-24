@@ -6,6 +6,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatPermissionMode,
+  AgentChatSpawnKind,
 } from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
 import type { ChatLaunchEvent } from "./chatLaunch";
@@ -1136,7 +1137,7 @@ export type SyncRosterChat = {
    * under its parent the way the machine's own Work list does. Omitted for
    * chats with no lineage; older hosts omit it and older phones ignore it.
    */
-  spawnKind?: "subagent" | "peer" | null;
+  spawnKind?: AgentChatSpawnKind | null;
   orchestrationParentSessionId?: string | null;
   /**
    * Identity-session marker used to reject stale/legacy roster rows on clients.

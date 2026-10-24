@@ -800,9 +800,7 @@ extension RemoteRosterChat {
     if let title = nonEmptyTrimmed(title) { payload["title"] = title }
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
-    if let spawnKind, spawnKind != .legacyUntyped {
-      payload["spawnKind"] = spawnKind == .subagent ? "subagent" : "peer"
-    }
+    if let spawnKind = spawnKind?.wireValue { payload["spawnKind"] = spawnKind }
     if let parentId = nonEmptyTrimmed(orchestrationParentSessionId) {
       payload["orchestrationParentSessionId"] = parentId
     }

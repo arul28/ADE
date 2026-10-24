@@ -19,9 +19,13 @@ import type { PrSummary } from "../../../desktop/src/shared/types/prs";
 
 import type { TokenStats, TuiChatSessionSummary } from "./adeApi";
 import { toWorkSessionSummary } from "./workRow";
-import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../../desktop/src/renderer/lib/terminalAttention";
 import { primarySessionLabel } from "../../../desktop/src/renderer/lib/sessions";
-import type { CanonicalSessionPhase } from "../../../desktop/src/shared/sessionCanonicalState";
+import { orphanRowChildSessionCandidate } from "../../../desktop/src/shared/chatOrphanRunReconcile";
+import {
+  childChatPaneStatus,
+  filedSubagentsOf,
+  spawnNestingPhase,
+} from "../../../desktop/src/shared/sessionSpawnNesting";
 
 function compactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -102,30 +106,20 @@ export function mergeSubagentSnapshots(
   return [...byId.values()];
 }
 
-function rosterPhaseStatus(phase: CanonicalSessionPhase): SubagentSnapshot["status"] {
-  switch (phase) {
-    case "starting":
-    case "running":
-    case "stale":
-    case "needs_you":
-      return "running";
-    case "failed":
-      return "failed";
-    case "stopped":
-      return "stopped";
-    default:
-      return "completed";
-  }
+/** The child chat a chat-info row stands for (`chat:<id>` or a bare id). */
+export function chatInfoRowChildId(snapshot: Pick<SubagentSnapshot, "id">): string | null {
+  return orphanRowChildSessionCandidate(snapshot.id);
 }
 
 /**
- * The chat's filed subagents from the session roster. The Work list no longer
- * shows them, so this pane is where they are reached: a child the transcript
- * has no row for (a promoted peer, an old or windowed transcript) gets a row,
- * and a child waiting on the user is marked `needsYou`. Same rule as the
- * desktop actions pane: same lane, `spawnKind: "subagent"`, parent = this chat.
+ * The chat's child chats from the session list, by the same rules as the
+ * desktop actions pane (`useChatChildRoster`): every subagent the Work list
+ * files under this chat (`filedSubagentsOf`, grandchildren included) that the
+ * transcript has no row for is appended, and any row whose chat is waiting on
+ * the user is marked `needsYou`. A row whose chat is known and not at rest
+ * takes its status from the chat's current phase.
  *
- * Returns the input array when the roster adds nothing.
+ * Returns the input array when the session list changes nothing.
  */
 export function withRosterSubagentSnapshots(
   snapshots: SubagentSnapshot[],
@@ -134,46 +128,45 @@ export function withRosterSubagentSnapshots(
 ): SubagentSnapshot[] {
   const parentId = parentSessionId?.trim();
   if (!parentId || sessions.length === 0) return snapshots;
-  const parentLaneId = sessions.find((session) => session.sessionId === parentId)?.laneId;
-  if (!parentLaneId) return snapshots;
-  const children = sessions.filter((session) => (
-    session.sessionId !== parentId
-    && !session.archivedAt
-    && session.spawnKind === "subagent"
-    && session.orchestrationParentSessionId?.trim() === parentId
-    && session.laneId === parentLaneId
-  ));
-  if (children.length === 0) return snapshots;
-  const phaseById = new Map<string, CanonicalSessionPhase>();
-  for (const child of children) {
-    phaseById.set(child.sessionId, sessionCanonicalUiState(canonicalInputFromSummary(toWorkSessionSummary(child))).phase);
-  }
-  const rowChildId = (snapshot: SubagentSnapshot): string => (
-    snapshot.id.startsWith("chat:") ? snapshot.id.slice("chat:".length) : snapshot.id
-  );
+  const nowMs = Date.now();
+  const summaries = sessions.map((session) => toWorkSessionSummary(session));
+  const summaryById = new Map(summaries.map((summary) => [summary.id, summary] as const));
+  const providerById = new Map(sessions.map((session) => [session.sessionId, session.provider] as const));
+  const phaseOfChild = (id: string | null) => {
+    const summary = id ? summaryById.get(id) : undefined;
+    return summary ? spawnNestingPhase(summary, nowMs) : null;
+  };
   let changed = false;
   const covered = new Set<string>();
   const out = snapshots.map((snapshot) => {
-    const childId = rowChildId(snapshot);
-    covered.add(childId);
-    const needsYou = phaseById.get(childId) === "needs_you";
-    if ((snapshot.needsYou === true) === needsYou) return snapshot;
+    const childId = chatInfoRowChildId(snapshot);
+    if (childId) covered.add(childId);
+    const phase = phaseOfChild(childId);
+    if (!phase) return snapshot;
+    // A child chat's row reads the chat as it is now: the transcript's row can
+    // still say running after the child stopped, or done after it started
+    // again (the desktop pane's self-heal makes the same correction). A chat
+    // at rest between turns may be a delegate that has not started yet, so
+    // its row keeps what the transcript says, as on desktop.
+    const needsYou = phase === "needs_you";
+    const status = phase === "ready" || phase === "idle" ? snapshot.status : childChatPaneStatus(phase);
+    if ((snapshot.needsYou === true) === needsYou && snapshot.status === status) return snapshot;
     changed = true;
-    return { ...snapshot, needsYou };
+    return { ...snapshot, needsYou, status };
   });
-  for (const child of children) {
-    if (covered.has(child.sessionId)) continue;
+  for (const child of filedSubagentsOf(summaries, parentId, nowMs)) {
+    if (covered.has(child.id)) continue;
     changed = true;
-    const phase = phaseById.get(child.sessionId)!;
+    const phase = spawnNestingPhase(child, nowMs);
     out.push({
-      id: child.sessionId,
-      name: primarySessionLabel(toWorkSessionSummary(child)),
+      id: child.id,
+      name: primarySessionLabel(child),
       kind: "subagent",
-      status: rosterPhaseStatus(phase),
+      status: childChatPaneStatus(phase),
       summary: "",
-      provider: child.provider ?? null,
+      provider: providerById.get(child.id) ?? null,
       taskType: "subagent",
-      startedAt: child.startedAt ?? null,
+      startedAt: child.startedAt || null,
       endedAt: child.endedAt ?? null,
       needsYou: phase === "needs_you",
     });

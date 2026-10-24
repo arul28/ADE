@@ -1,8 +1,8 @@
 // node scripts/perf/ui/chat-switch.mjs [rounds]
 // Click through N chat session cards in the Work sidebar; measure time-to-content and long tasks per switch.
 // --hash, or a file: page (the packaged app), navigates to #/work; see target.mjs.
-import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
-const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/list`)).json();
+import { cdpUrl, findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
+const list = await (await fetch(cdpUrl("/json/list"))).json();
 const page = findPage(list);
 const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();

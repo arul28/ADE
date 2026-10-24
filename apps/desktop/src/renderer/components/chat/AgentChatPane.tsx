@@ -4577,6 +4577,12 @@ export function AgentChatPane({
   const [appControlOpen, setAppControlOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).appControlOpen,
   );
+  /** The actions pane takes the side column; the device viewers give it up. */
+  const openChatActionsPane = useCallback(() => {
+    setIosSimulatorOpen(false);
+    setAppControlOpen(false);
+    setChatActionsOpen(true);
+  }, []);
   const [appControlAvailable, setAppControlAvailable] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
@@ -6039,7 +6045,9 @@ export function AgentChatPane({
         variant?: string;
         note?: string;
       }>).detail ?? {};
-      if (detail.sessionId && selectedSessionId && detail.sessionId !== selectedSessionId) return;
+      // An event for a named chat is that chat's alone: a pane showing another
+      // chat, or no chat yet (a draft tile), leaves it to the right pane.
+      if (detail.sessionId && detail.sessionId !== selectedSessionId) return;
       if (isLocalForkDetail(detail)) {
         applyLocalForkPrefill(
           typeof detail.note === "string" && detail.note.trim()
@@ -6050,10 +6058,8 @@ export function AgentChatPane({
       }
       if (event.type !== "ade:chat:open-info") return;
       // Served now, so the held copy must not reopen the pane later.
-      if (detail.sessionId && detail.sessionId === selectedSessionId) takeChatActionsPaneRequest(selectedSessionId);
-      setIosSimulatorOpen(false);
-      setAppControlOpen(false);
-      setChatActionsOpen(true);
+      if (detail.sessionId && isTileVisible) takeChatActionsPaneRequest(selectedSessionId);
+      openChatActionsPane();
 
       const taskId = typeof detail.taskId === "string" ? detail.taskId : null;
       if (!taskId) return;
@@ -6076,7 +6082,7 @@ export function AgentChatPane({
       window.removeEventListener("ade:chat:card-action", handler);
       window.removeEventListener("ade:chat:open-info", handler);
     };
-  }, [localHandoffOpen, selectedSessionId, selectedSubagentSnapshots]);
+  }, [isTileVisible, localHandoffOpen, openChatActionsPane, selectedSessionId, selectedSubagentSnapshots]);
   // The form belongs to the chat it opened on. A handoff selects the new chat,
   // and the user can switch chats with the form open; a form left open would
   // then hand off the other chat.
@@ -6395,10 +6401,8 @@ export function AgentChatPane({
       return;
     }
     markChatActionsAutoOpened();
-    setIosSimulatorOpen(false);
-    setAppControlOpen(false);
-    setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTaskCount]);
+    openChatActionsPane();
+  }, [chatActionsOpen, openChatActionsPane, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTaskCount]);
 
   const persistParallelLaunchState = useCallback(async (
     state: AgentChatParallelLaunchState | null,
@@ -7539,19 +7543,6 @@ export function AgentChatPane({
   useEffect(() => {
     if (!chatActionsAvailable && chatActionsOpen) setChatActionsOpen(false);
   }, [chatActionsAvailable, chatActionsOpen]);
-  // A Work row's subagent mark selects this chat and asks for its actions pane
-  // in the same press; the request is held until the chat is on screen AND
-  // the pane can show. Declared after the per-chat drawer restore and the
-  // close-when-unavailable effect above, so neither closes it again: a newly
-  // selected chat's lane resolves a render later, and taking the request
-  // before then opened the pane only for that effect to shut it.
-  useEffect(() => {
-    if (!selectedSessionId || !chatActionsAvailable) return;
-    if (!takeChatActionsPaneRequest(selectedSessionId)) return;
-    setIosSimulatorOpen(false);
-    setAppControlOpen(false);
-    setChatActionsOpen(true);
-  }, [selectedSessionId, chatActionsAvailable]);
   const handoffTargetDescriptor = useMemo(
     () => (handoffModelId ? (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey) ?? null) : null),
     [handoffModelId, modelCatalogScopeKey],
@@ -9251,8 +9242,16 @@ export function AgentChatPane({
   // Before the show handler registers: a show held while this chat was out of
   // view is delivered as the handler registers, and it must not be closed
   // again by this reset in the same commit.
+  // Null until the first run, so mount resets exactly as a switch does.
+  const transientResetKeyRef = useRef<{ sessionId: string | null; laneId: string | null } | null>(null);
   useEffect(() => {
-    setChatActionsOpen(false);
+    // A chat whose lane resolves a render after it was selected has not moved
+    // anywhere, so its actions pane stays as it is (a pane the Work row's
+    // subagent mark asked for would otherwise close as soon as it opened).
+    const previous = transientResetKeyRef.current;
+    const laneOnlyResolved = previous != null && previous.sessionId === selectedSessionId && previous.laneId == null;
+    transientResetKeyRef.current = { sessionId: selectedSessionId, laneId: laneId ?? null };
+    if (!laneOnlyResolved) setChatActionsOpen(false);
     proofShowTokenRef.current += 1;
     setProofShowRequested(false);
     setHandoffBusy(false);
@@ -9267,6 +9266,14 @@ export function AgentChatPane({
     // The full composer bucket effect above owns draft/context hydration for
     // session and lane switches; this effect resets transient chat UI only.
   }, [selectedSessionId, laneId]);
+  // A Work row's subagent mark selects this chat and asks for its actions pane
+  // in the same press (`requestChatActionsPane`). Taken here, after the reset
+  // above (which closes the pane on every switch), and only by the visible
+  // tile once the pane can show; until then the request waits (it expires).
+  useEffect(() => {
+    if (!selectedSessionId || !isTileVisible || !chatActionsAvailable) return;
+    if (takeChatActionsPaneRequest(selectedSessionId)) openChatActionsPane();
+  }, [chatActionsAvailable, isTileVisible, openChatActionsPane, selectedSessionId, laneId]);
   const openAppControlDrawer = useCallback(() => {
     setAppControlAvailable(true);
     setChatActionsOpen(false);

@@ -17378,11 +17378,11 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(
-      presentation.nestedGroupsByParentId["chat-parent"]?.first { $0.kind == .shells }?.children.map(\.id),
+      presentation.shellDrawerByParentId["chat-parent"]?.children.map(\.id),
       ["shell-older", "shell-newer"]
     )
     XCTAssertEqual(
-      presentation.nestedGroupsByParentId["chat-parent"]?.first { $0.kind == .shells }?.collapsedSectionId,
+      presentation.shellDrawerByParentId["chat-parent"]?.collapsedSectionId,
       "chat:chat-parent"
     )
     XCTAssertFalse(presentation.topLevelDisplaySessionIds.contains("shell-older"))

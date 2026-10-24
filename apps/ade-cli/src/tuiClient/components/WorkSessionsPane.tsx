@@ -15,8 +15,8 @@ import type {
 } from "../workListModel";
 import type { SessionStatusGlyph } from "../../../../desktop/src/shared/sessionStatusPresentation";
 import {
-  NESTED_DRAWER_STATUS_PRESENTATION,
-  type NestedDrawerStatus,
+  NESTED_SUBAGENT_STATUS_PRESENTATION,
+  type NestedSubagentStatus,
   type NestedSubagentMark,
 } from "../../../../desktop/src/shared/sessionSpawnNesting";
 
@@ -350,7 +350,7 @@ function SessionCard({
   );
 }
 
-const SUBAGENT_MARK_GLYPH: Record<NonNullable<NestedDrawerStatus>, SessionStatusGlyph> = {
+const SUBAGENT_MARK_GLYPH: Record<NestedSubagentStatus, SessionStatusGlyph> = {
   failed: "failed",
   needs_you: "needs-you",
   running: "working",
@@ -374,7 +374,7 @@ function subagentMarkText(mark: NestedSubagentMark | null): string {
 function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
   const subagentMark = subagentMarkText(row.subagents);
   const subagentTone = row.subagents?.status
-    ? NESTED_DRAWER_STATUS_PRESENTATION[row.subagents.status].tone
+    ? NESTED_SUBAGENT_STATUS_PRESENTATION[row.subagents.status].tone
     : null;
   const extras = `${subagentMark}${row.marker ? ` ${row.marker}` : ""}${row.hasDraft ? " ✎" : ""}${
     row.machine ? ` ⧉ ${row.machine.name}` : ""

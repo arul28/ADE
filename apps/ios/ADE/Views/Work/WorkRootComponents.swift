@@ -1459,15 +1459,15 @@ private struct WorkChatChildRosterKey: EnvironmentKey {
 
 /// An OPEN shell drawer: caret header + rows. Drawers default collapsed
 /// (`workIsNestedDrawerCollapsed`); a collapsed one renders as a
-/// `WorkNestedDrawerMarks` mark instead. Tapping the header collapses it.
+/// `WorkNestedDrawerMark` instead. Tapping the header collapses it.
 /// Nested subagents have no drawer: they live in the parent's Chat Info.
 struct WorkNestedSessionSection<Content: View>: View {
-  let group: WorkSessionChildGroup
+  let group: WorkShellDrawer
   let onCollapse: () -> Void
   let content: () -> Content
 
   init(
-    group: WorkSessionChildGroup,
+    group: WorkShellDrawer,
     onCollapse: @escaping () -> Void,
     @ViewBuilder content: @escaping () -> Content
   ) {
@@ -1484,7 +1484,7 @@ struct WorkNestedSessionSection<Content: View>: View {
             .font(.system(size: 8, weight: .bold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 9, alignment: .center)
-          Image(systemName: group.systemImage)
+          Image(systemName: "terminal")
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(ADEColor.textMuted)
           Text(group.label)
@@ -1518,42 +1518,39 @@ struct WorkNestedSessionSection<Content: View>: View {
   }
 }
 
-/// A parent's COLLAPSED shell drawer, as one thin line of marks under the card:
-/// kind icon, count, and the one state worth seeing (`workNestedDrawerStatus`).
-/// Tapping a mark opens that drawer. Mirrors desktop `renderCollapsedDrawerMark`.
-struct WorkNestedDrawerMarks: View {
-  let groups: [WorkSessionChildGroup]
-  let onOpen: (WorkSessionChildGroup) -> Void
+/// A parent's COLLAPSED shell drawer, as one thin mark under the card: the
+/// terminal icon, the count, and the one state worth seeing. Tapping it opens
+/// the drawer. iOS's own: desktop lists attached shells in the chat's actions
+/// pane instead of under the row.
+struct WorkNestedDrawerMark: View {
+  let group: WorkShellDrawer
+  let onOpen: () -> Void
 
   var body: some View {
     HStack(spacing: 4) {
-      ForEach(groups) { group in
-        Button {
-          onOpen(group)
-        } label: {
-          HStack(spacing: 4) {
-            Image(systemName: group.systemImage)
-              .font(.system(size: 9, weight: .medium))
-            Text("\(group.children.count)")
-              .font(.caption2.monospacedDigit())
-            WorkNestedStatusGlyph(status: group.status)
-          }
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 6)
-          .frame(minHeight: 32)
-          .contentShape(Rectangle())
+      Button(action: onOpen) {
+        HStack(spacing: 4) {
+          Image(systemName: "terminal")
+            .font(.system(size: 9, weight: .medium))
+          Text("\(group.children.count)")
+            .font(.caption2.monospacedDigit())
+          WorkNestedStatusGlyph(status: group.status)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel(group))
-        .accessibilityHint("Expands nested sessions")
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.horizontal, 6)
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .accessibilityLabel(accessibilityLabel)
+      .accessibilityHint("Expands nested sessions")
       Spacer(minLength: 0)
     }
     .padding(.leading, 8)
   }
 
   /// "Show N shells", plus the status word VoiceOver would otherwise lose.
-  private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
+  private var accessibilityLabel: String {
     let base = "Show \(group.label)"
     switch group.status {
     case .failed: return "\(base), Failed"
@@ -1567,7 +1564,7 @@ struct WorkNestedDrawerMarks: View {
 /// The one state a nested mark shows beside its count: a red cross for
 /// failed, an amber dot for needs you, a dashed ring for running.
 struct WorkNestedStatusGlyph: View {
-  let status: WorkNestedDrawerStatus
+  let status: WorkNestedStatus
 
   var body: some View {
     switch status {

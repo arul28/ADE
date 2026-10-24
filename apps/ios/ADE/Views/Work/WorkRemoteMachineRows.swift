@@ -141,6 +141,8 @@ func workRemoteMachineRepos(
 
 /// Desktop `pickLiveCheckout` over what the roster carries: the most recently
 /// opened checkout wins; on a tie the earlier roster entry stays.
+/// Desktop's first rule (a checkout present on disk beats a missing one) is not
+/// applied: the roster carries no `exists` field.
 private func workPickLiveCheckout(_ projects: [RemoteRosterProject]) -> RemoteRosterProject? {
   var best: RemoteRosterProject?
   var bestOpened = Date.distantPast

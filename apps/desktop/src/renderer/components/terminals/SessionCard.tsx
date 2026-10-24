@@ -51,10 +51,10 @@ import {
 import { relativeTimeCompact } from "../../lib/format";
 import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
 import {
-  NESTED_DRAWER_STATUS_PRESENTATION,
+  NESTED_SUBAGENT_STATUS_PRESENTATION,
   isChatToolType,
   nestedSubagentMarkLabel,
-  type NestedDrawerStatus,
+  type NestedSubagentStatus,
   type NestedSubagentMark,
 } from "../../../shared/sessionSpawnNesting";
 import { requestChatActionsPane } from "../chat/chatActionsPaneRequests";
@@ -467,8 +467,8 @@ function SessionProviderLogoStack({
   );
 }
 
-/** The subagent mark's state glyph, beside its count. Same marks the drawer used. */
-const SUBAGENT_MARK_STATUS_GLYPH: Record<NonNullable<NestedDrawerStatus>, React.ReactNode> = {
+/** The subagent mark's state glyph, beside its count. */
+const SUBAGENT_MARK_STATUS_GLYPH: Record<NestedSubagentStatus, React.ReactNode> = {
   failed: <X size={8} weight="bold" aria-hidden />,
   needs_you: <Circle size={7} weight="fill" aria-hidden />,
   running: <CircleNotch size={8} weight="bold" aria-hidden />,
@@ -1468,9 +1468,9 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
 
   const subagentMarkLabel = subagentMark ? nestedSubagentMarkLabel(subagentMark) : null;
   const subagentMarkTone = subagentMark?.status
-    ? NESTED_DRAWER_STATUS_PRESENTATION[subagentMark.status].tone
+    ? NESTED_SUBAGENT_STATUS_PRESENTATION[subagentMark.status].tone
     : null;
-  const subagentMarkGlyph = subagentMark && subagentMarkLabel ? (
+  const subagentMarkButton = subagentMark && subagentMarkLabel ? (
     <button
       type="button"
       data-testid="session-subagent-mark"
@@ -1479,17 +1479,17 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         "inline-flex shrink-0 items-center gap-0.5 rounded-sm text-[10px] font-medium leading-none tabular-nums transition-colors",
         subagentMarkTone ? SESSION_TONE_TEXT_CLASS[subagentMarkTone] : "text-muted-fg/55 hover:text-fg/80",
       )}
-      title={isChatToolType(session.toolType) ? `${subagentMarkLabel}. Open the list` : subagentMarkLabel}
+      title={`${subagentMarkLabel}. Open the list`}
       aria-label={subagentMarkLabel}
       disabled={Boolean(disabledReason)}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
         hoverCard.close();
-        if (disabledReason) return;
         // The list lives in the chat's actions pane; ask for it before the
         // select, so a chat that mounts on this press opens on it.
-        if (isChatToolType(session.toolType)) requestChatActionsPane(session.id);
+        // Only a chat files subagents (`sessionSpawnNesting`), so this row is one.
+        requestChatActionsPane(session.id);
         onSelect(session.id, event);
       }}
     >
@@ -1623,7 +1623,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           {/* Leading, for the same reason the full row puts it on line 3: the
               status slot widens on hover (Snooze, Settle), and anything
               between the title and that slot slides left as it does. */}
-          {subagentMarkGlyph}
+          {subagentMarkButton}
           {titleNode}
           {compactLineageGlyph}
           {cursorCloudLink}
@@ -1742,7 +1742,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
                 Snooze and Settle on hover and grows, so a mark beside it slid
                 left under the pointer and a click meant for it landed on
                 Un-settle. Nothing on this line moves on hover. */}
-            {subagentMarkGlyph}
+            {subagentMarkButton}
             {cursorCloudLink}
             <SessionProviderLogoStack session={session} size={20} />
           </div>

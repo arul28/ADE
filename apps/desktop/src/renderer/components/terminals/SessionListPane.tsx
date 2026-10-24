@@ -123,9 +123,9 @@ import {
 import {
   nestedSubagentMark,
   parentsWithBusySubagents,
-  workNestingDrawers,
+  buildWorkNesting,
   type NestedSubagentMark,
-  type WorkNestingDrawers,
+  type WorkNesting,
 } from "../../../shared/sessionSpawnNesting";
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
@@ -272,7 +272,7 @@ type ForeignLaneEntry = {
   quiet: ReturnType<typeof partitionQuietSessions>;
   /** Full-row partition used for stable shelving and collapse shape. */
   fullQuiet: ReturnType<typeof partitionQuietSessions>;
-  nesting: WorkNestingDrawers<TerminalSessionSummary>;
+  nesting: WorkNesting<TerminalSessionSummary>;
   shelf: WorkLaneShelf | null;
   /** Rolled-up lane status for the header dot; null when nothing is live. */
   focusStatus: WorkLaneFocusStatus | null;
@@ -1439,10 +1439,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   // list mode only. Status, time, and the board stay flat so a swarm cannot
   // hide inside a column that is supposed to be one row per session.
   const nestSubagents = isByLane && !boardReplacesList;
-  // One filing pass for local by-lane drawers: nested subagents, remounted
+  // One filing pass for the local by-lane list: filed subagents, attached
   // shells, and the ids that must not also render as top-level cards.
   const workNesting = useMemo(
-    () => workNestingDrawers(allSessions, {
+    () => buildWorkNesting(allSessions, {
       visibleParentIds: visibleSessionIdSet,
       nestSubagents,
       nowMs: foreignFilingNowMs,
@@ -1450,18 +1450,18 @@ export const SessionListPane = React.memo(function SessionListPane({
     [allSessions, nestSubagents, visibleSessionIdSet, foreignFilingNowMs],
   );
   const unfilteredNesting = useMemo(
-    () => workNestingDrawers(allSessionsUnfiltered, {
+    () => buildWorkNesting(allSessionsUnfiltered, {
       nestSubagents,
       nowMs: foreignFilingNowMs,
     }),
     [allSessionsUnfiltered, nestSubagents, foreignFilingNowMs],
   );
   const unfilteredForeignNestingByCompositeId = useMemo(() => {
-    const map = new Map<string, WorkNestingDrawers<TerminalSessionSummary>>();
+    const map = new Map<string, WorkNesting<TerminalSessionSummary>>();
     for (const row of foreignRows) {
       map.set(
         `${row.machineId}:${row.lane.id}`,
-        workNestingDrawers(row.sessions, { nestSubagents, nowMs: foreignFilingNowMs }),
+        buildWorkNesting(row.sessions, { nestSubagents, nowMs: foreignFilingNowMs }),
       );
     }
     return map;
@@ -1874,13 +1874,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     const fullQuiet = partitionQuietSessions(fullRow.sessions, effectiveFilingBuckets);
     const nowMs = foreignFilingNowMs;
     const fullNesting = unfilteredForeignNestingByCompositeId.get(compositeLaneId)
-      ?? workNestingDrawers(fullRow.sessions, { nestSubagents, nowMs });
-    // Render drawers from the visible slice so a search-hidden parent cannot
-    // keep a still-visible child nested. Shelf from the full row so nested
+      ?? buildWorkNesting(fullRow.sessions, { nestSubagents, nowMs });
+    // File from the visible slice so a search-hidden parent cannot keep a
+    // still-visible child filed away. Shelf from the full row so nested
     // settled helpers cannot flip a snoozed parent into Settled.
     const nesting = row.sessions === fullRow.sessions
       ? fullNesting
-      : workNestingDrawers(row.sessions, {
+      : buildWorkNesting(row.sessions, {
           visibleParentIds: new Set(row.sessions.map((session) => session.id)),
           nestSubagents,
           nowMs,
@@ -2101,7 +2101,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * Four rules keep the threshold from jittering:
    *   1. It reads the UNFILTERED roster, so the column does not reshape while
    *      the user types in search — same precedent as `isLaneQuiet`.
-   *   2. It counts TOP-LEVEL rows only. A chat with terminal-drawer children is
+   *   2. It counts TOP-LEVEL rows only. A chat with filed shells or subagents is
    *      one unit and must not summon a divider.
    *   3. Manual sort opts out entirely: a singleton has no header to grab, and
    *      the card's drag gesture is already claimed by the work-grid DnD.
@@ -2158,9 +2158,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       // — asserted by reading the same map rather than assumed, so this stays
       // correct if foreign handoffs ever land.
       if ((unfilteredHandoffCountByLaneId.get(compositeLaneId) ?? 0) > 0) continue;
-      const drawers = unfilteredForeignNestingByCompositeId.get(compositeLaneId);
-      if (!drawers) continue;
-      if (isHeaderlessRoster(row.sessions, drawers.excludedTopLevelIds)) ids.add(compositeLaneId);
+      const nesting = unfilteredForeignNestingByCompositeId.get(compositeLaneId);
+      if (!nesting) continue;
+      if (isHeaderlessRoster(row.sessions, nesting.excludedTopLevelIds)) ids.add(compositeLaneId);
     }
     return ids;
   }, [
@@ -2275,9 +2275,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   // it), so the visible ids are the top-level rows alone.
   const collectVisibleIdsFrom = useCallback((
     sessions: TerminalSessionSummary[],
-    drawers: WorkNestingDrawers<TerminalSessionSummary>,
+    nesting: WorkNesting<TerminalSessionSummary>,
   ): string[] => sessions
-    .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
+    .filter((session) => !nesting.excludedTopLevelIds.has(session.id))
     .map((session) => session.id), []);
   const collectVisibleIds = useCallback(
     (sessions: TerminalSessionSummary[]): string[] => collectVisibleIdsFrom(sessions, workNesting),
@@ -2457,7 +2457,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     suppressStatusLabel?: boolean;
     /** The row's filed subagents, as one mark on the row. */
     subagentMark?: NestedSubagentMark | null;
-    nesting?: WorkNestingDrawers<TerminalSessionSummary>;
+    nesting?: WorkNesting<TerminalSessionSummary>;
   };
   // A PR pill on a card or a lane divider opens the PR in that session's PR
   // tool: select the session, then hand the PR to its pane. Only PR lists go to
@@ -2594,37 +2594,42 @@ export const SessionListPane = React.memo(function SessionListPane({
   };
 
   // The card is memoized on its props; a mark rebuilt every render with the
-  // same counts must keep its identity or every parent row re-renders.
+  // same counts must keep its identity or every parent row re-renders. Each
+  // render keeps only the parents it drew, so the cache cannot grow without
+  // bound; it is handed over after commit.
   const subagentMarkCacheRef = useRef(new Map<string, NestedSubagentMark>());
+  const renderedSubagentMarks = new Map<string, NestedSubagentMark>();
+  useEffect(() => {
+    subagentMarkCacheRef.current = renderedSubagentMarks;
+  });
   const stableSubagentMark = (parentId: string, mark: NestedSubagentMark | null): NestedSubagentMark | null => {
     if (!mark) return null;
-    const cache = subagentMarkCacheRef.current;
-    const previous = cache.get(parentId);
-    if (
-      previous
+    const previous = renderedSubagentMarks.get(parentId) ?? subagentMarkCacheRef.current.get(parentId);
+    const stable = previous
       && previous.count === mark.count
       && previous.status === mark.status
       && previous.statusCount === mark.statusCount
-    ) return previous;
-    cache.set(parentId, mark);
-    return mark;
+      ? previous
+      : mark;
+    renderedSubagentMarks.set(parentId, stable);
+    return stable;
   };
 
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
-    const drawers = options?.nesting ?? workNesting;
+    const nesting = options?.nesting ?? workNesting;
     const cardOptions = options?.foreignRow
       ? {
           ...options,
-          nesting: drawers,
-          visibleSessionIds: collectVisibleIdsFrom(list, drawers),
+          nesting,
+          visibleSessionIds: collectVisibleIdsFrom(list, nesting),
         }
       : options;
     // Filed subagents leave the list: the parent row carries one mark for
     // them, and its chat's actions pane lists them.
     return list
-      .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
+      .filter((session) => !nesting.excludedTopLevelIds.has(session.id))
       .map((session) => {
-        const subagents = drawers.subagentsByParentId.get(session.id);
+        const subagents = nesting.subagentsByParentId.get(session.id);
         if (!subagents?.length) return renderCardCore(session, cardOptions);
         return renderCardCore(session, {
           ...cardOptions,

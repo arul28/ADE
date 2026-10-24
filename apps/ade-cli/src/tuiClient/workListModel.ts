@@ -53,6 +53,7 @@ import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
 import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
 import {
+  emptySpawnNestingIndex,
   indexNestedSubagents,
   nestedSubagentMark,
   parentsWithBusySubagents,
@@ -191,6 +192,11 @@ export type WorkListInput = {
   laneManualOrder?: readonly string[];
   /** Suppress the per-lane "+ new chat" affordance (add-to-grid picker mode). */
   hideNewChat?: boolean;
+  /**
+   * File subagents under their parent chat (default). Add-to-grid passes false:
+   * the picker chooses any chat to tile, and a filed subagent is one too.
+   */
+  nestSubagents?: boolean;
   nowMs?: number;
 };
 
@@ -523,7 +529,9 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     nowMs,
   }));
 
-  const nestIndex = indexNestedSubagents(sessionSummaries, { nowMs });
+  const nestIndex = input.nestSubagents === false
+    ? emptySpawnNestingIndex<(typeof sessionSummaries)[number]>()
+    : indexNestedSubagents(sessionSummaries, { nowMs });
 
   // Quiet partition uses the shared filing rule, so a row's shelf and its status
   // word can never disagree. Filed subagents are not rows at all: their parent

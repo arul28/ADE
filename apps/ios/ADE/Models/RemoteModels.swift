@@ -982,13 +982,19 @@ enum AgentChatSpawnKind: Equatable, Codable, Hashable {
     self.init(wireValue: try decoder.singleValueContainer().decode(String.self))
   }
 
+  /// The kind as the host spells it; nil for `.legacyUntyped`, which the host
+  /// never sends as a kind of its own.
+  var wireValue: String? {
+    switch self {
+    case .subagent: return "subagent"
+    case .peer: return "peer"
+    case .legacyUntyped: return nil
+    }
+  }
+
   func encode(to encoder: Encoder) throws {
     var container = encoder.singleValueContainer()
-    switch self {
-    case .subagent: try container.encode("subagent")
-    case .peer: try container.encode("peer")
-    case .legacyUntyped: try container.encode("none")
-    }
+    try container.encode(wireValue ?? "none")
   }
 }
 

@@ -521,17 +521,18 @@ Shared types and IPC:
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
-  are filed under the parent and leave the list; peers stay top-level. Demote
+  of a parent chat are filed under it and leave the list; peers, and children
+  of a tracked CLI or shell parent, stay top-level. Demote
   un-nests; promote files again. Cross-lane children stay top-level. A quiet
   parent (snoozed or settled) pulls not-done children up; done children stay
-  filed. Grandchildren flatten onto the root parent. `nestedSubagentMark` and
+  filed. Grandchildren file under the root parent. `nestedSubagentMark` and
   `nestedSubagentMarkLabel` give the parent row's one mark (count and worst
-  state). The old collapse keys (`chat-subagents:<parentId>`, `drawer-open:`,
+  state, one pass over the children); `filedSubagentsOf`, `spawnNestingPhase`
+  and `childChatPaneStatus` give the actions pane its filed rows. The old collapse keys (`chat-subagents:<parentId>`, `drawer-open:`,
   and the shells key `chat:<parentId>`) are inert. It also owns
   `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
-  subagents are not) so filing can run in shared rather than the renderer, and
-  `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
-  `sessionSpawnNesting.test.ts`.
+  subagents are not) so filing can run in shared rather than the renderer.
+  Tested in `sessionSpawnNesting.test.ts`.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
   and are shared with `ade code` and iOS; this module owns the re-export plus the
@@ -649,8 +650,10 @@ Shared types and IPC:
   `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
   subagent chats are not rows. The parent card's third line carries `⊚N` and
   the worst child state's glyph (`✕` failed, `●` needs you, `◐` running), and
-  the chat info pane lists the children. Filing imports `indexNestedSubagents`
-  from `sessionSpawnNesting.ts`. Every card is three lines. See
+  the chat info pane lists the children (`withRosterSubagentSnapshots`, the
+  same rules as the desktop pane). Filing imports `indexNestedSubagents` from
+  `sessionSpawnNesting.ts`. Every card is three lines. The add-to-grid picker
+  passes `nestSubagents: false`, so a filed subagent can still be tiled. See
   [ADE Code](../ade-code/README.md).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
@@ -2052,16 +2055,17 @@ iOS Work surfaces:
   provider mark on the trailing edge, then shout-only status words. See
   [the iOS companion](../sync-and-multi-device/ios-companion.md#work-session-list-rows).
 - `apps/ios/ADE/Views/Work/WorkSpawnNesting.swift` — Swift mirror of
-  `sessionSpawnNesting.ts` (same-lane subagent filing, quiet-parent pull-up,
-  grandchild flatten, `chat-subagents:<parentId>` drawer ids, Failed-wins
-  drawer attention).
+  `sessionSpawnNesting.ts` (same-lane subagent filing under a chat parent,
+  quiet-parent pull-up, grandchildren filed under the root parent, the
+  parent's one subagent mark with Failed winning, and the Chat Info child
+  roster).
 - `apps/ios/ADE/Views/Work/WorkSessionGrouping.swift` — the by-lane (default) /
   by-status / by-time grouping, `WorkViewStateStore`, and the trailing quiet
   zone: a **Snoozed** shelf above a **Settled** shelf, both collapsed until
-  explicitly opened via an inverted `shelf-open:<id>` marker. By-lane is exempt
-  from the shelves — a settled row still belongs to its lane there, and the
-  per-lane quiet fold already handles it. Nested subagent/shell drawers come
-  from `WorkSpawnNesting.swift`.
+  explicitly opened via an inverted `shelf-open:<id>` marker. Settled rows
+  lift onto the Settled shelf in every organization, by-lane included; a
+  pinned lane keeps its settled rows and is never folded quiet. Attached-shell
+  drawers and subagent marks come from `WorkSpawnNesting.swift`.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies

@@ -20,6 +20,8 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type { AgentChatSpawnKind } from "../../../../desktop/src/shared/types/chat";
+import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
   hasTable,
@@ -84,7 +86,7 @@ export type RosterLiveSession = {
    */
   identityKey?: string | null;
   /** Spawn lineage, so a client can file a child chat under its parent. */
-  spawnKind?: string | null;
+  spawnKind?: AgentChatSpawnKind | null;
   orchestrationParentSessionId?: string | null;
 };
 
@@ -469,13 +471,11 @@ type Sidecar = {
   /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
   eventSequence?: number | null;
   historyGeneration?: number | null;
-  spawnKind?: RosterSpawnKind | null;
+  spawnKind?: AgentChatSpawnKind | null;
   orchestrationParentSessionId?: string | null;
 };
 
-type RosterSpawnKind = "subagent" | "peer";
-
-function rosterSpawnKind(value: unknown): RosterSpawnKind | null {
+function rosterSpawnKind(value: unknown): AgentChatSpawnKind | null {
   return value === "subagent" || value === "peer" ? value : null;
 }
 
@@ -488,20 +488,38 @@ function rosterParentId(value: unknown): string | null {
  * subagent`), which keeps it in `resume_metadata_json` the way
  * `sessionService` reads it. Never throws.
  */
-function resumeMetadataLineage(raw: string | null): {
-  spawnKind: RosterSpawnKind | null;
+/** Rows already reported unreadable; the roster is rebuilt often. */
+const unreadableResumeMetadataWarned = new Set<string>();
+
+function resumeMetadataLineage(
+  raw: string | null,
+  sessionId: string,
+  logger?: Pick<Logger, "warn"> | null,
+): {
+  spawnKind: AgentChatSpawnKind | null;
   orchestrationParentSessionId: string | null;
 } {
-  if (!raw) return { spawnKind: null, orchestrationParentSessionId: null };
+  const none = { spawnKind: null, orchestrationParentSessionId: null };
+  if (!raw) return none;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
-    return {
-      spawnKind: rosterSpawnKind(parsed?.spawnKind),
-      orchestrationParentSessionId: rosterParentId(parsed?.orchestrationParentSessionId),
-    };
-  } catch {
-    return { spawnKind: null, orchestrationParentSessionId: null };
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (!unreadableResumeMetadataWarned.has(sessionId)) {
+      unreadableResumeMetadataWarned.add(sessionId);
+      logger?.warn?.("sync_host.roster_resume_metadata_unreadable", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return none;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return none;
+  const record = parsed as Record<string, unknown>;
+  return {
+    spawnKind: rosterSpawnKind(record.spawnKind),
+    orchestrationParentSessionId: rosterParentId(record.orchestrationParentSessionId),
+  };
 }
 
 const positiveInteger = (value: unknown): number | null =>
@@ -782,7 +800,11 @@ async function buildRosterProject(
     // before the sidecar is rewritten), then the chat's sidecar, then a tracked
     // CLI row's resume metadata. Sent only when known, so peers and plain chats
     // add nothing to the wire.
-    const cliLineage = sidecar ? null : resumeMetadataLineage(row.resume_metadata_json);
+    // Like `sessionService`, only a tracked agent CLI row reads lineage from its
+    // resume metadata.
+    const cliLineage = isTrackedAgentCliToolType(row.tool_type as TerminalToolType | null)
+      ? resumeMetadataLineage(row.resume_metadata_json, row.id, logger)
+      : null;
     const spawnKind = rosterSpawnKind(live?.spawnKind)
       ?? sidecar?.spawnKind
       ?? cliLineage?.spawnKind

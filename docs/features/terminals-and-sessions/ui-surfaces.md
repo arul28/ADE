@@ -326,19 +326,22 @@ the Work list's own menu, owner-archive and stop included. The list still
 whose chat is gone is archived with it (`sessionService`). The old `chat:<id>`
 shell drawer and its collapse key are gone.
 
-In by-lane list mode, subagent chats work the same way as shells. They are not
-rows of the Work list. They live in the parent chat's actions pane
+In by-lane list mode, subagent chats of a parent CHAT work the same way as
+shells. They are not rows of the Work list. They live in the parent chat's actions pane
 (**Subagents**), next to the provider's own subagents. The parent row carries
 one small mark instead: a people icon, the child count, and the worst child
 state (failed, then needs you, then running), from `nestedSubagentMark`. Its
 label reads like "2 subagents, 1 needs you". Pressing the mark opens the
 parent chat on its actions pane (`requestChatActionsPane`).
 
-The pane lists the children it learns from the transcript (`chat:<id>` rows).
-A child the transcript has no row for (a peer promoted to subagent, or an old
-or windowed transcript) gets a row from the chat's own machine's session
-roster. A child that is waiting on you reads **needs you** on its row. A row
-opens its child chat on the parent's machine (the chat's pin).
+The pane lists the children it learns from the transcript (`chat:<id>` rows),
+then appends every subagent the list files under this chat that the transcript
+has no row for (`filedSubagentsOf`: a peer promoted to subagent, a grandchild,
+an old or windowed transcript), read from the sessions of the chat's own
+machine (`useChatChildRoster`). Any child-chat row whose chat is waiting on you
+reads **needs you**. A row opens its child chat on the parent's machine (the
+chat's pin). A subagent of a tracked CLI or a shell is never filed: a terminal
+has no subagent list, so that child stays a top-level row.
 
 Filing has not changed. Peers stay top-level. Grandchildren count toward the
 root parent. A quiet parent (snoozed or settled) pulls not-done children
@@ -537,11 +540,6 @@ The full card is one full-bleed row with three lines:
    the previous logo peeking as a sliver to the right (offset ~28% of the mark,
    current logo at full opacity). Delta
    moved to line one so preview text owns the width it needs.
-
-A nested same-lane subagent (`nestedSubagent`) is a compact one-line card:
-identicon, title, then the provider glyph on the right (same seat as every
-other session card), plus shout-only status words (Needs you / Failed). Nested
-rows omit the Subagent/Peer lineage pill — they already sit under the parent.
 
 `SessionStatusSlot` displays one effective status label at a time. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through

@@ -58,15 +58,10 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
-import { paneRowChildSessionId, selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
+import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { useSessionsForPin } from "../../state/crossMachineLanes";
-import { projectStateKeyForBinding, useAppStore } from "../../state/appStore";
-import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
-import { primarySessionLabel } from "../../lib/sessions";
-import { chatToolProvider } from "../../../shared/sessionSpawnNesting";
-import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
+import { useChatChildRoster } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
@@ -93,121 +88,6 @@ const PANE_EARLIER_SECTION_KEYS = ["subagents", "background", "schedule"] as con
 
 function subagentIdentity(snapshot: ChatSubagentSnapshot): string {
   return snapshot.agentId?.trim() || snapshot.taskId;
-}
-
-/**
- * The sessions of the machine this chat runs on: that machine's slice of the
- * cross-machine union when pinned, else the tab's own session cache. Store
- * reads only — nothing is fetched or polled for this.
- */
-function useChatMachineSessions(): TerminalSessionSummary[] | null {
-  const scope = useChatRuntimeScope();
-  const pinned = useSessionsForPin(scope.binding);
-  const bound = useAppStore((state) => {
-    if (scope.binding) return null;
-    const key = projectStateKeyForBinding(null, scope.rootPath);
-    return key ? state.sessionsCacheByProject[key] ?? null : null;
-  });
-  return pinned ?? bound;
-}
-
-/**
- * This chat's filed subagents, as its machine's roster knows them: same lane,
- * `spawnKind: "subagent"`, parent = this chat. The Work list leaves them out
- * (`sessionSpawnNesting`), so this pane is where they are reached.
- */
-function rosterSubagentsOf(
-  sessions: readonly TerminalSessionSummary[] | null,
-  parentId: string | null | undefined,
-  parentLaneId: string | null,
-): TerminalSessionSummary[] {
-  if (!sessions?.length || !parentId) return [];
-  const laneId = sessions.find((session) => session.id === parentId)?.laneId ?? parentLaneId;
-  if (!laneId) return [];
-  return sessions.filter((session) => (
-    session.id !== parentId
-    && !session.archivedAt
-    && session.spawnKind === "subagent"
-    && session.orchestrationParentSessionId?.trim() === parentId
-    && session.laneId === laneId
-  ));
-}
-
-/** Same ids, same phase, same title: the roster churn did not touch this chat. */
-function sameRosterChildren(
-  left: readonly RosterChild[],
-  right: readonly RosterChild[],
-): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((entry, index) => {
-    const other = right[index]!;
-    return entry.session.id === other.session.id
-      && entry.phase === other.phase
-      && entry.title === other.title
-      && entry.session.startedAt === other.session.startedAt
-      && entry.session.lastActivityAt === other.session.lastActivityAt;
-  });
-}
-
-type RosterChild = { session: TerminalSessionSummary; phase: CanonicalSessionPhase; title: string };
-
-function rosterChildStatus(phase: CanonicalSessionPhase): ChatSubagentSnapshot["status"] {
-  switch (phase) {
-    case "starting":
-    case "running":
-    case "stale":
-    case "needs_you":
-      return "running";
-    case "failed":
-      return "failed";
-    case "stopped":
-      return "stopped";
-    default:
-      return "completed";
-  }
-}
-
-/**
- * A row for each roster subagent the transcript has no `chat:<id>` row for: a
- * peer promoted to subagent, or a transcript that predates (or windowed away)
- * its started event. Inserted in the transcript's newest-first spawn order.
- */
-function withRosterSubagentRows(
-  snapshots: ChatSubagentSnapshot[],
-  children: readonly RosterChild[],
-): ChatSubagentSnapshot[] {
-  if (children.length === 0) return snapshots;
-  const covered = new Set<string>();
-  for (const snapshot of snapshots) {
-    const childId = paneRowChildSessionId(snapshot);
-    if (childId) covered.add(childId);
-  }
-  const missing = children.filter((child) => !covered.has(child.session.id));
-  if (missing.length === 0) return snapshots;
-  const merged = [...snapshots];
-  for (const { session, phase, title } of missing) {
-    const row: ChatSubagentSnapshot = {
-      taskId: `chat:${session.id}`,
-      childSessionId: session.id,
-      agentId: session.id,
-      agentType: chatToolProvider(session.toolType) ?? session.toolType ?? undefined,
-      parentToolUseId: null,
-      description: title,
-      status: rosterChildStatus(phase),
-      startedAt: session.startedAt,
-      elapsedStartAt: null,
-      updatedAt: session.lastActivityAt ?? session.endedAt ?? session.startedAt,
-      summary: null,
-      background: false,
-      taskType: "subagent",
-      spawnKind: "subagent",
-    };
-    const startedMs = Date.parse(session.startedAt);
-    const at = merged.findIndex((existing) => Date.parse(existing.startedAt) < startedMs);
-    if (at < 0) merged.push(row);
-    else merged.splice(at, 0, row);
-  }
-  return merged;
 }
 
 function isSyntheticWorkflowAgent(snapshot: ChatSubagentSnapshot): boolean {
@@ -1346,7 +1226,12 @@ export function ChatSubagentsPanel({
    * the pane reads "running" for as long as the chat is kept.
    */
   runtimeAlive?: boolean;
-  /** Session status by spawned-chat session id, for rows that are ADE chats. */
+  /**
+   * Chat-runtime status by spawned-chat session id, for rows that are ADE
+   * chats: what self-heal reads to settle a row whose chat stopped. Filing and
+   * "needs you" come from the machine's sessions instead
+   * (`useChatChildRoster`), which also cover a chat this runtime has not loaded.
+   */
   childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
   /**
    * Each dynamic workflow's declared script plan, keyed by workflow task id —
@@ -1453,32 +1338,10 @@ export function ChatSubagentsPanel({
   );
   const taskList = taskListProp === undefined ? derivedTaskList : taskListProp;
 
-  // The chat's filed subagents from its own machine's roster. The Work list
-  // does not show them, so a child the transcript has no row for (a promoted
-  // peer, an old or windowed transcript) gets one here; and a child waiting on
-  // the user says so on its row.
+  // The chat's filed subagents (the Work list leaves them out) and the child
+  // chats its rows name, from the sessions of the machine it runs on.
   const scope = useChatRuntimeScope();
-  const machineSessions = useChatMachineSessions();
-  const rosterChildrenRef = useRef<RosterChild[]>([]);
-  const rosterChildren = useMemo(() => {
-    const next = rosterSubagentsOf(machineSessions, sessionId, scope.laneId).map((session) => ({
-      session,
-      phase: sessionCanonicalUiState(canonicalInputFromSummary(session)).phase,
-      title: primarySessionLabel(session),
-    }));
-    // Session churn elsewhere on the machine must not rebuild this pane's rows.
-    if (sameRosterChildren(next, rosterChildrenRef.current)) return rosterChildrenRef.current;
-    rosterChildrenRef.current = next;
-    return next;
-  }, [machineSessions, scope.laneId, sessionId]);
-  const rosterChildById = useMemo(
-    () => new Map(rosterChildren.map((child) => [child.session.id, child] as const)),
-    [rosterChildren],
-  );
-  const snapshotsWithRoster = useMemo(
-    () => withRosterSubagentRows(snapshots, rosterChildren),
-    [snapshots, rosterChildren],
-  );
+  const { snapshots: snapshotsWithRoster, childById } = useChatChildRoster(sessionId, snapshots);
   // Self-heal first, so every count, cap, grouping and label below reads the
   // truthful status rather than a "running" the event stream never closed.
   const healedSnapshots = useMemo(
@@ -1686,7 +1549,7 @@ export function ChatSubagentsPanel({
       // chat's pin (null = the tab's own machine).
       navigateToSpawnedChat(
         snap.childSessionId,
-        rosterChildById.get(snap.childSessionId)?.session.laneId ?? null,
+        childById.get(snap.childSessionId)?.session.laneId ?? null,
         scope.pin,
       );
       return;
@@ -1789,10 +1652,10 @@ export function ChatSubagentsPanel({
       }}
       spawnedChatTitle={
         snap.childSessionId != null
-          ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? rosterChildById.get(snap.childSessionId)?.title ?? null
+          ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
           : null
       }
-      needsYou={snap.childSessionId != null && rosterChildById.get(snap.childSessionId)?.phase === "needs_you"}
+      needsYou={snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you"}
       sessionModelLabel={sessionModelLabel}
       onStop={onStopSubagent}
       onClick={() => handleRowClick(snap)}
