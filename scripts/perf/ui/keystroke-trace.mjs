@@ -1,7 +1,7 @@
 // node scripts/perf/ui/keystroke-trace.mjs [keys]
 // Trace N keystrokes in the composer; report style/layout element counts per event.
 import { findPage } from "./target.mjs";
-const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();
+const list = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9222}/json/list`)).json();
 const page = findPage(list);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map(); const events = []; let done;
 const complete = new Promise((r) => (done = r));

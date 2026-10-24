@@ -263,6 +263,9 @@ struct WorkSessionDestinationView: View {
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.duoWorkFamily) private var duoWorkFamily
+  /// This chat's child chats as the Work list holds them. Chat Info lists a
+  /// nested subagent only from here, and opens a child through its lane id.
+  @Environment(\.workChatChildRoster) var chatChildRoster
 
   let sessionId: String
   let initialOpeningPrompt: String?
@@ -1872,6 +1875,9 @@ struct WorkSessionDestinationView: View {
       .onChange(of: chatInfoPresented) { _, presented in
         handleChatInfoPresentationChange(presented)
       }
+      .onChange(of: chatChildRoster) { _, _ in
+        refreshSubagentSnapshots()
+      }
       .onDisappear {
         chatDestinationVisible = false
         detachThreadModel()
@@ -2062,6 +2068,11 @@ struct WorkSessionDestinationView: View {
   }
 
   private func watchChatConnecting() async {
+    #if DEBUG
+    // A fixture chat has no machine to answer; leaving for the Hub after the
+    // timeout would close it before it can be looked at.
+    if WorkRootPreviewFixture.active != nil { return }
+    #endif
     var deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
     var ownerResolved = false
     while Date() < deadline {
@@ -2909,7 +2920,14 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func refreshSubagentSnapshots() {
     let local = buildWorkSubagentSnapshots(from: transcript)
-    let next = mergeWorkSubagentSnapshots(local: local, remote: remoteSubagentSnapshots)
+    let roster = chatChildRoster
+    let next = workChatInfoSubagentsWithChildChats(
+      mergeWorkSubagentSnapshots(local: local, remote: remoteSubagentSnapshots),
+      roster: roster,
+      // The live summary cache first: the roster is the list's copy, and the
+      // list stops rebuilding while a chat covers it on a phone.
+      summary: { id in syncService.chatSummaryCache[id] ?? roster.summaries[id] }
+    )
     if next != subagentSnapshots {
       subagentSnapshots = next
       subagentSnapshotsRenderSignature = workSubagentSnapshotsRenderSignature(next)
@@ -2988,12 +3006,48 @@ struct WorkSessionDestinationView: View {
   /// act on. So the card is all there is now, and the drill-in and its
   /// per-second transcript polling are gone.
   ///
-  /// This is only about in-thread subagents. A `--type subagent` chat and a
-  /// child lane are full chats with their own rows, and open exactly as they
-  /// always have.
+  /// A spawned child CHAT (`chat:<id>`) is different: it is a full chat, and
+  /// a nested one is listed nowhere but here. Tapping it opens it.
   @MainActor
   func handleSubagentSelection(_ snapshot: WorkSubagentSnapshot) async {
+    if let childId = workChatInfoChildSessionId(snapshot), openChildChat(childId) {
+      return
+    }
     toggleExpandedSubagentDetail(snapshot.taskId)
+  }
+
+  /// Opens a child chat the way `openParentSession()` opens the parent: one
+  /// navigation request the Work root resolves. The lane id comes from the
+  /// child's own Work row, so a child on another machine carries that
+  /// machine's namespaced lane id and the root opens it through that machine.
+  /// Without a row, a child is opened only when both chats are on this
+  /// machine; otherwise there is no lane to route by, and false is returned so
+  /// the row just expands rather than opening on the wrong machine.
+  @MainActor
+  func openChildChat(_ childId: String) -> Bool {
+    let laneId: String?
+    if let rowLaneId = chatChildRoster.laneIdBySessionId[childId] {
+      laneId = rowLaneId
+    } else if !isRemoteMachineChat,
+              syncService.remoteMachineChat(sessionId: sessionId) == nil,
+              syncService.remoteMachineChat(sessionId: childId) == nil {
+      laneId = nil
+    } else {
+      return false
+    }
+    let request = WorkSessionNavigationRequest(sessionId: childId, laneId: laneId)
+    if chatInfoPresented {
+      // The sheet goes first: the request replaces this chat, and a sheet
+      // still up over it would be torn down mid-presentation.
+      chatInfoPresented = false
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(350))
+        syncService.requestedWorkSessionNavigation = request
+      }
+    } else {
+      syncService.requestedWorkSessionNavigation = request
+    }
+    return true
   }
 
   @MainActor

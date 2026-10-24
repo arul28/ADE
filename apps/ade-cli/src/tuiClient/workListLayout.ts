@@ -63,18 +63,13 @@ export type WorkListLayout = {
  * A session card is three lines — the desktop SessionCard is a fixed
  * 4.875rem block (where/status, title, preview+provider) and the TUI matches
  * that anatomy even when a field is empty, so hit-testing cannot drift.
- * Nested same-lane subagents and the drawer line that folds them are the
- * exception: one indented line each, glued under the parent.
  */
 export function workListRowHeight(row: WorkListRow): number {
-  if (row.kind === "session") return row.nested ? 1 : 3;
-  return 1;
+  return row.kind === "session" ? 3 : 1;
 }
 
 /** Blank line above an entry so cards in a lane are not glued together. */
-export function workListRowMarginTop(row: WorkListRow, isFirst: boolean): number {
-  if (!isFirst && row.kind === "session" && row.nested) return 0;
-  if (!isFirst && row.kind === "drawer") return 0;
+export function workListRowMarginTop(_row: WorkListRow, isFirst: boolean): number {
   return isFirst ? 0 : 1;
 }
 

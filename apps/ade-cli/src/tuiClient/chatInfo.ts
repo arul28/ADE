@@ -17,7 +17,11 @@ import type {
 } from "./types";
 import type { PrSummary } from "../../../desktop/src/shared/types/prs";
 
-import type { TokenStats } from "./adeApi";
+import type { TokenStats, TuiChatSessionSummary } from "./adeApi";
+import { toWorkSessionSummary } from "./workRow";
+import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../../desktop/src/renderer/lib/terminalAttention";
+import { primarySessionLabel } from "../../../desktop/src/renderer/lib/sessions";
+import type { CanonicalSessionPhase } from "../../../desktop/src/shared/sessionCanonicalState";
 
 function compactNumber(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -96,6 +100,85 @@ export function mergeSubagentSnapshots(
     byId.set(row.id, existing ? { ...row, ...existing, ...row, lastToolName: existing.lastToolName ?? row.lastToolName } : row);
   }
   return [...byId.values()];
+}
+
+function rosterPhaseStatus(phase: CanonicalSessionPhase): SubagentSnapshot["status"] {
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+    case "needs_you":
+      return "running";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    default:
+      return "completed";
+  }
+}
+
+/**
+ * The chat's filed subagents from the session roster. The Work list no longer
+ * shows them, so this pane is where they are reached: a child the transcript
+ * has no row for (a promoted peer, an old or windowed transcript) gets a row,
+ * and a child waiting on the user is marked `needsYou`. Same rule as the
+ * desktop actions pane: same lane, `spawnKind: "subagent"`, parent = this chat.
+ *
+ * Returns the input array when the roster adds nothing.
+ */
+export function withRosterSubagentSnapshots(
+  snapshots: SubagentSnapshot[],
+  parentSessionId: string | null | undefined,
+  sessions: readonly TuiChatSessionSummary[],
+): SubagentSnapshot[] {
+  const parentId = parentSessionId?.trim();
+  if (!parentId || sessions.length === 0) return snapshots;
+  const parentLaneId = sessions.find((session) => session.sessionId === parentId)?.laneId;
+  if (!parentLaneId) return snapshots;
+  const children = sessions.filter((session) => (
+    session.sessionId !== parentId
+    && !session.archivedAt
+    && session.spawnKind === "subagent"
+    && session.orchestrationParentSessionId?.trim() === parentId
+    && session.laneId === parentLaneId
+  ));
+  if (children.length === 0) return snapshots;
+  const phaseById = new Map<string, CanonicalSessionPhase>();
+  for (const child of children) {
+    phaseById.set(child.sessionId, sessionCanonicalUiState(canonicalInputFromSummary(toWorkSessionSummary(child))).phase);
+  }
+  const rowChildId = (snapshot: SubagentSnapshot): string => (
+    snapshot.id.startsWith("chat:") ? snapshot.id.slice("chat:".length) : snapshot.id
+  );
+  let changed = false;
+  const covered = new Set<string>();
+  const out = snapshots.map((snapshot) => {
+    const childId = rowChildId(snapshot);
+    covered.add(childId);
+    const needsYou = phaseById.get(childId) === "needs_you";
+    if ((snapshot.needsYou === true) === needsYou) return snapshot;
+    changed = true;
+    return { ...snapshot, needsYou };
+  });
+  for (const child of children) {
+    if (covered.has(child.sessionId)) continue;
+    changed = true;
+    const phase = phaseById.get(child.sessionId)!;
+    out.push({
+      id: child.sessionId,
+      name: primarySessionLabel(toWorkSessionSummary(child)),
+      kind: "subagent",
+      status: rosterPhaseStatus(phase),
+      summary: "",
+      provider: child.provider ?? null,
+      taskType: "subagent",
+      startedAt: child.startedAt ?? null,
+      endedAt: child.endedAt ?? null,
+      needsYou: phase === "needs_you",
+    });
+  }
+  return changed ? out : snapshots;
 }
 
 /**

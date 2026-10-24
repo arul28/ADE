@@ -253,9 +253,10 @@ Stopping a running spawn is the one action left on them. Tapping a roster row
 in the Chat Info sheet still expands that agent's details in place, which is
 the only surface that expansion was ever visible on.
 
-This is only about in-thread subagents. A `--type subagent` chat and a child
-lane are full chats with their own rows, their own composer and their own lane,
-and they open exactly as they always have.
+This is only about in-thread subagents. A spawned child chat is a full chat
+with its own composer. Its Chat Info row (task id `chat:<childId>`) opens it,
+through the same navigation request "open parent" uses. The lane id comes from
+the child's Work row, so a child on another machine opens on that machine.
 
 ## Startup diagnostics collapse to one row
 
@@ -621,23 +622,23 @@ apps/ios/
 │   │   │                            # WorkSessionRowCard (the row card itself:
 │   │   │                            #   WorkSessionRow, its leaf views, the
 │   │   │                            #   render signature, and the preview-line
-│   │   │                            #   helpers; nested-subagent compact puts
-│   │   │                            #   identicon + title leading and the
-│   │   │                            #   provider mark on the trailing edge),
+│   │   │                            #   helpers; a parent row carries one
+│   │   │                            #   nested-subagent mark: count + worst
+│   │   │                            #   child state),
 │   │   │                            # WorkSessionCanonicalState (Swift mirror of
 │   │   │                            #   the shared derivation +
 │   │   │                            #   workSessionRowPresentation),
 │   │   │                            # WorkSpawnNesting (Swift mirror of
 │   │   │                            #   sessionSpawnNesting.ts: same-lane
-│   │   │                            #   subagent drawers, quiet-parent pull-up,
-│   │   │                            #   grandchild flatten,
-│   │   │                            #   chat-subagents:<parentId>),
+│   │   │                            #   subagent filing, quiet-parent pull-up,
+│   │   │                            #   grandchild flatten, the parent mark,
+│   │   │                            #   Chat Info's child-chat roster),
 │   │   │                            # WorkSessionGrouping (by-lane/status/time
 │   │   │                            #   groups, quiet-zone shelves,
 │   │   │                            #   WorkViewStateStore whose per-project
 │   │   │                            #   record includes the machine filter
 │   │   │                            #   and tolerates records predating it; nested
-│   │   │                            #   drawers come from WorkSpawnNesting),
+│   │   │                            #   filing comes from WorkSpawnNesting),
 │   │   │                            # WorkChatLaunch* (new-lane launches:
 │   │   │                            #   Presentation = hand mirror of
 │   │   │                            #   shared/chatLaunch.ts wording, Views =
@@ -2017,7 +2018,7 @@ Implemented envelope types on iOS:
 | `chat_subscribe` / `chat_event` / `chat_history` | Phone → runtime / runtime → phone | Agent chat transcript streaming and cursor-paged scrollback. `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. Explicit full-snapshot subscribes omit `sinceSeq`; rapid duplicates are coalesced for five seconds or until the snapshot ack arrives. A full-snapshot request starts a five-second acknowledgement watchdog; unanswered requests are resent twice regardless of project scope, then the chat renders an explicit error with Retry instead of an empty transcript. The initial tail is capped at 256 KiB and the ack carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`; near-top scroll requests continuous 256 KiB `chat_history` pages against the existing subscription until the transcript head, preserving the visible scroll anchor as pages prepend. Ordinary project-chat subscriptions stay warm for 120 seconds after leaving a detail screen (at most four pending inactive chats), and reopening synchronously cancels eviction even while offline. Personal and cross-project scopes still unsubscribe immediately so their routing scope can be cleared safely. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The chat's thread engine keeps the hint current from live `status` / `done` events and drops it when a full ack omits the flag (older host / no live summary). Chat frames never touch `SyncService`'s published state: they are decoded off the main actor and routed to `ChatThreadRegistry`, whose engines fold them and hand the view at most one frame per display frame (turn-state flips, pending-input changes and local echoes apply immediately). Cross-project transcript scope remains an additive protocol capability for controller reads, but Hub navigation always activates the tapped chat's owning project before opening it. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
 | `chat_subscribe` / `chat_history` (`chatLogV2` fields) | Phone → runtime / runtime → phone | Hosts advertising `features.chatLogV2` accept `sinceSequence` + `generation` on `chat_subscribe` (durable resume across host restarts; ack `{resumed: true, resumeKind: "sequence", historyGeneration, maxSequence}` followed by the missed events in order, or a snapshot with `gap: true`), `chatLogV2: true` (snapshot cut aligned to the turn start, old unresolved approvals in `pinnedEvents`), and `beforeSequence` on `chat_history` (page by the oldest cached sequence; pages carry `historyGeneration`). Folded replay rows carry `sequenceStart`; roster chat rows carry `maxSequence` and `historyGeneration`. A client whose cached generation differs from the host's drops that chat's cache |
 | `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
-| `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended. Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. Additive lifecycle fields carry `settledAt`, `statusNote`, `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`, and `exitCode`; disk readers return nulls against legacy databases that do not have those columns. Status precedence mirrors the desktop canonical derivation: a chat whose live runtime reports a running turn is `running` even when `lastTurnFailedAt` is still set (the marker describes the turn that ended), and a disk-only row drops that marker when the row's persisted `last_output_at` is newer than it, so a chat that kept working after a failure is not published as red into the Activity feed or the phone's Hub. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
+| `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended. Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. Additive lifecycle fields carry `settledAt`, `statusNote`, `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`, and `exitCode`; disk readers return nulls against legacy databases that do not have those columns. Spawn lineage (`spawnKind`, `orchestrationParentSessionId`) rides the same row when known, so a client files a same-lane subagent under its parent; it is omitted for chats with no lineage. Status precedence mirrors the desktop canonical derivation: a chat whose live runtime reports a running turn is `running` even when `lastTurnFailedAt` is still set (the marker describes the turn that ended), and a disk-only row drops that marker when the row's persisted `last_output_at` is newer than it, so a chat that kept working after a failure is not published as red into the Activity feed or the phone's Hub. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Bidirectional after negotiation | Slice of an oversized encoded envelope (>720 KiB). The phone sends chunks only after `hello_ok.features.chunkedEnvelopes.enabled`; both sides reassemble by `chunkId`/`index` before normal decompression/decode. `SyncEnvelopeChunkAssembler` allows at most eight sets / 512 parts, a 128-byte id, and 32 MiB aggregate decoded buffering; it rejects inconsistent totals and expires incomplete sets after 30 seconds |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
@@ -2564,8 +2565,15 @@ host lacks the `personalChats.*` capability.
 Detail screens that should claim the full height —
 new-chat / model-setup / advanced flows — opt out by emitting an
 `ADERootTabBarHiddenPreferenceKey` value via the `.adeRootTabBarHidden()`
-modifier. `ADEUIKitAppearance.configureTabBar()` (called from
-`ContentView.onAppear`) also tunes the underlying UIKit `UITabBar`
+modifier. `ADERootTabBarVisibilityModifier` sits on each root tab's content and
+is the one reader of that preference; it turns the request into the single
+`.toolbar(.hidden, for: .tabBar)` the native `TabView` honors. The Work tab
+also emits the preference from its own root whenever its navigation path is
+non-empty, so every pushed route — a chat, a new chat, an import — loses the
+five-tab bar. Before the Duo redesign the old custom bar lived inside the Work
+list and a pushed chat simply covered it; a native tab bar survives a push, so
+a chat showed the app tabs under its composer. `ADEUIKitAppearance.configureTabBar()`
+(called from `ContentView.onAppear`) also tunes the underlying UIKit `UITabBar`
 appearance so any system surface that still falls through (sheets,
 push-controllers built from UIKit) matches the SwiftUI chrome.
 
@@ -2628,9 +2636,15 @@ there, and the draft stays in the box until the switch succeeds. Saved profiles
 never merge across two different device identities, and a `brain_status` from a
 machine other than the active profile's is ignored, so a late status from the
 previous machine's socket cannot drop a pairing. Work includes remote chats for
-the same repository across machines. Chat commands route to the machine that
-owns the chat and fail while that machine is offline; they are never queued or
-sent to the focused machine as a fallback.
+the same repository across machines, one checkout per machine — the one
+desktop routes to (`pickLiveCheckout`): the most recently opened, roster order
+on a tie. A machine can register the same repository twice (a second clone, a
+sandbox copy), and matching by origin alone merged every one of them, putting
+another checkout's chats under the same machine name with no way to tell them
+apart and no way to delete them. The Hub still lists
+every project separately. Chat commands route to the machine that owns the
+chat and fail while that machine is offline; they are never queued or sent to
+the focused machine as a fallback.
 
 The Hub also owns the only mobile entry to projectless Chats.
 `HubPersonalChatsCard` shows the active-session count and attention count when
@@ -3240,22 +3254,25 @@ The iOS pieces:
   `WorkRootScreen+Actions.swift`, `WorkRootComponents.swift`, and
   `WorkSessionRowCard.swift` render the chips and menus and dispatch snooze /
   wake / settle / keep-active. Nested same-lane `spawnKind == .subagent`
-  drawers (then the existing shells drawer) come from
-  `WorkSpawnNesting.swift`, the Swift mirror of
-  `apps/desktop/src/shared/sessionSpawnNesting.ts`. Collapse ids are
-  `chat-subagents:<parentId>` vs `chat:<parentId>`. By-lane
+  filing and the shells drawer come from `WorkSpawnNesting.swift`, the Swift
+  mirror of `apps/desktop/src/shared/sessionSpawnNesting.ts`. Nested subagents
+  have no drawer, so a stored `chat-subagents:<parentId>` marker is inert. The
+  shells drawer opens with `drawer-open:chat:<parentId>`. By-lane
   groups whose full unfiltered roster is quiet use a thin collapsed header and
   an inverted `lane-open:<laneId>` expansion marker; expanding renders compact
   rows, and active work removes the marker so the next quiet spell collapses.
   The snooze helper yields to canonical `needs_you`, so a lane waiting on the
   user can never be folded into this quiet presentation.
-- By-status and by-time close with a **quiet zone**: a `Snoozed` shelf above a
-  `Settled` shelf, both collapsed by default behind an inverted
+- By-status, by-time, and by-lane close with a **quiet zone**: a `Snoozed`
+  shelf above a `Settled` shelf, both collapsed by default behind an inverted
   `shelf-open:<id>` marker. The `shelf-open:` namespace is deliberately separate
-  from `lane-open:`, which `pruneStaleQuietOpenMarkers` sweeps. By-lane is
-  exempt — a settled row still belongs to its lane there, and the per-lane quiet
-  fold already covers it. Archived rows are never lifted onto the Settled shelf;
-  they stay under "Archived" so filing them twice cannot hide them.
+  from `lane-open:`, which `pruneStaleQuietOpenMarkers` sweeps. By-lane used to
+  be exempt, keeping settled rows inside their lane; a settled singleton lane is
+  headerless, so there was no header to collapse and the finished row stayed on
+  screen permanently. Lifting it gives every finished chat the same one-tap
+  shelf, and the shelf row keeps its lane chip. Archived rows are never lifted
+  onto the Settled shelf; they stay under "Archived" so filing them twice
+  cannot hide them.
 - `WorkSessionGrouping.swift` also owns `WorkViewStateStore`, a versioned
   App-Group map keyed by project id plus host identity. `WorkRootScreen` swaps
   search, lane/status filters, organization, and collapsed ids when either
@@ -3266,8 +3283,8 @@ The iOS pieces:
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation,
   the row status vocabulary, and scoped view-state parity;
   `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, nested
-  subagent drawers (same-lane nest, peers stay top-level, quiet-parent pull-up,
-  usage-limit resume is not a Failed drawer), and the
+  subagent filing (same-lane nest, peers stay top-level, quiet-parent pull-up,
+  usage-limit resume is not a Failed mark), and the
   quiet-zone shelves; `PendingSessionSettleStatesTests.swift` covers the settle
   overlay — what each intent paints, which host row satisfies it, token-scoped
   failure, and the staleness backstop.
@@ -3314,15 +3331,27 @@ The phone does not generate these reports; it displays the host-authoritative
 value. Provider-specific planning signals and activity-report eligibility are
 listed in [the session provider signal boundaries](../terminals-and-sessions/README.md#provider-signal-boundaries).
 
-A nested same-lane subagent is a compact one-line card: identicon, title, then
-the provider mark on the trailing edge (same seat as a full card), and
-shout-only status words (Needs you / Failed). The **N subagents** drawer
-starts expanded; collapse is `chat-subagents:<parentId>`. A Failed child
-paints the drawer header as the red word **Failed** (Failed wins over a
-needs-you pip). Peers stay top-level. Grandchildren flatten into the root
-parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
-children up; done children stay nested. Cross-lane children stay top-level
-with the lineage chip. Demote un-nests.
+A nested same-lane subagent is not in the Work list. It lives only in its
+parent's Chat Info, like a native provider subagent, and tapping it there opens
+it. The parent row shows one mark instead: `person.2`, the child count, and the
+worst child state (a red cross for failed, an amber dot for needs you, a dashed
+ring for running). VoiceOver reads it as "2 subagents, 1 needs you". Chat Info
+reads child chats from the Work list's own rows, so a nested child the
+transcript has not named yet still appears, and a child waiting on you reads
+**Needs you**. Peers stay top-level. Grandchildren flatten into the root
+parent's mark. A quiet parent (snoozed or settled) pulls not-done children up;
+done children stay nested. Cross-lane children, and children whose parent is
+filtered out by search, stay top-level with the lineage chip. Demote un-nests.
+Children on another machine nest the same way: roster rows carry
+`spawnKind` and `orchestrationParentSessionId` (from the live chat, its
+sidecar, or a tracked CLI row's resume metadata), so a remote child files under
+its remote parent and opens through that machine. A host older than that field
+sends neither, and its children stay top-level rows.
+
+A child opened from Chat Info, and a parent opened from a child's breadcrumb,
+both go through the Work tab's navigation request. The tab handles that request
+at its root rather than on the list, because SwiftUI cancels a list's `.task`
+while a chat is pushed over it: before, such a request waited until Back.
 
 Non-prominent rows recede to 70% opacity, which is how the few rows that want a
 human stand out with no banner anywhere on screen. Settled resolves to a nil

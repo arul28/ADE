@@ -108,9 +108,9 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let isOrphaned: Bool
   /// Nothing here wants attention, so the section renders as a single thin row
   /// instead of a full header over nothing, and it defaults to collapsed. True
-  /// for a lane whose every session is settled (snoozed rows are already lifted
-  /// into the `status:snoozed` shelf, so they can't be here), and for the
-  /// quiet-zone shelves themselves.
+  /// for a lane whose every session is quiet (archived, settled, or snoozed —
+  /// though settled and snoozed rows are normally lifted onto their own
+  /// shelves first), and for the quiet-zone shelves themselves.
   /// Mutable so the by-lane pass can stamp it after construction — the quiet
   /// rule needs the assembled group, and value semantics make an in-place
   /// mutation identical to rebuilding the whole struct.
@@ -377,7 +377,8 @@ func buildWorkRootSessionPresentation(
     subagents: subagentGroupsByParentId,
     shells: shellFiling.groupsByParentId
   )
-  // Drawer children plus every filed shell, archived ones included: those are
+  // Nested subagents (listed nowhere; the parent row carries their mark),
+  // drawer shells, and every filed shell, archived ones included: those are
   // filed under their chat but not listed, so they must not surface as
   // top-level rows either.
   let childSessionIds = Set(
@@ -576,6 +577,7 @@ private func workRootSessionPresentationRenderSignature(
       case .running: hasher.combine("running")
       case .none: hasher.combine("none")
       }
+      hasher.combine(group.statusCount)
     }
   }
   for lane in workOrderedLanes {
@@ -688,10 +690,12 @@ func workHeaderlessLaneInputs(
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
 ///
 /// Every list closes with the same quiet zone: a **Snoozed** shelf above a
-/// **Settled** shelf, both collapsed until explicitly opened. By-lane is the one
-/// exemption — it has no global Settled shelf, because a settled row still
-/// belongs to its lane and by-lane already folds an all-quiet lane into a single
-/// thin row. See the `liftsSettled` comment below before "fixing" that.
+/// **Settled** shelf, both collapsed until explicitly opened. By-lane included:
+/// a settled row is finished work, so on a phone it belongs in one shelf the
+/// user opens deliberately, not inline under whichever lane happened to hold it.
+/// A singleton settled lane used to render its full row forever (a headerless
+/// lane has no header to collapse), which is exactly the noise the shelf exists
+/// to remove. The shelf row still carries the lane chip, so nothing is lost.
 ///
 /// Snooze is applied here as a visibility overlay on top of whichever
 /// organization is active: snoozed rows are lifted out of every other section
@@ -727,13 +731,12 @@ func workSessionGroups(
   pinnedLaneIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
-  // The quiet zone is a shelf pair, and only by-status and by-time build it.
-  // By-lane deliberately keeps settled rows inside their lane and folds a lane
-  // whose rows are ALL quiet into one thin row (`workLaneGroupIsQuiet`): a
-  // settled row still belongs to its lane, and lifting settled rows out
-  // globally would leave lanes empty and that fold unreachable.
-  let liftsSettled = organization != .byLane
-
+  // The quiet zone is a shelf pair built for every organization. By-lane used
+  // to exempt settled rows so they stayed inside their lane, but that left a
+  // settled singleton lane as a permanent full row: the lane is headerless, so
+  // there was no collapse control to hide it. Lifting it here gives the row the
+  // same one-tap shelf as every other finished chat, and the shelf row keeps its
+  // lane chip.
   var snoozed: [TerminalSessionSummary] = []
   var settled: [TerminalSessionSummary] = []
   var awake: [TerminalSessionSummary] = []
@@ -745,7 +748,7 @@ func workSessionGroups(
     }
     // Archived is checked first so an archived-and-settled row keeps landing in
     // "Archived" rather than being quietly re-filed under the settled shelf.
-    if liftsSettled, !archivedSessionIds.contains(session.id) {
+    if !archivedSessionIds.contains(session.id) {
       let canonical = workCanonicalSessionState(
         session: session,
         summary: chatSummaries[session.id],
@@ -886,12 +889,14 @@ let workSnoozedSectionId = "status:snoozed"
 /// making it inert rather than wrong.
 let workSettledSectionId = "status:settled"
 
-/// A lane section holding nothing but settled work.
+/// A lane section holding nothing but quiet work.
 ///
 /// Archived rows count as quiet too — they are equally "not what you're working
 /// on". A lane with anything running, ended-but-unsettled, or waiting on the
 /// user is never quiet, which is what keeps an attention row from being folded
-/// away behind a thin header.
+/// away behind a thin header. Settled and snoozed rows normally leave the lane
+/// for their own shelves before grouping, so in practice this fold now catches
+/// an archived-only lane.
 func workLaneGroupIsQuiet(
   _ group: WorkSessionGroup,
   referenceSessions: [TerminalSessionSummary]? = nil,

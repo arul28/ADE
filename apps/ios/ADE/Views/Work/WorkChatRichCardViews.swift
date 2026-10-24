@@ -3514,7 +3514,7 @@ struct WorkChatInfoDetailsSheet: View {
                     active: subagentPartition.active.count,
                     earlier: subagentPartition.earlier.count,
                     hidden: subagentPartition.clearedCount,
-                    running: subagentPartition.active.count { $0.status == .running },
+                    running: subagentPartition.active.count { $0.status == .running && !$0.needsInput },
                     failed: subagentPartition.active.count { $0.status == .failed }
                   ),
                   key: "subagents",
@@ -3942,8 +3942,18 @@ private struct WorkSquareStopButton: View {
 /// short word in the status tint (desktop's row tail).
 private struct WorkChatInfoStatusMark: View {
   let status: WorkSubagentSnapshot.Status
+  var needsInput = false
 
   var body: some View {
+    if needsInput {
+      Text("Needs you").font(.caption2.weight(.semibold)).foregroundStyle(ADEColor.warning)
+    } else {
+      statusWord
+    }
+  }
+
+  @ViewBuilder
+  private var statusWord: some View {
     switch status {
     case .running:
       ProgressView()
@@ -4017,7 +4027,7 @@ private struct WorkChatInfoSubagentRow: View {
                   .font(.caption2.weight(.medium))
                   .foregroundStyle(ADEColor.textMuted)
               }
-              WorkChatInfoStatusMark(status: snapshot.status)
+              WorkChatInfoStatusMark(status: snapshot.status, needsInput: snapshot.needsInput)
             }
             .fixedSize()
           }

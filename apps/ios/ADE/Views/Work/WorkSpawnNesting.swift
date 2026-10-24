@@ -1,9 +1,10 @@
 import Foundation
 
 /// Same-lane `spawnKind == .subagent` chats nest under their parent in the
-/// by-lane Work list. Mirrors `apps/desktop/src/shared/sessionSpawnNesting.ts`
-/// so a demote, a quiet-parent pull-up, or a grandchild flatten cannot
-/// disagree with desktop.
+/// by-lane Work list: they leave the list and live only in the parent's Chat
+/// Info, while the parent row shows one mark for them. Mirrors
+/// `apps/desktop/src/shared/sessionSpawnNesting.ts` so a demote, a
+/// quiet-parent pull-up, or a grandchild flatten cannot disagree with desktop.
 
 struct WorkSpawnNestingIndex: Equatable {
   var childrenByRootParentId: [String: [TerminalSessionSummary]]
@@ -70,12 +71,15 @@ func workSessionChildSectionId(parentId: String) -> String {
   "chat:\(parentId)"
 }
 
+/// Identity of a parent's subagent group. Nested subagents no longer render a
+/// drawer, so a stored `chat-subagents:` or `drawer-open:chat-subagents:`
+/// collapse marker is inert.
 func workSessionSubagentSectionId(parentId: String) -> String {
   "chat-subagents:\(parentId)"
 }
 
-/// A chat's shell and subagent drawers default to COLLAPSED: a busy agent can
-/// hang a dozen App Control shells and subagents off one chat. Same inverted
+/// A chat's shell drawer defaults to COLLAPSED: a busy agent can hang a dozen
+/// App Control shells off one chat. Same inverted
 /// shape as the quiet shelves — an explicit open writes `drawer-open:<id>` into
 /// `collapsedSectionIds`. A legacy `chat:<id>` entry from the expanded-by-default
 /// days is inert. Mirrors desktop `nestedDrawerOpenMarker`.
@@ -141,46 +145,79 @@ func workAttachedShellNestParentId(
   return nestedChildToRootParentId[parentId] ?? parentId
 }
 
+/// Failed or needs you, from the row each child would paint. Same rule as
+/// desktop `nestedSubagentDrawerAttention`: Failed is the red word the row
+/// paints, not raw phase `failed`. A usage-limit resume remaps that phase off
+/// red, and the parent's mark must follow.
+private func workNestedChildAttention(
+  _ child: TerminalSessionSummary,
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
+) -> WorkNestedDrawerStatus {
+  let row = workSessionRowPresentation(
+    session: child,
+    summary: chatSummaries[child.id],
+    now: now
+  )
+  guard let status = row.status, activityStatusShoutsLabel(glyph: status.glyph, tone: status.tone) else {
+    return .none
+  }
+  return status.tone == .red ? .failed : .needsYou
+}
+
+/// One child's contribution: its attention, else running, else nothing.
+private func workNestedChildStatus(
+  _ child: TerminalSessionSummary,
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
+) -> WorkNestedDrawerStatus {
+  let attention = workNestedChildAttention(child, chatSummaries: chatSummaries, now: now)
+  if attention != .none { return attention }
+  switch workCanonicalSessionState(session: child, summary: chatSummaries[child.id], now: now).phase {
+  case .running, .starting: return .running
+  default: return .none
+  }
+}
+
 func workNestedSubagentDrawerAttention(
   _ children: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
   now: Date
 ) -> WorkNestedDrawerStatus {
-  var needsYou = false
-  for child in children {
-    let row = workSessionRowPresentation(
-      session: child,
-      summary: chatSummaries[child.id],
-      now: now
-    )
-    // Same rule as desktop `nestedSubagentDrawerAttention`: Failed is the red
-    // word the row paints, not raw phase `failed`. A usage-limit resume remaps
-    // that phase off red, and the drawer header must follow.
-    if let status = row.status, activityStatusShoutsLabel(glyph: status.glyph, tone: status.tone) {
-      if status.tone == .red { return .failed }
-      needsYou = true
-    }
+  children.reduce(WorkNestedDrawerStatus.none) { worst, child in
+    max(worst, workNestedChildAttention(child, chatSummaries: chatSummaries, now: now))
   }
-  return needsYou ? .needsYou : .none
 }
 
-/// The one state a COLLAPSED drawer shows next to its count: failed, then needs
-/// you (both via `workNestedSubagentDrawerAttention`), then running. Ended and
-/// done children add nothing. Mirrors desktop `nestedDrawerStatus`.
+/// The one state a parent's nested mark shows next to its count: failed, then
+/// needs you (both via `workNestedSubagentDrawerAttention`), then running.
+/// Ended and done children add nothing. Mirrors desktop `nestedDrawerStatus`.
 func workNestedDrawerStatus(
   _ children: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
   now: Date
 ) -> WorkNestedDrawerStatus {
-  let attention = workNestedSubagentDrawerAttention(children, chatSummaries: chatSummaries, now: now)
-  if attention != .none { return attention }
+  workNestedDrawerStatusAndCount(children, chatSummaries: chatSummaries, now: now).status
+}
+
+/// The worst child state plus how many children are in it ("1 needs you").
+func workNestedDrawerStatusAndCount(
+  _ children: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
+) -> (status: WorkNestedDrawerStatus, count: Int) {
+  var worst = WorkNestedDrawerStatus.none
+  var count = 0
   for child in children {
-    switch workCanonicalSessionState(session: child, summary: chatSummaries[child.id], now: now).phase {
-    case .running, .starting: return .running
-    default: continue
+    let status = workNestedChildStatus(child, chatSummaries: chatSummaries, now: now)
+    if status > worst {
+      worst = status
+      count = 1
+    } else if status == worst, status != .none {
+      count += 1
     }
   }
-  return .none
+  return (worst, count)
 }
 
 private func workIsArchivedAttachedShell(_ session: TerminalSessionSummary) -> Bool {
@@ -282,22 +319,33 @@ enum WorkNestedSessionGroupKind: Equatable {
   case subagents
 }
 
-/// Drawer status, highest first: failed > needs you > running > nothing.
+/// Nested status, highest first: failed > needs you > running > nothing.
 /// `workNestedSubagentDrawerAttention` yields only failed/needs-you;
-/// `workNestedDrawerStatus` adds running.
-enum WorkNestedDrawerStatus: Equatable {
+/// `workNestedDrawerStatus` adds running. Declared lowest to highest so
+/// `Comparable` ranks them.
+enum WorkNestedDrawerStatus: Int, Comparable {
   case none
   case running
   case needsYou
   case failed
+
+  static func < (lhs: WorkNestedDrawerStatus, rhs: WorkNestedDrawerStatus) -> Bool {
+    lhs.rawValue < rhs.rawValue
+  }
 }
 
+/// A parent's nested children. Shell groups render as the parent's shell
+/// drawer. Subagent groups are never listed: a nested subagent lives only in
+/// its parent's Chat Info, and the group feeds the parent row's one mark
+/// (count plus the worst child state).
 struct WorkSessionChildGroup: Equatable, Identifiable {
   let parentId: String
   let children: [TerminalSessionSummary]
   let collapsedSectionId: String
   let kind: WorkNestedSessionGroupKind
   let status: WorkNestedDrawerStatus
+  /// How many children are in `status` (0 when `status` is `.none`).
+  var statusCount: Int = 0
 
   var id: String { collapsedSectionId }
 
@@ -372,6 +420,7 @@ func workSessionSubagentGroups(
 ) -> [String: WorkSessionChildGroup] {
   Dictionary(uniqueKeysWithValues: index.childrenByRootParentId.map { parentId, children in
     let ordered = children.sorted(by: workNestedChildSort)
+    let status = workNestedDrawerStatusAndCount(ordered, chatSummaries: chatSummaries, now: now)
     return (
       parentId,
       WorkSessionChildGroup(
@@ -379,11 +428,8 @@ func workSessionSubagentGroups(
         children: ordered,
         collapsedSectionId: workSessionSubagentSectionId(parentId: parentId),
         kind: .subagents,
-        status: workNestedDrawerStatus(
-          ordered,
-          chatSummaries: chatSummaries,
-          now: now
-        )
+        status: status.status,
+        statusCount: status.count
       )
     )
   })
@@ -413,4 +459,163 @@ private func workNestedChildSort(_ lhs: TerminalSessionSummary, _ rhs: TerminalS
     return lhs.startedAt < rhs.startedAt
   }
   return lhs.id < rhs.id
+}
+
+/// The one mark a parent's Work row shows for its nested subagents: how many,
+/// and the worst state among them (failed > needs you > running). The children
+/// themselves are listed only in the parent's Chat Info.
+struct WorkNestedSubagentMark: Hashable {
+  let count: Int
+  let status: WorkNestedDrawerStatus
+  /// Children in `status`; 0 when `status` is `.none`.
+  let statusCount: Int
+
+  init(count: Int, status: WorkNestedDrawerStatus, statusCount: Int) {
+    self.count = count
+    self.status = status
+    self.statusCount = statusCount
+  }
+
+  init?(group: WorkSessionChildGroup?) {
+    guard let group, group.kind == .subagents, !group.children.isEmpty else { return nil }
+    self.init(count: group.children.count, status: group.status, statusCount: group.statusCount)
+  }
+
+  /// "2 subagents, 1 needs you".
+  var accessibilityLabel: String {
+    let base = count == 1 ? "1 subagent" : "\(count) subagents"
+    switch status {
+    case .failed: return "\(base), \(statusCount) failed"
+    case .needsYou: return "\(base), \(statusCount) needs you"
+    case .running: return "\(base), \(statusCount) running"
+    case .none: return base
+    }
+  }
+}
+
+// MARK: - Child chats in the parent's Chat Info
+
+/// What a chat's Chat Info reads about its child chats, handed down by the
+/// Work root from the same rows the list holds. A row from another machine
+/// carries that machine's namespaced lane id (`fleet|<machineKey>|<laneId>`),
+/// so a child found here opens on its own machine.
+struct WorkChatChildRoster: Equatable {
+  /// The parent's own lane id as the list holds it.
+  var parentLaneId: String?
+  /// Rows that name this chat as their orchestration parent, any lane.
+  var children: [TerminalSessionSummary]
+  var summaries: [String: AgentChatSessionSummary]
+  /// Every row's lane id as the list holds it, for opening a child the
+  /// parent's transcript names (`chat:<id>`).
+  var laneIdBySessionId: [String: String]
+
+  static let empty = WorkChatChildRoster(
+    parentLaneId: nil,
+    children: [],
+    summaries: [:],
+    laneIdBySessionId: [:]
+  )
+}
+
+func workChatChildRoster(
+  parentId: String,
+  sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary]
+) -> WorkChatChildRoster {
+  var parentLaneId: String?
+  var children: [TerminalSessionSummary] = []
+  var summaries: [String: AgentChatSessionSummary] = [:]
+  var laneIdBySessionId: [String: String] = [:]
+  for session in sessions {
+    laneIdBySessionId[session.id] = session.laneId
+    if session.id == parentId {
+      parentLaneId = session.laneId
+      continue
+    }
+    guard workOrchestrationParentId(session, summary: chatSummaries[session.id]) == parentId else { continue }
+    children.append(session)
+    if let summary = chatSummaries[session.id] { summaries[session.id] = summary }
+  }
+  return WorkChatChildRoster(
+    parentLaneId: parentLaneId,
+    children: children.sorted(by: workNestedChildSort),
+    summaries: summaries,
+    laneIdBySessionId: laneIdBySessionId
+  )
+}
+
+/// The child session id of a spawned child chat's Chat Info row, or nil for a
+/// native in-thread subagent.
+func workChatInfoChildSessionId(_ snapshot: WorkSubagentSnapshot) -> String? {
+  let taskId = snapshot.taskId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard taskId.hasPrefix("chat:") else { return nil }
+  let id = String(taskId.dropFirst("chat:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+  return id.isEmpty ? nil : id
+}
+
+/// Chat Info's subagent list with the parent's child chats folded in.
+///
+/// The parent's transcript already names each spawned child (`chat:<id>`).
+/// Two gaps remain, and both are filled from the child's own Work row:
+/// a nested child (same lane, `spawnKind == .subagent`) the transcript has
+/// not named yet is added, and every child row reads "Needs you" while the
+/// child waits on the user, even after its spawn result landed.
+/// `summary` returns the freshest summary the caller holds for a child.
+func workChatInfoSubagentsWithChildChats(
+  _ snapshots: [WorkSubagentSnapshot],
+  roster: WorkChatChildRoster,
+  summary: (String) -> AgentChatSessionSummary?,
+  now: Date = Date()
+) -> [WorkSubagentSnapshot] {
+  guard !roster.children.isEmpty else { return snapshots }
+  let childById = Dictionary(roster.children.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  func phase(_ child: TerminalSessionSummary) -> CanonicalSessionPhase {
+    workCanonicalSessionState(session: child, summary: summary(child.id), now: now).phase
+  }
+  var named: Set<String> = []
+  var result = snapshots.map { snapshot -> WorkSubagentSnapshot in
+    guard let childId = workChatInfoChildSessionId(snapshot) else { return snapshot }
+    named.insert(childId)
+    guard let child = childById[childId] else { return snapshot }
+    var next = snapshot
+    next.needsInput = phase(child) == .needsYou
+    return next
+  }
+  for child in roster.children where !named.contains(child.id) {
+    let childSummary = summary(child.id)
+    guard workSpawnKind(child, summary: childSummary) == .subagent,
+          let parentLaneId = roster.parentLaneId,
+          child.laneId == parentLaneId
+    else { continue }
+    let childPhase = phase(child)
+    let status: WorkSubagentSnapshot.Status
+    switch childPhase {
+    case .starting, .running, .stale, .needsYou: status = .running
+    case .failed: status = .failed
+    case .stopped: status = .stopped
+    case .ready, .idle, .ended, .settled: status = .succeeded
+    }
+    let title = (childSummary?.title ?? child.title).trimmingCharacters(in: .whitespacesAndNewlines)
+    result.append(WorkSubagentSnapshot(
+      taskId: "chat:\(child.id)",
+      agentId: child.id,
+      agentType: nil,
+      provider: childSummary?.provider,
+      parentToolUseId: nil,
+      description: title,
+      background: false,
+      label: title.isEmpty ? nil : title,
+      model: childSummary?.model,
+      reasoningEffort: nil,
+      status: status,
+      lastToolName: nil,
+      latestSummary: nil,
+      turnId: nil,
+      startedAt: child.startedAt.isEmpty ? nil : child.startedAt,
+      updatedAt: child.lastActivityAt,
+      spawnKind: .subagent,
+      needsInput: childPhase == .needsYou
+    ))
+  }
+  return result
 }

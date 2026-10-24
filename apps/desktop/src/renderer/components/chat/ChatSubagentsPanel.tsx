@@ -58,8 +58,15 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
-import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
+import { paneRowChildSessionId, selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useSessionsForPin } from "../../state/crossMachineLanes";
+import { projectStateKeyForBinding, useAppStore } from "../../state/appStore";
+import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
+import { primarySessionLabel } from "../../lib/sessions";
+import { chatToolProvider } from "../../../shared/sessionSpawnNesting";
+import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { ChatShellsSection } from "./ChatShellsSection";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
@@ -86,6 +93,121 @@ const PANE_EARLIER_SECTION_KEYS = ["subagents", "background", "schedule"] as con
 
 function subagentIdentity(snapshot: ChatSubagentSnapshot): string {
   return snapshot.agentId?.trim() || snapshot.taskId;
+}
+
+/**
+ * The sessions of the machine this chat runs on: that machine's slice of the
+ * cross-machine union when pinned, else the tab's own session cache. Store
+ * reads only — nothing is fetched or polled for this.
+ */
+function useChatMachineSessions(): TerminalSessionSummary[] | null {
+  const scope = useChatRuntimeScope();
+  const pinned = useSessionsForPin(scope.binding);
+  const bound = useAppStore((state) => {
+    if (scope.binding) return null;
+    const key = projectStateKeyForBinding(null, scope.rootPath);
+    return key ? state.sessionsCacheByProject[key] ?? null : null;
+  });
+  return pinned ?? bound;
+}
+
+/**
+ * This chat's filed subagents, as its machine's roster knows them: same lane,
+ * `spawnKind: "subagent"`, parent = this chat. The Work list leaves them out
+ * (`sessionSpawnNesting`), so this pane is where they are reached.
+ */
+function rosterSubagentsOf(
+  sessions: readonly TerminalSessionSummary[] | null,
+  parentId: string | null | undefined,
+  parentLaneId: string | null,
+): TerminalSessionSummary[] {
+  if (!sessions?.length || !parentId) return [];
+  const laneId = sessions.find((session) => session.id === parentId)?.laneId ?? parentLaneId;
+  if (!laneId) return [];
+  return sessions.filter((session) => (
+    session.id !== parentId
+    && !session.archivedAt
+    && session.spawnKind === "subagent"
+    && session.orchestrationParentSessionId?.trim() === parentId
+    && session.laneId === laneId
+  ));
+}
+
+/** Same ids, same phase, same title: the roster churn did not touch this chat. */
+function sameRosterChildren(
+  left: readonly RosterChild[],
+  right: readonly RosterChild[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((entry, index) => {
+    const other = right[index]!;
+    return entry.session.id === other.session.id
+      && entry.phase === other.phase
+      && entry.title === other.title
+      && entry.session.startedAt === other.session.startedAt
+      && entry.session.lastActivityAt === other.session.lastActivityAt;
+  });
+}
+
+type RosterChild = { session: TerminalSessionSummary; phase: CanonicalSessionPhase; title: string };
+
+function rosterChildStatus(phase: CanonicalSessionPhase): ChatSubagentSnapshot["status"] {
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+    case "needs_you":
+      return "running";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    default:
+      return "completed";
+  }
+}
+
+/**
+ * A row for each roster subagent the transcript has no `chat:<id>` row for: a
+ * peer promoted to subagent, or a transcript that predates (or windowed away)
+ * its started event. Inserted in the transcript's newest-first spawn order.
+ */
+function withRosterSubagentRows(
+  snapshots: ChatSubagentSnapshot[],
+  children: readonly RosterChild[],
+): ChatSubagentSnapshot[] {
+  if (children.length === 0) return snapshots;
+  const covered = new Set<string>();
+  for (const snapshot of snapshots) {
+    const childId = paneRowChildSessionId(snapshot);
+    if (childId) covered.add(childId);
+  }
+  const missing = children.filter((child) => !covered.has(child.session.id));
+  if (missing.length === 0) return snapshots;
+  const merged = [...snapshots];
+  for (const { session, phase, title } of missing) {
+    const row: ChatSubagentSnapshot = {
+      taskId: `chat:${session.id}`,
+      childSessionId: session.id,
+      agentId: session.id,
+      agentType: chatToolProvider(session.toolType) ?? session.toolType ?? undefined,
+      parentToolUseId: null,
+      description: title,
+      status: rosterChildStatus(phase),
+      startedAt: session.startedAt,
+      elapsedStartAt: null,
+      updatedAt: session.lastActivityAt ?? session.endedAt ?? session.startedAt,
+      summary: null,
+      background: false,
+      taskType: "subagent",
+      spawnKind: "subagent",
+    };
+    const startedMs = Date.parse(session.startedAt);
+    const at = merged.findIndex((existing) => Date.parse(existing.startedAt) < startedMs);
+    if (at < 0) merged.push(row);
+    else merged.splice(at, 0, row);
+  }
+  return merged;
 }
 
 function isSyntheticWorkflowAgent(snapshot: ChatSubagentSnapshot): boolean {
@@ -830,6 +952,7 @@ function SubagentRow({
   collapsedDescendantCount = 0,
   onToggleCollapsedSubtree,
   spawnedChatTitle = null,
+  needsYou = false,
   sessionModelLabel = null,
   onStop,
 }: {
@@ -851,6 +974,8 @@ function SubagentRow({
   /** Live title of the spawned child chat this row navigates to, when resolved.
    * Non-null marks this as a spawned-chat row (navigates on click). */
   spawnedChatTitle?: string | null;
+  /** The spawned chat behind this row is waiting on the user. */
+  needsYou?: boolean;
   /** Parent session model label used only when the envelope has no model. */
   sessionModelLabel?: string | null;
   onClick: () => void;
@@ -884,7 +1009,7 @@ function SubagentRow({
     return () => window.clearInterval(intervalId);
   }, [isRunning]);
   const time = elapsedText(snapshot, nowMs);
-  const statusLabel = STATUS_LABEL[snapshot.status];
+  const statusLabel = needsYou ? "needs you" : STATUS_LABEL[snapshot.status];
   const runningLabelTint = category === "background"
     ? "text-cyan-100/90"
     : "text-[color:var(--color-accent-bright,#C4B5FD)]";
@@ -999,10 +1124,14 @@ function SubagentRow({
           <span
             className={cn(
               "tracking-[0.01em]",
-              isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
-              isFailed && "text-rose-300/70",
-              isStopped && "text-amber-300/55",
-              isCompleted && "text-fg/35",
+              needsYou
+                ? "text-amber-300/85"
+                : [
+                    isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
+                    isFailed && "text-rose-300/70",
+                    isStopped && "text-amber-300/55",
+                    isCompleted && "text-fg/35",
+                  ],
             )}
           >
             {statusLabel}
@@ -1324,11 +1453,37 @@ export function ChatSubagentsPanel({
   );
   const taskList = taskListProp === undefined ? derivedTaskList : taskListProp;
 
+  // The chat's filed subagents from its own machine's roster. The Work list
+  // does not show them, so a child the transcript has no row for (a promoted
+  // peer, an old or windowed transcript) gets one here; and a child waiting on
+  // the user says so on its row.
+  const scope = useChatRuntimeScope();
+  const machineSessions = useChatMachineSessions();
+  const rosterChildrenRef = useRef<RosterChild[]>([]);
+  const rosterChildren = useMemo(() => {
+    const next = rosterSubagentsOf(machineSessions, sessionId, scope.laneId).map((session) => ({
+      session,
+      phase: sessionCanonicalUiState(canonicalInputFromSummary(session)).phase,
+      title: primarySessionLabel(session),
+    }));
+    // Session churn elsewhere on the machine must not rebuild this pane's rows.
+    if (sameRosterChildren(next, rosterChildrenRef.current)) return rosterChildrenRef.current;
+    rosterChildrenRef.current = next;
+    return next;
+  }, [machineSessions, scope.laneId, sessionId]);
+  const rosterChildById = useMemo(
+    () => new Map(rosterChildren.map((child) => [child.session.id, child] as const)),
+    [rosterChildren],
+  );
+  const snapshotsWithRoster = useMemo(
+    () => withRosterSubagentRows(snapshots, rosterChildren),
+    [snapshots, rosterChildren],
+  );
   // Self-heal first, so every count, cap, grouping and label below reads the
   // truthful status rather than a "running" the event stream never closed.
   const healedSnapshots = useMemo(
-    () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
-    [snapshots, runtimeAlive, childChatStatuses],
+    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses }),
+    [snapshotsWithRoster, runtimeAlive, childChatStatuses],
   );
   // The workflow card owns these rows, so it reads the same healed status:
   // a run whose runtime died must not stay "Active" with a live Stop.
@@ -1527,7 +1682,13 @@ export function ChatSubagentsPanel({
     // Spawned ADE chats navigate directly; runtime-native subagents keep the
     // transcript takeover/details behavior below.
     if (snap.childSessionId != null) {
-      navigateToSpawnedChat(snap.childSessionId, null);
+      // A spawned chat runs on its parent's machine, so the jump keeps this
+      // chat's pin (null = the tab's own machine).
+      navigateToSpawnedChat(
+        snap.childSessionId,
+        rosterChildById.get(snap.childSessionId)?.session.laneId ?? null,
+        scope.pin,
+      );
       return;
     }
     // Clicking the row whose drawer is open closes it.
@@ -1628,9 +1789,10 @@ export function ChatSubagentsPanel({
       }}
       spawnedChatTitle={
         snap.childSessionId != null
-          ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
+          ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? rosterChildById.get(snap.childSessionId)?.title ?? null
           : null
       }
+      needsYou={snap.childSessionId != null && rosterChildById.get(snap.childSessionId)?.phase === "needs_you"}
       sessionModelLabel={sessionModelLabel}
       onStop={onStopSubagent}
       onClick={() => handleRowClick(snap)}

@@ -64,7 +64,6 @@ export function SessionStatusSlot({
   actionsEnabled,
   compact = false,
   runtimePin = null,
-  hideLabelUnlessShout = false,
   clockMs,
 }: {
   session: TerminalSessionSummary;
@@ -80,7 +79,6 @@ export function SessionStatusSlot({
   compact?: boolean;
   /** Runtime that owns this session when it differs from the active project. */
   runtimePin?: OpenProjectBinding | null;
-  hideLabelUnlessShout?: boolean;
   /**
    * The owning card's clock (`useTurnStallClock`). The card owns it because
    * the card computes `presentation`: a stall or an overdue wake has to
@@ -164,7 +162,6 @@ export function SessionStatusSlot({
           timestampLabel={timestampLabel}
           compact={compact}
           steeringInput={session.steeringInput === true}
-          hideLabelUnlessShout={hideLabelUnlessShout}
         />
       </span>
 

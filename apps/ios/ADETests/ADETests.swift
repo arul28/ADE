@@ -888,13 +888,26 @@ final class ADETests: XCTestCase {
       rootPath: "/remote/Repo",
       displayName: "Repo",
       iconDataUrl: nil,
-      lastOpenedAt: nil,
+      lastOpenedAt: "2026-10-20T12:00:00.000Z",
       booted: false,
       runningCount: 0,
       attentionCount: 0,
       lanes: [],
       chats: [],
       repoOriginUrl: "git@github.com:owner/repo.git"
+    )
+    let sandboxClone = RemoteRosterProject(
+      projectId: "remote-sandbox-clone",
+      rootPath: "/remote/ade-cloud-sandbox/Repo",
+      displayName: "Repo",
+      iconDataUrl: nil,
+      lastOpenedAt: "2026-09-01T12:00:00.000Z",
+      booted: false,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [],
+      chats: [],
+      repoOriginUrl: "https://github.com/owner/repo.git"
     )
     let differentRepository = RemoteRosterProject(
       projectId: "remote-other-repo",
@@ -913,7 +926,7 @@ final class ADETests: XCTestCase {
       machineKey: "machine-remote",
       name: "Remote",
       state: .live,
-      projects: [sameRepository, differentRepository],
+      projects: [sameRepository, sandboxClone, differentRepository],
       rosterRevision: 1,
       lastUpdateAt: nil,
       isPinned: false
@@ -949,6 +962,9 @@ final class ADETests: XCTestCase {
       identity: workRepoIdentity(owner: "Owner", name: "Repo"),
       folderKey: "repo"
     )
+    // One checkout per machine: the sandbox clone is the same repository but
+    // not the checkout the machine is working in, and merging it would put its
+    // chats in this Work list under the same machine name.
     XCTAssertEqual(workRepos.map(\.projectId), ["remote-same-repo"])
 
     let hub = hubMergeFleetRosters(focused: [(project: focused, roster: nil)], machines: [machine])

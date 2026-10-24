@@ -1131,6 +1131,14 @@ export type SyncRosterChat = {
   /** Parent chat/session id for attached shell rows. Mirrors TerminalSessionSummary.chatSessionId. */
   chatSessionId?: string | null;
   /**
+   * Spawn lineage (`TerminalSessionSummary.spawnKind` /
+   * `orchestrationParentSessionId`), so a client files a same-lane subagent
+   * under its parent the way the machine's own Work list does. Omitted for
+   * chats with no lineage; older hosts omit it and older phones ignore it.
+   */
+  spawnKind?: "subagent" | "peer" | null;
+  orchestrationParentSessionId?: string | null;
+  /**
    * Identity-session marker used to reject stale/legacy roster rows on clients.
    * Current hosts omit identity sessions from the normal roster entirely.
    */

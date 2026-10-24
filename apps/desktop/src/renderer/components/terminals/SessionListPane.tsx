@@ -121,12 +121,12 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import {
-  nestedSubagentSectionId,
+  nestedSubagentMark,
   parentsWithBusySubagents,
   workNestingDrawers,
+  type NestedSubagentMark,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
-import { NestedDrawers, nestedDrawerOpenMarker } from "./NestedDrawers";
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
@@ -2271,49 +2271,14 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [handoffJobsByLaneId, lanes, missingLaneSessionGroups]);
-  const isNestedDrawerCollapsed = useCallback(
-    (sectionId: string) => !workCollapsedSectionIds.includes(nestedDrawerOpenMarker(sectionId)),
-    [workCollapsedSectionIds],
-  );
-  // A selection that lands inside a collapsed drawer (a deeplink, a
-  // notification, the tab strip) opens that drawer once, so the selected row is
-  // on screen. Closing it again sticks until the selection moves.
-  const drawerRevealedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!selectedSessionId || drawerRevealedForRef.current === selectedSessionId) return;
-    const subagentParent = workNesting.nestedChildToRootParentId.get(selectedSessionId);
-    // Only subagents have a drawer to reveal: a chat's shells live in its
-    // actions pane, and focusing one opens the shell itself.
-    const sectionId = subagentParent ? nestedSubagentSectionId(subagentParent) : null;
-    // Not filed yet (the roster is still loading): try again on the next update.
-    if (!sectionId && !allSessionsUnfiltered.some((session) => session.id === selectedSessionId)) return;
-    drawerRevealedForRef.current = selectedSessionId;
-    if (sectionId && isNestedDrawerCollapsed(sectionId)) {
-      toggleWorkSectionCollapsed(nestedDrawerOpenMarker(sectionId), { preserveDeeplink: true });
-    }
-  }, [allSessionsUnfiltered, isNestedDrawerCollapsed, selectedSessionId, toggleWorkSectionCollapsed, workNesting]);
-  const expandSessionWithChildren = useCallback((
-    session: TerminalSessionSummary,
-    drawers: WorkNestingDrawers<TerminalSessionSummary> = workNesting,
-  ): string[] => {
-    const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
-    const ids = [session.id];
-    if (subagents.length > 0 && !isNestedDrawerCollapsed(nestedSubagentSectionId(session.id))) {
-      ids.push(...subagents.map((child) => child.id));
-    }
-    return ids;
-  }, [isNestedDrawerCollapsed, workNesting]);
+  // A filed subagent is not a row of the list (its parent's actions pane lists
+  // it), so the visible ids are the top-level rows alone.
   const collectVisibleIdsFrom = useCallback((
     sessions: TerminalSessionSummary[],
     drawers: WorkNestingDrawers<TerminalSessionSummary>,
-  ): string[] => {
-    const ids: string[] = [];
-    for (const session of sessions) {
-      if (drawers.excludedTopLevelIds.has(session.id)) continue;
-      ids.push(...expandSessionWithChildren(session, drawers));
-    }
-    return ids;
-  }, [expandSessionWithChildren]);
+  ): string[] => sessions
+    .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
+    .map((session) => session.id), []);
   const collectVisibleIds = useCallback(
     (sessions: TerminalSessionSummary[]): string[] => collectVisibleIdsFrom(sessions, workNesting),
     [collectVisibleIdsFrom, workNesting],
@@ -2490,7 +2455,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneBrowserTabs?: number;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
-    nestedSubagent?: boolean;
+    /** The row's filed subagents, as one mark on the row. */
+    subagentMark?: NestedSubagentMark | null;
     nesting?: WorkNestingDrawers<TerminalSessionSummary>;
   };
   // A PR pill on a card or a lane divider opens the PR in that session's PR
@@ -2612,7 +2578,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneBrowserTabs={options?.laneBrowserTabs ?? 0}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
-        nestedSubagent={options?.nestedSubagent}
+        subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
@@ -2627,6 +2593,23 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
+  // The card is memoized on its props; a mark rebuilt every render with the
+  // same counts must keep its identity or every parent row re-renders.
+  const subagentMarkCacheRef = useRef(new Map<string, NestedSubagentMark>());
+  const stableSubagentMark = (parentId: string, mark: NestedSubagentMark | null): NestedSubagentMark | null => {
+    if (!mark) return null;
+    const cache = subagentMarkCacheRef.current;
+    const previous = cache.get(parentId);
+    if (
+      previous
+      && previous.count === mark.count
+      && previous.status === mark.status
+      && previous.statusCount === mark.statusCount
+    ) return previous;
+    cache.set(parentId, mark);
+    return mark;
+  };
+
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
     const drawers = options?.nesting ?? workNesting;
     const cardOptions = options?.foreignRow
@@ -2636,36 +2619,17 @@ export const SessionListPane = React.memo(function SessionListPane({
           visibleSessionIds: collectVisibleIdsFrom(list, drawers),
         }
       : options;
+    // Filed subagents leave the list: the parent row carries one mark for
+    // them, and its chat's actions pane lists them.
     return list
       .filter((session) => !drawers.excludedTopLevelIds.has(session.id))
       .map((session) => {
-        const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
-        const card = renderCardCore(session, cardOptions);
-        if (subagents.length === 0) return card;
-        return (
-          <div key={`group-${session.id}`}>
-            {card}
-            <NestedDrawers
-              parentId={session.id}
-              subagents={subagents}
-              isCollapsed={isNestedDrawerCollapsed}
-              onToggle={toggleWorkSectionCollapsed}
-              nowMs={foreignFilingNowMs}
-              renderChild={(child, kind) => renderCardCore(child, {
-                ...cardOptions,
-                compact: true,
-                nestedSubagent: kind === "subagents",
-                showLaneIdentity: false,
-                laneActions: null,
-                machineMarker: null,
-                laneAppleDevice: null,
-                laneDesktop: null,
-                laneAppControl: false,
-                laneBrowserTabs: 0,
-              })}
-            />
-          </div>
-        );
+        const subagents = drawers.subagentsByParentId.get(session.id);
+        if (!subagents?.length) return renderCardCore(session, cardOptions);
+        return renderCardCore(session, {
+          ...cardOptions,
+          subagentMark: stableSubagentMark(session.id, nestedSubagentMark(subagents, foreignFilingNowMs)),
+        });
       });
   };
 

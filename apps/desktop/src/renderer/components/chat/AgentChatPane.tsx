@@ -296,6 +296,7 @@ import { attachedShellNestParentId } from "../../../shared/sessionSpawnNesting";
 import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
@@ -6048,6 +6049,8 @@ export function AgentChatPane({
         return;
       }
       if (event.type !== "ade:chat:open-info") return;
+      // Served now, so the held copy must not reopen the pane later.
+      if (detail.sessionId && detail.sessionId === selectedSessionId) takeChatActionsPaneRequest(selectedSessionId);
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
       setChatActionsOpen(true);
@@ -6074,7 +6077,6 @@ export function AgentChatPane({
       window.removeEventListener("ade:chat:open-info", handler);
     };
   }, [localHandoffOpen, selectedSessionId, selectedSubagentSnapshots]);
-
   // The form belongs to the chat it opened on. A handoff selects the new chat,
   // and the user can switch chats with the form open; a form left open would
   // then hand off the other chat.
@@ -7537,6 +7539,19 @@ export function AgentChatPane({
   useEffect(() => {
     if (!chatActionsAvailable && chatActionsOpen) setChatActionsOpen(false);
   }, [chatActionsAvailable, chatActionsOpen]);
+  // A Work row's subagent mark selects this chat and asks for its actions pane
+  // in the same press; the request is held until the chat is on screen AND
+  // the pane can show. Declared after the per-chat drawer restore and the
+  // close-when-unavailable effect above, so neither closes it again: a newly
+  // selected chat's lane resolves a render later, and taking the request
+  // before then opened the pane only for that effect to shut it.
+  useEffect(() => {
+    if (!selectedSessionId || !chatActionsAvailable) return;
+    if (!takeChatActionsPaneRequest(selectedSessionId)) return;
+    setIosSimulatorOpen(false);
+    setAppControlOpen(false);
+    setChatActionsOpen(true);
+  }, [selectedSessionId, chatActionsAvailable]);
   const handoffTargetDescriptor = useMemo(
     () => (handoffModelId ? (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey) ?? null) : null),
     [handoffModelId, modelCatalogScopeKey],

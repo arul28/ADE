@@ -106,7 +106,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
-  func testDrawerAttentionDoesNotTreatUsageLimitAsFailed() throws {
+  func testNestedMarkAttentionDoesNotTreatUsageLimitAsFailed() throws {
     var child = makeSession(
       id: "sub-1",
       laneId: "lane-a",
@@ -205,6 +205,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.status, .failed)
+    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.statusCount, 1)
     XCTAssertEqual(
       nestedSubagentGroup(parked, parentId: "chat-1")?.status,
       WorkNestedDrawerStatus.none
@@ -212,7 +213,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertNotEqual(failed, parked)
   }
 
-  func testSearchHiddenSubagentDoesNotAppearInDrawer() {
+  func testSearchHiddenSubagentIsNotCountedInParentMark() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
       sessions: [
@@ -324,7 +325,7 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(presentation.topLevelDisplaySessionIds, Set(["chat-1"]))
   }
 
-  func testGrandchildrenFlattenIntoTheRootParentDrawer() {
+  func testGrandchildrenFlattenIntoTheRootParentMark() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
       sessions: [
@@ -643,16 +644,19 @@ final class WorkSessionGroupingTests: XCTestCase {
 
   // MARK: - Quiet lanes stay orthogonal
 
-  /// Quiet ("everything here has settled") and headerless ("there is only one
-  /// row") answer different questions, and a lane can be both.
-  func testSettledSingletonLaneIsBothQuietAndHeaderless() {
+  /// A settled singleton lane no longer exists as a lane group: it files onto
+  /// the Settled shelf, which is quiet and collapsed by default. This is the
+  /// shape that used to leak a permanent full row on a phone.
+  func testSettledSingletonLaneFilesOntoTheSettledShelf() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let settled = makeSession(id: "s-1", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60)))
     let presentation = makePresentation(sessions: [settled], lanes: [lane])
 
     let group = presentation.sessionGroups.first
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), [workSettledSectionId])
     XCTAssertEqual(group?.isQuiet, true)
-    XCTAssertEqual(group?.isHeaderless, true)
+    XCTAssertEqual(group?.isShelf, true)
+    XCTAssertEqual(group?.isHeaderless, false)
   }
 
   func testQuietLaneWithTwoSessionsKeepsItsHeader() {
@@ -805,9 +809,10 @@ final class WorkSessionGroupingTests: XCTestCase {
       lanes: [quiet, active, primary]
     )
 
+    // The all-settled lane leaves the lane tier for the Settled shelf.
     XCTAssertEqual(
       presentation.sessionGroups.map(\.id),
-      ["lane:lane-primary", "lane:lane-active", "lane:lane-quiet"]
+      ["lane:lane-primary", "lane:lane-active", workSettledSectionId]
     )
   }
 
@@ -867,10 +872,11 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
-  /// By-lane has no global settled shelf on purpose: a settled row still belongs
-  /// to its lane, and lifting settled rows out globally would leave lanes empty
-  /// and make the per-lane quiet fold unreachable.
-  func testByLaneKeepsSettledRowsInsideTheirLane() {
+  /// A settled row leaves every lane for the one trailing shelf, by-lane
+  /// included. On a phone a settled singleton lane has no header to collapse,
+  /// so keeping the row inline made finished work permanent; the shelf is the
+  /// same one-tap disclosure every other finished chat gets.
+  func testByLaneLiftsSettledRowsOntoTheSettledShelf() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
       sessions: [
@@ -881,13 +887,15 @@ final class WorkSessionGroupingTests: XCTestCase {
       organization: .byLane
     )
 
-    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a"])
-    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["s-live", "s-settled"])
-    XCTAssertFalse(presentation.sessionGroups.contains { $0.isShelf })
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a", workSettledSectionId])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["s-live"])
+    XCTAssertEqual(presentation.sessionGroups.last?.sessions.map(\.id), ["s-settled"])
+    XCTAssertTrue(presentation.sessionGroups.last?.isShelf == true)
   }
 
-  /// The fold this exemption exists to protect.
-  func testByLaneStillFoldsAnAllQuietLane() {
+  /// An all-settled lane disappears from the lane tier and its rows stay
+  /// reachable in the shelf, which collapses by default.
+  func testByLaneFilesAnAllSettledLaneOntoTheSettledShelf() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let presentation = makePresentation(
       sessions: [
@@ -898,9 +906,10 @@ final class WorkSessionGroupingTests: XCTestCase {
       organization: .byLane
     )
 
-    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a"])
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), [workSettledSectionId])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["s-1", "s-2"])
+    XCTAssertEqual(presentation.sessionGroups.first?.isShelf, true)
     XCTAssertEqual(presentation.sessionGroups.first?.isQuiet, true)
-    XCTAssertEqual(presentation.sessionGroups.first?.isShelf, false)
   }
 
   /// `collapsedSectionIds` lists what IS collapsed, so it cannot express
@@ -993,9 +1002,8 @@ final class WorkSessionGroupingTests: XCTestCase {
   }
 
   /// The contract the shared clock exists for: one session, one instant, the
-  /// same verdict on both paths. Settled here, so by-status lifts it onto the
-  /// quiet shelf and by-lane folds its lane into the quiet form — two shapes,
-  /// one reading of the row.
+  /// same verdict on both paths. Both organizations now lift the settled row
+  /// onto the same quiet shelf.
   func testByStatusAndByLaneAgreeOnTheSameSessionAtTheSameInstant() {
     let lane = makeLane(id: "lane-a", name: "feature/one")
     let settled = makeSession(
@@ -1024,7 +1032,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       orderedLanes: [lane],
       now: now
     )
-    XCTAssertEqual(byLane.map(\.id), ["lane:lane-a"])
+    XCTAssertEqual(byLane.map(\.id), [workSettledSectionId])
     XCTAssertEqual(byLane.first?.isQuiet, true)
     XCTAssertEqual(byLane.first?.sessions.map(\.id), ["s-1"])
   }

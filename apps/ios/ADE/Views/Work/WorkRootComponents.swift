@@ -733,9 +733,9 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   var compact: Bool = false
-  /// Compact nested-subagent drawer row: identicon/lineage on the leading edge,
-  /// provider mark on the trailing edge — same right-side seat as a full card.
-  var nestedSubagent: Bool = false
+  /// The parent's one mark for its nested subagents (count + worst state).
+  /// Nil when nothing nests under this row.
+  var subagentMark: WorkNestedSubagentMark? = nil
   /// True when no lane header sits above this row — the singleton form, where
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
@@ -968,7 +968,7 @@ struct WorkSessionListRow: View {
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact,
-          nestedSubagent: nestedSubagent,
+          subagentMark: subagentMark,
           showsLaneIdentity: showsLaneIdentity,
           waitingOnSubagent: waitingOnSubagent,
           boardCard: boardCard,
@@ -1443,11 +1443,24 @@ extension EnvironmentValues {
     get { self[WorkSessionActionsMenuProviderKey.self] }
     set { self[WorkSessionActionsMenuProviderKey.self] = newValue }
   }
+
+  /// The open chat's child chats as the Work list holds them (see
+  /// `WorkChatChildRoster`). Set by the Work root on every chat it opens;
+  /// empty elsewhere, where Chat Info lists what the transcript names.
+  var workChatChildRoster: WorkChatChildRoster {
+    get { self[WorkChatChildRosterKey.self] }
+    set { self[WorkChatChildRosterKey.self] = newValue }
+  }
 }
 
-/// An OPEN nested drawer: caret header + rows. Drawers default collapsed
+private struct WorkChatChildRosterKey: EnvironmentKey {
+  static let defaultValue = WorkChatChildRoster.empty
+}
+
+/// An OPEN shell drawer: caret header + rows. Drawers default collapsed
 /// (`workIsNestedDrawerCollapsed`); a collapsed one renders as a
 /// `WorkNestedDrawerMarks` mark instead. Tapping the header collapses it.
+/// Nested subagents have no drawer: they live in the parent's Chat Info.
 struct WorkNestedSessionSection<Content: View>: View {
   let group: WorkSessionChildGroup
   let onCollapse: () -> Void
@@ -1505,7 +1518,7 @@ struct WorkNestedSessionSection<Content: View>: View {
   }
 }
 
-/// A parent's COLLAPSED drawers, as one thin line of marks under the card:
+/// A parent's COLLAPSED shell drawer, as one thin line of marks under the card:
 /// kind icon, count, and the one state worth seeing (`workNestedDrawerStatus`).
 /// Tapping a mark opens that drawer. Mirrors desktop `renderCollapsedDrawerMark`.
 struct WorkNestedDrawerMarks: View {
@@ -1523,7 +1536,7 @@ struct WorkNestedDrawerMarks: View {
               .font(.system(size: 9, weight: .medium))
             Text("\(group.children.count)")
               .font(.caption2.monospacedDigit())
-            statusGlyph(group.status)
+            WorkNestedStatusGlyph(status: group.status)
           }
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 6)
@@ -1539,8 +1552,24 @@ struct WorkNestedDrawerMarks: View {
     .padding(.leading, 8)
   }
 
-  @ViewBuilder
-  private func statusGlyph(_ status: WorkNestedDrawerStatus) -> some View {
+  /// "Show N shells", plus the status word VoiceOver would otherwise lose.
+  private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
+    let base = "Show \(group.label)"
+    switch group.status {
+    case .failed: return "\(base), Failed"
+    case .needsYou: return "\(base), Needs you"
+    case .running: return "\(base), Running"
+    case .none: return base
+    }
+  }
+}
+
+/// The one state a nested mark shows beside its count: a red cross for
+/// failed, an amber dot for needs you, a dashed ring for running.
+struct WorkNestedStatusGlyph: View {
+  let status: WorkNestedDrawerStatus
+
+  var body: some View {
     switch status {
     case .failed:
       Image(systemName: "xmark")
@@ -1558,16 +1587,26 @@ struct WorkNestedDrawerMarks: View {
       EmptyView()
     }
   }
+}
 
-  /// "Show N shells", plus the status word VoiceOver would otherwise lose.
-  private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
-    let base = "Show \(group.label)"
-    switch group.status {
-    case .failed: return "\(base), Failed"
-    case .needsYou: return "\(base), Needs you"
-    case .running: return "\(base), Running"
-    case .none: return base
+/// A parent row's mark for its nested subagents: `person.2`, the count, and
+/// the worst child state. Not a control of its own; the row's tap opens the
+/// chat, and its Chat Info lists the children.
+struct WorkNestedSubagentMarkLabel: View {
+  let mark: WorkNestedSubagentMark
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: "person.2")
+        .font(.system(size: 9, weight: .medium))
+      Text("\(mark.count)")
+        .font(.caption2.monospacedDigit())
+      WorkNestedStatusGlyph(status: mark.status)
     }
+    .foregroundStyle(ADEColor.textMuted)
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(mark.accessibilityLabel)
   }
 }
 

@@ -326,23 +326,30 @@ the Work list's own menu, owner-archive and stop included. The list still
 whose chat is gone is archived with it (`sessionService`). The old `chat:<id>`
 shell drawer and its collapse key are gone.
 
-In by-lane list mode, those subagent chats render in a drawer under the parent,
-labeled **N subagents**. The drawer starts collapsed; a selection that lands on
-a nested row opens it once. Collapse is stored under `chat-subagents:<parentId>`.
-Compact nested rows show the
-subagent identicon, title, then the provider glyph on the right of the card
-(same seat as every other session card), status glyph, and elapsed — they
-spell **Needs you** or **Failed** and otherwise omit the status word. The
-drawer header shows nothing, a needs-you pip, or the red word **Failed**
-(Failed wins if both). Peers stay top-level. Grandchildren flatten into the
-root parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
-children (working, needs you, failed, stale, starting) up to full top-level
-cards; done children stay nested and follow the parent into the quiet tails.
-Status, time, and Kanban stay flat. Foreign by-lane rows nest the same way.
-Demote-to-peer un-nests; promote nests again. Cross-lane children stay
-top-level in their own lane with the existing lineage chip. ADE Code cannot
-paint provider logos, so nested helpers are one-line indented rows rather
-than a collapsible drawer. `ade chat list` stays a flat table.
+In by-lane list mode, subagent chats work the same way as shells. They are not
+rows of the Work list. They live in the parent chat's actions pane
+(**Subagents**), next to the provider's own subagents. The parent row carries
+one small mark instead: a people icon, the child count, and the worst child
+state (failed, then needs you, then running), from `nestedSubagentMark`. Its
+label reads like "2 subagents, 1 needs you". Pressing the mark opens the
+parent chat on its actions pane (`requestChatActionsPane`).
+
+The pane lists the children it learns from the transcript (`chat:<id>` rows).
+A child the transcript has no row for (a peer promoted to subagent, or an old
+or windowed transcript) gets a row from the chat's own machine's session
+roster. A child that is waiting on you reads **needs you** on its row. A row
+opens its child chat on the parent's machine (the chat's pin).
+
+Filing has not changed. Peers stay top-level. Grandchildren count toward the
+root parent. A quiet parent (snoozed or settled) pulls not-done children
+(working, needs you, failed, stale, starting) up to full top-level cards. A
+child whose parent is hidden (by search, or deleted) stays top-level. Status,
+time, and Kanban stay flat. Foreign by-lane rows file the same way.
+Demote-to-peer un-nests; promote files again. Cross-lane children stay
+top-level in their own lane with the existing lineage chip. The old drawer
+keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. ADE Code
+does the same: no child rows, a `⊚2 ●` mark on the parent card, and the
+children in the chat info pane. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
 `sessionFilingBucket` rule), which combines canonical lifecycle

@@ -521,12 +521,13 @@ Shared types and IPC:
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
-  nest under the parent; peers stay top-level. Demote un-nests; promote nests
-  again. Cross-lane children stay top-level. A quiet parent (snoozed or
-  settled) pulls not-done children up; done children stay nested. Grandchildren
-  flatten into the root parent's one drawer. Collapse keys:
-  `chat-subagents:<parentId>` (the shells key `chat:<parentId>` is retired: a
-  chat's shells are drawn in its actions pane now). It also owns
+  are filed under the parent and leave the list; peers stay top-level. Demote
+  un-nests; promote files again. Cross-lane children stay top-level. A quiet
+  parent (snoozed or settled) pulls not-done children up; done children stay
+  filed. Grandchildren flatten onto the root parent. `nestedSubagentMark` and
+  `nestedSubagentMarkLabel` give the parent row's one mark (count and worst
+  state). The old collapse keys (`chat-subagents:<parentId>`, `drawer-open:`,
+  and the shells key `chat:<parentId>`) are inert. It also owns
   `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
   subagents are not) so filing can run in shared rather than the renderer, and
   `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
@@ -646,11 +647,11 @@ Shared types and IPC:
   `/chat unsettle` keep their own active-only dispatch in `app.tsx`.
 - `apps/ade-cli/src/tuiClient/workListModel.ts`, `workListLayout.ts`, and
   `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
-  subagent chats indent as one-line nested rows under the parent (shout-only
-  Needs you / Failed). A terminal cannot paint provider logos, so there is no
-  collapsible **N subagents** drawer. Filing imports `indexNestedSubagents`
-  from `sessionSpawnNesting.ts`. A nested row is one line; a full card is
-  three. See [ADE Code](../ade-code/README.md).
+  subagent chats are not rows. The parent card's third line carries `⊚N` and
+  the worst child state's glyph (`✕` failed, `●` needs you, `◐` running), and
+  the chat info pane lists the children. Filing imports `indexNestedSubagents`
+  from `sessionSpawnNesting.ts`. Every card is three lines. See
+  [ADE Code](../ade-code/README.md).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
   the hosted-web halves. ADE Web has no local database, so every lifecycle
@@ -1135,17 +1136,14 @@ Renderer surfaces:
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
   enter a bulk action accidentally.
   In by-lane list mode, same-lane `spawnKind: "subagent"` chats (and tracked
-  CLI `--type subagent` sessions) nest under the parent in a collapsed-by-default
-  **N subagents** drawer (`chat-subagents:<parentId>`). Attached shells are not
-  drawn here: they live in the chat's actions pane (**Shells**), while the list
-  keeps them out of the top-level rows by filing them under their chat. Compact nested rows keep the identicon, title,
-  then the provider glyph on the right of the card (same seat as every other
-  session card), plus the status glyph; they spell Needs you / Failed only.
-  The drawer header is empty, a needs-you pip, or the red word **Failed**
-  (Failed wins). Peers stay top-level. Grandchildren flatten into the root
-  parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
-  children up to top-level cards; done children stay nested. Demote-to-peer
-  un-nests; promote nests again. Cross-lane children stay top-level in their
+  CLI `--type subagent` sessions) and attached shells are not drawn here. Both
+  live in the chat's actions pane (**Subagents**, **Shells**), and the list
+  keeps them out of the top-level rows by filing them under their chat. The
+  parent row carries one subagent mark (count and worst state: failed, needs
+  you, running); pressing it opens the chat on its actions pane. Peers stay
+  top-level. Grandchildren count toward the root parent. A quiet parent
+  (snoozed or settled) pulls not-done children up to top-level cards; done
+  children stay filed. Demote-to-peer un-nests; promote files again. Cross-lane children stay top-level in their
   own lane with the lineage chip. Status, time, and Kanban stay flat.
   `ade chat list` stays a flat table. Filing lives in
   `sessionSpawnNesting.ts`.
@@ -1383,9 +1381,12 @@ Renderer surfaces:
   `SessionStatusSlot`; line two is the elastic title with a singleton lane's
   fixed-width PR badge at the right edge, directly beneath the status; line
   three keeps the sanitized preview, Claude TTL, failure exit code, and
-  provider mark. Nested-subagent drawer rows (`nestedSubagent`) collapse to
-  identicon, title, then the provider glyph on the right (same seat as a full
-  card) plus shout-only status words (Needs you / Failed). A foreign singleton adds the fixed-width amber machine glyph to
+  provider mark. A parent of filed subagents shows `subagentMark` on line
+  three, just before the provider mark (leading on a compact row): count plus
+  worst state, with a spoken label. Not on line one: the status slot there
+  swaps its timestamp for Snooze and Settle on hover and widens, so a mark
+  beside it slid left under the pointer and a press meant for it landed on
+  Un-settle. A foreign singleton adds the fixed-width amber machine glyph to
   the line-one status cluster; grouped lane headers own repeated machine/PR
   identity. A lane with exactly one session has no redundant header and promotes
   the lane identity and PR navigation onto the card.
@@ -3112,11 +3113,9 @@ Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every
 archived item across lanes, chats, and shells. A chat's attached shells are
 listed in its actions pane's **Shells** section (open, or right-click for the
-Work list's own menu) rather than as rows or a drawer in the Work list; its
-subagent drawer starts collapsed behind its full header strip — kind icon, kind
-label and count, plus failed/needs-you/running — and collapsing only hides the
-child rows; a selection that lands inside it opens it once so the selected row
-is on screen.
+Work list's own menu) rather than as rows or a drawer in the Work list. Its
+same-lane subagents are listed the same way, in the pane's **Subagents**
+section; the Work row only carries a mark with their count and worst state.
 
 ## Cross-links
 

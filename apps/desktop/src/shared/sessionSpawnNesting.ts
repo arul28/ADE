@@ -11,11 +11,14 @@ import {
   type SessionStatusTone,
 } from "./sessionStatusPresentation";
 import type { TerminalSessionSummary } from "./types/sessions";
+import { pluralCount } from "./formatting";
 
 /**
  * Same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`
- * sessions) nest under their parent in the by-lane Work list, the way attached
- * shells already do. Peers stay top-level. This module is the one filing rule
+ * sessions) are filed under their parent in the by-lane Work list, the way
+ * attached shells already are: they leave the list, and the parent's chat
+ * actions pane lists them. The parent row carries one mark (`nestedSubagentMark`)
+ * for them. Peers stay top-level. This module is the one filing rule
  * desktop, ADE Code, and the iOS mirror consult so a demote, a quiet-parent
  * pull-up, or a grandchild flatten cannot disagree across surfaces.
  *
@@ -23,8 +26,7 @@ import type { TerminalSessionSummary } from "./types/sessions";
  * needs_you, failed, stale) promote to top-level cards. Done children stay
  * nested and follow the parent into the quiet tails.
  *
- * Grandchildren flatten into the root parent's one drawer — a compact nested
- * row cannot own a second indent.
+ * Grandchildren flatten onto the root parent, so its one mark counts them too.
  */
 
 export type SpawnNestingSession = Pick<
@@ -422,4 +424,43 @@ export function nestedDrawerStatus(
     if (phase === "running" || phase === "starting") return "running";
   }
   return null;
+}
+
+/** The parent row's one mark for its filed subagents: how many, and the worst state. */
+export type NestedSubagentMark = {
+  count: number;
+  /** Worst child state (`nestedDrawerStatus`): failed, then needs you, then running. */
+  status: NestedDrawerStatus;
+  /** How many children are in that worst state. 0 when `status` is null. */
+  statusCount: number;
+};
+
+/** Null for a parent with no filed subagents. */
+export function nestedSubagentMark(
+  children: readonly SpawnNestingSession[],
+  nowMs: number = Date.now(),
+): NestedSubagentMark | null {
+  if (children.length === 0) return null;
+  const status = nestedDrawerStatus(children, nowMs);
+  let statusCount = 0;
+  if (status) {
+    for (const child of children) {
+      if (nestedDrawerStatus([child], nowMs) === status) statusCount += 1;
+    }
+  }
+  return { count: children.length, status, statusCount };
+}
+
+const MARK_STATUS_WORDS: Record<NonNullable<NestedDrawerStatus>, [one: string, many: string]> = {
+  failed: ["failed", "failed"],
+  needs_you: ["needs you", "need you"],
+  running: ["running", "running"],
+};
+
+/** The mark's spoken form, e.g. "2 subagents, 1 needs you". */
+export function nestedSubagentMarkLabel(mark: NestedSubagentMark): string {
+  const base = pluralCount(mark.count, "subagent");
+  if (!mark.status || mark.statusCount === 0) return base;
+  const [one, many] = MARK_STATUS_WORDS[mark.status];
+  return `${base}, ${mark.statusCount} ${mark.statusCount === 1 ? one : many}`;
 }

@@ -241,7 +241,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let isMuted: Bool
   let isSelectedTransitionSource: Bool
   let compact: Bool
-  let nestedSubagent: Bool
+  /// The parent's mark for its nested subagents. In the signature so a child
+  /// turning needs-you (or a new child) repaints the parent row.
+  let subagentMark: WorkNestedSubagentMark?
   /// Setup rail of a chat launch that still owns this row; nil otherwise.
   let launchRail: [ChatLaunchRailSegment]?
   let waitingOnSubagent: Bool
@@ -256,7 +258,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     isMuted: Bool,
     isSelectedTransitionSource: Bool,
     compact: Bool,
-    nestedSubagent: Bool,
+    subagentMark: WorkNestedSubagentMark?,
     showsLaneIdentity: Bool,
     waitingOnSubagent: Bool
   ) {
@@ -324,9 +326,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.waitingOnSubagent = waitingOnSubagent
     // Same source as `workSpawnKind` in WorkSpawnNesting: the session row
     // carries the host projection, and the chat summary is a fallback when
-    // the list has not hydrated it yet. Nested compact rows key the leading
-    // identicon off this flag, so reading only the summary dropped the mark
-    // for CLI `--type subagent` rows and any chat whose summary is still empty.
+    // the list has not hydrated it yet. The lineage glyph keys off this flag,
+    // so reading only the summary dropped the mark for CLI `--type subagent`
+    // rows and any chat whose summary is still empty.
     self.isSubagent = (session.spawnKind ?? chatSummary?.spawnKind) == .subagent
     // Read off the SESSION, never the chat summary: `parentIdentityKey` is a
     // host projection carried on the session row, and the CTO parent it names is
@@ -356,7 +358,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isMuted = isMuted
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
-    self.nestedSubagent = nestedSubagent
+    self.subagentMark = subagentMark
     self.launchRail = compact ? nil : session.launchRail
   }
 
@@ -375,9 +377,8 @@ struct WorkSessionRow: View, Equatable {
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
   var compact: Bool = false
-  /// Compact nested-subagent drawer row. The provider mark sits on the trailing
-  /// edge, matching a full Work card rather than the quiet-shelf compact form.
-  var nestedSubagent: Bool = false
+  /// The parent's one mark for its nested subagents (count + worst state).
+  var subagentMark: WorkNestedSubagentMark? = nil
   /// The singleton form: no lane header above this row, so the row shows the
   /// lane itself. Under a lane header the chip would just repeat the header.
   var showsLaneIdentity: Bool = true
@@ -404,7 +405,7 @@ struct WorkSessionRow: View, Equatable {
     transitionNamespace: Namespace.ID?,
     isSelectedTransitionSource: Bool,
     compact: Bool = false,
-    nestedSubagent: Bool = false,
+    subagentMark: WorkNestedSubagentMark? = nil,
     showsLaneIdentity: Bool = true,
     waitingOnSubagent: Bool = false,
     boardCard: Bool = false,
@@ -424,7 +425,7 @@ struct WorkSessionRow: View, Equatable {
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
-    self.nestedSubagent = nestedSubagent
+    self.subagentMark = subagentMark
     self.showsLaneIdentity = showsLaneIdentity
     self.waitingOnSubagent = waitingOnSubagent
     self.renderSignature = WorkSessionRowRenderSignature(
@@ -437,7 +438,7 @@ struct WorkSessionRow: View, Equatable {
       isMuted: isMuted,
       isSelectedTransitionSource: isSelectedTransitionSource,
       compact: compact,
-      nestedSubagent: nestedSubagent,
+      subagentMark: subagentMark,
       showsLaneIdentity: showsLaneIdentity,
       waitingOnSubagent: waitingOnSubagent
     )
@@ -482,11 +483,7 @@ struct WorkSessionRow: View, Equatable {
 
   private var compactBody: some View {
     HStack(alignment: .center, spacing: 8) {
-      if nestedSubagent {
-        nestedSubagentCompactContents
-      } else {
-        quietCompactContents
-      }
+      quietCompactContents
     }
     .padding(.horizontal, 4)
     .padding(.vertical, 8)
@@ -508,20 +505,6 @@ struct WorkSessionRow: View, Equatable {
   }
 
   @ViewBuilder
-  private var nestedSubagentCompactContents: some View {
-    lineageMark(font: .caption2)
-    compactTitle
-    Spacer(minLength: 6)
-    compactProviderLogo
-      .fixedSize()
-    if isPendingSyncCreation {
-      compactPendingSyncLabel
-    } else {
-      statusSlot(wraps: false)
-    }
-  }
-
-  @ViewBuilder
   private var quietCompactContents: some View {
     compactProviderLogo
     lineageMark(font: .caption2)
@@ -529,6 +512,7 @@ struct WorkSessionRow: View, Equatable {
     if let badge = capsuleBadge {
       WorkSessionStatusCapsule(badge: badge)
     }
+    subagentMarkView
     Spacer(minLength: 6)
     if isPendingSyncCreation {
       compactPendingSyncLabel
@@ -653,6 +637,7 @@ struct WorkSessionRow: View, Equatable {
           .accessibilityHidden(true)
       }
       lineageMark(font: .caption2)
+      subagentMarkView
       if showsLaneIdentity {
         HStack(spacing: 4) {
           Circle()
@@ -692,7 +677,7 @@ struct WorkSessionRow: View, Equatable {
   /// Whether the meta line has anything before the status.
   private var duoMetaHasLeading: Bool {
     session.pinned || isMuted || renderSignature.activeGoal != nil
-      || nestedSubagent || showsSubagentIdentity || showsCtoLineage
+      || subagentMark != nil || showsSubagentIdentity || showsCtoLineage
       || showsLaneIdentity || !(machineName ?? "").isEmpty || failedExitCode != nil
   }
 
@@ -760,6 +745,7 @@ struct WorkSessionRow: View, Equatable {
           laneGitState
         }
         lineageMark(font: .caption2)
+        subagentMarkView
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       statusSlot(wraps: false)
@@ -778,6 +764,16 @@ struct WorkSessionRow: View, Equatable {
     renderSignature.isCtoChild
   }
 
+  /// The parent's one mark for its nested subagents. The children are listed
+  /// only in this chat's Chat Info, so the row says how many and the worst
+  /// state among them, and nothing else.
+  @ViewBuilder
+  private var subagentMarkView: some View {
+    if let mark = renderSignature.subagentMark {
+      WorkNestedSubagentMarkLabel(mark: mark)
+    }
+  }
+
   /// Who spawned this row, as one mark.
   ///
   /// Informational, unlike desktop's chip, which is also a button to the CTO
@@ -791,12 +787,7 @@ struct WorkSessionRow: View, Equatable {
   /// layout draws this one size larger than the packed line-1 form does.
   @ViewBuilder
   private func lineageMark(font: Font) -> some View {
-    // Nested compact always paints the identicon — desktop's
-    // `nestedSubagentGlyph` is gated on the drawer, not on spawnKind hydration.
-    // A CTO chip on a nested row would replace that mark; nested rows already
-    // sit under the parent, so the identicon wins the same way desktop's
-    // compact lineage glyph is suppressed when `nestedSubagent` is set.
-    if nestedSubagent || showsSubagentIdentity {
+    if showsSubagentIdentity {
       Image(systemName: "person.2.fill")
         .font(font.weight(.semibold))
         .foregroundStyle(ADEColor.accent)
@@ -904,6 +895,7 @@ struct WorkSessionRow: View, Equatable {
         // the same lineage mark — at the larger size this layout uses
         // throughout, which is what the subagent glyph here already used.
         lineageMark(font: .caption)
+        subagentMarkView
 
         if showsLaneIdentity {
           laneChip
@@ -1088,8 +1080,7 @@ struct WorkSessionRow: View, Equatable {
         // keeps the decision in the leaf, which is the only view that knows
         // whether it was on screen for the transition.
         needsYou: renderSignature.canonicalPhase == .needsYou,
-        steeringInput: renderSignature.steeringInput,
-        hideLabelUnlessShout: nestedSubagent
+        steeringInput: renderSignature.steeringInput
       )
     } else {
       HStack(spacing: 4) {
@@ -1200,15 +1191,15 @@ struct WorkSessionRow: View, Equatable {
       parts.append("has a question")
     }
     // The glyphs are `accessibilityHidden`, so the lineage has to be stated
-    // here or it is colour-and-shape-only meaning. Nested compact always
-    // speaks "subagent" (the drawer is the fact). Elsewhere "spawned by the
-    // CTO" is the more specific answer and stands in for "subagent".
-    if nestedSubagent {
-      parts.append("subagent")
-    } else if renderSignature.isCtoChild {
+    // here or it is colour-and-shape-only meaning. "Spawned by the CTO" is the
+    // more specific answer and stands in for "subagent".
+    if renderSignature.isCtoChild {
       parts.append("spawned by the CTO")
     } else if renderSignature.isSubagent {
       parts.append("subagent")
+    }
+    if let mark = renderSignature.subagentMark {
+      parts.append(mark.accessibilityLabel)
     }
     if let model = renderSignature.model, !model.isEmpty {
       parts.append(shortModelLabel(model))
@@ -1370,9 +1361,6 @@ struct WorkSessionRowStatusSlot: View {
   var needsYou: Bool = false
   /// Live Codex steering pip. Shown only while the slot is the working glyph.
   var steeringInput: Bool = false
-  /// Nested compact rows keep the glyph and elapsed, and only spell the word
-  /// for Needs you / Failed — same rule as desktop `hideLabelUnlessShout`.
-  var hideLabelUnlessShout: Bool = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pulsing = false
@@ -1390,7 +1378,7 @@ struct WorkSessionRowStatusSlot: View {
           Text(tickerLabel(since: elapsedSince, now: context.date))
             .font(.caption2.weight(.semibold).monospacedDigit())
         }
-      } else if !hideLabelUnlessShout || activityStatusShoutsLabel(glyph: glyph, tone: tone) {
+      } else {
         Text(label)
           .font(.caption2.weight(.semibold))
       }
@@ -1402,9 +1390,8 @@ struct WorkSessionRowStatusSlot: View {
     }
     .foregroundStyle(activityToneColor(tone))
     .lineLimit(wraps ? 2 : 1)
-    // Nested compact rows may drop the status word (glyph + elapsed only).
-    // Every other caller still keeps the word: it is the deliverable, and the
-    // glyph set is deliberately partial (snoozed and woke have no glyph).
+    // The word always shows: it is the deliverable, and the glyph set is
+    // deliberately partial (snoozed and woke have no glyph).
     .fixedSize(horizontal: !wraps, vertical: false)
     // `scaleEffect` and not a size or padding change: it is drawn, not laid out,
     // so a pulsing row cannot nudge line 1's width and re-truncate the lane name
@@ -1431,10 +1418,9 @@ struct WorkSessionRowStatusSlot: View {
 
   private func tickerLabel(since: Date, now: Date) -> String {
     let elapsed = ActivityRowPresentation.formatDuration(now.timeIntervalSince(since))
-    let showWord = !hideLabelUnlessShout || activityStatusShoutsLabel(glyph: glyph, tone: tone)
     if let elapsed {
-      return showWord ? "\(label) \(elapsed)" : elapsed
+      return "\(label) \(elapsed)"
     }
-    return showWord ? label : ""
+    return label
   }
 }

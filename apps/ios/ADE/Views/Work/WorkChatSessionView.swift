@@ -2759,6 +2759,7 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.stopReason)
     hasher.combine(snapshot.resultLanded)
     hasher.combine(snapshot.lastActivity)
+    hasher.combine(snapshot.needsInput)
   }
   return hasher.finalize()
 }
