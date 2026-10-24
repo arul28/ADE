@@ -3357,8 +3357,21 @@ is not loaded yet.
   shell read through equality-gated selectors. Adding a plain
   `useChatLaunchEntries()` to a page-level component re-renders it on every
   tick.
+- **An existing chat never shows an empty model.** "Select model" is only for
+  a new draft. The composer resolves a chat's model in this order: the
+  summary's `modelId`, its `model` string matched in the registry, its preset's
+  model, the newest `done` event in the chat's own transcript that names a
+  model (`resolveTranscriptComposerModelId`, the last 2,000 events), then the
+  summary's raw `model` string. While none of these is known the picker shows
+  "Loading model…" (`ModelPicker`'s `emptyLabel`), and a locked pane clears a
+  model left over from the chat shown before, so a send cannot carry it. The
+  model-fallback effect never swaps an existing chat's own model for another,
+  even when this window's catalog cannot list it (a preset or route model, a
+  custom Codex `config.toml` model, a model newer than this build): that swap
+  moved the chat to another model on the next send. A model picked in a chat
+  whose model is not known yet is still applied on send.
 - **The locked summary read retries.** A locked Work chat takes its title and
-  model only from its summary, and a finished chat gets no events that would
+  model mainly from its summary, and a finished chat gets no events that would
   read it again, so `refreshLockedSessionSummary` never gives up on a read
   that fails: it keeps the summary already held (and the turn flag it implies)
   and retries on a 1, 2, 4, 8, 15, then every-30-seconds backoff while the pane

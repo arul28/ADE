@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
 import { codedError } from "../codedError";
+import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
 
 type TestEvent = Record<string, any>;
@@ -175,6 +176,22 @@ describe("createSentryEventHooks", () => {
     expect(isExpectedOutcome(error)).toBe(expected);
     // The same causes under any other message are never expected.
     expect(isExpectedOutcome(new TypeError("Cannot read properties of undefined", { cause: cause() }))).toBe(false);
+  });
+
+  // The typed mark (`shared/expectedError.ts`) silences an answer someone
+  // caught and reported. It never silences an error nobody caught, or a crash.
+  it("drops an error its throw site marked expected only when it was handled", () => {
+    const hooks = createSentryEventHooks();
+    // A message no pattern knows, so only the mark can drop it.
+    const message = "Branch 'feature/x' not found locally or on any remote";
+    const marked = new AdeExpectedError(message, "user");
+    const handled = { exception: { values: [{ type: "Error", value: message, mechanism: { type: "generic", handled: true } }] } };
+    const unhandled = { exception: { values: [{ type: "Error", value: message, mechanism: { type: "onunhandledrejection", handled: false } }] } };
+
+    expect(hooks.beforeSend(handled, { originalException: marked })).toBeNull();
+    expect(hooks.beforeSend(unhandled, { originalException: marked })).not.toBeNull();
+    expect(hooks.beforeSend({ ...handled, level: "fatal" }, { originalException: marked })).not.toBeNull();
+    expect(hooks.beforeSend(handled, { originalException: new Error(message) })).not.toBeNull();
   });
 
   it("reads an expected state from an error's code as well as its text", () => {

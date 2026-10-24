@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runGitMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../git/git", () => ({
+vi.mock("../git/git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../git/git")>()),
   runGit: runGitMock,
 }));
 

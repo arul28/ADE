@@ -20,7 +20,7 @@ const MAX_GROUPING_TEXT = 200;
 const GROUPING_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
   // uuid-shaped ids.
   [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<id>"],
-  // Windows paths (C:\… or C:/…) and UNC paths (\\server\share\…).
+  // Windows paths (C:\... or C:/...) and UNC paths (\\server\share\...).
   [/\b[A-Za-z]:[\\/][^\s'"`),;]*/g, "<path>"],
   [/\\\\[^\s'"`),;]+/g, "<path>"],
   // POSIX and home paths: a slash that starts a word, so `ade/actions/call` stays.
@@ -28,7 +28,7 @@ const GROUPING_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
   // Quoted names: a branch, a secret, a key.
   [/'[^'\n]{1,200}'/g, "'<...>'"],
   [/"[^"\n]{1,200}"/g, "\"<...>\""],
-  // Any word with a digit in it, six characters or longer: tab-…, bs-…, project_…, hex.
+  // Any word with a digit in it, six characters or longer: tab-..., bs-..., project_..., hex.
   [/\b(?=[\w-]*\d)[\w-]{6,}\b/g, "<id>"],
   [/\d+/g, "<n>"],
 ];

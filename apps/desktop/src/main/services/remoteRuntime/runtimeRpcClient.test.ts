@@ -6,6 +6,7 @@ import {
   type RuntimeRpcTransport,
   type RuntimeRpcTransportCloseInfo,
 } from "./runtimeRpcClient";
+import { expectedErrorKind } from "../../../shared/expectedError";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
@@ -185,6 +186,33 @@ describe("RuntimeRpcClient", () => {
     await expect(pending).rejects.toThrow(
       'Remote ADE service method projects.create failed (code -32601): Method not found Details: {"method":"projects.create"}',
     );
+  });
+
+  it("keeps the brain's expected mark on the error it rebuilds from a reply", async () => {
+    // The brain marks an answer (a missing branch, a closed tab) as expected;
+    // the desktop rebuilds the error from the reply's text, so the mark must
+    // ride the reply or the desktop reports the answer as an ADE fault.
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    const answer = client.call("ade/actions/call", {});
+    const fault = client.call("ade/actions/call", {});
+    transport.emitData({
+      jsonrpc: "2.0",
+      id: requestId(transport.writes[0]!),
+      error: { code: -32603, message: "Branch 'x' not found locally or on any remote", expected: "user" },
+    });
+    transport.emitData({
+      jsonrpc: "2.0",
+      id: requestId(transport.writes[1]!),
+      error: { code: -32603, message: "watcher exploded", expected: "not-a-kind" },
+    });
+
+    const answerError = await answer.catch((error: unknown) => error);
+    const faultError = await fault.catch((error: unknown) => error);
+    expect((answerError as Error).message).toContain("Branch 'x' not found locally or on any remote");
+    expect(expectedErrorKind(answerError)).toBe("user");
+    expect(expectedErrorKind(faultError)).toBeNull();
   });
 
   it("clears pending calls when writes fail", async () => {
