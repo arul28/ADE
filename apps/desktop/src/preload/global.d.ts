@@ -2507,6 +2507,16 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<void>;
         };
+        /**
+         * The account's Fast-mode permission, for hosts with no account-settings
+         * bridge (the hosted web client). The desktop preload leaves it absent
+         * and the renderer writes the account store directly; the web adapter
+         * forwards it to the host's `chat.*FastModeEnabled` commands.
+         */
+        fastModePolicy?: {
+          get: () => Promise<boolean>;
+          set: (enabled: boolean) => Promise<boolean>;
+        };
         handoff: (
           args: AgentChatHandoffArgs,
           pin?: OpenProjectBinding | null,

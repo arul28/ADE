@@ -63,6 +63,7 @@ struct LanesTabShell: View {
 
 struct LanesTabView: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @Environment(\.duoLayout) var duoLayout
   /// Deliberately not observed: what the body draws arrives in `inputs`.
   let syncService: SyncService
   let machineFleet: MachineFleet
@@ -82,6 +83,9 @@ struct LanesTabView: View, Equatable {
   @State var searchText = ""
   @State var quickFilter: LaneQuickFilter = .active
   @State var lanePath = NavigationPath()
+  /// The lane the Duo's inner display shows in its detail column. A selection,
+  /// not a push: changing it replaces the detail instead of stacking.
+  @State var duoSelectedLaneId: String?
   @State var addLaneSheetPresented = false
   @State var openLaneIds: [String] = []
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
@@ -97,6 +101,9 @@ struct LanesTabView: View, Equatable {
   @State private var lastHandledLanesProjectionRevision: Int?
   /// Which machines' lanes the list shows (the filter chips).
   @State var machineFilter: LaneMachineFilter = .all
+  /// Live lane actions have been waiting long enough to say so (see
+  /// `liveActionNoticePresentation`).
+  @State var laneLiveActionWaitIsLong = false
 
   var scope: LaneListScope { quickFilter.scope }
 
@@ -144,155 +151,153 @@ struct LanesTabView: View, Equatable {
 
   var body: some View {
     let _ = ScrollDiagnostics.shared.count(.lanesBody)
-    NavigationStack(path: $lanePath) {
-      List {
-        Section {
-          laneSearchField
-            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-          if !laneSnapshots.isEmpty {
-            laneQuickFilterChips
-              .adeFlatRow(insets: EdgeInsets(top: 2, leading: 0, bottom: 8, trailing: 0), separator: .hidden)
-          }
-          if !remoteLanes.machines.isEmpty {
-            laneMachineFilterChips
-              .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
-          }
-          laneNoticeRows
-          if showsLaneLoadingSkeletons {
-            ForEach(0..<5, id: \.self) { _ in
-              LaneRowSkeleton()
-                .adeFlatRow(insets: laneRowInsets)
-            }
-          }
-          if !openLaneSnapshots.isEmpty {
-            openLanesTray
-              .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
-          }
-        }
-        laneListSections
+    Group {
+      // The Duo's inner display has room for the list beside a lane's detail;
+      // every other size keeps the phone's push navigation.
+      if duoLayout.isWide {
+        duoLanesSplitBody
+      } else {
+        lanesPhoneBody
       }
-      .adeFlatList()
-      .listSectionSpacing(.compact)
-      .contentMargins(.bottom, 24, for: .scrollContent)
-      .environment(\.defaultMinListRowHeight, 0)
-      .adeScrollDiagnosticsSurface(.lanes, key: "lanes")
-      .refreshable { await refreshFromPullGesture() }
-      .navigationDestination(for: LaneRoute.self) { route in
-        laneDestination(route)
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar(.hidden, for: .navigationBar)
-      .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(title: "Lanes") {
-          topBarActions
-        }
-      }
-      .sensoryFeedback(.success, trigger: refreshFeedbackToken)
-      .task(id: primaryBranchReloadKey) {
-        guard primaryBranchReloadKey != nil else { return }
-        await refreshPrimaryBranches(force: false)
-      }
-      .task(id: lanesProjectionReloadKey) {
-        guard let revision = lanesProjectionReloadKey else { return }
-        guard lastHandledLanesProjectionRevision != revision || laneSnapshots.isEmpty else { return }
-        let now = Date()
-        if !laneSnapshots.isEmpty {
-          let elapsed = now.timeIntervalSince(lastLanesLocalProjectionReload)
-          if elapsed < 0.35 {
-            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
-            guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
-          }
-        }
-        lastLanesLocalProjectionReload = Date()
-        await reload(refreshRemote: false)
-        guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
-        lastHandledLanesProjectionRevision = revision
-      }
-      .task(id: remoteLanesPollKey) {
-        guard remoteLanesPollKey != nil else { return }
-        while !Task.isCancelled {
-          await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-          try? await Task.sleep(nanoseconds: LaneRemoteMachinesModel.refreshIntervalNanoseconds)
-        }
-      }
-      .onChange(of: syncService.activeProjectId) { _, _ in
-        // The tab stays mounted across a project switch: drop the previous
-        // project's lanes so they never show while the new project loads.
-        remoteLanes.reset()
-        machineFilter = .all
-        laneSnapshots = []
-        pullRequests = []
-        laneListPresentation = .empty
-        openLaneIds = []
-        primaryBranches = []
-        primaryBranchLaneId = nil
-        selectedLaneTransitionId = nil
-        errorMessage = nil
+    }
+    .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+    // Folding keeps the lane on screen: the split's selected lane is pushed
+    // when the window turns compact, and a phone's pop clears the selection.
+    .onChange(of: duoLayout.isWide) { _, wide in
+      if wide {
         lanePath = NavigationPath()
+      } else if let laneId = duoSelectedLaneId {
+        lanePath = NavigationPath([LaneRoute(laneId: laneId)])
       }
-      // Keyed on the tab being active and the request id, so it runs on
-      // appear, when the tab comes forward, and for each new request.
-      .task(id: laneNavigationRequestKey) {
-        guard laneNavigationRequestKey != nil else { return }
-        await handleRequestedLaneNavigation()
-      }
-      .onChange(of: searchText) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
-      .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
-        refreshLaneListPresentation()
-        let pendingIds = syncService.pendingLaneDeletionIds
-        openLaneIds.removeAll { pendingIds.contains($0) }
-        if let selectedLaneTransitionId, pendingIds.contains(selectedLaneTransitionId) {
-          self.selectedLaneTransitionId = nil
+    }
+    .onChange(of: lanePath.count) { _, count in
+      if !duoLayout.isWide, count == 0 { duoSelectedLaneId = nil }
+    }
+    // Times the "Waiting for live lane actions" notice: shown only if the wait
+    // outlasts the routine re-sync a visit starts.
+    .task(id: isActive && laneLiveActionsWaiting) {
+      laneLiveActionWaitIsLong = false
+      guard isActive, laneLiveActionsWaiting else { return }
+      try? await Task.sleep(for: .seconds(4))
+      guard !Task.isCancelled else { return }
+      laneLiveActionWaitIsLong = true
+    }
+    .task(id: primaryBranchReloadKey) {
+      guard primaryBranchReloadKey != nil else { return }
+      await refreshPrimaryBranches(force: false)
+    }
+    .task(id: lanesProjectionReloadKey) {
+      guard let revision = lanesProjectionReloadKey else { return }
+      guard lastHandledLanesProjectionRevision != revision || laneSnapshots.isEmpty else { return }
+      let now = Date()
+      if !laneSnapshots.isEmpty {
+        let elapsed = now.timeIntervalSince(lastLanesLocalProjectionReload)
+        if elapsed < 0.35 {
+          try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+          guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
         }
       }
-      .onChange(of: syncService.connectionState) { oldValue, newValue in
-        guard isActive else { return }
-        let wasOnline = oldValue == .connected
-        let nowOnline = newValue == .connected
-        if wasOnline && !nowOnline {
-          ADEHaptics.warning()
-        }
+      lastLanesLocalProjectionReload = Date()
+      await reload(refreshRemote: false)
+      guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
+      lastHandledLanesProjectionRevision = revision
+    }
+    .task(id: remoteLanesPollKey) {
+      guard remoteLanesPollKey != nil else { return }
+      while !Task.isCancelled {
+        await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+        try? await Task.sleep(nanoseconds: LaneRemoteMachinesModel.refreshIntervalNanoseconds)
       }
-      .sheet(isPresented: $addLaneSheetPresented) {
-        AddLaneSheet(
-          machines: laneCreateMachines,
-          onLaneCreated: { createdLaneId in
-            addLaneSheetPresented = false
-            if !openLaneIds.contains(createdLaneId) {
-              openLaneIds.insert(createdLaneId, at: 0)
-            }
-            if isWorkRemoteLaneId(createdLaneId) {
-              await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-            } else {
-              await reload(refreshRemote: true)
-            }
+    }
+    .onChange(of: syncService.activeProjectId) { _, _ in
+      // The tab stays mounted across a project switch: drop the previous
+      // project's lanes so they never show while the new project loads.
+      remoteLanes.reset()
+      machineFilter = .all
+      laneSnapshots = []
+      pullRequests = []
+      laneListPresentation = .empty
+      openLaneIds = []
+      primaryBranches = []
+      primaryBranchLaneId = nil
+      selectedLaneTransitionId = nil
+      duoSelectedLaneId = nil
+      errorMessage = nil
+      lanePath = NavigationPath()
+    }
+    // Keyed on the tab being active and the request id, so it runs on
+    // appear, when the tab comes forward, and for each new request.
+    .task(id: laneNavigationRequestKey) {
+      guard laneNavigationRequestKey != nil else { return }
+      await handleRequestedLaneNavigation()
+    }
+    .onChange(of: searchText) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
+      refreshLaneListPresentation()
+      let pendingIds = syncService.pendingLaneDeletionIds
+      openLaneIds.removeAll { pendingIds.contains($0) }
+      if let selectedLaneTransitionId, pendingIds.contains(selectedLaneTransitionId) {
+        self.selectedLaneTransitionId = nil
+      }
+      if let duoSelectedLaneId, pendingIds.contains(duoSelectedLaneId) {
+        self.duoSelectedLaneId = nil
+      }
+    }
+    .onChange(of: syncService.connectionState) { oldValue, newValue in
+      guard isActive else { return }
+      let wasOnline = oldValue == .connected
+      let nowOnline = newValue == .connected
+      if wasOnline && !nowOnline {
+        ADEHaptics.warning()
+      }
+    }
+    .sheet(isPresented: $addLaneSheetPresented) {
+      AddLaneSheet(
+        machines: laneCreateMachines,
+        onLaneCreated: { createdLaneId in
+          addLaneSheetPresented = false
+          if !openLaneIds.contains(createdLaneId) {
+            openLaneIds.insert(createdLaneId, at: 0)
           }
+          if isWorkRemoteLaneId(createdLaneId) {
+            await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+          } else {
+            await reload(refreshRemote: true)
+          }
+        }
+      )
+    }
+    .sheet(item: $detailSheetTarget) { target in
+      NavigationStack {
+        LaneDetailScreen(
+          laneId: target.laneId,
+          initialSnapshot: target.snapshot,
+          allLaneSnapshots: laneSnapshots,
+          initialSection: target.initialSection,
+          onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
         )
       }
-      .sheet(item: $detailSheetTarget) { target in
-        NavigationStack {
-          LaneDetailScreen(
-            laneId: target.laneId,
-            initialSnapshot: target.snapshot,
-            allLaneSnapshots: laneSnapshots,
-            initialSection: target.initialSection,
-            onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
-          )
-        }
+    }
+    .sheet(isPresented: $batchManagePresented) {
+      LaneBatchManageSheet(
+        snapshots: laneSnapshots.filter { batchManageLaneIds.contains($0.lane.id) }
+      ) {
+        await reload(refreshRemote: true)
       }
-      .sheet(isPresented: $batchManagePresented) {
-        LaneBatchManageSheet(
-          snapshots: laneSnapshots.filter { batchManageLaneIds.contains($0.lane.id) }
-        ) {
-          await reload(refreshRemote: true)
+    }
+  }
+
+  /// The phone layout: the same list as the inner display's left column,
+  /// with each lane's detail (the same Overview | Git screen) pushed on top.
+  private var lanesPhoneBody: some View {
+    NavigationStack(path: $lanePath) {
+      lanesListContent
+        .navigationDestination(for: LaneRoute.self) { route in
+          laneDestination(route)
         }
-      }
     }
   }
 
@@ -321,11 +326,6 @@ struct LanesTabView: View, Equatable {
   }
 
   // MARK: - Top bar
-
-  @ViewBuilder
-  private var topBarActions: some View {
-    addLaneActionButton
-  }
 
   /// In the top bar, beside the hub back button and the activity bell.
   var addLaneActionButton: some View {

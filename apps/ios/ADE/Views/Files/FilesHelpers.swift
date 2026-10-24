@@ -49,32 +49,6 @@ func fileTint(for name: String) -> Color {
   ADEColor.textSecondary
 }
 
-func changeStatusTint(_ changeStatus: String) -> Color {
-  switch changeStatus.uppercased() {
-  case "A":
-    return ADEColor.success
-  case "D":
-    return ADEColor.danger
-  case "M":
-    return ADEColor.warning
-  default:
-    return ADEColor.textSecondary
-  }
-}
-
-func changeStatusDescription(_ changeStatus: String) -> String {
-  switch changeStatus.uppercased() {
-  case "A":
-    return "Added"
-  case "D":
-    return "Deleted"
-  case "M":
-    return "Modified"
-  default:
-    return changeStatus.uppercased()
-  }
-}
-
 func relativeDateDescription(from isoTimestamp: String?) -> String? {
   guard let isoTimestamp, let date = filesRelativeIsoFormatter.date(from: isoTimestamp) else {
     return nil

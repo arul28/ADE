@@ -23,6 +23,9 @@ struct WorkModelPickerSheet: View {
   let currentProvider: String
   let currentReasoningEffort: String
   let currentCodexFastMode: Bool
+  /// False when the account forbids Fast. Rows then draw the bolt toggle
+  /// disabled; the composer's bolt already shows the locked glyph.
+  let fastModeAllowed: Bool
   let availableModelIds: [String]?
   let cursorAvailabilityMode: WorkCursorAvailabilityMode
   let lanes: [LaneSummary]
@@ -59,6 +62,7 @@ struct WorkModelPickerSheet: View {
     currentProvider: String,
     currentReasoningEffort: String = "",
     currentCodexFastMode: Bool = false,
+    fastModeAllowed: Bool = true,
     availableModelIds: [String]? = nil,
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     lanes: [LaneSummary] = [],
@@ -79,6 +83,7 @@ struct WorkModelPickerSheet: View {
     self.currentProvider = currentProvider
     self.currentReasoningEffort = currentReasoningEffort
     self.currentCodexFastMode = currentCodexFastMode
+    self.fastModeAllowed = fastModeAllowed
     self.availableModelIds = availableModelIds
     self.cursorAvailabilityMode = cursorAvailabilityMode
     self.lanes = lanes
@@ -269,6 +274,7 @@ struct WorkModelPickerSheet: View {
                 selectedModelId: selectedModelId,
                 selectedReasoningEffort: selectedReasoningEffort,
                 selectedCodexFastMode: selectedCodexFastMode,
+                fastModeAllowed: fastModeAllowed,
                 favorites: picker.favorites,
                 isBusy: isBusy,
                 onSelect: { model in select(model: model) },
@@ -1043,6 +1049,7 @@ struct ModelPickerContentPane: View {
   let selectedModelId: String
   let selectedReasoningEffort: String
   let selectedCodexFastMode: Bool
+  let fastModeAllowed: Bool
   let favorites: [String]
   let isBusy: Bool
   let onSelect: (WorkModelOption) -> Void
@@ -1140,6 +1147,7 @@ struct ModelPickerContentPane: View {
                     isBusy: isBusy,
                     selectedReasoningEffort: selectedReasoningEffort,
                     selectedCodexFastMode: selectedCodexFastMode,
+                fastModeAllowed: fastModeAllowed,
                     onSelect: { onSelect(model) },
                     onSelectReasoning: { effort in onSelectReasoning(model, effort) },
                     onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
@@ -1471,6 +1479,7 @@ struct ModelPickerListRow: View {
   let isBusy: Bool
   let selectedReasoningEffort: String
   let selectedCodexFastMode: Bool
+  var fastModeAllowed: Bool = true
   let onSelect: () -> Void
   let onSelectReasoning: (String) -> Void
   let onToggleFastMode: (Bool) -> Void
@@ -1825,7 +1834,7 @@ struct ModelPickerListRow: View {
     .toggleStyle(.switch)
     .controlSize(.mini)
     .tint(ADEColor.accent)
-    .disabled(isBusy || !model.isAvailable)
+    .disabled(isBusy || !model.isAvailable || !fastModeAllowed)
     .accessibilityLabel("Fast mode \(selectedCodexFastMode ? "on" : "off")")
   }
 

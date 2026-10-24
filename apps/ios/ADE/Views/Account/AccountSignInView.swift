@@ -49,6 +49,9 @@ struct AccountSignInView: View {
         .padding(.horizontal, 22)
         .padding(.top, 8)
         .padding(.bottom, 32)
+        // A readable column wherever the sheet is wide (the Duo's inner
+        // display shows it as a large form sheet).
+        .frame(maxWidth: 460)
         .frame(maxWidth: .infinity)
       }
       .background(ADEColor.pageBackground.ignoresSafeArea())
@@ -56,13 +59,10 @@ struct AccountSignInView: View {
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
+        ToolbarItem(placement: .cancellationAction) {
+          Button(role: .close) {
             if account.isSignedIn { onFinish() }
             dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 13, weight: .semibold))
           }
           .accessibilityLabel(step == .machines ? "Done" : "Close")
         }
@@ -463,9 +463,13 @@ struct AccountProviderButton: View {
         .font(.system(size: 18, weight: .medium))
         .foregroundStyle(foreground)
     } else if let asset {
+      // A template, in the row's text colour: the GitHub mark ships white
+      // and vanished on the light card.
       Image(asset)
+        .renderingMode(.template)
         .resizable()
         .aspectRatio(contentMode: .fit)
+        .foregroundStyle(foreground)
     } else if glyph == .google {
       GoogleGlyph()
     }

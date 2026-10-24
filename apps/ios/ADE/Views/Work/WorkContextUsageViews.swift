@@ -373,6 +373,8 @@ struct WorkCompactFirstOffer: Equatable {
 struct WorkCompactFirstPill: View {
   let offer: WorkCompactFirstOffer
   @Binding var choice: Bool?
+  /// In the chat's pill row: the row sets the height and the gap.
+  var inRow = false
   var body: some View {
     TimelineView(.periodic(from: offer.endedAt.addingTimeInterval(offer.idleSeconds), by: 60)) { context in
       if offer.isEligible(at: context.date) {
@@ -380,14 +382,18 @@ struct WorkCompactFirstPill: View {
         let tint = enabled ? ADEColor.accent : ADEColor.textSecondary
         Button { choice = !enabled } label: {
           HStack(spacing: 6) {
-            Image(systemName: "arrow.down.and.line.horizontal.and.arrow.up")
+            Image(systemName: enabled ? "checkmark" : "arrow.down.and.line.horizontal.and.arrow.up")
               .font(.system(size: 10, weight: .bold))
-            Text("Compact first · \(workAbbreviateCount(offer.contextTokens))")
+            // Desktop's two states: an offer, then a commitment.
+            Text("\(enabled ? "Compacts on next send" : "Compact first") · \(workAbbreviateCount(offer.contextTokens))")
               .font(.caption2.weight(.semibold).monospacedDigit())
+              .lineLimit(1)
+              .contentTransition(.opacity)
           }
           .foregroundStyle(tint)
           .padding(.horizontal, 10)
-          .padding(.vertical, 6)
+          .padding(.vertical, inRow ? 0 : 6)
+          .frame(minHeight: inRow ? workChatComposerChipRowHeight : nil)
           .workChatGlass(in: Capsule(style: .continuous), interactive: true)
           .overlay(
             Capsule(style: .continuous)
@@ -396,8 +402,9 @@ struct WorkCompactFirstPill: View {
           .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
-        .padding(.bottom, 8)
+        .padding(.bottom, inRow ? 0 : 8)
         .transition(.opacity)
+        .animation(.snappy(duration: 0.18), value: enabled)
         .accessibilityIdentifier("Work.Chat.Composer.CompactFirstPill")
         .accessibilityValue(enabled ? "On" : "Off")
         .help("The cache expired after \(offer.idleSeconds < 3600 ? "5 minutes" : "an hour"). Compacting first re-sends about \(workAbbreviateCount(offer.estimatedPostTokens)) tokens instead of \(workAbbreviateCount(offer.contextTokens)).")

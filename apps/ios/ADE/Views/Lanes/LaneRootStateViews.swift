@@ -11,11 +11,24 @@ extension LanesTabView {
 
   var liveActionNoticePresentation: LaneEmptyStatePresentation? {
     guard !laneSnapshots.isEmpty else { return nil }
-    return laneLiveActionNotice(
+    guard let notice = laneLiveActionNotice(
       connectionState: syncService.connectionState,
       laneStatus: laneStatus,
       hasHostProfile: syncService.activeHostProfile != nil
-    )
+    ) else { return nil }
+    // Every visit re-syncs the lanes for a moment, and the cached list is
+    // already on screen: "Waiting for live lane actions" only once the wait
+    // has lasted (`laneLiveActionWaitIsLong`), never as a flash that pushes
+    // the list down and back. Offline and pairing notices show at once.
+    if notice.action == .retry, !laneLiveActionWaitIsLong { return nil }
+    return notice
+  }
+
+  /// The lanes are cached but live actions are still waiting on the machine
+  /// or the lane sync: the state the delayed notice above times.
+  var laneLiveActionsWaiting: Bool {
+    !laneSnapshots.isEmpty
+      && !laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: laneStatus)
   }
 
   var showsLaneLoadingSkeletons: Bool {

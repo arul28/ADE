@@ -140,7 +140,7 @@ import {
   enrichChatSessionsWithLifecycle,
   enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
-  getLaunchDefaults,
+  readLaunchDefaults,
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
@@ -3785,6 +3785,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [modelState, setModelState] = useState<AdeCodeModelState>(
     () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
   );
+  // The account's Fast permission, from the machine's launch defaults. False
+  // disables every local Fast toggle; the brain refuses the update anyway.
+  const [fastModeAllowed, setFastModeAllowed] = useState(false);
+  const fastModeAllowedRef = useRef(false);
+  fastModeAllowedRef.current = fastModeAllowed;
+  // Refreshing the account permission on the session poll keeps a phone-side
+  // change from leaving this terminal locked (or open) until reconnect. Once a
+  // minute is enough for a preference that changes rarely.
+  const lastFastModePolicyReadAtRef = useRef(0);
   // The model the TUI opened on; the machine's launch defaults replace it only
   // while it is still this one (see the connect path).
   const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
@@ -4958,11 +4967,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // footer cells exist and are focusable (refs let the input handler read current
   // values without stale closures).
   const footerFastSupported = useMemo(() => {
+    if (!fastModeAllowed) return false;
     const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
     const activeModel = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
     return Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
       || modelSupportsFastMode(descriptor);
-  }, [models, modelState.modelId]);
+  }, [fastModeAllowed, models, modelState.modelId]);
   const footerReasoningSupported = useMemo(
     () => modelReasoningEfforts(modelState, models).length > 0,
     [modelState, models],
@@ -5473,6 +5483,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       newChatPreviewLaneIdRef.current = laneId;
       draftChatActiveRef.current = true;
       setDraftChatMode(true);
+      // Fast belongs to the chat it was chosen for; a new chat starts Standard.
+      setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
       setGridView(false);
       selectActiveSessionId(null);
       clearLoadedTranscript();
@@ -6166,8 +6178,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Draft: the interface is the user's editable Chat/CLI choice.
       interfaceMode: modelState.interfaceMode,
       interfaceEditable: true,
+      fastModeAllowed,
     }),
-    [modelState, models],
+    [modelState, models, fastModeAllowed],
   );
   // Once a session exists the interface is fixed by its type (a CLI terminal is
   // active ⇒ CLI; an SDK chat ⇒ Chat). With no committed session yet (/model on a
@@ -6188,8 +6201,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       outputStyleEditable: Boolean(activeSession?.sessionId && activeSession.provider === "claude"),
       interfaceMode: modelSetupInterfaceMode,
       interfaceEditable: modelSetupInterfaceEditable,
+      fastModeAllowed,
     }),
-    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelSetupInterfaceEditable, modelSetupInterfaceMode, modelState, models],
+    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelSetupInterfaceEditable, modelSetupInterfaceMode, modelState, models, fastModeAllowed],
   );
   const modelPickerRows = useMemo(() => {
     if (!providerLocked) return modelSetupRows;
@@ -8046,6 +8060,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       paneBeforeDetailsRef.current = previousPane;
     }
     setDraftChatMode(true);
+    // Fast belongs to the chat it was chosen for; a new chat starts Standard.
+    setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
     // Creating a new chat leaves the grid (shown as a single draft chat) but
     // keeps the grid resumable — navigating back to a tile re-enters it.
     setGridView(false);
@@ -8997,8 +9013,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setMode(conn.mode);
         // A new chat opens on what this machine used last, from any client,
         // unless the user already picked a model here.
-        void getLaunchDefaults(conn).then((defaults) => {
-          if (!defaults) return;
+        void readLaunchDefaults(conn).then((read) => {
+          if (!read.ok || connectionRef.current !== conn) return;
+          const defaults = read.defaults;
+          if (!defaults) {
+            // The host answered with no saved defaults: no permission to grant.
+            setFastModeAllowed(false);
+            return;
+          }
+          setFastModeAllowed(defaults.fastModeAllowed ?? true);
+          if (defaults.fastModeAllowed === false) {
+            setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+          }
           setModelState((prev) => {
             if (prev.provider !== initialModelProviderRef.current.provider
               || prev.modelId !== initialModelProviderRef.current.modelId) return prev;
@@ -9091,6 +9117,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setActiveProjectRoot(entry.projectRoot);
     connectionLostRef.current = false;
     setConnectionLost(false);
+    // A different machine can carry a different account answer. Read it for the
+    // connection just adopted, and drop a response that lost the race to a
+    // later hop.
+    void readLaunchDefaults(entry.connection).then((read) => {
+      if (connectionRef.current !== entry.connection || !read.ok) return;
+      // A valid record with no permission field comes from an older host, which
+      // clients treat as allowed. Only an explicit false (or no record) denies.
+      const allowed = read.defaults ? read.defaults.fastModeAllowed !== false : false;
+      setFastModeAllowed(allowed);
+      if (!allowed) {
+        setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+      }
+    });
     if (sessionId) selectActiveSessionId(sessionId);
     await refreshStateRef.current();
   }, [selectActiveSessionId]);
@@ -9725,6 +9764,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void refreshState({ hydrateHistory: false, includeLaneStatus: false }).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
+      if (Date.now() - lastFastModePolicyReadAtRef.current >= 60_000) {
+        lastFastModePolicyReadAtRef.current = Date.now();
+        void readLaunchDefaults(connection).then((read) => {
+          if (connectionRef.current !== connection || !read.ok) return;
+          // A valid record with no permission field is an older host; only an
+          // explicit false (or no record) denies.
+          const allowed = read.defaults ? read.defaults.fastModeAllowed !== false : false;
+          setFastModeAllowed(allowed);
+          if (!allowed) {
+            setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
+          }
+        });
+      }
     }, intervalMs);
     return () => clearInterval(timer);
   }, [chatRefreshPollActive, connection, refreshState]);
@@ -14248,6 +14300,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Launched chat, but refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`, "error");
       });
       setDraftChatMode(true);
+      // The launched chat took its Fast choice with it; the draft that remains
+      // for the next launch starts at Standard again.
+      setModelState((prev) => (prev.fastMode ? { ...prev, fastMode: false } : prev));
       addNotice(`Launched chat in ${lane?.name ?? "lane"}.`, "success");
       setBackgroundLaunchStatus((prev) => prev?.id === launchId ? null : prev);
     } catch (err) {
@@ -14677,7 +14732,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (row.kind === "codex-fast") {
-      applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+      if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       return;
     }
     if (row.kind === "output-style") {
@@ -15013,7 +15068,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
         || modelSupportsFastMode(descriptor);
       if (fastSupported) {
-        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       } else if (modelState.provider === "claude") {
         void submitPrompt("/fast");
       } else {
@@ -16132,7 +16187,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (key.downArrow) {
         if (cell === "provider") cycleProvider(1);
         else if (cell === "model") cycleModel(1);
-        else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        else if (cell === "fast") { if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode })); }
         else if (cell === "reasoning") cycleReasoning(1);
         else if (cell === "permission") cyclePermission(1);
         else if (cell === "subagents") openSubagentsPane();
@@ -17818,7 +17873,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         selectFooterControl(null);
         setPaneFocus("chat");
         setInlineRowFocus({ cell: "fast" });
-        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+        if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       });
       footerX += width;
     }
@@ -17889,7 +17944,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             const cell = inlineRowFocus.cell;
             if (cell === "provider") cycleProvider(1);
             else if (cell === "model") cycleModel(1);
-            else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
+            else if (cell === "fast") { if (fastModeAllowedRef.current) applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode })); }
             else if (cell === "reasoning") cycleReasoning(1);
             else if (cell === "permission") cyclePermission(1);
             else if (cell === "subagents") openSubagentsPane();

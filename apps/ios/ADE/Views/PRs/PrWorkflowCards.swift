@@ -250,6 +250,7 @@ struct PrMobileWorkflowCardView: View {
           rebaseMode: card.rebaseMode,
           creationStrategy: card.creationStrategy
         )
+        .modifier(PrLeadingColumnPush())
       } label: {
         HStack(spacing: 8) {
           Image(systemName: "chart.bar.doc.horizontal")
@@ -260,6 +261,8 @@ struct PrMobileWorkflowCardView: View {
         }
       }
       .buttonStyle(ADEKitButtonStyle(tone: .warn, wide: true))
+      // The button draws its own chevron; the list's second one doubled it.
+      .navigationLinkIndicatorVisibility(.hidden)
     }
 
     HStack(spacing: 10) {
@@ -357,4 +360,21 @@ private func wkIntegrationConfigRows(card: PrWorkflowCard) -> [WkConfigRowData] 
     rows.append(.init(label: "Conflicts", value: "\(conflicts)"))
   }
   return rows
+}
+
+/// A page pushed inside the PRs list column held landscape on the Duo: the
+/// column ends at the seam, not at the edge bar, so the page drops the
+/// edge bar's trailing inset the column's own list drops (it stopped two
+/// thirds of the way across, its buttons cut to "Rebas…").
+private struct PrLeadingColumnPush: ViewModifier {
+  @Environment(\.duoLayout) private var duo
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if duo.isWide && duo.hasEdgeBar {
+      content.duoLeadingColumnContent()
+    } else {
+      content
+    }
+  }
 }

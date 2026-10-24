@@ -74,12 +74,21 @@ struct ClipPairingView: View {
   @State private var showAppStoreOverlay = false
 
   var body: some View {
-    VStack(spacing: 0) {
-      Spacer(minLength: 0)
-      card
-      Spacer(minLength: 0)
+    // Centered on the whole screen, not the safe area: a display with a
+    // status or camera column on one side only (the iPhone Duo) would push a
+    // safe-area-centered card off to the other side. Symmetric margins as
+    // wide as the larger inset keep it clear of both edges.
+    GeometryReader { geometry in
+      let sideInset = max(geometry.safeAreaInsets.leading, geometry.safeAreaInsets.trailing)
+      VStack(spacing: 0) {
+        Spacer(minLength: 0)
+        card
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .padding(.horizontal, sideInset)
+      .ignoresSafeArea(.container, edges: .horizontal)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
     .appStoreOverlay(isPresented: $showAppStoreOverlay) {
       SKOverlay.AppClipConfiguration(position: .bottom)

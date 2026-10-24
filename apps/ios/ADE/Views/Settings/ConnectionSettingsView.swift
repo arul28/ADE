@@ -8,6 +8,7 @@ struct ConnectionSettingsView: View {
   let pairingOnly: Bool
 
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.duoLayout) private var duo
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   @StateObject private var presentationModel = SettingsConnectionPresentationModel()
@@ -18,6 +19,13 @@ struct ConnectionSettingsView: View {
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
+  /// The account's Fast permission, read over the sync host and written back
+  /// from the Chat section. Off by default, like the desktop.
+  @State private var fastModeEnabled = false
+  /// Orders the switch's writes and reads: an older read or a failed write must
+  /// not overwrite what the person chose last.
+  @State private var fastModeWriteGeneration = 0
+  @State private var fastModeSaving = false
 
   init(syncService: SyncService, pairingOnly: Bool = false) {
     self.syncService = syncService
@@ -38,31 +46,60 @@ struct ConnectionSettingsView: View {
   }
 
   var body: some View {
-    NavigationStack {
-      Group {
-        if pairingOnly {
-          ScrollView {
-            pairingOnlyGroup
-              .padding(.horizontal, 16)
-              .padding(.top, 8)
-              .padding(.bottom, 36)
+    // The Duo's inner display gets Apple Settings' two columns: this list on
+    // the left, the page a row opens on the right. Everywhere else it is the
+    // one pushed stack it has always been.
+    if duo.isWide && !pairingOnly {
+      DuoSettingsSplit(onClose: { dismiss() }) {
+        settingsChrome(settingsList, includesClose: false)
+      } landing: {
+        connectionLandingPage
+      }
+    } else {
+      NavigationStack {
+        settingsChrome(
+          Group {
+            if pairingOnly {
+              ScrollView {
+                pairingOnlyGroup
+                  .padding(.horizontal, 16)
+                  .padding(.top, 8)
+                  .padding(.bottom, 36)
+              }
+              .background(ADEColor.pageBackground.ignoresSafeArea())
+            } else {
+              settingsList
+            }
           }
-          .background(ADEColor.pageBackground.ignoresSafeArea())
-        } else {
-          settingsList
+        )
+      }
+    }
+  }
+
+  /// The title, close button, sheets and observers the settings root carries,
+  /// whichever column layout hosts it.
+  /// `includesClose: false` for the Duo's two columns, which put the close
+  /// button on the page column instead (see `DuoSettingsSplit`).
+  private func settingsChrome<Content: View>(_ content: Content, includesClose: Bool = true) -> some View {
+    content
+      .adeNavigationGlass()
+      .task {
+        guard !pairingOnly else { return }
+        let generation = fastModeWriteGeneration
+        let enabled = await syncService.getFastModeEnabled()
+        if generation == fastModeWriteGeneration {
+          fastModeEnabled = enabled
         }
       }
-      .adeNavigationGlass()
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            dismiss()
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 13, weight: .semibold))
+        if includesClose {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) {
+              dismiss()
+            }
+            .accessibilityLabel("Close settings")
           }
-          .accessibilityLabel("Close settings")
         }
       }
       .sheet(item: $presentedSheet) { route in
@@ -134,7 +171,6 @@ struct ConnectionSettingsView: View {
         syncService.requestedPairingQrNavigation = nil
         handleScannedPairingCode(request.raw)
       }
-    }
   }
 
   /// Pairing-only entry point (from the no-account gate): connection status +
@@ -143,19 +179,7 @@ struct ConnectionSettingsView: View {
   private var pairingOnlyGroup: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       ADESettingsSection("Connection") {
-        SettingsConnectionHeader(
-          snapshot: presentationModel.connectionSnapshot,
-          onDisconnect: { syncService.disconnectForUserConnectionChange() },
-          onReconnect: {
-            Task { await syncService.reconnectForUserConnectionChange() }
-          },
-          onPairWithPin: {
-            if let host = syncService.accountPairingPinFallbackHost {
-              pinPreset = .discover(host)
-            }
-          },
-          onWake: wakeAsleepMachine
-        )
+        connectionHeader
       }
 
       SettingsPairingSection(
@@ -163,6 +187,34 @@ struct ConnectionSettingsView: View {
         presentedSheet: $presentedSheet
       )
     }
+  }
+
+  /// The two-column window's first page: the page title already says
+  /// "Connection", so the card stands without a section heading.
+  private var connectionLandingPage: some View {
+    ADESettingsPage(title: "Connection") {
+      connectionHeader
+      SettingsPairingSection(
+        snapshot: presentationModel.pairingSnapshot,
+        presentedSheet: $presentedSheet
+      )
+    }
+  }
+
+  private var connectionHeader: some View {
+    SettingsConnectionHeader(
+      snapshot: presentationModel.connectionSnapshot,
+      onDisconnect: { syncService.disconnectForUserConnectionChange() },
+      onReconnect: {
+        Task { await syncService.reconnectForUserConnectionChange() }
+      },
+      onPairWithPin: {
+        if let host = syncService.accountPairingPinFallbackHost {
+          pinPreset = .discover(host)
+        }
+      },
+      onWake: wakeAsleepMachine
+    )
   }
 
   private var settingsList: some View {
@@ -195,6 +247,48 @@ struct ConnectionSettingsView: View {
             }
             ADESettingsLink(title: "AI accounts", symbol: "person.2") {
               SettingsProviderAccountsPage(syncService: syncService)
+            }
+          }
+        }
+        if syncService.supportsRemoteAction("chat.setFastModeEnabled") {
+          ADESettingsSection("Chat") {
+            ADESettingsRows {
+              Toggle(isOn: Binding(
+                get: { fastModeEnabled },
+                set: { next in
+                  guard !fastModeSaving else { return }
+                  fastModeWriteGeneration += 1
+                  let generation = fastModeWriteGeneration
+                  fastModeEnabled = next
+                  fastModeSaving = true
+                  Task {
+                    do {
+                      try await syncService.setFastModeEnabled(next)
+                    } catch {
+                      if generation == fastModeWriteGeneration {
+                        fastModeEnabled = !next
+                      }
+                    }
+                    if generation == fastModeWriteGeneration {
+                      fastModeSaving = false
+                    }
+                  }
+                }
+              )) {
+                VStack(alignment: .leading, spacing: 3) {
+                  Text("Allow Fast mode")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(ADEColor.textPrimary)
+                  Text("Roughly 2× standard, up to 8× for Ultrafast. Off until you turn it on here; every new chat still starts at Standard.")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+              .toggleStyle(.switch)
+              .tint(ADEColor.warning)
+              .disabled(fastModeSaving)
+              .padding(ADEKit.inset)
             }
           }
         }
@@ -284,7 +378,6 @@ struct ConnectionSettingsView: View {
         pinPreset = .discover(host)
       }
       .environmentObject(syncService)
-      .presentationDetents([.medium, .large])
 
     case .scan:
       SettingsPairingScannerSheet { payload in

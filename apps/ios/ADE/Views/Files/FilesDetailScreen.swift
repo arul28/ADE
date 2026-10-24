@@ -3,12 +3,20 @@ import UIKit
 
 struct FilesDetailScreen: View {
   @EnvironmentObject var syncService: SyncService
+  /// Held landscape on a phone (the Duo's closed display included) the
+  /// rail has little height: Changes moves into ⋯ so the tabs keep room.
+  @Environment(\.verticalSizeClass) var verticalSizeClass
+  @Environment(\.dismiss) var dismissViewer
 
   let workspace: FilesWorkspace
   let relativePath: String
   let focusLine: Int?
   let transitionNamespace: Namespace.ID?
   let navigateToDirectory: (String) -> Void
+  /// Set by the Duo's Files window: the viewer's controls move into the system
+  /// toolbar (the edge bar held landscape) and the breadcrumb becomes the
+  /// subtitle. Nil keeps the phone's in-content strip.
+  var duoChrome: FilesDuoEditorChrome? = nil
 
   @State var blob: SyncFileBlob?
   @State var errorMessage: String?
@@ -26,6 +34,8 @@ struct FilesDetailScreen: View {
   @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
   @State var lastHandledFilesProjectionRevision: Int?
   @State var lastFilesDetailReload = Date.distantPast
+  /// The trailing safe area the edge bar reserves (wide, held landscape).
+  @State var railInset: CGFloat = 0
 
   var language: FilesLanguage {
     FilesLanguage.detect(languageId: blob?.languageId, filePath: relativePath)
@@ -64,6 +74,13 @@ struct FilesDetailScreen: View {
     filesFullPath(rootPath: workspace.rootPath, relativePath: relativePath)
   }
 
+  /// Under the Duo's edge bar the code reaches the screen edge and stops
+  /// short of the rail by the bar's own width.
+  private var trailingMargin: CGFloat? {
+    guard duoChrome?.runsUnderRail == true else { return nil }
+    return railInset
+  }
+
   var body: some View {
     Group {
       if let blob {
@@ -81,60 +98,21 @@ struct FilesDetailScreen: View {
     .adeNavigationGlass()
     .adeRootTabBarHidden()
     .adeAnalyticsScreen(.fileDetail)
-    .navigationTitle(lastPathComponent(relativePath))
+    // The file's name is the floating capsule over the code on every
+    // display (the wide window's design), not the bar's title.
+    .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        Menu {
-          Button("Copy Full Path") {
-            UIPasteboard.general.string = fullPath
-          }
-
-          Button("Copy Relative Path") {
-            UIPasteboard.general.string = relativePath
-          }
-        } label: {
-          Image(systemName: "ellipsis.circle")
-        }
-        .accessibilityLabel("File actions")
-
-        Button {
-          isDetailsSheetPresented = true
-        } label: {
-          Image(systemName: "info.circle")
-        }
-        .accessibilityLabel("File details")
-        .disabled(blob == nil)
-      }
-    }
+    .toolbar { viewerToolbar(duoChrome) }
+    // Held landscape on a phone, back and ⋯ ride the file's header row: the
+    // closed display's rail folds its five tabs to one under two top items.
+    .toolbar(changesInMenu(duoChrome) ? .hidden : .automatic, for: .navigationBar)
     .safeAreaInset(edge: .top, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
-        FilesBreadcrumbBar(
-          relativePath: relativePath,
-          includeCurrentFile: true,
-          onSelectDirectory: { path in
-            if path.isEmpty {
-              navigateToDirectory("")
-            } else {
-              navigateToDirectory(path)
-            }
-          }
-        )
-        .padding(.horizontal, 16)
-
-        if let blob {
-          FilesViewerControlStrip(
-            editorModes: editorModes,
-            mode: $mode,
-            showsMarkdownToggle: mode == .preview && isMarkdownFile,
-            markdownViewMode: $markdownViewMode,
-            showsLayoutToggle: showsCodeLayoutControl(blob: blob),
-            codeLayoutMode: $codeLayoutMode,
-            showsDiffScopeToggle: mode == .diff && workspace.laneId != nil,
-            diffMode: $diffMode
-          )
-        }
-
+        // The file's name floats over the code in a slim glass capsule (the
+        // bar beside or above it is the edge bar or the stack's top bar).
+        viewerHeader
+          .padding(.horizontal, 12)
+          .padding(.top, 6)
         if let errorMessage {
           FilesCompactBanner(
             symbol: "exclamationmark.triangle.fill",
@@ -144,11 +122,17 @@ struct FilesDetailScreen: View {
             onAction: { Task { await load() } }
           )
           .padding(.horizontal, 16)
+          .background(ADEColor.pageBackground.opacity(0.94))
         }
       }
-      .padding(.top, 4)
-      .padding(.bottom, 6)
-      .background(ADEColor.pageBackground.opacity(0.94))
+      .padding(.bottom, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .environment(\.filesViewerTrailingMargin, trailingMargin)
+    .onGeometryChange(for: CGFloat.self) { proxy in
+      proxy.safeAreaInsets.trailing
+    } action: { inset in
+      if railInset != inset { railInset = inset }
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "container", workspaceId: workspace.id, path: relativePath), in: transitionNamespace)
     .sheet(isPresented: $isDetailsSheetPresented) {
@@ -182,7 +166,7 @@ struct FilesDetailScreen: View {
     }
   }
 
-  private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
+  func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
     switch mode {
     case .preview:
       if isMarkdownFile {
@@ -249,13 +233,34 @@ struct FilesDetailScreen: View {
       if let limit = filesPartialPreviewLimit(blob: blob, focusLine: focusLine) {
         // Takes precedence over the generic size cap: "we only got the start"
         // is the honest reason, and it is the one that explains a line number
-        // that goes nowhere.
-        FilesContentFallback(
-          symbol: "doc.text.magnifyingglass",
-          title: limit.title,
-          message: limit.message
-        )
-        .padding(16)
+        // that goes nowhere. The start that did load still shows under it.
+        if let focusLine, focusLine > filesPartialPreviewLineCount(blob.content) {
+          FilesContentFallback(
+            symbol: "doc.text.magnifyingglass",
+            title: limit.title,
+            message: limit.message
+          )
+          .padding(16)
+        } else {
+          VStack(spacing: 0) {
+            FilesCompactBanner(
+              symbol: "doc.text.magnifyingglass",
+              tint: ADEColor.warning,
+              title: "\(limit.title). Open it in ADE on your machine to read the rest.",
+              actionTitle: nil,
+              onAction: nil
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+            SyntaxHighlightedCodeView(
+              text: filesPartialPreviewPrefix(blob.content),
+              language: language,
+              focusLine: focusLine,
+              layoutMode: codeLayoutMode,
+              fillsContainer: true
+            )
+          }
+        }
       } else if let limit = filesTextPreviewLimit(blob: blob) {
         FilesContentFallback(
           symbol: "doc.text.magnifyingglass",

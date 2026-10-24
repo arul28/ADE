@@ -9,6 +9,11 @@ struct TerminalSessionScreen: View {
   @Environment(\.dismiss) private var dismiss
 
   let session: TerminalSessionSummary
+  /// The top bar's leading control: Back (the pushed screen), or, as the
+  /// Duo's detail column beside the sessions list, the way back to the list
+  /// while it is away and nothing while it shows (a column has no stack to
+  /// pop, so a Back there did nothing).
+  var leading: TerminalLeadingControl = .back
 
   @StateObject private var controller = TerminalSessionController()
   @State private var keyboardVisible = false
@@ -70,6 +75,9 @@ struct TerminalSessionScreen: View {
     VStack(spacing: 0) {
       topBar
       SwiftTermSessionView(controller: controller)
+        // A little air between the text and the screen's (or the column's)
+        // edge; the black runs on behind it.
+        .padding(.horizontal, 6)
         .overlay {
           terminalLoadOverlay
         }
@@ -158,17 +166,16 @@ struct TerminalSessionScreen: View {
 
   private var topBar: some View {
     HStack(spacing: 10) {
-      Button {
-        dismiss()
-      } label: {
-        Image(systemName: "chevron.left")
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 36, height: 36)
-          .contentShape(Rectangle())
+      switch leading {
+      case .back:
+        leadingButton(symbol: "chevron.left", label: "Back") { dismiss() }
+      case .showChats(let action):
+        leadingButton(symbol: "sidebar.left", label: "Show chats", action: action)
+          .accessibilityIdentifier("Duo.Work.SidebarToggle")
+      case .none:
+        // Keeps the title clear of the column's edge.
+        Color.clear.frame(width: 2, height: 36)
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Back")
 
       Circle()
         .fill(statusColor)
@@ -190,6 +197,18 @@ struct TerminalSessionScreen: View {
         .opacity(0.98)
         .ignoresSafeArea(edges: .top)
     }
+  }
+
+  private func leadingButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .frame(width: 36, height: 36)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
   }
 
   private var titleText: String {
@@ -493,4 +512,14 @@ private struct TerminalHistoryShimmer: View {
       }
     }
   }
+}
+
+/// The terminal top bar's leading control.
+enum TerminalLeadingControl {
+  /// Pops the pushed screen.
+  case back
+  /// Brings the sessions list back beside the terminal.
+  case showChats(() -> Void)
+  /// Nothing: the list is already beside it.
+  case none
 }

@@ -47,6 +47,7 @@ import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { AppearanceRoot } from "./AppearanceRoot";
@@ -416,6 +417,18 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   // showing, so the agent hears "held" instead of "no desktop" while the user
   // is somewhere else; the pane showing the chat takes it when it mounts.
   useWorkToolShowRequestListener(Boolean(active && projectRoot));
+
+  // The account's Fast-mode permission, once per window and again whenever the
+  // window regains focus (another machine may have turned it on or off). The
+  // value starts locked, so a slow or missing brain never unlocks a paid tier.
+  React.useEffect(() => {
+    void hydrateFastModeEnabled();
+    const onFocus = () => {
+      void hydrateFastModeEnabled();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   React.useEffect(() => {
     if (!isWorkRoute) return;

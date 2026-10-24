@@ -1101,8 +1101,10 @@ struct ADERootTopBar<Actions: View>: View {
     // A solid bar: content scrolling under a fading one collided with the
     // title (the CTO thread was unreadable under "CTO").
     .background {
+      // Edge to edge: on the Duo's outer display the status column sits on
+      // the trailing side, and a bar that stopped at it read as a slab.
       ADEColor.pageBackground
-        .ignoresSafeArea(edges: .top)
+        .ignoresSafeArea(edges: [.top, .horizontal])
         .allowsHitTesting(false)
     }
   }

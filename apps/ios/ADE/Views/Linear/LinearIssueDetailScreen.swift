@@ -5,6 +5,9 @@ import SwiftUI
 struct LinearIssueDetailScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.openURL) private var openURL
+  @Environment(\.linearIssueSelection) private var linearSelection
+
+  private var inLinearWindow: Bool { linearSelection.select != nil }
 
   let issue: NormalizedLinearIssue
   let hasLane: Bool
@@ -47,8 +50,15 @@ struct LinearIssueDetailScreen: View {
           .accessibilityLabel("Open in Linear")
         }
       }
+      // The Duo's Linear window: the launch actions are toolbar items, so
+      // held landscape they sit in the edge bar instead of a bar over the text.
+      if inLinearWindow {
+        DuoLinearLaunchToolbar(issue: issue)
+      }
     }
-    .safeAreaInset(edge: .bottom) { launchBar }
+    .safeAreaInset(edge: .bottom) {
+      if !inLinearWindow { launchBar }
+    }
     .task(id: issue.id) { await loadComments() }
   }
 

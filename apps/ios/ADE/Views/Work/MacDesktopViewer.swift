@@ -18,6 +18,12 @@ import UIKit
 /// cannot unsubscribe each other on the host.
 struct MacDesktopViewer: View {
   let laneId: String
+  /// The chat this viewer was opened from, so an inspect handoff goes back to
+  /// the right composer. Nil for a viewer opened without a chat.
+  var chatSessionId: String?
+  /// A column in a split, not a full-screen cover: no close button of its own
+  /// and no window-wide dark preference (the pane scopes dark itself).
+  var embedded = false
 
   /// Poll cadence for the lease, recording and stream summary. Same as the
   /// tools sheet: this is a surface the user opened to watch.
@@ -40,21 +46,35 @@ struct MacDesktopViewer: View {
   @State private var confirmingStop = false
   @State private var stopError: String?
   @State private var orientation = MacDesktopViewerOrientation()
+  /// The frozen inspect view, over everything, until its Close resumes the live
+  /// subscription.
+  @State private var inspect: LiveInspectMarkupModel?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-  init(laneId: String, initialState: WorkToolsMacDesktopState?) {
+  init(
+    laneId: String,
+    initialState: WorkToolsMacDesktopState?,
+    chatSessionId: String? = nil,
+    embedded: Bool = false
+  ) {
     self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.embedded = embedded
     _desktop = State(initialValue: initialState)
   }
 
   var body: some View {
     ZStack {
-      Color.black.ignoresSafeArea()
+      // In the tools pane the picture sits on the pane's own background.
+      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
 
       // One tree in both orientations. A branch per orientation would rebuild
       // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
-        controls
+        // In the Work tools pane these are the pane's toolbar items instead.
+        if !embedded {
+          controls
+        }
         if let stopError {
           Text(stopError).font(.caption).foregroundStyle(ADEColor.warning).padding(.horizontal)
         }
@@ -63,12 +83,52 @@ struct MacDesktopViewer: View {
         stage
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .livePictureViewport()
-        if !compactHeight {
+        if !compactHeight && !embedded {
           footer
         }
       }
+      if let inspect, !embedded {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+          .transition(.opacity)
+          .zIndex(2)
+      }
     }
-    .preferredColorScheme(.dark)
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    // In the Duo's tools pane the frozen inspector takes the whole screen: it
+    // has its own bar and a picture | inspector split across the fold, and
+    // drawn inside the pane its stack would take over the chat's title and
+    // rail.
+    .fullScreenCover(isPresented: Binding(
+      get: { embedded && inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+      }
+    }
+    .preferredColorScheme(embedded ? nil : .dark)
+    .modifier(MacDesktopPaneChrome(
+      enabled: embedded,
+      subtitle: macDesktopViewerRibbon(
+        controlling: controlling,
+        lease: desktop?.lease,
+        displayName: desktop?.display?.name
+      ),
+      stopSeat: paneStopSeat,
+      stopping: stopping,
+      canInspect: syncService.supportsViewerRemoteAction("macDesktop.observe") && desktop?.display != nil,
+      confirmingStop: $confirmingStop,
+      onInspect: { beginInspect() }
+    ))
+    .confirmationDialog(
+      paneStopSeat.map { "\(windowsDesktopStopCopy(seat: $0).action)?" } ?? "",
+      isPresented: Binding(get: { embedded && confirmingStop }, set: { confirmingStop = $0 }),
+      titleVisibility: .visible
+    ) {
+      if let seat = paneStopSeat { stopDialogActions(seat: seat) }
+    } message: {
+      if let seat = paneStopSeat { Text(windowsDesktopStopCopy(seat: seat).consequence) }
+    }
     .task(id: laneId) {
       await refresh()
       while !Task.isCancelled {
@@ -93,11 +153,21 @@ struct MacDesktopViewer: View {
 
   // MARK: - Pieces
 
+  /// The Windows seat the pane's Stop acts on, when this host can stop it.
+  private var paneStopSeat: String? {
+    guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
+          syncService.canStopWindowsDesktop(seat: seat) else { return nil }
+    return seat
+  }
+
   private var controls: some View {
     HStack(spacing: 14) {
-      controlButton(systemName: "xmark", label: "Close") {
-        stopSession()
-        dismiss()
+      // In a pane the pane's close button is the way out.
+      if !embedded {
+        controlButton(systemName: "xmark", label: "Close") {
+          stopSession()
+          dismiss()
+        }
       }
       Spacer(minLength: 0)
       if let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
@@ -114,24 +184,16 @@ struct MacDesktopViewer: View {
           isPresented: $confirmingStop,
           titleVisibility: .visible
         ) {
-          Button(copy.action, role: .destructive) {
-            Task {
-              stopping = true
-              stopError = nil
-              defer { stopping = false }
-              do {
-                try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
-                await refresh()
-              } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
-            }
-          }
-          Button("Keep running", role: .cancel) {}
+          stopDialogActions(seat: seat)
         } message: {
           Text(copy.consequence)
         }
       }
       if let session {
         MacDesktopViewerReconnectButton(session: session) { reconnect() }
+      }
+      if syncService.supportsViewerRemoteAction("macDesktop.observe"), desktop?.display != nil {
+        controlButton(systemName: "viewfinder", label: "Inspect") { beginInspect() }
       }
       if rotates && !controlling {
         controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
@@ -140,6 +202,24 @@ struct MacDesktopViewer: View {
     .overlay { title }
     .padding(.horizontal, 18)
     .padding(.vertical, compactHeight ? 6 : 12)
+  }
+
+  /// Asks first, like every Stop on the desktop: the private screen signs out
+  /// and closes the lane's apps; the main desktop is handed back.
+  @ViewBuilder
+  private func stopDialogActions(seat: String) -> some View {
+    Button(windowsDesktopStopCopy(seat: seat).action, role: .destructive) {
+      Task {
+        stopping = true
+        stopError = nil
+        defer { stopping = false }
+        do {
+          try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+          await refresh()
+        } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
+      }
+    }
+    Button("Keep running", role: .cancel) {}
   }
 
   private var title: some View {
@@ -195,14 +275,16 @@ struct MacDesktopViewer: View {
             onReconnect: { reconnect() }
           )
         }
-        .padding(.horizontal, 12)
+        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
+        .padding(.horizontal, embedded ? 16 : 12)
+        .padding(.vertical, embedded ? 16 : 0)
       } else if syncService.connectionState != .connected {
         stageMessage("Waiting for the connection to your Mac…")
       } else {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
     } else if desktop == nil {
-      ProgressView().tint(.white)
+      ProgressView().tint(embedded ? nil : .white)
     } else {
       offCard
     }
@@ -213,7 +295,7 @@ struct MacDesktopViewer: View {
   private var offCard: some View {
     VStack(spacing: 12) {
       if starting {
-        ProgressView().tint(.white)
+        ProgressView().tint(embedded ? nil : .white)
       }
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
@@ -229,10 +311,10 @@ struct MacDesktopViewer: View {
         } label: {
           Text("Start")
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(embedded ? ADEColor.accent : .white)
             .padding(.horizontal, 18)
             .padding(.vertical, 9)
-            .background(Color.white.opacity(0.16), in: Capsule())
+            .background(embedded ? ADEColor.accent.opacity(0.12) : Color.white.opacity(0.16), in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
@@ -244,7 +326,7 @@ struct MacDesktopViewer: View {
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(.white.opacity(0.85))
+      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
@@ -332,6 +414,7 @@ struct MacDesktopViewer: View {
   /// lane has a display.
   private func updateLifecycle() {
     let shouldRun = isLiveCapable
+      && inspect == nil
       && scenePhase == .active
       && syncService.connectionState == .connected
     if shouldRun {
@@ -358,6 +441,26 @@ struct MacDesktopViewer: View {
     current.stop(using: syncService)
     session = nil
     controlling = false
+  }
+
+  // MARK: - Inspect
+
+  /// Freezes the desktop for inspect: stops the live subscription, then asks
+  /// the host for one accessibility observation and its screenshot. The
+  /// desktop itself keeps running.
+  private func beginInspect() {
+    guard inspect == nil, desktop?.display != nil else { return }
+    ADEHaptics.light()
+    let model = LiveInspectMarkupModel(surface: .macDesktop, laneId: laneId, chatSessionId: chatSessionId)
+    model.begin(plan: .macDesktop, using: syncService)
+    inspect = model
+    stopSession()
+  }
+
+  private func exitInspect() {
+    guard inspect != nil else { return }
+    inspect = nil
+    updateLifecycle()
   }
 
   /// Re-subscribes on the same session rather than tearing it down: a stop
@@ -716,5 +819,41 @@ enum MacDesktopViewerRotation {
   private static func activeScene() -> UIWindowScene? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+  }
+}
+
+/// The Mac Desktop viewer's controls in the Work tools pane's header, and its
+/// ribbon as the header's status line. Off (the full-screen viewer), it
+/// changes nothing.
+private struct MacDesktopPaneChrome: ViewModifier {
+  let enabled: Bool
+  let subtitle: String
+  let stopSeat: String?
+  let stopping: Bool
+  let canInspect: Bool
+  @Binding var confirmingStop: Bool
+  let onInspect: () -> Void
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content
+        .duoPaneHeader(status: subtitle) {
+          if canInspect {
+            DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder") { onInspect() }
+              .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+          }
+          if let stopSeat {
+            DuoPaneActionButton(
+              title: windowsDesktopStopCopy(seat: stopSeat).action,
+              systemImage: "stop.fill"
+            ) {
+              confirmingStop = true
+            }
+            .disabled(stopping)
+          }
+        }
+    } else {
+      content
+    }
   }
 }

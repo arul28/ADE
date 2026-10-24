@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Check, Copy } from "@phosphor-icons/react";
+import { Check, Code, Copy, MapTrifold, Palette, Rows, Square, TextAa } from "@phosphor-icons/react";
 import {
   CHAT_FONT_SIZE_MAX_PX,
   CHAT_FONT_SIZE_MIN_PX,
@@ -8,7 +8,6 @@ import {
   CHAT_TRANSCRIPT_DENSITY_IDS,
   CODE_BLOCK_COPY_POSITION_IDS,
   useAppStore,
-  useRootAppStore,
   type ChatChromeTint,
   type ChatShellGeometry,
   type ChatTranscriptDensity,
@@ -30,6 +29,7 @@ import {
 import { DictationSection } from "./DictationSection";
 import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
+import { FastModeSection } from "./FastModeSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
@@ -65,8 +65,6 @@ export function ChatSection() {
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
-  const draftsButtonEnabled = useRootAppStore((s) => s.draftsButtonEnabled);
-  const setDraftsButtonEnabled = useRootAppStore((s) => s.setDraftsButtonEnabled);
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
   const [previewProvider, setPreviewProvider] = useState<PreviewProviderKey>("claude");
@@ -76,74 +74,95 @@ export function ChatSection() {
       <div className="ade-cs">
         <div className="ade-cs-layout">
           <div className="ade-cs-main">
-            <ModernSection
-              group="Transcript"
-              anchor="chat-font-size"
-              title="Text size"
-              hint="The transcript and the composer. The rest of ADE keeps its size."
-            >
-              <FontSizeControl value={chatFontSizePx} onChange={setChatFontSizePx} />
-            </ModernSection>
-
-            <ModernSection group="Transcript" anchor="transcript-density" title="Density" hint="Space between messages.">
-              <ChoiceGrid
-                ariaLabel="Transcript density"
-                value={chatTranscriptDensity}
-                options={CHAT_TRANSCRIPT_DENSITY_IDS}
-                label={(id) => TRANSCRIPT_DENSITY_LABEL[id]}
-                onChange={setChatTranscriptDensity}
-                art={(id) => <DensityArt density={id} />}
-              />
-            </ModernSection>
-
-            <ModernSection group="Transcript" anchor="chat-corners" title="Corners" hint="How round the chat window is.">
-              <ChoiceGrid
-                ariaLabel="Chat shell corners"
-                value={chatShellGeometry}
-                options={CHAT_SHELL_GEOMETRY_IDS}
-                label={(id) => SHELL_GEOMETRY_LABEL[id]}
-                onChange={setChatShellGeometry}
-                art={(id) => <CornersArt geometry={id} />}
-              />
-            </ModernSection>
+            <FastModeSection />
 
             <ModernSection
               group="Transcript"
-              anchor="chat-tint"
-              title="Runtime color"
-              hint="Give each runtime its own hue in the chat chrome."
+              anchor="chat-transcript"
+              title="Transcript"
+              hint="How the conversation reads, from text size to the small helpers around it."
+              icon={<TextAa size={16} weight="bold" />}
+              tone="violet"
             >
-              <ChoiceGrid
-                ariaLabel="Chat tint"
-                value={chatChromeTint}
-                options={CHAT_CHROME_TINT_IDS}
-                label={(id) => CHAT_CHROME_TINT_LABEL[id]}
-                onChange={setChatChromeTint}
-                art={(id) => <TintArt tint={id} />}
-                columns={2}
-              />
-            </ModernSection>
-
-            <ModernSection
-              group="Transcript"
-              anchor="code-block-copy-position"
-              title="Code block copy button"
-              hint={COPY_POSITION_META[codeBlockCopyButtonPosition].hint}
-            >
-              <ChoiceGrid
-                ariaLabel="Code block copy button position"
-                value={codeBlockCopyButtonPosition}
-                options={CODE_BLOCK_COPY_POSITION_IDS}
-                label={(id) => COPY_POSITION_META[id].label}
-                onChange={setCodeBlockCopyButtonPosition}
-                art={(id) => <CopyArt position={id} />}
-              />
-            </ModernSection>
-
-            <ModernSection group="Details" title="Details" hint="Small helpers around the transcript and the composer.">
               <ModernRows>
                 <ModernRow
+                  anchor="chat-font-size"
+                  icon={<TextAa size={15} weight="bold" />}
+                  tone="violet"
+                  title="Text size"
+                  hint="The transcript and the composer. The rest of ADE keeps its size."
+                >
+                  <FontSizeControl value={chatFontSizePx} onChange={setChatFontSizePx} />
+                </ModernRow>
+                <ModernRow
+                  anchor="transcript-density"
+                  icon={<Rows size={15} weight="bold" />}
+                  tone="violet"
+                  title="Density"
+                  hint="Space between messages."
+                >
+                  <ChoiceGrid
+                    ariaLabel="Transcript density"
+                    value={chatTranscriptDensity}
+                    options={CHAT_TRANSCRIPT_DENSITY_IDS}
+                    label={(id) => TRANSCRIPT_DENSITY_LABEL[id]}
+                    onChange={setChatTranscriptDensity}
+                    art={(id) => <DensityArt density={id} />}
+                  />
+                </ModernRow>
+                <ModernRow
+                  anchor="chat-corners"
+                  icon={<Square size={15} weight="bold" />}
+                  tone="violet"
+                  title="Corners"
+                  hint="How round the chat window is."
+                >
+                  <ChoiceGrid
+                    ariaLabel="Chat shell corners"
+                    value={chatShellGeometry}
+                    options={CHAT_SHELL_GEOMETRY_IDS}
+                    label={(id) => SHELL_GEOMETRY_LABEL[id]}
+                    onChange={setChatShellGeometry}
+                    art={(id) => <CornersArt geometry={id} />}
+                  />
+                </ModernRow>
+                <ModernRow
+                  anchor="chat-tint"
+                  icon={<Palette size={15} weight="bold" />}
+                  tone="violet"
+                  title="Runtime color"
+                  hint="Give each runtime its own hue in the chat chrome."
+                >
+                  <ChoiceGrid
+                    ariaLabel="Chat tint"
+                    value={chatChromeTint}
+                    options={CHAT_CHROME_TINT_IDS}
+                    label={(id) => CHAT_CHROME_TINT_LABEL[id]}
+                    onChange={setChatChromeTint}
+                    art={(id) => <TintArt tint={id} />}
+                    columns={2}
+                  />
+                </ModernRow>
+                <ModernRow
+                  anchor="code-block-copy-position"
+                  icon={<Code size={15} weight="bold" />}
+                  tone="violet"
+                  title="Code block copy button"
+                  hint={COPY_POSITION_META[codeBlockCopyButtonPosition].hint}
+                >
+                  <ChoiceGrid
+                    ariaLabel="Code block copy button position"
+                    value={codeBlockCopyButtonPosition}
+                    options={CODE_BLOCK_COPY_POSITION_IDS}
+                    label={(id) => COPY_POSITION_META[id].label}
+                    onChange={setCodeBlockCopyButtonPosition}
+                    art={(id) => <CopyArt position={id} />}
+                  />
+                </ModernRow>
+                <ModernRow
                   anchor="user-message-minimap"
+                  icon={<MapTrifold size={15} weight="bold" />}
+                  tone="violet"
                   title="Message minimap"
                   hint="A tick per message you sent in the left gutter. Hover to preview, click to jump."
                   control={(
@@ -154,18 +173,6 @@ export function ChatSection() {
                     />
                   )}
                 />
-                <ModernRow
-                  anchor="drafts-button"
-                  title="Drafts button"
-                  hint="The bookmark beside the context meter. ⌘S works either way."
-                  control={(
-                    <SettingsToggle
-                      label="Drafts button"
-                      checked={draftsButtonEnabled}
-                      onChange={setDraftsButtonEnabled}
-                    />
-                  )}
-                />
               </ModernRows>
             </ModernSection>
 
@@ -173,7 +180,7 @@ export function ChatSection() {
 
             {noProject ? (
               <ProjectSettingsNotice
-                group="Smart decisions"
+                group="Agent behavior"
                 title="Project chat settings"
                 detail="Next prompt suggestions, Smart decisions and Claude mods are saved in each project."
               />

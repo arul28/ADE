@@ -17,6 +17,8 @@ enum LinearRoute: Hashable {
 struct LinearIssueListScreen: View {
   @ObservedObject var store: LinearPaneStore
   var onClose: () -> Void = {}
+  /// False inside the Work tools pane, whose own close button is the way out.
+  var showsClose = true
   var onAttachIssue: ((NormalizedLinearIssue) -> Void)? = nil
 
   private enum Mode {
@@ -29,6 +31,7 @@ struct LinearIssueListScreen: View {
   /// User overrides for group collapse state. Completed groups collapse by
   /// default, while all other groups open until the user toggles them.
   @State private var groupCollapseOverrides: [String: Bool] = [:]
+  @Environment(\.linearIssueSelection) private var selection
 
   private enum ListContent { case skeletons, failure, empty, issues }
 
@@ -58,7 +61,13 @@ struct LinearIssueListScreen: View {
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .safeAreaInset(edge: .top, spacing: 0) { LinearFilterChipsBar(store: store) }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      // The Duo's Linear window carries these in its views rail and the
+      // filter menu instead of a chip row over the list.
+      if selection.select == nil {
+        LinearFilterChipsBar(store: store)
+      }
+    }
     .searchable(text: $store.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search issues")
     .refreshable { await store.reload() }
     .onChange(of: store.query) { _, _ in store.scheduleReload() }
@@ -75,11 +84,13 @@ struct LinearIssueListScreen: View {
   // (the List + searchable + onChange chain + toolbar together tip it over).
   @ToolbarContentBuilder
   private var linearToolbar: some ToolbarContent {
-    ToolbarItem(placement: .topBarLeading) {
-      Button { onClose() } label: {
-        Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+    if showsClose {
+      ToolbarItem(placement: .topBarLeading) {
+        Button { onClose() } label: {
+          Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+        }
+        .accessibilityLabel("Close Linear")
       }
-      .accessibilityLabel("Close Linear")
     }
     ToolbarItem(placement: .topBarTrailing) {
       NavigationLink(value: LinearRoute.connection) {
@@ -88,7 +99,7 @@ struct LinearIssueListScreen: View {
       .accessibilityLabel("Linear connection settings")
     }
     ToolbarItem(placement: .topBarTrailing) {
-      LinearFiltersMenu(store: store)
+      LinearFiltersMenu(store: store, includesState: selection.select != nil)
     }
   }
 
@@ -109,10 +120,23 @@ struct LinearIssueListScreen: View {
               .buttonStyle(.plain)
               .listRowBackground(Color.clear)
             case .browse:
-              NavigationLink(value: LinearRoute.issue(issue)) {
-                LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+              if let select = selection.select {
+                // The Duo's Linear window shows the issue beside the list.
+                Button {
+                  select(issue)
+                } label: {
+                  LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(
+                  selection.selectedIssueId == issue.id ? LinearBrand.surface : Color.clear
+                )
+              } else {
+                NavigationLink(value: LinearRoute.issue(issue)) {
+                  LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+                }
+                .listRowBackground(Color.clear)
               }
-              .listRowBackground(Color.clear)
             }
           }
         }
@@ -206,6 +230,7 @@ struct LinearIssueRow: View {
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
               .background(LinearBrand.surface, in: Capsule())
+              .fixedSize()
           }
         }
         Text(issue.title)
@@ -309,9 +334,19 @@ struct LinearToggleChip: View {
 
 struct LinearFiltersMenu: View {
   @ObservedObject var store: LinearPaneStore
+  /// The state presets, for a layout with no chip row to hold them.
+  var includesState = false
 
   var body: some View {
     Menu {
+      if includesState {
+        Picker("State", selection: $store.statePreset) {
+          ForEach(LinearPaneStore.StatePreset.allCases) { preset in
+            Text(preset.title).tag(preset)
+          }
+        }
+        .pickerStyle(.inline)
+      }
       Menu("Project") {
         Button {
           store.projectId = nil
@@ -342,6 +377,7 @@ struct LinearFiltersMenu: View {
 
   private var hasActiveFilter: Bool {
     store.projectId != nil || store.priority != nil
+      || (includesState && store.statePreset != .all)
   }
 
   @ViewBuilder

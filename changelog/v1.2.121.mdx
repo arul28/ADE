@@ -1,0 +1,32 @@
+---
+title: "v1.2.121"
+description: "Release notes for ADE v1.2.121 - October 23, 2026"
+---
+
+ADE 1.2.121 lets agents message you on every device, lets agents read usage limits, makes chats take less space, and gives the iOS app one modern layout on iPhone Duo, iPad and iPhone.
+
+## New
+
+- An agent can send you a message with `ade notify` when you asked it to. The chat shows it, Activity's Inbox lists it on desktop, web, phone and `ade code`, and a tap opens the chat (#1880).
+- Desktop notifications for needs-you, failures, goal outcomes and agent messages while no ADE window is focused (#1880).
+- `ade usage limits` shows how much of each account's windows is left, when they reset, and which account smart balance picks next, on this machine or all of them. ADE MCP gets a read-only `usage_limits` tool (#1881).
+- Settings › Storage & cleanup lists chats from deleted lanes, with a preview and a confirm before removal, and shows each agent CLI's own session folders (#1882).
+
+## Improved
+
+- "Mute notifications" on a chat applies on every device (#1880).
+- A phone alert waits 2 minutes while you are at the computer, and never buzzes if you open it there (#1880).
+- Each chat is written once, and archived or settled chats are compressed sooner. Old copies are removed only after every event is proven to be in the full transcript (#1882).
+- Claude and Codex accounts show as their email and id everywhere; account names are gone (#1881).
+- New installs start on the theme's plain background; a photo is something you turn on in Settings › Appearance (#1883).
+- A new link preview image and video, and a reorganized README (#1885).
+
+## Fixed
+
+- `--machine` on a command that cannot run elsewhere now fails with a message instead of answering for this machine (#1881).
+- The Halftone pattern draws only on Retina screens, and Phosphor scanlines turn off at 125%–175% scaling, so they no longer band through text (#1883).
+
+## iOS
+
+- One modern layout on iPhone Duo, iPad and iPhone. On the Duo, panes open at the hinge, the edge bar always carries the five app tabs, the PR view follows desktop's, and Files is rebuilt with a real tree and opens in under a second (#1887).
+- The phone mutes chats on every device and clears alerts once seen elsewhere (#1880). Both are in a new TestFlight build.

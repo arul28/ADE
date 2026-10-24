@@ -1,5 +1,5 @@
 import React, { useCallback } from "react";
-import { CheckCircle, DownloadSimple } from "@phosphor-icons/react";
+import { CheckCircle, DownloadSimple, Microphone } from "@phosphor-icons/react";
 import { primaryButton } from "../lanes/laneDesignTokens";
 import { useAppStore } from "../../state/appStore";
 import { useVoiceModelInstall } from "../../hooks/useVoiceModelInstall";
@@ -44,9 +44,11 @@ export function DictationSection() {
 
   return (
     <ModernSection
-      group="Voice input"
-      title="Voice input"
+      group="Voice"
+      title="Dictation"
       hint="Dictate into any composer. Speech is transcribed on this machine and never uploaded."
+      icon={<Microphone size={16} weight="bold" />}
+      tone="pink"
     >
       <ModernRows>
         <ModernRow

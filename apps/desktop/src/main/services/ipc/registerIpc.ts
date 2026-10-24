@@ -974,6 +974,10 @@ import type {
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../../shared/types/accountSettings";
+import {
+  FAST_MODE_SETTING_KEY,
+  FAST_MODE_SETTING_SCOPE,
+} from "../../../shared/fastModePolicy";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
@@ -12400,13 +12404,20 @@ export function registerIpc({
     async (
       _event,
       args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
-    ): Promise<AccountSettingsResult<null>> =>
-      await accountSettingsSyncService.set(
+    ): Promise<AccountSettingsResult<null>> => {
+      const result = await accountSettingsSyncService.set(
         args.scope,
         args.key,
         args.value,
         { expectedAccountUserId: args.expectedAccountUserId },
-      ),
+      );
+      // The chat service reads the same cache file on its next action; this is
+      // the immediate pass so a live chat does not send one more Fast turn.
+      if (result.ok && args.scope === FAST_MODE_SETTING_SCOPE && args.key === FAST_MODE_SETTING_KEY) {
+        getCtx().agentChatService?.applyFastModePolicy();
+      }
+      return result;
+    },
   );
 
   ipcMain.handle(

@@ -1667,7 +1667,7 @@ struct WorkEventCardView: View, Equatable {
       Image(systemName: card.icon)
         .font(.caption.weight(.semibold))
         .foregroundStyle(card.tint.color)
-        .frame(width: 18, height: 18)
+        .frame(width: 18, height: 18, alignment: .leading)
       Text(ribbonText)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
@@ -1677,7 +1677,9 @@ struct WorkEventCardView: View, Equatable {
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
     }
-    .padding(.horizontal, 10)
+    // No surface, so no leading inset: the glyph starts on the thread's own
+    // text edge (it sat ~10pt+ in from the messages around it).
+    .padding(.trailing, 10)
     .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
@@ -3012,6 +3014,10 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
   let spacing: CGFloat
   let strokeOpacity: Double
   let accessibilityLabel: String
+  /// Nil on the phone, where a pill opens a sheet (the chevron says so). On a
+  /// wide display a pill toggles the tools pane beside the thread: no
+  /// chevron, and the pill of what the pane shows is drawn selected.
+  let selection: Bool?
   let onOpen: () -> Void
   @ViewBuilder let content: () -> Content
 
@@ -3020,6 +3026,7 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
     spacing: CGFloat = 7,
     strokeOpacity: Double = 0.22,
     accessibilityLabel: String,
+    selection: Bool? = nil,
     onOpen: @escaping () -> Void,
     @ViewBuilder content: @escaping () -> Content
   ) {
@@ -3027,56 +3034,92 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
     self.spacing = spacing
     self.strokeOpacity = strokeOpacity
     self.accessibilityLabel = accessibilityLabel
+    self.selection = selection
     self.onOpen = onOpen
     self.content = content
   }
+
+  private var isSelected: Bool { selection == true }
 
   var body: some View {
     Button(action: onOpen) {
       HStack(spacing: spacing) {
         content()
-        Image(systemName: "chevron.up")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
+        if selection == nil {
+          Image(systemName: "chevron.up")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
       }
-      .foregroundStyle(tint)
+      .foregroundStyle(isSelected ? ADEColor.accent : tint)
       .padding(.horizontal, 10)
       .frame(minHeight: workChatComposerChipRowHeight)
       .workChatGlass(in: Capsule(style: .continuous), interactive: true)
+      .background {
+        if isSelected {
+          Capsule(style: .continuous).fill(ADEColor.accent.opacity(0.16))
+        }
+      }
       .overlay(
         Capsule(style: .continuous)
-          .stroke(tint.opacity(strokeOpacity), lineWidth: 0.75)
+          .stroke(isSelected ? ADEColor.accent.opacity(0.55) : tint.opacity(strokeOpacity), lineWidth: isSelected ? 1 : 0.75)
       )
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(accessibilityLabel)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
 
-/// The single chat-activity chip above the composer: icon plus a count, no
-/// label. It replaced a separate "Subagents" capsule that opened the very same
-/// sheet — two chips, one destination, and between them enough text to squeeze
-/// the PR chip into an ellipsis.
-///
-/// `count` is `workChatInfoItemCount` — subagents, background work and
-/// schedules together, which is exactly what the sheet lists.
+/// What the Chat info pill says: what is running right now, else how much
+/// proof was filed. Nil (no pill) when neither: Chat info is then one tap away
+/// in the ⋯ menu, not a pill.
+struct WorkChatInfoPillModel: Equatable {
+  /// Subagents and background work running now.
+  var running: Int
+  /// Proof artifacts filed in this chat.
+  var proof: Int
+
+  init?(running: Int, proof: Int) {
+    guard running > 0 || proof > 0 else { return nil }
+    self.running = running
+    self.proof = proof
+  }
+
+  var label: String {
+    running > 0 ? "\(running) running" : "\(proof) proof"
+  }
+
+  var accessibilityLabel: String {
+    var parts: [String] = []
+    if running > 0 { parts.append("\(running) agent\(running == 1 ? "" : "s") running") }
+    if proof > 0 { parts.append("\(proof) proof filed") }
+    return "Chat info, " + parts.joined(separator: ", ")
+  }
+}
+
+/// The Chat info pill above the composer (desktop's floating chat-actions
+/// preview): only while something is going on.
 struct WorkChatInfoActivePopup: View {
-  let count: Int
+  let model: WorkChatInfoPillModel
+  var isSelected: Bool? = nil
   let onOpen: () -> Void
 
   var body: some View {
     WorkComposerBadgeCapsule(
       tint: ADEColor.accent,
       spacing: 6,
-      accessibilityLabel: "Chat info, \(count) item\(count == 1 ? "" : "s")",
+      accessibilityLabel: model.accessibilityLabel,
+      selection: isSelected,
       onOpen: onOpen
     ) {
-      Image(systemName: "info.circle.fill")
+      Image(systemName: model.running > 0 ? "flowchart.fill" : "photo.on.rectangle.angled")
         .font(.system(size: 13, weight: .semibold))
-      Text("\(count)")
-        .font(.caption2.weight(.bold).monospacedDigit())
+      Text(model.label)
+        .font(.caption.weight(.semibold).monospacedDigit())
         .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
     }
   }
 }
@@ -3097,7 +3140,52 @@ func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> I
 /// Schedule. Mirrors the desktop chat-info pane (`buildSubagentPaneRows` +
 /// `deriveScheduleItems` / `deriveBackgroundItems`). Empty sections are hidden;
 /// a shared empty state renders only when all three are empty.
+/// Which parts of Chat Info a surface shows. The sheet shows all of it; the
+/// Duo's tools pane splits it into desktop's drawer tabs: Agents (subagents and
+/// background work) and Info (tasks, schedule and sources).
+struct WorkChatInfoSections: OptionSet, Equatable {
+  let rawValue: Int
+  static let agents = WorkChatInfoSections(rawValue: 1 << 0)
+  static let info = WorkChatInfoSections(rawValue: 1 << 1)
+  static let all: WorkChatInfoSections = [.agents, .info]
+
+  var title: String {
+    switch self {
+    case .agents: return "Agents"
+    case .info: return "Info"
+    default: return "Chat Info"
+    }
+  }
+
+  var emptyMessage: String {
+    switch self {
+    case .agents: return "No agents yet. Subagents and background work show up as the chat runs."
+    case .info: return "Nothing here yet. Tasks, schedules and sources show up as the chat runs."
+    default: return "Nothing here yet. Agents, tasks and sources show up as the chat runs."
+    }
+  }
+}
+
+/// The Chat info sheet's own navigation stack, and its absence in a pane.
+private struct WorkChatInfoStackChrome: ViewModifier {
+  let embedded: Bool
+  let title: String
+
+  func body(content: Content) -> some View {
+    if embedded {
+      content
+    } else {
+      NavigationStack {
+        content
+          .navigationTitle(title)
+          .navigationBarTitleDisplayMode(.inline)
+      }
+    }
+  }
+}
+
 struct WorkChatInfoDetailsSheet: View {
+  var sections: WorkChatInfoSections = .all
   let sessionId: String
   let subagentSnapshots: [WorkSubagentSnapshot]
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
@@ -3114,6 +3202,13 @@ struct WorkChatInfoDetailsSheet: View {
   let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
   let onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)?
   var onStopTask: (@MainActor (String) async -> Void)? = nil
+  /// The chat's proof, as desktop's drawer shows it between the agents and
+  /// the sources: the latest few, and the way into all of it.
+  var proof: [ComputerUseArtifactSummary] = []
+  var onShowProof: (() -> Void)? = nil
+  /// Inside the Duo's tools pane: no navigation stack of its own (it would
+  /// take over the chat's title and rail); the pane header names it.
+  var embedded = false
   @AppStorage private var paneUiRaw: String
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
@@ -3132,6 +3227,7 @@ struct WorkChatInfoDetailsSheet: View {
   private let scheduleCap = 10
 
   init(
+    sections: WorkChatInfoSections = .all,
     sessionId: String,
     subagentSnapshots: [WorkSubagentSnapshot],
     scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
@@ -3147,8 +3243,15 @@ struct WorkChatInfoDetailsSheet: View {
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
     onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil,
     onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil,
-    onStopTask: (@MainActor (String) async -> Void)? = nil
+    onStopTask: (@MainActor (String) async -> Void)? = nil,
+    proof: [ComputerUseArtifactSummary] = [],
+    onShowProof: (() -> Void)? = nil,
+    embedded: Bool = false
   ) {
+    self.proof = sections.contains(.agents) ? proof : []
+    self.onShowProof = onShowProof
+    self.embedded = embedded
+    self.sections = sections
     self.sessionId = sessionId
     self.subagentSnapshots = subagentSnapshots
     self.scheduledWorkSnapshots = scheduledWorkSnapshots
@@ -3156,9 +3259,12 @@ struct WorkChatInfoDetailsSheet: View {
     self.nextWakeAt = nextWakeAt
     self.provider = provider
     self.sessionModel = sessionModel
-    self.sourceRefs = sourceRefs
-    self.omittedSourceRefCount = max(0, omittedSourceRefCount)
-    self.taskList = taskList
+    // Tasks and sources are Info; a surface showing Agents only drops them here
+    // so every section below reads one source of truth.
+    let showsInfo = sections.contains(.info)
+    self.sourceRefs = showsInfo ? sourceRefs : []
+    self.omittedSourceRefCount = showsInfo ? max(0, omittedSourceRefCount) : 0
+    self.taskList = showsInfo ? taskList : nil
     self.onResolveSourceFavicons = onResolveSourceFavicons
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
@@ -3180,21 +3286,24 @@ struct WorkChatInfoDetailsSheet: View {
   /// merged into one list. Source order is stable; terminal rows move into the
   /// Earlier partition without reordering survivors.
   private var subagents: [WorkSubagentSnapshot] {
-    workChatInfoSubagents(subagentSnapshots)
+    guard sections.contains(.agents) else { return [] }
+    return workChatInfoSubagents(subagentSnapshots)
   }
 
   private var backgroundItems: [WorkScheduledWorkSnapshot] {
-    workChatInfoBackgroundItems(scheduledWorkSnapshots)
+    guard sections.contains(.agents) else { return [] }
+    return workChatInfoBackgroundItems(scheduledWorkSnapshots)
   }
 
   private var scheduleItems: [WorkScheduledWorkSnapshot] {
-    workChatInfoScheduleItems(scheduledWorkSnapshots)
+    guard sections.contains(.info) else { return [] }
+    return workChatInfoScheduleItems(scheduledWorkSnapshots)
   }
 
   private var isEmpty: Bool {
     subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty
       && sourceRefs.isEmpty && omittedSourceRefCount == 0
-      && taskList == nil
+      && taskList == nil && proof.isEmpty
   }
 
   private var nextWakeLabel: String? {
@@ -3353,7 +3462,9 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
-    running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active)"
+    // Every row the section lists (live plus the "Completed (n)" group): a
+    // bare active count read "0" above two completed subagents.
+    running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active + earlier)"
   }
 
   var body: some View {
@@ -3369,11 +3480,11 @@ struct WorkChatInfoDetailsSheet: View {
     let visibleSchedule = capped(schedulePartition.active, cap: scheduleCap, showAll: showAllSections.contains("schedule")) {
       $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed"
     }
-    NavigationStack {
+    Group {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 0) {
           if isEmpty {
-            Text("Nothing here yet. Agents, tasks and sources show up as the chat runs.")
+            Text(sections.emptyMessage)
               .font(.footnote)
               .foregroundStyle(ADEColor.textMuted)
               .padding(.vertical, 16)
@@ -3488,8 +3599,13 @@ struct WorkChatInfoDetailsSheet: View {
                 }
               }
             }
-            if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
+            if !proof.isEmpty {
               infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty) {
+                proofSection
+              }
+            }
+            if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
+              infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty && proof.isEmpty) {
                 VStack(alignment: .leading, spacing: 6) {
                   plainHeader(title: "Sources", tone: ADEColor.textMuted, hint: "\(sourceRefs.count + omittedSourceRefCount)")
                   ForEach(Array(visibleSourceRefs), id: \.self) { source in
@@ -3514,8 +3630,6 @@ struct WorkChatInfoDetailsSheet: View {
       }
       .scrollIndicators(.hidden)
       .background(workChatCanvasBackground.ignoresSafeArea())
-      .navigationTitle("Chat Info")
-      .navigationBarTitleDisplayMode(.inline)
       .task(id: visibleSourceHosts.joined(separator: "|")) {
         guard !visibleSourceHosts.isEmpty, let onResolveSourceFavicons else { return }
         do {
@@ -3526,6 +3640,48 @@ struct WorkChatInfoDetailsSheet: View {
           // The domain initial remains as the icon if the host is offline or
           // the paired runtime does not advertise this command yet.
         }
+      }
+    }
+    .modifier(WorkChatInfoStackChrome(embedded: embedded, title: sections.title))
+  }
+
+  /// Proof: the latest few, newest first, each opening the Proof view, which
+  /// holds the rest.
+  private var proofSection: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      plainHeader(title: "Proof", tone: ADEColor.purpleAccent, hint: "\(proof.count)")
+      let latest = proof.sorted { $0.createdAt > $1.createdAt }.prefix(3)
+      ForEach(Array(latest), id: \.id) { artifact in
+        let row = WorkProofRowModel(artifact: artifact)
+        Button {
+          onShowProof?()
+        } label: {
+          HStack(spacing: 10) {
+            Image(systemName: row.isVideo ? "video" : "photo")
+              .font(.system(size: 14, weight: .medium))
+              .foregroundStyle(ADEColor.purpleAccent)
+              .frame(width: 30, height: 30)
+              .background(ADEColor.purpleAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+              Text(row.title)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textPrimary)
+              Text(row.subtitle)
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .lineLimit(1)
+            Spacer(minLength: 0)
+          }
+          .frame(minHeight: 40)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(onShowProof == nil)
+        .accessibilityLabel(row.accessibilityLabel)
+      }
+      if let onShowProof {
+        quietButton(proof.count > 3 ? "Show all \(proof.count)" : "Open proof", action: onShowProof)
       }
     }
   }
@@ -4366,12 +4522,14 @@ struct WorkSubagentTimelineGridView: View {
     let lines = workSubagentGridLines(count: model.rows.count, columnsPerRow: columnsPerRow)
     LazyVStack(alignment: .leading, spacing: 8) {
       ForEach(lines, id: \.lowerBound) { line in
+        // Tiles in a line share its height, as desktop's grid does: each
+        // fills to the tallest, and the line is only as tall as that one.
         HStack(alignment: .top, spacing: 8) {
           ForEach(model.rows[line], id: \.id) { row in
             WorkSubagentTimelineGridTile(row: row, onStop: onStop)
-              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
           }
         }
+        .fixedSize(horizontal: false, vertical: true)
       }
     }
   }
@@ -4471,7 +4629,7 @@ private struct WorkSubagentTimelineGridTile: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
-    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+    .frame(maxWidth: .infinity, minHeight: 96, maxHeight: .infinity, alignment: .topLeading)
     .padding(9)
     .adeGlassCard(cornerRadius: 12, padding: 0)
     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(tint.opacity(0.16), lineWidth: 0.8))

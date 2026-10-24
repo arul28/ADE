@@ -526,6 +526,8 @@ struct WorkCrossMachineHandoffTarget: Identifiable, Equatable {
   let busy: Bool
   /// The source chat's fast mode, so the sheet starts from what the chat uses.
   var fastMode: Bool = false
+  /// The account's Fast permission; false keeps the move at Standard.
+  var fastModeAllowed: Bool = true
 }
 
 struct WorkCrossMachineHandoffSheet: View {
@@ -558,7 +560,7 @@ struct WorkCrossMachineHandoffSheet: View {
     _modelId = State(initialValue: target.modelId)
     _provider = State(initialValue: target.provider)
     _reasoningEffort = State(initialValue: target.reasoningEffort)
-    _fastMode = State(initialValue: target.fastMode)
+    _fastMode = State(initialValue: target.fastMode && target.fastModeAllowed)
     _runtimeMode = State(initialValue: target.runtimeMode.isEmpty
       ? workDefaultRuntimeMode(provider: target.provider)
       : target.runtimeMode)
@@ -645,6 +647,7 @@ struct WorkCrossMachineHandoffSheet: View {
           currentProvider: provider,
           currentReasoningEffort: reasoningEffort,
           currentCodexFastMode: fastMode,
+          fastModeAllowed: target.fastModeAllowed,
           isBusy: false,
           // A fork resumes the provider's own session, so it stays on that provider.
           modelFilter: mode == "fork"
@@ -803,7 +806,7 @@ struct WorkCrossMachineHandoffSheet: View {
                 .foregroundStyle(ADEColor.textPrimary)
               let detail = [
                 reasoningEffort.isEmpty ? nil : workReasoningEffortDisplayName(reasoningEffort),
-                fastMode ? "Fast" : nil,
+                fastMode && target.fastModeAllowed ? "Fast" : nil,
               ].compactMap { $0 }.joined(separator: " · ")
               if !detail.isEmpty {
                 Text(detail)
@@ -1055,7 +1058,7 @@ struct WorkCrossMachineHandoffSheet: View {
     if !reasoningEffort.isEmpty { args["reasoningEffort"] = reasoningEffort }
     // Always sent: an omitted field would inherit the source chat's value
     // and ignore a person who turned fast mode off here.
-    args["fastMode"] = fastMode
+    args["fastMode"] = fastMode && target.fastModeAllowed
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
     if let v = wire.permissionMode { args["permissionMode"] = v }
     if let v = wire.claudePermissionMode { args["claudePermissionMode"] = v }

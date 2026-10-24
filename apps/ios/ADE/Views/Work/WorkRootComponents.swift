@@ -332,6 +332,12 @@ struct WorkSidebarSectionHeader: View {
   /// quiet zone reads as its own region rather than one more lane. Same fence the
   /// desktop sidebar draws (`renderQuietZone` in `SessionListPane.tsx`).
   var startsQuietZone = false
+  /// Wide display only: the lane's branch under its name, as desktop's header
+  /// shows it.
+  var branch: String? = nil
+  /// The Duo's sessions column: the lane's name, its branch under it and one
+  /// count. Git state, focus and the PR are the Lanes tab's to show there.
+  var minimal = false
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -381,10 +387,19 @@ struct WorkSidebarSectionHeader: View {
               .frame(maxWidth: .infinity)
               .accessibilityHidden(true)
           } else {
-            Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
-              .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
-              .foregroundStyle(quietAwareLabelColor)
-              .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+              Text(group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label)
+                .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
+                .foregroundStyle(quietAwareLabelColor)
+                .lineLimit(1)
+              if let branch, !branch.isEmpty, !isQuietRow, branch != group.label {
+                Text(branch)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(ADEColor.textMuted)
+                  .lineLimit(1)
+                  .truncationMode(.middle)
+              }
+            }
             if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
               WorkRemoteLaneGlyph()
             }
@@ -392,7 +407,7 @@ struct WorkSidebarSectionHeader: View {
 
           // Beside the name, not in the trailing cluster: there it sat next to
           // the amber "uncommitted changes" dot and read as the same fact.
-          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow {
+          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow, !minimal {
             WorkLaneFocusDot(status: laneFocus)
           }
 
@@ -416,11 +431,11 @@ struct WorkSidebarSectionHeader: View {
       // lane name: this is context, not a call to action. Dropped entirely on a
       // folded quiet row, where the section is one thin line and every glyph
       // competes with the count.
-      if !isQuietRow, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
+      if !isQuietRow, !minimal, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
         laneGitStateChips(laneStatus)
       }
 
-      if let pullRequest {
+      if let pullRequest, !minimal {
         Button {
           onOpenPullRequest(pullRequest)
         } label: {
@@ -725,6 +740,12 @@ struct WorkSessionListRow: View {
   /// the row carries the lane identity itself.
   var showsLaneIdentity: Bool = true
   var waitingOnSubagent: Bool = false
+  /// A card on the Duo's board (see `WorkSessionRow.boardCard`).
+  var boardCard = false
+  /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
+  var duoRow = false
+  /// The machine a row from another machine lives on, for the Duo's meta line.
+  var machineName: String? = nil
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -733,9 +754,9 @@ struct WorkSessionListRow: View {
   let onToggleSelect: (TerminalSessionSummary) -> Void
   let onOpen: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
-  let onRename: (TerminalSessionSummary) -> Void
+  var onRename: (TerminalSessionSummary) -> Void
   let onStopRuntime: (TerminalSessionSummary) -> Void
-  let onDelete: (TerminalSessionSummary) -> Void
+  var onDelete: (TerminalSessionSummary) -> Void
   let onCopyId: (TerminalSessionSummary) -> Void
   let onCopyDeepLink: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
@@ -803,20 +824,20 @@ struct WorkSessionListRow: View {
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
 
   /// Mute only applies to chat sessions.
-  private var isMuted: Bool {
+  fileprivate var isMuted: Bool {
     isChatSession(session)
       && pushNotificationService.isSessionMuted(session.id)
   }
 
-  private var canonicalPhase: CanonicalSessionPhase {
+  fileprivate var canonicalPhase: CanonicalSessionPhase {
     workCanonicalSessionState(session: session, summary: chatSummary).phase
   }
 
-  private var isSnoozed: Bool {
+  fileprivate var isSnoozed: Bool {
     session.isSnoozed()
   }
 
-  private var isChat: Bool { isChatSession(session) }
+  fileprivate var isChat: Bool { isChatSession(session) }
 
   /// Mid-flight. Desktop hides Settle for these (`sessionIsMidFlight` in
   /// `renderer/lib/terminalAttention.ts`): filing away a row the machine is
@@ -833,7 +854,7 @@ struct WorkSessionListRow: View {
   /// reads `ready`/`idle` here and Settle is already offered. The two agree on
   /// behaviour by different routes; if iOS ever gains the promotion, it must
   /// gain the `liveness == .turn` clause with it.
-  private var isActivelyRunning: Bool {
+  fileprivate var isActivelyRunning: Bool {
     canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
   }
 
@@ -856,13 +877,13 @@ struct WorkSessionListRow: View {
   /// clear and throws, so offering "Dismiss & settle" could only ever produce
   /// an error toast and a rolled-back optimistic write. Falling through to the
   /// disabled "Resolve input to settle" row is the honest answer.
-  private var canDismissNeedsYou: Bool {
+  fileprivate var canDismissNeedsYou: Bool {
     canonicalPhase != .needsYou
       || isChat
       || session.attentionRequestedAt != nil
   }
 
-  private var canSettle: Bool {
+  fileprivate var canSettle: Bool {
     lifecycleAvailable
       && canonicalPhase != .settled
       && !isActivelyRunning
@@ -872,18 +893,18 @@ struct WorkSessionListRow: View {
   /// The settle for a needs-you row also clears the pending prompt, and says so.
   /// The host REJECTS the dismiss flag on a row with nothing pending, so this is
   /// the only condition under which the dismissing variant may be sent.
-  private var settleDismissesPendingInput: Bool {
+  fileprivate var settleDismissesPendingInput: Bool {
     canonicalPhase == .needsYou
   }
 
   /// Needs-you with an ask nothing can dismiss. Desktop renders a DISABLED row
   /// here rather than nothing: an item that silently disappears reads as a bug,
   /// while "Resolve input to settle" states the precondition.
-  private var settleBlockedOnInput: Bool {
+  fileprivate var settleBlockedOnInput: Bool {
     lifecycleAvailable && canonicalPhase == .needsYou && !canDismissNeedsYou
   }
 
-  private var canUnsettle: Bool {
+  fileprivate var canUnsettle: Bool {
     lifecycleAvailable && canonicalPhase == .settled
   }
 
@@ -891,14 +912,14 @@ struct WorkSessionListRow: View {
   /// agent, user, operator or merge policy wrote into `settled_at`. A settle the
   /// UI merely derived has no column for the pin to hold down, so desktop
   /// restricts the item the same way (`SessionContextMenu.tsx:209`, `:250`).
-  private var canKeepActive: Bool {
+  fileprivate var canKeepActive: Bool {
     lifecycleAvailable
       && session.settledAt != nil
       && session.resolvedSettleOverride != .active
       && canonicalPhase == .settled
   }
 
-  private var canDemoteToPeer: Bool {
+  fileprivate var canDemoteToPeer: Bool {
     workCanDemoteChatToPeer(
       isChat: isChat,
       spawnKind: chatSummary?.spawnKind,
@@ -907,7 +928,7 @@ struct WorkSessionListRow: View {
     )
   }
 
-  private var canPromoteToSubagent: Bool {
+  fileprivate var canPromoteToSubagent: Bool {
     workCanPromoteChatToSubagent(
       isChat: isChat,
       spawnKind: chatSummary?.spawnKind,
@@ -916,7 +937,7 @@ struct WorkSessionListRow: View {
     )
   }
 
-  private var snoozeOptions: [WorkSnoozeOption] {
+  fileprivate var snoozeOptions: [WorkSnoozeOption] {
     workSnoozeOptions()
   }
 
@@ -949,7 +970,10 @@ struct WorkSessionListRow: View {
           compact: compact,
           nestedSubagent: nestedSubagent,
           showsLaneIdentity: showsLaneIdentity,
-          waitingOnSubagent: waitingOnSubagent
+          waitingOnSubagent: waitingOnSubagent,
+          boardCard: boardCard,
+          duoRow: duoRow,
+          machineName: machineName
         )
         .equatable()
       }
@@ -1024,14 +1048,7 @@ struct WorkSessionListRow: View {
     // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
     // is exactly where the deletes used to sit.
     .contextMenu {
-      nameMenuSection
-      fileMenuSection
-      lifecycleMenuSection(status: rowStatus)
-      handoffMenuSection
-      agentMenuSection
-      laneMenuSection
-      copyMenuSection
-      destructiveMenuSection(status: rowStatus)
+      WorkSessionActionsMenuContent(row: self, includesSelect: true)
     }
     .overlay {
       if isLaneDeleting {
@@ -1050,26 +1067,26 @@ struct WorkSessionListRow: View {
     .accessibilityHint(isLaneDeleting ? "This lane is being deleted" : "")
   }
 
-  private var shouldShowDeleteAction: Bool {
+  fileprivate var shouldShowDeleteAction: Bool {
     isChatSession(session)
   }
 
   /// Stop-then-delete for a live CLI/shell row: desktop's "Stop & delete".
-  private func canStopAndDeleteSession(status: String) -> Bool {
+  fileprivate func canStopAndDeleteSession(status: String) -> Bool {
     deleteSessionAvailable && isStoppableRuntimeStatus(session, status: status)
   }
 
   /// Plain delete for a CLI/shell row that is already stopped. `work.delete
   /// Session` handles both, but the labels differ because the consequences do.
-  private func canDeleteStoppedSession(status: String) -> Bool {
+  fileprivate func canDeleteStoppedSession(status: String) -> Bool {
     deleteSessionAvailable && !isChat && !isStoppableRuntimeStatus(session, status: status)
   }
 
-  private var settleLabel: String {
+  fileprivate var settleLabel: String {
     settleDismissesPendingInput ? "Dismiss & settle" : "Settle"
   }
 
-  private func settle() {
+  fileprivate func settle() {
     if settleDismissesPendingInput {
       onDismissAndSettle(session)
     } else {
@@ -1085,20 +1102,20 @@ struct WorkSessionListRow: View {
   // Every item calls the command the desktop item calls, and an item the
   // session type or the host cannot honour is hidden, not greyed.
 
-  private var canRename: Bool {
+  fileprivate var canRename: Bool {
     !CursorCloudNaming.ownsName(session.cursorCloudAgentId)
       && !CursorCloudNaming.ownsName(chatSummary?.cursorCloudAgentId)
   }
 
   /// Desktop shows "Set tag…" only on a running Claude chat: tag writes need a
   /// live Claude SDK runtime.
-  private var canSetTag: Bool {
+  fileprivate var canSetTag: Bool {
     tagAvailable && session.toolType == "claude-chat" && session.status == "running"
   }
 
   /// Section 1 — what the row is called: Rename, Generate ▸.
   @ViewBuilder
-  private var nameMenuSection: some View {
+  fileprivate var nameMenuSection: some View {
     Section {
       if canRename {
         Button {
@@ -1112,7 +1129,7 @@ struct WorkSessionListRow: View {
   }
 
   @ViewBuilder
-  private var generateNamesMenu: some View {
+  fileprivate var generateNamesMenu: some View {
     if isChat && generateNamesAvailable {
       let cloudOwned = !canRename
       Menu {
@@ -1150,7 +1167,7 @@ struct WorkSessionListRow: View {
   /// Section 2 — how the row is filed: Pin, Set tag…, plus the phone-only
   /// Mute and Select (the one way into multi-select).
   @ViewBuilder
-  private var fileMenuSection: some View {
+  fileprivate func fileMenuSection(includesSelect: Bool) -> some View {
     Section {
       Button {
         onPin(session)
@@ -1172,10 +1189,12 @@ struct WorkSessionListRow: View {
                 systemImage: isMuted ? "bell" : "bell.slash")
         }
       }
-      Button {
-        onLongPressSelect(session)
-      } label: {
-        Label("Select", systemImage: "checkmark.circle")
+      if includesSelect {
+        Button {
+          onLongPressSelect(session)
+        } label: {
+          Label("Select", systemImage: "checkmark.circle")
+        }
       }
     }
   }
@@ -1185,7 +1204,7 @@ struct WorkSessionListRow: View {
   /// native nested `Menu`. Keep it exhaustive: a row that reaches the end of
   /// this block with nothing rendered is a row the user cannot un-hide.
   @ViewBuilder
-  private func lifecycleMenuSection(status: String) -> some View {
+  fileprivate func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
     Section {
       if canSettle {
@@ -1251,7 +1270,7 @@ struct WorkSessionListRow: View {
 
   /// Section 4 — Hand off ▸ (`WorkSessionHandoffMenu`, kept with the hand-off
   /// sheets it opens).
-  private var handoffMenuSection: some View {
+  fileprivate var handoffMenuSection: some View {
     WorkSessionHandoffMenu(
       session: session,
       record: chatSummary?.crossMachineHandoff ?? session.crossMachineHandoff,
@@ -1268,7 +1287,7 @@ struct WorkSessionListRow: View {
 
   /// Section 5 — the agent itself: restart, promote / demote.
   @ViewBuilder
-  private var agentMenuSection: some View {
+  fileprivate var agentMenuSection: some View {
     if isChat && (restartAvailable || canDemoteToPeer || canPromoteToSubagent) {
       Section {
         if restartAvailable {
@@ -1299,7 +1318,7 @@ struct WorkSessionListRow: View {
   /// Section 6 — the lane: Go to lane, Manage lane, the PR shortcut, and the
   /// `Lane ▸` submenu with the rest of the lane's own menu.
   @ViewBuilder
-  private var laneMenuSection: some View {
+  fileprivate var laneMenuSection: some View {
     Section {
       Button {
         onGoToLane(session)
@@ -1331,7 +1350,7 @@ struct WorkSessionListRow: View {
   }
 
   /// Section 7 — Copy ▸.
-  private var copyMenuSection: some View {
+  fileprivate var copyMenuSection: some View {
     Section {
       Menu {
         Button {
@@ -1352,7 +1371,7 @@ struct WorkSessionListRow: View {
 
   /// Destructive, last, and behind a divider — the whole point of the reorder.
   @ViewBuilder
-  private func destructiveMenuSection(status: String) -> some View {
+  fileprivate func destructiveMenuSection(status: String) -> some View {
     if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
       Section {
       if canStopAndDeleteSession(status: status) {
@@ -1378,6 +1397,51 @@ struct WorkSessionListRow: View {
       }
       }
     }
+  }
+}
+
+/// The session's actions, in desktop's order (`SessionContextMenu.tsx`):
+/// identity, filing, lifecycle, hand off, agent, lane, copy, then the deletes
+/// behind a divider. ONE list for every place a session offers its actions:
+/// the Work list row's long-press menu and the open chat's ⋯ (phone header,
+/// the Duo's rail, the iPad toolbar). Only the list offers Select, the way
+/// into multi-select.
+struct WorkSessionActionsMenuContent: View {
+  let row: WorkSessionListRow
+  var includesSelect: Bool
+  /// Observed here too: the Mute item's label follows a mute flipped anywhere.
+  @ObservedObject private var pushNotificationService = PushNotificationService.shared
+
+  var body: some View {
+    let status = normalizedWorkChatSessionStatus(session: row.session, summary: row.chatSummary)
+    row.nameMenuSection
+    row.fileMenuSection(includesSelect: includesSelect)
+    row.lifecycleMenuSection(status: status)
+    row.handoffMenuSection
+    row.agentMenuSection
+    row.laneMenuSection
+    row.copyMenuSection
+    row.destructiveMenuSection(status: status)
+  }
+}
+
+/// Builds the Work list's own, fully wired row for a session, so a chat opened
+/// from the list offers exactly the list row's actions in its ⋯ (each routed
+/// to the machine that owns the chat, as the row's are). Set by the Work root
+/// on every chat it opens; nil elsewhere (a chat opened from the Hub, Lanes or
+/// CTO), where the ⋯ falls back to the chat's own items.
+struct WorkSessionActionsMenuProvider {
+  let row: (TerminalSessionSummary) -> WorkSessionListRow
+}
+
+private struct WorkSessionActionsMenuProviderKey: EnvironmentKey {
+  static let defaultValue: WorkSessionActionsMenuProvider? = nil
+}
+
+extension EnvironmentValues {
+  var workSessionActionsMenu: WorkSessionActionsMenuProvider? {
+    get { self[WorkSessionActionsMenuProviderKey.self] }
+    set { self[WorkSessionActionsMenuProviderKey.self] = newValue }
   }
 }
 
@@ -1767,6 +1831,52 @@ struct WorkRootHeader: View {
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
+  /// New chat and ⋯ at the row's end. False on the Duo's outer display, where
+  /// they are the edge bar's buttons instead.
+  var showsTrailingActions = true
+
+  private var titleCluster: some View {
+    HStack(spacing: 6) {
+      WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
+      Text("Work")
+        .font(.system(size: 22, weight: .heavy, design: .rounded))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityAddTraits(.isHeader)
+    }
+  }
+
+  private var searchField: some View {
+    WorkHeaderSearchField(
+      searchText: $searchText,
+      filterOpen: $filterOpen,
+      activeFilterCount: activeFilterCount
+    )
+  }
+
+  @ViewBuilder
+  private var trailingActions: some View {
+    if showsTrailingActions {
+      Button(action: actions.onNewChat) {
+        Image(systemName: "square.and.pencil")
+          .font(.system(size: 18, weight: .medium))
+          .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+          .frame(width: 32, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!isLive)
+      .accessibilityLabel("New chat")
+      .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
+      WorkHeaderOverflowMenu(
+        showsLinear: showsLinear,
+        showsCursorCloud: showsCursorCloud,
+        showsGitHubIssues: showsGitHubIssues,
+        actions: actions
+      )
+    }
+  }
 
   var body: some View {
     HStack(spacing: 8) {
@@ -1783,35 +1893,11 @@ struct WorkRootHeader: View {
           .frame(minHeight: 44)
           .accessibilityLabel("Cancel selection")
       } else {
-        WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
-        Text("Work")
-          .font(.system(size: 22, weight: .heavy, design: .rounded))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .fixedSize()
-          .accessibilityAddTraits(.isHeader)
-        WorkHeaderSearchField(
-          searchText: $searchText,
-          filterOpen: $filterOpen,
-          activeFilterCount: activeFilterCount
-        )
-        Button(action: actions.onNewChat) {
-          Image(systemName: "square.and.pencil")
-            .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
-            .frame(width: 32, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isLive)
-        .accessibilityLabel("New chat")
-        .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
-        WorkHeaderOverflowMenu(
-          showsLinear: showsLinear,
-          showsCursorCloud: showsCursorCloud,
-          showsGitHubIssues: showsGitHubIssues,
-          actions: actions
-        )
+        // One row on every phone: project / back, title, search with the
+        // filter chip inside it, then new chat and the overflow menu.
+        titleCluster
+        searchField
+        trailingActions
       }
     }
     .padding(.horizontal, 16)
@@ -1836,7 +1922,7 @@ struct WorkRootHeader: View {
 /// Back-to-hub control: a small chevron and the project's icon, or the ADE mark
 /// when the project has none. Same action as `ADEHubBackButton`, without the
 /// capsule so it sits flat in the one-row header.
-private struct WorkHeaderProjectButton: View {
+struct WorkHeaderProjectButton: View {
   let iconDataUrl: String?
   let action: () -> Void
 
@@ -1868,7 +1954,7 @@ private struct WorkHeaderProjectButton: View {
 /// Search that takes the header's remaining width, with the filter control as a
 /// chip inside its trailing edge. The chip turns accent while the panel is open
 /// or a lane/status filter is applied, and shows how many are applied.
-private struct WorkHeaderSearchField: View {
+struct WorkHeaderSearchField: View {
   @Binding var searchText: String
   @Binding var filterOpen: Bool
   let activeFilterCount: Int
@@ -1945,17 +2031,86 @@ private struct WorkHeaderSearchField: View {
 /// `unreadCount` the bell used — so moving the bell in here loses no signal.
 ///
 /// The only observer in the header, and of `ActivityDrawerModel` alone.
-private struct WorkHeaderOverflowMenu: View {
+/// Activity as an edge-bar button, its unread count as the item's badge.
+struct WorkActivityRailButton: View {
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+  let action: () -> Void
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      action()
+    } label: {
+      Label("Activity", systemImage: drawer.unreadCount > 0 ? "bell.badge" : "bell")
+    }
+    .badge(drawer.unreadCount)
+  }
+}
+
+/// Whether this display has a vertical edge bar beside a camera/clock column
+/// (the Duo's closed outer display, held upright): a tall occlusion along the
+/// trailing edge. Every other iPhone has none, or a short one at the top.
+func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
+  guard proxy.size.height > proxy.size.width else { return false }
+  // Upright, only that display reserves a column on the trailing side.
+  if proxy.safeAreaInsets.trailing > 40 { return true }
+  #if compiler(>=6.4)
+  guard #available(iOS 27.1, *) else { return false }
+  return proxy.reservedRegions(kind: .occlusion, options: .includeInactive).contains { region in
+    let frame = region.frame
+    // A real column, not a sliver: an iPhone with Camera Control reports
+    // that button as a tall, thin occlusion on the same side.
+    return frame.width >= 30 && frame.height > frame.width * 2 && frame.minX > proxy.size.width / 2
+  }
+  #else
+  return false
+  #endif
+}
+
+/// The Duo's outer display in either orientation: upright its rail is
+/// `workDisplayHasEdgeRail`; held sideways the camera column reserves the
+/// trailing side only, while every other iPhone held sideways reserves both
+/// sides alike.
+func workDisplayHasSideRail(_ proxy: GeometryProxy) -> Bool {
+  if workDisplayHasEdgeRail(proxy) { return true }
+  guard proxy.size.width > proxy.size.height else { return false }
+  return proxy.safeAreaInsets.trailing - proxy.safeAreaInsets.leading > 30
+}
+
+struct WorkHeaderOverflowMenu: View {
   @EnvironmentObject private var drawer: ActivityDrawerModel
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
   let actions: WorkRootHeaderActions
+  /// In a system toolbar: a plain symbol label (with the unread count as the
+  /// item's badge), which the toolbar styles and lays out itself.
+  var toolbarLabel = false
+  /// The Duo's sessions column: List or Board, as the menu's first section.
+  var viewMode: Binding<DuoWorkViewMode>? = nil
 
   private var unread: Int { drawer.unreadCount }
 
   var body: some View {
+    if toolbarLabel {
+      menu
+    } else {
+      menu.buttonStyle(.plain)
+    }
+  }
+
+  private var menu: some View {
     Menu {
+      if let viewMode {
+        Section("View") {
+          Picker("View", selection: viewMode) {
+            ForEach(DuoWorkViewMode.allCases) { mode in
+              Label(mode.title, systemImage: mode.symbolName).tag(mode)
+            }
+          }
+          .pickerStyle(.inline)
+        }
+      }
       Button {
         ADEHaptics.light()
         actions.onOpenActivity()
@@ -1994,26 +2149,131 @@ private struct WorkHeaderOverflowMenu: View {
         Label("Settings", systemImage: "gearshape")
       }
     } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .frame(width: 32, height: 44)
-        .overlay(alignment: .topTrailing) {
-          if unread > 0 {
-            Circle()
-              .fill(ADEColor.warning)
-              .frame(width: 8, height: 8)
-              .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
-              .offset(x: -2, y: 10)
-              .transition(.scale.combined(with: .opacity))
-          }
-        }
-        .contentShape(Rectangle())
+      if toolbarLabel {
+        Label("More", systemImage: unread > 0 ? "ellipsis.circle.fill" : "ellipsis")
+      } else {
+        phoneLabel
+      }
     }
-    .buttonStyle(.plain)
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
     .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+  }
+
+  private var phoneLabel: some View {
+    Image(systemName: "ellipsis")
+      .font(.system(size: 18, weight: .semibold))
+      .foregroundStyle(ADEColor.textPrimary)
+      .frame(width: 32, height: 44)
+      .overlay(alignment: .topTrailing) {
+        if unread > 0 {
+          Circle()
+            .fill(ADEColor.warning)
+            .frame(width: 8, height: 8)
+            .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
+            .offset(x: -2, y: 10)
+            .transition(.scale.combined(with: .opacity))
+        }
+      }
+      .contentShape(Rectangle())
+  }
+}
+
+/// Desktop's filter panel (`WorkFilterPanel.tsx`) as one native menu, for the
+/// Duo's sessions toolbar: "View" groups and never hides a chat; "Show only"
+/// does. Same bindings as the phone's floating panel, so the two can never
+/// disagree about what is filtered.
+struct WorkFilterMenu: View {
+  @Binding var organization: WorkSessionOrganization
+  @Binding var foldBusyLanes: Bool
+  @Binding var selectedStatus: WorkSessionStatusFilter
+  @Binding var selectedLaneId: String
+  @Binding var machineFilter: String
+  let machineOptions: [WorkMachineFilterOption]
+  let lanes: [LaneSummary]
+  let activeFilterCount: Int
+  let onClear: () -> Void
+
+  private var selectedMachines: Set<String> { workParseMachineFilter(machineFilter) }
+
+  var body: some View {
+    Menu {
+      Section("Group by") {
+        Picker("Group by", selection: $organization.animation(.snappy(duration: 0.18))) {
+          ForEach(WorkSessionOrganization.allCases) { option in
+            Text(option.title).tag(option)
+          }
+        }
+        .pickerStyle(.inline)
+        if organization == .byLane {
+          Toggle("Fold busy lanes", isOn: $foldBusyLanes.animation(.snappy(duration: 0.18)))
+        }
+      }
+      Section("Show only") {
+        Picker(selection: $selectedStatus.animation(.snappy(duration: 0.18))) {
+          ForEach(WorkSessionStatusFilter.allCases) { status in
+            Text(status == .all ? "Any status" : status.title).tag(status)
+          }
+        } label: {
+          Label("Status", systemImage: "circle.dashed")
+        }
+        .pickerStyle(.menu)
+        if machineOptions.count > 1 || !selectedMachines.isEmpty {
+          Menu {
+            ForEach(machineOptions) { machine in
+              Toggle(
+                machine.isLive ? machine.name : "\(machine.name) (offline)",
+                isOn: Binding(
+                  get: { selectedMachines.contains(machine.id) },
+                  set: { on in
+                    var next = selectedMachines
+                    if on { next.insert(machine.id) } else { next.remove(machine.id) }
+                    withAnimation(.snappy(duration: 0.18)) { machineFilter = workSerializeMachineFilter(next) }
+                  }
+                )
+              )
+            }
+            if !selectedMachines.isEmpty {
+              Divider()
+              Button("Show all machines") {
+                withAnimation(.snappy(duration: 0.18)) { machineFilter = "" }
+              }
+            }
+          } label: {
+            Label("Machine", systemImage: "desktopcomputer")
+          }
+        }
+        Picker(selection: $selectedLaneId) {
+          Text("All lanes").tag("all")
+          ForEach(lanes) { lane in
+            Text(laneMenuTitle(lane)).tag(lane.id)
+          }
+        } label: {
+          Label("Lane", systemImage: "arrow.triangle.branch")
+        }
+        .pickerStyle(.menu)
+      }
+      if activeFilterCount > 0 {
+        Button("Clear filters", systemImage: "xmark.circle") {
+          withAnimation(.snappy(duration: 0.18)) { onClear() }
+        }
+      }
+    } label: {
+      Label(
+        activeFilterCount > 0 ? "Filters, \(activeFilterCount) on" : "Filters",
+        systemImage: activeFilterCount > 0
+          ? "line.3.horizontal.decrease.circle.fill"
+          : "line.3.horizontal.decrease"
+      )
+    }
+    .accessibilityIdentifier("Duo.Work.FilterMenu")
+  }
+
+  /// Two machines' lanes can share a name ("main"), so a lane from another
+  /// machine names it in the menu entry.
+  private func laneMenuTitle(_ lane: LaneSummary) -> String {
+    guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
+    return "\(lane.name) — \(machine)"
   }
 }
 

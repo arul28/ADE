@@ -56,6 +56,10 @@ private struct HubDestinationTopKey: PreferenceKey {
 let hubComposerSpring = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
 struct HubInlineComposer: View {
+  /// The space the composer leaves under its box, for a layout that lines
+  /// the box up with something else (`duoEdgeBarAlignedBottom`).
+  static let bottomPadding: CGFloat = 8
+
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
 
@@ -292,7 +296,7 @@ struct HubInlineComposer: View {
     }
     .padding(.horizontal, 16)
     .padding(.top, isExpanded ? 12 : 0)
-    .padding(.bottom, 8)
+    .padding(.bottom, Self.bottomPadding)
     .workChatAttachmentPicker(
       isPresented: $presentedPicker.isPresenting(.photos),
       attachments: $attachments,

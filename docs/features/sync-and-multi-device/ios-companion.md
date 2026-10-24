@@ -1152,8 +1152,40 @@ carries a digest stamped by the (off-main) snapshot fold, and the presentation
 signature hashes those digests plus each row's shape instead of re-hashing the
 visible transcript's full text several times a second.
 
-Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
-Phase 7).
+Deployment target: iOS 26+. iPhone, iPad and the iPhone Duo (iOS 27.1
+foldable) share one design; only folds and the Duo's edge bar are Duo-specific.
+
+### Large screens: iPhone Duo and iPad
+
+`Views/Duo/` holds the adaptive layer. `.duoLayoutRoot()` (in `ADEApp`)
+publishes `\.duoLayout`: `isWide` (regular width: the Duo's inner display or
+an iPad), `hasFold`, `fold` (`sideBySide` = flat or book, `stacked` = laptop or
+tent), `isLandscape`, and `hasEdgeBar`. The Duo's outer display and every other
+iPhone are `compact` and use the same views stacked, never an older design.
+
+- **Edge bar.** On the Duo's inner display held landscape, iOS draws the
+  trailing navigation stack's toolbar as a vertical rail on the curved edge.
+  `DuoAppTabsToolbar` puts the five app tabs at its bottom on every in-project
+  screen; a screen's own actions sit at its top. The bar does not restore an
+  item that was removed and declared again, so `DuoChatRail` declares every
+  slot in every state and changes only what a slot shows. Content never runs
+  under the rail (`duoInsetGroupedMargins()`, `duoLeadingColumnContent()`).
+- **Panes at the hinge.** Work's Chat Info, tools and PR pane, and CTO's
+  settings, open beside the chat with the hinge as the divider, flat or
+  book-folded (`DuoWorkSplit`, `DuoToolsPane`).
+- **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
+  column and detail side by side when wide, the list behind the detail
+  (with a Back chevron) on a phone.
+- **Folding.** Folding swaps the wide columns for the phone stack. The wide
+  Work columns stay for one moment, hidden and with no bar items
+  (`\.duoRailRetired`), so the edge bar's items leave with them; torn down with
+  items still bound, the outer display kept them as an empty glass capsule.
+  `DuoAdaptableTabShell` re-binds the tab bars after each fold or rotation.
+- **Crash context.** `CrashReporting.setDisplayLayout` tags later Sentry
+  events with the display family, edge bar and fold, and adds one breadcrumb
+  per change.
+- **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
+  simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
 
 ### Connection status UI
 

@@ -790,6 +790,9 @@ struct ADESettingsRow<Control: View>: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      // The text takes the row's room before the spacer does; otherwise a
+      // hint wrapped at half the row with empty space beside it.
+      .layoutPriority(1)
       Spacer(minLength: 8)
       control()
     }
@@ -833,9 +836,21 @@ struct ADESettingsLink<Destination: View>: View {
   var symbol: String?
   var value: String?
   @ViewBuilder var destination: () -> Destination
+  /// Set by the Duo's two-column Settings: the row whose page fills the right
+  /// column draws the selection, as Apple Settings' sidebar does.
+  @Environment(\.duoSettingsSelection) private var splitSelection
+  /// The two-column window's close: the page this row opens in the right
+  /// column carries it, so it stays on the edge bar.
+  @Environment(\.duoSettingsClose) private var splitClose
 
   var body: some View {
-    NavigationLink(destination: destination) {
+    NavigationLink {
+      if let splitClose {
+        destination().modifier(DuoSettingsCloseItem(onClose: splitClose))
+      } else {
+        destination()
+      }
+    } label: {
       ADESettingsRow(title: title, hint: hint, symbol: symbol) {
         HStack(spacing: 6) {
           if let value {
@@ -849,6 +864,14 @@ struct ADESettingsLink<Destination: View>: View {
       }
     }
     .buttonStyle(ADEKitRowButtonStyle())
+    .background {
+      if let splitSelection, splitSelection.wrappedValue == title {
+        ADEColor.accent.opacity(0.14)
+      }
+    }
+    .simultaneousGesture(TapGesture().onEnded {
+      splitSelection?.wrappedValue = title
+    })
   }
 }
 
@@ -931,6 +954,11 @@ extension View {
   /// An inset-grouped `List` that reads like `ADESettingsPage` + `ADESettingsRows`.
   func adeSettingsList() -> some View {
     listStyle(.insetGrouped)
+      // The same 16pt sides as `ADESettingsPage`: a regular-width window
+      // widened the system's inset, so List pages ended further in than the
+      // pages beside them. Plus the trailing safe area, so the rows still
+      // stop at the Duo's edge bar.
+      .duoInsetGroupedMargins(16)
       .scrollContentBackground(.hidden)
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .listSectionSpacing(22)

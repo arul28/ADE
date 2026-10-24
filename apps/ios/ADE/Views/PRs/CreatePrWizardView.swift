@@ -44,6 +44,11 @@ struct CreatePrWizardView: View {
   let onCreateIntegration: (CreateIntegrationRequest) async -> Bool
   let initialLaneId: String?
   let singleModeOnly: Bool
+  /// Shown in a pane beside a chat (the Duo, an iPad), where desktop opens
+  /// it: no navigation stack of its own (it would take over the chat's
+  /// toolbar); its title and Create go to the pane's header, and Close is the
+  /// pane's.
+  var embedded = false
 
   init(
     lanes: [LaneSummary],
@@ -306,7 +311,34 @@ struct CreatePrWizardView: View {
   }
 
   var body: some View {
-    NavigationStack {
+    if embedded {
+      formScroll
+        .duoPaneHeader(status: nil) {
+          DuoPaneRowOnly { submitButton }
+        }
+        .onAppear(perform: seedSelection)
+    } else {
+      NavigationStack {
+        formScroll
+          .navigationTitle("Open pull request")
+          .adeAnalyticsScreen(.pullRequestCreate)
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Cancel") { dismiss() }
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+              submitButton
+            }
+            .sharedBackgroundVisibility(.hidden)
+          }
+          .onAppear(perform: seedSelection)
+      }
+    }
+  }
+
+  private var formScroll: some View {
       ScrollView {
         VStack(spacing: 0) {
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
@@ -350,39 +382,6 @@ struct CreatePrWizardView: View {
       .scrollIndicators(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Open pull request")
-      .adeAnalyticsScreen(.pullRequestCreate)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          submitButton
-        }
-        .sharedBackgroundVisibility(.hidden)
-      }
-      .onAppear {
-        if singleModeOnly {
-          createMode = .single
-        }
-        refreshCachedLaneOptions()
-        if selectedLaneId.isEmpty {
-          if let initialLaneId,
-             fallbackCreateLanes.contains(where: { $0.id == initialLaneId }) {
-            selectedLaneId = initialLaneId
-          } else if let firstEligible = eligibleLaneOptions.first {
-            selectedLaneId = firstEligible.id
-          } else if let firstSource = fallbackCreateLanes.first {
-            selectedLaneId = firstSource.id
-          }
-        }
-        if baseBranch.isEmpty {
-          baseBranch = defaultTargetBranch
-        }
-        applyDefaultTitleIfUntouched()
-      }
       .onChange(of: selectedLaneId) { oldLaneId, newLaneId in
         // Reset base-branch default when lane changes so the target picker
         // tracks the new lane's recommended base instead of a stale one.
@@ -424,8 +423,28 @@ struct CreatePrWizardView: View {
       .sheet(isPresented: $editPresented) {
         editorSheet
       }
-    }
   }
+
+  private func seedSelection() {
+        if singleModeOnly {
+          createMode = .single
+        }
+        refreshCachedLaneOptions()
+        if selectedLaneId.isEmpty {
+          if let initialLaneId,
+             fallbackCreateLanes.contains(where: { $0.id == initialLaneId }) {
+            selectedLaneId = initialLaneId
+          } else if let firstEligible = eligibleLaneOptions.first {
+            selectedLaneId = firstEligible.id
+          } else if let firstSource = fallbackCreateLanes.first {
+            selectedLaneId = firstSource.id
+          }
+        }
+        if baseBranch.isEmpty {
+          baseBranch = defaultTargetBranch
+        }
+        applyDefaultTitleIfUntouched()
+      }
 
   // MARK: - Branches (source + target)
 

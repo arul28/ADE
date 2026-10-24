@@ -27,7 +27,13 @@
  * per lane is kept by reference so a new viewer sees a picture at once.
  */
 
-import type { AppControlEventPayload, AppControlScreencastFrame, AppControlSession } from "../../../../desktop/src/shared/types/appControl";
+import type {
+  AppControlEventPayload,
+  AppControlInspectPointArgs,
+  AppControlInspectResult,
+  AppControlScreencastFrame,
+  AppControlSession,
+} from "../../../../desktop/src/shared/types/appControl";
 import type {
   SyncAppControlSession,
   SyncAppControlStatus,
@@ -110,6 +116,12 @@ export type AppControlSyncSource = {
    * publishes a fresh capture as a `frame` event, which fans out as usual.
    */
   getLatestFrame?: (args: { laneId: string }) => Promise<AppControlScreencastFrame | null>;
+  /**
+   * Element under one point of the live frame, for a remote viewer's frozen
+   * inspect view. Read-only (no click, no screenshot unless asked); the caller
+   * sends viewport coordinates and gets the host's own hit-test back.
+   */
+  inspectPoint?: (args: AppControlInspectPointArgs) => Promise<AppControlInspectResult>;
   /**
    * Which lanes this module has viewers for. The service streams a lane's
    * screencast only while something wants its frames.
@@ -518,6 +530,28 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
           viewerCount: laneId ? laneViewerCount(laneId) : 0,
         },
       };
+    },
+
+    /**
+     * The element under one point of the lane's current frame, for a viewer
+     * that froze the picture and is inspecting it. The host does the hit-test:
+     * the phone has no DOM, and the frame it froze was captured at whatever
+     * size the screencast cap allowed.
+     *
+     * `includeScreenshot` is forced off — a remote inspect needs no second
+     * picture, and the viewer already holds the frame it tapped.
+     */
+    async inspectPoint(args: AppControlInspectPointArgs): Promise<AppControlInspectResult> {
+      const laneId = cleanId(args.laneId);
+      if (!laneId) throw new Error("appControl.inspectPoint requires laneId.");
+      if (!deps.source.inspectPoint) {
+        throw new Error("App Control inspect is not available in this runtime.");
+      }
+      return await deps.source.inspectPoint({
+        ...args,
+        laneId,
+        includeScreenshot: false,
+      });
     },
 
     /**

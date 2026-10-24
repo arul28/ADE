@@ -403,6 +403,9 @@ struct WorkComposerControlsRow: View {
   let modeLabel: String
   let isCollapsed: Bool
   let fastModeEnabled: Bool
+  /// False when the account forbids Fast. The bolt then draws muted with a
+  /// slash, instead of the amber "on" glyph; the picker hides the toggle.
+  var fastModeAllowed: Bool = true
   let onOpenModelPicker: (() -> Void)?
   let onSelectMode: ((String) -> Void)?
   /// False when the access mode is not known yet (a chat on another machine
@@ -595,6 +598,11 @@ struct WorkComposerControlsRow: View {
           Image(systemName: "bolt.fill")
             .font(.system(size: 10, weight: .bold))
             .foregroundStyle(ADEColor.warning)
+        } else if !fastModeAllowed {
+          // Locked for this account: a muted, slashed bolt. No text, no banner.
+          Image(systemName: "bolt.slash.fill")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.45))
         }
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
@@ -697,6 +705,7 @@ struct WorkComposerChipStrip: View {
             modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
             isCollapsed: isCollapsed,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
+            fastModeAllowed: chatSummary.fastModeAllowed,
             onOpenModelPicker: onOpenModelPicker,
             onSelectMode: onSelectRuntimeMode,
             showsAccessControl: chatSummary.accessModeKnown

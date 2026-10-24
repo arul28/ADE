@@ -322,6 +322,30 @@ struct MobileProjectForgetResultPayload: Codable, Equatable {
   var rootPath: String?
 }
 
+/// `project_set_icon_result`: the host stored the icon (or why not), and the
+/// thumbnail its next catalog carries.
+struct MobileProjectSetIconResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var projectId: String?
+  var rootPath: String?
+  var iconDataUrl: String?
+}
+
+/// The `project_set_icon_request` payload for a picked PNG.
+func mobileProjectSetIconPayload(projectId: String?, rootPath: String?, png: Data) -> [String: Any] {
+  var payload: [String: Any] = [
+    "fileName": "icon.png",
+    "mimeType": "image/png",
+    "dataBase64": png.base64EncodedString(),
+  ]
+  if let projectId, !projectId.isEmpty { payload["projectId"] = projectId }
+  if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+    payload["rootPath"] = rootPath
+  }
+  return payload
+}
+
 struct MobileProjectBrowseEntry: Codable, Equatable, Identifiable {
   var id: String { fullPath }
   var name: String
@@ -1166,7 +1190,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -2117,7 +2145,11 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var reasoningEffort: String?
   var codexFastMode: Bool?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
+  /// Fail-open for an older host that cannot enforce the permission.
+  var effectiveFastModeAllowed: Bool { fastModeAllowed ?? true }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -2166,6 +2198,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case reasoningEffort
     case codexFastMode
     case fastMode
+    case fastModeAllowed
     case executionMode
     case permissionMode
     case interactionMode
@@ -2215,6 +2248,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
     codexFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
     fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
+    fastModeAllowed = try container.decodeIfPresent(Bool.self, forKey: .fastModeAllowed)
     executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
     permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
     interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
@@ -4863,6 +4897,8 @@ struct AgentChatLaunchDefaults: Codable, Equatable {
   var modelId: String
   var reasoningEffort: String?
   var fastMode: Bool?
+  /// Whether this ADE account allows Fast at all. Older hosts omit it.
+  var fastModeAllowed: Bool? = nil
   var interactionMode: String?
   var permissionMode: String?
   var claudePermissionMode: String?
@@ -8320,6 +8356,12 @@ struct AppControlStreamFrameEnvelope: Equatable {
   var width: Int
   var height: Int
   var capturedAt: String?
+  /// The frame's own scale and viewport, when the host sends them. A tap on a
+  /// frozen frame becomes a CSS viewport point with these; older hosts omit
+  /// them and Inspect falls back to the App Control status geometry.
+  var scaleX: Double?
+  var viewportWidth: Double?
+  var viewportHeight: Double?
   var base64Data: String
 
   init?(_ payload: [String: Any]) {
@@ -8336,6 +8378,9 @@ struct AppControlStreamFrameEnvelope: Equatable {
     self.width = (payload["width"] as? NSNumber)?.intValue ?? 0
     self.height = (payload["height"] as? NSNumber)?.intValue ?? 0
     self.capturedAt = payload["capturedAt"] as? String
+    self.scaleX = (payload["scaleX"] as? NSNumber)?.doubleValue
+    self.viewportWidth = (payload["viewportWidth"] as? NSNumber)?.doubleValue
+    self.viewportHeight = (payload["viewportHeight"] as? NSNumber)?.doubleValue
     self.base64Data = encoded
   }
 }

@@ -30,6 +30,11 @@ struct HubFleetMerge: Equatable {
   var laneOwners: [String: HubRemoteOwner] = [:]
   /// Extra project card id -> the machine that opens it.
   var projectOwners: [String: HubRemoteOwner] = [:]
+  /// Card id (a focused-machine project's id, or an extra card's id) -> every
+  /// other machine that has this project, with its own id and root there. The
+  /// card's machine chip counts them, and a change to the project (its icon)
+  /// is sent to each.
+  var projectLocations: [String: [HubRemoteOwner]] = [:]
 
   static func == (lhs: HubFleetMerge, rhs: HubFleetMerge) -> Bool {
     lhs.mergedRosters == rhs.mergedRosters
@@ -38,6 +43,7 @@ struct HubFleetMerge: Equatable {
       && lhs.chatOwners == rhs.chatOwners
       && lhs.laneOwners == rhs.laneOwners
       && lhs.projectOwners == rhs.projectOwners
+      && lhs.projectLocations == rhs.projectLocations
   }
 }
 
@@ -112,7 +118,9 @@ func hubMergeFleetRosters(
             otherFolder: folder
           ) ? focusedId : nil
         }
+      let location = HubRemoteOwner(machineKey: machine.machineKey, project: ownerProject, lane: nil)
       if let focusedId = matchedFocusedId {
+        merge.projectLocations[focusedId, default: []].append(location)
         var target = merge.mergedRosters[focusedId]
           ?? focusedRosterById[focusedId].flatMap { $0 }
           ?? RemoteRosterProject(
@@ -137,6 +145,7 @@ func hubMergeFleetRosters(
         ?? folder.map { "folder:\($0)" }
         ?? hubRemoteProjectCardId(machineKey: machine.machineKey, projectId: remote.projectId)
       if let index = extraIndexByKey[key] {
+        merge.projectLocations[merge.extraProjects[index].summary.id, default: []].append(location)
         var roster = merge.extraProjects[index].roster
         roster.lanes.append(contentsOf: lanes)
         roster.chats.append(contentsOf: chats)
@@ -152,7 +161,8 @@ func hubMergeFleetRosters(
       roster.chats = chats
       extraIndexByKey[key] = merge.extraProjects.count
       merge.extraProjects.append((summary: summary, roster: hubRecountedRoster(roster)))
-      merge.projectOwners[cardId] = HubRemoteOwner(machineKey: machine.machineKey, project: ownerProject, lane: nil)
+      merge.projectOwners[cardId] = location
+      merge.projectLocations[cardId, default: []].append(location)
     }
   }
   return merge
