@@ -324,7 +324,9 @@ node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
   npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
 ```
 
-The UI scripts talk to the renderer over CDP port 9222 and pick the first
+The UI scripts talk to the renderer over CDP port 9222 (`CDP_PORT=<port>` for
+a dev app launched with another `ADE_APP_CONTROL_CDP_PORT`, e.g. when another
+lane's dev app already holds 9222) and pick the first
 `//localhost:` page, or the packaged app's `index.html` page when no dev page
 is open. Set `CDP_TARGET_URL=localhost:<port>` to the port on the log's
 `dev launcher using` line when more than one window is open.
@@ -1212,3 +1214,26 @@ A server switched off for the folder stayed off. A Codex chat called
 Playwright's `browser_navigate` through the direct launch and read the page
 title back. Wall time of the side job was within noise (3.0–3.9 s against
 3.3–4.3 s, one 47.8 s outlier on the old path).
+
+## Mac Studio (M4 Max): subagents in the chat actions pane (2026-10-24)
+
+Same machine as the ADE-175 pass. Before is main at `bb5087d1e` from a
+temporary worktree; after is the `ade/mobile-settled-collapse-and-subagents`
+branch. Each was a freshly launched dev app (own socket, sync off, CDP 9233)
+driven through the same steps: the ADE repository, the Settled shelf open
+(7 settled parents with 2 to 20 same-lane subagents), one parent chat open
+with its actions pane showing. Two `route-sweep.mjs` runs and one
+`render-count.mjs` window each. Other agents were running on the machine.
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Work: page elements | `route-sweep.mjs none /work 12` | 2,487 | 1,878-1,894 | 3k (Other tabs row) |
+| Work: idle main-thread work | same | 0.6-5.0 ms/s | 0.9-5.1 ms/s | 30 ms/s |
+| Work: renderer JS heap | same | 130-131 MB | 125-131 MB | 220 MB |
+| Work: React commits while idle | `render-count.mjs 12` | 0.7-1.0/s | 0.8-1.0/s | no list or pane re-renders |
+| Machine roster, warm (42 projects, 318 chats) | `roster.bench.mts`, two runs each | 15-47 ms | 10-15 ms | not set yet; needs approval |
+| Machine roster, cold (same) | same | 184-204 ms | 129-133 ms | not set yet; needs approval |
+
+The roster now also reads each chat's spawn kind and parent (from the sidecar
+it already opened, or a tracked CLI row's `resume_metadata_json`); the
+before/after gap is run-order noise, not a speedup.

@@ -20,6 +20,8 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type { AgentChatSpawnKind } from "../../../../desktop/src/shared/types/chat";
+import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
   hasTable,
@@ -83,6 +85,9 @@ export type RosterLiveSession = {
    * defensive signal for older or alternate roster producers.
    */
   identityKey?: string | null;
+  /** Spawn lineage, so a client can file a child chat under its parent. */
+  spawnKind?: AgentChatSpawnKind | null;
+  orchestrationParentSessionId?: string | null;
 };
 
 /** A roster chat with the optional identity marker retained for compatibility. */
@@ -159,6 +164,8 @@ type TerminalSessionRow = {
   last_turn_failed_at: string | null;
   snoozed_until: string | null;
   snoozed_at: string | null;
+  /** Tracked CLI rows keep their spawn lineage here; chats keep it in their sidecar. */
+  resume_metadata_json: string | null;
 };
 
 type PullRequestRow = {
@@ -393,6 +400,9 @@ function readProjectFromDiskUncached(
           const snoozedAtColumn = sessionColumns.has("snoozed_at")
             ? "snoozed_at"
             : "null as snoozed_at";
+          const resumeMetadataColumn = sessionColumns.has("resume_metadata_json")
+            ? "resume_metadata_json"
+            : "null as resume_metadata_json";
           return activeDb
             .prepare(
               `
@@ -400,7 +410,7 @@ function readProjectFromDiskUncached(
                        last_output_at, pinned, exit_code, started_at,
                        ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
                        ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
-                       ${snoozedUntilColumn}, ${snoozedAtColumn}
+                       ${snoozedUntilColumn}, ${snoozedAtColumn}, ${resumeMetadataColumn}
                 from terminal_sessions
                 where archived_at is null
               `,
@@ -461,7 +471,56 @@ type Sidecar = {
   /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
   eventSequence?: number | null;
   historyGeneration?: number | null;
+  spawnKind?: AgentChatSpawnKind | null;
+  orchestrationParentSessionId?: string | null;
 };
+
+function rosterSpawnKind(value: unknown): AgentChatSpawnKind | null {
+  return value === "subagent" || value === "peer" ? value : null;
+}
+
+function rosterParentId(value: unknown): string | null {
+  return typeof value === "string" ? value.trim() || null : null;
+}
+
+/**
+ * Spawn lineage of a tracked CLI row (`ade new chat --mode cli --type
+ * subagent`), which keeps it in `resume_metadata_json` the way
+ * `sessionService` reads it. Never throws.
+ */
+/** Rows already reported unreadable; the roster is rebuilt often. */
+const unreadableResumeMetadataWarned = new Set<string>();
+
+function resumeMetadataLineage(
+  raw: string | null,
+  sessionId: string,
+  logger?: Pick<Logger, "warn"> | null,
+): {
+  spawnKind: AgentChatSpawnKind | null;
+  orchestrationParentSessionId: string | null;
+} {
+  const none = { spawnKind: null, orchestrationParentSessionId: null };
+  if (!raw) return none;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (!unreadableResumeMetadataWarned.has(sessionId)) {
+      unreadableResumeMetadataWarned.add(sessionId);
+      logger?.warn?.("sync_host.roster_resume_metadata_unreadable", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return none;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return none;
+  const record = parsed as Record<string, unknown>;
+  return {
+    spawnKind: rosterSpawnKind(record.spawnKind),
+    orchestrationParentSessionId: rosterParentId(record.orchestrationParentSessionId),
+  };
+}
 
 const positiveInteger = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
@@ -479,6 +538,8 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
       eventSequence: positiveInteger(parsed.eventSequence),
       historyGeneration: positiveInteger(parsed.historyGeneration),
+      spawnKind: rosterSpawnKind(parsed.spawnKind),
+      orchestrationParentSessionId: rosterParentId(parsed.orchestrationParentSessionId),
     };
   } catch {
     return null;
@@ -735,10 +796,29 @@ async function buildRosterProject(
         historyGeneration: sidecar.historyGeneration ?? 1,
       };
     }
+    // Spawn lineage: the live summary first (a demote or promote updates it
+    // before the sidecar is rewritten), then the chat's sidecar, then a tracked
+    // CLI row's resume metadata. Sent only when known, so peers and plain chats
+    // add nothing to the wire.
+    // Like `sessionService`, only a tracked agent CLI row reads lineage from its
+    // resume metadata.
+    const cliLineage = isTrackedAgentCliToolType(row.tool_type as TerminalToolType | null)
+      ? resumeMetadataLineage(row.resume_metadata_json, row.id, logger)
+      : null;
+    const spawnKind = rosterSpawnKind(live?.spawnKind)
+      ?? sidecar?.spawnKind
+      ?? cliLineage?.spawnKind
+      ?? null;
+    const orchestrationParentSessionId = rosterParentId(live?.orchestrationParentSessionId)
+      ?? sidecar?.orchestrationParentSessionId
+      ?? cliLineage?.orchestrationParentSessionId
+      ?? null;
     chats.push({
       id: row.id,
       laneId: row.lane_id,
       chatSessionId: row.chat_session_id,
+      ...(spawnKind ? { spawnKind } : {}),
+      ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
       title: row.title,
       provider: live?.provider ?? sidecar?.provider ?? null,
       model: live?.model ?? sidecar?.model ?? null,

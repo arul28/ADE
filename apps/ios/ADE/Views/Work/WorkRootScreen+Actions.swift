@@ -895,8 +895,25 @@ extension WorkRootListScreen {
     guard !Task.isCancelled else { return }
     guard syncService.requestedWorkLaneNavigation?.id == request.id else { return }
 
+    // Every row of the lane may sit on the Snoozed or Settled shelf, which
+    // leaves no `lane:` section to scroll to. Open the shelves and land on the
+    // first one holding the lane's rows instead.
+    var scrollTarget = sectionId
+    if !sessionPresentation.sessionGroups.contains(where: { $0.id == sectionId }),
+       let shelf = workQuietShelfHoldingLane(sessionPresentation.sessionGroups, laneId: request.laneId)
+    {
+      collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(
+        workCollapsedSectionIdsOpeningQuietShelves(collapsedSectionIds)
+      )
+      scrollTarget = shelf.id
+      // A short wait for the opened shelves' rows to lay out before the scroll.
+      try? await Task.sleep(for: .milliseconds(100))
+      guard !Task.isCancelled else { return }
+      guard syncService.requestedWorkLaneNavigation?.id == request.id else { return }
+    }
+
     withAnimation(.snappy) {
-      proxy.scrollTo(sectionId, anchor: .top)
+      proxy.scrollTo(scrollTarget, anchor: .top)
     }
     syncService.requestedWorkLaneNavigation = nil
   }

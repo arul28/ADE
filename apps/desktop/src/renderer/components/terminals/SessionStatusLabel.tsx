@@ -19,7 +19,6 @@ import {
   SESSION_TONE_TEXT_CLASS,
   formatFutureDuration,
   formatWorkingDuration,
-  sessionStatusShoutsLabel,
   type SessionStatusGlyph,
   type SessionStatusPresentation,
 } from "../../../shared/sessionStatusPresentation";
@@ -111,11 +110,6 @@ export type SessionStatusLabelProps = {
   timestampLabel: string;
   compact: boolean;
   steeringInput?: boolean;
-  /**
-   * Nested compact rows keep the glyph and elapsed, and only spell the word
-   * for Needs you / Failed. The drawer header carries the same shout.
-   */
-  hideLabelUnlessShout?: boolean;
 };
 
 /**
@@ -129,7 +123,6 @@ export function SessionStatusLabel({
   timestampLabel,
   compact,
   steeringInput = false,
-  hideLabelUnlessShout = false,
 }: SessionStatusLabelProps) {
   const waiting = presentation?.glyph === "waiting";
   const elapsed = useElapsedLabel(elapsedSince, Boolean(presentation?.showsElapsed));
@@ -159,8 +152,6 @@ export function SessionStatusLabel({
     );
   }
 
-  const showLabel = !hideLabelUnlessShout || sessionStatusShoutsLabel(presentation);
-
   return (
     <span
       data-session-status={presentation.label}
@@ -179,14 +170,8 @@ export function SessionStatusLabel({
     >
       <StatusGlyph glyph={presentation.glyph} />
       {/* Keep the ticker outside role=status so screen readers do not announce
-          the row again every second. Compact nested rows hide the word
-          visually except Needs you / Failed, but the status name stays in
-          the accessibility tree. */}
-      <span
-        role="status"
-        aria-label={exactWakeTitle}
-        className={showLabel ? undefined : "sr-only"}
-      >
+          the row again every second. */}
+      <span role="status" aria-label={exactWakeTitle}>
         {presentation.label}
       </span>
       {steeringInput && presentation.glyph === "working" ? (

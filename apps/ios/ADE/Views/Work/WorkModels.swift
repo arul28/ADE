@@ -1711,6 +1711,10 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   var resultLanded: Bool = false
   /// Last progress/activity text observed before the terminal result.
   var lastActivity: String? = nil
+  /// A child chat (`chat:<id>`) that is waiting on the user right now. Read
+  /// from the child's own Work row, not the parent's transcript, so the row
+  /// says "Needs you" even after the spawn result landed.
+  var needsInput: Bool = false
 
   var id: String { taskId }
 }

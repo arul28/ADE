@@ -60,6 +60,8 @@ import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatChildRoster } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
@@ -830,6 +832,7 @@ function SubagentRow({
   collapsedDescendantCount = 0,
   onToggleCollapsedSubtree,
   spawnedChatTitle = null,
+  needsYou = false,
   sessionModelLabel = null,
   onStop,
 }: {
@@ -851,6 +854,8 @@ function SubagentRow({
   /** Live title of the spawned child chat this row navigates to, when resolved.
    * Non-null marks this as a spawned-chat row (navigates on click). */
   spawnedChatTitle?: string | null;
+  /** The spawned chat behind this row is waiting on the user. */
+  needsYou?: boolean;
   /** Parent session model label used only when the envelope has no model. */
   sessionModelLabel?: string | null;
   onClick: () => void;
@@ -884,7 +889,7 @@ function SubagentRow({
     return () => window.clearInterval(intervalId);
   }, [isRunning]);
   const time = elapsedText(snapshot, nowMs);
-  const statusLabel = STATUS_LABEL[snapshot.status];
+  const statusLabel = needsYou ? "needs you" : STATUS_LABEL[snapshot.status];
   const runningLabelTint = category === "background"
     ? "text-cyan-100/90"
     : "text-[color:var(--color-accent-bright,#C4B5FD)]";
@@ -999,10 +1004,14 @@ function SubagentRow({
           <span
             className={cn(
               "tracking-[0.01em]",
-              isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
-              isFailed && "text-rose-300/70",
-              isStopped && "text-amber-300/55",
-              isCompleted && "text-fg/35",
+              needsYou
+                ? "text-amber-300/85"
+                : [
+                    isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
+                    isFailed && "text-rose-300/70",
+                    isStopped && "text-amber-300/55",
+                    isCompleted && "text-fg/35",
+                  ],
             )}
           >
             {statusLabel}
@@ -1217,7 +1226,12 @@ export function ChatSubagentsPanel({
    * the pane reads "running" for as long as the chat is kept.
    */
   runtimeAlive?: boolean;
-  /** Session status by spawned-chat session id, for rows that are ADE chats. */
+  /**
+   * Chat-runtime status by spawned-chat session id, for rows that are ADE
+   * chats: what self-heal reads to settle a row whose chat stopped. A child
+   * this runtime has not loaded takes its state from the machine's sessions
+   * (`useChatChildRoster`), which also give filing and "needs you".
+   */
   childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
   /**
    * Each dynamic workflow's declared script plan, keyed by workflow task id —
@@ -1324,11 +1338,19 @@ export function ChatSubagentsPanel({
   );
   const taskList = taskListProp === undefined ? derivedTaskList : taskListProp;
 
+  // The chat's filed subagents (the Work list leaves them out) and the child
+  // chats its rows name, from the sessions of the machine it runs on.
+  const scope = useChatRuntimeScope();
+  const { snapshots: snapshotsWithRoster, childById, childStatuses } = useChatChildRoster(
+    sessionId,
+    snapshots,
+    childChatStatuses,
+  );
   // Self-heal first, so every count, cap, grouping and label below reads the
   // truthful status rather than a "running" the event stream never closed.
   const healedSnapshots = useMemo(
-    () => selfHealSubagentSnapshots(snapshots, { runtimeAlive, childChatStatuses }),
-    [snapshots, runtimeAlive, childChatStatuses],
+    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses: childStatuses }),
+    [snapshotsWithRoster, runtimeAlive, childStatuses],
   );
   // The workflow card owns these rows, so it reads the same healed status:
   // a run whose runtime died must not stay "Active" with a live Stop.
@@ -1527,7 +1549,13 @@ export function ChatSubagentsPanel({
     // Spawned ADE chats navigate directly; runtime-native subagents keep the
     // transcript takeover/details behavior below.
     if (snap.childSessionId != null) {
-      navigateToSpawnedChat(snap.childSessionId, null);
+      // A spawned chat runs on its parent's machine, so the jump keeps this
+      // chat's pin (null = the tab's own machine).
+      navigateToSpawnedChat(
+        snap.childSessionId,
+        childById.get(snap.childSessionId)?.session.laneId ?? null,
+        scope.pin,
+      );
       return;
     }
     // Clicking the row whose drawer is open closes it.
@@ -1631,6 +1659,7 @@ export function ChatSubagentsPanel({
           ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
           : null
       }
+      needsYou={snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you"}
       sessionModelLabel={sessionModelLabel}
       onStop={onStopSubagent}
       onClick={() => handleRowClick(snap)}

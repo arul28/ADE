@@ -1540,7 +1540,9 @@ func workChatInfoBackgroundItems(
 }
 
 func workSubagentIsEarlier(_ snapshot: WorkSubagentSnapshot) -> Bool {
-  snapshot.status == .succeeded || snapshot.status == .stopped
+  // A child chat waiting on the user is live work, whatever its spawn result.
+  guard !snapshot.needsInput else { return false }
+  return snapshot.status == .succeeded || snapshot.status == .stopped
 }
 
 func workBackgroundItemIsEarlier(_ snapshot: WorkScheduledWorkSnapshot) -> Bool {

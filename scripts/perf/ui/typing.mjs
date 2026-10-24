@@ -1,7 +1,6 @@
 // node scripts/perf/ui/typing.mjs <n chars> — types into the focused chat composer via CDP key events; reports Event Timing durations
-import { findPage } from "./target.mjs";
-const port = 9222;
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+import { cdpUrl, findPage } from "./target.mjs";
+const list = await (await fetch(cdpUrl("/json/list"))).json();
 const t = findPage(list);
 const ws = new WebSocket(t.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));

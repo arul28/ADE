@@ -53,10 +53,11 @@ import type { TuiChatSessionSummary } from "./adeApi";
 import type { AdeCodeProvider } from "./types";
 import { getPreviewLine, toWorkSessionSummary, type SessionPreviewLine } from "./workRow";
 import {
+  emptySpawnNestingIndex,
   indexNestedSubagents,
-  nestedDrawerStatus,
+  nestedSubagentMark,
   parentsWithBusySubagents,
-  type NestedDrawerStatus,
+  type NestedSubagentMark,
 } from "../../../desktop/src/shared/sessionSpawnNesting";
 
 export type WorkListShelfKind = "snoozed" | "settled";
@@ -112,10 +113,11 @@ export type WorkListSessionRow = {
   laneColor: string | null;
   laneIcon: string | null;
   /**
-   * Same-lane subagent nested under its parent. Compact one-line card; the
-   * parent already names the lane.
+   * This chat's filed same-lane subagents. They are not rows of the list; the
+   * row carries one mark for them (count + worst state) and the chat's details
+   * pane lists them. Null when it has none.
    */
-  nested: boolean;
+  subagents: NestedSubagentMark | null;
   /** Codex (and peers) have a queued steer. Painted as a `?` pip, never baked into `status.label`. */
   steeringInput: boolean;
   /** Present on foreign rows so a hop can open the same project on that machine. */
@@ -152,26 +154,11 @@ export type WorkListShelfRow = {
   expanded: boolean;
 };
 
-/**
- * A chat's subagents, folded into one line under it. Collapsed by default, like
- * the desktop drawer: the line says how many there are and the one state worth
- * seeing (`nestedDrawerStatus`); Enter opens it and lists them below.
- */
-export type WorkListDrawerRow = {
-  kind: "drawer";
-  key: string;
-  parentId: string;
-  count: number;
-  status: NestedDrawerStatus;
-  expanded: boolean;
-};
-
 export type WorkListRow =
   | WorkListLaneHeaderRow
   | WorkListSessionRow
   | WorkListNewChatRow
-  | WorkListShelfRow
-  | WorkListDrawerRow;
+  | WorkListShelfRow;
 
 export type WorkListGroup = {
   header: WorkListLaneHeaderRow;
@@ -182,8 +169,6 @@ export type WorkListGroup = {
 export type WorkListModel = {
   /** Flat, ordered, exactly what is on screen — arrow keys walk this. */
   rows: WorkListRow[];
-  /** Nested subagent id → the parent whose drawer holds it. */
-  drawerParentBySessionId: ReadonlyMap<string, string>;
   groups: WorkListGroup[];
   snoozed: WorkListSessionRow[];
   settled: WorkListSessionRow[];
@@ -202,13 +187,16 @@ export type WorkListInput = {
   /** Sessions holding an unsent composer draft, for the pencil indicator. */
   draftSessionIds?: ReadonlySet<string>;
   expandedShelves?: ReadonlySet<WorkListShelfKind>;
-  /** Parent session ids whose subagent drawer is open. Absent = collapsed. */
-  expandedDrawers?: ReadonlySet<string>;
   unavailableLaneIds?: ReadonlySet<string>;
   laneSortMode?: WorkLaneSortMode;
   laneManualOrder?: readonly string[];
   /** Suppress the per-lane "+ new chat" affordance (add-to-grid picker mode). */
   hideNewChat?: boolean;
+  /**
+   * File subagents under their parent chat (default). Add-to-grid passes false:
+   * the picker chooses any chat to tile, and a filed subagent is one too.
+   */
+  nestSubagents?: boolean;
   nowMs?: number;
 };
 
@@ -373,7 +361,7 @@ function buildSessionRow(args: {
     showLaneIdentity: false,
     laneColor: null,
     laneIcon: null,
-    nested: false,
+    subagents: null,
     steeringInput,
   };
 }
@@ -407,7 +395,7 @@ function buildForeignRow(foreign: WorkListForeignSession): WorkListSessionRow {
     showLaneIdentity: false,
     laneColor: null,
     laneIcon: null,
-    nested: false,
+    subagents: null,
     steeringInput: false,
     projectCanonicalId: foreign.projectCanonicalId ?? null,
     projectRootPath: foreign.projectRootPath ?? null,
@@ -521,7 +509,6 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
   const nowMs = input.nowMs ?? Date.now();
   const draftSessionIds = input.draftSessionIds ?? new Set<string>();
   const expandedShelves = input.expandedShelves ?? new Set<WorkListShelfKind>();
-  const expandedDrawers = input.expandedDrawers ?? new Set<string>();
   const unavailableLaneIds = input.unavailableLaneIds ?? new Set<string>();
   const laneById = new Map(input.lanes.map((lane) => [lane.id, lane] as const));
 
@@ -542,54 +529,26 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     nowMs,
   }));
 
-  const nestIndex = indexNestedSubagents(sessionSummaries, { nowMs });
-  const nestedById = new Map<string, WorkListSessionRow>();
+  const nestIndex = input.nestSubagents === false
+    ? emptySpawnNestingIndex<(typeof sessionSummaries)[number]>()
+    : indexNestedSubagents(sessionSummaries, { nowMs });
 
   // Quiet partition uses the shared filing rule, so a row's shelf and its status
-  // word can never disagree. Nested subagents stay off the top-level shelves
-  // and reappear under their parent.
+  // word can never disagree. Filed subagents are not rows at all: their parent
+  // carries one mark for them, and its details pane lists them.
   const active: WorkListSessionRow[] = [];
   const snoozed: WorkListSessionRow[] = [];
   const settled: WorkListSessionRow[] = [];
-  for (const row of rowsBySession) {
-    if (nestIndex.nestedChildIds.has(row.sessionId)) {
-      nestedById.set(row.sessionId, row);
-      continue;
-    }
+  for (const sessionRow of rowsBySession) {
+    if (nestIndex.nestedChildIds.has(sessionRow.sessionId)) continue;
+    const children = nestIndex.childrenByRootParentId.get(sessionRow.sessionId) ?? [];
+    const row = children.length > 0
+      ? { ...sessionRow, subagents: nestedSubagentMark(children, nowMs) }
+      : sessionRow;
     if (row.filing === "snoozed") snoozed.push(row);
     else if (row.filing === "settled") settled.push(row);
     else active.push(row);
   }
-
-  const expandNested = (list: readonly WorkListSessionRow[]): Array<WorkListSessionRow | WorkListDrawerRow> => {
-    const out: Array<WorkListSessionRow | WorkListDrawerRow> = [];
-    for (const row of list) {
-      out.push(row);
-      const children = nestIndex.childrenByRootParentId.get(row.sessionId) ?? [];
-      if (children.length === 0) continue;
-      const expanded = expandedDrawers.has(row.sessionId);
-      out.push({
-        kind: "drawer",
-        key: `drawer:${row.sessionId}`,
-        parentId: row.sessionId,
-        count: children.length,
-        status: nestedDrawerStatus(children, nowMs),
-        expanded,
-      });
-      if (!expanded) continue;
-      for (const child of children) {
-        const childRow = nestedById.get(child.id);
-        if (!childRow) continue;
-        out.push({
-          ...childRow,
-          nested: true,
-          showLaneIdentity: false,
-          preview: null,
-        });
-      }
-    }
-    return out;
-  };
 
   const foreignRows = (input.foreign ?? []).map(buildForeignRow);
   const laneNameIndex = new Map<string, LaneSummary>();
@@ -679,13 +638,12 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     const headerless = laneRows.length === 1
       && (input.laneSortMode ?? "activity") !== "manual"
       && worktreeAvailable;
-    const laneEntries = expandNested(laneRows.map((row) => ({
+    const sessions = laneRows.map((row) => ({
       ...row,
       showLaneIdentity: headerless,
       laneColor: lane.color ?? null,
       laneIcon: lane.emoji ?? lane.icon ?? null,
-    })));
-    const sessions = laneEntries.filter((row): row is WorkListSessionRow => row.kind === "session");
+    }));
     groups.push({ header, sessions, newChat: null });
     // Fully-quiet lanes have no live rows. Desktop files them under
     // snoozed/settled; emitting an empty header here duplicated the lane name
@@ -696,7 +654,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       continue;
     }
     if (!headerless) rows.push(header);
-    rows.push(...laneEntries);
+    rows.push(...sessions);
   }
 
   // Machines whose lanes have no local twin get their own dim group, so a
@@ -742,14 +700,6 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       laneById,
       input.laneSortMode ?? "activity",
     );
-    const expandedContents: WorkListRow[] = [];
-    for (const row of decorated) {
-      if (row.kind !== "session") {
-        expandedContents.push(row);
-        continue;
-      }
-      expandedContents.push(...expandNested([row]));
-    }
     rows.push({
       kind: "shelf",
       key: `shelf:${shelf}`,
@@ -757,10 +707,10 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
       count: shelfRows.length,
       expanded,
     });
-    if (expanded) rows.push(...expandedContents);
+    if (expanded) rows.push(...decorated);
   }
 
-  return { rows, groups, snoozed, settled, drawerParentBySessionId: nestIndex.nestedChildToRootParentId };
+  return { rows, groups, snoozed, settled };
 }
 
 /** Index of a row by key, or -1. */

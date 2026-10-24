@@ -8,14 +8,17 @@ import {
   type WorkListLayout,
 } from "../workListLayout";
 import type {
-  WorkListDrawerRow,
   WorkListModel,
   WorkListLaneHeaderRow,
   WorkListSessionRow,
   WorkListShelfRow,
 } from "../workListModel";
-import { sessionStatusShoutsLabel } from "../../../../desktop/src/shared/sessionStatusPresentation";
-import { NESTED_DRAWER_STATUS_PRESENTATION } from "../../../../desktop/src/shared/sessionSpawnNesting";
+import type { SessionStatusGlyph } from "../../../../desktop/src/shared/sessionStatusPresentation";
+import {
+  NESTED_SUBAGENT_STATUS_PRESENTATION,
+  type NestedSubagentStatus,
+  type NestedSubagentMark,
+} from "../../../../desktop/src/shared/sessionSpawnNesting";
 
 /**
  * ADE Code's left pane: the desktop Work list, one session per card.
@@ -147,17 +150,6 @@ export function WorkSessionsPaneComponent({
               );
             case "new-chat":
               return null;
-            case "drawer":
-              return (
-                <DrawerRow
-                  key={row.key}
-                  row={row}
-                  width={inner}
-                  selected={selected}
-                  hovered={hovered}
-                  marginTop={marginTop}
-                />
-              );
             case "shelf":
               return (
                 <ShelfRow
@@ -266,13 +258,11 @@ function LaneHeader({
 
 function sessionStatusCluster(row: WorkListSessionRow): string {
   const glyphMark = row.glyph ? theme.sessionGlyphMark(row.glyph) : "";
-  const shout = Boolean(row.status && sessionStatusShoutsLabel(row.status));
   let label = "";
   let steeringPip = "";
   if (row.status) {
-    // Desktop/iOS keep the Codex `?` pip as a sibling of the status word, so
-    // a nested row that hides "Working" still shows it has a question.
-    if (!row.nested || shout) label = row.status.label;
+    // Desktop/iOS keep the Codex `?` pip as a sibling of the status word.
+    label = row.status.label;
     if (row.steeringInput && row.status.glyph === "working") steeringPip = "?";
   } else {
     label = row.timestampLabel ?? "";
@@ -309,8 +299,7 @@ function SessionCard({
   const railColor = highlighted ? theme.color.violet : theme.color.borderSoft;
   const innerWidth = Math.max(4, width - GUTTER_CELLS);
   let whereLeft = row.ageLabel;
-  if (row.nested) whereLeft = `  ${row.title}`;
-  else if (row.showLaneIdentity) whereLeft = row.laneName ?? "lane";
+  if (row.showLaneIdentity) whereLeft = row.laneName ?? "lane";
   const whereColor = row.showLaneIdentity
     ? (row.laneColor ?? theme.color.t2)
     : theme.color.t5;
@@ -361,12 +350,33 @@ function SessionCard({
   );
 }
 
+const SUBAGENT_MARK_GLYPH: Record<NestedSubagentStatus, SessionStatusGlyph> = {
+  failed: "failed",
+  needs_you: "needs-you",
+  running: "working",
+};
+
 /**
- * Line 3: preview on the left; draft/machine marks on the right. No fake
- * provider logo — a terminal cannot render those assets.
+ * A chat's filed subagents as one mark: `⊚2` and the worst state's glyph
+ * (`✕` failed, `●` needs you, `◐` running). `⊚` is the chat-info pane's mark,
+ * which is where they are listed.
+ */
+function subagentMarkText(mark: NestedSubagentMark | null): string {
+  if (!mark) return "";
+  const glyph = mark.status ? ` ${theme.sessionGlyphMark(SUBAGENT_MARK_GLYPH[mark.status])}` : "";
+  return ` ⊚${mark.count}${glyph}`;
+}
+
+/**
+ * Line 3: preview on the left; subagent/draft/machine marks on the right. No
+ * fake provider logo — a terminal cannot render those assets.
  */
 function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
-  const extras = `${row.marker ? ` ${row.marker}` : ""}${row.hasDraft ? " ✎" : ""}${
+  const subagentMark = subagentMarkText(row.subagents);
+  const subagentTone = row.subagents?.status
+    ? NESTED_SUBAGENT_STATUS_PRESENTATION[row.subagents.status].tone
+    : null;
+  const extras = `${subagentMark}${row.marker ? ` ${row.marker}` : ""}${row.hasDraft ? " ✎" : ""}${
     row.machine ? ` ⧉ ${row.machine.name}` : ""
   }`;
   const preview = row.preview?.text ?? "";
@@ -376,6 +386,11 @@ function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
       <Text color={theme.color.t4} dimColor italic>
         {padDisplayEnd(truncateDisplayEnd(preview, leftMax), leftMax)}
       </Text>
+      {subagentMark ? (
+        <Text color={subagentTone ? theme.sessionToneColor(subagentTone) : theme.color.t4} dimColor={!subagentTone}>
+          {subagentMark}
+        </Text>
+      ) : null}
       {row.marker ? (
         <Text color={theme.color.t5} dimColor>{` ${row.marker}`}</Text>
       ) : null}
@@ -389,40 +404,6 @@ function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
   );
 }
 
-
-/** A chat's folded subagents: `▸ 3 subagents · needs you`, indented under it. */
-function DrawerRow({
-  row,
-  width,
-  selected,
-  hovered,
-  marginTop,
-}: {
-  row: WorkListDrawerRow;
-  width: number;
-  selected: boolean;
-  hovered: boolean;
-  marginTop: number;
-}) {
-  const highlighted = selected || hovered;
-  const gutter = rowGutter(highlighted);
-  const status = row.status ? NESTED_DRAWER_STATUS_PRESENTATION[row.status] : null;
-  const label = `  ${row.expanded ? "▾" : "▸"} ${row.count} ${row.count === 1 ? "subagent" : "subagents"}`;
-  const statusText = status ? ` · ${status.label.toLowerCase()}` : "";
-  const room = Math.max(6, width - GUTTER_CELLS);
-  return (
-    <Box marginTop={marginTop} width={width}>
-      <Text wrap="truncate-end">
-        <Text color={highlighted ? theme.color.violet : theme.color.t4} dimColor={!highlighted}>
-          {`${gutter}${truncateDisplayEnd(label, room)}`}
-        </Text>
-        {status && terminalDisplayWidth(label + statusText) <= room ? (
-          <Text color={theme.sessionToneColor(status.tone)}>{statusText}</Text>
-        ) : null}
-      </Text>
-    </Box>
-  );
-}
 
 /**
  * The collapsed quiet tail. Snoozed and settled rows share one shelf pattern —

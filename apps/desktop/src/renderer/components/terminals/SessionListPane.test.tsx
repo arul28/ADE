@@ -588,7 +588,7 @@ describe("SessionListPane", () => {
     expect(screen.queryByText("Child shell")).toBeNull();
   });
 
-  it("nests same-lane subagent chats under the parent in a second drawer", () => {
+  it("files a same-lane subagent chat behind one mark on its parent's row", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -614,31 +614,25 @@ describe("SessionListPane", () => {
       spawnKind: "peer",
       orchestrationParentSessionId: parent.id,
     });
-    const toggleWorkSectionCollapsed = vi.fn();
+    const onSelectSession = vi.fn();
     renderPane({
       runningFiltered: [parent, child, peer],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
-      toggleWorkSectionCollapsed,
+      onSelectSession,
     });
 
-    expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
-    expect(screen.getByTestId("nested-subagent-row")).toBeTruthy();
-    expect(screen.getByText("Helper subagent")).toBeTruthy();
+    expect(screen.queryByText("Helper subagent")).toBeNull();
     expect(screen.getByText("Peer chat")).toBeTruthy();
-    expect(screen.queryByText("Subagent")).toBeNull();
-    const nestedRow = screen.getByTestId("nested-subagent-row");
-    const glyph = within(nestedRow).getByTestId("nested-subagent-glyph");
-    const logo = within(nestedRow).getByTestId("tool-logo");
-    const title = within(nestedRow).getByText("Helper subagent");
-    expect(glyph.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(title.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 subagent/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat-subagents:chat-parent");
+    const mark = screen.getByRole("button", { name: /^1 subagent/i });
+    // Pressing the mark opens the parent chat (its actions pane lists the child).
+    fireEvent.click(mark);
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
+    expect(onSelectSession.mock.calls[0]?.[0]).toBe(parent.id);
+    expect(onSelectSession.mock.calls[0]?.[2]).toEqual([parent.id, peer.id]);
   });
 
-  it("keeps a settled subagent nested under an active parent instead of a quiet tail", () => {
+  it("keeps a settled subagent filed under an active parent instead of a quiet tail", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -670,11 +664,11 @@ describe("SessionListPane", () => {
       settledFiltered: [child],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      workCollapsedSectionIds: ["settled-open:lane-known", "drawer-open:chat-subagents:chat-parent"],
+      workCollapsedSectionIds: ["settled-open:lane-known"],
     });
 
-    expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
-    expect(screen.getByText("Nested settled helper")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^1 subagent$/i })).toBeTruthy();
+    expect(screen.queryByText("Nested settled helper")).toBeNull();
     expect(screen.getByText("Peer chat")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /1 settled/i })).toBeNull();
   });
@@ -710,7 +704,7 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Still working helper")).toBeTruthy();
   });
 
-  it("re-nests a working child once a snoozed parent wakes under a complete filing map", () => {
+  it("re-files a working child once a snoozed parent wakes under a complete filing map", () => {
     vi.useFakeTimers();
     const nowMs = Date.parse("2026-09-21T12:00:00.000Z");
     vi.setSystemTime(nowMs);
@@ -758,14 +752,13 @@ describe("SessionListPane", () => {
         [parent.id, "running"],
         [child.id, "running"],
       ]),
-      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
     }));
 
-    expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
-    expect(screen.getByText("Working helper")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^1 subagent, 1 running$/i })).toBeTruthy();
+    expect(screen.queryByText("Working helper")).toBeNull();
   });
 
-  it("shows Failed on the subagent drawer header when any child failed", () => {
+  it("says Failed on the parent's subagent mark when any child failed", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -791,8 +784,8 @@ describe("SessionListPane", () => {
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child]]]),
     });
 
-    const header = screen.getByRole("button", { name: /1 subagent/i });
-    expect(within(header).getByText("Failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 subagent, 1 failed" })).toBeTruthy();
+    expect(screen.queryByText("Broken helper")).toBeNull();
   });
 
   it("reports rendered session order for range selection", () => {
@@ -1685,7 +1678,7 @@ describe("SessionListPane", () => {
       expect(screen.queryByText("Foreign child shell")).toBeNull();
     });
 
-    it("nests a settled foreign subagent under its active parent instead of the quiet tail", () => {
+    it("files a settled foreign subagent under its active parent, and its mark opens the parent on that machine", () => {
       const parent = makeSession({
         id: "foreign-chat-parent",
         laneId: "lane-elsewhere",
@@ -1714,23 +1707,19 @@ describe("SessionListPane", () => {
       renderPane({
         runningFiltered: [],
         sessionsGroupedByLane: new Map(),
-        workCollapsedSectionIds: [
-          "settled-open:target-studio:lane-elsewhere",
-          "drawer-open:chat-subagents:foreign-chat-parent",
-        ],
+        workCollapsedSectionIds: ["settled-open:target-studio:lane-elsewhere"],
         onSelectSession,
       });
 
-      expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
-      expect(screen.getByText("Foreign nested settled helper")).toBeTruthy();
+      expect(screen.queryByText("Foreign nested settled helper")).toBeNull();
       expect(screen.getByText("Foreign peer chat")).toBeTruthy();
       expect(screen.queryByRole("button", { name: /1 settled/i })).toBeNull();
-      fireEvent.click(screen.getByTestId("nested-subagent-row"));
-      expect(onSelectSession.mock.calls[0]?.[2]).toEqual(expect.arrayContaining([
-        parent.id,
-        child.id,
-        peer.id,
-      ]));
+      fireEvent.click(screen.getByRole("button", { name: /^1 subagent$/i }));
+      expect(onSelectSession.mock.calls[0]?.[0]).toBe(parent.id);
+      expect(onSelectSession.mock.calls[0]?.[2]).toEqual(expect.arrayContaining([parent.id, peer.id]));
+      expect(onSelectSession.mock.calls[0]?.[2]).not.toContain(child.id);
+      // The foreign row's machine travels with the select.
+      expect(onSelectSession.mock.calls[0]?.[3]).toBeTruthy();
     });
 
     it("reaches a headerless foreign lane's menu through its card", () => {
@@ -2447,7 +2436,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
     );
   });
 
-  it("counts top-level rows only, so a chat with nested subagents stays a singleton", () => {
+  it("counts top-level rows only, so a chat with filed subagents stays a singleton", () => {
     const parent = soloSession({ toolType: "codex-chat" });
     const child = soloSession({
       id: "session-solo-subagent",

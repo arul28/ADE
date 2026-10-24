@@ -99,7 +99,17 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
   return options.first { $0.id == machineKey }?.name
 }
 
-/// The other machines' checkouts of the repository `identity`.
+/// The other machines' checkouts of the repository `identity`, one per machine.
+///
+/// A machine can register the same repository more than once (a second clone,
+/// a sandbox copy). Matching by origin alone took every one of them, so another
+/// checkout's chats landed in this Work list under the same machine name. Each
+/// machine contributes the ONE checkout desktop routes to for this repository
+/// (`pickLiveCheckout` in `apps/desktop/src/shared/crossMachineHandoff.ts`):
+/// the most recently opened, roster order on a tie. The roster already leaves
+/// out projects ADE registered on its own (`catalogVisibility == "system"`), so
+/// that part of desktop's rule is applied on the host. The Hub still lists
+/// every project separately.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
@@ -108,24 +118,42 @@ func workRemoteMachineRepos(
   guard identity != nil || folderKey != nil else { return [] }
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
-    for project in machine.projects {
-      guard fleetProjectsMatch(
+    let matches = machine.projects.filter { project in
+      fleetProjectsMatch(
         identity: identity,
         folder: folderKey,
         otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),
         otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
-      ) else { continue }
-      repos.append(WorkRemoteMachineRepo(
-        machineKey: machine.machineKey,
-        machineName: machine.name,
-        projectId: project.projectId,
-        rootPath: project.rootPath,
-        lanes: project.lanes,
-        chats: project.chats.filter { $0.archived != true && !$0.isIdentityChat }
-      ))
+      )
     }
+    guard let project = workPickLiveCheckout(matches) else { continue }
+    repos.append(WorkRemoteMachineRepo(
+      machineKey: machine.machineKey,
+      machineName: machine.name,
+      projectId: project.projectId,
+      rootPath: project.rootPath,
+      lanes: project.lanes,
+      chats: project.chats.filter { $0.archived != true && !$0.isIdentityChat }
+    ))
   }
   return repos
+}
+
+/// Desktop `pickLiveCheckout` over what the roster carries: the most recently
+/// opened checkout wins; on a tie the earlier roster entry stays.
+/// Desktop's first rule (a checkout present on disk beats a missing one) is not
+/// applied: the roster carries no `exists` field.
+private func workPickLiveCheckout(_ projects: [RemoteRosterProject]) -> RemoteRosterProject? {
+  var best: RemoteRosterProject?
+  var bestOpened = Date.distantPast
+  for project in projects {
+    let opened = workParsedDate(project.lastOpenedAt) ?? .distantPast
+    if best == nil || opened > bestOpened {
+      best = project
+      bestOpened = opened
+    }
+  }
+  return best
 }
 
 struct WorkRemoteMachineMerge {

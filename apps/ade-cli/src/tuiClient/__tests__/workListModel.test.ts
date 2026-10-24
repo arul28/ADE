@@ -130,7 +130,7 @@ describe("workListModel grouping", () => {
     expect(model.rows.filter((row) => row.kind === "session").every((row) => !row.showLaneIdentity)).toBe(true);
   });
 
-  it("folds same-lane subagent chats into a collapsed drawer under the parent and keeps the lane header for remaining peers", () => {
+  it("files same-lane subagent chats out of the list behind one mark on the parent, and keeps peers as rows", () => {
     const input = {
       lanes: [lane("lane-1", "Feature")],
       sessions: [
@@ -162,20 +162,11 @@ describe("workListModel grouping", () => {
     const rowIds = (model: ReturnType<typeof build>) =>
       model.rows.map((row) => (row.kind === "session" ? row.sessionId : row.key));
 
-    const collapsed = build(input);
-    expect(rowIds(collapsed)).toEqual(["lane:lane-1", "parent", "drawer:parent", "peer"]);
-    expect(collapsed.rows.find((row) => row.kind === "drawer")).toMatchObject({ count: 1, expanded: false });
-
-    const model = build({ ...input, expandedDrawers: new Set(["parent"]) });
-    expect(rowIds(model)).toEqual([
-      "lane:lane-1",
-      "parent",
-      "drawer:parent",
-      "helper",
-      "peer",
-    ]);
-    expect(sessionRows(model).find((row) => row.sessionId === "helper")?.nested).toBe(true);
-    expect(sessionRows(model).find((row) => row.sessionId === "peer")?.nested).toBe(false);
+    const model = build(input);
+    expect(rowIds(model)).toEqual(["lane:lane-1", "parent", "peer"]);
+    expect(sessionRows(model).find((row) => row.sessionId === "parent")?.subagents)
+      .toEqual({ count: 1, status: "running", statusCount: 1 });
+    expect(sessionRows(model).find((row) => row.sessionId === "peer")?.subagents).toBeNull();
     expect(model.groups[0]!.header.sessionCount).toBe(2);
   });
 
@@ -195,9 +186,9 @@ describe("workListModel grouping", () => {
       activeSessionId: null,
     });
 
-    expect(model.rows.map((row) => row.kind)).toEqual(["session", "drawer"]);
-    expect(sessionRows(model).map((row) => [row.sessionId, row.nested, row.showLaneIdentity])).toEqual([
-      ["parent", false, true],
+    expect(model.rows.map((row) => row.kind)).toEqual(["session"]);
+    expect(sessionRows(model).map((row) => [row.sessionId, row.subagents?.count ?? 0, row.showLaneIdentity])).toEqual([
+      ["parent", 1, true],
     ]);
   });
 
@@ -224,8 +215,6 @@ describe("workListModel grouping", () => {
       activeSessionId: null,
     });
 
-    const helper = sessionRows(model).find((row) => row.sessionId === "helper");
-    expect(helper?.nested).toBe(false);
     expect(model.rows[0]).toMatchObject({ kind: "session", sessionId: "helper" });
     expect(model.settled.map((row) => row.sessionId)).toEqual(["parent"]);
     expect(model.rows.some((row) => row.kind === "shelf" && row.shelf === "settled")).toBe(true);
