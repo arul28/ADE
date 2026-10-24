@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.122] - 2026-10-24
+
+### Desktop and web
+
+- Side chats with `/side`; Kimi 2.3 and Pi 1.4 with fork and MCP; MCP secrets off the command line (#1890).
+- Subagent chats move into their parent's actions pane; other-machine clone rows fixed (#1891).
+- Fast mode is an account permission, off by default (#1884).
+- App Control relaunches reuse one shell (#1892).
+- New installs open on a wallpaper sized for their screen (#1888).
+- Moving a large project no longer times out on the size check (#1893).
+- `ade apple` simulator tool fixes (#1889); shorter README (#1886).
+
+### iOS
+
+- Settled-chat, tab bar and normal-iPhone layout fixes; subagents in the actions pane (#1889, #1891), in a new TestFlight build.
+
 ## [1.2.121] - 2026-10-23
 
 ### Desktop and web
@@ -2722,7 +2738,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.121...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.122...HEAD
+[1.2.122]: https://github.com/arul28/ADE/compare/v1.2.121...v1.2.122
 [1.2.121]: https://github.com/arul28/ADE/compare/v1.2.120...v1.2.121
 [1.2.120]: https://github.com/arul28/ADE/compare/v1.2.119...v1.2.120
 [1.2.119]: https://github.com/arul28/ADE/compare/v1.2.118...v1.2.119

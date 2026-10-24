@@ -1,0 +1,31 @@
+---
+title: "v1.2.122"
+description: "Release notes for ADE v1.2.122 - October 24, 2026"
+---
+
+ADE 1.2.122 adds side chats, puts subagent chats in their parent's actions pane, makes fast mode an account permission, and brings back sharp first-launch wallpapers.
+
+## New
+
+- Side chats: type `/side <question>` in a chat. A read-only "Side chat" tab opens in the Tools pane. It knows the whole conversation, cannot edit anything, and sends a message to the main chat only when you ask (#1890).
+- Kimi 2.3 and Pi 1.4, with a real fork, MCP servers and side chats (#1890).
+- New installs open on a wallpaper that fits their screen, from eleven new full-size pictures (#1888).
+
+## Improved
+
+- Subagent chats live in their parent's actions pane on desktop, web, ADE Code and iOS. The Work list shows one small mark on the parent instead (#1891).
+- Fast mode is one account-wide permission, off by default. Turn it on in Settings › Chat › Speed & spend; each chat still starts Standard (#1884).
+- An App Control relaunch reuses its shell, so an edit, rebuild and relaunch loop leaves one shell (#1892).
+- A shorter, plainer README with current screenshots and GIFs (#1886).
+
+## Fixed
+
+- A Claude chat's MCP secrets are no longer visible on its command line (#1890).
+- Moving a large project no longer times out on the size check (#1893).
+- Dead App Control shells no longer hide chats on other machines (#1892).
+- Chats from a second copy of a repository on another machine no longer show under that machine's name (#1891).
+- `ade apple` simulator tools: no silent new device after a person releases the lane's device, `screenshot --out` writes to your path, `snapshot` gives refs for every element, and gestures cannot be cut into (#1889).
+
+## iOS
+
+- Settled chats collapse correctly, the tab bar hides under an open chat, and normal iPhones keep their own Work list and chat chrome (#1891, #1889). Subagent chats move into the parent's actions pane. All are in a new TestFlight build.
