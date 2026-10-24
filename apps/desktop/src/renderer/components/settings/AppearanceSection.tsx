@@ -17,7 +17,7 @@ import {
   type InterfaceMonoFont,
   type InterfaceSansFont,
 } from "../../state/appStore";
-import { DEFAULT_SCENE_PREFERENCES, type SceneShuffleEvery, type SceneTexture } from "../../scene/scenePreferences";
+import { DEFAULT_SCENE_PREFERENCES, defaultScenePreferences, type SceneShuffleEvery, type SceneTexture } from "../../scene/scenePreferences";
 import { FOCUS_GRID_MAX_CHATS_OPTIONS } from "../../state/appearanceStore";
 import type {
   ChatChromeTint,
@@ -36,8 +36,18 @@ import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
-import { BUNDLED_SCENES } from "../../scene/sceneLibrary";
-import { reshuffleScene, useActiveScene, useSetScene, useUserScenes, type ActiveScene } from "../../scene/useScene";
+import { BUNDLED_SCENES, sceneFitsScreen, type ScreenPixels } from "../../scene/sceneLibrary";
+import {
+  inShuffle,
+  reshuffleScene,
+  toggledShufflePool,
+  useActiveScene,
+  useScreenPixels,
+  useSetScene,
+  useUserScenes,
+  type ActiveScene,
+  type ShufflePrefs,
+} from "../../scene/useScene";
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import "./AppearanceSection.css";
@@ -141,7 +151,7 @@ export function AppearanceSection() {
     setInterfacePreferences({
       sansFont: "geist",
       monoFont: "jetbrains",
-      scene: { ...DEFAULT_SCENE_PREFERENCES, choiceMade: true },
+      scene: { ...defaultScenePreferences(), choiceMade: true },
     });
   };
 
@@ -243,7 +253,7 @@ export function AppearanceSection() {
         <aside className="ade-ap-aside">
           <div className="ade-ap-aside-head">
             <span className="kit-eyebrow">Preview</span>
-            <button type="button" className="ade-ap-reset" onClick={resetAll} title="Restore ADE, dark, Geist, and the picture shuffle">
+            <button type="button" className="ade-ap-reset" onClick={resetAll} title="Restore ADE, dark, Geist, and the default background">
               <ArrowCounterClockwise size={11} weight="bold" /> Reset
             </button>
           </div>
@@ -383,6 +393,7 @@ function BackgroundPicker() {
   };
 
   const hiDpi = useSyncExternalStore(subscribeHiDpi, readHiDpi);
+  const screen = useScreenPixels();
   const pickedId = scenePrefs.mode === "image" ? scenePrefs.imageId : null;
   const usingPicture = scenePrefs.mode === "image" || scenePrefs.mode === "shuffle";
 
@@ -431,8 +442,8 @@ function BackgroundPicker() {
           title={scenePrefs.mode === "shuffle" ? "Pick another picture now" : "A new picture on a schedule"}
         >
           <div className="ade-ap-scene-art ade-ap-scene-mosaic">
-            {BUNDLED_SCENES.slice(0, 4).map((scene) => (
-              <img key={scene.id} src={scene.src} alt="" draggable={false} style={{ objectPosition: scene.position }} />
+            {[...new Set([...BUNDLED_SCENES.filter((scene) => sceneFitsScreen(scene, screen)), ...BUNDLED_SCENES])].slice(0, 4).map((scene) => (
+              <img key={scene.id} src={scene.thumb} alt="" draggable={false} style={{ objectPosition: scene.position }} />
             ))}
             <span className="ade-ap-scene-badge"><Shuffle size={13} weight="bold" /></span>
           </div>
@@ -454,9 +465,13 @@ function BackgroundPicker() {
             onClick={() => setScene({ mode: "image", imageId: scene.id })}
           >
             <div className="ade-ap-scene-art">
-              <img src={scene.src} alt="" draggable={false} style={{ objectPosition: scene.position }} />
+              <img src={scene.thumb} alt="" draggable={false} style={{ objectPosition: scene.position }} />
             </div>
-            <SceneLabel name={scene.name} sub="ADE" active={pickedId === scene.id} />
+            <SceneLabel
+              name={scene.name}
+              sub={sceneFitsScreen(scene, screen) ? "Fits this screen" : "Made for other screens"}
+              active={pickedId === scene.id}
+            />
           </button>
         ))}
 
@@ -517,10 +532,12 @@ function BackgroundPicker() {
         <ShuffleOptions
           every={scenePrefs.shuffleEvery}
           exclude={scenePrefs.shuffleExclude}
+          include={scenePrefs.shuffleInclude}
+          screen={screen}
           userScenes={userScenes}
           activeId={active.kind === "image" ? active.id : null}
           onEvery={(shuffleEvery) => setScene({ shuffleEvery })}
-          onExclude={(shuffleExclude) => setScene({ shuffleExclude })}
+          onPool={(shuffleExclude, shuffleInclude) => setScene({ shuffleExclude, shuffleInclude })}
         />
       ) : null}
 
@@ -590,33 +607,39 @@ const SHUFFLE_EVERY_OPTIONS: { value: SceneShuffleEvery; label: string }[] = [
 
 /**
  * Shuffle's own settings: when it changes, and which pictures are in the
- * rotation. Every picture is in by default; a new picture joins on its own.
+ * rotation. By default that is every picture sized for this screen plus the
+ * user's own (`inShuffle`); any picture can be put in or left out, and a new
+ * picture that fits joins on its own.
  */
 function ShuffleOptions({
   every,
   exclude,
+  include,
+  screen,
   userScenes,
   activeId,
   onEvery,
-  onExclude,
+  onPool,
 }: {
   every: SceneShuffleEvery;
   exclude: string[];
+  include: string[];
+  screen: ScreenPixels;
   userScenes: { id: string; name: string }[];
   activeId: string | null;
   onEvery: (next: SceneShuffleEvery) => void;
-  onExclude: (next: string[]) => void;
+  onPool: (exclude: string[], include: string[]) => void;
 }) {
-  const pictures = [
-    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.src as string | null, position: scene.position })),
+  const pictures: { id: string; name: string; src: string | null; position: string }[] = [
+    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.thumb, position: scene.position })),
     ...userScenes.map((scene) => ({ id: scene.id, name: scene.name, src: null, position: "50% 50%" })),
   ];
-  const included = pictures.filter((picture) => !exclude.includes(picture.id)).length;
+  const pool: ShufflePrefs = { shuffleExclude: exclude, shuffleInclude: include };
+  const included = pictures.filter((picture) => inShuffle(picture.id, pool, screen)).length;
   const toggle = (id: string) => {
-    const next = exclude.includes(id) ? exclude.filter((value) => value !== id) : [...exclude, id];
-    // Leaving every picture out would leave nothing to shuffle; keep at least one.
-    if (pictures.every((picture) => next.includes(picture.id))) return;
-    onExclude(next);
+    // Null would leave nothing to shuffle; keep at least one.
+    const next = toggledShufflePool(id, pool, screen, pictures.map((picture) => picture.id));
+    if (next) onPool(next.shuffleExclude, next.shuffleInclude);
   };
   return (
     <div className="ade-ap-shuffle">
@@ -638,13 +661,18 @@ function ShuffleOptions({
       <div className="ade-ap-shuffle-label">
         <span className="kit-eyebrow">In the shuffle</span>
         <span className="kit-num">{included} of {pictures.length}</span>
-        {exclude.length > 0 ? (
-          <button type="button" className="ade-ap-shuffle-all" onClick={() => onExclude([])}>Include all</button>
+        {included < pictures.length ? (
+          <button type="button" className="ade-ap-shuffle-all" onClick={() => onPool([], pictures.map((picture) => picture.id))}>Include all</button>
+        ) : null}
+        {exclude.length > 0 || include.length > 0 ? (
+          <button type="button" className="ade-ap-shuffle-all" onClick={() => onPool([], [])} title="Every picture sized for this screen, plus your own">
+            Best for this screen
+          </button>
         ) : null}
       </div>
       <div className="ade-ap-shuffle-grid" role="group" aria-label="Pictures in the shuffle">
         {pictures.map((picture) => {
-          const on = !exclude.includes(picture.id);
+          const on = inShuffle(picture.id, pool, screen);
           return (
             <button
               key={picture.id}

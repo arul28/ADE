@@ -171,7 +171,7 @@ written (the base mode) so older clients keep working.
 ## Scenes and picture colours
 
 The backdrop behind the top bar, the home page and the new chat page is a
-**scene**: the theme's flat background (the default), its animated mesh, one
+**scene**: the theme's flat background (the web default), its animated mesh, one
 picture, or a shuffled picture. Scene
 preferences live in `interfacePreferences.scene` in `ade.userPreferences.v1`
 (per computer, like the theme). `ThemeDocumentSync` in
