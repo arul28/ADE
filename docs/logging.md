@@ -616,6 +616,20 @@ operational lines (`agent_chat.auto_resume_scheduled`,
 which do carry session ids, schedule ids, and fire times, are not PostHog
 events.
 
+A side chat (`/side`) records one coarse fact on the same `ade_feature_used`
+event with `feature: "chat"` and `action: "side_chat"`, at the durable owner
+(`sideChatService.ts`, through the `onSideChatOutcome` hook that `main.ts`
+wires to `captureChatSideChatAnalytics`): `outcome` is `started` (a side chat
+opened), `delivered` (a message the user asked it to send reached the main
+chat) or `failed` (that message could not). `provider` is the coarse slug.
+Never the question, the reply, the sent message, or the model. A
+`chat_side_chat:<main chat>:<outcome>` deduplication key (hashed locally, never
+sent) with a ten-minute minimum interval bounds it: a side chat opens once and
+sends only on request, so the worst case is three accepted events per chat per
+ten minutes and realistic volume is a few per installation per day, inside the
+existing `ade_feature_used` limits. No ceiling was raised. Opening the Side
+chat tool also counts through `tool_opened` (`tool_side_chat`).
+
 What becomes of a handoff's transcript replay records one coarse fact on the
 same `ade_feature_used` event with `feature: "chat"` and
 `action: "handoff_replay"`, at the durable owners: `handoffSession` once the

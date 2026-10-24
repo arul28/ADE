@@ -177,6 +177,7 @@ struct WorkChatMessageFold {
           deliveryState: deliveryState,
           processed: processed
         )
+        if envelope.userMessageFromSideChat { messages[lastIndex].fromSideChat = true }
       } else if let duplicateIndex = duplicateUserMessageVariantIndex(
         in: messages,
         text: text,
@@ -190,6 +191,7 @@ struct WorkChatMessageFold {
           deliveryState: deliveryState,
           processed: processed
         )
+        if envelope.userMessageFromSideChat { messages[duplicateIndex].fromSideChat = true }
       } else {
         metadataTurnKeys.append([])
         messages.append(WorkChatMessage(
@@ -203,6 +205,7 @@ struct WorkChatMessageFold {
           deliveryState: deliveryState,
           processed: processed,
           writtenByAde: envelope.userMessageWrittenByAde,
+          fromSideChat: envelope.userMessageFromSideChat,
           attachments: attachments
         ))
       }
@@ -1104,6 +1107,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
     sourceOffset: entry.sourceOffset
   )
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
+  envelope.userMessageFromSideChat = entry.userMessageFromSideChat
   return envelope
 }
 

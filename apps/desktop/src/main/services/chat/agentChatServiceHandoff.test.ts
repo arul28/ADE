@@ -2614,6 +2614,49 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("opens a Claude side chat as a fork that never takes the main chat's own thread", async () => {
+      const makeWarmHandle = (sdkSessionId: string) => ({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield { type: "result", subtype: "success", is_error: false, session_id: sdkSessionId, usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: sdkSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValueOnce(makeWarmHandle("main-sdk") as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(makeWarmHandle("side-fork-sdk") as any);
+
+      const { service } = createService();
+      const main = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        permissionMode: "default",
+      });
+      await startClaudeThread(service, main.id);
+      await vi.waitFor(() => {
+        expect(readPersistedChatState(main.id).sdkSessionId).toBeTruthy();
+      });
+      const mainSdkSessionId = readPersistedChatState(main.id).sdkSessionId as string;
+
+      // A bare `/side`: the side chat opens and sends nothing yet, so a resume
+      // before its first send must still fork rather than continue the main
+      // chat's thread.
+      const { session: side, created } = await service.startSideChat({ sessionId: main.id, text: "" });
+
+      expect(created).toBe(true);
+      const sidePersisted = readPersistedChatState(side.id);
+      expect(sidePersisted.sideChatParentSessionId).toBe(main.id);
+      expect(sidePersisted.forkFromSdkSessionId).toBe(mainSdkSessionId);
+      expect(sidePersisted.sdkSessionId).not.toBe(mainSdkSessionId);
+      expect(readPersistedChatState(main.id).sdkSessionId).toBe(mainSdkSessionId);
+      expect(readPersistedChatState(main.id).sideChatSessionId).toBe(side.id);
+    });
+
     it("does not carry a source interaction mode into non-Claude handoff targets", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {

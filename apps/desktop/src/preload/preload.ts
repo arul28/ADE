@@ -627,6 +627,10 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatStartSideChatArgs,
+  AgentChatStartSideChatResult,
+  AgentChatEndSideChatArgs,
+  AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -8132,6 +8136,21 @@ const adeBridge = {
     ): Promise<AgentChatHandoffResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
+      ),
+    // Side chats run on the main chat's machine: every call takes that chat's pin.
+    startSideChat: async (
+      args: AgentChatStartSideChatArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatStartSideChatResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "startSideChat", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatStartSideChat, args),
+      ),
+    endSideChat: async (
+      args: AgentChatEndSideChatArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatEndSideChatResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "endSideChat", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatEndSideChat, args),
       ),
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,

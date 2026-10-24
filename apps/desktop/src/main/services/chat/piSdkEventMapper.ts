@@ -13,6 +13,7 @@ import {
   type PiSdkUiResponsePayload,
 } from "./piSdkProtocol";
 import { finiteNumberOrNull, toOptionalString } from "../shared/utils";
+import { parseMcpToolName } from "../../../shared/permissionPolicy";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -54,6 +55,11 @@ export type PiSdkTurnUsage = {
 /** What one turn's events told the mapper; the done event reads it. */
 export type PiSdkEventMapperState = {
   usage: PiSdkTurnUsage;
+  /**
+   * Prompt-cache refreshes Pi ran between turns (`cacheWarming: "idle"`). They
+   * are billed like any request, so the next turn's totals carry them.
+   */
+  idleCacheWarmUsage?: PiSdkTurnUsage;
   servedModel?: string;
   provider?: string;
   account?: PiSdkAccount;
@@ -65,10 +71,31 @@ export function createPiSdkEventMapperState(): PiSdkEventMapperState {
 
 /** Clears the state before the next prompt. */
 export function resetPiSdkEventMapperTurn(state: PiSdkEventMapperState): void {
-  state.usage = { requestCount: 0 };
+  state.usage = state.idleCacheWarmUsage ?? { requestCount: 0 };
+  state.idleCacheWarmUsage = undefined;
   state.servedModel = undefined;
   state.provider = undefined;
   state.account = undefined;
+}
+
+/**
+ * Pi keeps a provider's prompt cache warm with 1-token refresh requests during
+ * long tool runs (and, if the user turned it on, between turns). Each refresh
+ * is a `usage` entry of kind `cache_warm`, not an assistant message, so it never
+ * reaches `message_end`. Its tokens and cost count toward the turn; the
+ * request count and the context reading do not move, because a refresh adds
+ * nothing to the conversation.
+ */
+function addCacheWarmUsage(entry: Record<string, unknown>, turnId: string | undefined, state: PiSdkEventMapperState): void {
+  const usage = asRecord(entry.usage);
+  if (!usage) return;
+  const target = turnId ? state.usage : (state.idleCacheWarmUsage ??= { requestCount: 0 });
+  addUsageValue(target, "inputTokens", finiteNumberOrNull(usage.input));
+  addUsageValue(target, "outputTokens", finiteNumberOrNull(usage.output));
+  addUsageValue(target, "cacheReadTokens", finiteNumberOrNull(usage.cacheRead));
+  addUsageValue(target, "cacheCreationTokens", finiteNumberOrNull(usage.cacheWrite));
+  addUsageValue(target, "cacheWrite1hTokens", finiteNumberOrNull(usage.cacheWrite1h));
+  addUsageValue(target, "costUsd", finiteNumberOrNull(asRecord(usage.cost)?.total));
 }
 
 function mapAssistantMessageEnd(
@@ -127,6 +154,11 @@ export function mapPiSdkEventToChatEvents(
     const message = asRecord(record.message);
     return message?.role === "assistant" ? mapAssistantMessageEnd(message, turnId, state) : [];
   }
+  if (type === "entry_appended") {
+    const entry = asRecord(record.entry);
+    if (entry?.type === "usage" && entry.kind === "cache_warm") addCacheWarmUsage(entry, turnId, state);
+    return [];
+  }
   if (type === "message_update") {
     const assistant = asRecord(record.assistantMessageEvent);
     if (!assistant) return [];
@@ -145,22 +177,32 @@ export function mapPiSdkEventToChatEvents(
     return [];
   }
   if (type === "tool_execution_start") {
+    const tool = typeof record.toolName === "string" ? record.toolName : "pi_tool";
+    const parentItemId = toOptionalString(record.parentToolCallId);
+    const mcp = parseMcpToolName(tool);
     return [{
       type: "tool_call",
-      tool: typeof record.toolName === "string" ? record.toolName : "pi_tool",
+      tool,
       args: record.args ?? {},
       itemId: typeof record.toolCallId === "string" && record.toolCallId.length ? record.toolCallId : randomUUID(),
+      ...(parentItemId ? { parentItemId } : {}),
+      ...(mcp ? { mcp } : {}),
       turnId,
     }];
   }
   if (type === "tool_execution_end") {
     const toolId = typeof record.toolCallId === "string" && record.toolCallId.length ? record.toolCallId : randomUUID();
     const failed = record.isError === true;
+    const tool = typeof record.toolName === "string" ? record.toolName : "pi_tool";
+    const parentItemId = toOptionalString(record.parentToolCallId);
+    const mcp = parseMcpToolName(tool);
     return [{
       type: "tool_result",
-      tool: typeof record.toolName === "string" ? record.toolName : "pi_tool",
+      tool,
       result: record.result ?? (failed ? "Pi tool failed." : ""),
       itemId: toolId,
+      ...(parentItemId ? { parentItemId } : {}),
+      ...(mcp ? { mcp } : {}),
       status: failed ? "failed" : "completed",
       turnId,
     }];

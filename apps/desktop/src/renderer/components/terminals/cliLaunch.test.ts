@@ -649,31 +649,40 @@ describe("resolveCleanShellLaunchFields", () => {
 
 describe("piSdkToolPolicyForPermissionMode", () => {
   it("keeps plan mode read-only and states it, rather than leaving it inferred", () => {
-    const plan = piSdkToolPolicyForPermissionMode("plan");
-    expect(plan.tools).toEqual(["read"]);
+    const plan = piSdkToolPolicyForPermissionMode("plan", "linux");
+    expect(plan.tools).toEqual(["read", "grep", "find", "ls"]);
     expect(plan.approvalTools).toEqual([]);
     // Chat gates real capabilities (extension loading) on this flag, so it must
     // not be re-derived from the tool list.
     expect(plan.readOnly).toBe(true);
+    // An MCP tool can change anything, so plan mode starts no MCP server.
+    expect(plan.mcp).toBe("off");
   });
 
   it("offers the write tools behind an approval card for the ask-first modes", () => {
     for (const mode of ["default", "auto", "config-toml"] as const) {
-      const policy = piSdkToolPolicyForPermissionMode(mode);
-      expect(policy.tools).toEqual(["read", "bash", "edit", "write"]);
+      const policy = piSdkToolPolicyForPermissionMode(mode, "linux");
+      expect(policy.tools).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
       expect(policy.approvalTools).toEqual(["bash", "edit", "write"]);
       expect(policy.readOnly).toBe(false);
+      expect(policy.mcp).toBe("ask");
     }
+    // On Windows the shell is PowerShell too, behind the same card as bash.
+    const windows = piSdkToolPolicyForPermissionMode("default", "win32");
+    expect(windows.tools).toContain("powershell");
+    expect(windows.approvalTools).toEqual(["bash", "powershell", "edit", "write"]);
   });
 
   it("pre-approves the modes the user already widened, and never gates a tool it withholds", () => {
-    expect(piSdkToolPolicyForPermissionMode("full-auto")).toMatchObject({ approvalTools: [], readOnly: false });
-    expect(piSdkToolPolicyForPermissionMode("edit")).toMatchObject({
-      tools: ["read", "edit", "write"],
+    expect(piSdkToolPolicyForPermissionMode("full-auto", "linux")).toMatchObject({ approvalTools: [], readOnly: false, mcp: "allow" });
+    expect(piSdkToolPolicyForPermissionMode("edit", "linux")).toMatchObject({
+      tools: ["read", "edit", "write", "grep", "find", "ls"],
       approvalTools: [],
+      // Edit mode allows edits, but an MCP call can do anything, so it asks.
+      mcp: "ask",
     });
     for (const mode of ["default", "auto", "config-toml", "edit", "plan", "full-auto"] as const) {
-      const policy = piSdkToolPolicyForPermissionMode(mode);
+      const policy = piSdkToolPolicyForPermissionMode(mode, "win32");
       expect(policy.approvalTools.every((tool) => policy.tools.includes(tool))).toBe(true);
     }
   });
@@ -683,7 +692,10 @@ describe("piSdkToolPolicyForPermissionMode", () => {
     // mode fail the launch.
     expect(() => validateLaunchProfilePermissionMode("pi", "config-toml")).not.toThrow();
     expect(piToolFlags("config-toml")).toEqual([]);
-    expect(piToolFlags("full-auto")).toEqual(["--tools", "read,bash,edit,write"]);
+    expect(piToolFlags("full-auto")).toEqual(["--tools", "read,bash,edit,write,grep,find,ls"]);
+    // A read-only terminal turns MCP off too: Pi keeps MCP tools through a
+    // `--tools` allowlist that names none of them.
+    expect(piToolFlags("plan")).toEqual(["--tools", "read,grep,find,ls", "--no-mcp"]);
     // Pi has no equivalent of Claude's auto, so that one still fails loudly.
     expect(() => validateLaunchProfilePermissionMode("pi", "auto")).toThrow(/not supported for Pi/u);
   });
@@ -705,8 +717,8 @@ describe("piSdkToolPolicyForPermissionMode", () => {
   });
 
   it("leaves the tracked-terminal mapping stricter, because a CLI has no approval gate", () => {
-    expect(piToolsForPermissionMode("default")).toEqual(["read"]);
-    expect(piSdkToolPolicyForPermissionMode("default").tools).toContain("bash");
+    expect(piToolsForPermissionMode("default")).toEqual(["read", "grep", "find", "ls"]);
+    expect(piSdkToolPolicyForPermissionMode("default", "linux").tools).toContain("bash");
   });
 });
 
@@ -1394,7 +1406,7 @@ describe("buildTrackedCliStartupCommand", () => {
         "--model", "openai/gpt-5.4", "--thinking", "high", "--append-system-prompt",
       ]));
       expect(launch.args.join("\n")).toContain(ADE_CLI_AGENT_GUIDANCE);
-      expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write");
+      expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular");
       expect(launch.initialInput).toBe("Run the Pi path.");
       expect(launch.args.join("\n")).toContain("ADE permission policy for this Pi session: full-auto");
       expect(launch.initialInput).not.toContain("--dangerously");
@@ -1571,12 +1583,13 @@ describe("tracked CLI resume helpers", () => {
     expect(launch.args).toEqual([
       "--model", "openai/gpt-5.4",
       "--thinking", "medium",
-      "--tools", "read",
+      "--tools", "read,grep,find,ls", "--no-mcp",
+      "--tui-mode", "regular",
       "--session", "pi-session-1",
     ]);
     expect(launch.initialInput).toBe(prompt);
     expect(launch.initialInputDelayMs).toBe(750);
-    expect(launch.startupCommand).toContain("pi --model \"openai/gpt-5.4\" --thinking medium --tools read --session pi-session-1");
+    expect(launch.startupCommand).toContain("pi --model \"openai/gpt-5.4\" --thinking medium --tools read,grep,find,ls --no-mcp --tui-mode regular --session pi-session-1");
     expect(launch.startupCommand).not.toContain("Continue in");
     expect(launch.startupCommand).not.toContain("%TEMP%");
     expect(launch.startupCommand).not.toContain("powershell");
@@ -1653,7 +1666,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "pi-session-1",
       launch: { permissionMode: "full-auto", model: "pi/anthropic/claude-sonnet-5", reasoningEffort: "high" },
-    })).toBe("pi --model \"anthropic/claude-sonnet-5\" --thinking high --tools read,bash,edit,write --session pi-session-1");
+    })).toBe("pi --model \"anthropic/claude-sonnet-5\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular --session pi-session-1");
   });
 
   it("preserves Codex native approval and sandbox pairs without escalating access", () => {

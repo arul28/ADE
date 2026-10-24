@@ -170,6 +170,45 @@ export function callerMcpSupport(
 }
 
 /**
+ * Providers that get the MCP registry's servers although an embedder cannot
+ * hand them servers of its own (their row above stays `unsupported`).
+ *
+ * Pi: the chat worker registers the registry's servers in Pi's own MCP support
+ * (`pi.registerMcpServer`). Pi has no legacy SSE client. Opening Pi to
+ * caller-injected servers and strict mode is a separate SDK contract change
+ * (the SDK fixture pins Pi's verdict), so it is not made here.
+ */
+const REGISTRY_ONLY_MCP_SUPPORT: Readonly<Record<string, { unsupportedTransports: readonly AgentChatMcpServerConfig["type"][] }>> = {
+  pi: { unsupportedTransports: ["sse"] },
+  // Kimi: ACP `session/new` `mcpServers` (stdio, HTTP and SSE, all advertised
+  // in its `initialize`). The servers in Kimi's own config also load, and a
+  // same-named one there wins (`providerOwnMcpServerNames`).
+  kimi: { unsupportedTransports: [] },
+};
+
+/** Every provider the registry can reach: the caller-MCP table plus the registry-only rows. */
+export const REGISTRY_MCP_PROVIDER_IDS: readonly string[] = [
+  ...Object.keys(CALLER_MCP_SUPPORT),
+  ...Object.keys(REGISTRY_ONLY_MCP_SUPPORT).filter((id) => !Object.prototype.hasOwnProperty.call(CALLER_MCP_SUPPORT, id)),
+];
+
+/**
+ * Whether a provider gets the MCP registry's servers, and which transports it
+ * cannot take; null when it gets none. The launch path and Settings › MCP
+ * servers › Who gets them both read this.
+ */
+export function registryMcpSupport(
+  provider: AgentChatProvider | string,
+): { unsupportedTransports: readonly AgentChatMcpServerConfig["type"][] } | null {
+  if (Object.prototype.hasOwnProperty.call(REGISTRY_ONLY_MCP_SUPPORT, provider)) {
+    return REGISTRY_ONLY_MCP_SUPPORT[provider]!;
+  }
+  const support = callerMcpSupport(provider);
+  if (!support || support.level === "unsupported") return null;
+  return { unsupportedTransports: support.unsupportedTransports ?? [] };
+}
+
+/**
  * Providers that can receive caller-injected MCP servers, in table order. The
  * refusal message names these rather than a hand-written list, so adding a
  * provider to the table is the only edit adding it needs.

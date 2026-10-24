@@ -3618,6 +3618,7 @@ const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
   "createSession",
   "updateSession",
   "handoffSession",
+  "startSideChat",
   "launchHeadless",
   "startLaunch",
   "launchCli",

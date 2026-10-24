@@ -1144,6 +1144,8 @@ export type SyncRosterChat = {
    * Current hosts omit identity sessions from the normal roster entirely.
    */
   identityKey?: string | null;
+  /** This chat's side chat (`shared/sideChat.ts`). Side chats are never roster rows of their own. */
+  sideChatSessionId?: string | null;
   title?: string | null;
   provider?: string | null;
   model?: string | null;
@@ -2624,6 +2626,8 @@ export type SyncRemoteCommandAction =
   | "chat.getFastModeEnabled"
   | "chat.setFastModeEnabled"
   | "chat.handoff"
+  | "chat.startSideChat"
+  | "chat.endSideChat"
   | "chat.prepareCrossMachineHandoff"
   | "chat.validateCrossMachineSource"
   | "chat.preflightCrossMachineDestination"

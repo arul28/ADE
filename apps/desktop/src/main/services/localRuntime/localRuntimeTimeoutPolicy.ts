@@ -296,6 +296,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // timeout while the daemon-side handoff kept running to a late "surprise"
   // success (ADE-122).
   ["chat.handoffSession", 120_000],
+  // A side chat forks the provider history (Codex in an ephemeral app-server,
+  // up to 30s) and then dispatches its first message.
+  ["chat.startSideChat", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
   // Cursor Cloud open-chat hydrates conversation + boots a worker + attaches
   // the live stream. The 30s default fired while Cursor's VM was still

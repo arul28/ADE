@@ -665,6 +665,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sourceSessionId: string, targetModelId: string, mode?: \"brief\" | \"fork\", targetLaneId?: string | null, handoffNote?: string | null, reasoningEffort?: string | null }",
       example: "ade actions run chat.handoffSession --input-json '{\"sourceSessionId\":\"chat-123\",\"targetModelId\":\"openai/gpt-5.6-sol\",\"mode\":\"brief\"}' --json",
     },
+    startSideChat: {
+      description:
+        "Open a chat's side chat (a read-only fork shown inside the chat, at most one per chat) with a first message, "
+        + "or send the message to the side chat it already has.",
+      input: "object { sessionId: string, text: string }",
+      example: "ade actions run chat.startSideChat --input-json '{\"sessionId\":\"chat-123\",\"text\":\"Why did we pick Redis?\"}' --json",
+    },
+    endSideChat: {
+      description: "End a side chat for good. Pass the side chat's id or its main chat's id; with expectedSideSessionId, it refuses when the main chat has a different side chat now.",
+      input: "object { sessionId: string, expectedSideSessionId?: string }",
+      example: "ade actions run chat.endSideChat --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
     setScheduledWorkPaused: {
       description: "Pause or resume every scheduled job on one chat. Reversible; nothing is cancelled.",
       input: "object { sessionId: string, paused: boolean }",

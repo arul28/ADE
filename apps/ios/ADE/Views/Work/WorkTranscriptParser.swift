@@ -1214,6 +1214,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           guard let value = metadata[name] else { return false }
           return !(value is NSNull)
         }
+        if let sideChat = metadata[agentChatSideChatMetadataKey], !(sideChat is NSNull) {
+          parsed.userMessageFromSideChat = true
+        }
       }
       return parsed
     }

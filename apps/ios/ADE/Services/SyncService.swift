@@ -4288,6 +4288,18 @@ final class SyncService: ObservableObject {
   /// logic lives in `SyncService+ChatLaunch.swift`.
   let chatLaunchStore = ChatLaunchStore()
   @Published private(set) var chatLaunchRevision = 0
+  /// Side chats (`/side`, `WorkSideChat.swift`): what this phone learned live
+  /// about a main chat's side chat, from `chat.startSideChat` /
+  /// `chat.endSideChat` answers and `session_meta_updated` events. Keyed by
+  /// main chat id; a nil value records "ended". Wins over cached summaries
+  /// and roster rows until a host summary agrees or the entry ages out.
+  var sideChatPointerOverrides: [String: SyncSideChatPointer] = [:]
+  /// Every side chat id this phone has seen. A side chat is never a Work row,
+  /// even after its main chat's pointer is gone from every cache.
+  var knownSideChatSessionIds: Set<String> = []
+  /// Bumped whenever `sideChatPointerOverrides` changes, so the Work list and
+  /// an open chat re-read their side-chat marks.
+  @Published var sideChatRevision = 0
   /// Set when the connected host advertised `chat.startLaunch` but then
   /// rejected it as an unknown command; new chats fall back to the chained
   /// flow until the next connection resets it.
@@ -23866,6 +23878,8 @@ extension SyncService {
     // still evict the whole cache via `resetChatEventState(clearHistory: true)`.
     for (sessionId, summary) in summaries {
       chatSummaryCache[sessionId] = withCrossMachineHandoffClearApplied(summary)
+      // A side chat ended on another device clears this phone's override too.
+      reconcileSideChatPointer(withHostSummary: summary)
     }
     // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
     // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
@@ -23902,6 +23916,7 @@ extension SyncService {
 
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
     chatSummaryCache[summary.sessionId] = withCrossMachineHandoffClearApplied(summary)
+    reconcileSideChatPointer(withHostSummary: summary)
     refreshActiveSessionsAndSnapshot()
   }
 
@@ -23939,6 +23954,13 @@ extension SyncService {
     // Absent = the patch is about something else; empty = cleared.
     if let rawComments = eventDict?["threadComments"] as? [Any] {
       setThreadComments(decodeThreadComments(rawComments), sessionId: envelope.sessionId)
+    }
+    // The chat's side chat opened (its id) or ended (null). Absent = no change.
+    if let eventDict, eventDict.keys.contains("sideChatSessionId") {
+      noteSideChatPointer(
+        mainSessionId: envelope.sessionId,
+        sideSessionId: eventDict["sideChatSessionId"] as? String
+      )
     }
     if adoptedTitle != nil || adoptedManuallyNamed != nil {
       try? database.updateSessionMeta(
@@ -24036,7 +24058,8 @@ extension SyncService {
     // running roster, but can still appear in the in-app Activity drawer via
     // `allAgents`.
     let runningRecencyCutoff = now.addingTimeInterval(-120)
-    let identitySessionIds = identitySessionIdsForSessions(sessions)
+    // Side chats live inside their main chat, so they are hidden the same way.
+    let hiddenSessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
 
     for session in sessions {
       let isChat = isWorkChatToolType(session.toolType)
@@ -24047,7 +24070,7 @@ extension SyncService {
       // The CTO has its own tab and attention path. A stale local session row
       // may survive before the next roster refresh, so the identity marker is
       // enforced again at the activity/widget projection boundary.
-      guard !identitySessionIds.contains(session.id) else { continue }
+      guard !hiddenSessionIds.contains(session.id) else { continue }
       let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
       let status = session.status.lowercased()
       let isFailedStatus = canonical.phase == .failed
@@ -25192,11 +25215,12 @@ extension SyncService {
     let lanes = database.fetchLanes(includeArchived: false)
     let visibleLaneIds = Set(lanes.map(\.id))
     let sessions = localSessions()
-    let identitySessionIds = identitySessionIdsForSessions(sessions)
+    // Side chats live inside their main chat, so they are hidden the same way.
+    let hiddenSessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
     let scopedSessions = sessions.filter { session in
       session.archivedAt == nil
         && visibleLaneIds.contains(session.laneId)
-        && !identitySessionIds.contains(session.id)
+        && !hiddenSessionIds.contains(session.id)
     }
     let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))
     let visibleSessions = scopedSessions.filter { session in
@@ -26668,5 +26692,184 @@ extension SyncService {
       }
     }
     return nil
+  }
+}
+
+// MARK: - Side chats (`/side`)
+
+/// What the phone learned live about a main chat's side chat. `sideSessionId`
+/// nil means the side chat ended.
+struct SyncSideChatPointer: Equatable {
+  var sideSessionId: String?
+  var learnedAt: Date
+
+  /// Still the newer word: inside the trust window the host's own answers
+  /// (summaries, the roster) may not have caught up. After it, they win.
+  func isTrusted(at now: Date = Date()) -> Bool {
+    now.timeIntervalSince(learnedAt) <= SyncService.sideChatPointerTrustWindow
+  }
+}
+
+/// `chat.startSideChat` answer: the side chat, and whether this call made it.
+struct AgentChatStartSideChatResult: Decodable, Equatable {
+  var session: AgentChatSession
+  var created: Bool
+}
+
+/// `chat.endSideChat` answer: the side chat that was ended, or nil.
+struct AgentChatEndSideChatResult: Decodable, Equatable {
+  var endedSessionId: String?
+}
+
+extension SyncService {
+  /// How long a live pointer outranks a host summary that disagrees with it. A
+  /// summary fetched before the side chat opened can land after the start
+  /// answer; past this window a disagreeing host summary is the fresher word
+  /// (another device ended it while this phone was not watching).
+  static let sideChatPointerTrustWindow: TimeInterval = 30
+
+  /// `chat.startSideChat` on the main chat's own machine: opens the chat's side
+  /// chat (or returns the one it has) and sends `text` to it. Empty text only
+  /// opens it. The side chat lives on the main chat's machine, so its routing
+  /// is copied from the main chat before anything reads or sends for it.
+  func startSideChat(mainSessionId: String, text: String) async throws -> AgentChatStartSideChatResult {
+    let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireInvokableChatAction("chat.startSideChat", sessionId: mainId)
+    let scope = chatCommandScope(for: mainId)
+    let result = try await sendDecodableCommand(
+      action: chatActionName("chat.startSideChat", sessionId: mainId),
+      args: ["sessionId": mainId, "text": text],
+      disconnectOnTimeout: false,
+      // Matches the brain's own budget: a fork can run a provider process.
+      timeoutNanoseconds: 120_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatStartSideChatResult.self
+    )
+    adoptSideChatScope(sideSessionId: result.session.sessionId, mainSessionId: mainId)
+    noteSideChatPointer(mainSessionId: mainId, sideSessionId: result.session.sessionId)
+    return result
+  }
+
+  /// `chat.endSideChat`, sent with the MAIN chat's id (the brain takes either)
+  /// so it rides the main chat's routing, which is always registered.
+  @discardableResult
+  /// `expectedSideSessionId` is the side chat the panel shows: when another
+  /// device replaced it, the host refuses instead of ending one never shown here.
+  func endSideChat(mainSessionId: String, expectedSideSessionId: String? = nil) async throws -> String? {
+    let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireInvokableChatAction("chat.endSideChat", sessionId: mainId)
+    let scope = chatCommandScope(for: mainId)
+    var args: [String: Any] = ["sessionId": mainId]
+    if let expected = syncNonEmpty(expectedSideSessionId) { args["expectedSideSessionId"] = expected }
+    let result = try await sendDecodableCommand(
+      action: chatActionName("chat.endSideChat", sessionId: mainId),
+      args: args,
+      disconnectOnTimeout: false,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatEndSideChatResult.self
+    )
+    noteSideChatPointer(mainSessionId: mainId, sideSessionId: nil)
+    return result.endedSessionId
+  }
+
+  /// Side chats this phone knows of: never Work rows, widget agents or Hub rows.
+  func sideChatHiddenSessionIds() -> Set<String> {
+    var ids = knownSideChatSessionIds
+    for pointer in sideChatPointerOverrides.values {
+      if let side = pointer.sideSessionId { ids.insert(side) }
+    }
+    // Runs on every activity refresh: plain emptiness checks, no trimming.
+    for (id, summary) in chatSummaryCache {
+      if summary.sideChatParentSessionId?.isEmpty == false { ids.insert(id) }
+      if let side = summary.sideChatSessionId, !side.isEmpty { ids.insert(side) }
+    }
+    // The host leaves side chats out of the roster and names each one on its
+    // main chat's row, which may be all this phone knows of it.
+    for project in rosterProjects {
+      for chat in project.chats {
+        if let side = chat.sideChatSessionId, !side.isEmpty { ids.insert(side) }
+      }
+    }
+    return ids
+  }
+
+  /// Whether this chat's machine can open a side chat at all (an older brain
+  /// does not advertise the command).
+  func supportsSideChat(mainSessionId: String) -> Bool {
+    supportsChatRemoteAction("chat.startSideChat", sessionId: mainSessionId)
+  }
+
+  /// The main chat's side chat right now, or nil. Live pointer first (an open
+  /// chat also hears the brain's `session_meta_updated`), then the chat's
+  /// summary (a roster stand-in carries the roster's pointer), then the
+  /// active project's roster row. Read on every render of an open chat, so the
+  /// roster scan runs only when no summary is known.
+  func sideChatSessionId(forMainSession mainSessionId: String, summary: AgentChatSessionSummary? = nil) -> String? {
+    let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !mainId.isEmpty else { return nil }
+    if let pointer = sideChatPointerOverrides[mainId], pointer.isTrusted() {
+      return pointer.sideSessionId
+    }
+    if let known = summary ?? chatSummaryCache[mainId] {
+      return syncNonEmpty(known.sideChatSessionId)
+    }
+    return syncNonEmpty(activeProjectRosterSession(sessionId: mainId)?.sideChatSessionId)
+  }
+
+  /// Record a side chat opening (an id) or ending (nil) for a main chat.
+  func noteSideChatPointer(mainSessionId: String, sideSessionId: String?) {
+    let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !mainId.isEmpty else { return }
+    let sideId = syncNonEmpty(sideSessionId?.trimmingCharacters(in: .whitespacesAndNewlines))
+    if let sideId { knownSideChatSessionIds.insert(sideId) }
+    let previous = sideChatPointerOverrides[mainId]
+    sideChatPointerOverrides[mainId] = SyncSideChatPointer(sideSessionId: sideId, learnedAt: Date())
+    if var cached = chatSummaryCache[mainId], cached.sideChatSessionId != sideId {
+      cached.sideChatSessionId = sideId
+      chatSummaryCache[mainId] = cached
+    }
+    if previous?.sideSessionId != sideId || previous == nil {
+      sideChatRevision &+= 1
+    }
+  }
+
+  /// A host summary is authoritative once it agrees with the live pointer, or
+  /// once the pointer is old enough that the summary is the fresher word.
+  func reconcileSideChatPointer(withHostSummary summary: AgentChatSessionSummary) {
+    if syncNonEmpty(summary.sideChatParentSessionId) != nil {
+      knownSideChatSessionIds.insert(summary.sessionId)
+    }
+    if let side = syncNonEmpty(summary.sideChatSessionId) {
+      knownSideChatSessionIds.insert(side)
+    }
+    guard let pointer = sideChatPointerOverrides[summary.sessionId] else { return }
+    let hostSide = syncNonEmpty(summary.sideChatSessionId)
+    let agrees = hostSide == pointer.sideSessionId
+    let aged = !pointer.isTrusted()
+    // A roster-derived summary carries the roster's pointer, which is the
+    // host's word once the trust window has passed (a side chat another device
+    // ended); inside the window it may simply not have caught up yet.
+    if summary.rosterDerived == true && !aged { return }
+    guard agrees || aged else { return }
+    sideChatPointerOverrides.removeValue(forKey: summary.sessionId)
+    if !agrees { sideChatRevision &+= 1 }
+  }
+
+  /// Route a side chat the way its main chat routes: same machine, same
+  /// project. Runs before the side chat's view reads its engine key.
+  func adoptSideChatScope(sideSessionId: String, mainSessionId: String) {
+    let sideId = sideSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let mainId = mainSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sideId.isEmpty, !mainId.isEmpty, sideId != mainId else { return }
+    knownSideChatSessionIds.insert(sideId)
+    if let remote = remoteMachineChatsBySession[mainId] {
+      viewOwnedRemoteChatIds.insert(sideId)
+      remoteMachineChatsBySession[sideId] = remote
+    }
+    if let scope = chatCommandScopeBySession[mainId] {
+      chatCommandScopeBySession[sideId] = scope
+    }
   }
 }

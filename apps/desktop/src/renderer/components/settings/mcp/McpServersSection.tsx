@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
-import { CALLER_MCP_SUPPORT } from "../../../../shared/callerMcpServers";
+import { REGISTRY_MCP_PROVIDER_IDS, registryMcpSupport } from "../../../../shared/callerMcpServers";
 import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
   MCP_TRANSPORT_LABEL,
@@ -53,6 +53,7 @@ const PROVIDER_NAME: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  kimi: "Kimi",
 };
 
 function providerName(id: string): string {
@@ -567,28 +568,29 @@ function MissingSecret({
 }
 
 /**
+ * The agents ADE does not hand registry servers to yet. Written by hand: it
+ * is the one row here that `REGISTRY_MCP_PROVIDER_IDS` does not drive, so it changes
+ * only when someone edits it.
+ */
+const NOT_SERVED_YET = "Copilot, Grok, Qwen, Devin, and personal chats";
+
+/**
  * Which agents the registry reaches.
  *
- * The shipped providers are read off `CALLER_MCP_SUPPORT`, the table the launch
+ * The shipped providers are read off `registryMcpSupport`, which the launch
  * path itself consults, so a provider that gains or loses a transport changes
  * this page without an edit here. The last row is {@link NOT_SERVED_YET}, which
  * no table knows.
  */
-/**
- * The agents ADE does not hand registry servers to yet. Written by hand: it
- * is the one row here that `CALLER_MCP_SUPPORT` does not drive, so it changes
- * only when someone edits it.
- */
-const NOT_SERVED_YET = "Copilot, Grok, Kimi, Qwen, Devin, and personal chats";
-
 function WhoGetsThem() {
   const groups = useMemo(() => {
     const all: string[] = [];
     const partial: Array<{ id: string; transports: string[] }> = [];
     const none: string[] = [];
-    for (const [id, support] of Object.entries(CALLER_MCP_SUPPORT)) {
-      const blocked: readonly string[] = "unsupportedTransports" in support ? support.unsupportedTransports : [];
-      if (support.level === "unsupported") none.push(id);
+    for (const id of REGISTRY_MCP_PROVIDER_IDS) {
+      const support = registryMcpSupport(id);
+      const blocked: readonly string[] = support?.unsupportedTransports ?? [];
+      if (!support) none.push(id);
       else if (blocked.length) partial.push({ id, transports: blocked.map((transport) => transport.toUpperCase()) });
       else all.push(id);
     }

@@ -1193,9 +1193,19 @@ turn does not read either table.
 
 ### Pi
 
-Pi's built-in tool registry contains only `read`, `bash`, `edit`, and `write`,
-and its `tools` option is one flat allowlist — anything unlisted is dropped.
-Passing ADE's generic `grep`/`find`/`ls` names would make the SDK launch fail.
+Pi's built-in tools are `read`, `bash`, `edit`, `write`, the read-only
+`grep`, `find`, and `ls`, and (Windows) `powershell`. The SDK's `tools` option
+is one flat allowlist — anything unlisted is never registered. The worker
+grants exactly those names and rejects any other. `powershell` is granted only
+on Windows (the policy takes the brain's `process.platform`, which is the
+chat's machine), in the same modes as `bash` and behind the same gate; Pi runs
+it through `pwsh.exe`, else Windows PowerShell. With extensions on, the worker
+cannot list every tool in advance, so it passes `excludeTools` with every
+built-in it did not grant, and `+name` entries for the ones it did: that
+session starts on Pi's `defaultTools` setting (`read`, `bash`, `edit`, `write`
+unless the user changed it), so without them `grep`, `find`, `ls` and
+`powershell` would never switch on, and without `excludeTools` the setting
+could switch an ungranted one on ungated.
 
 Chat and tracked-CLI Pi sessions therefore use **two different mappings**, both
 in `shared/cliLaunch.ts`:
@@ -1205,12 +1215,19 @@ in `shared/cliLaunch.ts`:
 - `piSdkToolPolicyForPermissionMode` — the chat mapping, where ADE can hold each
   call behind an approval card.
 
-| Mode | `tools` | Gated behind an approval card | `readOnly` |
-|---|---|---|:-:|
-| `plan` | `read` | — | yes |
-| `edit` | `read`, `edit`, `write` | — | no |
-| `full-auto` | `read`, `bash`, `edit`, `write` | — | no |
-| `default` (also `auto`, `config-toml`) | `read`, `bash`, `edit`, `write` | `bash`, `edit`, `write` | no |
+| Mode | `tools` | Gated behind an approval card | MCP | `readOnly` |
+|---|---|---|---|:-:|
+| `plan` | `read`, `grep`, `find`, `ls` | — | off | yes |
+| `edit` | `read`, `edit`, `write`, `grep`, `find`, `ls` | MCP tools | ask | no |
+| `full-auto` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | — | allow | no |
+| `default` (also `auto`, `config-toml`) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | `bash`, `edit`, `write`, MCP tools | ask | no |
+
+On Windows `powershell` is added next to `bash` in `default` and `full-auto`,
+and gated in `default`. `grep`, `find`, and `ls` never ask: they cannot change
+the workspace. The tracked-CLI mapping gets them in every mode too (`--tools`
+accepts them; a mode whose list is only read tools also passes `--no-mcp`).
+`edit` mode asks before an MCP call because an MCP tool can do anything a
+shell can, as Claude's accept-edits mode does.
 
 `default` in a Pi chat therefore means **ask before anything that changes the
 workspace**, not read-only. Every workspace-changing capability is offered
@@ -1260,11 +1277,106 @@ the user's global defaults (`setDefaultModelAndProvider`,
 starts on. The worker's settings manager is built on a read-only storage
 (`createPiReadOnlySettingsStorage`), so the user's `settings.json` is read and
 every write is dropped. The picks still land in the session file, which is the
-session's own record.
+session's own record. One exception: Pi's "Sign in with ChatGPT" (Pi 0.99+, on
+the `openai` provider) refuses to run without an installation id, so `login`
+passes `LoginOptions.getDeviceId`. It reads `deviceId` from the user's global
+`settings.json`, the id the Pi CLI's own `/login` uses, and when there is none
+has Pi's settings manager create it: one field, written under Pi's lock.
+
+A worker started with `readOnly: true` runs on `PI_READ_ONLY_TOOLS` (`read`,
+`grep`, `find`, `ls`) plus `ask_user` when asked for. `tools` may narrow that
+set but not widen it, `approvalTools` must be empty, and extensions stay off,
+because their tools can write. `ready.activeTools` reports what Pi declares to
+the model.
+
+`grep` and `find` run ripgrep and fd. Pi uses a copy in `<agentDir>/bin` or on
+`PATH`, and otherwise downloads the latest release from GitHub on first use,
+unpinned. ADE ships neither binary as a tool of its own (copies exist only
+inside other providers' packages), so the chat worker leaves `grep` out of a
+session when no `rg` is found there, and `find` when no `fd` is
+(`withoutMissingSearchBinaries`); the model then searches with `bash` or `ls`,
+and Pi never reaches its download. Nothing is switched off for what the session
+spawns. A tracked Pi terminal is unchanged: Pi's interactive mode fetches both
+at startup, whatever `--tools` says.
+
+#### Pi MCP servers
+
+Pi's SDK loads no built-in extension, so the worker adds Pi's MCP support as
+inline extension factories when the init carries `mcp`: `createMcpExtension()`
+(which reads `mcp.json` and connects the servers on `session_start`), plus
+`createCodemodeExtension({ models: false })` and `createToolSearchExtension()`,
+the tools that reach servers with Pi's default `codemode` exposure and with
+`deferred`. Codemode scripts get no `models` handle: running a classifier or
+image model costs money on the user's credentials, and no card asks first. All
+three are `hidden` and `replaceable`, as in Pi's CLI, so a user extension that
+brings its own MCP support replaces Pi's. They load whether or not the user's
+extensions do (`noExtensions` only covers file-based ones), and `bindExtensions`
+runs for MCP alone, since it fires `session_start`. MCP needs the same
+`projectTrusted: false` settings manager as extensions; without one it stays
+off.
+
+- **Which servers.** The agent directory's `mcp.json` (Pi's user scope), and a
+  project's `.pi/mcp.json` only when the user trusted that folder in Pi itself
+  (`ProjectTrustStore`, Pi's `trust.json`); the worker then loads the config
+  with Pi's internal `loadMcpConfig`, and a Pi build without it reads the
+  agent directory's file only. On top, the MCP registry's servers
+  (`registryMcpServersForLaunch`) are registered with `pi.registerMcpServer`,
+  values included, over the worker IPC. Each `env` and header value is
+  escaped (`$` → `$$`, a leading `!` → `$!`) so Pi keeps a secret as written
+  instead of reading it as `${NAME}` or `!command`. A failed registration
+  (Pi counts names that differ only in `-` and `_` as one) is reported as an
+  extension load notice, and the other servers still start.
+- **Who.** `startPiRuntime` decides with `piMcpModeFor`: no MCP in `plan`
+  mode, plan interaction mode, or a side chat (a `readOnly` worker refuses
+  `mcp`). Strict MCP chats, the light profile and an SDK host's personal chat
+  skip the user's `mcp.json`, as they skip Claude's, and the registry gives
+  those none either, so they get no MCP. An assistant chat gets the user's
+  `mcp.json` but not the registry (`registryMcpServersForLaunch` leaves
+  personal chats out). The registry's servers are read only when a worker
+  starts (`piMcpInitWithRegistry`).
+- **Allowlist.** An MCP tool the `tools` allowlist does not match stays
+  callable from codemode and `tool_search` but is never declared, so a
+  `direct` server would reach the model with no tools. The worker therefore
+  adds `codemode`, `tool_search`, `mcp__*` and the three resource tools
+  (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
+  to the allowlist. In the extensions path nothing filters them.
+- **Approval.** When the mode asks, an `ade-mcp-approval` inline extension
+  registers a `tool_call` hook that sends every `mcp__*` and resource tool
+  call through the same approval gate as `bash` (one gate per worker, so
+  "allow for this chat" is per tool name). Calls a codemode script makes go
+  through the hook too, as nested calls. A denial returns `{ block: true }`
+  with the same message a denied built-in gets. If that extension fails to
+  load, the worker fails the chat start rather than run MCP calls unasked.
+- **Environment.** The worker's environment is an allowlist
+  (`buildPiWorkerEnvironment`). The `$NAME` references in the agent
+  directory's `mcp.json` (`env`, `headers`, `oauth.clientSecret`) are added
+  to it, as `models.json` references already were, so they resolve as they do
+  in `pi`. A project file's references are not. Stdio servers inherit the
+  worker's environment plus their own `env`.
+
+Pi's MCP OAuth (its `mcp-auth.json`, `/mcp login`) is not reachable from an
+ADE chat, which has no `/mcp`; a registry server signed in through Settings
+reaches Pi with its `Authorization` header.
+
+The worker's `fork` request copies one native session into a new session file
+in the worker's cwd and session store, with Pi's own branching
+(`SessionManager.createBranchedSession`, which `/fork` and `/clone` use). It
+copies the root-to-cut path of the source's active branch, keeps labels,
+gives the copy a new id, and sets `parentSession` to the source file. The
+source is never written. Pi's loader appends a newline to a file whose last
+line is unterminated, so the worker first copies the source's complete lines
+into a private snapshot and has Pi open that. The source may therefore be a
+live session mid-turn in another worker. Without `entryId`, the cut is the
+last entry at which no turn was in flight: after an assistant response that
+does not hand over to tools, and before the next user or steering message.
+Any initialized worker can serve it, an `inventoryOnly` one included.
 
 Pi's tool allowlist and extension binding are fixed when the worker is created,
 so `startPiRuntime` records a `toolPolicyKey` (tools + approval tools +
-extensions on/off) on the runtime and restarts the worker whenever it changes.
+extensions on/off + the MCP mode) on the runtime and restarts the worker
+whenever it changes. The MCP servers are not in the key: a running chat keeps
+the servers it started with, so a renewed sign-in or an edited registry server
+does not restart the worker between turns.
 Without that, a session switched from `default` to `plan` would keep its write
 tools until something else happened to restart it.
 
@@ -1872,9 +1984,12 @@ fork --through-turn <turn-id>`). `sliceTranscriptThroughTurn` cuts the source
 transcript after that turn's last envelope and refuses a turn that is missing or
 never got its `done`. The latest turn is an ordinary full fork. An earlier one
 forks natively only where the provider can cut at a turn — Codex to Codex on a
-server with `thread/fork beforeTurnId` (the id of the next turn) — and
+server with `thread/fork beforeTurnId` (the id of the next turn), Copilot, and
+Pi to Pi (the worker's `fork` with the `entryId` just before the next turn's
+prompt, found in Pi's session file by `piForkCutBeforePrompt`) — and
 everywhere else the kept turns travel as a transcript replay, the same portable
-context a cross-provider fork uses. The new chat's copied history holds only
+context a cross-provider fork uses. Kimi forks natively only as a whole chat
+(ACP `session/fork` carries no cut point), so its earlier-turn fork replays. The new chat's copied history holds only
 the kept turns; the source chat is not changed. The desktop fork form shows the
 chosen point ("From the turn that ended at …") with a **Whole chat** escape.
 

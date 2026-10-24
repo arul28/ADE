@@ -184,6 +184,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var processed: Bool? = nil
   /// True for a user message that ADE wrote for the user (a wake, a relay).
   var writtenByAde = false
+  /// True for a message the chat's side chat sent here; the bubble says so.
+  var fromSideChat = false
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -717,14 +719,16 @@ struct WorkActiveSendCapability: Equatable {
     // no cancel-and-resend, so interrupt just stops the turn.
     case "copilot":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "GitHub Copilot", interruptContinues: false)
-    // The three ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
+    // Qwen and Grok are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
     // so the next person diffing this table against the TS one sees them here.
     case "qwen":
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Qwen", interruptContinues: false)
+    // Kimi adds an interrupt ADE runs itself: stop the turn, then send the
+    // message as the next one, so it continues the way Cursor's does.
     case "kimi":
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "Kimi", interruptContinues: false)
+      return WorkActiveSendCapability(modes: [.queue, .interrupt], agentLabel: "Kimi", interruptContinues: true)
     case "grok":
       return WorkActiveSendCapability(modes: [.queue], agentLabel: "Grok", interruptContinues: false)
     default:
@@ -2285,6 +2289,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var textPhase: String? = nil
   /// True for a user message that ADE wrote for the user, not the reader.
   var userMessageWrittenByAde = false
+  /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
+  var userMessageFromSideChat = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

@@ -305,6 +305,11 @@ struct WorkSessionDestinationView: View {
   /// `showsLaneActions` and `compactComposer` so none of the three drifts into
   /// standing for the others.
   var liveRedirectOnlySends = false
+  /// Set when this destination shows a side chat (`/side`) inside its main
+  /// chat's panel: the main chat's id. The side chat is read-only on its main
+  /// chat's model, so the composer hides those controls, and it has no lane
+  /// chrome of its own.
+  var sideChatParentSessionId: String?
   /// The Work tab's tools column, when this chat is shown in a wide display's
   /// detail column. Nil for every pushed chat, so phone layouts never mount it.
   var duoPane: DuoWorkPaneModel?
@@ -344,6 +349,7 @@ struct WorkSessionDestinationView: View {
     personalChatMachineKey: String? = nil,
     compactComposer: Bool = false,
     liveRedirectOnlySends: Bool = false,
+    sideChatParentSessionId: String? = nil,
     duoPane: DuoWorkPaneModel? = nil,
     duoPaneOpen: Bool = false,
     duoShowsSidebar: Bool = false,
@@ -372,6 +378,7 @@ struct WorkSessionDestinationView: View {
     self.personalChatMachineKey = personalChatMachineKey
     self.compactComposer = compactComposer
     self.liveRedirectOnlySends = liveRedirectOnlySends
+    self.sideChatParentSessionId = sideChatParentSessionId
     self.duoPane = duoPane
     self.duoPaneOpen = duoPaneOpen
     self.duoShowsSidebar = duoShowsSidebar
@@ -388,6 +395,11 @@ struct WorkSessionDestinationView: View {
     // routes this chat's frames to. Both calls are idempotent, so a re-init of
     // this struct costs a dictionary lookup.
     if let sync = SyncService.shared {
+      // A side chat routes exactly like its main chat (same machine, same
+      // project), including a main chat routed by the Work list's row.
+      if let sideChatParentSessionId {
+        sync.adoptSideChatScope(sideSessionId: sessionId, mainSessionId: sideChatParentSessionId)
+      }
       workRegisterChatCommandScope(
         sync,
         sessionId: sessionId,
@@ -565,6 +577,9 @@ struct WorkSessionDestinationView: View {
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
   @State var composerDraftRestore: WorkChatComposerDraftRestore?
+  /// The side-chat panel (`/side`) over this chat, and what it shows.
+  @State var sideChatPanelPresented = false
+  @State var sideChatPanelState: WorkSideChatPanelState = .closed
 
   var initialOpeningPromptNeedsManualRetry: Bool {
     initialOpeningPromptDispatchHandled
@@ -763,6 +778,9 @@ struct WorkSessionDestinationView: View {
   var sessionHeaderTrailingControls: some View {
     if let session, isChatSession(session) {
       HStack(spacing: 8) {
+        if currentSideChatSessionId != nil {
+          WorkSideChatHeaderButton { openSideChatPanel() }
+        }
         sessionHeaderMenu(session, toolbarLabel: false)
       }
     } else {
@@ -1648,6 +1666,9 @@ struct WorkSessionDestinationView: View {
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }
+      .sheet(isPresented: $sideChatPanelPresented) {
+        sideChatPanel
+      }
       .sheet(isPresented: $chatInfoPresented) {
         chatInfoDetailsContent
           .presentationDetents([.medium, .large])
@@ -2273,14 +2294,20 @@ struct WorkSessionDestinationView: View {
     } else {
       restoreCancelledQueueAction = nil
     }
+    var summaryContext = WorkChatSummaryRenderContext(
+      composerChatSummary,
+      parentTitle: composerChatSummary?.orchestrationParentSessionId.flatMap { parentId in
+        syncService.chatSummaryCache[parentId]?.title
+      }
+    )
+    if isSideChatSurface { summaryContext.isSideChat = true }
+    summaryContext.offersSideChat = offersSideChat
+    let openSideChatAction: (() -> Void)? = currentSideChatSessionId == nil
+      ? nil
+      : { openSideChatPanel() }
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
-      chatSummaryContext: WorkChatSummaryRenderContext(
-        composerChatSummary,
-        parentTitle: composerChatSummary?.orchestrationParentSessionId.flatMap { parentId in
-          syncService.chatSummaryCache[parentId]?.title
-        }
-      ),
+      chatSummaryContext: summaryContext,
       thread: thread,
       artifacts: artifactsForView,
       cardExpansionSnapshot: cardExpansion,
@@ -2441,7 +2468,8 @@ struct WorkSessionDestinationView: View {
           ADEHaptics.light()
           syncService.linearPaneAttachSessionId = session.id
           syncService.linearPanePresented = true
-        }
+        },
+      onOpenSideChat: openSideChatAction
     )
   }
 
@@ -3485,6 +3513,7 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.personalChat == rhs.personalChat
       && lhs.personalChatMachineKey == rhs.personalChatMachineKey
       && lhs.liveRedirectOnlySends == rhs.liveRedirectOnlySends
+      && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
   }
 }
 

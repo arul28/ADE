@@ -298,6 +298,14 @@ import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTa
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { SideChatHeaderButton } from "./SideChatBadge";
+import {
+  noteSideChat,
+  noteSideChatStartFailed,
+  noteSideChatStarting,
+  resolveSideChatView,
+} from "./sideChatState";
+import { parseSideSlashCommand, sideChatUnavailableReason } from "../../../shared/sideChat";
 import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
@@ -10040,6 +10048,10 @@ export function AgentChatPane({
         if (meta.orchestrationParentSessionId !== undefined) {
           summaryPatch.orchestrationParentSessionId = meta.orchestrationParentSessionId ?? undefined;
         }
+        if (meta.sideChatSessionId !== undefined) {
+          summaryPatch.sideChatSessionId = meta.sideChatSessionId ?? undefined;
+          noteSideChat(envelope.sessionId, meta.sideChatSessionId);
+        }
         if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
@@ -13879,6 +13891,51 @@ export function AgentChatPane({
     selectedSessionId,
   ]);
 
+  /**
+   * `/side <question>`: ask the chat's read-only side chat (opening it when the
+   * chat has none) in the Work tools pane, instead of sending to this chat. The
+   * side chat runs on this chat's machine, so the call carries its pin. A chat
+   * that cannot have one (a side chat itself, a provider with no fork) says
+   * why, and so does a draft with attachments, which a side chat cannot take.
+   */
+  const openSideChatFromComposer = useCallback((prompt: string, draftText: string, hasAttachments: boolean): boolean => {
+    const mainSessionId = selectedSessionId;
+    if (!mainSessionId) return false;
+    const unavailable = sideChatUnavailableReason(selectedSession ?? { provider: sessionProvider });
+    if (unavailable) {
+      setError(unavailable);
+      return true;
+    }
+    if (hasAttachments) {
+      // Sending `/side …` on to the main chat as a prompt would be the one
+      // thing the user did not ask for.
+      setError("Side chats take text only. Remove the attachments and context, then send /side again.");
+      return true;
+    }
+    const pin = chatRuntimePinRef.current;
+    setError(null);
+    updateComposerDraft("");
+    const alreadyOpen = resolveSideChatView(mainSessionId, selectedSession?.sideChatSessionId ?? null).kind === "open";
+    if (!alreadyOpen) noteSideChatStarting(mainSessionId, prompt);
+    workSidebar.setTool("side-chat");
+    void window.ade.agentChat.startSideChat({ sessionId: mainSessionId, text: prompt }, pin)
+      .then((result) => noteSideChat(mainSessionId, result.session.id))
+      .catch((startError: unknown) => {
+        const message = errorMessage(startError);
+        if (!alreadyOpen) {
+          noteSideChatStartFailed(mainSessionId, prompt, message);
+          return;
+        }
+        setError(message);
+        // The question went nowhere: put it back, unless the user has typed
+        // something new or moved to another chat meanwhile.
+        if (!draftValueRef.current.trim() && selectedSessionIdRef.current === mainSessionId) {
+          updateComposerDraft(draftText);
+        }
+      });
+    return true;
+  }, [selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -13934,6 +13991,15 @@ export function AgentChatPane({
       }
       return;
     }
+    const sideCommand = selectedSessionId ? parseSideSlashCommand(draft) : null;
+    // Anything besides the text (files, context chips, picked elements) is
+    // something a side chat cannot take, so `/side` with it is refused.
+    const sideCommandCarriesContext = attachments.length > 0
+      || contextAttachments.length > 0
+      || iosElementContextItems.length > 0
+      || appControlContextItems.length > 0
+      || builtInBrowserContextItems.length > 0;
+    if (sideCommand && openSideChatFromComposer(sideCommand.prompt, draft, sideCommandCarriesContext)) return;
     const readAmbientPrefix = () => {
       const context = ambientTurnContext?.()?.trim();
       return context ? `${context}\n\n` : "";
@@ -14830,6 +14896,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    openSideChatFromComposer,
     isPersonalPane, attachments,
     ambientTurnContext,
     buildNativeControlPayload,
@@ -16930,6 +16997,11 @@ export function AgentChatPane({
       <AgentBrowserPresenceHeaderButton
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
+      />
+      <SideChatHeaderButton
+        mainSessionId={selectedSession?.sideChatParentSessionId ? null : selectedSessionId}
+        rowSideChatSessionId={selectedSession?.sideChatSessionId ?? null}
+        onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
       {hasAttachedTerminal ? (

@@ -99,6 +99,7 @@ import {
   captureAppleDeviceAnalytics,
   captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
+  captureChatSideChatAnalytics,
   captureChatCompactionAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -4775,6 +4776,11 @@ app.whenReady().then(async () => {
         event,
       }),
       onChatHandoffReplay: (event) => captureChatHandoffReplayAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
+      onSideChatOutcome: (event) => captureChatSideChatAnalytics({
         analytics: productAnalyticsService,
         projectId,
         event,

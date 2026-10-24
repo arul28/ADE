@@ -20,7 +20,7 @@ export const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent" as const;
 
 export type PiInstallation = {
   /**
-   * ADE's pinned Pi CLI script (`dist/cli.js`). A JavaScript file: run it with
+   * ADE's pinned Pi CLI script (`dist/bundle/cli.js`). A JavaScript file: run it with
    * a Node >= PI_SDK_MIN_NODE, never directly.
    */
   cliPath: string | null;

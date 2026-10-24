@@ -1315,6 +1315,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var spawnKind: AgentChatSpawnKind? = nil
   /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
   var subagentTakeoverPromptShownAt: String? = nil
+  /// Set on a side chat (`/side`): the main chat it was opened from. A side
+  /// chat lives inside its main chat and is never listed on its own.
+  var sideChatParentSessionId: String? = nil
+  /// Set on a main chat while it has a side chat: that side chat's id.
+  var sideChatSessionId: String? = nil
   /// This chat's move to another machine, owned by the source brain. Absent on
   /// older hosts and for a chat that never moved.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
@@ -1407,6 +1412,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
       && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
+      && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
+      && lhs.sideChatSessionId == rhs.sideChatSessionId
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
       && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
   }
@@ -2192,6 +2199,10 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
   var subagentTakeoverPromptShownAt: String? = nil
+  /// Side chats (`/side`): set on a side chat (its main chat) and on a main
+  /// chat that has one (the side chat). See `WorkSideChat.swift`.
+  var sideChatParentSessionId: String? = nil
+  var sideChatSessionId: String? = nil
 
   enum CodingKeys: String, CodingKey {
     case id
@@ -2240,6 +2251,8 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case orchestrationParentSessionId
     case spawnKind
     case subagentTakeoverPromptShownAt
+    case sideChatParentSessionId
+    case sideChatSessionId
   }
 
   init(from decoder: Decoder) throws {
@@ -2290,6 +2303,8 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     subagentTakeoverPromptShownAt = try container.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
+    sideChatParentSessionId = try container.decodeIfPresent(String.self, forKey: .sideChatParentSessionId)
+    sideChatSessionId = try container.decodeIfPresent(String.self, forKey: .sideChatSessionId)
   }
 
   func encode(to encoder: Encoder) throws {
@@ -2337,6 +2352,8 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
     try container.encodeIfPresent(spawnKind, forKey: .spawnKind)
     try container.encodeIfPresent(subagentTakeoverPromptShownAt, forKey: .subagentTakeoverPromptShownAt)
+    try container.encodeIfPresent(sideChatParentSessionId, forKey: .sideChatParentSessionId)
+    try container.encodeIfPresent(sideChatSessionId, forKey: .sideChatSessionId)
   }
 }
 
@@ -3075,6 +3092,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// so `AgentChatEvent.userMessage` does not grow. A scene reads it: only a
   /// message the reader wrote answers a scene.
   var userMessageWrittenByAde: Bool = false
+  /// True for a `user_message` a side chat sent to this chat because the user
+  /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
+  var userMessageFromSideChat: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3149,6 +3169,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var failDetail: String?
     var summary: String?
     var metadataMarksAdeAuthor = false
+    var metadataMarksSideChat = false
 
     private struct MetadataKey: CodingKey {
       var stringValue: String
@@ -3198,6 +3219,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           let key = MetadataKey(name)
           return metadata.contains(key) && (try? metadata.decodeNil(forKey: key)) == false
         }
+        let sideChatKey = MetadataKey(agentChatSideChatMetadataKey)
+        metadataMarksSideChat = metadata.contains(sideChatKey)
+          && (try? metadata.decodeNil(forKey: sideChatKey)) == false
       }
     }
   }
@@ -3264,6 +3288,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopSource = rawEvent?.stopSource
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
+    userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -3733,6 +3758,9 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 
 /// The `metadata` markers of a `user_message` that ADE wrote for the user.
 /// The same list as desktop `isReaderAuthoredMessage`; keep the two the same.
+/// `metadata.sideChat` on a message a side chat sent to its main chat.
+let agentChatSideChatMetadataKey = "sideChat"
+
 let agentChatAdeAuthoredMetadataKeys = [
   "boardMove", "prWatchWake", "scheduledWake", "spawnCompletion",
   "agentRelay", "hostContinuation", "usageLimitResume",
@@ -5690,6 +5718,9 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Passive attribution only: it does not nest the row under the launcher.
   var launchedBySessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// The chat's side chat (`/side`) while it has one, projected by the host
+  /// onto session rows and roster rows. Drives the row's side-chat mark.
+  var sideChatSessionId: String? = nil
   /// The chat's live goal (Codex `thread/goal`, Claude `/goal`), projected by
   /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
   /// read back from the database, which has no column for it.
@@ -5765,6 +5796,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.launchedBySessionId == rhs.launchedBySessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.sideChatSessionId == rhs.sideChatSessionId
       && lhs.activeGoal == rhs.activeGoal
       && lhs.claudeTag == rhs.claudeTag
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
@@ -5823,6 +5855,7 @@ extension TerminalSessionSummary {
     case orchestrationParentSessionId
     case launchedBySessionId
     case spawnKind
+    case sideChatSessionId
     case activeGoal
     case claudeTag
     case crossMachineHandoff
@@ -5879,6 +5912,7 @@ extension TerminalSessionSummary {
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     launchedBySessionId = try container.decodeIfPresent(String.self, forKey: .launchedBySessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    sideChatSessionId = try? container.decodeIfPresent(String.self, forKey: .sideChatSessionId)
     // Tolerant: a goal shape this build does not know drops the decoration,
     // never the row.
     activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)

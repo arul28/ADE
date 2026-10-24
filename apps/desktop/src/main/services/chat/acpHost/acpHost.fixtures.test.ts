@@ -2,7 +2,7 @@
  * Dialect claims vs captured initialize responses from real binaries.
  *
  * These fixtures were recorded on 2026-10-05 against the latest CLI releases:
- * Grok 1.0.46, Qwen Code 0.25.0, Kimi Code 2.1.1, and Devin
+ * Grok 1.0.46, Qwen Code 0.25.0, Kimi Code 2.3.1, and Devin
  * 3000.11.3. Each one was diffed against the older build installed on the
  * capture machine; the handshakes differ only in the version string.
  */
@@ -121,10 +121,10 @@ describe("captured initialize fixtures", () => {
     expect(qwenDialect.cancelStyle).toBe("notification");
   });
 
-  it("kimi 2.1.1 advertises close, login terminal-auth, and reads usage_update", () => {
+  it("kimi 2.3.1 advertises close, fork, login terminal-auth, and reads usage_update", () => {
     const init = loadFixture<AcpInitializeResponse>("kimi.initialize.json");
     expect(init.protocolVersion).toBe(1);
-    expect(init.agentInfo?.version).toBe("2.1.1");
+    expect(init.agentInfo?.version).toBe("2.3.1");
     expect(init.agentCapabilities?.loadSession).toBe(true);
     expect(init.agentCapabilities?.promptCapabilities).toEqual({
       image: true,
@@ -136,6 +136,8 @@ describe("captured initialize fixtures", () => {
       list: {},
       resume: {},
       close: {},
+      // Kimi's native Fork and side chats call `session/fork`.
+      fork: {},
     });
     expect(init.authMethods?.[0]).toMatchObject({
       id: "login",

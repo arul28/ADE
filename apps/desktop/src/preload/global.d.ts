@@ -314,6 +314,10 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatStartSideChatArgs,
+  AgentChatStartSideChatResult,
+  AgentChatEndSideChatArgs,
+  AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -2521,6 +2525,14 @@ declare global {
           args: AgentChatHandoffArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatHandoffResult>;
+        startSideChat: (
+          args: AgentChatStartSideChatArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatStartSideChatResult>;
+        endSideChat: (
+          args: AgentChatEndSideChatArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatEndSideChatResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
           pin?: OpenProjectBinding | null,

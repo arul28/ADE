@@ -26,9 +26,24 @@ extension WorkSessionDestinationView {
     deliveryMode: WorkActiveSendMode = .queue,
     compactFirst: Bool? = nil
   ) async -> Bool {
+    var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    // `/side` is ADE's, not the provider's: it opens (or writes to) this
+    // chat's side chat and never reaches the main chat. Inside the side chat
+    // itself the command just means "send this here".
+    if let side = workParseSideSlashCommand(text) {
+      if isSideChatSurface {
+        guard !side.prompt.isEmpty else { return true }
+        text = side.prompt
+      } else {
+        guard inputAttachments.isEmpty else {
+          errorMessage = "A side chat takes text only. Remove the attachments, or send them to this chat."
+          return false
+        }
+        return await openSideChatFromComposer(prompt: side.prompt)
+      }
+    }
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
-    let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     // Pending thread comments marked for the next send ride this message. A
     // manual `/compact` is a command, not a reply, so it never takes them.
     let includeThreadComments = !workChatIsManualCompactCommand(text)

@@ -80,7 +80,15 @@ extension WorkRootListScreen {
       lanes: rosterProjection.lanes,
       launches: localProjectionIsCurrent ? syncService.activeProjectChatLaunches() : []
     )
-    let sessionsSnapshot = launchProjection.sessions
+    // Side chats live inside their main chat: never a row, and the main
+    // chat's row wears the side-chat mark while it has one.
+    let sessionsSnapshot = workApplySideChats(
+      sessions: launchProjection.sessions,
+      chatSummaries: knownChatSummaries,
+      rosterPointers: workRosterSideChatPointers(activeRoster),
+      overrides: syncService.sideChatPointerOverrides,
+      knownSideChatIds: syncService.knownSideChatSessionIds
+    )
     let deletingLaneIds = syncService.pendingLaneDeletionIds
     let lanesSnapshot = launchProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []

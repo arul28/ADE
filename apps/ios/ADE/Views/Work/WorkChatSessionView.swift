@@ -326,6 +326,11 @@ struct WorkChatSummaryRenderContext: Equatable {
   let crossMachineHandoff: AgentChatCrossMachineHandoffRecord?
   /// Batch move waiting for approval in this chat, projected by the host.
   let crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval?
+  /// This chat is a side chat (`/side`): read-only on its main chat's model,
+  /// so the composer shows no model or access controls.
+  var isSideChat = false
+  /// The composer offers `/side` (a Work chat on a provider that can fork).
+  var offersSideChat = false
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -413,6 +418,8 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
+    self.isSideChat = summary.sideChatParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
   }
 
   var currentModelId: String {
@@ -792,6 +799,9 @@ struct WorkChatSessionView: View {
   /// Attach a Linear issue to this chat, from the composer's ⋯ (as on
   /// desktop). Nil when the host cannot.
   var onAttachIssue: (() -> Void)? = nil
+  /// Opens this chat's side chat. Set only while the chat has one; the badge
+  /// row then shows a Side chat chip (never otherwise).
+  var onOpenSideChat: (() -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1173,7 +1183,7 @@ struct WorkChatSessionView: View {
   /// Lane tool chips: the lane's running simulator, browser tabs and App
   /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
   var showsComposerLaneToolChips: Bool {
-    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
+    inputLockMessage == nil && !isPersonalChat && !chatSummaryContext.isSideChat && !laneTools.chips.isEmpty
   }
 
   /// The thread-comments chip: only while the chat has at least one comment
@@ -1194,7 +1204,12 @@ struct WorkChatSessionView: View {
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
-      || showsComposerThreadCommentsChip || showsComposerCompactFirstPill
+      || showsComposerThreadCommentsChip || showsComposerCompactFirstPill || showsComposerSideChatChip
+  }
+
+  /// The Side chat chip: only for a chat that has a side chat.
+  var showsComposerSideChatChip: Bool {
+    inputLockMessage == nil && onOpenSideChat != nil
   }
 
   /// Compact first, once the prompt cache has expired (desktop's chip).
@@ -1218,6 +1233,9 @@ struct WorkChatSessionView: View {
         // First: the chips that change what the next send carries.
         if showsComposerCompactFirstPill, let offer = composerCompactFirstOffer {
           WorkCompactFirstPill(offer: offer, choice: $compactFirstChoice, inRow: true)
+        }
+        if showsComposerSideChatChip, let onOpenSideChat {
+          WorkSideChatChip(onOpen: onOpenSideChat)
         }
         if showsComposerThreadCommentsChip {
           WorkThreadCommentsChip(comments: threadComments) {
@@ -1934,12 +1952,14 @@ struct WorkChatSessionView: View {
           }
         },
         onOpenModelPicker: !chatSummaryContext.isAvailable
+          || chatSummaryContext.isSideChat
           || (isPersonalChat && (
             !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
           ))
           ? nil
           : { modelPickerPresented = true },
         onSelectRuntimeMode: !chatSummaryContext.isAvailable
+          || chatSummaryContext.isSideChat
           || (isPersonalChat && !personalSessionUpdatesAvailable)
           ? nil
           : { mode in
@@ -2658,7 +2678,8 @@ struct WorkChatSessionView: View {
       model: laneTools,
       laneId: session.laneId,
       chatSessionId: session.id,
-      enabled: !isPersonalChat,
+      // A side chat's lane tools are its main chat's, already polled there.
+      enabled: !isPersonalChat && !chatSummaryContext.isSideChat,
       duoPane: duoPane,
       relay: toolsRelay
     )
@@ -3417,13 +3438,16 @@ private struct WorkChatComposerDraftInput: View {
           composerOverflowMenu()
         },
         controls: {
-          WorkComposerChipStrip(
-            chatSummary: chatSummary,
-            settingsMutationInFlight: settingsMutationInFlight,
-            codexFastModeOverride: codexFastModeOverride,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectRuntimeMode: onSelectRuntimeMode
-          )
+          // A side chat is fixed: read-only, on its main chat's model.
+          if !chatSummary.isSideChat {
+            WorkComposerChipStrip(
+              chatSummary: chatSummary,
+              settingsMutationInFlight: settingsMutationInFlight,
+              codexFastModeOverride: codexFastModeOverride,
+              onOpenModelPicker: onOpenModelPicker,
+              onSelectRuntimeMode: onSelectRuntimeMode
+            )
+          }
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
         },
@@ -3493,6 +3517,7 @@ private struct WorkChatComposerDraftInput: View {
       configureSuggestionController()
     }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
+    .onChange(of: chatSummary.offersSideChat) { _, _ in configureSuggestionController() }
     // Focus goes back to the composer field only when it is actually editable.
     // While a question is open the field is locked, so pushing focus there would
     // raise a keyboard over a field that rejects every keystroke; the tray and
@@ -3828,6 +3853,7 @@ private struct WorkChatComposerDraftInput: View {
 
   private func configureSuggestionController() {
     suggestionController.provider = chatSummary.provider
+    suggestionController.offersSideChat = chatSummary.offersSideChat
     suggestionController.laneId = laneId.isEmpty ? nil : laneId
     suggestionController.syncService = syncService
     suggestionController.sessionId = sessionId.isEmpty ? nil : sessionId

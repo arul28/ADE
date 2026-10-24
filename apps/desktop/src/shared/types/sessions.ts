@@ -511,6 +511,8 @@ export type TerminalSessionSummary = {
    */
   launchedBySessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /** The chat's side chat (`shared/sideChat.ts`), while it has one. Drives the session card's side-chat mark. */
+  sideChatSessionId?: string;
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
    * session rather than an ordinary chat (today the only one is the CTO, whose

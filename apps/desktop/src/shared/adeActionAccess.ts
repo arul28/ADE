@@ -194,7 +194,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
       "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
       "actOnClaudePluginUi",
-      "approveToolUse", "handoffSession", "prepareCrossMachineHandoff",
+      "approveToolUse", "handoffSession", "startSideChat", "endSideChat", "prepareCrossMachineHandoff",
       "validateCrossMachineSource", "fastForwardCrossMachineHandoffLane",
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",

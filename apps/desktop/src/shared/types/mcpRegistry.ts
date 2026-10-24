@@ -43,7 +43,7 @@ export type McpServerSignIn = {
 };
 
 /** A provider CLI whose own config the scan reads. */
-export type McpConfigProvider = "claude" | "codex" | "cursor" | "opencode" | "droid";
+export type McpConfigProvider = "claude" | "codex" | "cursor" | "opencode" | "droid" | "pi";
 
 /** A server found in a provider's own config. Names only: no values. */
 export type McpFoundServer = {

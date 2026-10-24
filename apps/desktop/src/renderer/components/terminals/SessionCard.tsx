@@ -105,6 +105,7 @@ import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLin
 import { useComposerDraftPresence } from "../../state/composerDraftPresenceStore";
 import { deriveSessionRowIndicators } from "../../../shared/sessionDraftIndicators";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
+import { SideChatBadge } from "../chat/SideChatBadge";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import {
@@ -1381,7 +1382,12 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      browser right now. Sits with `machineGlyph`/`gridIndicator` because it
      answers the same question they do — where is this work happening — and it
      renders nothing at all when the chat is not browsing. */
-  const browserPresenceGlyph = <AgentBrowserPresenceBadge chatSessionId={session.id} size={11} />;
+  const browserPresenceGlyph = (
+    <>
+      <AgentBrowserPresenceBadge chatSessionId={session.id} size={11} />
+      <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
+    </>
+  );
   const gridIndicator = gridBadge ? (
     <span
       data-testid="session-grid-indicator"

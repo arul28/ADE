@@ -132,7 +132,7 @@ export function normalizePermissionPolicy(
  * splitting on the last separator, or on all of them, renames the tool. Four
  * functions used to re-implement this; now they read it.
  */
-function parseMcpToolName(name: string): { server: string; tool: string } | null {
+export function parseMcpToolName(name: string): { server: string; tool: string } | null {
   const trimmed = name.trim();
   const lower = trimmed.toLowerCase();
   const form = lower.startsWith("mcp__")

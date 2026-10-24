@@ -125,6 +125,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
   var identityKey: String? = nil
+  /// This chat's side chat (`/side`) while it has one. Side chats are never
+  /// roster rows of their own; this drives the row's side-chat mark and the
+  /// chat's Side chat chip. Older hosts omit it.
+  var sideChatSessionId: String? = nil
   /// `chatLogV2` hosts: newest durable envelope `sequence` in this chat's log,
   /// so the phone can tell which cached threads are current without asking.
   var maxSequence: Int? = nil
@@ -205,6 +209,10 @@ extension RemoteRosterChat {
     merged.toolType = nonEmptyRosterValue(toolType) ?? local.toolType
     merged.chatSessionId = nonEmptyRosterValue(chatSessionId) ?? local.chatSessionId
     merged.identityKey = nonEmptyRosterValue(identityKey) ?? local.identityKey
+    // The roster is authoritative here: every host that sends this field omits
+    // it once the side chat ends, and a host too old to send it has none. A
+    // local fallback would bring an ended side chat back.
+    merged.sideChatSessionId = nonEmptyRosterValue(sideChatSessionId)
     merged.applyLocalSnoozeOverlay(local)
     return merged
   }
@@ -760,7 +768,8 @@ extension RemoteRosterChat {
       resumeMetadata: nil,
       chatIdleSinceAt: nil,
       chatSessionId: chatSessionId,
-      pendingInputItemId: nil
+      pendingInputItemId: nil,
+      sideChatSessionId: nonEmptyRosterValue(sideChatSessionId)
     )
     session.spawnKind = spawnKind
     session.orchestrationParentSessionId = orchestrationParentSessionId
@@ -800,14 +809,22 @@ extension RemoteRosterChat {
     if let title = nonEmptyTrimmed(title) { payload["title"] = title }
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
+    if let sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) { payload["sideChatSessionId"] = sideChatSessionId }
     if let spawnKind = spawnKind?.wireValue { payload["spawnKind"] = spawnKind }
     if let parentId = nonEmptyTrimmed(orchestrationParentSessionId) {
       payload["orchestrationParentSessionId"] = parentId
     }
-    guard let data = try? JSONSerialization.data(withJSONObject: payload),
-          var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
-    else { return nil }
-    summary.rosterDerived = true
-    return summary
+    return rosterDerivedChatSummary(payload)
   }
+}
+
+/// A chat summary built from what this phone already knows (a roster row, or a
+/// side chat's main chat), marked `rosterDerived` so the composer claims no
+/// access mode for it. Nil when the payload lacks a required field.
+func rosterDerivedChatSummary(_ payload: [String: Any]) -> AgentChatSessionSummary? {
+  guard let data = try? JSONSerialization.data(withJSONObject: payload),
+        var summary = try? JSONDecoder().decode(AgentChatSessionSummary.self, from: data)
+  else { return nil }
+  summary.rosterDerived = true
+  return summary
 }

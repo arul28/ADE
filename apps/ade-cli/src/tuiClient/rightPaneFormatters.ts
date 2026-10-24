@@ -649,6 +649,7 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   "windows-desktop": "Windows Desktop",
   pr: "PR",
   issues: "Issues",
+  "side-chat": "Side chat",
 };
 
 export function workToolLabel(toolId: string | null | undefined): string | null {

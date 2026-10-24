@@ -503,6 +503,10 @@ import type {
   AgentChatEventHistorySnapshot,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatStartSideChatArgs,
+  AgentChatStartSideChatResult,
+  AgentChatEndSideChatArgs,
+  AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffResult,
@@ -9202,6 +9206,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.handoffSession(withoutRendererRuntimeActor(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatStartSideChat, async (_event, arg: AgentChatStartSideChatArgs): Promise<AgentChatStartSideChatResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.startSideChat(withoutRendererRuntimeActor(arg));
+  });
+
+  ipcMain.handle(IPC.agentChatEndSideChat, async (_event, arg: AgentChatEndSideChatArgs): Promise<AgentChatEndSideChatResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.endSideChat(arg);
   });
 
   ipcMain.handle(

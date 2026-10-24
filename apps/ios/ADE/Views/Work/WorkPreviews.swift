@@ -518,18 +518,27 @@ func workPreviewChatSessionView(
   laneTools: WorkLaneToolsPreview? = nil,
   compactFirst: Bool = false,
   pendingSettingsAfterBackground: [String]? = nil,
-  transcript: [WorkChatEnvelope] = WorkPreviewData.transcript
+  transcript: [WorkChatEnvelope] = WorkPreviewData.transcript,
+  isSideChat: Bool = false,
+  onOpenSideChat: (() -> Void)? = nil
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
+  if isSideChat {
+    summary.sessionId = "preview-side-chat"
+    summary.title = "Side chat"
+    summary.sideChatParentSessionId = WorkPreviewData.chatSummary.sessionId
+  }
   summary.pendingSettingsAfterBackground = pendingSettingsAfterBackground
   if compactFirst {
     summary.compactionIdleMode = "ask"
     summary.compactFirstMinTokens = 1_000
     summary.promptCache = AgentChatPromptCache(ttl: "5m", since: nil)
   }
-  return WorkChatSessionView(
+  var summaryContext = WorkChatSummaryRenderContext(summary)
+  summaryContext.offersSideChat = !isSideChat
+  var view = WorkChatSessionView(
     session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
-    chatSummaryContext: WorkChatSummaryRenderContext(summary),
+    chatSummaryContext: summaryContext,
     thread: workPreviewThreadModel(
       sessionId: WorkPreviewData.terminalSession.id,
       transcript: transcript,
@@ -598,6 +607,8 @@ func workPreviewChatSessionView(
     scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature([]),
     previewLaneTools: laneTools
   )
+  view.onOpenSideChat = onOpenSideChat
+  return view
 }
 
 #Preview("Work chat") {
@@ -1463,6 +1474,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// Every in-chat handoff card state stacked, plus the send gate's prompt
   /// (where new messages go).
   case handoffCard = "handoff-card"
+  /// The main chat with its Side chat chip and a message from its side chat,
+  /// under the side-chat panel slid up over it. See `WorkSideChatPreviewHost`.
+  case sideChat = "side-chat"
+  /// The same main chat with the panel down: the chip and the label.
+  case sideChatMain = "side-chat-main"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1626,6 +1642,10 @@ struct ADEPreviewScreenHost: View {
       .environmentObject(WorkPreviewData.syncService)
     case .handoffCard:
       WorkCrossMachineHandoffCardsPreviewHost()
+    case .sideChat:
+      WorkSideChatPreviewHost(panelPresented: true)
+    case .sideChatMain:
+      WorkSideChatPreviewHost(panelPresented: false)
     }
   }
 }
@@ -2503,6 +2523,100 @@ struct WorkChatInfoPreviewHost: View {
       onSetScheduledWorkPaused: { _ in },
       onStopTask: { _ in }
     )
+  }
+}
+
+/// `-adePreviewScreen side-chat | side-chat-main`: the main chat with its Side
+/// chat chip and a message its side chat sent it, and (for `side-chat`) the
+/// side-chat panel slid up over it with a sent and a still-sending block.
+private struct WorkSideChatPreviewHost: View {
+  @State var panelPresented: Bool
+
+  var body: some View {
+    NavigationStack {
+      workPreviewChatSessionView(
+        transcript: WorkSideChatPreviewData.mainTranscript,
+        onOpenSideChat: { panelPresented = true }
+      )
+    }
+    .environmentObject(WorkPreviewData.syncService)
+    .environmentObject(WorkPreviewData.dictationController)
+    .sheet(isPresented: $panelPresented) {
+      WorkSideChatPanel(
+        state: .open(sideSessionId: "preview-side-chat", created: nil),
+        mainSessionId: WorkPreviewData.chatSummary.sessionId,
+        mainSession: WorkPreviewData.terminalSession,
+        mainSummary: WorkPreviewData.chatSummary,
+        crossProjectContext: nil,
+        lanes: [WorkPreviewData.lane],
+        isLive: true,
+        onEnd: {},
+        previewContent: AnyView(
+          workPreviewChatSessionView(
+            transcript: WorkSideChatPreviewData.sideTranscript,
+            isSideChat: true
+          )
+        )
+      )
+      .environmentObject(WorkPreviewData.syncService)
+      .environmentObject(WorkPreviewData.dictationController)
+    }
+  }
+}
+
+@MainActor
+private enum WorkSideChatPreviewData {
+  static var mainTranscript: [WorkChatEnvelope] {
+    var fromSide = WorkPreviewData.envelope(
+      sequence: 40,
+      event: .userMessage(
+        text: "Before you ship, also gate the Files tab reload: it does the same work on every revision.",
+        attachments: nil,
+        turnId: "turn-side-1",
+        steerId: nil,
+        deliveryState: "delivered",
+        processed: true
+      )
+    )
+    fromSide.userMessageFromSideChat = true
+    return WorkPreviewData.transcript + [fromSide]
+  }
+
+  static var sideTranscript: [WorkChatEnvelope] {
+    func envelope(_ sequence: Int, _ event: WorkChatEvent) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: "preview-side-chat",
+        timestamp: WorkPreviewData.timestamp,
+        sequence: sequence,
+        event: event
+      )
+    }
+    return [
+      envelope(1, .userMessage(
+        text: "Does the Files tab have the same reload problem?",
+        attachments: nil, turnId: "s-1", steerId: nil, deliveryState: "delivered", processed: true
+      )),
+      envelope(2, .assistantText(
+        text: "Yes. `FilesRootScreen` reloads on every `localStateRevision`, even while the tab is hidden, so it pays the same cost the Work tab did.",
+        turnId: "s-1", itemId: "s-a1"
+      )),
+      envelope(3, .userMessage(
+        text: "Tell the main chat to fix that too.",
+        attachments: nil, turnId: "s-2", steerId: nil, deliveryState: "delivered", processed: true
+      )),
+      envelope(4, .assistantText(
+        text: "Sending it over.\n\n<send_to_main>\nBefore you ship, also gate the Files tab reload: it does the same work on every revision.\n</send_to_main>",
+        turnId: "s-2", itemId: "s-a2"
+      )),
+      envelope(5, .userMessage(
+        text: "And the Lanes tab?",
+        attachments: nil, turnId: "s-3", steerId: nil, deliveryState: "delivered", processed: true
+      )),
+      envelope(6, .assistantText(
+        text: "Lanes is fine. Sending a note anyway:\n\n<send_to_main>\nLanes already gates its reload; no change needed",
+        turnId: "s-3", itemId: "s-a3"
+      )),
+    ]
   }
 }
 #endif
