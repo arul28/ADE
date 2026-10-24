@@ -145,7 +145,7 @@ import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef } from "./iosSemanticActions";
-import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError } from "./appleDeviceErrors";
+import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
 import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
@@ -242,6 +242,8 @@ function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
 const APPLE_ROTATE_SETTLE_TIMEOUT_MS = 3_000;
 /** A Duo turn may wait twice (it resends once), so its control slot is longer than the default. */
 const APPLE_ROTATE_CONTROL_TIMEOUT_MS = 12_000;
+/** The longest drag the helper performs: under the 8 s control slot, which a gesture must not outlive. */
+const MAX_SWIPE_DURATION_MS = 5_000;
 
 /**
  * The framebuffer's pixel size, read from the device rather than from ADE.
@@ -2113,26 +2115,6 @@ export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
 const AGENT_NO_LANE_DEVICE_MESSAGE =
   "This lane has no Apple device yet. Run `ade apple start` to give it its own (it makes a new device and boots it), "
   + "or `ade apple device-create`.";
-
-/** The error code when a lane released its device and an agent call would replace it. */
-const APPLE_LANE_DEVICE_RELEASED_CODE = "APPLE_LANE_DEVICE_RELEASED";
-
-/**
- * What an agent hears when its lane gave up a device that is still installed.
- *
- * Without it, the next `launch` made the lane a NEW, empty device and went on
- * as if nothing had changed: a signed-in iPhone Duo was swapped for a blank
- * one, and every script that named the old udid drove a device no lane held.
- */
-function laneDeviceReleasedMessage(release: AppleLaneDeviceRelease, nowMs: number): string {
-  const minutes = Math.max(0, Math.round((nowMs - Date.parse(release.releasedAt)) / 60_000));
-  const when = minutes < 1 ? "less than a minute ago" : `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
-  const who = release.by === "agent" ? "by an agent (`ade apple device-detach`)" : "from the Apple Development pane or the tools card";
-  return `${APPLE_LANE_DEVICE_RELEASED_CODE}: this lane gave up its device ${release.name} (${release.udid}) ${when}, ${who}, `
-    + "and it is still installed. ADE does not make a new device in its place. "
-    + `Run \`ade apple device-attach --simulator ${release.udid}\` to take it back, `
-    + "or `ade apple device-create` for a new, empty device.";
-}
 
 /**
  * Actions that drive or read a device: for an agent they run on the lane's own
@@ -5852,6 +5834,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /* ───────────────────────── input ───────────────────────── */
 
   /**
+   * Run a gesture's steps with nothing else written between them (see
+   * `SimHelperClient.sendGesture`): a snapshot or a screenshot from another
+   * caller can no longer hold the finger down between a tap's begin and end.
+   */
+  const helperGesture = <T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T> =>
+    helper().sendGesture(gesture);
+
+  /**
    * A tap, as the helper wants it: a begin and an end at the same point.
    *
    * The helper's wire unit is DEVICE POINTS (`Protocol.swift`'s `DevicePoint`,
@@ -5859,16 +5849,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * the same unit idb's `ui tap` took — so no call site had to change its
    * coordinates when the engine did.
    */
-  /**
-   * Run a gesture's steps with nothing else written between them (see
-   * `SimHelperTransport.sendGesture`): a snapshot or a screenshot from another
-   * caller can no longer hold the finger down between a tap's begin and end.
-   */
-  const helperGesture = <T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T> => {
-    const client = helper();
-    return client.sendGesture ? client.sendGesture(gesture) : gesture((command) => client.send(command));
-  };
-
   const helperTap = async (deviceUdid: string, x: number, y: number, space: HelperPointSpace): Promise<void> => {
     await helperGesture(async (send) => {
       await send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
@@ -5894,8 +5874,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null },
     space: HelperPointSpace,
   ): Promise<void> => {
-    const durationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
-    if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
+    const requestedMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
+    if (!Number.isFinite(requestedMs)) throw new Error("durationMs must be a number.");
+    // A gesture holds the helper for every simulator on this Mac, so it ends
+    // well inside the control slot's timeout.
+    const durationMs = Math.min(requestedMs, MAX_SWIPE_DURATION_MS);
     const steps = Math.max(2, Math.min(60, Math.round(Math.max(durationMs, 1) / DRAG_STEP_MS)));
     const stepDelayMs = Math.max(0, Math.round(durationMs / steps));
     await helperGesture(async (send) => {
@@ -6476,6 +6459,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else if (requestedUdid) {
         laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid, agentCaller });
       } else if (agentCaller) {
+        // A device the user released is not replaced behind their back: the
+        // agent hears where it went and how to take it back.
+        const released = await releasedLaneDeviceStillInstalled(laneId);
+        if (released) throw new AppleLaneDeviceReleasedError(released, Date.now());
         // An agent gets its lane's own device rather than an error it has to
         // translate into a second command: a new, empty one, the same one
         // `device-create` makes, so nobody else's device is booted or used.
@@ -6630,14 +6617,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
-   * The lane's device, created on first ask.
-   *
-   * `launch` and `open-device` call this: a lane gets no device until it is
-   * asked for, and the ask is what creates it. An un-laned caller keeps the old
-   * behaviour of driving whatever simulator `resolveDevice` picks, because
-   * there is no lane to own a device.
-   */
-  /**
    * The device this lane released, when it is still installed and no lane
    * holds it. An ADE device the cleanup pass deleted, or one another lane
    * took, is gone from the lane's point of view, so this answers null.
@@ -6652,6 +6631,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return release;
   };
 
+  /**
+   * The lane's device, created on first ask.
+   *
+   * `launch` and `open-device` call this: a lane gets no device until it is
+   * asked for, and the ask is what creates it. An un-laned caller keeps the old
+   * behaviour of driving whatever simulator `resolveDevice` picks, because
+   * there is no lane to own a device.
+   */
   const ensureLaneDevice = async (runtime: LaneRuntime): Promise<AppleLaneDevice | null> => {
     if (!runtime.key) return null;
     const existing = laneDevices.get(runtime.key);
@@ -7033,7 +7020,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
           const released = await releasedLaneDeviceStillInstalled(runtime.key);
-          if (released) throw new Error(laneDeviceReleasedMessage(released, Date.now()));
+          if (released) throw new AppleLaneDeviceReleasedError(released, Date.now());
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
             laneDevice = await ensureLaneDevice(runtime);
           } else {

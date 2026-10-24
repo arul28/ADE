@@ -387,7 +387,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --start-x <n> --start-y <n> Required start coordinates.
     --end-x <n> --end-y <n>     Required end coordinates.
-    --duration-ms <n>           Swipe duration in milliseconds.
+    --duration-ms <n>           Swipe duration in milliseconds, at most 5000.
     --device, --udid <id>       Simulator device.
 `,
   type: `${ADE_BANNER}
@@ -763,8 +763,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                            only while the layout does not move.
     --identifier <id>      Accessibility identifier.
     --label <text>         Accessibility label, case-insensitive. With no exact match,
-                           a label that starts with these words also matches
-                           ("Work" finds "Work, 3 need you").
+                           find, tap and fill take the one label that starts with
+                           these words ("Work" finds "Work, 3 need you").
     --text <text>          Case-insensitive substring of the label or value.
                            --contains (or --text-match) spells the same thing without
                            meeting the --text output flag.

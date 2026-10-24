@@ -52,7 +52,8 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 function HingeSlider({ angle, onPreview, onCommit }: {
   angle: number;
   onPreview: (angle: number) => void;
-  onCommit: (angle: number) => void;
+  /** `onDetent`: the release landed on Closed, Laptop or Open. */
+  onCommit: (angle: number, onDetent: boolean) => void;
 }) {
   const [value, setValue] = useState(Math.round(angle));
   const [dragging, setDragging] = useState(false);
@@ -68,7 +69,8 @@ function HingeSlider({ angle, onPreview, onCommit }: {
     releaseRef.current?.();
     releaseRef.current = null;
     setDragging(false);
-    onCommitRef.current(valueRef.current);
+    const angle = valueRef.current;
+    onCommitRef.current(angle, DETENTS.some((detent) => detent.angle === angle));
   }, []);
   // The slider holds its own value only while the pointer is down. The
   // release is heard on the window, so one the input never sees (off the
@@ -142,7 +144,7 @@ export function AppleDuoDock({
   /** What the simulator reports, for the quiet readout on the right. */
   reported: { angle: number | null; wide: boolean | null } | null;
   onPreviewAngle: (angle: number) => void;
-  onCommitAngle: (angle: number) => void;
+  onCommitAngle: (angle: number, onDetent: boolean) => void;
   onScreen: (screen: AppleDuoScreen) => void;
   onTurn: (orientation: AppleDeviceOrientation) => void;
 }) {

@@ -293,13 +293,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
 
   const findMatch = async (
     args: IosSimulatorFindElementArgs,
+    options: { labelPrefix?: boolean } = {},
   ): Promise<{ match: IosSimulatorElementMatch | null; reason: string | null; snapshot: IosScreenSnapshot }> => {
     const snapshot = await deps.getScreenSnapshot({
       deviceUdid: args.deviceUdid ?? null,
       projectRoot: args.projectRoot ?? null,
       laneId: args.laneId ?? null,
     });
-    const outcome = matchElements(snapshot.elements, args.query);
+    const outcome = matchElements(snapshot.elements, args.query, options);
     if (!outcome.selected) return { match: null, reason: outcome.reason, snapshot };
     return {
       match: {
@@ -772,7 +773,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * ----------------------------------------------------------------- */
 
     async findElement(args: IosSimulatorFindElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args);
+      const { match, reason } = await findMatch(args, { labelPrefix: true });
       return {
         ok: Boolean(match),
         action: "assert",
@@ -785,7 +786,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     },
 
     async tapElement(args: IosSimulatorTapElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args);
+      const { match, reason } = await findMatch(args, { labelPrefix: true });
       if (!match) {
         return { ok: false, action: "tap", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }
@@ -818,7 +819,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     },
 
     async fillElement(args: IosSimulatorFillElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args);
+      const { match, reason } = await findMatch(args, { labelPrefix: true });
       if (!match) {
         return { ok: false, action: "fill", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }

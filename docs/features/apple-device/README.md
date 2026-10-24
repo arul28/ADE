@@ -692,8 +692,10 @@ says the file stayed there.
 (device points). The `ref` comes from the identifier, else the label, so it is
 the same in the next snapshot; `tap-element --ref` takes it, and also the tree
 `id` (`accessibility:0.1.2`), which moves with the layout. `--label` matches
-the whole label first; with no exact match, a label that starts with those
-words ("Work" finds "Work, 3 need you"). `--contains` is `--text` without the
+the whole label first. With no exact match, `find-element`, `tap-element` and
+`fill` take the one label that starts with those words ("Work" finds "Work, 3
+need you"); two such labels are no match, and `wait` and `assert-visible` take
+exact labels only. `--contains` is `--text` without the
 clash with the `--text` output flag.
 
 A tap's touch-down and touch-up, and a drag's steps, go to the helper as one

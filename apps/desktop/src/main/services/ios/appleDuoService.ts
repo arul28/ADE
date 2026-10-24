@@ -254,16 +254,8 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     // axis at the deadline.
     const sameAxisAtStart = pictureAxis(before) === wantedAxis(before);
     let after = before;
-    // Two rounds: right after a fold the guest is still switching panels and
-    // can drop the turn, so the first `rotate` after `fold closed` answered
-    // "applied no" and a second call worked. The second round sends the turn
-    // again and waits once more.
-    for (let round = 0; round < 2; round += 1) {
-      if (round > 0) {
-        const again = await deps.helperSend({ type: "orientation", udid: deviceUdid, value }).catch(() => null);
-        if (again?.applied !== true) break;
-        deps.logger.warn("apple.rotate_resent", { udid: deviceUdid, orientation });
-      }
+    /** Poll the posture until the picture turns or the deadline passes; the result when it turned. */
+    const waitForTurn = async (): Promise<AppleRotateResult | null> => {
       const deadline = Date.now() + settleMs;
       for (;;) {
         await sleep(200);
@@ -277,12 +269,28 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
           return { ...base, applied: true, verification: "rotated", reason: null, detail: null, posture: after };
         }
         if (Date.now() >= deadline) {
-          if (onAxis) return { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after };
-          break;
+          return onAxis
+            ? { ...base, applied: true, verification: "already-on-axis", reason: null, detail: null, posture: after }
+            : null;
         }
       }
-      // Nothing to resend for: the guest does not say how its screen sits.
-      if (!pictureAxis(after)) break;
+    };
+    const turned = await waitForTurn();
+    if (turned) return turned;
+    // Right after a fold the guest is still switching panels and can drop the
+    // turn: the first `rotate` after `fold closed` answered "applied no" and a
+    // second call worked. So send the turn once more and wait again, unless
+    // the guest does not say how its screen sits (nothing to wait for).
+    if (pictureAxis(after)) {
+      const again = await deps.helperSend({ type: "orientation", udid: deviceUdid, value }).catch((cause: unknown) => {
+        deps.logger.warn("apple.rotate_resend_failed", { udid: deviceUdid, error: cause instanceof Error ? cause.message : String(cause) });
+        return null;
+      });
+      if (again?.applied === true) {
+        deps.logger.warn("apple.rotate_resent", { udid: deviceUdid, orientation });
+        const turnedAgain = await waitForTurn();
+        if (turnedAgain) return turnedAgain;
+      }
     }
     if (!pictureAxis(after)) {
       return {

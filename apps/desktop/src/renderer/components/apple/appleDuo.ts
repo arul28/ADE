@@ -23,18 +23,12 @@ export type AppleDuoStanceId = "open" | "laptop" | "book" | "tent" | "closed";
 export type AppleDuoPose = {
   /** Interior hinge angle in degrees: 0 = folded shut, 180 = flat. */
   angle: number;
-  /**
-   * True when the lower half stays flat on the surface and only the upper half
-   * hinges up — the "laptop" posture. False folds both halves symmetrically.
-   */
-  lowerFlat: boolean;
 };
 
 export type AppleDuoStance = {
   id: AppleDuoStanceId;
   label: string;
   angle: number;
-  lowerFlat: boolean;
 };
 
 export const APPLE_DUO_MIN_ANGLE = 0;
@@ -51,17 +45,15 @@ export const APPLE_DUO_NUDGE_DEGREES = 15;
  * and Closed are the extremes; every stance folds both halves the same way.
  */
 export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
-  { id: "open", label: "Open", angle: APPLE_DEVICE_POSE_TARGETS.open.angle, lowerFlat: false },
+  { id: "open", label: "Open", angle: APPLE_DEVICE_POSE_TARGETS.open.angle },
   // The simulator's own preset angles (APPLE_DEVICE_POSE_TARGETS): drawn at
   // anything else, the hinge jumped when the simulator's report landed.
-  // Folded the same way as every other angle, so the drawn hinge is always
-  // the slider's: a flat base drew 90° for any nudge below it.
-  { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, lowerFlat: false },
+  { id: "laptop", label: "Laptop", angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle },
   // Book is Laptop's angle held upright: the simulator tells them apart by
   // how the phone is held, not by the hinge.
-  { id: "book", label: "Book", angle: APPLE_DEVICE_POSE_TARGETS.book.angle, lowerFlat: false },
-  { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle, lowerFlat: false },
-  { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle, lowerFlat: false },
+  { id: "book", label: "Book", angle: APPLE_DEVICE_POSE_TARGETS.book.angle },
+  { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle },
+  { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle },
 ];
 
 export function clampAppleDuoAngle(angle: number): number {
@@ -69,17 +61,23 @@ export function clampAppleDuoAngle(angle: number): number {
   return Math.min(APPLE_DUO_MAX_ANGLE, Math.max(APPLE_DUO_MIN_ANGLE, angle));
 }
 
+/** A reported hinge this close to the drawn one is the same fold, not a move. */
+const APPLE_DUO_SAME_HINGE_DEGREES = 2;
+
+export function appleDuoSameHinge(a: number, b: number): boolean {
+  return Math.abs(a - b) <= APPLE_DUO_SAME_HINGE_DEGREES;
+}
+
 export function appleDuoStance(id: AppleDuoStanceId): AppleDuoStance {
   return APPLE_DUO_STANCES.find((stance) => stance.id === id) ?? APPLE_DUO_STANCES[0]!;
 }
 
 export function appleDuoPoseForStance(id: AppleDuoStanceId): AppleDuoPose {
-  const stance = appleDuoStance(id);
-  return { angle: stance.angle, lowerFlat: stance.lowerFlat };
+  return { angle: appleDuoStance(id).angle };
 }
 
-export function appleDuoPoseForAngle(angle: number, lowerFlat = false): AppleDuoPose {
-  return { angle: clampAppleDuoAngle(angle), lowerFlat };
+export function appleDuoPoseForAngle(angle: number): AppleDuoPose {
+  return { angle: clampAppleDuoAngle(angle) };
 }
 
 /**
@@ -110,17 +108,11 @@ export function appleDuoStanceFor(input: {
  *
  * Positive upper rotation and negative lower rotation both bring the panels'
  * faces toward the viewer (+Z), so at 90° each the two halves meet and the
- * device is shut. A flat base (`lowerFlat`) leaves the lower half at 0 and only
- * tilts the upper half by `180 - angle`.
+ * device is shut. The drawn hinge is the angle alone: every posture folds
+ * both halves the same way.
  */
 export function appleDuoPanelRotationsDeg(pose: AppleDuoPose): { upper: number; lower: number } {
   const angle = clampAppleDuoAngle(pose.angle);
-  if (pose.lowerFlat) {
-    // The base stays down, so the screen tips up from flat (180°) to vertical
-    // (90°) and never folds past it — a laptop lid does not lie back through
-    // its own base.
-    return { upper: Math.min(90, APPLE_DUO_MAX_ANGLE - angle), lower: 0 };
-  }
   const fold = (APPLE_DUO_MAX_ANGLE - angle) / 2;
   return { upper: fold, lower: fold === 0 ? 0 : -fold };
 }
@@ -185,9 +177,9 @@ export type AppleDuoState = {
 export type AppleDuoAction =
   /** Jump to a named posture. */
   | { type: "stance"; stance: AppleDuoStanceId }
-  /** Set a custom angle; clears the flat base. */
+  /** Set a custom angle. */
   | { type: "angle"; angle: number }
-  /** Step the angle by a signed number of degrees, keeping the flat base. */
+  /** Step the angle by a signed number of degrees. */
   | { type: "nudge"; delta: number };
 
 export function createAppleDuoState(): AppleDuoState {
@@ -199,10 +191,8 @@ export function reduceAppleDuoState(state: AppleDuoState, action: AppleDuoAction
     case "stance":
       return { pose: appleDuoPoseForStance(action.stance) };
     case "angle":
-      return { pose: appleDuoPoseForAngle(action.angle, false) };
+      return { pose: appleDuoPoseForAngle(action.angle) };
     case "nudge":
-      return {
-        pose: appleDuoPoseForAngle(state.pose.angle + action.delta, state.pose.lowerFlat),
-      };
+      return { pose: appleDuoPoseForAngle(state.pose.angle + action.delta) };
   }
 }

@@ -48,7 +48,7 @@ export type DisplayLayout = {
  */
 export type DuoBodyControls = {
   /** Fold both halves to an interior hinge angle (0 shut, 180 flat). */
-  setHinge: (angle: number, lowerFlat: boolean) => void;
+  setHinge: (angle: number) => void;
   /**
    * Raycast both panels and answer the hit in continuous inner-display
    * portrait coordinates. Null when the ray misses both halves.

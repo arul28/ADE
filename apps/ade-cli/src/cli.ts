@@ -14231,9 +14231,7 @@ function iosSimulatorSubcommandFromArgv(argv: string[]): string | null {
  */
 function readIosSimulatorOutPath(args: string[]): JsonObject {
   const outPath = readValue(args, ["--out", "--out-path", "--output"]);
-  // Resolved here, against the caller's directory: sent as typed, a relative
-  // path resolved against the brain's own working directory instead.
-  return outPath ? { outPath: path.resolve(outPath) } : {};
+  return outPath ? { outPath } : {};
 }
 
 /**
@@ -14517,7 +14515,9 @@ function buildIosSimulatorPlan(
     // Filed as proof by default; `--no-proof` is a scratch shot for an agent's
     // own eyes, so a validation loop does not flood the proof drawer.
     const noProof = readFlag(args, ["--no-proof"]);
-    const outPath = asString(readIosSimulatorOutPath(args).outPath);
+    // Resolved against the caller's directory: the copy runs here, not on the brain.
+    const outValue = readValue(args, ["--out", "--out-path", "--output"]);
+    const outPath = outValue ? path.resolve(outValue) : null;
     return {
       ...iosAction("iOS simulator screenshot", "screenshot", {
         deviceUdid: readIosSimulatorDevice(args),

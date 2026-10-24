@@ -1649,6 +1649,8 @@ export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
  * through `deviceDelete`, which stops its stream first.
  */
 export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
+/** A lane released its device, it is still installed, and an agent call would replace it. */
+export const APPLE_LANE_DEVICE_RELEASED_CODE = "APPLE_LANE_DEVICE_RELEASED" as const;
 /**
  * An agent asked to attach a simulator that is not its lane's own device.
  *

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
-import { showToast, type ToastInput } from "../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
@@ -68,7 +68,7 @@ function renderFiledToast(
     ...(actions.length ? { actions } : {}),
     // A render takes a while and the person may be looking elsewhere when it
     // lands; the default 6 s was gone before they read where it went.
-    durationMs: 20_000,
+    durationMs: READABLE_TOAST_DURATION_MS,
   };
 }
 

@@ -60,17 +60,16 @@ export interface SimHelperTransport {
   onEvent(listener: (event: { type: string } & Record<string, unknown>) => void): () => void;
   /** Absolute path of the helper binary in use, for diagnostics. */
   readonly binaryPath: string;
+}
+
+export type SimHelperClient = SimHelperTransport & {
   /**
    * Run a multi-command gesture (a tap's begin and end, a drag's moves) with
    * no other command written between its steps. The helper handles one line
    * at a time, so a `snapshot` slotted between a tap's begin and end held the
    * finger down for seconds: iOS read a long press, and a slow drag a tap.
-   * Optional: a transport without it sends the steps as they come.
    */
-  sendGesture?<T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T>;
-}
-
-export type SimHelperClient = SimHelperTransport & {
+  sendGesture<T>(gesture: (send: SimHelperTransport["send"]) => Promise<T>): Promise<T>;
   /** True once the child has spawned and announced `ready`. */
   isReady(): boolean;
   /** The running helper's pid, or null. */

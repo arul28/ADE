@@ -114,7 +114,8 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * The body of a detach, for a caller already in the lane's queue: forget
    * the binding, then release the lane's hold. Null when the lane had no device.
    */
-  const detachStep = async (runtime: R, by: "agent" | "user"): Promise<AppleLaneDevice | null> => {
+  const detachStep = async (runtime: R, agentCaller: boolean | null | undefined): Promise<AppleLaneDevice | null> => {
+    const by = agentCaller === true ? "agent" : "user";
     const detached = await deps.laneDevices.deviceDetach({ laneId: runtime.key, by });
     if (!detached) return null;
     // After the binding is gone, so the `released` event this sends is read
@@ -165,7 +166,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       if (!laneDevice) return null;
       assertExpectedDevice(laneDevice, detachArgs.udid);
       deps.assertSessionOwner(runtime, detachArgs);
-      return detachStep(runtime, detachArgs.agentCaller === true ? "agent" : "user");
+      return detachStep(runtime, detachArgs.agentCaller);
     });
   };
 
@@ -203,7 +204,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       if (laneDevice.origin === "attached") {
         // Refused before the stream stops, so the owner keeps a working view.
         if (!deleteArgs.force) throw new AppleDeviceAttachedNotDeletableError(laneDevice);
-        await detachStep(runtime, deleteArgs.agentCaller === true ? "agent" : "user");
+        await detachStep(runtime, deleteArgs.agentCaller);
         return;
       }
       // Whatever was driving it stops first: deleting a simulator out from

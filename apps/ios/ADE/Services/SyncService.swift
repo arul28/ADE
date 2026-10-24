@@ -20221,9 +20221,8 @@ final class SyncService: ObservableObject {
   /// Work list. While a project is pinned, nothing switches away from it.
   func pinActiveProjectForPreview(projectId: String) {
     previewPinnedProjectId = nil
-    setActiveProjectId(projectId, rootPath: nil)
+    setActiveProjectForTesting(projectId: projectId, rootPath: nil)
     previewPinnedProjectId = normalizedProjectId(projectId)
-    resetOutboundCursorStateForActiveProject()
   }
   #endif
 

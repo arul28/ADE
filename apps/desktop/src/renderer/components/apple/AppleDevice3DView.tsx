@@ -42,8 +42,6 @@ export type AppleDeviceDuoProps = {
   enabled: boolean;
   /** Interior hinge angle in degrees: 0 folded shut, 180 flat. */
   angle: number;
-  /** Keep the lower half flat and hinge only the upper half (laptop posture). */
-  lowerFlat: boolean;
   /** A pinch on the glass adjusts the hinge (only while enabled). */
   onHingeChange?: ((angle: number) => void) | undefined;
   /**
@@ -575,7 +573,7 @@ function createViewer(
       innerAspect: layout.aspect,
       texture,
       layout,
-      ...(duo ? { pose: { angle: duo.angle, lowerFlat: duo.lowerFlat } } : {}),
+      ...(duo ? { pose: { angle: duo.angle } } : {}),
     });
     installBody(next);
     paintDisplay();
@@ -664,7 +662,7 @@ function createViewer(
         currentModelKey = wantedKey;
         installDuoBody(props);
       } else if (body?.duo) {
-        body.duo.setHinge(duo.angle, duo.lowerFlat);
+        body.duo.setHinge(duo.angle);
         body.duo.setActivePanel?.(duo.activeScreenId ?? null);
         body.duo.setPhysicalOrientation?.(duo.physicalOrientation ?? null, duo.tableMode === true);
         applyPose();
@@ -1223,7 +1221,6 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.interactive,
     props.duo?.enabled,
     props.duo?.angle,
-    props.duo?.lowerFlat,
     props.duo?.model,
     props.duo?.activeScreenId,
     props.duo?.physicalOrientation,

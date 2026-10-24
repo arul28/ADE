@@ -165,6 +165,7 @@ function fakeSimHelper(overrides: {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
+    sendGesture: (gesture) => gesture((command) => client.send(command)),
     isReady: () => true,
     pid: overrides.pid ?? (() => 4321),
     protocolVersion: () => 1,

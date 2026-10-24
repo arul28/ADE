@@ -11,6 +11,7 @@ import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
+import { DIRTY_WORKTREE_PREFIX } from "../../desktop/src/main/services/prs/prService";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -8142,8 +8143,8 @@ async function runTool(args: {
     }).catch((error: unknown) => {
       // The service's "explicitly continue anyway" is a button in the
       // desktop; an agent needs the flag that does it.
-      if (error instanceof Error && error.message.includes("DIRTY_WORKTREE:")) {
-        error.message = `${error.message} From the CLI, pass --allow-dirty (the PR is made from the lane's commits only).`;
+      if (error instanceof Error && error.message.includes(DIRTY_WORKTREE_PREFIX)) {
+        error.message = `${error.message} To continue, pass allowDirtyWorktree: true (from the CLI, --allow-dirty); the PR is made from the lane's commits only.`;
       }
       throw error;
     });

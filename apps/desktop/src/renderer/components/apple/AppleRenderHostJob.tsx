@@ -187,7 +187,6 @@ export default function AppleRenderHostJob({
         ? {
             enabled: true,
             angle: duoState.pose.angle,
-            lowerFlat: duoState.pose.lowerFlat,
             model: duoModel,
             activeScreenId: posture?.activeScreenId ?? null,
             physicalOrientation: posture?.orientation ?? null,

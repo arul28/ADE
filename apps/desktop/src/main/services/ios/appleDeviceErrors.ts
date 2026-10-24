@@ -1,9 +1,11 @@
 import type { AppleLaneDevice } from "../../../shared/types/iosSimulator";
+import type { AppleLaneDeviceRelease } from "./laneDeviceRegistry";
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
+  APPLE_LANE_DEVICE_RELEASED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   APPLE_RUNTIME_NOT_INSTALLED_CODE,
 } from "../../../shared/types/iosSimulator";
@@ -94,5 +96,29 @@ export class AppleDeviceNotLaneOwnedError extends Error {
     const [why, next] = explain[reason.kind];
     super(`${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: Simulator ${simulator.name} (${simulator.udid}) ${why}. ${next}`);
     this.name = "AppleDeviceNotLaneOwnedError";
+  }
+}
+
+/**
+ * An agent call on a lane that gave up a device that is still installed.
+ *
+ * Without it, the next `launch` made the lane a NEW, empty device and went on
+ * as if nothing had changed: a signed-in iPhone Duo was swapped for a blank
+ * one, and every script that named the old udid drove a device no lane held.
+ */
+export class AppleLaneDeviceReleasedError extends Error {
+  readonly code = APPLE_LANE_DEVICE_RELEASED_CODE;
+
+  constructor(readonly release: AppleLaneDeviceRelease, nowMs: number) {
+    const minutes = Math.max(0, Math.round((nowMs - Date.parse(release.releasedAt)) / 60_000));
+    const when = minutes < 1 ? "less than a minute ago" : `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    const who = release.by === "agent" ? "by an agent (`ade apple device-detach`)" : "from the Apple Development pane or the tools card";
+    super(
+      `${APPLE_LANE_DEVICE_RELEASED_CODE}: this lane gave up its device ${release.name} (${release.udid}) ${when}, ${who}, `
+        + "and it is still installed. ADE does not make a new device in its place. "
+        + `Run \`ade apple device-attach --simulator ${release.udid}\` to take it back, `
+        + "or `ade apple device-create` for a new, empty device.",
+    );
+    this.name = "AppleLaneDeviceReleasedError";
   }
 }

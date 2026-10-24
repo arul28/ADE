@@ -1394,7 +1394,7 @@ function parseDiffStatOutput(stdout: string): IntegrationProposalStep["diffStat"
   };
 }
 
-const DIRTY_WORKTREE_PREFIX = "DIRTY_WORKTREE:";
+export const DIRTY_WORKTREE_PREFIX = "DIRTY_WORKTREE:";
 
 function formatDirtyWorktreeError(lanes: LaneSummary[]): Error {
   const names = lanes.map((lane) => lane.name).join(", ");
