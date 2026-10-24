@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { getAppearanceState, useAppearanceStore } from "../state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES, type ScenePreferences, type SceneTexture } from "./scenePreferences";
-import { BUNDLED_SCENES, findBundledScene, isUserSceneId } from "./sceneLibrary";
+import { BUNDLED_SCENES, findBundledScene, isUserSceneId, readScreenPixels, sceneFitsScreen, type ScreenPixels } from "./sceneLibrary";
 import { extractScenePalette, type ScenePalette } from "./scenePalette";
 import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummary } from "./userScenes";
 
@@ -101,17 +101,30 @@ export function sceneLibraryIds(): string[] {
 const SHUFFLE_AT_KEY = "ade.sceneShuffleAt";
 const PERIOD_MS: Record<"hour" | "day", number> = { hour: 3_600_000, day: 86_400_000 };
 
-/** The shuffle pool: every picture not left out. Falls back to everything when the user left out all of them. */
-export function shufflePool(exclude: readonly string[]): string[] {
-  const all = sceneLibraryIds();
-  const pool = all.filter((id) => !exclude.includes(id));
-  return pool.length > 0 ? pool : all;
+type ShufflePrefs = Pick<ScenePreferences, "shuffleExclude" | "shuffleInclude">;
+
+/**
+ * Whether a picture is in the shuffle on this screen. Left out wins, then put
+ * in by hand; otherwise the user's own pictures are in, and a bundled one is
+ * in when it is sized for the screen.
+ */
+export function inShuffle(id: string, prefs: ShufflePrefs, screen: ScreenPixels): boolean {
+  if (prefs.shuffleExclude.includes(id)) return false;
+  if (prefs.shuffleInclude.includes(id) || isUserSceneId(id)) return true;
+  const bundled = findBundledScene(id);
+  return bundled ? sceneFitsScreen(bundled, screen) : false;
 }
 
-function pickShuffle(avoid: string | null, exclude: readonly string[]): string {
-  const pool = shufflePool(exclude);
+/** The shuffle pool on the current screen. Empty when nothing fits, and the gradient shows instead. */
+export function shufflePool(prefs: ShufflePrefs): string[] {
+  const screen = readScreenPixels();
+  return sceneLibraryIds().filter((id) => inShuffle(id, prefs, screen));
+}
+
+function pickShuffle(avoid: string | null, prefs: ShufflePrefs): string | null {
+  const pool = shufflePool(prefs);
   const candidates = pool.length > 1 ? pool.filter((id) => id !== avoid) : pool;
-  return candidates[Math.floor(Math.random() * candidates.length)] ?? BUNDLED_SCENES[0]!.id;
+  return candidates[Math.floor(Math.random() * candidates.length)] ?? null;
 }
 
 function readStored(key: string): string | null {
@@ -122,7 +135,8 @@ function readStored(key: string): string | null {
   }
 }
 
-function remember(pick: string): void {
+function remember(pick: string | null): void {
+  if (!pick) return;
   try {
     window.localStorage.setItem(SHUFFLE_LAST_KEY, pick);
     window.localStorage.setItem(SHUFFLE_AT_KEY, String(Date.now()));
@@ -136,8 +150,8 @@ function remember(pick: string): void {
  * first read of a run; hour and day modes keep the remembered pick while its
  * period lasts, so a relaunch inside the hour does not change the picture.
  */
-function currentShufflePick(prefs: ScenePreferences): string {
-  const pool = shufflePool(prefs.shuffleExclude);
+function currentShufflePick(prefs: ScenePreferences): string | null {
+  const pool = shufflePool(prefs);
   if (shufflePick && pool.includes(shufflePick)) return shufflePick;
   const last = readStored(SHUFFLE_LAST_KEY);
   if ((prefs.shuffleEvery === "hour" || prefs.shuffleEvery === "day") && last && pool.includes(last)) {
@@ -147,7 +161,7 @@ function currentShufflePick(prefs: ScenePreferences): string {
       return last;
     }
   }
-  shufflePick = pickShuffle(last, prefs.shuffleExclude);
+  shufflePick = pickShuffle(last, prefs);
   remember(shufflePick);
   return shufflePick;
 }
@@ -155,7 +169,7 @@ function currentShufflePick(prefs: ScenePreferences): string {
 /** Picks another picture for shuffle mode right now. */
 export function reshuffleScene(): void {
   const prefs = getAppearanceState().interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES;
-  shufflePick = pickShuffle(shufflePick, prefs.shuffleExclude);
+  shufflePick = pickShuffle(shufflePick, prefs);
   remember(shufflePick);
   emit();
 }

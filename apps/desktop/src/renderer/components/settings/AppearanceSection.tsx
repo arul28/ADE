@@ -36,8 +36,8 @@ import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
-import { BUNDLED_SCENES } from "../../scene/sceneLibrary";
-import { reshuffleScene, useActiveScene, useSetScene, useUserScenes, type ActiveScene } from "../../scene/useScene";
+import { BUNDLED_SCENES, readScreenPixels, sceneFitsScreen, type ScreenPixels } from "../../scene/sceneLibrary";
+import { inShuffle, reshuffleScene, useActiveScene, useSetScene, useUserScenes, type ActiveScene } from "../../scene/useScene";
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import "./AppearanceSection.css";
@@ -383,6 +383,7 @@ function BackgroundPicker() {
   };
 
   const hiDpi = useSyncExternalStore(subscribeHiDpi, readHiDpi);
+  const screen = useScreenPixels();
   const pickedId = scenePrefs.mode === "image" ? scenePrefs.imageId : null;
   const usingPicture = scenePrefs.mode === "image" || scenePrefs.mode === "shuffle";
 
@@ -431,8 +432,8 @@ function BackgroundPicker() {
           title={scenePrefs.mode === "shuffle" ? "Pick another picture now" : "A new picture on a schedule"}
         >
           <div className="ade-ap-scene-art ade-ap-scene-mosaic">
-            {BUNDLED_SCENES.slice(0, 4).map((scene) => (
-              <img key={scene.id} src={scene.src} alt="" draggable={false} style={{ objectPosition: scene.position }} />
+            {[...new Set([...BUNDLED_SCENES.filter((scene) => sceneFitsScreen(scene, screen)), ...BUNDLED_SCENES])].slice(0, 4).map((scene) => (
+              <img key={scene.id} src={scene.thumb} alt="" draggable={false} style={{ objectPosition: scene.position }} />
             ))}
             <span className="ade-ap-scene-badge"><Shuffle size={13} weight="bold" /></span>
           </div>
@@ -454,9 +455,13 @@ function BackgroundPicker() {
             onClick={() => setScene({ mode: "image", imageId: scene.id })}
           >
             <div className="ade-ap-scene-art">
-              <img src={scene.src} alt="" draggable={false} style={{ objectPosition: scene.position }} />
+              <img src={scene.thumb} alt="" draggable={false} style={{ objectPosition: scene.position }} />
             </div>
-            <SceneLabel name={scene.name} sub="ADE" active={pickedId === scene.id} />
+            <SceneLabel
+              name={scene.name}
+              sub={sceneFitsScreen(scene, screen) ? "Fits this screen" : "Made for other screens"}
+              active={pickedId === scene.id}
+            />
           </button>
         ))}
 
@@ -517,10 +522,12 @@ function BackgroundPicker() {
         <ShuffleOptions
           every={scenePrefs.shuffleEvery}
           exclude={scenePrefs.shuffleExclude}
+          include={scenePrefs.shuffleInclude}
+          screen={screen}
           userScenes={userScenes}
           activeId={active.kind === "image" ? active.id : null}
           onEvery={(shuffleEvery) => setScene({ shuffleEvery })}
-          onExclude={(shuffleExclude) => setScene({ shuffleExclude })}
+          onPool={(shuffleExclude, shuffleInclude) => setScene({ shuffleExclude, shuffleInclude })}
         />
       ) : null}
 
@@ -590,33 +597,45 @@ const SHUFFLE_EVERY_OPTIONS: { value: SceneShuffleEvery; label: string }[] = [
 
 /**
  * Shuffle's own settings: when it changes, and which pictures are in the
- * rotation. Every picture is in by default; a new picture joins on its own.
+ * rotation. By default that is every picture sized for this screen plus the
+ * user's own (`inShuffle`); any picture can be put in or left out, and a new
+ * picture that fits joins on its own.
  */
 function ShuffleOptions({
   every,
   exclude,
+  include,
+  screen,
   userScenes,
   activeId,
   onEvery,
-  onExclude,
+  onPool,
 }: {
   every: SceneShuffleEvery;
   exclude: string[];
+  include: string[];
+  screen: ScreenPixels;
   userScenes: { id: string; name: string }[];
   activeId: string | null;
   onEvery: (next: SceneShuffleEvery) => void;
-  onExclude: (next: string[]) => void;
+  onPool: (exclude: string[], include: string[]) => void;
 }) {
   const pictures = [
-    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.src as string | null, position: scene.position })),
+    ...BUNDLED_SCENES.map((scene) => ({ id: scene.id, name: scene.name, src: scene.thumb as string | null, position: scene.position })),
     ...userScenes.map((scene) => ({ id: scene.id, name: scene.name, src: null, position: "50% 50%" })),
   ];
-  const included = pictures.filter((picture) => !exclude.includes(picture.id)).length;
+  const isOn = (id: string, pool = { shuffleExclude: exclude, shuffleInclude: include }) => inShuffle(id, pool, screen);
+  const included = pictures.filter((picture) => isOn(picture.id)).length;
   const toggle = (id: string) => {
-    const next = exclude.includes(id) ? exclude.filter((value) => value !== id) : [...exclude, id];
+    const nextExclude = exclude.filter((value) => value !== id);
+    const nextInclude = include.filter((value) => value !== id);
+    // Off: leave it out. On: drop the leave-out, and put it in by hand when
+    // it would not be in on its own (not sized for this screen).
+    if (isOn(id)) nextExclude.push(id);
+    else if (!isOn(id, { shuffleExclude: nextExclude, shuffleInclude: nextInclude })) nextInclude.push(id);
     // Leaving every picture out would leave nothing to shuffle; keep at least one.
-    if (pictures.every((picture) => next.includes(picture.id))) return;
-    onExclude(next);
+    if (!pictures.some((picture) => isOn(picture.id, { shuffleExclude: nextExclude, shuffleInclude: nextInclude }))) return;
+    onPool(nextExclude, nextInclude);
   };
   return (
     <div className="ade-ap-shuffle">
@@ -638,13 +657,18 @@ function ShuffleOptions({
       <div className="ade-ap-shuffle-label">
         <span className="kit-eyebrow">In the shuffle</span>
         <span className="kit-num">{included} of {pictures.length}</span>
-        {exclude.length > 0 ? (
-          <button type="button" className="ade-ap-shuffle-all" onClick={() => onExclude([])}>Include all</button>
+        {included < pictures.length ? (
+          <button type="button" className="ade-ap-shuffle-all" onClick={() => onPool([], pictures.map((picture) => picture.id))}>Include all</button>
+        ) : null}
+        {exclude.length > 0 || include.length > 0 ? (
+          <button type="button" className="ade-ap-shuffle-all" onClick={() => onPool([], [])} title="Every picture sized for this screen, plus your own">
+            Best for this screen
+          </button>
         ) : null}
       </div>
       <div className="ade-ap-shuffle-grid" role="group" aria-label="Pictures in the shuffle">
         {pictures.map((picture) => {
-          const on = !exclude.includes(picture.id);
+          const on = isOn(picture.id);
           return (
             <button
               key={picture.id}
@@ -882,6 +906,24 @@ function PreviewBackdrop({ scene, palette }: { scene: ActiveScene; palette: Reso
       }}
     />
   );
+}
+
+// The screen's device pixels, live: moving the window to another display
+// changes which pictures fit.
+function subscribeScreen(onChange: () => void): () => void {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+
+let screenSnapshot: ScreenPixels = { width: 0, height: 0 };
+function readScreenSnapshot(): ScreenPixels {
+  const next = readScreenPixels();
+  if (next.width !== screenSnapshot.width || next.height !== screenSnapshot.height) screenSnapshot = next;
+  return screenSnapshot;
+}
+
+function useScreenPixels(): ScreenPixels {
+  return useSyncExternalStore(subscribeScreen, readScreenSnapshot);
 }
 
 // The halftone texture draws only at 2x and above (see `styles/scene.css`).

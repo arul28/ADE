@@ -9,7 +9,8 @@
 
 const DB_NAME = "ade-scenes";
 const STORE = "images";
-const MAX_EDGE = 3840;
+// Wide enough for a 5120-pixel ultrawide to show an imported picture sharp.
+const MAX_EDGE = 5120;
 const MAX_IMPORT_BYTES = 40 * 1024 * 1024;
 
 export type UserScene = {
