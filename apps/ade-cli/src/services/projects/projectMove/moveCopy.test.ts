@@ -45,7 +45,8 @@ afterEach(() => {
   }
 });
 
-// `du -skI` (leaving out node_modules) is BSD `du`; the move is macOS-only.
+// DARWIN-GATE: `du -skI` (leaving out node_modules) is BSD `du`, and the move is
+// macOS-only; no macOS runner executes the ade-cli vitest suites.
 describe.skipIf(process.platform !== "darwin")("measureProject", () => {
   it("keeps one measurement in flight and counts its minute from when it finished", async () => {
     const root = tempProject();
