@@ -12,7 +12,7 @@ import { formatBytes } from "../../../../../desktop/src/shared/formatting";
 import { isPathInside } from "../../../../../desktop/src/main/services/shared/pathCompare";
 import { detectCloudStorageProvider } from "../../../../../desktop/src/main/services/storage/cloudPlaceholder";
 import { planAgentHistoryRenames, summarizeAgentHistory } from "./moveAgentHistory";
-import { measureProject, onSameVolume } from "./moveCopy";
+import { DISK_USAGE_TIMEOUT_MS, measureProject, onSameVolume, type ProjectMeasurement } from "./moveCopy";
 import { projectDatabasePath, readProjectDatabaseSummary, type DatabaseSummary } from "./moveDatabase";
 import { listWorktreeLinks, rootSpellings, type WorktreeLink } from "./moveGitLinks";
 import { ownsLeftoverCopy } from "./moveJournal";
@@ -239,12 +239,16 @@ export async function preflightProjectMove(args: {
   const sameDrive = onSameVolume(sourceRoot, path.dirname(destinationRoot)) && destinationVolume?.fileSystem === "apfs";
   const freeBytes = destinationVolume?.freeBytes ?? 0;
   // On the same drive the copy is made of clones, which take no space.
-  const canCopyDependencies = sameDrive || freeBytes >= sizes.copyBytes + sizes.dependencyBytes + SPACE_MARGIN_BYTES;
+  // A failed measurement blocks the move, same drive included: the size line
+  // and the dependency choice both read these bytes, and a project the drive
+  // cannot read would fail the copy anyway.
+  const canCopyDependencies = sizes.measured
+    && (sameDrive || freeBytes >= sizes.copyBytes + sizes.dependencyBytes + SPACE_MARGIN_BYTES);
 
   const checks: ProjectMoveCheck[] = [
     destinationCheck(sourceRoot, destinationRoot),
     driveCheck(sourceVolume, destinationVolume),
-    spaceCheck(sizes, freeBytes, where, sameDrive),
+    sizes.measured ? spaceCheck(sizes, freeBytes, where, sameDrive) : measureCheck(),
     accessCheck(destinationRoot, where),
     quietCheck(args.activity),
     await holdersCheck(sourceRoot),
@@ -256,20 +260,21 @@ export async function preflightProjectMove(args: {
     planAgentHistoryRenames({ oldSpellings, newRoot: destinationRoot, knownPaths: [sourceRoot, ...lanes.knownLanePaths] }),
     oldSpellings,
   );
-
   return {
     ...base,
     sourceVolume,
     destinationVolume,
-    copyBytes: sizes.copyBytes,
-    dependencyBytes: sizes.dependencyBytes,
+    copyBytes: sizes.measured ? sizes.copyBytes : 0,
+    dependencyBytes: sizes.measured ? sizes.dependencyBytes : 0,
     sameDrive,
     canCopyDependencies,
     laneCount: lanes.laneCount,
     checks,
     canMove: !checks.some((check) => check.status === "blocked"),
     notes: [
-      ...(await afterMoveNotes(sourceRoot, links, oldSpellings, sameDrive ? 0 : sizes.dependencyBytes, sameDrive)),
+      // A failed measurement already blocks the move; scanning every lane for
+      // path mentions would only spend the rest of the IPC budget.
+      ...(sizes.measured ? await afterMoveNotes(sourceRoot, links, oldSpellings, sizes, sameDrive) : []),
       ...(await driveNotes(sourceRoot, destinationVolume)),
     ],
     agentHistory,
@@ -300,6 +305,20 @@ function destinationCheck(sourceRoot: string, destinationRoot: string): ProjectM
   return problems.length
     ? { id: "destination", status: "blocked", title: "The new location can't be used", detail: problems.join(" ") }
     : { id: "destination", status: "ok", title: `New location: ${destinationRoot}` };
+}
+
+/**
+ * `du` ended without a total: it hit its own limit, or part of the project
+ * could not be read. The move needs that number to know the new location has
+ * room, so it waits instead of guessing.
+ */
+function measureCheck(): ProjectMoveCheck {
+  return {
+    id: "space",
+    status: "blocked",
+    title: "ADE couldn't measure the project",
+    detail: `It either took longer than ${DISK_USAGE_TIMEOUT_MS / 60_000} minutes or the project folder couldn't be read at all. Check that its drive is connected and ADE can read the folder, then check again.`,
+  };
 }
 
 function spaceCheck(sizes: { copyBytes: number; dependencyBytes: number }, free: number, where: string, sameDrive: boolean): ProjectMoveCheck {
@@ -470,22 +489,22 @@ function lanesCheck(sourceRoot: string, links: WorktreeLink[]): { check: Project
 }
 
 /** What ADE leaves for the person to do after the move. */
-async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpellings: string[], dependencyBytes: number, sameDrive: boolean): Promise<ProjectMoveNote[]> {
+async function afterMoveNotes(sourceRoot: string, links: WorktreeLink[], oldSpellings: string[], sizes: ProjectMeasurement, sameDrive: boolean): Promise<ProjectMoveNote[]> {
   const notes: ProjectMoveNote[] = [];
   const lanes = links.flatMap((link) => (link.relativePath !== null && link.exists ? [path.join(sourceRoot, link.relativePath)] : []));
   const checkouts = [sourceRoot, ...lanes];
   const lockfile = lockfileKind(sourceRoot);
   // On the same drive dependencies are cloned with the project: nothing to do.
-  if (!sameDrive && (dependencyBytes > 0 || lockfile)) {
+  if (!sameDrive && sizes.measured && (sizes.dependencyBytes > 0 || lockfile)) {
     const command = installCommandFor(sourceRoot) ?? "your install command";
     const linked = dependencyLinksIntoProject(lanes, oldSpellings);
-    const hasDependencies = dependencyBytes > 0;
+    const hasDependencies = sizes.dependencyBytes > 0;
     notes.push({
       id: "dependencies",
       title: hasDependencies ? `Dependencies: copy them, or run ${command} after` : `Dependencies: run ${command} after`,
       detail: hasDependencies
         ? [
-            `${formatBytes(dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
+            `${formatBytes(sizes.dependencyBytes)} of dependencies. Copy them with the project and nothing needs reinstalling; leave them out and ADE offers to run ${command} in each checkout after the move.`,
             lockfile === "pnpm" ? "pnpm keeps one store per drive: on another drive, the first pnpm install reinstalls once into a store there." : "",
             linked.length ? `${linked.length} lane link${linked.length === 1 ? "" : "s"} to the main checkout's dependencies only work once those are there:\n${linked.map((file) => path.relative(sourceRoot, file)).join("\n")}` : "",
           ].filter(Boolean).join("\n")
