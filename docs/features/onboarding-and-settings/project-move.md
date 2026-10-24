@@ -7,6 +7,15 @@ original is kept, renamed, until the person deletes it. macOS only for now:
 on Windows and Linux the card is absent, and its manifest entry
 (`macOnly`) keeps it out of the nav, search and the command palette.
 
+Before a move can start, the dialog measures the project with `du`,
+dependencies included, so the space check knows what the destination needs. On
+a project whose lanes hold their own `node_modules` that takes over a minute,
+so the dialog keeps checking instead of giving up, and a re-check joins the
+measurement already running rather than starting another. If the size cannot be
+read (it took longer than ten minutes, or the project folder cannot be read at
+all), the move stays disabled and says so instead of treating the project as
+empty.
+
 Research, the full map of stored paths and the experiments behind each rule:
 [`docs/plans/project-move.md`](../../plans/project-move.md).
 
@@ -29,6 +38,7 @@ Research, the full map of stored paths and the experiments behind each rule:
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Forwards the `copyDependencies` choice from the desktop IPC request to the move controller. |
 | `apps/desktop/src/renderer/components/projectMove/` | `MoveProjectDialog` (one setup screen with the drive, folder and checks → Moving → Done), `ProjectMoveHost` (the dialog host and the old-copy banner), the agent check prompt. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.test.ts` | Whole moves on real git repos and project data, Codex trust carry-over, interrupted-move recovery, and the journal's process check. |
+| `apps/ade-cli/src/services/projects/projectMove/moveCopy.test.ts` | One measurement shared by concurrent checks and reused after it finishes; an unreadable project reported as unmeasured rather than 0 B. |
 | `apps/desktop/src/renderer/components/projectMove/projectMove.test.tsx` | The old-copy banner shows only in the moved project's tab; the check agent launches only on Start agent, ask-first, with the edited prompt. |
 | `apps/desktop/src/renderer/components/settings/ProjectLocationSection.tsx` | The Settings row. `machine: "local"`. |
 

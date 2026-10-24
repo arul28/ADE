@@ -22,6 +22,7 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
+import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
 
 describe("ipcInvokeTimeoutMs", () => {
   it.each([
@@ -455,9 +456,16 @@ describe("ipcInvokeTimeoutMs", () => {
     [IPC.projectOpenRepo, 5 * 60_000],
     [IPC.machineResetStart, 5 * 60_000],
     [IPC.projectMoveCleanup, 24 * 60 * 60_000],
+    // The move check measures the project before it can answer.
+    [IPC.projectMovePreflight, DISK_USAGE_TIMEOUT_MS],
   ] as const)("keeps %s open for its full operation budget", (channel, minimumMs) => {
     const timeoutMs = ipcInvokeTimeoutMs(channel);
     expect(timeoutMs).toBeGreaterThanOrEqual(minimumMs);
+    if (channel === IPC.projectMovePreflight) {
+      // `du` itself is killed at this limit, so the renderer must wait longer
+      // than the measurement can legally take.
+      expect(timeoutMs).toBeGreaterThan(DISK_USAGE_TIMEOUT_MS);
+    }
     if (channel === IPC.projectMoveCleanup) {
       expect(timeoutMs).toBe(ipcInvokeTimeoutMs(IPC.projectMoveStart));
       expect(timeoutMs).toBe(24 * 60 * 60_000);

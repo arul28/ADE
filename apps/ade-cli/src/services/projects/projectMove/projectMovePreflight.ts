@@ -315,7 +315,7 @@ function measureCheck(): ProjectMoveCheck {
     id: "space",
     status: "blocked",
     title: "ADE couldn't measure the project",
-    detail: `It either took longer than ${DISK_USAGE_TIMEOUT_MS / 60_000} minutes or part of the project couldn't be read. Check that its drive is connected and ADE can read the folder, then check again.`,
+    detail: `It either took longer than ${DISK_USAGE_TIMEOUT_MS / 60_000} minutes or the project folder couldn't be read at all. Check that its drive is connected and ADE can read the folder, then check again.`,
   };
 }
 
