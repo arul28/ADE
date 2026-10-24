@@ -686,6 +686,18 @@ extension WorkSessionDestinationView {
           return nil
         }()
         try await syncService.endSideChat(mainSessionId: sessionId, expectedSideSessionId: shownSideSessionId)
+        // Once the pointer ages out, the lookup falls back to this view's
+        // summaries, so none of them may still name the ended side chat.
+        if let shownSideSessionId,
+           var summary = composerChatSummary,
+           summary.sideChatSessionId == shownSideSessionId {
+          summary.sideChatSessionId = nil
+          chatSummary = summary
+          if var known = lastKnownChatSummary, known.sideChatSessionId == shownSideSessionId {
+            known.sideChatSessionId = nil
+            lastKnownChatSummary = known
+          }
+        }
         sideChatPanelState = .closed
       }
     )
