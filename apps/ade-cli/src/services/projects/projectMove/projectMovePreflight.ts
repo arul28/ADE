@@ -272,7 +272,9 @@ export async function preflightProjectMove(args: {
     checks,
     canMove: !checks.some((check) => check.status === "blocked"),
     notes: [
-      ...(await afterMoveNotes(sourceRoot, links, oldSpellings, sizes, sameDrive)),
+      // A failed measurement already blocks the move; scanning every lane for
+      // path mentions would only spend the rest of the IPC budget.
+      ...(sizes.measured ? await afterMoveNotes(sourceRoot, links, oldSpellings, sizes, sameDrive) : []),
       ...(await driveNotes(sourceRoot, destinationVolume)),
     ],
     agentHistory,
