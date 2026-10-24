@@ -13,6 +13,8 @@ import type {
 } from "../../../shared/types/core";
 import { codedError } from "../../../shared/codedError";
 import { runGit } from "../git/git";
+import { isGitToolchainMissing } from "../git/gitToolchain";
+import { markExpected } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
@@ -111,7 +113,9 @@ export function createProjectScaffoldService({
       if (initRes.exitCode !== 0) {
         const fallbackInit = await runGit(["init"], { cwd: rootPath, timeoutMs: 15_000 });
         if (fallbackInit.exitCode !== 0) {
-          throw new Error(`git init failed: ${fallbackInit.stderr.trim() || `exit ${fallbackInit.exitCode}`}`);
+          const error = new Error(`git init failed: ${fallbackInit.stderr.trim() || `exit ${fallbackInit.exitCode}`}`);
+          // No developer tools on this Mac: the user's setup, said in the message.
+          throw isGitToolchainMissing(fallbackInit.stderr) ? markExpected(error, "environment") : error;
         }
         const symbolicRef = await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
           cwd: rootPath,

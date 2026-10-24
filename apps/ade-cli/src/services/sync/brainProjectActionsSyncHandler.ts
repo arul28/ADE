@@ -1473,6 +1473,9 @@ export function createBrainProjectActionsSyncHandler(
             // instead of what to do next.
             send(ws, "account_challenge_error", {
               message: SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE,
+              // Lets the phone tell this known refusal (it has a next step) from
+              // a challenge that failed for a reason worth reporting.
+              code: "sealed_adoption_unavailable",
             }, envelope.requestId);
             return;
           }

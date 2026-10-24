@@ -12,6 +12,7 @@
  * Info and debug stay on disk only; they are too many for the quota and add
  * little to a report.
  */
+import { expectedErrorKind } from "../expectedError";
 import { addSentryBreadcrumb, captureError, captureProblem, isSentryActive, sendSentryLog } from "./capture";
 import { createEventLimiter } from "./guardrails";
 import { scrubRecord } from "./scrub";
@@ -63,6 +64,9 @@ export function forwardLogToSentry(level: Level, event: string, meta?: Record<st
   addSentryBreadcrumb("log", event, attributes, level === "warn" ? "warning" : "error");
   if (level !== "error" || LOG_ONLY_EVENTS.has(event)) return;
   const error = errorFromMeta(meta);
+  // An error line about an answer (a folder that is not a repository, a path
+  // the user picked): the line and the Sentry Log above are the record of it.
+  if (expectedErrorKind(error)) return;
   const context = { tags: { "log.event": event }, extra: attributes };
   // An Error groups by its own stack and type. A message has no stack of its
   // own (the stack would be this bridge's), so it groups by the event name.

@@ -62,8 +62,11 @@ const SIMCTL_SHUTDOWN_TIMEOUT_MS = 60_000;
 
 /** `simctl boot` refusing a device another caller already booted. */
 const ALREADY_BOOTED = /Unable to boot device in current state|current state: Booted|already booted/i;
-/** `simctl shutdown` refusing a device that is already off. */
-const ALREADY_OFF = /current state: Shutdown|Unable to shutdown device in current state|not booted|Invalid device state/i;
+/**
+ * `simctl shutdown` refusing a device that is already off, or one that no
+ * longer exists at all ("Invalid device: <udid>", e.g. deleted in Xcode).
+ */
+const ALREADY_OFF = /current state: Shutdown|Unable to shutdown device in current state|not booted|Invalid device state|Invalid device: [0-9A-F-]{36}/i;
 
 export function createSimulatorPower(deps: SimulatorPowerDeps): SimulatorPower {
   const bootDevice = async (device: Pick<IosSimulatorDevice, "udid" | "name" | "state">): Promise<boolean> => {

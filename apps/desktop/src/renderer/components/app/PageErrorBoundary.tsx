@@ -11,6 +11,8 @@ import {
   WhatToDo,
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { reloadForStaleChunk } from "../../lib/staleChunkReload";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 /**
  * Per-route error boundary. One screen failing to draw must never take the
@@ -35,6 +37,8 @@ class PageErrorBoundaryInner extends React.Component<
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    // Web client after a deploy: this page's old chunk is gone; reload into the new build.
+    if (isWebClientMode() && reloadForStaleChunk(error)) return;
     console.error("page.crash", error, errorInfo, error?.stack);
     captureError(error, {
       handled: false,

@@ -1,4 +1,5 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1701,7 +1702,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         alertBody: optionalNonEmptyString(record.alertBody),
       });
       if (!raised) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1712,7 +1713,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("setSessionStatusNote requires a string `note` field.");
       }
       if (!sessionService.setStatusNote(sessionId, record.note || null)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1724,7 +1725,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error("setSessionActivity requires a supported string `value` or null.");
       }
       if (!sessionService.setSessionActivity(sessionId, value)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, value };
     },
@@ -1763,7 +1764,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         agentChatService: runtime.agentChatService,
         ptyService: runtime.ptyService,
       })) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1776,7 +1777,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.unsettleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.unsettleSession(sessionId)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1839,7 +1840,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const untilIso = requireSnoozeDeadline(record.untilIso);
       if (!sessionService.snoozeSession(sessionId, untilIso)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, snoozedUntil: untilIso };
     },
@@ -1866,7 +1867,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const override = readSettleOverride(record.override, "session.setSettleOverride");
       if (!sessionService.setSettleOverride(sessionId, override)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, settleOverride: override };
     },
@@ -1879,7 +1880,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.clearWokeMarker");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.clearWokeMarker(sessionId)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },

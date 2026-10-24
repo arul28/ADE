@@ -15,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import { markExpected } from "../../../shared/expectedError";
 import path from "node:path";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
@@ -87,6 +88,7 @@ import {
   type WindowsDesktopOperationKind,
   type WindowsDesktopStatus,
   type WindowsDesktopTakeoverArgs,
+  MAC_DESKTOP_ANSWER_CODES,
 } from "../../../shared/types/macDesktop";
 import type {
   ComputerUseArtifactIngestionRequest,
@@ -174,6 +176,7 @@ export class MacDesktopError extends Error {
     super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopError";
     this.code = code;
+    if (MAC_DESKTOP_ANSWER_CODES.has(code)) markExpected(this, "user");
   }
 }
 

@@ -2781,10 +2781,44 @@ function resolveSessionComposerModelId(
   session: Pick<AgentChatSessionSummary, "modelId" | "model" | "presetId">,
   harnessPresets: readonly HarnessPreset[],
 ): string | null {
-  return session.modelId
-    ?? resolveRegistryModelId(session.model)
-    ?? resolveHarnessLaunchTarget(session.presetId, harnessPresets)?.launchModelId
-    ?? null;
+  return session.modelId?.trim()
+    || resolveRegistryModelId(session.model)
+    || resolveHarnessLaunchTarget(session.presetId, harnessPresets)?.launchModelId
+    || null;
+}
+
+/**
+ * How far back the transcript fallback looks. It reruns on every event while
+ * the summary cannot name the model, so a long turn must not make each event
+ * cost a walk of the whole chat.
+ */
+const TRANSCRIPT_MODEL_SCAN_LIMIT = 2_000;
+
+/**
+ * The model the chat's last finished turn ran on, read from its own transcript
+ * (the newest `done` event that names one). Used only while the summary cannot
+ * name the chat's model.
+ */
+function resolveTranscriptComposerModelId(events: readonly AgentChatEventEnvelope[]): string | null {
+  const stop = Math.max(0, events.length - TRANSCRIPT_MODEL_SCAN_LIMIT);
+  for (let index = events.length - 1; index >= stop; index -= 1) {
+    const event = events[index]!.event;
+    if (event.type !== "done") continue;
+    const modelId = event.modelId?.trim();
+    if (modelId) return modelId;
+    const model = event.model?.trim();
+    if (model) return resolveRegistryModelId(model) ?? model;
+  }
+  return null;
+}
+
+/**
+ * The summary's own model string, as the last resort for an existing chat
+ * whose model no catalog resolves (a custom Codex `config.toml` model, a model
+ * newer than this build). The picker shows the raw id, which is the truth.
+ */
+function rawSessionComposerModelId(session: Pick<AgentChatSessionSummary, "model"> | null | undefined): string | null {
+  return session?.model?.trim() || null;
 }
 
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
@@ -5225,15 +5259,8 @@ export function AgentChatPane({
     const normalized = laneLabel?.trim();
     return normalized?.length ? normalized : laneId;
   }, [laneId, laneLabel]);
-  const selectedSessionModelId = useMemo(() => {
-    if (!selectedSession) return null;
-    return resolveSessionComposerModelId(selectedSession, harnessPresets);
-  }, [selectedSession, harnessPresets]);
-  const selectedSessionPresetId = selectedSession?.presetId ?? null;
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
-  const selectedSessionModelIdRef = useRef(selectedSessionModelId);
-  selectedSessionModelIdRef.current = selectedSessionModelId;
   const deferredComposerSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -5469,6 +5496,25 @@ export function AgentChatPane({
       ?? peekAgentChatSessionViewCache(renderedSessionId)?.events
       ?? EMPTY_CHAT_EVENTS
     : EMPTY_CHAT_EVENTS;
+  // The model of the chat this pane shows. The summary names it; when the
+  // summary is missing (a read still pending or failing) or names a model this
+  // window cannot resolve, the chat's own transcript and then the summary's raw
+  // model string stand in. An existing chat must never fall back to an empty
+  // model: the composer would show "Select model" for a chat that already ran,
+  // and a pick made there would be dropped on send.
+  const selectedSessionModelId = useMemo(() => {
+    if (!selectedSessionId) return null;
+    const fromSummary = selectedSession ? resolveSessionComposerModelId(selectedSession, harnessPresets) : null;
+    if (fromSummary) return fromSummary;
+    const fromTranscript = renderedSessionId === selectedSessionId
+      ? resolveTranscriptComposerModelId(selectedEvents)
+      : null;
+    return fromTranscript ?? rawSessionComposerModelId(selectedSession);
+  }, [harnessPresets, renderedSessionId, selectedEvents, selectedSession, selectedSessionId]);
+  const selectedSessionModelIdRef = useRef(selectedSessionModelId);
+  selectedSessionModelIdRef.current = selectedSessionModelId;
+  const selectedSessionModelOwnerRef = useRef<string | null>(selectedSessionId);
+  selectedSessionModelOwnerRef.current = selectedSessionId;
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);
@@ -7080,7 +7126,24 @@ export function AgentChatPane({
     if (!session) {
       // Locked Work chats keep this pane mounted across switches. While the
       // incoming session is still loading, do not seed last-launch into it.
+      // Its transcript may already name its model (the summary read is slow
+      // or failing); show that rather than an empty picker or the model of
+      // the chat shown before the switch, which a send would then apply.
       if (lockSessionId) {
+        const transcriptModelId = selectedSessionModelOwnerRef.current === lockSessionId
+          ? selectedSessionModelIdRef.current
+          : null;
+        if (
+          transcriptModelId
+          && !isDeferredComposerModelSelection(
+            composerModelIdRef.current,
+            transcriptModelId,
+            deferredComposerSessionIdRef.current,
+            lockSessionId,
+          )
+        ) {
+          setModelId(transcriptModelId);
+        }
         return;
       }
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
@@ -7117,7 +7180,11 @@ export function AgentChatPane({
     if (sessionRoutePickRef.current && sessionRoutePickRef.current.sessionId !== session.sessionId) {
       setSessionRoutePick(null);
     }
-    const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current);
+    // The selected chat's model may come from its transcript when its summary
+    // cannot name it; any other chat (a tab click) falls back to its raw model.
+    const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current)
+      ?? (selectedSessionModelOwnerRef.current === session.sessionId ? selectedSessionModelIdRef.current : null)
+      ?? rawSessionComposerModelId(session);
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       nextModelId,
@@ -9023,9 +9090,11 @@ export function AgentChatPane({
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
-    // A chat on a preset or route runs the preset's model, which discovery and
-    // the registry may not list (DeepSeek in Claude Code). Keep it.
-    if (selectedSessionPresetId && modelId === selectedSessionModelId) return;
+    // An existing chat keeps its own model even when this window's catalog
+    // cannot list it: a preset or route model (DeepSeek in Claude Code), a
+    // custom Codex `config.toml` model, a model newer than this build. A
+    // fallback here would switch the chat to another model on the next send.
+    if (selectedSessionId && modelId === selectedSessionModelId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -9034,7 +9103,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId, selectedSessionPresetId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -14606,10 +14675,16 @@ export function AgentChatPane({
         ? sessionRoutePickRef.current
         : null;
       const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
+      // With no model known for the chat yet, only a model the person picked
+      // in this chat counts as a change; an empty or stale composer does not.
+      const pickedWithoutSessionModel = !selectedSessionModelId
+        && Boolean(modelId)
+        && deferredComposerSessionIdRef.current === selectedSessionId;
       const selectedModelChanged =
         Boolean(selectedSessionId)
         && (
           (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+          || pickedWithoutSessionModel
           || selectedRouteChanged
         );
       const selectedFastModeChanged =
@@ -17532,6 +17607,8 @@ export function AgentChatPane({
             shouldAutofocus={layoutVariant === "grid-tile" ? shouldAutofocusComposer : false}
             sdkSlashCommands={sdkSlashCommands}
             modelId={subagentComposerModel?.modelId ?? modelId}
+            // Only a new draft asks for a pick; an existing chat's model is still being read.
+            {...(renderedSessionId ? { modelEmptyLabel: "Loading model…" } : {})}
             fastModeAllowed={fastModeAllowedForComposer}
             {...(!fastModeAllowedForComposer ? { onFastModeLocked: openFastModeSetting } : {})}
             // A chat launched from a saved preset is named by the preset in the

@@ -1,5 +1,6 @@
 import net from "node:net";
 import { parseRpcUrlAuthToken, withRpcAuthParam } from "../rpcAuth";
+import { markExpected, readExpectedErrorKind } from "../../../desktop/src/shared/expectedError";
 
 type PendingRequest = {
   method: string;
@@ -16,6 +17,8 @@ type JsonRpcResponse = {
     code: number;
     message: string;
     data?: unknown;
+    /** The peer's mark for an answer rather than a defect; see `shared/expectedError.ts`. */
+    expected?: unknown;
   };
   method?: string;
   params?: unknown;
@@ -289,7 +292,9 @@ export class JsonRpcClient {
     this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (response.error) {
-      pending.reject(new JsonRpcResponseError(response.error.message));
+      const rejection = new JsonRpcResponseError(response.error.message);
+      const expected = readExpectedErrorKind(response.error.expected);
+      pending.reject(expected ? markExpected(rejection, expected) : rejection);
       return;
     }
     pending.resolve(response.result);

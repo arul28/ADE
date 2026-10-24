@@ -58,6 +58,12 @@ export type ModelPickerActivePreset = {
 export type ModelPickerProps = {
   value: string;
   /**
+   * The trigger's label while `value` is empty. "Select model" (the default)
+   * asks for a pick, which only a new draft needs; an existing chat whose model
+   * has not been read yet passes a loading label instead.
+   */
+  emptyLabel?: string;
+  /**
    * The preset this chat launched from. When set, the trigger shows the
    * preset's logo and name instead of the model's — the preset is what the user
    * chose, and it names the model, the effort and the permission mode at once.
@@ -184,6 +190,7 @@ export type ModelPickerProps = {
 
 export const ModelPicker = memo(function ModelPicker({
   value,
+  emptyLabel,
   onChange,
   activePreset = null,
   compact = false,
@@ -526,6 +533,7 @@ export const ModelPicker = memo(function ModelPicker({
           <ModelPickerTrigger
             model={selectedModel}
             value={value}
+            {...(emptyLabel ? { emptyLabel } : {})}
             {...(activePreset ? { activePreset } : {})}
             compact={compact}
             disabled={disabled}
@@ -703,6 +711,7 @@ export function composeModelPickerTriggerLabel({
   serviceTier,
   serviceTierSupported,
   presetName,
+  emptyLabel,
 }: {
   model: ModelDescriptor | undefined;
   value: string;
@@ -714,6 +723,8 @@ export function composeModelPickerTriggerLabel({
   serviceTierSupported?: boolean;
   /** A chat launched from a saved preset is named by the preset, not the model. */
   presetName?: string | null;
+  /** The label while `value` is empty; see `ModelPickerProps.emptyLabel`. */
+  emptyLabel?: string;
 }): string {
   // The preset's name replaces the model id outright rather than joining it.
   // The trigger is 152px; "Opus on work · claude-opus-4-5-20260101" truncates to
@@ -721,7 +732,7 @@ export function composeModelPickerTriggerLabel({
   // The model still reaches them — it is the trigger's `title`.
   const preset = presetName?.trim();
   if (preset) return preset;
-  const base = model?.displayName ?? (value.trim() || "Select model");
+  const base = model?.displayName ?? (value.trim() || emptyLabel || "Select model");
   if (serviceTier && (serviceTierSupported ?? modelSupportsServiceTier(model, serviceTier))) {
     return `${base} ${serviceTier === "fast" ? "Fast" : "Standard"}`;
   }
@@ -737,6 +748,7 @@ export function composeModelPickerTriggerLabel({
 type TriggerProps = {
   model: ModelDescriptor | undefined;
   value: string;
+  emptyLabel?: string;
   activePreset?: ModelPickerActivePreset | null;
   compact: boolean;
   disabled: boolean;
@@ -752,12 +764,13 @@ type TriggerProps = {
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, activePreset, compact, disabled, open, fastMode, fastTier, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
+      { model, value, emptyLabel, activePreset, compact, disabled, open, fastMode, fastTier, fastModeSupported, serviceTier, serviceTierSupported, className, ...rest },
       ref,
     ) {
       const label = composeModelPickerTriggerLabel({
         model,
         value,
+        ...(emptyLabel ? { emptyLabel } : {}),
         ...(activePreset?.name ? { presetName: activePreset.name } : {}),
         fastMode,
         fastTier: fastTier ?? null,

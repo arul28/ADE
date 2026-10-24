@@ -649,6 +649,22 @@ func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
   }
 }
 
+/// The machine answered and said why it can't take this sign-in, with the
+/// next step (pair with a code, or open a project on it). The connection card
+/// shows those words; it is an outcome, not a bug, so it is not sent to Sentry.
+/// Hosts before the `code` field send only the message, matched exactly.
+func syncConnectFailureIsExplainedRefusal(_ error: Error) -> Bool {
+  if let exhausted = error as? AccountAdoptionRoutesExhaustedError {
+    guard let finalFailure = exhausted.finalFailure else { return false }
+    return syncConnectFailureIsExplainedRefusal(finalFailure)
+  }
+  let nsError = error as NSError
+  guard nsError.domain == "ADE.AdoptChannel", nsError.code == 6 else { return false }
+  if (nsError.userInfo["ADEErrorCode"] as? String) == "sealed_adoption_unavailable" { return true }
+  return nsError.localizedDescription
+    == "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again."
+}
+
 /// `ADE`-domain codes the connect paths throw when the machine never answered.
 private enum SyncConnectErrorCode {
   /// The WebSocket did not open in time (`awaitSocketOpen`).
@@ -7519,12 +7535,17 @@ final class SyncService: ObservableObject {
       case "account_challenge_ok", "hello_ok":
         return preprocessed.payload
       case "account_challenge_error":
-        let message = syncNonEmpty((preprocessed.payload as? [String: Any])?["message"] as? String)
+        let challengePayload = preprocessed.payload as? [String: Any]
+        let message = syncNonEmpty(challengePayload?["message"] as? String)
           ?? "That route could not verify the computer's identity."
+        var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
+        if let code = syncNonEmpty(challengePayload?["code"] as? String) {
+          userInfo["ADEErrorCode"] = code
+        }
         throw NSError(
           domain: "ADE.AdoptChannel",
           code: 6,
-          userInfo: [NSLocalizedDescriptionKey: message]
+          userInfo: userInfo
         )
       case "hello_error":
         throw adoptionCandidateHelloError(
@@ -8634,7 +8655,7 @@ final class SyncService: ObservableObject {
         machineWasAsleep: blamesSleep
       )
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
-      if !syncConnectFailureIsUnreachableMachine(error) {
+      if !syncConnectFailureIsUnreachableMachine(error) && !syncConnectFailureIsExplainedRefusal(error) {
         CrashReporting.capture(error, context: ["area": "pairing", "step": "connect"])
       }
       ProductAnalytics.shared.captureError(.pairing)

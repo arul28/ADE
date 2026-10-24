@@ -5,6 +5,8 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
+import { markExpected } from "../../../shared/expectedError";
+import { isGitToolchainMissing } from "./gitToolchain";
 import { GIT_READ_ENV } from "./gitReadEnv";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
@@ -656,7 +658,8 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
     const raw = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
     const ownership = describeGitOwnershipProblem(raw);
     if (ownership) throw new GitUntrustedFolderError(ownership);
-    throw new Error(formatGitExecutionError(raw));
+    const error = new Error(formatGitExecutionError(raw));
+    throw isGitToolchainMissing(raw) ? markExpected(error, "environment") : error;
   }
   return res.stdout;
 }

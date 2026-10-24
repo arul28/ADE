@@ -1,6 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { runGit, runGitOrThrow } from "../git/git";
+import { describeGitOwnershipProblem, formatGitExecutionError, GitUntrustedFolderError, runGit } from "../git/git";
+import { isGitToolchainMissing } from "../git/gitToolchain";
+import { markExpected } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectInfo } from "../../../shared/types";
 import {
@@ -11,8 +13,20 @@ import {
 export async function resolveRepoRoot(selectedPath: string): Promise<string> {
   const managedWorktree = findAdeManagedWorktreeRoot(selectedPath);
   if (managedWorktree) return managedWorktree.projectRoot;
-  const out = await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
-  return normalizeProjectRootPath(out.trim());
+  const res = await runGit(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
+  if (res.exitCode !== 0) {
+    const raw = res.stderr.trim() || res.stdout.trim() || "git rev-parse --show-toplevel failed";
+    const ownership = describeGitOwnershipProblem(raw);
+    if (ownership) throw new GitUntrustedFolderError(ownership);
+    const error = new Error(formatGitExecutionError(raw));
+    // Exit 128 from this probe is git's "not a repository" (in the user's own
+    // language, so the text is never matched): the user picked a plain folder.
+    // A Mac without developer tools is its environment. Anything else reports.
+    if (res.exitCode === 128) throw markExpected(error, "user");
+    if (isGitToolchainMissing(raw)) throw markExpected(error, "environment");
+    throw error;
+  }
+  return normalizeProjectRootPath(res.stdout.trim());
 }
 
 export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {

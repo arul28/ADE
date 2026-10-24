@@ -11963,6 +11963,37 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "update" || sub === "configure" || sub === "updateSession") {
+    // The help and docs point agents at `ade chat update --title`. Without
+    // this branch it fell through to an action named `update` (not callable),
+    // and `chat updateSession` with no session sent the runtime no arguments.
+    const model = readValue(args, ["--model", "--model-id"]);
+    const title = readValue(args, ["--title"]);
+    const tag = readValue(args, ["--tag"]);
+    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const fastMode = readFastModeFlag(args);
+    return {
+      kind: "execute",
+      label: "chat update",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "updateSession",
+          withSession({
+            sessionId: requireValue(sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID), "sessionId"),
+            ...(title !== null ? { title } : {}),
+            ...(tag !== null ? { tag } : {}),
+            ...(model ? { modelId: model } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(fastMode !== undefined ? { fastMode } : {}),
+          }),
+        ),
+      ],
+    };
+  }
   return {
     kind: "execute",
     label: `chat ${sub}`,

@@ -5,6 +5,7 @@ import {
   describeFetchTransportFailure,
   fetchTransportFailureCode,
 } from "../../../../desktop/src/shared/fetchTransportFailure";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
   AttentionItem,
@@ -197,6 +198,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the network code that the raw `fetch failed` keeps only in its cause chain.
  */
 export class PushRelayUnreachableError extends Error {
+  /** The network, not ADE: never a Sentry issue (`shared/expectedError.ts`). */
+  readonly adeExpected = "network" as const;
+
   constructor(
     /** `ECONNRESET`, `ENOTFOUND`, …, `timeout`, or null when undici named nothing. */
     readonly code: string | null,
@@ -221,6 +225,9 @@ export class PushRelayRequestError extends Error {
   ) {
     super(`push relay ${action} failed: ${reason}`);
     this.name = "PushRelayRequestError";
+    // The relay's own outage or rate limit ("temporarily unavailable"): the
+    // relay reports its failures itself, and the caller tries again later.
+    if (status === 429 || status >= 500) markExpected(this, "environment");
   }
 }
 

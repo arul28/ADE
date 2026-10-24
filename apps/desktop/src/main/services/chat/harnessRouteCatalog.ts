@@ -23,6 +23,7 @@ import {
   type HarnessRouteModel,
   type HarnessRouteSource,
 } from "../../../shared/harnessRoutes";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource } from "../../../shared/harnessPresets";
 import { providerLabel } from "../../../shared/modelCatalog";
 import { decodeOpenCodeRegistryId, MODEL_REGISTRY, type ProviderFamily } from "../../../shared/modelRegistry";
@@ -247,7 +248,8 @@ export async function buildHarnessLaunchEnv(
   const shell = args.shell ?? (process.platform === "win32" ? "pwsh" : "zsh");
   const result = resolve(args.presetId);
   if (!result) throw new Error("That custom provider does not exist on this account.");
-  if (result.status === "unsupported") throw new Error(result.unsupported);
+  // A route this machine cannot run (no proxy yet, a stopped proxy): the state, not a fault.
+  if (result.status === "unsupported") throw new AdeExpectedError(result.unsupported, "environment");
   const cli = await requirePinnedProviderCli(result.provider);
   // The model rides along: a proxied route or a Droid route spells it in a way
   // only this resolution knows, and the copied launcher starts the harness on

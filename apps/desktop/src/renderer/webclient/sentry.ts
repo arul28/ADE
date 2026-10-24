@@ -36,7 +36,7 @@ export function initWebClientSentry(): void {
     // React, which then fails to insert or remove them: not ADE's DOM.
     beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)
       ? null
-      : hooks.beforeSend(event)),
+      : hooks.beforeSend(event, hint)),
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,

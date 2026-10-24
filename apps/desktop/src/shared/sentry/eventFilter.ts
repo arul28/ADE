@@ -4,7 +4,9 @@
  * scrub. Kept free of SDK-specific types so the Electron, Node and browser SDKs
  * can all take it.
  */
+import { expectedErrorKind } from "../expectedError";
 import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
+import { forwardLogToSentry } from "./logBridge";
 import {
   scrubBreadcrumb,
   scrubEvent,
@@ -43,8 +45,21 @@ export function createSentryEventHooks(budget?: SentryBudget) {
   const limiter = createEventLimiter(budget);
   const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
   return {
-    beforeSend<T>(event: T): T | null {
+    beforeSend<T>(event: T, hint?: { originalException?: unknown }): T | null {
       const candidate = event as unknown as FilterableEvent;
+      // An error its throw site marked as an answer (`shared/expectedError.ts`),
+      // however it got here: a direct capture, a logged error, an unhandled
+      // rejection. Kept as a Sentry Log, never an issue. A crash stays: an
+      // answer nobody caught is a bug in whoever should have.
+      const expected = candidate.level === "fatal" ? null : expectedErrorKind(hint?.originalException);
+      if (expected) {
+        const original = hint?.originalException as { message?: unknown } | undefined;
+        forwardLogToSentry("warn", "sentry.expected_error", {
+          kind: expected,
+          message: typeof original?.message === "string" ? original.message : null,
+        });
+        return null;
+      }
       if (isIgnoredEvent(candidate)) return null;
       // Crashes are the most valuable thing Sentry receives, so they do not
       // compete with ordinary errors for the budget; they have their own.

@@ -61,6 +61,7 @@ import {
 } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { markExpectedFromWire } from "../../../shared/expectedError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -1009,6 +1010,21 @@ const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (clo
 // failure would re-run a non-idempotent action against a healthy daemon.
 const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
 
+// The brain's answer for a project id its registry does not hold. The id is
+// the brain's own hash of the folder; this pool caches it per folder, so a
+// brain that drops or re-keys the record leaves the pool sending a dead id on
+// every call (ADE-DESKTOP-2P and eight sibling issues, one Windows window).
+const UNKNOWN_PROJECT_ID_PATTERN = /Unknown projectId: (project_[0-9a-f]+)/;
+
+/** How often one folder may be registered again after the brain forgot its id. */
+const STALE_PROJECT_REREGISTER_INTERVAL_MS = 30_000;
+
+/** The project id an error says the brain does not know, or null. */
+export function unknownProjectIdInError(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return UNKNOWN_PROJECT_ID_PATTERN.exec(message)?.[1] ?? null;
+}
+
 // Socket-level codes that mean the connection went away mid-call. Read from
 // `Error.code`, never from message text, so a forwarded application message
 // that happens to mention ECONNRESET cannot buy itself a retry.
@@ -1218,6 +1234,8 @@ export class LocalRuntimeConnectionPool {
   /** Every action call still running, coalesced or not, for `drain()`. */
   private readonly inFlightActionCalls = new Set<Promise<unknown>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
+  /** When a folder was last registered again because the brain forgot its id. */
+  private readonly staleProjectReregisteredAtByRoot = new Map<string, number>();
   private readonly projectRegistrationsByRoot = new Map<string, {
     acceptsMatchingWaiters: boolean;
     intent: ProjectRegistrationIntent;
@@ -2061,6 +2079,47 @@ export class LocalRuntimeConnectionPool {
     this.projectsByRoot.delete(normalizedRoot);
   }
 
+  /**
+   * The brain answered "Unknown projectId" for the id this pool handed out for
+   * `rootPath`. Drop that cached record so the next `ensureProject` registers
+   * the folder again and gets the id the brain knows now. Returns whether the
+   * caller should retry once: the brain refused before running anything, so a
+   * retry is safe for every action. Rate-limited per folder, so a brain that
+   * keeps refusing a fresh registration costs one re-registration per window
+   * of time, not one per poll.
+   */
+  private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
+    if (unknownProjectIdInError(error) !== project.projectId) return false;
+    const normalizedRoot = path.resolve(rootPath);
+    const now = Date.now();
+    const lastAt = this.staleProjectReregisteredAtByRoot.get(normalizedRoot) ?? 0;
+    if (now - lastAt < STALE_PROJECT_REREGISTER_INTERVAL_MS) return false;
+    this.staleProjectReregisteredAtByRoot.set(normalizedRoot, now);
+    // Another call may already have registered the folder again.
+    if (this.projectsByRoot.get(normalizedRoot)?.projectId === project.projectId) {
+      this.projectsByRoot.delete(normalizedRoot);
+    }
+    this.logger.warn("local_runtime.project_id_unknown_reregistering", {
+      rootPath: normalizedRoot,
+      projectId: project.projectId,
+    });
+    return true;
+  }
+
+  /** Run `call` with the folder's project id, registering it again once if the brain forgot it. */
+  private async withRegisteredProject<T>(
+    rootPath: string,
+    call: (project: RemoteRuntimeProjectRecord) => Promise<T>,
+  ): Promise<T> {
+    const project = await this.ensureProject(rootPath);
+    try {
+      return await call(project);
+    } catch (error) {
+      if (!this.dropStaleProjectRecord(rootPath, project, error)) throw error;
+      return await call(await this.ensureProject(rootPath));
+    }
+  }
+
   async setProjectCatalogVisibility(
     rootPath: string,
     catalogVisibility: "recent" | "system",
@@ -2266,8 +2325,9 @@ export class LocalRuntimeConnectionPool {
     // A dropped daemon connection (restart / build-hash recycle) is transient:
     // the next connect() reconnects to the live daemon. Retry a replay-safe call
     // once so the renderer never sees a raw "connection closed" for a refresh.
-    const maxAttempts = isReplaySafeAdeAction(request.domain, request.action) ? 2 : 1;
+    let maxAttempts = isReplaySafeAdeAction(request.domain, request.action) ? 2 : 1;
     let lastError: Error | null = null;
+    let reregisteredStaleProject = false;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const tStart = Date.now();
@@ -2310,7 +2370,10 @@ export class LocalRuntimeConnectionPool {
             const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
               ? record.error as Record<string, unknown>
               : {};
-            throw new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed.");
+            throw markExpectedFromWire(
+              new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed."),
+              error.expected,
+            );
           }
         }
       } catch (error) {
@@ -2359,6 +2422,15 @@ export class LocalRuntimeConnectionPool {
           lastError = callError;
           continue;
         }
+        // The brain forgot the id this pool cached for the folder. It refused
+        // before running the action, so any action may run once more against
+        // the id a fresh registration returns.
+        if (!reregisteredStaleProject && this.dropStaleProjectRecord(rootPath, project, callError)) {
+          reregisteredStaleProject = true;
+          maxAttempts = Math.max(maxAttempts, attempt + 1);
+          lastError = callError;
+          continue;
+        }
         throw callError;
       }
 
@@ -2388,14 +2460,15 @@ export class LocalRuntimeConnectionPool {
   }
 
   async listActionRegistryForRoot(rootPath: string): Promise<AdeActionRegistryEntry[]> {
-    const project = await this.ensureProject(rootPath);
-    const entry = await this.connect();
-    const value = await entry.client.call("ade/actions/call", {
-      projectId: project.projectId,
-      name: "list_ade_actions",
-      ...callerReportsFailureParam(),
-      arguments: { domain: "all" },
-    }, { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS });
+    const value = await this.withRegisteredProject(rootPath, async (project) => {
+      const entry = await this.connect();
+      return await entry.client.call("ade/actions/call", {
+        projectId: project.projectId,
+        name: "list_ade_actions",
+        ...callerReportsFailureParam(),
+        arguments: { domain: "all" },
+      }, { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS });
+    });
     return normalizeAdeActionRegistry(value);
   }
 
@@ -2403,22 +2476,23 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     request: RemoteRuntimeStreamEventsRequest = {},
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const project = await this.ensureProject(rootPath);
-    const entry = await this.connect();
-    const value = await entry.client.call(
-      "ade/actions/call",
-      {
-        projectId: project.projectId,
-        name: "stream_events",
-        ...callerReportsFailureParam(),
-        arguments: {
-          cursor: clampCursor(request.cursor),
-          limit: clampLimit(request.limit),
-          ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+    const value = await this.withRegisteredProject(rootPath, async (project) => {
+      const entry = await this.connect();
+      return await entry.client.call(
+        "ade/actions/call",
+        {
+          projectId: project.projectId,
+          name: "stream_events",
+          ...callerReportsFailureParam(),
+          arguments: {
+            cursor: clampCursor(request.cursor),
+            limit: clampLimit(request.limit),
+            ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+          },
         },
-      },
-      { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },
-    );
+        { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },
+      );
+    });
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
@@ -2531,13 +2605,14 @@ export class LocalRuntimeConnectionPool {
     params: Record<string, unknown> = {},
     options: { timeoutMs?: number } = {},
   ): Promise<T> {
-    const project = await this.ensureProject(rootPath);
-    const entry = await this.connect();
-    // The transport clock starts here, after registration and connect.
-    return await entry.client.call(method, {
-      ...params,
-      projectId: project.projectId,
-    }, { timeoutMs: options.timeoutMs ?? LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
+    return await this.withRegisteredProject(rootPath, async (project) => {
+      const entry = await this.connect();
+      // The transport clock starts here, after registration and connect.
+      return await entry.client.call(method, {
+        ...params,
+        projectId: project.projectId,
+      }, { timeoutMs: options.timeoutMs ?? LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
+    });
   }
 
   /**
@@ -2674,6 +2749,7 @@ export class LocalRuntimeConnectionPool {
     this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
     this.projectsByRoot.clear();
+    this.staleProjectReregisteredAtByRoot.clear();
     this.projectRegistrationsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
@@ -2736,6 +2812,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
     this.projectsByRoot.clear();
+    this.staleProjectReregisteredAtByRoot.clear();
     return true;
   }
 
@@ -3766,6 +3843,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
+      this.staleProjectReregisteredAtByRoot.clear();
       this.emitRuntimeStatusChange();
     });
     return client;
@@ -3880,6 +3958,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
+      this.staleProjectReregisteredAtByRoot.clear();
       if (client) closeRuntimeClient(client);
       this.emitRuntimeStatusChange();
     };

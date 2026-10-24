@@ -99,6 +99,8 @@ import {
 } from "../../desktop/src/shared/codedError";
 import { isExpectedFailure, isExpectedOutcome, isProgrammingError } from "../../desktop/src/shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
+import { runtimeActionFingerprint } from "../../desktop/src/shared/sentry/grouping";
+import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -1967,8 +1969,8 @@ const CALLER_ERROR_CODES = new Set<number>([
 /**
  * Sentry for a failed `ade/actions/call`. The endpoint turns every failure
  * into an `ok: false` reply, which is right for the caller and left nothing
- * behind for anyone else. A defect becomes one issue per action and error
- * code; an answer the caller already got (an expected outcome, an agent's
+ * behind for anyone else. A defect becomes one issue per error and normalized
+ * message (the action is a tag); an answer the caller already got (an expected outcome, an agent's
  * mistake, a desktop call the desktop reports) becomes a Sentry Log.
  */
 function reportFailedAction(
@@ -2007,9 +2009,11 @@ function reportFailedAction(
     return;
   }
   const code = parseCodedErrorMessage(error).code ?? null;
+  // Grouped by what failed, not by the action: one fault reached through many
+  // actions is one issue. The action stays a tag.
   captureError(error, {
     tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
-    fingerprint: ["runtime-action", actionName, code ?? (error instanceof Error ? error.name : "unknown")],
+    fingerprint: runtimeActionFingerprint(error),
   });
 }
 
@@ -8896,6 +8900,17 @@ export function createAdeRpcRequestHandler(args: {
         const adeCode = !movedAway && typeof thrownCode === "string" && thrownCode.trim() && !isErrnoLikeCode(thrownCode)
           ? thrownCode
           : null;
+        // An expected failure says so on the wire, so the caller's own Sentry
+        // gate can tell it from a defect; older callers ignore the field.
+        // Sentry keeps no issue for it, so this line is its local record.
+        const expected = expectedErrorKind(error);
+        if (expected) {
+          runtime.logger?.info?.("ade_rpc.action_expected_failure", {
+            action: actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
+            kind: expected,
+            message,
+          });
+        }
         return {
           ok: false,
           error: {
@@ -8903,6 +8918,7 @@ export function createAdeRpcRequestHandler(args: {
               ? error.code
               : adeCode ?? (error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed),
             message,
+            ...(expected ? { expected } : {}),
             ...(movedAway ? {
               sessionId: error.sessionId,
               destinationSessionId: error.targetSessionId,

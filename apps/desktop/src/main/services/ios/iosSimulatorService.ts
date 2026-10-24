@@ -147,7 +147,7 @@ import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
-import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseSimctlDevices } from "./appleSimulatorCatalog";
+import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
@@ -604,10 +604,33 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const SIMCTL_SCREENSHOT_TIMEOUT_MS = 30_000;
+
 function isTerminatedByTimeout(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as { killed?: unknown; signal?: unknown };
   return record.killed === true && record.signal === "SIGTERM";
+}
+
+/**
+ * A failed `simctl io … screenshot`. It often exits with nothing on stderr but
+ * its "Note: No display specified" line, so the error says how it ended (a
+ * timeout, an exit code, a signal) instead of only echoing the command.
+ */
+function simctlScreenshotFailure(error: unknown, deviceName: string, timeoutMs: number): Error {
+  if (isTerminatedByTimeout(error)) {
+    return new Error(`Simulator ${deviceName} did not return a screenshot within ${Math.round(timeoutMs / 1000)}s. CoreSimulator may be stuck; shut that simulator down and try again.`);
+  }
+  if (!(error instanceof Error)) return new Error(String(error));
+  const record = error as { code?: unknown; signal?: unknown };
+  const ending = typeof record.code === "number"
+    ? `exit code ${record.code}`
+    : typeof record.signal === "string" && record.signal
+      ? `signal ${record.signal}`
+      : null;
+  if (!ending || error.message.includes(ending)) return error;
+  error.message = `${error.message.trimEnd()}\n(simctl ended with ${ending})`;
+  return error;
 }
 
 function outputToString(value: unknown): string {
@@ -2696,6 +2719,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     run: (command, commandArgs, options) => run(command, commandArgs, options),
     powerOffDevice: (udid) => power.powerOffDevice(udid, "delete"),
     listInstalledSimulators,
+    // Same rule as the simulators: no `xcrun` spawn off a Mac or on a Mac
+    // with no `simctl`, where the answer is "none" (the picker asks on open).
+    listInstalledRuntimes: async () => {
+      if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
+      if (simctlMissingAt && Date.now() - simctlMissingAt < SIMCTL_MISSING_RECHECK_MS) return [];
+      const { stdout } = await run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
+      return parseAppleInstalledRuntimes(stdout);
+    },
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
     projectRoot: args.projectRoot,
@@ -4780,7 +4811,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let buffer: Buffer;
     try {
       const display = await duo.screenshotDisplayArgs(device.udid);
-      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: 30_000 });
+      await run("xcrun", ["simctl", "io", device.udid, "screenshot", "--type=png", ...display, capturePath], { timeoutMs: SIMCTL_SCREENSHOT_TIMEOUT_MS })
+        .catch((error: unknown) => { throw simctlScreenshotFailure(error, device.name, SIMCTL_SCREENSHOT_TIMEOUT_MS); });
       buffer = await fs.promises.readFile(capturePath);
     } finally {
       await fs.promises.rm(capturePath, { force: true }).catch(() => {});

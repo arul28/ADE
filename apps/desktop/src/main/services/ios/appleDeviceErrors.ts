@@ -10,10 +10,14 @@ import {
   APPLE_RUNTIME_NOT_INSTALLED_CODE,
 } from "../../../shared/types/iosSimulator";
 
-/** The typed refusals of the lane-device code. Each message names its code and the next step. */
+/**
+ * The typed refusals of the lane-device code. Each message names its code and the next step.
+ * Each is an answer, not a fault, so each carries its `adeExpected` kind (`shared/expectedError.ts`).
+ */
 
 export class AppleNoInstalledSimulatorsError extends Error {
   readonly code = APPLE_NO_INSTALLED_SIMULATORS_CODE;
+  readonly adeExpected = "environment" as const;
 
   constructor() {
     super(`${APPLE_NO_INSTALLED_SIMULATORS_CODE}: no iOS Simulator runtime is installed, and ADE never downloads one. Install one from Xcode ▸ Settings ▸ Components, then ask again.`);
@@ -23,6 +27,7 @@ export class AppleNoInstalledSimulatorsError extends Error {
 
 export class AppleRuntimeNotInstalledError extends Error {
   readonly code = APPLE_RUNTIME_NOT_INSTALLED_CODE;
+  readonly adeExpected = "environment" as const;
 
   constructor(what: string, installed: string[]) {
     super(
@@ -35,6 +40,7 @@ export class AppleRuntimeNotInstalledError extends Error {
 
 export class AppleDeviceExistsError extends Error {
   readonly code = APPLE_DEVICE_EXISTS_CODE;
+  readonly adeExpected = "user" as const;
 
   constructor(readonly device: AppleLaneDevice) {
     super(`${APPLE_DEVICE_EXISTS_CODE}: lane ${device.laneId} already has ${device.name} (${device.udid}). Delete it first to create another, or add a second one beside it with device-create --extra.`);
@@ -44,6 +50,7 @@ export class AppleDeviceExistsError extends Error {
 
 export class AppleDeviceAttachedNotDeletableError extends Error {
   readonly code = APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE;
+  readonly adeExpected = "user" as const;
 
   constructor(readonly device: AppleLaneDevice) {
     super(`${APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE}: ${device.name} was attached, not created by ADE, so ADE will not delete it. Pass force to detach it from lane ${device.laneId} instead.`);
@@ -53,6 +60,7 @@ export class AppleDeviceAttachedNotDeletableError extends Error {
 
 export class AppleDeviceOwnedByLaneError extends Error {
   readonly code = APPLE_DEVICE_OWNED_BY_LANE_CODE;
+  readonly adeExpected = "user" as const;
 
   constructor(readonly device: AppleLaneDevice) {
     super(`${APPLE_DEVICE_OWNED_BY_LANE_CODE}: ${device.name} (${device.udid}) is held by lane ${device.laneId}. That lane gives it up itself; deleting it here would take its live view away with no warning on its screen.`);
@@ -78,6 +86,7 @@ export type AppleDeviceNotLaneOwnedReason =
  */
 export class AppleDeviceNotLaneOwnedError extends Error {
   readonly code = APPLE_DEVICE_NOT_LANE_OWNED_CODE;
+  readonly adeExpected = "user" as const;
 
   constructor(readonly simulator: { udid: string; name: string }, readonly reason: AppleDeviceNotLaneOwnedReason) {
     // A second model (an iPad beside an iPhone Duo) is an extra device of the
@@ -108,6 +117,7 @@ export class AppleDeviceNotLaneOwnedError extends Error {
  */
 export class AppleLaneDeviceReleasedError extends Error {
   readonly code = APPLE_LANE_DEVICE_RELEASED_CODE;
+  readonly adeExpected = "user" as const;
 
   constructor(readonly release: AppleLaneDeviceRelease, nowMs: number) {
     const minutes = Math.max(0, Math.round((nowMs - Date.parse(release.releasedAt)) / 60_000));

@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
@@ -195,8 +196,9 @@ export function createProjectNotesService(args: {
     const body = oneLine(typeof value === "string" ? value : "");
     if (!body) throw new Error("A note needs text: one short line.");
     if (body.length > PROJECT_NOTES_LIMITS.maxNoteChars) {
-      throw new Error(
+      throw new AdeExpectedError(
         `This note is ${body.length} characters; the limit is ${PROJECT_NOTES_LIMITS.maxNoteChars}. Shorten it to one line.`,
+        "user",
       );
     }
     return body;

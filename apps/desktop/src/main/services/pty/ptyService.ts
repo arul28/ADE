@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -8471,7 +8472,7 @@ export function createPtyService({
       const terminalId = resolveTerminalId(args);
       if (!terminalId) throw new Error("terminal.read requires terminalId, ptyId, or an active chat terminal.");
       const session = sessionService.get(terminalId);
-      if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
+      if (!session) throw new AdeExpectedError(`Terminal session '${terminalId}' was not found.`, "user");
       if (isPersistedChatToolType(session.toolType)) {
         throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
       }
@@ -8497,7 +8498,7 @@ export function createPtyService({
       const terminalId = resolveTerminalId(args);
       if (!terminalId) throw new Error("terminal.preview requires terminalId or an active chat terminal.");
       const session = sessionService.get(terminalId);
-      if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
+      if (!session) throw new AdeExpectedError(`Terminal session '${terminalId}' was not found.`, "user");
       if (isPersistedChatToolType(session.toolType)) {
         throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
       }

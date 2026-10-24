@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -1449,13 +1450,14 @@ async function resolveImportBranchTarget(args: {
       };
     }
     if (matches.length > 1) {
-      throw new Error(
+      throw new AdeExpectedError(
         `Branch '${rawRef}' exists on multiple remotes. Import it using an explicit remote ref like '${matches[0]}'.`,
+        "user",
       );
     }
   }
 
-  throw new Error(`Branch '${rawRef}' not found locally or on any remote`);
+  throw new AdeExpectedError(`Branch '${rawRef}' not found locally or on any remote`, "user");
 }
 
 function computeStackDepth(args: {
@@ -8848,7 +8850,7 @@ export function createLaneService({
       const childRows = getChildrenRows(laneId, false);
       if (childRows.length > 0) {
         finishDeleteOperation("failed", { error: "Lane has active child lanes." });
-        throw new Error("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.");
+        throw new AdeExpectedError("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.", "user");
       }
 
       const worktreeMetadataPath = row.worktree_path

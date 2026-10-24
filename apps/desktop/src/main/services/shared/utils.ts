@@ -11,6 +11,7 @@ import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -474,7 +475,9 @@ function resolveCandidatePath(
       continue;
     }
     if (!opts.allowMissing) {
-      throw new Error(`Path does not exist: ${candidate}`);
+      // The caller named a path that is not there (a deleted worktree, a file
+      // an agent guessed): an answer, not a fault.
+      throw new AdeExpectedError(`Path does not exist: ${candidate}`, "user");
     }
     cursor = nextPath;
   }
@@ -670,12 +673,13 @@ export function resolveWithinAllowedRoots(
       ownRootFailure = real === null
         ? rootError
         : walk.failure.missing
-          ? new Error(`Path does not exist: ${candidate}`)
+          ? new AdeExpectedError(`Path does not exist: ${candidate}`, "user")
           : walk.failure.error;
     }
   }
   if (sawEscape || ownRootFailure === null) {
-    throw new Error(refusalMessage);
+    // The refusal is the guard doing its job on a path the caller chose.
+    throw new AdeExpectedError(refusalMessage, "user");
   }
   throw ownRootFailure;
 }

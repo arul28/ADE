@@ -1,4 +1,5 @@
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { existsSync, mkdirSync } from "node:fs";
 import { WebContentsView, app, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
@@ -687,6 +688,8 @@ function collectionForProjectRoot(
  */
 export class BuiltInBrowserNoTabError extends Error {
   readonly reason = "no_tab" as const;
+  /** A tab that closed while a call for it was on the way: an answer, not a fault (`shared/expectedError.ts`). */
+  readonly adeExpected = "user" as const;
 
   /**
    * The tab that was asked for, when one was named.
@@ -2466,8 +2469,8 @@ function createBuiltInBrowserWindowService(args: {
     const entry = activeSessionById(sessionId);
     if (!entry) {
       const ended = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
-      if (ended?.endedAt) throw new Error(`Browser session ended: ${sessionId}`);
-      throw new Error(`Browser session not found: ${sessionId}`);
+      if (ended?.endedAt) throw new AdeExpectedError(`Browser session ended: ${sessionId}`, "user");
+      throw new AdeExpectedError(`Browser session not found: ${sessionId}`, "user");
     }
     return entry;
   };
@@ -2562,7 +2565,7 @@ function createBuiltInBrowserWindowService(args: {
       const tab = tabById(sessionEntry.tabId);
       if (!tab) {
         endSessionsForTab(sessionEntry.tabId);
-        throw new Error(`Browser session ${sessionEntry.id} tab is no longer available.`);
+        throw new AdeExpectedError(`Browser session ${sessionEntry.id} tab is no longer available.`, "user");
       }
       return tab;
     }
@@ -4925,7 +4928,7 @@ function createBuiltInBrowserWindowService(args: {
   function claim(input: BuiltInBrowserClaimArgs = {}): BuiltInBrowserStatus {
     const tabId = stringOrNull(input.tabId);
     const tab = tabId ? tabById(tabId) : activeTab();
-    if (tabId && !tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tabId && !tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     if (tab) assertHandoffAllowsAgentAction(tab, input);
     if (tab) prepareAgentReadTab(tab, input);
     emitStatus();
@@ -5220,7 +5223,7 @@ function createBuiltInBrowserWindowService(args: {
     const chatSessionId = stringOrNull(input.chatSessionId);
     if (tabId) {
       const tab = tabById(tabId);
-      if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+      if (!tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
       prepareAgentReadTab(tab, input);
     }
     const sessions = browserSessions
@@ -5237,7 +5240,7 @@ function createBuiltInBrowserWindowService(args: {
     const sessionId = stringOrNull(input.sessionId);
     if (!sessionId) throw new Error("Browser session id is required.");
     const entry = browserSessions.find((sessionEntry) => sessionEntry.id === sessionId) ?? null;
-    if (!entry) throw new Error(`Browser session not found: ${sessionId}`);
+    if (!entry) throw new AdeExpectedError(`Browser session not found: ${sessionId}`, "user");
     const tab = tabById(entry.tabId);
     if (tab) prepareAgentReadTab(tab, input);
     if (!input.force) {
@@ -5383,7 +5386,7 @@ function createBuiltInBrowserWindowService(args: {
     let existingTab: BrowserTabState | null = null;
     if (!createNewTab && input.tabId) {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
-      if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+      if (!existingTab) throw new AdeExpectedError(`Browser tab not found: ${input.tabId}`, "user");
       if (isolation && existingTab.isolation?.partition !== isolation.partition) {
         throw new Error(
           `Browser tab ${input.tabId} is not in the isolated profile "${isolation.profile}". A tab's sign-in is fixed when it opens; open a new tab with that profile instead.`,
@@ -5509,7 +5512,7 @@ function createBuiltInBrowserWindowService(args: {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
-    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (!tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     if (tab.handoff) throw new Error("Someone is signing in on this tab. Hand it back before attaching it to a chat.");
     const chatSessionId = stringOrNull(input.chatSessionId);
     const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
@@ -5530,7 +5533,7 @@ function createBuiltInBrowserWindowService(args: {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
-    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (!tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     await prepareAgentReadTabAsync(tab, input, "The agent requested access to switch to this browser tab.");
     const wasDifferentTab = tab.id !== activeTabId;
     if (wasDifferentTab) {
@@ -5552,7 +5555,7 @@ function createBuiltInBrowserWindowService(args: {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
     const index = tabs.findIndex((entry) => entry.id === tabId);
-    if (index < 0) throw new Error(`Browser tab not found: ${tabId}`);
+    if (index < 0) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     await prepareAgentReadTabAsync(tabs[index]!, input, "The agent requested access to close this browser tab.");
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
@@ -6784,7 +6787,9 @@ function createBuiltInBrowserWindowService(args: {
       if (remainingMs <= 0) break;
       await waitForTabActivity(tab, browserWaitWakeTimeoutMs(tab, input, remainingMs));
     } while (Date.now() < deadline);
-    throw new Error(lastError ?? `Timed out waiting for browser condition after ${timeoutMs}ms.`);
+    // A condition that never came true is the agent's answer; a check that kept failing is not.
+    if (lastError) throw new Error(lastError);
+    throw new AdeExpectedError(`Timed out waiting for browser condition after ${timeoutMs}ms.`, "user");
   };
 
   const browserWaitWakeTimeoutMs = (
