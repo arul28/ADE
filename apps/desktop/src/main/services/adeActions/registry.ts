@@ -1702,6 +1702,11 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         alertBody: optionalNonEmptyString(record.alertBody),
       });
       if (!raised) {
+        // This action and the two after it are only asked for by agents and
+        // the CLI (`ade` status/attention), which can name a session that is
+        // gone: their answer, not a fault. The settle/snooze actions below
+        // also serve ADE's own Work UI on every machine, where "not found"
+        // can be a misrouted call (the wrong machine), so they stay reported.
         throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
@@ -1764,7 +1769,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         agentChatService: runtime.agentChatService,
         ptyService: runtime.ptyService,
       })) {
-        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
+        throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };
     },
@@ -1777,7 +1782,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.unsettleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.unsettleSession(sessionId)) {
-        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
+        throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };
     },
@@ -1840,7 +1845,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const untilIso = requireSnoozeDeadline(record.untilIso);
       if (!sessionService.snoozeSession(sessionId, untilIso)) {
-        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
+        throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId, snoozedUntil: untilIso };
     },
@@ -1867,7 +1872,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const override = readSettleOverride(record.override, "session.setSettleOverride");
       if (!sessionService.setSettleOverride(sessionId, override)) {
-        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
+        throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId, settleOverride: override };
     },
@@ -1880,7 +1885,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.clearWokeMarker");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.clearWokeMarker(sessionId)) {
-        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
+        throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };
     },

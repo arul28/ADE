@@ -99,7 +99,6 @@ import {
 } from "../../desktop/src/shared/codedError";
 import { isExpectedFailure, isExpectedOutcome, isProgrammingError } from "../../desktop/src/shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
-import { runtimeActionFingerprint } from "../../desktop/src/shared/sentry/grouping";
 import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -1969,9 +1968,10 @@ const CALLER_ERROR_CODES = new Set<number>([
 /**
  * Sentry for a failed `ade/actions/call`. The endpoint turns every failure
  * into an `ok: false` reply, which is right for the caller and left nothing
- * behind for anyone else. A defect becomes one issue per error and normalized
- * message (the action is a tag); an answer the caller already got (an expected outcome, an agent's
- * mistake, a desktop call the desktop reports) becomes a Sentry Log.
+ * behind for anyone else. A defect becomes an issue grouped by its stack (the
+ * action is the `runtime.action` tag); an answer the caller already got (an
+ * expected outcome, an agent's mistake, a desktop call the desktop reports)
+ * becomes a Sentry Log.
  */
 function reportFailedAction(
   actionName: string,
@@ -2009,11 +2009,10 @@ function reportFailedAction(
     return;
   }
   const code = parseCodedErrorMessage(error).code ?? null;
-  // Grouped by what failed, not by the action: one fault reached through many
-  // actions is one issue. The action stays a tag.
+  // Sentry's default grouping: a brain error has a real stack, so one fault
+  // reached through many actions is one issue. The action stays a tag.
   captureError(error, {
     tags: { "runtime.action": actionName, ...(code ? { "error.code": code } : {}) },
-    fingerprint: runtimeActionFingerprint(error),
   });
 }
 
@@ -8883,14 +8882,12 @@ export function createAdeRpcRequestHandler(args: {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const movedAway = isMovedAwayChatError(error);
-        // `run_ade_action` carries every domain action; name the real one, or
-        // all of them share one Sentry issue whatever actually failed.
-        reportFailedAction(
-          actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
-          error,
-          session,
-          params.callerReportsFailure === true,
-        );
+        // `run_ade_action` carries every domain action; name the real one, so
+        // the `runtime.action` tag and the log line say what actually failed.
+        const reportedAction = actionName === "run_ade_action" && domain && domainAction
+          ? `${domain}.${domainAction}`
+          : actionName;
+        reportFailedAction(reportedAction, error, session, params.callerReportsFailure === true);
         // An ADE coded error (a definitive cross-machine return refusal, …)
         // keeps its code across the wire so the caller can tell it apart;
         // platform errno codes stay behind.
@@ -8906,7 +8903,7 @@ export function createAdeRpcRequestHandler(args: {
         const expected = expectedErrorKind(error);
         if (expected) {
           runtime.logger?.info?.("ade_rpc.action_expected_failure", {
-            action: actionName === "run_ade_action" && domain && domainAction ? `${domain}.${domainAction}` : actionName,
+            action: reportedAction,
             kind: expected,
             message,
           });

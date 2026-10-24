@@ -2729,6 +2729,7 @@ export function registerIpc({
               // Analytics capture must never mask the original IPC error.
             }
           }
+          const kind = expectedErrorKind(error);
           if (traceIpcInvokes || didTimeout) {
             const logger = traceLogger ?? getTraceLogger();
             logger.warn("ipc.invoke.failed", {
@@ -2738,14 +2739,14 @@ export function registerIpc({
               durationMs,
               err: getErrorMessage(error),
             });
-          } else if (expectedErrorKind(error)) {
+          } else if (kind) {
             // An answer Sentry no longer keeps as an issue (`shared/expectedError.ts`):
             // this line is its record on this machine.
             getTraceLogger().info("ipc.invoke.expected_failure", {
               callId,
               channel,
               durationMs,
-              kind: expectedErrorKind(error),
+              kind,
               err: getErrorMessage(error),
             });
           }
@@ -2764,9 +2765,14 @@ export function registerIpc({
   };
 
   const ensureIosSimulator = (): NonNullable<AppContext["iosSimulatorService"]> => {
-    const service = getCtx().iosSimulatorService;
+    const ctx = getCtx();
+    const service = ctx.iosSimulatorService;
     if (!service) {
-      throw new AdeExpectedError("iOS Simulator service is not available.", "environment");
+      const message = "iOS Simulator service is not available.";
+      // Expected only in the no-project window, which has no simulator
+      // service. A project context without one is a wiring bug: report it.
+      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
     }
     return service;
   };
@@ -11247,12 +11253,14 @@ export function registerIpc({
   });
 
   const requirePtyService = (): ReturnType<typeof createPtyService> => {
-    const service = getCtx().ptyService;
+    const ctx = getCtx();
+    const service = ctx.ptyService;
     if (!service) {
-      throw new AdeExpectedError(
-        "ADE terminal service is not available for this project window. Reopen the project and try again.",
-        "environment",
-      );
+      const message = "ADE terminal service is not available for this project window. Reopen the project and try again.";
+      // Expected only in the no-project window, which has no terminals. A
+      // project context without one is a wiring bug: report it.
+      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
     }
     return service;
   };

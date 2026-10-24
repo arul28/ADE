@@ -8390,7 +8390,7 @@ function AgentChatComposerImpl({
               <>
                 <ModelPicker
                   value={modelId}
-                  {...(modelEmptyLabel ? { emptyLabel: modelEmptyLabel } : {})}
+                  emptyLabel={modelEmptyLabel}
                   onChange={handleModelPickerChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   activePresetId={activeHarnessPresetId}

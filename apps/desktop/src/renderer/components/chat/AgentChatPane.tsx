@@ -2821,6 +2821,14 @@ function rawSessionComposerModelId(session: Pick<AgentChatSessionSummary, "model
   return session?.model?.trim() || null;
 }
 
+/** The selected chat's resolved model, tagged with the chat it belongs to. */
+type SessionModelRef = { sessionId: string | null; modelId: string | null };
+
+/** The model known for `sessionId`, or null when the known model is another chat's. */
+function knownSessionModelId(known: SessionModelRef, sessionId: string): string | null {
+  return known.sessionId === sessionId ? known.modelId : null;
+}
+
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
 const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
 const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "never"];
@@ -5511,10 +5519,9 @@ export function AgentChatPane({
       : null;
     return fromTranscript ?? rawSessionComposerModelId(selectedSession);
   }, [harnessPresets, renderedSessionId, selectedEvents, selectedSession, selectedSessionId]);
-  const selectedSessionModelIdRef = useRef(selectedSessionModelId);
-  selectedSessionModelIdRef.current = selectedSessionModelId;
-  const selectedSessionModelOwnerRef = useRef<string | null>(selectedSessionId);
-  selectedSessionModelOwnerRef.current = selectedSessionId;
+  /** The model above and the chat it belongs to, for callbacks that read it later. */
+  const selectedSessionModelRef = useRef<SessionModelRef>({ sessionId: selectedSessionId, modelId: selectedSessionModelId });
+  selectedSessionModelRef.current = { sessionId: selectedSessionId, modelId: selectedSessionModelId };
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);
@@ -7124,26 +7131,38 @@ export function AgentChatPane({
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
-      // Locked Work chats keep this pane mounted across switches. While the
-      // incoming session is still loading, do not seed last-launch into it.
-      // Its transcript may already name its model (the summary read is slow
-      // or failing); show that rather than an empty picker or the model of
-      // the chat shown before the switch, which a send would then apply.
-      if (lockSessionId) {
-        const transcriptModelId = selectedSessionModelOwnerRef.current === lockSessionId
-          ? selectedSessionModelIdRef.current
-          : null;
-        if (
-          transcriptModelId
-          && !isDeferredComposerModelSelection(
-            composerModelIdRef.current,
-            transcriptModelId,
-            deferredComposerSessionIdRef.current,
-            lockSessionId,
-          )
-        ) {
-          setModelId(transcriptModelId);
-        }
+      // A chat whose summary is still loading (or failing). Locked Work chats
+      // keep this pane mounted across switches, so never seed last-launch
+      // into one. Its transcript may already name its model; show that
+      // rather than an empty picker, the model of the chat shown before the
+      // switch, or the last launch, any of which a send would then apply.
+      const loadingSessionId = lockSessionId ?? selectedSessionModelRef.current.sessionId;
+      const transcriptModelId = loadingSessionId
+        ? knownSessionModelId(selectedSessionModelRef.current, loadingSessionId)
+        : null;
+      if (
+        loadingSessionId
+        && transcriptModelId
+        && !isDeferredComposerModelSelection(
+          composerModelIdRef.current,
+          transcriptModelId,
+          deferredComposerSessionIdRef.current,
+          loadingSessionId,
+        )
+      ) {
+        setModelId(transcriptModelId);
+      } else if (
+        lockSessionId
+        && !transcriptModelId
+        && !launchAwaitingSessionRef.current
+        && deferredComposerSessionIdRef.current !== lockSessionId
+      ) {
+        // Nothing names this chat's model yet: show "Loading model…", not
+        // the model left over from the chat shown before. A new-lane launch
+        // still waiting for its chat shows the model it launches with.
+        setModelId("");
+      }
+      if (lockSessionId || transcriptModelId) {
         return;
       }
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
@@ -7183,7 +7202,7 @@ export function AgentChatPane({
     // The selected chat's model may come from its transcript when its summary
     // cannot name it; any other chat (a tab click) falls back to its raw model.
     const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current)
-      ?? (selectedSessionModelOwnerRef.current === session.sessionId ? selectedSessionModelIdRef.current : null)
+      ?? knownSessionModelId(selectedSessionModelRef.current, session.sessionId)
       ?? rawSessionComposerModelId(session);
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
@@ -10157,7 +10176,7 @@ export function AgentChatPane({
           && envelope.sessionId === selectedSessionIdRef.current
           && !isDeferredComposerModelSelection(
             composerModelIdRef.current,
-            selectedSessionModelIdRef.current,
+            selectedSessionModelRef.current.modelId,
             deferredComposerSessionIdRef.current,
             selectedSessionIdRef.current,
           )
@@ -15337,7 +15356,7 @@ export function AgentChatPane({
 
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
-      selectedSessionModelIdRef.current,
+      selectedSessionModelRef.current.modelId,
       deferredComposerSessionIdRef.current,
       selectedSessionId,
     )) {
@@ -15445,7 +15464,7 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) return;
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
-      selectedSessionModelIdRef.current,
+      selectedSessionModelRef.current.modelId,
       deferredComposerSessionIdRef.current,
       selectedSessionId,
     )) {
@@ -15501,7 +15520,7 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) return;
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
-      selectedSessionModelIdRef.current,
+      selectedSessionModelRef.current.modelId,
       deferredComposerSessionIdRef.current,
       selectedSessionId,
     )) {
@@ -17608,7 +17627,7 @@ export function AgentChatPane({
             sdkSlashCommands={sdkSlashCommands}
             modelId={subagentComposerModel?.modelId ?? modelId}
             // Only a new draft asks for a pick; an existing chat's model is still being read.
-            {...(renderedSessionId ? { modelEmptyLabel: "Loading model…" } : {})}
+            modelEmptyLabel={renderedSessionId ? "Loading model…" : undefined}
             fastModeAllowed={fastModeAllowedForComposer}
             {...(!fastModeAllowedForComposer ? { onFastModeLocked: openFastModeSetting } : {})}
             // A chat launched from a saved preset is named by the preset in the

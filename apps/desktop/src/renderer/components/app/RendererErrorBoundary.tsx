@@ -11,7 +11,6 @@ import {
 import { ReportIssueButton } from "./ReportIssueButton";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { reloadForStaleChunk } from "../../lib/staleChunkReload";
-import { isWebClientMode } from "../../lib/webClientMode";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
@@ -47,7 +46,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     // Web client after a deploy: a lazy screen's old chunk is gone. The page
     // reloads into the new build; nothing here is broken.
-    if (isWebClientMode() && reloadForStaleChunk(error)) return;
+    if (reloadForStaleChunk(error)) return;
     if (!this.autoReported) {
       this.autoReported = true;
       captureError(error, {

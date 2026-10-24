@@ -70329,7 +70329,7 @@ export function createAgentChatService(args: {
     // An action call with no arguments arrives as `undefined`; say what is
     // missing instead of failing on a property read.
     if (!args || typeof args !== "object" || typeof args.sessionId !== "string" || !args.sessionId.trim()) {
-      throw new Error("chat.updateSession needs { sessionId, ...fields }, e.g. `ade chat update <session> --title \"New title\"`.");
+      throw new AdeExpectedError("chat.updateSession needs { sessionId, ...fields }, e.g. `ade chat update <session> --title \"New title\"`.", "user");
     }
     // A parent sent here used to be dropped without a word, so the caller
     // believed the chat was relinked.

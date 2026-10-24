@@ -1,8 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { describeGitOwnershipProblem, formatGitExecutionError, GitUntrustedFolderError, runGit } from "../git/git";
-import { isGitToolchainMissing } from "../git/gitToolchain";
-import { markExpected } from "../../../shared/expectedError";
+import { gitCommandError, runGit } from "../git/git";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectInfo } from "../../../shared/types";
 import {
@@ -10,20 +9,21 @@ import {
   normalizeProjectRootPath,
 } from "../../../../../ade-cli/src/services/projects/projectRoots";
 
-export async function resolveRepoRoot(selectedPath: string): Promise<string> {
+/**
+ * The repository root containing `selectedPath`. `userChosen` is set only when
+ * the user picked the folder (the open-project flow): then git's "not a
+ * repository" is their choice, not a fault. Every other caller passes a path
+ * ADE expects to be a repository, so the same failure still reports.
+ */
+export async function resolveRepoRoot(selectedPath: string, opts: { userChosen?: boolean } = {}): Promise<string> {
   const managedWorktree = findAdeManagedWorktreeRoot(selectedPath);
   if (managedWorktree) return managedWorktree.projectRoot;
   const res = await runGit(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
   if (res.exitCode !== 0) {
-    const raw = res.stderr.trim() || res.stdout.trim() || "git rev-parse --show-toplevel failed";
-    const ownership = describeGitOwnershipProblem(raw);
-    if (ownership) throw new GitUntrustedFolderError(ownership);
-    const error = new Error(formatGitExecutionError(raw));
+    const error = gitCommandError(res.stderr.trim() || res.stdout.trim() || "git rev-parse --show-toplevel failed");
     // Exit 128 from this probe is git's "not a repository" (in the user's own
     // language, so the text is never matched): the user picked a plain folder.
-    // A Mac without developer tools is its environment. Anything else reports.
-    if (res.exitCode === 128) throw markExpected(error, "user");
-    if (isGitToolchainMissing(raw)) throw markExpected(error, "environment");
+    if (opts.userChosen && res.exitCode === 128 && !expectedErrorKind(error)) throw markExpected(error, "user");
     throw error;
   }
   return normalizeProjectRootPath(res.stdout.trim());

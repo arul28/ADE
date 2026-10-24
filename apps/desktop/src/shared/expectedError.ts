@@ -31,7 +31,7 @@ const KINDS: ReadonlySet<string> = new Set<ExpectedErrorKind>(["user", "environm
 type Marked = { adeExpected?: unknown };
 
 /** A kind read off the wire, or null when the value is not one. */
-export function readExpectedErrorKind(value: unknown): ExpectedErrorKind | null {
+function readExpectedErrorKind(value: unknown): ExpectedErrorKind | null {
   return typeof value === "string" && KINDS.has(value) ? (value as ExpectedErrorKind) : null;
 }
 

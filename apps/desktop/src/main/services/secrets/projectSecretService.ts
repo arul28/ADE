@@ -598,7 +598,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const entry = index.entries[name];
     if (!entry) throw notFound();
     const value = store.getSync(valueKey(name));
-    if (value == null) throw notFound();
+    // Indexed but with no stored value: the store lost it, which is a fault
+    // worth a report, not an answer.
+    if (value == null) throw new Error(notFound().message);
     return {
       ...toSummary(name, entry, resolveStorage(entry)),
       value,

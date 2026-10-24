@@ -475,9 +475,10 @@ function resolveCandidatePath(
       continue;
     }
     if (!opts.allowMissing) {
-      // The caller named a path that is not there (a deleted worktree, a file
-      // an agent guessed): an answer, not a fault.
-      throw new AdeExpectedError(`Path does not exist: ${candidate}`, "user");
+      // Not marked expected here: most callers are ADE's own and pass paths
+      // that should exist. Boundaries that take a user's or agent's path
+      // (Files, `resolveWithinAllowedRoots`) mark it themselves.
+      throw new Error(`Path does not exist: ${candidate}`);
     }
     cursor = nextPath;
   }
@@ -673,6 +674,8 @@ export function resolveWithinAllowedRoots(
       ownRootFailure = real === null
         ? rootError
         : walk.failure.missing
+          // Every caller resolves a path the renderer or an agent sent, so a
+          // missing one is their answer, not a fault.
           ? new AdeExpectedError(`Path does not exist: ${candidate}`, "user")
           : walk.failure.error;
     }

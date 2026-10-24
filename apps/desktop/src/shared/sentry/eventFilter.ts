@@ -41,17 +41,26 @@ function currentUserId(): string | null {
   }
 }
 
+/** Whether the SDK caught this exception itself (an uncaught error or unhandled rejection). */
+function isUnhandledException(event: unknown): boolean {
+  const values = (event as { exception?: { values?: Array<{ mechanism?: { handled?: boolean } }> } })
+    .exception?.values;
+  return Array.isArray(values) && values.some((value) => value?.mechanism?.handled === false);
+}
+
 export function createSentryEventHooks(budget?: SentryBudget) {
   const limiter = createEventLimiter(budget);
   const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
   return {
     beforeSend<T>(event: T, hint?: { originalException?: unknown }): T | null {
       const candidate = event as unknown as FilterableEvent;
-      // An error its throw site marked as an answer (`shared/expectedError.ts`),
-      // however it got here: a direct capture, a logged error, an unhandled
-      // rejection. Kept as a Sentry Log, never an issue. A crash stays: an
-      // answer nobody caught is a bug in whoever should have.
-      const expected = candidate.level === "fatal" ? null : expectedErrorKind(hint?.originalException);
+      // An error its throw site marked as an answer (`shared/expectedError.ts`)
+      // that someone caught and reported: a direct capture or a logged error.
+      // Kept as a Sentry Log, never an issue. A crash or an unhandled
+      // rejection stays: an answer nobody caught is a bug in whoever should have.
+      const expected = candidate.level === "fatal" || isUnhandledException(candidate)
+        ? null
+        : expectedErrorKind(hint?.originalException);
       if (expected) {
         const original = hint?.originalException as { message?: unknown } | undefined;
         forwardLogToSentry("warn", "sentry.expected_error", {

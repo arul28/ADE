@@ -1457,7 +1457,11 @@ async function resolveImportBranchTarget(args: {
     }
   }
 
-  throw new AdeExpectedError(`Branch '${rawRef}' not found locally or on any remote`, "user");
+  const notFound = `Branch '${rawRef}' not found locally or on any remote`;
+  // Only a listing that ran and found nothing means the branch is missing; a
+  // failed `git for-each-ref` is ADE's problem and stays reportable.
+  if (remoteRefsRes.exitCode !== 0) throw new Error(notFound);
+  throw new AdeExpectedError(notFound, "user");
 }
 
 function computeStackDepth(args: {

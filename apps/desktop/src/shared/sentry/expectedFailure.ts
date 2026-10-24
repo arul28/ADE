@@ -125,10 +125,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^Lane delete is already running: /,
   /^Color already in use by lane /,
   // Apple simulator answers: a device another lane owns, one that is off, a path outside the build.
+  // (IS_EXTRA is marked where it is thrown now; the code stays for older brains.)
   /\b(?:APPLE_DEVICE_(?:NOT_LANE_OWNED|OFF|EXISTS|IS_EXTRA)|IOS_SIMULATOR_(?:OUT_PATH_OUTSIDE_ROOT|NO_BUILDABLE_TARGET)):/,
   // An agent's Apple call on a lane that has no device yet; the answer says how
-  // to make one. Thrown in iosSimulatorService.ts as a plain sentence, so it is
-  // matched here until that throw site carries a mark (shared/expectedError.ts).
+  // to make one. Marked where it is thrown now (shared/expectedError.ts); the
+  // text stays for older brains, whose errors arrive without the mark.
   /^This lane has no Apple device yet\. /,
   // The web client while its computer reconnects or the user switches project.
   /^Reconnecting to this computer\. Try again when connected\.$/,

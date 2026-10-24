@@ -180,6 +180,7 @@ import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../share
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -2724,8 +2725,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     listInstalledRuntimes: async () => {
       if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
       if (simctlMissingAt && Date.now() - simctlMissingAt < SIMCTL_MISSING_RECHECK_MS) return [];
-      const { stdout } = await run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
-      return parseAppleInstalledRuntimes(stdout);
+      try {
+        const { stdout } = await run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
+        simctlMissingAt = 0;
+        return parseAppleInstalledRuntimes(stdout);
+      } catch (error) {
+        if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+        if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
+        simctlMissingAt = Date.now();
+        return [];
+      }
     },
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
@@ -6500,9 +6509,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // `device-create` makes, so nobody else's device is booted or used.
         laneDevice = await laneDevices.deviceCreate({ laneId });
       } else {
-        throw new Error(
+        throw new AdeExpectedError(
           "This lane has no Apple device yet. Run `ade apple device-create` to give it its own, "
             + "or `ade apple start --udid <udid>` to attach an installed simulator.",
+          "user",
         );
       }
       // A new device is a simulator the cached device list has never seen.
@@ -6801,7 +6811,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
     const laneDevice = await ensureLaneDevice(runtime);
-    if (!laneDevice) throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+    if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
     const device = await resolveDevice(laneDevice.udid, runtime);
     await ensureDeviceBooted(device);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
@@ -7039,10 +7049,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         const extra = explicit && explicit !== laneDevice?.udid ? laneDevices.findExtra(runtime.key, explicit) : null;
         if (extra) {
           if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
-            throw new Error(
+            throw new AdeExpectedError(
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
               + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
               + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+              "user",
             );
           }
           if (mode === "drive") await bootExtraDevice(extra);
@@ -7056,7 +7067,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
             laneDevice = await ensureLaneDevice(runtime);
           } else {
-            throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+            throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
           }
         }
         const pinned = mode === "drive" && laneDevice ? { ...callArgs, deviceUdid: laneDevice.udid } : callArgs;

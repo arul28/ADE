@@ -1020,7 +1020,7 @@ const UNKNOWN_PROJECT_ID_PATTERN = /Unknown projectId: (project_[0-9a-f]+)/;
 const STALE_PROJECT_REREGISTER_INTERVAL_MS = 30_000;
 
 /** The project id an error says the brain does not know, or null. */
-export function unknownProjectIdInError(error: unknown): string | null {
+function unknownProjectIdInError(error: unknown): string | null {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return UNKNOWN_PROJECT_ID_PATTERN.exec(message)?.[1] ?? null;
 }
@@ -2090,15 +2090,24 @@ export class LocalRuntimeConnectionPool {
    */
   private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
     if (unknownProjectIdInError(error) !== project.projectId) return false;
-    const normalizedRoot = path.resolve(rootPath);
+    // `ensureProject` caches a moved project under its new folder; follow the
+    // same redirect so the record dropped is the one that was handed out.
+    let normalizedRoot = path.resolve(rootPath);
+    for (let hop = 0; hop < 8; hop += 1) {
+      const movedRoot = resolveMovedProjectRoot(normalizedRoot);
+      if (movedRoot === normalizedRoot) break;
+      normalizedRoot = movedRoot;
+    }
+    // A call that was in flight beside the one that recovered: the record it
+    // used is already dropped or replaced, so it retries against the new one.
+    // Compared by object, because a fresh registration returns the same id
+    // (the id is a hash of the folder).
+    if (this.projectsByRoot.get(normalizedRoot) !== project) return true;
     const now = Date.now();
     const lastAt = this.staleProjectReregisteredAtByRoot.get(normalizedRoot) ?? 0;
     if (now - lastAt < STALE_PROJECT_REREGISTER_INTERVAL_MS) return false;
     this.staleProjectReregisteredAtByRoot.set(normalizedRoot, now);
-    // Another call may already have registered the folder again.
-    if (this.projectsByRoot.get(normalizedRoot)?.projectId === project.projectId) {
-      this.projectsByRoot.delete(normalizedRoot);
-    }
+    this.projectsByRoot.delete(normalizedRoot);
     this.logger.warn("local_runtime.project_id_unknown_reregistering", {
       rootPath: normalizedRoot,
       projectId: project.projectId,

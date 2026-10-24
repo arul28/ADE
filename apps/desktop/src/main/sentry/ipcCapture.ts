@@ -15,6 +15,7 @@ import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
 import { parseCodedErrorMessage } from "../../shared/codedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../shared/sentry/expectedFailure";
 import { runtimeActionFingerprint } from "../../shared/sentry/grouping";
+import { IPC } from "../../shared/ipc";
 import { forwardLogToSentry } from "../../shared/sentry/logBridge";
 import { runInCapturedIpcCall } from "./ipcCallScope";
 
@@ -62,10 +63,14 @@ function sleptThroughTimeout(error: unknown, startedAt: number, startedMono: num
   return asleepMs >= SLEPT_DURING_CALL_MS;
 }
 
+/** The channels that carry every brain action; `labelFor` names the action. */
+const RUNTIME_ACTION_CHANNELS: ReadonlySet<string> = new Set([IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction]);
+
 /**
  * `labelFor` names a call more precisely than its channel when it can (the
- * brain's action channel carries every action); it returns the channel
- * otherwise. Supplied by the caller so this wrapper knows no channel.
+ * brain's action channels carry every action); it returns the channel
+ * otherwise. Supplied by the caller, which knows how each channel's args
+ * name the call.
  */
 export function installIpcErrorCapture(labelFor: (channel: string, args: readonly unknown[]) => string): void {
   const target = ipcMain as PatchedIpcMain;
@@ -99,17 +104,18 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
         if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";
           const code = parseCodedErrorMessage(error).code ?? null;
+          const runtimeAction = RUNTIME_ACTION_CHANNELS.has(channel);
           captureError(error, {
             tags: {
               "ipc.channel": channel,
-              ...(label !== channel ? { "runtime.action": label } : {}),
+              ...(runtimeAction ? { "runtime.action": label } : {}),
               ...(code ? { "error.code": code } : {}),
             },
             extra: { durationMs },
             // A runtime action's failure is rebuilt from the brain's reply and
             // has no stack of its own: group it by what failed, not by which
             // action hit it, or one fault is an issue per screen that asked.
-            fingerprint: label !== channel ? runtimeActionFingerprint(error) : ["ipc", label, code ?? errorName],
+            fingerprint: runtimeAction ? runtimeActionFingerprint(error, label) : ["ipc", label, code ?? errorName],
           });
         }
         throw error;

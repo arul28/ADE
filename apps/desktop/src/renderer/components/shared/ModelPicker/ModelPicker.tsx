@@ -190,7 +190,7 @@ export type ModelPickerProps = {
 
 export const ModelPicker = memo(function ModelPicker({
   value,
-  emptyLabel,
+  emptyLabel = "Select model",
   onChange,
   activePreset = null,
   compact = false,
@@ -533,7 +533,7 @@ export const ModelPicker = memo(function ModelPicker({
           <ModelPickerTrigger
             model={selectedModel}
             value={value}
-            {...(emptyLabel ? { emptyLabel } : {})}
+            emptyLabel={emptyLabel}
             {...(activePreset ? { activePreset } : {})}
             compact={compact}
             disabled={disabled}
@@ -711,7 +711,7 @@ export function composeModelPickerTriggerLabel({
   serviceTier,
   serviceTierSupported,
   presetName,
-  emptyLabel,
+  emptyLabel = "Select model",
 }: {
   model: ModelDescriptor | undefined;
   value: string;
@@ -732,7 +732,7 @@ export function composeModelPickerTriggerLabel({
   // The model still reaches them — it is the trigger's `title`.
   const preset = presetName?.trim();
   if (preset) return preset;
-  const base = model?.displayName ?? (value.trim() || emptyLabel || "Select model");
+  const base = model?.displayName ?? (value.trim() || emptyLabel);
   if (serviceTier && (serviceTierSupported ?? modelSupportsServiceTier(model, serviceTier))) {
     return `${base} ${serviceTier === "fast" ? "Fast" : "Standard"}`;
   }
@@ -748,7 +748,7 @@ export function composeModelPickerTriggerLabel({
 type TriggerProps = {
   model: ModelDescriptor | undefined;
   value: string;
-  emptyLabel?: string;
+  emptyLabel: string;
   activePreset?: ModelPickerActivePreset | null;
   compact: boolean;
   disabled: boolean;
@@ -770,7 +770,7 @@ const ModelPickerTrigger = memo(
       const label = composeModelPickerTriggerLabel({
         model,
         value,
-        ...(emptyLabel ? { emptyLabel } : {}),
+        emptyLabel,
         ...(activePreset?.name ? { presetName: activePreset.name } : {}),
         fastMode,
         fastTier: fastTier ?? null,

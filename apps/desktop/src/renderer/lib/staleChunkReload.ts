@@ -10,6 +10,8 @@
  * app never swaps under itself.
  */
 
+import { isWebClientMode } from "./webClientMode";
+
 const RELOAD_STAMP_KEY = "ade:stale-chunk-reload-at";
 const RELOAD_GUARD_MS = 60_000;
 
@@ -18,22 +20,20 @@ const CHUNK_LOAD_FAILURE =
 
 let reloading = false;
 
-export function isChunkLoadFailure(error: unknown): boolean {
+function isChunkLoadFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return CHUNK_LOAD_FAILURE.test(message);
 }
 
-/** True while this page is reloading for a stale chunk; the failure it hit is not a bug. */
-export function isStaleChunkReloadPending(): boolean {
-  return reloading;
-}
-
 /**
- * Reload for a failed chunk when the guard allows. True when a reload is under
- * way (started now or earlier), so the caller can skip its crash report.
+ * Reload for a failed chunk when the guard allows (web client only). True when
+ * a reload is under way for this kind of failure, so the caller can skip its
+ * crash report. A reload the user cancelled ("Stay" on beforeunload) leaves
+ * the latch set, so only chunk failures are excused by it, never other crashes.
  */
 export function reloadForStaleChunk(error: unknown): boolean {
-  if (reloading) return true;
+  if (!isWebClientMode()) return false;
+  if (reloading) return isChunkLoadFailure(error);
   if (!isChunkLoadFailure(error)) return false;
   try {
     const last = Number(window.sessionStorage.getItem(RELOAD_STAMP_KEY)) || 0;

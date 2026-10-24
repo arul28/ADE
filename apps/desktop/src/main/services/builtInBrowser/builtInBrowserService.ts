@@ -6780,6 +6780,8 @@ function createBuiltInBrowserWindowService(args: {
       try {
         const matched = await browserWaitConditionMatched(tab, input);
         if (matched) return;
+        // Only a check that is still failing at the deadline is an error.
+        lastError = null;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
       }

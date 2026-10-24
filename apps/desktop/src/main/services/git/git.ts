@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { markExpected } from "../../../shared/expectedError";
-import { isGitToolchainMissing } from "./gitToolchain";
+import { GIT_TOOLCHAIN_MISSING, XCODE_LICENSE_NOT_AGREED } from "../../../shared/xcodeToolchain";
 import { GIT_READ_ENV } from "./gitReadEnv";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
@@ -108,17 +108,23 @@ async function resolveGitExecutableUncached(): Promise<string> {
   return cachedGitExecutable;
 }
 
+/**
+ * How every "git is not installed" message starts. ADE writes it (spawn hit
+ * ENOENT), so {@link gitCommandError} can tell a machine without git apart.
+ */
+const GIT_EXECUTABLE_NOT_FOUND = "git executable not found";
+
 function gitExecutableNotFoundMessage(executable: string): string {
   if (process.platform === "darwin") {
-    return `git executable not found (tried ${executable}). Install Xcode Command Line Tools or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+    return `${GIT_EXECUTABLE_NOT_FOUND} (tried ${executable}). Install Xcode Command Line Tools or set ADE_GIT_EXECUTABLE to git's absolute path.`;
   }
   if (process.platform === "win32") {
-    return `git executable not found (tried ${executable}). Install Git for Windows or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+    return `${GIT_EXECUTABLE_NOT_FOUND} (tried ${executable}). Install Git for Windows or set ADE_GIT_EXECUTABLE to git's absolute path.`;
   }
   if (process.platform === "linux") {
-    return `git executable not found (tried ${executable}). Install git with your package manager or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+    return `${GIT_EXECUTABLE_NOT_FOUND} (tried ${executable}). Install git with your package manager or set ADE_GIT_EXECUTABLE to git's absolute path.`;
   }
-  return `git executable not found (tried ${executable}). Install git or set ADE_GIT_EXECUTABLE to git's absolute path.`;
+  return `${GIT_EXECUTABLE_NOT_FOUND} (tried ${executable}). Install git or set ADE_GIT_EXECUTABLE to git's absolute path.`;
 }
 
 function gitSpawnErrorMessage(error: NodeJS.ErrnoException, opts: GitRunOptions, executable: string): string {
@@ -655,19 +661,30 @@ export function resetGitCommonDirCacheForTests(): void {
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
   const res = await runGit(args, opts);
   if (res.exitCode !== 0) {
-    const raw = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
-    const ownership = describeGitOwnershipProblem(raw);
-    if (ownership) throw new GitUntrustedFolderError(ownership);
-    const error = new Error(formatGitExecutionError(raw));
-    throw isGitToolchainMissing(raw) ? markExpected(error, "environment") : error;
+    throw gitCommandError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`);
   }
   return res.stdout;
+}
+
+/**
+ * The error for a failed git command, from its output: a folder git refuses
+ * for its owner is a {@link GitUntrustedFolderError}; a machine that cannot
+ * run git (no developer tools, the Xcode license, no git installed at all) is
+ * marked an expected `environment` failure. `message` replaces the text shown
+ * when the caller words it itself.
+ */
+export function gitCommandError(raw: string, message: string = formatGitExecutionError(raw)): Error {
+  const ownership = describeGitOwnershipProblem(raw);
+  if (ownership) return new GitUntrustedFolderError(ownership);
+  const error = new Error(message);
+  const noGit = GIT_TOOLCHAIN_MISSING.test(raw) || raw.startsWith(GIT_EXECUTABLE_NOT_FOUND);
+  return noGit ? markExpected(error, "environment") : error;
 }
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
   if (ownership) return gitOwnershipMessage(ownership);
-  if (!/not agreed to the Xcode license agreements/i.test(raw)) return raw;
+  if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }
 

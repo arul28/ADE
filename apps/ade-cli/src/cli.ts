@@ -7081,6 +7081,36 @@ function readFastTierFlag(args: string[]): "ultrafast" | undefined {
   return readFlag(args, ["--ultrafast"]) ? "ultrafast" : undefined;
 }
 
+/**
+ * The `chat.updateSession` fields read from flags, shared by `ade chat update`
+ * and its `--personal` form so both send the same ones. Consumes the flags;
+ * the caller adds the session and the `--input-json` / `--arg` passthrough.
+ */
+function readChatUpdateFields(args: string[]): JsonObject {
+  const model = readValue(args, ["--model", "--model-id"]);
+  const title = readValue(args, ["--title"]);
+  // Claude-only session tag mirrored to the SDK. Pass `--tag ""` to clear it.
+  // Rejected at runtime for non-Claude sessions or before a Claude turn exists.
+  const tag = readValue(args, ["--tag"]);
+  const provider = readValue(args, ["--provider"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const droidPermissionMode = readDroidPermissionMode(args);
+  const fastMode = readFastModeFlag(args);
+  const fastTier = readFastTierFlag(args);
+  return {
+    ...(title !== null ? { title } : {}),
+    ...(tag !== null ? { tag } : {}),
+    ...(provider ? { provider } : {}),
+    ...(model ? { model, modelId: model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(fastTier ? { fastTier } : {}),
+  };
+}
+
 function autoLaneGenericSuffix(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return [
@@ -11967,31 +11997,17 @@ function buildChatPlan(args: string[]): CliPlan {
     // The help and docs point agents at `ade chat update --title`. Without
     // this branch it fell through to an action named `update` (not callable),
     // and `chat updateSession` with no session sent the runtime no arguments.
-    const model = readValue(args, ["--model", "--model-id"]);
-    const title = readValue(args, ["--title"]);
-    const tag = readValue(args, ["--tag"]);
-    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-    const fastMode = readFastModeFlag(args);
+    // The session can come from the positional, --session, --input-json, or
+    // the caller's own chat, so it is required only after they are merged.
+    const update = withSession(readChatUpdateFields(args));
+    update.sessionId = requireValue(
+      asString(update.sessionId) ?? asString(process.env.ADE_CHAT_SESSION_ID),
+      "sessionId",
+    );
     return {
       kind: "execute",
       label: "chat update",
-      steps: [
-        actionStep(
-          "result",
-          "chat",
-          "updateSession",
-          withSession({
-            sessionId: requireValue(sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID), "sessionId"),
-            ...(title !== null ? { title } : {}),
-            ...(tag !== null ? { tag } : {}),
-            ...(model ? { modelId: model } : {}),
-            ...(reasoningEffort ? { reasoningEffort } : {}),
-            ...(permissionMode ? { permissionMode } : {}),
-            ...(fastMode !== undefined ? { fastMode } : {}),
-          }),
-        ),
-      ],
+      steps: [actionStep("result", "chat", "updateSession", update)],
     };
   }
   return {
@@ -13024,30 +13040,12 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "update" || sub === "configure") {
-    const model = readValue(args, ["--model", "--model-id"]);
-    const title = readValue(args, ["--title"]);
-    // Claude-only session tag mirrored to the SDK. Pass `--tag ""` to clear it.
-    // Rejected at runtime for non-Claude sessions or before a Claude turn exists.
-    const tag = readValue(args, ["--tag"]);
-    const provider = readValue(args, ["--provider"]);
-    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-    const droidPermissionMode = readDroidPermissionMode(args);
-    const fastMode = readFastModeFlag(args);
     return {
       ...base,
       label: "personal chat update",
       steps: [personalChatStep("updateSession", collectGenericObjectArgs(args, {
         sessionId,
-        ...(title !== null ? { title } : {}),
-        ...(tag !== null ? { tag } : {}),
-        ...(provider ? { provider } : {}),
-        ...(model ? { model, modelId: model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(permissionMode ? { permissionMode } : {}),
-        ...(droidPermissionMode ? { droidPermissionMode } : {}),
-        ...(fastMode !== undefined ? { fastMode } : {}),
-        ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
+        ...readChatUpdateFields(args),
       }))],
     };
   }
@@ -21193,6 +21191,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--state",
   "--tab",
   "--tab-identifier",
+  // `chat update --tag <tag>` and `git tag --tag <name>`: always a value.
+  "--tag",
   "--task",
   "--task-id",
   "--target",
