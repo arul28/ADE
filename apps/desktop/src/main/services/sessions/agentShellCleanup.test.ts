@@ -7,10 +7,10 @@ import { createSessionService } from "./sessionService";
 import { writeCarriesTypedInput } from "./agentShellCleanup";
 
 /**
- * `agentShellCleanup` archives a dead shell an agent started under a chat, and
- * only then. The rules are the whole contract: a relaunch goes at once, a clean
- * exit or an ADE stop waits out the grace period, a crash waits for the chat to
- * settle, anything the person typed into is theirs and is never archived, and a
+ * `agentShellCleanup` deletes a dead shell App Control started, and only then.
+ * The rules are the whole contract: a replaced shell goes at once, a clean exit
+ * or an ADE stop waits out the grace period, a crash waits for the chat to
+ * settle, anything the person typed into is theirs and is never deleted, and a
  * running shell is never touched. Exercised through the real service over a
  * real temp database, so the sweep's join and the ledger trim are real too.
  */
@@ -90,8 +90,8 @@ async function createHarness(): Promise<{ db: Db; agentShells: ReturnType<typeof
   return { db, agentShells: service.agentShells };
 }
 
-function archivedAt(db: Db, id: string): string | null {
-  return db.get<{ archivedAt: string | null }>("select archived_at as archivedAt from terminal_sessions where id = ?", [id])?.archivedAt ?? null;
+function rowExists(db: Db, id: string): boolean {
+  return Boolean(db.get<{ present: number }>("select 1 as present from terminal_sessions where id = ?", [id]));
 }
 
 function ledgerCount(db: Db, id: string): number {
@@ -121,46 +121,47 @@ describe("writeCarriesTypedInput", () => {
 });
 
 describe("agent shell cleanup sweep", () => {
-  it("archives a relaunched shell at once, even after an unclean exit", async () => {
+  it("deletes a relaunched shell at once, even after an unclean exit", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "relaunched", chatSessionId: "chat-1", status: "failed", exitCode: 1 });
     insertSession(db, { id: "chat-1", toolType: "codex-chat" });
     db.run("update agent_shell_cleanup set retired_reason = 'relaunch' where session_id = ?", [id]);
 
     expect(agentShells.sweep(NOW_MS)).toEqual([id]);
-    expect(archivedAt(db, id)).not.toBeNull();
+    expect(rowExists(db, id)).toBe(false);
   });
 
-  it("archives a clean exit only after the grace period", async () => {
+  it("deletes a clean exit only after the grace period", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "clean", chatSessionId: "chat-1", status: "completed", exitCode: 0 });
     insertSession(db, { id: "chat-1", toolType: "codex-chat" });
 
     expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([]);
-    expect(archivedAt(db, id)).toBeNull();
+    expect(rowExists(db, id)).toBe(true);
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
+    expect(rowExists(db, id)).toBe(false);
   });
 
-  it("archives a crashed shell whose chat was deleted, instead of waiting for it forever", async () => {
+  it("deletes a crashed shell whose chat was deleted, instead of waiting for it forever", async () => {
     // Deleting a chat does NOT clear the shell's `chat_session_id` (the column
     // has no foreign key), so the shell keeps an id whose row is gone. The
     // unclean end is the case `parentQuiet` decides: before this rule that
-    // shell could never archive, because the parent it was waiting to settle
+    // shell could never be swept, because the parent it was waiting to settle
     // no longer existed.
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "orphan-crashed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
 
     expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([id]);
-    expect(archivedAt(db, id)).not.toBeNull();
+    expect(rowExists(db, id)).toBe(false);
   });
 
-  it("never archives a shell somebody typed into, chat or no chat", async () => {
+  it("never deletes a shell somebody typed into, chat or no chat", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "orphan-typed", chatSessionId: "deleted-chat", status: "failed", exitCode: 1 });
     agentShells.markUserInput(id);
 
     expect(agentShells.sweep(NOW_MS + GRACE * 4)).toEqual([]);
-    expect(archivedAt(db, id)).toBeNull();
+    expect(rowExists(db, id)).toBe(true);
   });
 
   it("treats an ADE stop as a clean end, waiting out the same grace period", async () => {
@@ -171,19 +172,41 @@ describe("agent shell cleanup sweep", () => {
 
     expect(agentShells.sweep(NOW_MS + MINUTE)).toEqual([]);
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
+    expect(rowExists(db, id)).toBe(false);
   });
 
-  it("holds a crashed shell until its chat settles", async () => {
+  it("holds a crashed shell until its chat settles, and keeps a chatless crash", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "crashed", chatSessionId: "chat-1", status: "failed", exitCode: 1 });
+    const chatless = seedAgentShell(db, agentShells, { id: "chatless-crashed", status: "failed", exitCode: 1 });
     insertSession(db, { id: "chat-1", toolType: "codex-chat" });
 
     expect(agentShells.sweep(NOW_MS + 10 * MINUTE)).toEqual([]);
     db.run("update terminal_sessions set settled_at = ? where id = 'chat-1'", [NOW]);
     expect(agentShells.sweep(NOW_MS + 10 * MINUTE)).toEqual([id]);
+    // A chatless failure has no chat to settle: it stays in view until a
+    // relaunch reuses the shell rather than being deleted out from under it.
+    expect(rowExists(db, chatless)).toBe(true);
+    expect(agentShells.sweep(NOW_MS + GRACE * 4)).toEqual([]);
+    expect(rowExists(db, chatless)).toBe(true);
   });
 
-  it("never archives a shell the person typed into, and drops its ledger row", async () => {
+  it("keeps a dead shell a relaunch holds, then deletes it once released", async () => {
+    const { db, agentShells } = await createHarness();
+    const id = seedAgentShell(db, agentShells, { id: "held", chatSessionId: "chat-1", status: "completed", exitCode: 0 });
+    insertSession(db, { id: "chat-1", toolType: "codex-chat" });
+
+    const release = agentShells.hold(id);
+    // Due on its own, but a relaunch is between claiming the shell and running
+    // its new process in it: deleting the row there would strand the launch.
+    expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([]);
+    expect(rowExists(db, id)).toBe(true);
+    release();
+    expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
+    expect(rowExists(db, id)).toBe(false);
+  });
+
+  it("never deletes a shell the person typed into, and drops its ledger row", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "typed", chatSessionId: "chat-1", status: "completed", exitCode: 0 });
     insertSession(db, { id: "chat-1", toolType: "codex-chat" });
@@ -191,8 +214,8 @@ describe("agent shell cleanup sweep", () => {
     agentShells.markUserInput(id);
 
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([]);
-    expect(archivedAt(db, id)).toBeNull();
-    // The ledger only needs rows that may still be archived; a claimed shell is done.
+    expect(rowExists(db, id)).toBe(true);
+    // The ledger only needs rows that may still be deleted; a claimed shell is done.
     expect(ledgerCount(db, id)).toBe(0);
   });
 
@@ -204,17 +227,50 @@ describe("agent shell cleanup sweep", () => {
     db.run("update agent_shell_cleanup set retired_reason = 'relaunch' where session_id in ('running','detached')");
 
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([]);
-    expect(archivedAt(db, running)).toBeNull();
-    expect(archivedAt(db, detached)).toBeNull();
+    expect(rowExists(db, running)).toBe(true);
+    expect(rowExists(db, detached)).toBe(true);
     expect(ledgerCount(db, running)).toBe(1);
   });
 
-  it("trims the ledger once the shell it tracked is archived", async () => {
+  it("trims the ledger once the shell it tracked is deleted", async () => {
     const { db, agentShells } = await createHarness();
     const id = seedAgentShell(db, agentShells, { id: "gone", chatSessionId: "chat-1", status: "completed", exitCode: 0 });
     insertSession(db, { id: "chat-1", toolType: "codex-chat" });
 
     expect(agentShells.sweep(NOW_MS + GRACE)).toEqual([id]);
+    expect(rowExists(db, id)).toBe(false);
     expect(ledgerCount(db, id)).toBe(0);
+  });
+});
+
+describe("relaunch eligibility", () => {
+  it.each([
+    ["the same chat", {}, { laneId: "lane-1", chatSessionId: "chat-1" }, true],
+    ["both chatless", { chatSessionId: null }, { laneId: "lane-1", chatSessionId: null }, true],
+    ["typed into", { typed: true }, { laneId: "lane-1", chatSessionId: "chat-1" }, false],
+    ["archived", { archivedAt: NOW }, { laneId: "lane-1", chatSessionId: "chat-1" }, false],
+    ["another chat's", {}, { laneId: "lane-1", chatSessionId: "chat-2" }, false],
+    ["a chatless shell for a chat's launch", { chatSessionId: null }, { laneId: "lane-1", chatSessionId: "chat-1" }, false],
+    ["in another lane", {}, { laneId: "lane-2", chatSessionId: "chat-1" }, false],
+    ["still running", { status: "running", endedAt: null }, { laneId: "lane-1", chatSessionId: "chat-1" }, false],
+  ])("answers a relaunch for a shell that is %s", async (
+    _label: string,
+    overrides: NonNullable<Parameters<typeof insertSession>[1]> & { typed?: boolean },
+    scope: { laneId: string; chatSessionId: string | null },
+    expected: boolean,
+  ) => {
+    const { db, agentShells } = await createHarness();
+    const { typed, ...sessionOverrides } = overrides;
+    const id = seedAgentShell(db, agentShells, {
+      id: "candidate",
+      chatSessionId: "chat-1",
+      status: "completed",
+      exitCode: 0,
+      ...sessionOverrides,
+    });
+    insertSession(db, { id: "chat-1", toolType: "codex-chat" });
+    if (typed) agentShells.markUserInput(id);
+
+    expect(agentShells.canRelaunchIn(id, scope)).toBe(expected);
   });
 });

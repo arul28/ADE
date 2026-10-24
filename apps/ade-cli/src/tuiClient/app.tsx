@@ -225,7 +225,15 @@ import {
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
-import { chatInfoPrFromSummaries, deriveChatInfoSnapshot, formatChatPrHeaderLabel, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
+import {
+  chatInfoPrFromSummaries,
+  deriveChatInfoSnapshot,
+  formatChatPrHeaderLabel,
+  mergeSubagentSnapshots,
+  snapshotFromRuntimeSubagent,
+  chatInfoRowChildId,
+  withRosterSubagentSnapshots,
+} from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
   parseWorkSearchQuery,
@@ -601,7 +609,7 @@ export type FooterControl = "drawer" | "details" | "agents";
  * `"lanes" | "chats"` MODE: the pane no longer has modes, so "am I looking at a
  * lane or a chat" is now a property of the selected row, not of the pane.
  */
-export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | "drawer" | null;
+export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | null;
 
 /**
  * Per-lane PR rollup, kept for the chat-info pane's PR block. It used to live in
@@ -3974,8 +3982,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // cadence the app already runs.
   const [attentionSnapshot, setAttentionSnapshot] = useState<AttentionSnapshot | null>(null);
   const [workExpandedShelves, setWorkExpandedShelves] = useState<Set<WorkListShelfKind>>(() => new Set());
-  // Subagent drawers start folded (desktop parity); a parent id here is open.
-  const [workExpandedDrawers, setWorkExpandedDrawers] = useState<Set<string>>(() => new Set());
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [drawerLaneId, setDrawerLaneId] = useState<string | null>(null);
@@ -5021,9 +5027,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const subagentSnapshots = useMemo(
     () => {
       const fromEvents = shouldDeriveFullChatInfo ? subagentSnapshotsFromEvents(events) : EMPTY_SUBAGENT_SNAPSHOTS;
-      return mergeSubagentSnapshots(fromEvents, runtimeSubagentSnapshots);
+      // Filed subagents are not Work-list rows; this pane lists them, roster
+      // gaps included.
+      return withRosterSubagentSnapshots(
+        mergeSubagentSnapshots(fromEvents, runtimeSubagentSnapshots),
+        activeSessionId,
+        displaySessions,
+      );
     },
-    [events, runtimeSubagentSnapshots, shouldDeriveFullChatInfo],
+    [activeSessionId, displaySessions, events, runtimeSubagentSnapshots, shouldDeriveFullChatInfo],
   );
   const chatInfoRosterViewState = resolveChatInfoRosterViewState(subagentPaneViewState);
   const chatInfoEvents = shouldDeriveFullChatInfo ? events : EMPTY_CHAT_EVENTS;
@@ -5079,7 +5091,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const sessionLane = (chatLaneId ? lanes.find((lane) => lane.id === chatLaneId) : null) ?? activeLane;
     const snapshots = shouldDeriveFullChatInfo
       ? subagentSnapshots
-      : mergeSubagentSnapshots(subagentSnapshotsFromEvents(events), runtimeSubagentSnapshots);
+      : withRosterSubagentSnapshots(
+        mergeSubagentSnapshots(subagentSnapshotsFromEvents(events), runtimeSubagentSnapshots),
+        activeSessionId,
+        displaySessions,
+      );
     return deriveChatInfoSnapshot({
       events,
       activeSession: activeDisplaySession,
@@ -5106,9 +5122,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeDisplaySession,
     activeLane,
     activeLaneId,
+    activeSessionId,
     activeTerminalSession,
     chatLinkedPrs,
     currentGoal,
+    displaySessions,
     events,
     inspectedSubagentId,
     lanes,
@@ -5389,10 +5407,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     lanes,
     sessions: (addMode ? tileableDisplaySessions : openDrawerSessions) as TuiChatSessionSummary[],
     foreign: addMode ? [] : workForeignSessions,
+    nestSubagents: !addMode,
     activeSessionId,
     draftSessionIds: workDraftSessionIds,
     expandedShelves: workExpandedShelves,
-    expandedDrawers: workExpandedDrawers,
     unavailableLaneIds,
     hideNewChat: true,
   }), [
@@ -5403,7 +5421,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     tileableDisplaySessions,
     unavailableLaneIds,
     workDraftSessionIds,
-    workExpandedDrawers,
     workExpandedShelves,
     workForeignSessions,
   ]);
@@ -5625,25 +5642,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     })();
   }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
-  // Opening a nested subagent (a notification, `/resume`, the grid) opens the
-  // drawer it sits in once, so the cursor has a row to land on. Folding it
-  // again sticks until another chat becomes active.
-  const drawerRevealedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!activeSessionId || drawerRevealedForRef.current === activeSessionId) return;
-    const parentId = workListModel.drawerParentBySessionId.get(activeSessionId);
-    if (!parentId) return;
-    drawerRevealedForRef.current = activeSessionId;
-    setWorkExpandedDrawers((prev) => (prev.has(parentId) ? prev : new Set(prev).add(parentId)));
-  }, [activeSessionId, workListModel]);
-  const toggleWorkDrawer = useCallback((parentId: string) => {
-    setWorkExpandedDrawers((prev) => {
-      const next = new Set(prev);
-      if (next.has(parentId)) next.delete(parentId);
-      else next.add(parentId);
-      return next;
-    });
-  }, []);
   const toggleWorkShelf = useCallback((shelf: WorkListShelfKind) => {
     setWorkExpandedShelves((prev) => {
       const next = new Set(prev);
@@ -5702,7 +5700,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       case "shelf":
-      case "drawer":
         return;
       default: {
         const _exhaustive: never = row;
@@ -6657,9 +6654,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   useEffect(() => {
     if (rightPane.kind !== "chat-info") return;
-    if (drawerOpen && drawerPreviewSession && drawerPreviewChatInfo) return;
+    // A preview of another chat owns the pane; the active chat's own preview
+    // keeps its full Chat Info (child chats included) current.
+    if (
+      drawerOpen
+      && drawerPreviewSession
+      && drawerPreviewChatInfo
+      && drawerPreviewSession.sessionId !== activeSessionId
+    ) return;
     setRightPane({ kind: "chat-info", info: chatInfo });
-  }, [chatInfo, drawerOpen, drawerPreviewChatInfo, drawerPreviewSession, rightPane.kind]);
+  }, [activeSessionId, chatInfo, drawerOpen, drawerPreviewChatInfo, drawerPreviewSession, rightPane.kind]);
 
   useEffect(() => {
     if (!drawerOpen || activePane !== "drawer" || workSelectionKind !== "session") {
@@ -15430,10 +15434,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       toggleWorkShelf(row.shelf);
       return;
     }
-    if (row.kind === "drawer") {
-      toggleWorkDrawer(row.parentId);
-      return;
-    }
     if (
       row.kind === "session"
       && region === "lane-identity"
@@ -15495,7 +15495,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     openNewChatSetup,
     resumeClosedTerminalSession,
     selectWorkRow,
-    toggleWorkDrawer,
     toggleWorkShelf,
   ]);
 
@@ -17344,6 +17343,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               })
               .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
           }
+          return;
+        }
+        // A row that stands for a child chat opens as the chat it is, the way
+        // the desktop actions pane opens it (a filed subagent has no Work-list
+        // row to open it from).
+        const childChatId = selectedSnapshot ? chatInfoRowChildId(selectedSnapshot) : null;
+        const childChat = childChatId && childChatId !== activeSessionIdRef.current
+          ? displaySessionsRef.current.find((session) => session.sessionId === childChatId) ?? null
+          : null;
+        if (childChat) {
+          if (childChat.laneId) {
+            setDrawerLaneId(childChat.laneId);
+            setSelectedDrawerLaneId(childChat.laneId);
+          }
+          setSelectedWorkChatAction(null);
+          setSelectedDrawerChatId(childChat.sessionId);
+          applyDrawerChatSelection({ session: childChat, action: null });
+          focusChat();
           return;
         }
         // Capability gate: only runtimes with a real child transcript

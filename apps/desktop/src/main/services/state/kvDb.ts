@@ -3030,8 +3030,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
   safeAddColumn(db, "alter table terminal_sessions add column owner_process_started_at text");
   try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
-  // Machine-local ledger of the shells an agent started under a chat, read by
-  // `agentShellCleanup` to archive them once they are dead. Local-only (see
+  // Machine-local ledger of the shells App Control started, read by
+  // `agentShellCleanup` to delete them once they are dead and to pick the shell
+  // a relaunch reuses. Local-only (see
   // LOCAL_ONLY_CRR_EXCLUDED_TABLES): it records what this machine's processes
   // launched and saw typed, which no other machine can know.
   db.run(`

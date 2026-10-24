@@ -3337,7 +3337,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   a lane that already has a live session refuses; --force replaces it, and only
   in the same lane.
 
-  Launch runs the command in a visible terminal. ADE sets
+  Launch runs the command in a visible terminal. When the same chat launches
+  again on the lane (after a stop, or with --force), the app runs in the same
+  terminal session as before, so an edit/relaunch loop keeps one shell. It gets
+  a new one instead when someone typed into the old shell, it was archived, or
+  the old app did not exit within 5 seconds; --new-shell asks for a new one.
+  ADE sets
   ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS and forwards the
   debug flags for npm/pnpm/yarn/bun scripts and direct electron commands. A
   custom launcher must forward ADE_APP_CONTROL_DEBUG_FLAGS (or read
@@ -15943,6 +15948,7 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     const label = readValue(args, ["--label", "--name"]);
     const chatSessionId = claimArgs.chatSessionId;
     const force = readFlag(args, ["--force", "-f"]) ? true : undefined;
+    const newShell = readFlag(args, ["--new-shell"]) ? true : undefined;
     const positionalCommand = args
       .filter((arg) => arg !== "--" && !arg.startsWith("-"))
       .join(" ")
@@ -15969,6 +15975,7 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
             label,
             chatSessionId,
             force,
+            newShell,
           }),
         ),
       ],

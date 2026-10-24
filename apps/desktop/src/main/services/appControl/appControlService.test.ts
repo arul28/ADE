@@ -433,6 +433,69 @@ describe("appControlService", () => {
     }
   });
 
+  it("relaunches a chat's app in its previous shell, and in a new one with newShell", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const exitListeners: Array<(event: { sessionId: string; exitCode: number | null }) => void> = [];
+    const create = vi.fn(async (input: Record<string, unknown>) => ({
+      sessionId: typeof input.sessionId === "string" ? input.sessionId : "terminal-1",
+      ptyId: "pty-1",
+      pid: 42,
+    }));
+    const signalTerminal = vi.fn(({ terminalId }: { terminalId: string }) => {
+      for (const listener of exitListeners) listener({ sessionId: terminalId, exitCode: 0 });
+    });
+    const holdAgentShell = vi.fn(() => () => {});
+    const canRelaunchAgentShell = vi.fn(() => true);
+    const retireAgentShell = vi.fn();
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn((listener: (event: { sessionId: string; exitCode: number | null }) => void) => {
+          exitListeners.push(listener);
+          return () => {};
+        }),
+        signalTerminal,
+        hasLivePty: vi.fn(() => false),
+        holdAgentShell,
+        canRelaunchAgentShell,
+        retireAgentShell,
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev", cwd: projectRoot, chatSessionId: "chat-1", debugPort: 9333 });
+      await service.stop({ laneId: "lane-1", force: true });
+      await service.launch({ command: "npm run dev", cwd: projectRoot, chatSessionId: "chat-1", debugPort: 9333 });
+
+      // The same chat's next launch runs a fresh process in the old row, so an
+      // edit/relaunch loop leaves one shell instead of one per launch.
+      expect(create).toHaveBeenLastCalledWith(expect.objectContaining({
+        sessionId: "terminal-1",
+        freshRun: true,
+        allowNewSessionId: true,
+      }));
+      expect(holdAgentShell).toHaveBeenCalledWith("terminal-1");
+      expect(canRelaunchAgentShell).toHaveBeenCalledWith("terminal-1", { laneId: "lane-1", chatSessionId: "chat-1" });
+
+      await service.stop({ laneId: "lane-1", force: true });
+      await service.launch({ command: "npm run dev", cwd: projectRoot, chatSessionId: "chat-1", debugPort: 9333, newShell: true });
+
+      // `newShell` opts out: a separate terminal, and the replaced shell goes.
+      const lastCreateArgs = create.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+      expect(lastCreateArgs).not.toHaveProperty("sessionId");
+      expect(lastCreateArgs).not.toHaveProperty("freshRun");
+      expect(retireAgentShell).toHaveBeenCalledWith({ sessionId: "terminal-1", reason: "relaunch" });
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   it("lets manual target switches win over an in-flight health poll", async () => {
     const targetA = target("a");
     const targetB = target("b");

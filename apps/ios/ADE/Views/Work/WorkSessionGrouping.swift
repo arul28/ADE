@@ -108,9 +108,9 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let isOrphaned: Bool
   /// Nothing here wants attention, so the section renders as a single thin row
   /// instead of a full header over nothing, and it defaults to collapsed. True
-  /// for a lane whose every session is settled (snoozed rows are already lifted
-  /// into the `status:snoozed` shelf, so they can't be here), and for the
-  /// quiet-zone shelves themselves.
+  /// for a lane whose every session is quiet (archived, settled, or snoozed;
+  /// settled and snoozed rows are lifted onto their own shelves first except a
+  /// pinned lane's settled rows), and for the quiet-zone shelves themselves.
   /// Mutable so the by-lane pass can stamp it after construction — the quiet
   /// rule needs the assembled group, and value semantics make an in-place
   /// mutation identical to rebuilding the whole struct.
@@ -236,7 +236,10 @@ struct WorkRootSessionPresentation: Equatable {
   let displaySessionIds: Set<String>
   let topLevelDisplaySessionIds: Set<String>
   let busySubagentParentIds: Set<String>
-  let nestedGroupsByParentId: [String: [WorkSessionChildGroup]]
+  /// A chat's attached-shell drawer, rendered under its row.
+  let shellDrawerByParentId: [String: WorkShellDrawer]
+  /// A parent row's one mark for its nested subagents.
+  let subagentMarkByParentId: [String: WorkNestedSubagentMark]
   let sessionGroups: [WorkSessionGroup]
   let workOrderedLanes: [LaneSummary]
   let laneById: [String: LaneSummary]
@@ -253,7 +256,8 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessionIds: Set<String>,
     topLevelDisplaySessionIds: Set<String>,
     busySubagentParentIds: Set<String> = [],
-    nestedGroupsByParentId: [String: [WorkSessionChildGroup]],
+    shellDrawerByParentId: [String: WorkShellDrawer] = [:],
+    subagentMarkByParentId: [String: WorkNestedSubagentMark] = [:],
     sessionGroups: [WorkSessionGroup],
     workOrderedLanes: [LaneSummary],
     laneById: [String: LaneSummary],
@@ -267,7 +271,8 @@ struct WorkRootSessionPresentation: Equatable {
     self.displaySessionIds = displaySessionIds
     self.topLevelDisplaySessionIds = topLevelDisplaySessionIds
     self.busySubagentParentIds = busySubagentParentIds
-    self.nestedGroupsByParentId = nestedGroupsByParentId
+    self.shellDrawerByParentId = shellDrawerByParentId
+    self.subagentMarkByParentId = subagentMarkByParentId
     self.sessionGroups = sessionGroups
     self.workOrderedLanes = workOrderedLanes
     self.laneById = laneById
@@ -281,7 +286,6 @@ struct WorkRootSessionPresentation: Equatable {
     displaySessionIds: [],
     topLevelDisplaySessionIds: [],
     busySubagentParentIds: [],
-    nestedGroupsByParentId: [:],
     sessionGroups: [],
     workOrderedLanes: [],
     laneById: [:],
@@ -368,21 +372,15 @@ func buildWorkRootSessionPresentation(
     chatSummaries: chatSummaries,
     now: now
   )
-  let subagentGroupsByParentId = workSessionSubagentGroups(
+  let subagentMarkByParentId = workNestedSubagentMarks(
     from: spawnIndex,
     chatSummaries: chatSummaries,
     now: now
   )
-  let nestedGroupsByParentId = workNestedGroupsByParentId(
-    subagents: subagentGroupsByParentId,
-    shells: shellFiling.groupsByParentId
-  )
-  // Drawer children plus every filed shell, archived ones included: those are
-  // filed under their chat but not listed, so they must not surface as
-  // top-level rows either.
-  let childSessionIds = Set(
-    nestedGroupsByParentId.values.flatMap { $0.flatMap { $0.children.map(\.id) } }
-  ).union(shellFiling.filedShellIds)
+  // Nested subagents (listed nowhere; the parent row carries their mark) and
+  // every filed shell, archived ones included: those are filed under their
+  // chat but not listed, so they must not surface as top-level rows either.
+  let childSessionIds = spawnIndex.nestedChildIds.union(shellFiling.filedShellIds)
   let topLevelDisplaySessionIds = displaySessionIds.subtracting(childSessionIds)
 
   // Lane ordering and the singleton rule both read the UNFILTERED roster, so
@@ -406,6 +404,7 @@ func buildWorkRootSessionPresentation(
       sessions: mergedSessions,
       pinnedLaneIds: pinnedLaneIds,
       chatSummaries: chatSummaries,
+      archivedSessionIds: archivedSessionIds,
       now: now
     ),
     sortMode: laneSortMode
@@ -458,7 +457,8 @@ func buildWorkRootSessionPresentation(
     displaySessionIds: displaySessionIds,
     topLevelDisplaySessionIds: topLevelDisplaySessionIds,
     busySubagentParentIds: busySubagentParentIds,
-    nestedGroupsByParentId: nestedGroupsByParentId,
+    shellDrawerByParentId: shellFiling.groupsByParentId,
+    subagentMarkByParentId: subagentMarkByParentId,
     sessionGroups: sessionGroups,
     workOrderedLanes: workOrderedLanes,
     laneById: laneById,
@@ -468,7 +468,8 @@ func buildWorkRootSessionPresentation(
       mergedSessions: mergedSessions,
       displaySessions: displaySessions,
       topLevelDisplaySessionIds: topLevelDisplaySessionIds,
-      nestedGroupsByParentId: nestedGroupsByParentId,
+      shellDrawerByParentId: shellFiling.groupsByParentId,
+      subagentMarkByParentId: subagentMarkByParentId,
       sessionGroups: sessionGroups,
       workOrderedLanes: workOrderedLanes,
       lanePrTagsByLaneId: lanePrTagsByLaneId,
@@ -483,7 +484,8 @@ private func workRootSessionPresentationRenderSignature(
   mergedSessions: [TerminalSessionSummary],
   displaySessions: [TerminalSessionSummary],
   topLevelDisplaySessionIds: Set<String>,
-  nestedGroupsByParentId: [String: [WorkSessionChildGroup]],
+  shellDrawerByParentId: [String: WorkShellDrawer],
+  subagentMarkByParentId: [String: WorkNestedSubagentMark],
   sessionGroups: [WorkSessionGroup],
   workOrderedLanes: [LaneSummary],
   lanePrTagsByLaneId: [String: LanePrTag],
@@ -562,21 +564,16 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(group.countOverride)
     hasher.combine(group.sessions.map(\.id))
   }
-  for parentId in nestedGroupsByParentId.keys.sorted() {
-    guard let groups = nestedGroupsByParentId[parentId] else { continue }
+  for parentId in shellDrawerByParentId.keys.sorted() {
+    guard let group = shellDrawerByParentId[parentId] else { continue }
     hasher.combine(parentId)
-    for group in groups {
-      hasher.combine(group.kind == .subagents ? "subagent" : "shell")
-      hasher.combine(group.parentId)
-      hasher.combine(group.collapsedSectionId)
-      hasher.combine(group.children.map(\.id))
-      switch group.status {
-      case .failed: hasher.combine("failed")
-      case .needsYou: hasher.combine("needs_you")
-      case .running: hasher.combine("running")
-      case .none: hasher.combine("none")
-      }
-    }
+    hasher.combine(group.collapsedSectionId)
+    hasher.combine(group.children.map(\.id))
+    hasher.combine(group.status)
+  }
+  for parentId in subagentMarkByParentId.keys.sorted() {
+    hasher.combine(parentId)
+    hasher.combine(subagentMarkByParentId[parentId])
   }
   for lane in workOrderedLanes {
     hasher.combine(lane.id)
@@ -648,13 +645,17 @@ func workLaneOrderInputs(
   return inputs
 }
 
-/// Per-lane inputs to the singleton rule. Counts TOP-LEVEL rows only — a chat
-/// with terminal children or nested subagents is one unit — over the unfiltered roster.
+/// Per-lane inputs to the singleton rule. Counts TOP-LEVEL rows that stay in
+/// the lane only, over the unfiltered roster: a chat with terminal children or
+/// nested subagents is one unit, and a row the by-lane list lifts onto the
+/// Snoozed or Settled shelf (`workQuietShelf`) is not in the lane at all. So a
+/// lane with one live row and three settled ones is a singleton.
 func workHeaderlessLaneInputs(
   lanes: [LaneSummary],
   sessions: [TerminalSessionSummary],
   pinnedLaneIds: Set<String>,
   chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String> = [],
   now: Date
 ) -> [WorkHeaderlessLaneInput] {
   let rosterIds = Set(sessions.map(\.id))
@@ -674,6 +675,15 @@ func workHeaderlessLaneInputs(
     ) {
       continue
     }
+    if workQuietShelf(
+      for: session,
+      summary: chatSummaries[session.id],
+      archived: archivedSessionIds.contains(session.id),
+      keepsSettledInLane: pinnedLaneIds.contains(session.laneId),
+      now: now
+    ) != nil {
+      continue
+    }
     topLevelByLaneId[session.laneId, default: 0] += 1
   }
   return lanes.map { lane in
@@ -688,10 +698,13 @@ func workHeaderlessLaneInputs(
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
 ///
 /// Every list closes with the same quiet zone: a **Snoozed** shelf above a
-/// **Settled** shelf, both collapsed until explicitly opened. By-lane is the one
-/// exemption — it has no global Settled shelf, because a settled row still
-/// belongs to its lane and by-lane already folds an all-quiet lane into a single
-/// thin row. See the `liftsSettled` comment below before "fixing" that.
+/// **Settled** shelf, both collapsed until explicitly opened. By-lane included:
+/// a settled row is finished work, so on a phone it belongs in one shelf the
+/// user opens deliberately, not inline under whichever lane happened to hold it,
+/// and a headerless lane would have no header to fold it behind. The shelf row
+/// carries the lane chip, so nothing is lost. A pinned lane keeps its settled
+/// rows: the pin says "keep this where I can see it", and a pinned lane always
+/// has a header, whose quiet fold collapses an all-settled lane to one line.
 ///
 /// Snooze is applied here as a visibility overlay on top of whichever
 /// organization is active: snoozed rows are lifted out of every other section
@@ -727,36 +740,24 @@ func workSessionGroups(
   pinnedLaneIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
-  // The quiet zone is a shelf pair, and only by-status and by-time build it.
-  // By-lane deliberately keeps settled rows inside their lane and folds a lane
-  // whose rows are ALL quiet into one thin row (`workLaneGroupIsQuiet`): a
-  // settled row still belongs to its lane, and lifting settled rows out
-  // globally would leave lanes empty and that fold unreachable.
-  let liftsSettled = organization != .byLane
-
+  // The quiet zone is a shelf pair built for every organization; see
+  // `workQuietShelf` for which rows it takes.
   var snoozed: [TerminalSessionSummary] = []
   var settled: [TerminalSessionSummary] = []
   var awake: [TerminalSessionSummary] = []
   for session in sessions {
     if nestedChildIds.contains(session.id) { continue }
-    if session.isFiledAsSnoozed(summary: chatSummaries[session.id], now: now) {
-      snoozed.append(session)
-      continue
+    switch workQuietShelf(
+      for: session,
+      summary: chatSummaries[session.id],
+      archived: archivedSessionIds.contains(session.id),
+      keepsSettledInLane: organization == .byLane && pinnedLaneIds.contains(session.laneId),
+      now: now
+    ) {
+    case .snoozed: snoozed.append(session)
+    case .settled: settled.append(session)
+    case nil: awake.append(session)
     }
-    // Archived is checked first so an archived-and-settled row keeps landing in
-    // "Archived" rather than being quietly re-filed under the settled shelf.
-    if liftsSettled, !archivedSessionIds.contains(session.id) {
-      let canonical = workCanonicalSessionState(
-        session: session,
-        summary: chatSummaries[session.id],
-        now: now
-      )
-      if canonical.phase == .settled {
-        settled.append(session)
-        continue
-      }
-    }
-    awake.append(session)
   }
 
   var groups: [WorkSessionGroup]
@@ -804,7 +805,9 @@ func workSessionGroups(
       headerlessLaneIds: headerlessLaneIds
     ).map { group in
       var group = group
-      group.isQuiet = workLaneGroupIsQuiet(
+      // A pinned lane opts out of the quiet treatment, as on desktop.
+      let pinned = group.laneId.map { pinnedLaneIds.contains($0) } ?? false
+      group.isQuiet = !pinned && workLaneGroupIsQuiet(
         group,
         referenceSessions: quietReferenceSessions,
         chatSummaries: chatSummaries,
@@ -876,6 +879,30 @@ func workSessionGroups(
   return groups
 }
 
+/// The quiet-zone shelf `workSessionGroups` lifts a row onto before the
+/// organization runs, or nil when the row stays in its own section.
+enum WorkQuietShelf {
+  case snoozed
+  case settled
+}
+
+/// Snoozed first (`isFiledAsSnoozed`, which already yields to needs you).
+/// Archived is checked before settled so an archived-and-settled row keeps
+/// landing in "Archived" rather than being re-filed under the settled shelf.
+/// `keepsSettledInLane` is a pinned lane in by-lane: its settled rows stay.
+func workQuietShelf(
+  for session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  archived: Bool,
+  keepsSettledInLane: Bool,
+  now: Date
+) -> WorkQuietShelf? {
+  if session.isFiledAsSnoozed(summary: summary, now: now) { return .snoozed }
+  guard !archived, !keepsSettledInLane else { return nil }
+  let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
+  return canonical.phase == .settled ? .settled : nil
+}
+
 /// Stable id for the snoozed tail so its collapse state persists like any other
 /// section, independent of the active organization.
 let workSnoozedSectionId = "status:snoozed"
@@ -886,12 +913,15 @@ let workSnoozedSectionId = "status:snoozed"
 /// making it inert rather than wrong.
 let workSettledSectionId = "status:settled"
 
-/// A lane section holding nothing but settled work.
+/// A lane section holding nothing but quiet work.
 ///
 /// Archived rows count as quiet too — they are equally "not what you're working
 /// on". A lane with anything running, ended-but-unsettled, or waiting on the
 /// user is never quiet, which is what keeps an attention row from being folded
-/// away behind a thin header.
+/// away behind a thin header. Settled and snoozed rows normally leave the lane
+/// for their own shelves before grouping, so this fold catches an
+/// archived-only lane. A pinned lane keeps its settled rows and is never
+/// folded quiet (the caller exempts it).
 func workLaneGroupIsQuiet(
   _ group: WorkSessionGroup,
   referenceSessions: [TerminalSessionSummary]? = nil,
@@ -1204,6 +1234,22 @@ func workCollapsedSectionIdsFramingLane(_ ids: Set<String>, laneId: String) -> S
   // only while open. Open it too, or the scroll target is not in the list.
   framed.insert("shelf-open:\(workWorkingSectionId)")
   return framed
+}
+
+/// The quiet-zone shelf (Snoozed, then Settled) holding a row of this lane.
+/// A lane whose every row was lifted onto the shelves has no section of its
+/// own, so a lane deeplink lands here instead.
+func workQuietShelfHoldingLane(_ groups: [WorkSessionGroup], laneId: String) -> WorkSessionGroup? {
+  groups.first { group in
+    (group.id == workSnoozedSectionId || group.id == workSettledSectionId)
+      && group.sessions.contains { $0.laneId == laneId }
+  }
+}
+
+/// Opens the Snoozed and Settled shelves for one lane deeplink, the same way
+/// `workCollapsedSectionIdsFramingLane` opens the lane itself.
+func workCollapsedSectionIdsOpeningQuietShelves(_ ids: Set<String>) -> Set<String> {
+  ids.union(["shelf-open:\(workSnoozedSectionId)", "shelf-open:\(workSettledSectionId)"])
 }
 
 // MARK: - Scoped Work view state

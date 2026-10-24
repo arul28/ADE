@@ -1006,9 +1006,14 @@ function ChatInfoRoster({
             const rosterIndex = rosterIndexByKey.get(row.key) ?? -1;
             const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
             const kind = subagentAgentKind(row.snapshot.status);
-            const statusColor = row.section === "background"
-              ? theme.color.tool
-              : theme.agentStatusColor(kind);
+            // A spawned chat waiting on the user says so: its own glyph and word.
+            const needsYou = row.snapshot.needsYou === true;
+            const needsYouLabel = needsYou ? " needs you" : "";
+            const statusColor = needsYou
+              ? theme.color.attention
+              : row.section === "background"
+                ? theme.color.tool
+                : theme.agentStatusColor(kind);
             const inspected = info.inspectedSubagentId === row.snapshot.id;
             const modelAttribution = subagentModelAttribution({
               snapshotModel: row.snapshot.model,
@@ -1025,17 +1030,18 @@ function ChatInfoRoster({
               : 0;
             const nameWidth = Math.max(
               6,
-              inner - 18 - (modelAttribution ? modelLabelWidth + inheritedSuffix.length + 1 : 0),
+              inner - 18 - needsYouLabel.length - (modelAttribution ? modelLabelWidth + inheritedSuffix.length + 1 : 0),
             );
             const detail = isSelected ? selectedRosterDetail(row.snapshot, info.capability) : null;
             return (
               <Box key={row.key} flexDirection="column">
                 <Box flexDirection="row">
                   <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
-                  <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
+                  <Text color={statusColor}>{` ${needsYou ? theme.sessionGlyphMark("needs-you") : theme.agentStatusGlyph(kind)}`}</Text>
                   <Text color={isSelected ? theme.color.violet : inspected ? theme.color.t1 : theme.color.t2} bold={isSelected || inspected}>
                     {` ${endTruncate(row.snapshot.name, nameWidth)}`}
                   </Text>
+                  {needsYou ? <Text color={theme.color.attention}>{needsYouLabel}</Text> : null}
                   {modelAttribution ? (
                     <>
                       <Text color={theme.color.t4} dimColor>

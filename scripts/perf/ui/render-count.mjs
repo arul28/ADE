@@ -1,11 +1,11 @@
 // node scripts/perf/ui/render-count.mjs <seconds> reload
 // `reload` installs the hook and reloads the renderer; it is needed once per
-// renderer load (later runs may omit it).  — install render hook in the dev Electron page (CDP port 9222), count renders over a window
+// renderer load (later runs may omit it).  — install render hook in the dev Electron page (CDP_PORT, default 9222), count renders over a window
 import { readFileSync } from "node:fs";
-import { findPage } from "./target.mjs";
+import { cdpUrl, findPage } from "./target.mjs";
 const secs = Number(process.argv[2] ?? 10);
 const reload = process.argv[3] === "reload";
-const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();
+const list = await (await fetch(cdpUrl("/json/list"))).json();
 const page = findPage(list);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();
 await new Promise((r) => (ws.onopen = r));

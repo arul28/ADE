@@ -83,6 +83,11 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var id: String // sessionId
   var laneId: String
   var chatSessionId: String?
+  /// Spawn lineage, so a same-lane subagent of a chat on another machine files
+  /// under its parent here the way it does on that machine. Older hosts omit
+  /// both; an unknown kind decodes as `.legacyUntyped`, which never nests.
+  var spawnKind: AgentChatSpawnKind? = nil
+  var orchestrationParentSessionId: String? = nil
   var title: String?
   var provider: String?
   var model: String?
@@ -724,7 +729,7 @@ extension RemoteRosterChat {
   func asTerminalSessionSummary(laneName: String) -> TerminalSessionSummary {
     let strings = sessionStatusStrings
     let lifecycleTimestamp = lifecycleFreshness?.timestamp ?? ""
-    return TerminalSessionSummary(
+    var session = TerminalSessionSummary(
       id: id,
       laneId: laneId,
       laneName: laneName,
@@ -766,6 +771,9 @@ extension RemoteRosterChat {
       pendingInputItemId: nil,
       sideChatSessionId: nonEmptyRosterValue(sideChatSessionId)
     )
+    session.spawnKind = spawnKind
+    session.orchestrationParentSessionId = orchestrationParentSessionId
+    return session
   }
 }
 
@@ -802,6 +810,10 @@ extension RemoteRosterChat {
     if let preview = nonEmptyTrimmed(preview) { payload["lastOutputPreview"] = preview }
     if let identityKey { payload["identityKey"] = identityKey }
     if let sideChatSessionId = nonEmptyRosterValue(sideChatSessionId) { payload["sideChatSessionId"] = sideChatSessionId }
+    if let spawnKind = spawnKind?.wireValue { payload["spawnKind"] = spawnKind }
+    if let parentId = nonEmptyTrimmed(orchestrationParentSessionId) {
+      payload["orchestrationParentSessionId"] = parentId
+    }
     return rosterDerivedChatSummary(payload)
   }
 }

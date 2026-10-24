@@ -3,6 +3,7 @@
 // (BrowserRouter). The packaged app loads file:///…/renderer/index.html and routes
 // by hash (HashRouter reads location.hash, see App.tsx usesBrowserRouter), so
 // its routes are #/work, #/lanes and so on.
+//   CDP_PORT=<port>             the DevTools port (default 9222)
 //   CDP_TARGET_URL=<substring>  the only page considered
 //   --hash, CDP_HASH_ROUTES=1   navigate with location.hash
 //   CDP_HASH_ROUTES=0           navigate with history.pushState, even on file:
@@ -10,6 +11,10 @@
 
 const DEV_PAGE = "//localhost:";
 const PACKAGED_PAGE = /^file:.*\/index\.html([?#]|$)/;
+
+// The dev app's DevTools endpoint: CDP_PORT (default 9222), for a dev app
+// launched with another ADE_APP_CONTROL_CDP_PORT.
+export const cdpUrl = (path) => `http://127.0.0.1:${process.env.CDP_PORT ?? 9222}${path}`;
 
 // Arguments without flags, so `--hash` never lands in a script's positional arguments.
 export const positionalArgs = () => process.argv.slice(2).filter((a) => a !== "--hash");

@@ -198,11 +198,12 @@ and in tests.
   post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
-- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — archives the
-  dead shells an agent started under a chat. It reads the machine-local
+- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — deletes the
+  dead shells App Control launched. It reads the machine-local
   `agent_shell_cleanup` ledger (excluded from CRR: it records this machine's own
-  launches and typing), sweeps joined `terminal_sessions` rows, and archives
-  through `sessionService.archiveSession` only when the row is eligible. See
+  launches and typing), sweeps joined `terminal_sessions` rows, and deletes the
+  row (`sessionService.deleteSession`) only when it is eligible; `ptyService`
+  removes the transcript files once the shell's close work settles. It also answers whether a relaunch may reuse a shell. See
   [Dead agent shells](#dead-agent-shells).
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
@@ -521,16 +522,18 @@ Shared types and IPC:
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
-  nest under the parent; peers stay top-level. Demote un-nests; promote nests
-  again. Cross-lane children stay top-level. A quiet parent (snoozed or
-  settled) pulls not-done children up; done children stay nested. Grandchildren
-  flatten into the root parent's one drawer. Collapse keys:
-  `chat-subagents:<parentId>` (the shells key `chat:<parentId>` is retired: a
-  chat's shells are drawn in its actions pane now). It also owns
+  of a parent chat are filed under it and leave the list; peers, and children
+  of a tracked CLI or shell parent, stay top-level. Demote
+  un-nests; promote files again. Cross-lane children stay top-level. A quiet
+  parent (snoozed or settled) pulls not-done children up; done children stay
+  filed. Grandchildren file under the root parent. `nestedSubagentMark` and
+  `nestedSubagentMarkLabel` give the parent row's one mark (count and worst
+  state, one pass over the children); `filedSubagentsOf`, `spawnNestingPhase`
+  and `childChatPaneStatus` give the actions pane its filed rows. The old collapse keys (`chat-subagents:<parentId>`, `drawer-open:`,
+  and the shells key `chat:<parentId>`) are inert. It also owns
   `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
-  subagents are not) so filing can run in shared rather than the renderer, and
-  `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
-  `sessionSpawnNesting.test.ts`.
+  subagents are not) so filing can run in shared rather than the renderer.
+  Tested in `sessionSpawnNesting.test.ts`.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
   and are shared with `ade code` and iOS; this module owns the re-export plus the
@@ -646,11 +649,13 @@ Shared types and IPC:
   `/chat unsettle` keep their own active-only dispatch in `app.tsx`.
 - `apps/ade-cli/src/tuiClient/workListModel.ts`, `workListLayout.ts`, and
   `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
-  subagent chats indent as one-line nested rows under the parent (shout-only
-  Needs you / Failed). A terminal cannot paint provider logos, so there is no
-  collapsible **N subagents** drawer. Filing imports `indexNestedSubagents`
-  from `sessionSpawnNesting.ts`. A nested row is one line; a full card is
-  three. See [ADE Code](../ade-code/README.md).
+  subagent chats are not rows. The parent card's third line carries `⊚N` and
+  the worst child state's glyph (`✕` failed, `●` needs you, `◐` running), and
+  the chat info pane lists the children (`withRosterSubagentSnapshots`, the
+  same rules as the desktop pane). Filing imports `indexNestedSubagents` from
+  `sessionSpawnNesting.ts`. Every card is three lines. The add-to-grid picker
+  passes `nestSubagents: false`, so a filed subagent can still be tiled. See
+  [ADE Code](../ade-code/README.md).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
   the hosted-web halves. ADE Web has no local database, so every lifecycle
@@ -1135,17 +1140,14 @@ Renderer surfaces:
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
   enter a bulk action accidentally.
   In by-lane list mode, same-lane `spawnKind: "subagent"` chats (and tracked
-  CLI `--type subagent` sessions) nest under the parent in a collapsed-by-default
-  **N subagents** drawer (`chat-subagents:<parentId>`). Attached shells are not
-  drawn here: they live in the chat's actions pane (**Shells**), while the list
-  keeps them out of the top-level rows by filing them under their chat. Compact nested rows keep the identicon, title,
-  then the provider glyph on the right of the card (same seat as every other
-  session card), plus the status glyph; they spell Needs you / Failed only.
-  The drawer header is empty, a needs-you pip, or the red word **Failed**
-  (Failed wins). Peers stay top-level. Grandchildren flatten into the root
-  parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
-  children up to top-level cards; done children stay nested. Demote-to-peer
-  un-nests; promote nests again. Cross-lane children stay top-level in their
+  CLI `--type subagent` sessions) and attached shells are not drawn here. Both
+  live in the chat's actions pane (**Subagents**, **Shells**), and the list
+  keeps them out of the top-level rows by filing them under their chat. The
+  parent row carries one subagent mark (count and worst state: failed, needs
+  you, running); pressing it opens the chat on its actions pane. Peers stay
+  top-level. Grandchildren count toward the root parent. A quiet parent
+  (snoozed or settled) pulls not-done children up to top-level cards; done
+  children stay filed. Demote-to-peer un-nests; promote files again. Cross-lane children stay top-level in their
   own lane with the lineage chip. Status, time, and Kanban stay flat.
   `ade chat list` stays a flat table. Filing lives in
   `sessionSpawnNesting.ts`.
@@ -1383,9 +1385,12 @@ Renderer surfaces:
   `SessionStatusSlot`; line two is the elastic title with a singleton lane's
   fixed-width PR badge at the right edge, directly beneath the status; line
   three keeps the sanitized preview, Claude TTL, failure exit code, and
-  provider mark. Nested-subagent drawer rows (`nestedSubagent`) collapse to
-  identicon, title, then the provider glyph on the right (same seat as a full
-  card) plus shout-only status words (Needs you / Failed). A foreign singleton adds the fixed-width amber machine glyph to
+  provider mark. A parent of filed subagents shows `subagentMark` on line
+  three, just before the provider mark (leading on a compact row): count plus
+  worst state, with a spoken label. Not on line one: the status slot there
+  swaps its timestamp for Snooze and Settle on hover and widens, so a mark
+  beside it slid left under the pointer and a press meant for it landed on
+  Un-settle. A foreign singleton adds the fixed-width amber machine glyph to
   the line-one status cluster; grouped lane headers own repeated machine/PR
   identity. A lane with exactly one session has no redundant header and promotes
   the lane identity and PR navigation onto the card.
@@ -2051,16 +2056,17 @@ iOS Work surfaces:
   provider mark on the trailing edge, then shout-only status words. See
   [the iOS companion](../sync-and-multi-device/ios-companion.md#work-session-list-rows).
 - `apps/ios/ADE/Views/Work/WorkSpawnNesting.swift` — Swift mirror of
-  `sessionSpawnNesting.ts` (same-lane subagent filing, quiet-parent pull-up,
-  grandchild flatten, `chat-subagents:<parentId>` drawer ids, Failed-wins
-  drawer attention).
+  `sessionSpawnNesting.ts` (same-lane subagent filing under a chat parent,
+  quiet-parent pull-up, grandchildren filed under the root parent, the
+  parent's one subagent mark with Failed winning, and the Chat Info child
+  roster).
 - `apps/ios/ADE/Views/Work/WorkSessionGrouping.swift` — the by-lane (default) /
   by-status / by-time grouping, `WorkViewStateStore`, and the trailing quiet
   zone: a **Snoozed** shelf above a **Settled** shelf, both collapsed until
-  explicitly opened via an inverted `shelf-open:<id>` marker. By-lane is exempt
-  from the shelves — a settled row still belongs to its lane there, and the
-  per-lane quiet fold already handles it. Nested subagent/shell drawers come
-  from `WorkSpawnNesting.swift`.
+  explicitly opened via an inverted `shelf-open:<id>` marker. Settled rows
+  lift onto the Settled shelf in every organization, by-lane included; a
+  pinned lane keeps its settled rows and is never folded quiet. Attached-shell
+  drawers and subagent marks come from `WorkSpawnNesting.swift`.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
@@ -3074,21 +3080,40 @@ so explicitly rather than asserting a tier ADE never set.
 
 ## Dead agent shells
 
-A shell an agent started under a chat does not linger in the Work sidebar once
-it is dead. `agentShellCleanup` (wired by `ptyService`) tracks the shells this
-machine launched (`markAgentLaunched`), what was typed into them
-(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then archives
-the eligible ones. A shell is eligible only when an agent started it, it is
-attached to a chat, it has ended (not `running`/`detached`), and nobody typed
-into it. When it goes depends on how it ended: an App Control relaunch archives
-it at once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits
-until the chat settles, so a failure stays in view.
+A shell App Control launched does not linger once it is dead, and a relaunch
+does not make a new one. `agentShellCleanup` (wired by `ptyService`) tracks the
+shells this machine launched (`markAgentLaunched`), what was typed into them
+(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then deletes
+the eligible ones: the row and its transcript. A shell is eligible only when App
+Control started it (`launchedBy: "agent"`, with or without a chat), it has ended
+(not `running`/`detached`), it is not archived, and nobody typed into it. When it
+goes depends on how it ended: one replaced by a launch in a new shell goes at
+once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits until the
+chat settles, so a failure stays in view. A chatless shell's crash has no chat to
+settle, so it stays until a relaunch reuses the shell.
+
+Deletion, not archive, because hidden rows still fill every `session.list` page:
+another machine reads only the newest 60 of them, and a pile of archived App
+Control shells once pushed a live chat out of its Work list. That read now also
+passes `includeArchived: false`, so archived rows cannot use up the page either.
+
+**Relaunch reuses the shell.** When the same chat (or, chatless, no chat)
+launches again on the lane, App Control waits up to 5 seconds for the old app's
+process to exit, checks the shell is still eligible (`canRelaunchIn`: same lane
+and chat, ended, untouched, not archived), and runs the new process in that row
+(`ptyService.create` with `sessionId`, `freshRun`). `hold` keeps the sweep off the
+row in between, and launches on one lane run one at a time, so two cannot claim
+the same row. A fresh run gets a new start time, its own failure state (not the
+resume path's restored end state), the new title, and a fresh transcript: it
+waits for the old run's close work, then removes the old log, so
+`ade app-control logs` shows only the current run. The ledger marks the relaunch
+only after the new process holds the row. `ade app-control launch --new-shell`
+opts out.
 
 Typing into a shell the person owns it — `terminal.write { fromUser }` from a
-user client, or a hand resume — and it is never archived. The RPC server strips
-`fromUser` from a non-user caller, so an agent cannot claim its own shell to keep
-it around. The ledger is per machine and never replicates; nothing is ever
-deleted, only hidden.
+user client, or a hand resume — and it is never deleted or reused. The RPC
+server strips `fromUser` from a non-user caller, so an agent cannot claim its
+own shell to keep it around. The ledger is per machine and never replicates.
 
 A shell is a tool of the chat that ran it, so deleting that chat stops and
 archives its shells (`sessionService.listAttachedShellIds` /
@@ -3112,11 +3137,9 @@ Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every
 archived item across lanes, chats, and shells. A chat's attached shells are
 listed in its actions pane's **Shells** section (open, or right-click for the
-Work list's own menu) rather than as rows or a drawer in the Work list; its
-subagent drawer starts collapsed behind its full header strip — kind icon, kind
-label and count, plus failed/needs-you/running — and collapsing only hides the
-child rows; a selection that lands inside it opens it once so the selected row
-is on screen.
+Work list's own menu) rather than as rows or a drawer in the Work list. Its
+same-lane subagents are listed the same way, in the pane's **Subagents**
+section; the Work row only carries a mark with their count and worst state.
 
 ## Cross-links
 

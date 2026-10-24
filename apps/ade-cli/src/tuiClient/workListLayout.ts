@@ -4,9 +4,8 @@
  *
  * This is the same contract `drawerLayout.ts` held for the lane drawer, and it
  * exists for the same reason: the pane's rows are variable height (a session
- * card is three lines, matching the desktop SessionCard, except a nested
- * subagent which is one indented line with no blank above),
- * so a click can only be resolved by replaying the exact placement the renderer
+ * card is three lines, matching the desktop SessionCard; headers and shelves
+ * are one), so a click can only be resolved by replaying the exact placement the renderer
  * used. Render from `layout.placements`, hit-test against `layout.placements`,
  * and the two cannot drift.
  *
@@ -16,7 +15,6 @@
  *   row 2 ..              placed rows, in `WorkListModel.rows` order:
  *                           lane-header  1 line (+1 blank above, except first)
  *                           session      3 lines + 1 blank above (except first)
- *                           nested       1 line, no blank above
  *                           shelf        1 line (+1 blank above)
  *
  * Pure: no React, no terminal, no clock.
@@ -63,19 +61,9 @@ export type WorkListLayout = {
  * A session card is three lines — the desktop SessionCard is a fixed
  * 4.875rem block (where/status, title, preview+provider) and the TUI matches
  * that anatomy even when a field is empty, so hit-testing cannot drift.
- * Nested same-lane subagents and the drawer line that folds them are the
- * exception: one indented line each, glued under the parent.
  */
 export function workListRowHeight(row: WorkListRow): number {
-  if (row.kind === "session") return row.nested ? 1 : 3;
-  return 1;
-}
-
-/** Blank line above an entry so cards in a lane are not glued together. */
-export function workListRowMarginTop(row: WorkListRow, isFirst: boolean): number {
-  if (!isFirst && row.kind === "session" && row.nested) return 0;
-  if (!isFirst && row.kind === "drawer") return 0;
-  return isFirst ? 0 : 1;
+  return row.kind === "session" ? 3 : 1;
 }
 
 /**
@@ -113,7 +101,8 @@ export function computeWorkListLayout({
     let line = chromeHeader + 1 + topHint;
     for (let index = start; index < rows.length; index += 1) {
       const row = rows[index]!;
-      const marginTop = workListRowMarginTop(row, placements.length === 0);
+      // A blank line above every entry but the first, so cards are not glued together.
+      const marginTop = placements.length === 0 ? 0 : 1;
       const height = workListRowHeight(row);
       const bottomHint = index < rows.length - 1 ? 1 : 0;
       if (line + marginTop + height - 1 > chromeHeader + bodyRows - bottomHint) break;

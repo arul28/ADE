@@ -3,6 +3,7 @@ import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
   Brain,
+  Circle,
   CircleNotch,
   Clock,
   CloudArrowUp,
@@ -18,6 +19,7 @@ import {
   TreeStructure,
   UsersThree,
   Warning,
+  X,
   XCircle,
   Target,
 } from "@phosphor-icons/react";
@@ -48,7 +50,14 @@ import {
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
-import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import {
+  NESTED_SUBAGENT_STATUS_PRESENTATION,
+  isChatToolType,
+  nestedSubagentMarkLabel,
+  type NestedSubagentStatus,
+  type NestedSubagentMark,
+} from "../../../shared/sessionSpawnNesting";
+import { requestChatActionsPane } from "../chat/chatActionsPaneRequests";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
@@ -101,6 +110,7 @@ import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import {
   SESSION_TONE_DOT_CLASS,
+  SESSION_TONE_TEXT_CLASS,
   formatFutureDuration,
   sessionElapsedAnchor,
 } from "../../../shared/sessionStatusPresentation";
@@ -458,6 +468,13 @@ function SessionProviderLogoStack({
   );
 }
 
+/** The subagent mark's state glyph, beside its count. */
+const SUBAGENT_MARK_STATUS_GLYPH: Record<NestedSubagentStatus, React.ReactNode> = {
+  failed: <X size={8} weight="bold" aria-hidden />,
+  needs_you: <Circle size={7} weight="fill" aria-hidden />,
+  running: <CircleNotch size={8} weight="bold" aria-hidden />,
+};
+
 /** The launch's moving status line, isolated so progress ticks re-render only this text. */
 function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   const text = useChatLaunchStatusLine(launchId);
@@ -498,7 +515,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   laneBrowserTabs = 0,
   suppressMachineChip = false,
   suppressStatusLabel = false,
-  nestedSubagent = false,
+  subagentMark = null,
   subagentBusy = false,
 }: {
   session: TerminalSessionSummary;
@@ -614,10 +631,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    */
   suppressStatusLabel?: boolean;
   /**
-   * Compact nested-subagent drawer row: identicon + title + provider + status
-   * glyph (word only for Needs you / Failed). Distinct from a compact shell.
+   * This chat's filed subagents: they are not rows of the list, so the row
+   * carries one mark for them (count + worst state). Pressing it opens the chat
+   * on its actions pane, where they are listed.
    */
-  nestedSubagent?: boolean;
+  subagentMark?: NestedSubagentMark | null;
   /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
   subagentBusy?: boolean;
 }) {
@@ -1357,7 +1375,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       actionsEnabled={!disabledReason}
       compact={compact}
       runtimePin={runtimePin}
-      hideLabelUnlessShout={nestedSubagent}
       clockMs={statusClockMs}
     />
   );
@@ -1455,20 +1472,46 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     </button>
   ) : null;
 
-  const nestedSubagentGlyph = nestedSubagent ? (
-    <span data-testid="nested-subagent-glyph" className="inline-flex shrink-0 items-center">
-      <ChatSubagentGlyph id={session.id} color={chatSubagentColor(session.id)} size={14} />
-    </span>
+  const subagentMarkLabel = subagentMark ? nestedSubagentMarkLabel(subagentMark) : null;
+  const subagentMarkTone = subagentMark?.status
+    ? NESTED_SUBAGENT_STATUS_PRESENTATION[subagentMark.status].tone
+    : null;
+  const subagentMarkButton = subagentMark && subagentMarkLabel ? (
+    <button
+      type="button"
+      data-testid="session-subagent-mark"
+      data-subagent-status={subagentMark.status ?? undefined}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-sm text-[10px] font-medium leading-none tabular-nums transition-colors",
+        subagentMarkTone ? SESSION_TONE_TEXT_CLASS[subagentMarkTone] : "text-muted-fg/55 hover:text-fg/80",
+      )}
+      title={`${subagentMarkLabel}. Open the list`}
+      aria-label={subagentMarkLabel}
+      disabled={Boolean(disabledReason)}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        hoverCard.close();
+        // The list lives in the chat's actions pane; ask for it before the
+        // select, so a chat that mounts on this press opens on it.
+        // Only a chat files subagents (`sessionSpawnNesting`), so this row is one.
+        requestChatActionsPane(session.id);
+        onSelect(session.id, event);
+      }}
+    >
+      <UsersThree size={11} weight="bold" aria-hidden />
+      <span aria-hidden>{subagentMark.count}</span>
+      {subagentMark.status ? SUBAGENT_MARK_STATUS_GLYPH[subagentMark.status] : null}
+    </button>
   ) : null;
 
   /* COMPACT ROWS ONLY. The full row carries lineage on line 1 now, and two
      lineage indicators on one row is exactly the duplication this pass removes.
      Compact rows have no line 1 at all — dropping the glyph there would delete
      the affordance rather than move it — so the single-glyph form survives
-     here, and only here. Nested subagent rows replace this with the identicon
-     at the start of the row; they already sit under the parent. */
+     here, and only here. */
   let compactLineageGlyph: React.ReactNode = null;
-  if (!nestedSubagent && isCtoChild) {
+  if (isCtoChild) {
     compactLineageGlyph = (
       <button
         type="button"
@@ -1486,7 +1529,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         <Brain size={11} weight="duotone" />
       </button>
     );
-  } else if (!nestedSubagent && session.orchestrationParentSessionId) {
+  } else if (session.orchestrationParentSessionId) {
     compactLineageGlyph = (
       <button
         type="button"
@@ -1582,11 +1625,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       }}
     >
       {compact ? (
-        <div
-          className={cn("flex h-8 min-w-0 items-center gap-1.5", SESSION_ROW_INNER_PADDING_CLASS)}
-          data-testid={nestedSubagent ? "nested-subagent-row" : undefined}
-        >
-          {nestedSubagentGlyph}
+        <div className={cn("flex h-8 min-w-0 items-center gap-1.5", SESSION_ROW_INNER_PADDING_CLASS)}>
+          {/* Leading, for the same reason the full row puts it on line 3: the
+              status slot widens on hover (Snooze, Settle), and anything
+              between the title and that slot slides left as it does. */}
+          {subagentMarkButton}
           {titleNode}
           {compactLineageGlyph}
           {cursorCloudLink}
@@ -1701,6 +1744,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
                 slot rather than leading the card. The model name used to sit
                 before it as text; that label is gone, so the glyph alone
                 carries the provider. */}
+            {/* Not on line 1: the status slot there swaps its timestamp for
+                Snooze and Settle on hover and grows, so a mark beside it slid
+                left under the pointer and a click meant for it landed on
+                Un-settle. Nothing on this line moves on hover. */}
+            {subagentMarkButton}
             {cursorCloudLink}
             <SessionProviderLogoStack session={session} size={20} />
           </div>

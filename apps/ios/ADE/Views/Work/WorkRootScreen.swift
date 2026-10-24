@@ -907,6 +907,13 @@ struct WorkRootListScreen: View, Equatable {
         duoRetiringWide = false
       }
     }
+    // Here, not on the list: a `.task` on the list is cancelled while a chat
+    // is pushed over it, so a request made from inside a chat (Chat Info's
+    // child chat, the subagent breadcrumb's parent) waited until Back.
+    .task(id: workSessionNavigationRequestKey) {
+      guard isTabActive, workSessionNavigationRequestKey != nil else { return }
+      await handleRequestedWorkSessionNavigation()
+    }
     #if DEBUG
     .task(id: "\(duoLayout.isWide)|\(duoPreviewSelectionKey)") {
       if !duoLayout.isWide { applyDuoPreviewSelectionIfNeeded() }
@@ -942,6 +949,13 @@ struct WorkRootListScreen: View, Equatable {
     } action: { hasRail in
       if workListHasEdgeRail != hasRail { workListHasEdgeRail = hasRail }
     }
+    // The native root tab bar survives a push, so a chat would sit above the
+    // five app tabs. Any pushed Work route (chat, new chat, import) hides it.
+    // Emitted from the tab's own root, not only from the destination: a
+    // destination preference is not reliably visible to the `TabView`. A
+    // display with an edge rail keeps it: the rail is the tab bar there, and
+    // hiding it leaves an empty glass capsule under the composer.
+    .adeRootTabBarHidden(!path.isEmpty && !workListHasEdgeRail)
   }
 
   /// The Duo's inner display: two sibling navigation stacks, never one stack
@@ -1594,6 +1608,15 @@ struct WorkRootListScreen: View, Equatable {
       .equatable()
     }
     .id(route.openId)
+    // Chat Info's child chats, read from the same rows this list holds: a
+    // nested subagent is listed nowhere else, and a child on another machine
+    // keeps its namespaced lane id so opening it goes to that machine.
+    .environment(\.workChatChildRoster, workChatChildRoster(
+      parentId: route.sessionId,
+      sessions: mergedSessions,
+      chatSummaries: chatSummaries,
+      now: Date()
+    ))
     // The chat's ⋯ is the list row's own menu (Select aside), wired to the
     // same actions, so the two can never offer different things.
     .environment(\.workSessionActionsMenu, WorkSessionActionsMenuProvider { session in
@@ -1894,6 +1917,11 @@ struct WorkRootListScreen: View, Equatable {
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .onChange(of: inputs.activeProjectId) { _, projectId in
+        #if DEBUG
+        // A fixture keeps one project for its whole run (`WorkListPreviewHost`);
+        // a flicker of the active id must not pop its open chat.
+        if WorkRootPreviewFixture.active != nil { return }
+        #endif
         applyWorkViewStateScope()
         resetWorkProjectionForProjectChange(projectId)
       }
@@ -1945,10 +1973,6 @@ struct WorkRootListScreen: View, Equatable {
         }
         scheduleSessionPresentationRebuild()
         await hydrateSearchOutputBuffersIfNeeded()
-      }
-      .task(id: workSessionNavigationRequestKey) {
-        guard isTabActive, workSessionNavigationRequestKey != nil else { return }
-        await handleRequestedWorkSessionNavigation()
       }
       .task(id: workLaneNavigationRequestKey) {
         guard isTabActive, workLaneNavigationRequestKey != nil else { return }
@@ -2306,7 +2330,9 @@ struct WorkRootListScreen: View, Equatable {
     railColor: Color? = nil,
     showsDivider: Bool = false
   ) -> some View {
-    let nestedGroups = sessionPresentation.nestedGroupsByParentId[session.id] ?? []
+    // Only the shell drawer renders under a row. Nested subagents live in the
+    // parent's Chat Info; the row itself carries their mark.
+    let shellDrawer = sessionPresentation.shellDrawerByParentId[session.id]
     sessionListRow(
       session,
       compact: compact,
@@ -2318,54 +2344,46 @@ struct WorkRootListScreen: View, Equatable {
     // Rows are flush: no card, no inter-row inset. Their own vertical padding
     // is the gap, a hairline marks the boundary, and zero `listRowInsets`
     // keep the lane rail one unbroken line down the lane. The hairline goes
-    // under the subagent drawer instead when there is one, so the drawer
-    // reads as part of its parent.
-    .workRowHairline(showsDivider && nestedGroups.isEmpty)
+    // under the shell drawer instead when there is one, so the drawer reads
+    // as part of its parent.
+    .workRowHairline(showsDivider && shellDrawer == nil)
     .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
     .id(session.id)
     .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     .listRowBackground(Color.clear)
     .listRowSeparator(.hidden)
 
-    nestedChildDrawer(
-      groups: nestedGroups,
-      railColor: railColor,
-      showsDivider: showsDivider
-    )
+    if let shellDrawer {
+      nestedChildDrawer(
+        group: shellDrawer,
+        railColor: railColor,
+        showsDivider: showsDivider
+      )
+    }
   }
 
-  /// A chat's drawers start COLLAPSED (`workIsNestedDrawerCollapsed`).
-  /// Collapsed drawers share one thin line of marks under the card; an opened
-  /// drawer renders its rows below that line. Subagents before shells. Nested
-  /// subagents sit under a parent that already names the lane, so they drop
-  /// lane identity; shells keep the previous compact default.
+  /// A chat's shell drawer starts COLLAPSED (`workIsNestedDrawerCollapsed`).
+  /// Collapsed, it is one thin mark under the card; opened, its rows render
+  /// below that line in the compact form.
   @ViewBuilder
   private func nestedChildDrawer(
-    groups: [WorkSessionChildGroup],
+    group: WorkShellDrawer,
     railColor: Color?,
     showsDivider: Bool
   ) -> some View {
-    let collapsedIds = collapsedSectionIds
-    let collapsed = groups.filter {
-      workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
-    }
-    let open = groups.filter {
-      !workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
-    }
     let leadingInset = Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter)
-    if !collapsed.isEmpty {
-      WorkNestedDrawerMarks(groups: collapsed) { group in
+    if workIsNestedDrawerCollapsed(sectionId: group.collapsedSectionId, collapsedSectionIds: collapsedSectionIds) {
+      WorkNestedDrawerMark(group: group) {
         toggleNestedDrawer(group)
       }
       .padding(.leading, leadingInset)
       .padding(.bottom, 4)
-      .workRowHairline(showsDivider && open.isEmpty)
+      .workRowHairline(showsDivider)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
       .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
-    }
-    ForEach(open) { group in
+    } else {
       WorkNestedSessionSection(
         group: group,
         onCollapse: { toggleNestedDrawer(group) }
@@ -2374,8 +2392,7 @@ struct WorkRootListScreen: View, Equatable {
           sessionListRow(
             child,
             compact: true,
-            showsLaneIdentity: group.kind == .shells,
-            nestedSubagent: group.kind == .subagents,
+            showsLaneIdentity: true,
             transitionNamespace: nil
           )
           .id(child.id)
@@ -2383,7 +2400,7 @@ struct WorkRootListScreen: View, Equatable {
       }
       .padding(.leading, leadingInset)
       .padding(.bottom, 6)
-      .workRowHairline(showsDivider && group.id == open.last?.id)
+      .workRowHairline(showsDivider)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
       .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
@@ -2391,7 +2408,7 @@ struct WorkRootListScreen: View, Equatable {
     }
   }
 
-  private func toggleNestedDrawer(_ group: WorkSessionChildGroup) {
+  private func toggleNestedDrawer(_ group: WorkShellDrawer) {
     withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
       toggleCollapsed(workNestedDrawerOpenMarker(sectionId: group.collapsedSectionId))
     }
@@ -2411,7 +2428,6 @@ struct WorkRootListScreen: View, Equatable {
     _ session: TerminalSessionSummary,
     compact: Bool,
     showsLaneIdentity: Bool,
-    nestedSubagent: Bool = false,
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
@@ -2426,13 +2442,13 @@ struct WorkRootListScreen: View, Equatable {
       isArchived: archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
       compact: compact,
-      nestedSubagent: nestedSubagent,
+      subagentMark: sessionPresentation.subagentMarkByParentId[session.id],
       showsLaneIdentity: showsLaneIdentity,
       waitingOnSubagent: sessionPresentation.busySubagentParentIds.contains(session.id),
       boardCard: boardCard,
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
-      // keeps its own full-width row, and nested drawer rows their compact form.
-      duoRow: duoLayout.isWide && !boardCard && !compact && !nestedSubagent,
+      // keeps its own full-width row, and drawer shells their compact form.
+      duoRow: duoLayout.isWide && !boardCard && !compact,
       machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,

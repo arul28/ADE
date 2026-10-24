@@ -878,7 +878,7 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes, chatSessionId }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
@@ -898,6 +898,7 @@ export function createSessionService({
       where.push("s.chat_session_id = ?");
       params.push(trimmedChatSessionId);
     }
+    if (includeArchived === false) where.push("s.archived_at is null");
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
     const fetchRows = (
       extraWhere: string[] = [],
@@ -1435,7 +1436,38 @@ export function createSessionService({
     return ids;
   };
 
-  const agentShells = createAgentShellCleanup({ db, archiveSession: (sessionId) => archiveSession(sessionId) });
+  const deleteSession = (sessionId: string): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    db.run("delete from terminal_sessions where id = ?", [trimmed]);
+    statusNoteUpdatedAtById.delete(trimmed);
+    // Reap the lifecycle token with its row. ADE has been bitten before by a
+    // local table with no reaper, and every other session-keyed side table is
+    // already cascaded here.
+    settleLifecycle.forget(trimmed);
+    clearSettleResidue(trimmed);
+    // PR links are routing metadata for one chat; a link outliving its chat
+    // pins its lane's PR (the primary lane can never shed those). The row is
+    // already gone, so a failed purge must not report the delete as failed —
+    // but it still says so, because the orphan it leaves is otherwise invisible.
+    try {
+      deletePullRequestChatLinksForSessions(db, [trimmed]);
+    } catch (error) {
+      logger?.warn("sessions.pr_chat_link_purge_failed", {
+        sessionId: trimmed,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    emitChanged({ sessionId: trimmed, reason: "deleted" });
+    return true;
+  };
+
+  const agentShells = createAgentShellCleanup({ db, deleteSession });
 
   const settledAtMs = (sessionId: string): number | null => {
     const row = db.get<{ settledAt: string | null }>(
@@ -2810,36 +2842,7 @@ export function createSessionService({
       return changed;
     },
 
-    deleteSession(sessionId: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run("delete from terminal_sessions where id = ?", [trimmed]);
-      statusNoteUpdatedAtById.delete(trimmed);
-      // Reap the lifecycle token with its row. ADE has been bitten before by a
-      // local table with no reaper, and every other session-keyed side table is
-      // already cascaded here.
-      settleLifecycle.forget(trimmed);
-      clearSettleResidue(trimmed);
-      // PR links are routing metadata for one chat; a link outliving its chat
-      // pins its lane's PR (the primary lane can never shed those). The row is
-      // already gone, so a failed purge must not report the delete as failed —
-      // but it still says so, because the orphan it leaves is otherwise invisible.
-      try {
-        deletePullRequestChatLinksForSessions(db, [trimmed]);
-      } catch (error) {
-        logger?.warn("sessions.pr_chat_link_purge_failed", {
-          sessionId: trimmed,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      emitChanged({ sessionId: trimmed, reason: "deleted" });
-      return true;
-    },
+    deleteSession,
 
     async readTranscriptTail(
       transcriptPath: string,

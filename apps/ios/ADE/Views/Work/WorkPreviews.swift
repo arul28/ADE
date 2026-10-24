@@ -2114,6 +2114,14 @@ struct WorkListPreviewHost: View {
     }
     .environmentObject(drawer)
     .onAppear(perform: seed)
+    // The simulator has no machine, so the connection code clears the project
+    // catalog, and with it this fixture's project, which is in no catalog.
+    // Keep the fixture's project active, or the list behind an open chat
+    // empties and the chat is popped.
+    .onReceive(syncService.$activeProjectId) { projectId in
+      guard seeded, projectId != WorkListPreviewData.projectId else { return }
+      syncService.setActiveProjectForTesting(projectId: WorkListPreviewData.projectId, rootPath: nil)
+    }
   }
 
   private func seed() {

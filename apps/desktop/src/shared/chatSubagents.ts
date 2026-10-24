@@ -35,6 +35,8 @@ export type SubagentSnapshot = {
   costUsd?: number;
   durationMs?: number;
   lastToolName?: string;
+  /** A spawned ADE chat behind this row is waiting on the user (from the session roster). */
+  needsYou?: boolean;
 };
 
 const SUBAGENT_TASK_TYPES = new Set<NonNullable<SubagentSnapshot["taskType"]>>([

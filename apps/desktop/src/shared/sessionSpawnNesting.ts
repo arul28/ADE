@@ -11,20 +11,24 @@ import {
   type SessionStatusTone,
 } from "./sessionStatusPresentation";
 import type { TerminalSessionSummary } from "./types/sessions";
+import { pluralCount } from "./formatting";
 
 /**
  * Same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`
- * sessions) nest under their parent in the by-lane Work list, the way attached
- * shells already do. Peers stay top-level. This module is the one filing rule
- * desktop, ADE Code, and the iOS mirror consult so a demote, a quiet-parent
- * pull-up, or a grandchild flatten cannot disagree across surfaces.
+ * sessions) of a parent CHAT are filed under that parent in the by-lane Work
+ * list: they leave the top-level rows, the parent row carries one mark for
+ * them (`nestedSubagentMark`), and the parent's actions pane lists them
+ * (`filedSubagentsOf`). Peers stay top-level. This module is the one filing
+ * rule desktop, ADE Code, and the iOS mirror consult so a demote, a
+ * quiet-parent pull-up, or a grandchild flatten cannot disagree across
+ * surfaces.
  *
  * Quiet parent (snoozed / settled): not-done children (starting, running,
- * needs_you, failed, stale) promote to top-level cards. Done children stay
- * nested and follow the parent into the quiet tails.
+ * needs_you, failed, stale) stay top-level rows. Done children stay filed and
+ * follow the parent into the quiet tails.
  *
- * Grandchildren flatten into the root parent's one drawer — a compact nested
- * row cannot own a second indent.
+ * Grandchildren file under the root parent, so one mark and one pane cover a
+ * whole tree.
  */
 
 export type SpawnNestingSession = Pick<
@@ -57,15 +61,13 @@ export type SpawnNestingSession = Pick<
   | "archivedAt"
 >;
 
-type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
-
 export type SpawnNestingIndex<T extends SpawnNestingSession = SpawnNestingSession> = {
   childrenByRootParentId: Map<string, T[]>;
   nestedChildIds: Set<string>;
   nestedChildToRootParentId: Map<string, string>;
 };
 
-export type WorkNestingDrawers<T extends SpawnNestingSession = SpawnNestingSession> = {
+export type WorkNesting<T extends SpawnNestingSession = SpawnNestingSession> = {
   subagentsByParentId: Map<string, T[]>;
   nestedChildIds: Set<string>;
   nestedChildToRootParentId: Map<string, string>;
@@ -80,14 +82,6 @@ export function emptySpawnNestingIndex<
     nestedChildIds: new Set(),
     nestedChildToRootParentId: new Map(),
   };
-}
-
-export function nestedSubagentSectionId(parentId: string): string {
-  return `chat-subagents:${parentId}`;
-}
-
-export function attachedShellSectionId(parentId: string): string {
-  return `chat:${parentId}`;
 }
 
 /**
@@ -108,7 +102,8 @@ export function chatToolProvider(toolType: string | null | undefined): string | 
   return normalized === "cursor" ? "cursor" : normalized.slice(0, -"-chat".length);
 }
 
-function phaseOf(session: SpawnNestingSession, nowMs: number): CanonicalSessionPhase {
+/** A session's canonical phase, as the nesting rules read it. */
+export function spawnNestingPhase(session: SpawnNestingSession, nowMs: number = Date.now()): CanonicalSessionPhase {
   return canonicalSessionState({
     status: session.status,
     runtimeState: session.runtimeState ?? null,
@@ -129,13 +124,13 @@ function phaseOf(session: SpawnNestingSession, nowMs: number): CanonicalSessionP
 }
 
 function isQuietParent(session: SpawnNestingSession, nowMs: number): boolean {
-  const phase = phaseOf(session, nowMs);
+  const phase = spawnNestingPhase(session, nowMs);
   if (isSessionFiledAsSnoozed(session, phase, nowMs)) return true;
   return phase === "settled";
 }
 
 function isNotDone(session: SpawnNestingSession, nowMs: number): boolean {
-  const phase = phaseOf(session, nowMs);
+  const phase = spawnNestingPhase(session, nowMs);
   switch (phase) {
     case "starting":
     case "running":
@@ -182,6 +177,9 @@ function immediateSubagentParentId(
   const parent = byId.get(parentId);
   if (!parent) return null;
   if (parent.laneId !== session.laneId) return null;
+  // Only a chat lists its subagents (its actions pane). A child of a tracked
+  // CLI or a shell stays a top-level row, or nothing would show it.
+  if (!isChatToolType(parent.toolType)) return null;
   return parent.id;
 }
 
@@ -257,8 +255,8 @@ export function indexNestedSubagents<T extends SpawnNestingSession>(
 }
 
 /**
- * Attached shells (`chatSessionId`) of a nested subagent remount onto the
- * root parent's shell drawer so they do not vanish with the compact child.
+ * The chat an attached shell (`chatSessionId`) files under: its own chat, or
+ * that chat's root parent when the chat is itself a filed subagent.
  */
 export function attachedShellNestParentId(
   session: Pick<SpawnNestingSession, "id" | "chatSessionId">,
@@ -286,14 +284,14 @@ export function groupAttachedShellsByParentId<T extends SpawnNestingSession>(
   return map;
 }
 
-export function workNestingDrawers<T extends SpawnNestingSession>(
+export function buildWorkNesting<T extends SpawnNestingSession>(
   sessions: readonly T[],
   options?: {
     nowMs?: number;
     visibleParentIds?: ReadonlySet<string>;
     nestSubagents?: boolean;
   },
-): WorkNestingDrawers<T> {
+): WorkNesting<T> {
   const nestSubagents = options?.nestSubagents !== false;
   const index = nestSubagents
     ? indexNestedSubagents(sessions, options)
@@ -304,11 +302,8 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
     index.nestedChildToRootParentId,
     visibleParentIds,
   );
-  // Every attached shell is filed under its chat, so none resurfaces as a
-  // top-level card.
-  // Attached shells are filed — and only filed: the desktop draws them in the
-  // chat's actions pane now, so the drawers carry their exclusion from the
-  // top-level rows and nothing else.
+  // Attached shells and filed subagents are listed in their chat's actions
+  // pane, so here they only leave the top-level rows.
   const excludedTopLevelIds = new Set(index.nestedChildIds);
   for (const list of attachedShellsByParentId.values()) {
     for (const child of list) excludedTopLevelIds.add(child.id);
@@ -330,7 +325,7 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
  */
 export function subagentKeepsParentBusy(child: SpawnNestingSession, nowMs: number = Date.now()): boolean {
   if (child.archivedAt) return false;
-  const phase = phaseOf(child, nowMs);
+  const phase = spawnNestingPhase(child, nowMs);
   if (isSessionFiledAsSnoozed(child, phase, nowMs)) return false;
   if (phase === "starting" || phase === "running" || phase === "stale") return true;
   return (phase === "ready" || phase === "idle") && scheduledWakeState(child.nextWakeAt, nowMs) === "pending";
@@ -355,50 +350,11 @@ export function parentsWithBusySubagents<T extends SpawnNestingSession>(
   return parents;
 }
 
-export function isTopLevelWorkSession(
-  session: SpawnNestingSession,
-  rosterIds: ReadonlySet<string>,
-  nestedChildIds: ReadonlySet<string>,
-  nestedChildToRootParentId: ReadonlyMap<string, string>,
-): boolean {
-  if (nestedChildIds.has(session.id)) return false;
-  const shellParent = attachedShellNestParentId(session, nestedChildToRootParentId);
-  if (shellParent && shellParent !== session.id && rosterIds.has(shellParent)) return false;
-  return true;
-}
+export type NestedSubagentStatus = "failed" | "needs_you" | "running";
 
-function nestedSubagentDrawerAttention(
-  children: readonly SpawnNestingSession[],
-  nowMs: number = Date.now(),
-): NestedSubagentDrawerAttention {
-  let needsYou = false;
-  for (const child of children) {
-    const phase = phaseOf(child, nowMs);
-    const presentation = sessionStatusPresentation(
-      phase,
-      { snoozed: isSessionFiledAsSnoozed(child, phase, nowMs) },
-      {
-        nowMs,
-        usageLimitResume: child.usageLimitResume,
-        chatActivityMode: child.chatActivityMode,
-        nextWakeAt: child.nextWakeAt,
-        backgroundWork: child.backgroundWork,
-      },
-    );
-    if (!presentation) continue;
-    if (sessionStatusShoutsLabel(presentation)) {
-      if (presentation.tone === "red") return "failed";
-      needsYou = true;
-    }
-  }
-  return needsYou ? "needs_you" : null;
-}
-
-export type NestedDrawerStatus = "failed" | "needs_you" | "running" | null;
-
-/** How each drawer status reads on every surface: one word, one tone. */
-export const NESTED_DRAWER_STATUS_PRESENTATION: Record<
-  NonNullable<NestedDrawerStatus>,
+/** How each subagent status reads on every surface: one word, one tone. */
+export const NESTED_SUBAGENT_STATUS_PRESENTATION: Record<
+  NestedSubagentStatus,
   { label: string; tone: SessionStatusTone }
 > = {
   failed: { label: "Failed", tone: "red" },
@@ -406,20 +362,119 @@ export const NESTED_DRAWER_STATUS_PRESENTATION: Record<
   running: { label: "Running", tone: "blue" },
 };
 
+const NESTED_SUBAGENT_STATUS_RANK: Record<NestedSubagentStatus, number> = {
+  running: 1,
+  needs_you: 2,
+  failed: 3,
+};
+
 /**
- * The one state a COLLAPSED drawer shows next to its count: failed, then needs
- * you (both via `nestedSubagentDrawerAttention`), then running. Ended and done
- * children add nothing — a drawer of finished work shows only its count.
+ * One child's contribution to its parent's mark. Failed and needs you are the
+ * words the child's own row shouts (`sessionStatusShoutsLabel`), so a
+ * usage-limit resume that remaps a failed phase off red counts as nothing.
+ * Ended and done children add nothing.
  */
-export function nestedDrawerStatus(
+function nestedSubagentStatus(child: SpawnNestingSession, nowMs: number): NestedSubagentStatus | null {
+  const phase = spawnNestingPhase(child, nowMs);
+  const presentation = sessionStatusPresentation(
+    phase,
+    { snoozed: isSessionFiledAsSnoozed(child, phase, nowMs) },
+    {
+      nowMs,
+      usageLimitResume: child.usageLimitResume,
+      chatActivityMode: child.chatActivityMode,
+      nextWakeAt: child.nextWakeAt,
+      backgroundWork: child.backgroundWork,
+    },
+  );
+  if (presentation && sessionStatusShoutsLabel(presentation)) {
+    return presentation.tone === "red" ? "failed" : "needs_you";
+  }
+  return phase === "running" || phase === "starting" ? "running" : null;
+}
+
+/** The parent row's one mark for its filed subagents: how many, and the worst state. */
+export type NestedSubagentMark = {
+  count: number;
+  /** Worst child state: failed, then needs you, then running. Null when none. */
+  status: NestedSubagentStatus | null;
+  /** How many children are in that worst state. 0 when `status` is null. */
+  statusCount: number;
+};
+
+/** Null for a parent with no filed subagents. One pass over the children. */
+export function nestedSubagentMark(
   children: readonly SpawnNestingSession[],
   nowMs: number = Date.now(),
-): NestedDrawerStatus {
-  const attention = nestedSubagentDrawerAttention(children, nowMs);
-  if (attention) return attention;
+): NestedSubagentMark | null {
+  if (children.length === 0) return null;
+  let status: NestedSubagentStatus | null = null;
+  let statusCount = 0;
   for (const child of children) {
-    const phase = phaseOf(child, nowMs);
-    if (phase === "running" || phase === "starting") return "running";
+    const childStatus = nestedSubagentStatus(child, nowMs);
+    if (!childStatus) continue;
+    if (!status || NESTED_SUBAGENT_STATUS_RANK[childStatus] > NESTED_SUBAGENT_STATUS_RANK[status]) {
+      status = childStatus;
+      statusCount = 1;
+    } else if (childStatus === status) {
+      statusCount += 1;
+    }
   }
-  return null;
+  return { count: children.length, status, statusCount };
+}
+
+const MARK_STATUS_WORDS: Record<NestedSubagentStatus, [one: string, many: string]> = {
+  failed: ["failed", "failed"],
+  needs_you: ["needs you", "need you"],
+  running: ["running", "running"],
+};
+
+/** The mark's spoken form, e.g. "2 subagents, 1 needs you". */
+export function nestedSubagentMarkLabel(mark: NestedSubagentMark): string {
+  const base = pluralCount(mark.count, "subagent");
+  if (!mark.status || mark.statusCount === 0) return base;
+  const [one, many] = MARK_STATUS_WORDS[mark.status];
+  return `${base}, ${mark.statusCount} ${mark.statusCount === 1 ? one : many}`;
+}
+
+/**
+ * The subagent chats a parent's actions pane lists from the machine's session
+ * list: every session the Work list files under this parent, grandchildren
+ * included. The list leaves them out, so the pane is where they are reached. A
+ * quiet parent's unfinished children are top-level rows and are not here.
+ */
+export function filedSubagentsOf<T extends SpawnNestingSession>(
+  sessions: readonly T[],
+  parentId: string | null | undefined,
+  nowMs: number = Date.now(),
+): T[] {
+  const id = parentId?.trim();
+  if (!id || sessions.length === 0) return [];
+  return indexNestedSubagents(sessions, { nowMs }).childrenByRootParentId.get(id) ?? [];
+}
+
+/** The actions-pane status of a child chat with this canonical phase. */
+export function childChatPaneStatus(
+  phase: CanonicalSessionPhase,
+): "running" | "completed" | "failed" | "stopped" {
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+    case "needs_you":
+      return "running";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    case "ready":
+    case "idle":
+    case "ended":
+    case "settled":
+      return "completed";
+    default: {
+      const exhaustive: never = phase;
+      return exhaustive;
+    }
+  }
 }

@@ -9,14 +9,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
+import { cdpUrl, findPage, navigateStatement, positionalArgs, useHashRoutes } from "./target.mjs";
 const [runId, routesArg, idleArg] = positionalArgs();
 const routes = routesArg.split(",");
 const idleSecs = Number(idleArg ?? 12);
 const eventsPath = join(homedir(), ".ade", "perf-runs", runId, "events.jsonl");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const list = await (await fetch("http://127.0.0.1:9222/json/list")).json();
+const list = await (await fetch(cdpUrl("/json/list"))).json();
 const page = findPage(list);
 const hash = useHashRoutes(page);
 const ws = new WebSocket(page.webSocketDebuggerUrl); let id = 1; const pend = new Map();

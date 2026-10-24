@@ -5,11 +5,9 @@ import {
   emptySpawnNestingIndex,
   groupAttachedShellsByParentId,
   indexNestedSubagents,
-  isTopLevelWorkSession,
-  nestedDrawerStatus,
-  nestedSubagentSectionId,
+  nestedSubagentMark,
   parentsWithBusySubagents,
-  workNestingDrawers,
+  buildWorkNesting,
 } from "./sessionSpawnNesting";
 
 const NOW = Date.parse("2026-09-21T12:00:00.000Z");
@@ -86,7 +84,7 @@ describe("indexNestedSubagents", () => {
     expect(index.nestedChildIds.size).toBe(0);
   });
 
-  it("flattens grandchildren into the root parent's drawer", () => {
+  it("files grandchildren under the root parent", () => {
     const root = sess({ id: "root" });
     const mid = sess({
       id: "mid",
@@ -239,35 +237,7 @@ describe("attached shells of nested subagents", () => {
   });
 });
 
-describe("isTopLevelWorkSession", () => {
-  it("counts a parent plus nested swarm as one top-level unit", () => {
-    const parent = sess({ id: "parent" });
-    const child = sess({
-      id: "child",
-      spawnKind: "subagent",
-      orchestrationParentSessionId: "parent",
-    });
-    const shell = sess({
-      id: "shell",
-      toolType: "shell",
-      chatSessionId: "parent",
-    });
-    const roster = [parent, child, shell];
-    const index = indexNestedSubagents(roster, { nowMs: NOW });
-    const rosterIds = new Set(roster.map((s) => s.id));
-    const topLevel = roster.filter((session) =>
-      isTopLevelWorkSession(
-        session,
-        rosterIds,
-        index.nestedChildIds,
-        index.nestedChildToRootParentId,
-      ),
-    );
-    expect(topLevel.map((s) => s.id)).toEqual(["parent"]);
-  });
-});
-
-describe("nestedDrawerStatus", () => {
+describe("nestedSubagentMark", () => {
   const needsYou = sess({ id: "ask", attentionRequestedAt: NOW_ISO });
   // A failed chat is resting: `runtimeState` is the live projection, and a
   // live turn would outrank the marker (see canonicalSessionState).
@@ -281,7 +251,7 @@ describe("nestedDrawerStatus", () => {
     ["running when nothing asks", [ended, running], "running"],
     ["nothing for finished work", [ended], null],
   ] as const)("shows %s", (_label, children, expected) => {
-    expect(nestedDrawerStatus([...children], NOW)).toBe(expected);
+    expect(nestedSubagentMark([...children], NOW)?.status ?? null).toBe(expected);
   });
 
   it("does not shout Failed for a usage-limit resume", () => {
@@ -301,8 +271,8 @@ describe("nestedDrawerStatus", () => {
         updatedAt: NOW_ISO,
       },
     });
-    expect(nestedDrawerStatus([parked], NOW)).toBe(null);
-    expect(nestedDrawerStatus([{ ...parked, usageLimitResume: null }], NOW)).toBe("failed");
+    expect(nestedSubagentMark([parked], NOW)?.status ?? null).toBe(null);
+    expect(nestedSubagentMark([{ ...parked, usageLimitResume: null }], NOW)?.status ?? null).toBe("failed");
   });
 });
 
@@ -335,12 +305,6 @@ describe("parentsWithBusySubagents", () => {
   });
 });
 
-describe("nestedSubagentSectionId", () => {
-  it("is distinct from the shell drawer key", () => {
-    expect(nestedSubagentSectionId("p1")).toBe("chat-subagents:p1");
-  });
-});
-
 describe("emptySpawnNestingIndex", () => {
   it("returns a fresh map so later writes cannot poison other callers", () => {
     const first = emptySpawnNestingIndex();
@@ -352,7 +316,7 @@ describe("emptySpawnNestingIndex", () => {
   });
 });
 
-describe("workNestingDrawers", () => {
+describe("buildWorkNesting", () => {
   it("sorts nested children by startedAt then id", () => {
     const parent = sess({ id: "parent", startedAt: "2026-09-21T10:00:00.000Z" });
     const later = sess({
@@ -367,11 +331,11 @@ describe("workNestingDrawers", () => {
       orchestrationParentSessionId: "parent",
       startedAt: "2026-09-21T11:00:00.000Z",
     });
-    const drawers = workNestingDrawers([parent, later, earlier], { nowMs: NOW });
-    expect(drawers.subagentsByParentId.get("parent")?.map((s) => s.id)).toEqual([
+    const nesting = buildWorkNesting([parent, later, earlier], { nowMs: NOW });
+    expect(nesting.subagentsByParentId.get("parent")?.map((s) => s.id)).toEqual([
       "earlier",
       "later",
     ]);
-    expect([...drawers.excludedTopLevelIds].sort()).toEqual(["earlier", "later"]);
+    expect([...nesting.excludedTopLevelIds].sort()).toEqual(["earlier", "later"]);
   });
 });

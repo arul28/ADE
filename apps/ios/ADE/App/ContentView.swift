@@ -66,7 +66,6 @@ struct ContentView: View {
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.duoLayout) private var duo
 
   /// One spring for the top banner stack (connect toast + update banner), so
   /// the two cannot slide at different speeds when they overlap. Reduce Motion
@@ -341,7 +340,7 @@ struct ContentView: View {
   private var workTab: some TabContent<RootTab> {
     Tab(value: RootTab.work) {
       WorkTabView(isActive: selectedTab == .work)
-        .duoHidesTabBar(duo.isWide)
+        .adeRootTabBarVisibility()
     } label: {
       Label("Work", systemImage: "terminal")
     }
@@ -353,7 +352,7 @@ struct ContentView: View {
   private var lanesTab: some TabContent<RootTab> {
     Tab(value: RootTab.lanes) {
       LanesTabShell(isActive: selectedTab == .lanes)
-        .duoHidesTabBar(duo.isWide)
+        .adeRootTabBarVisibility()
     } label: {
       Label("Lanes", systemImage: "square.stack.3d.up")
     }
@@ -362,7 +361,7 @@ struct ContentView: View {
   private var prsTab: some TabContent<RootTab> {
     Tab(value: RootTab.prs) {
       PRsTabShell(isActive: selectedTab == .prs)
-        .duoHidesTabBar(duo.isWide)
+        .adeRootTabBarVisibility()
     } label: {
       Label("PRs", systemImage: "arrow.triangle.pull")
     }
@@ -371,7 +370,7 @@ struct ContentView: View {
   private var filesTab: some TabContent<RootTab> {
     Tab(value: RootTab.files) {
       FilesTabView(isActive: selectedTab == .files)
-        .duoHidesTabBar(duo.isWide)
+        .adeRootTabBarVisibility()
     } label: {
       Label("Files", systemImage: "doc.text")
     }
@@ -380,7 +379,7 @@ struct ContentView: View {
   private var ctoTab: some TabContent<RootTab> {
     Tab(value: RootTab.cto) {
       CtoRootScreen(isTabActive: selectedTab == .cto)
-        .duoHidesTabBar(duo.isWide)
+        .adeRootTabBarVisibility()
     } label: {
       // Not an SF Symbol: `CtoMark` is the SAME drawing the desktop rail
       // uses, bundled as a template asset. `Label(_:image:)` keeps this row's
@@ -586,6 +585,37 @@ private struct DuoAppNavigationSync: ViewModifier {
         if $selectedTab.wrappedValue != tab { $selectedTab.wrappedValue = tab }
       }
     }
+  }
+}
+
+/// The root tab bar is hidden while a tab shows a detail screen. The tab's own
+/// content asks for it with `.adeRootTabBarHidden()` (a chat, a new chat, a
+/// file detail, a terminal); this reads that preference at the tab root and
+/// applies the ONE visibility the native `TabView` honors, because a native
+/// tab bar survives a push and would otherwise sit under a chat's composer.
+/// `duo.isWide` also hides it on the inner display, where the edge bar carries
+/// the tabs. The bottom bar follows `duo.isWide` alone: it holds the inner
+/// display's tabs, and a detail screen hiding the tab bar must not bring it
+/// up on a phone.
+private struct ADERootTabBarVisibilityModifier: ViewModifier {
+  @Environment(\.duoLayout) private var duo
+  @State private var detailHidesTabBar = false
+
+  func body(content: Content) -> some View {
+    content
+      .onPreferenceChange(ADERootTabBarHiddenPreferenceKey.self) { hidden in
+        if detailHidesTabBar != hidden { detailHidesTabBar = hidden }
+      }
+      .toolbar(duo.isWide || detailHidesTabBar ? .hidden : .automatic, for: .tabBar)
+      .toolbar(duo.isWide ? .automatic : .hidden, for: .bottomBar)
+  }
+}
+
+extension View {
+  /// Apply once per root tab, on the tab's own content. See
+  /// `ADERootTabBarVisibilityModifier`.
+  func adeRootTabBarVisibility() -> some View {
+    modifier(ADERootTabBarVisibilityModifier())
   }
 }
 
