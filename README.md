@@ -13,7 +13,8 @@
   <a href="https://ade-app.dev/download/windows">Windows</a> ·
   <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
   <a href="https://app.ade-app.dev">Web</a> ·
-  <a href="https://ade-app.dev/docs">Docs</a>
+  <a href="https://ade-app.dev/docs">Docs</a> ·
+  <a href="https://www.ade-app.dev/docs/changelog">Changelog</a>
 </p>
 
 <p align="center">
