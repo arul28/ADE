@@ -209,8 +209,8 @@ export type ModelPickerContentProps = {
   /**
    * Fast mode is a single bit on the surface, and it belongs to whichever model
    * is selected — so only the selected row ever draws an "on" chip. Without
-   * `onFastModeChange` the surface has not opted in and no row shows a fast
-   * affordance.
+   * `onFastModeChange` (or `onFastModeLocked` on a locked account) the surface
+   * has not opted in and no row shows a fast affordance.
    */
   fastMode?: boolean;
   /** The selected model's Fast tier, when Fast is on. */
@@ -223,6 +223,12 @@ export type ModelPickerContentProps = {
    */
   effectiveFastTier?: string | null;
   onFastModeChange?: (next: boolean, tier?: FastTier) => void;
+  /**
+   * Set when the account does not allow Fast. The Fast chips still show, but a
+   * press that would turn Fast on calls this instead, before anything is
+   * selected or recorded as recent.
+   */
+  onFastModeLocked?: () => void;
   /** Why Fast cannot run with the selected model's other picks; shown on its chip. */
   fastModeUnavailableReason?: string | null;
   serviceTierMode?: boolean;
@@ -258,6 +264,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   registryFilter,
   fastMode = false,
   onFastModeChange,
+  onFastModeLocked,
   fastTier = null,
   ultrafastEnabled = false,
   effectiveFastTier = null,
@@ -809,13 +816,15 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   /**
    * One press on a non-selected row's chip means "use this model, fast" — it
    * commits the selection and turns fast on. On the selected row it is a plain
-   * toggle that leaves both the selection and the open popover alone.
+   * toggle that leaves both the selection and the open popover alone. On a
+   * locked account a press that would turn Fast on calls `onFastModeLocked`
+   * instead, after the sign-in check and before anything is selected.
    */
   const handleFastChipChange = useCallback(
     (modelId: string, next: boolean, tier?: FastTier) => {
       const model = expandedModels.find((m) => m.id === modelId);
       if (!model || !modelSupportsFastMode(model)) return;
-      if (modelId === value) {
+      if (modelId === value && !onFastModeLocked) {
         // Fast-only callers keep the one-argument call they always got.
         if (next && tier === "ultrafast") onFastModeChange?.(true, "ultrafast");
         else onFastModeChange?.(next);
@@ -826,12 +835,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
+      if (onFastModeLocked) {
+        if (next) onFastModeLocked();
+        return;
+      }
       recordUsage(modelId);
       // Model + service tier are one selection. Emitting a single change keeps
       // controlled consumers from rebuilding two patches from the same render.
       onSelect(modelId, { fastMode: true });
     },
-    [expandedModels, hideSignInFamilies, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onFastModeChange, onFastModeLocked, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   /**
@@ -868,6 +881,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         if (!hideSignInFamilies?.includes(family)) onOpenSignIn?.(family, model.authTypes);
         return;
       }
+      if (next === "fast" && onFastModeLocked) {
+        onFastModeLocked();
+        return;
+      }
       recordUsage(modelId);
       if (modelId === value) {
         onServiceTierChange?.(modelId, next);
@@ -875,7 +892,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         onSelect(modelId, { fastMode: next === "fast", serviceTier: next });
       }
     },
-    [expandedModels, hideSignInFamilies, isAvailableForUse, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
+    [expandedModels, hideSignInFamilies, isAvailableForUse, onFastModeLocked, onOpenSignIn, onSelect, onServiceTierChange, recordUsage, value],
   );
 
   const handleCopyId = useCallback((modelId: string) => {
@@ -1217,7 +1234,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         fastTier={isActive ? fastTier : null}
                         ultrafastEnabled={ultrafastEnabled}
                         effectiveFastTier={effectiveFastTier}
-                        {...(!serviceTierMode && onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
+                        {...(!serviceTierMode && (onFastModeChange || onFastModeLocked) ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(isActive && fastModeUnavailableReason ? { fastUnavailableReason: fastModeUnavailableReason } : {})}
                         {...(serviceTierMode ? {
                           serviceTierMode: true,

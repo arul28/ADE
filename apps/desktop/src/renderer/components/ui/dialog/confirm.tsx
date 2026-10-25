@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { NoticeTone } from "../notice/noticeTones";
+import { noticeTone, type NoticeTone } from "../notice/noticeTones";
 import { Dialog } from "./Dialog";
 
 /**
@@ -33,8 +33,12 @@ export type ConfirmDialogOptions = {
   tone?: NoticeTone;
   /** Deletes, discards and resets: red confirm button. */
   destructive?: boolean;
-  /** Show the tone icon tile. Default: shown when `tone` is set or `destructive`. */
-  icon?: boolean;
+  /**
+   * The icon tile: `true` for the tone's glyph, a node for the feature's own
+   * glyph. Default: shown when `tone` is set or `destructive`. A shown tile
+   * also tints the panel's edge with the tone, as a notice card does.
+   */
+  icon?: ReactNode | boolean;
   /**
    * Withdraw the question: aborting closes the dialog and resolves `false`
    * (and the checkbox's default). For confirms that stop applying while open,
@@ -295,6 +299,7 @@ function ConfirmDialogView({
   onResult: (result: CheckboxConfirmResult) => void;
 }): JSX.Element {
   const tone: NoticeTone = options.tone ?? (options.destructive ? "error" : "accent");
+  const icon = options.icon ?? Boolean(options.tone || options.destructive);
   const [checked, setChecked] = useState(() => defaultChecked(options));
   const settle = (confirmed: boolean) => onResult({ confirmed, checked });
   const checkboxes = options.checkboxes ?? [];
@@ -326,7 +331,9 @@ function ConfirmDialogView({
       layer="nestedDialog"
       size="sm"
       tone={tone}
-      icon={(options.icon ?? Boolean(options.tone || options.destructive)) || undefined}
+      icon={icon || undefined}
+      // A toned confirm wears the notice card's faint tone edge too.
+      {...(icon ? { panelStyle: { border: `1px solid ${noticeTone(tone).edge}` } } : {})}
       title={options.title}
       description={options.message}
       hideClose

@@ -757,6 +757,59 @@ describe("ModelPicker", () => {
     expect(onServiceTierChange).toHaveBeenLastCalledWith(null);
   });
 
+  it.each([
+    { press: "the selected row's Fast chip", rowId: () => FAST_GPT.id, serviceTierMode: false },
+    { press: "another row's Fast chip", rowId: () => FAST_GPT_ALT.id, serviceTierMode: false },
+    { press: "another row's fast service tier", rowId: () => "cursor/composer-2.6-alt", serviceTierMode: true },
+  ])("never turns Fast on for a locked account: $press asks for Settings instead", async ({ rowId, serviceTierMode }) => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    const onServiceTierChange = vi.fn();
+    const onFastModeLocked = vi.fn();
+    const tiered = (id: string): ModelDescriptor => ({
+      ...FAST_GPT,
+      id,
+      shortId: id.slice("cursor/".length),
+      displayName: id,
+      providerRoute: "cursor-sdk",
+      providerModelId: id.slice("cursor/".length),
+      serviceTiers: ["fast", "standard"],
+    });
+    const models = serviceTierMode
+      ? [tiered("cursor/composer-2.6"), tiered("cursor/composer-2.6-alt")]
+      : [FAST_GPT, FAST_GPT_ALT];
+    render(
+      <ModelPicker
+        value={models[0]!.id}
+        onChange={onChange}
+        models={models}
+        fastMode={false}
+        fastModeAllowed={false}
+        onFastModeLocked={onFastModeLocked}
+        {...(serviceTierMode
+          ? { serviceTierMode: true, serviceTier: null, onServiceTierChange }
+          : { onFastModeChange })}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    await user.click(trigger);
+
+    const row = await findModelRow(rowId());
+    const control = serviceTierMode
+      ? row.querySelector<HTMLButtonElement>('[data-model-picker-service-tier="true"]')
+      : await within(row).findByRole("button", { name: /Fast mode for/i });
+    expect(control, "the locked account still sees the Fast control").toBeTruthy();
+    await user.click(control!);
+
+    expect(onFastModeLocked).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onFastModeChange).not.toHaveBeenCalled();
+    expect(onServiceTierChange).not.toHaveBeenCalled();
+    expect(recentStore).toEqual([]);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("omits the fast affordance entirely when onFastModeChange is not supplied", async () => {
     const user = userEvent.setup();
     render(

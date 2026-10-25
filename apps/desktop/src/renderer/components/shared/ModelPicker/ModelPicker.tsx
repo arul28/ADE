@@ -109,8 +109,8 @@ export type ModelPickerProps = {
   /**
    * Fast mode lives inside the picker (a per-row affordance plus a " Fast"
    * suffix on the trigger) so every surface that mounts a ModelPicker gets it
-   * without building its own chip. Omitting `onFastModeChange` renders no fast
-   * affordance at all.
+   * without building its own chip. Omitting `onFastModeChange` (and, on a
+   * locked account, `onFastModeLocked`) renders no fast affordance at all.
    */
   fastMode?: boolean;
   /**
@@ -144,13 +144,16 @@ export type ModelPickerProps = {
    */
   fastModeUnavailableReason?: string | null;
   /**
-   * Whether this ADE account allows Fast at all. False keeps the selector's
-   * Fast half out of the popover and renders a muted lightning beside the
-   * trigger that leads to Settings instead of turning anything on. Absent means
-   * allowed, which is what older surfaces and older hosts assume.
+   * Whether this ADE account allows Fast at all. False never turns Fast on:
+   * without `onFastModeLocked` the popover has no Fast half, and with it the
+   * Fast chips stay but call `onFastModeLocked` instead. Absent means allowed,
+   * which is what older surfaces and older hosts assume.
    */
   fastModeAllowed?: boolean;
-  /** Where the locked lightning goes: the Fast-mode row in Settings. */
+  /**
+   * Called when the user tries to turn Fast on while the account does not
+   * allow it. The popover closes first; the caller asks to open Settings.
+   */
   onFastModeLocked?: () => void;
   /** Cursor Cloud's nullable three-state service-tier control. */
   serviceTierMode?: boolean;
@@ -458,16 +461,34 @@ export const ModelPicker = memo(function ModelPicker({
     [availableSet],
   );
 
+  // A locked account keeps the Fast chips, but pressing one asks the caller to
+  // send the user to Settings instead of turning anything on.
+  const fastModeLocked = !fastModeAllowed && onFastModeLocked != null;
+  const handleFastModeLocked = useCallback(() => {
+    setOpen(false);
+    onFastModeLocked?.();
+  }, [onFastModeLocked]);
+
   const handleSelect = useCallback(
     (modelId: string, options?: ModelPickerSelection) => {
-      if (options) {
-        onChange(modelId, options);
+      // The permission, not the callback, is the lock: a selection that asks
+      // for Fast on a locked account goes through at Standard.
+      const asksForFast = options != null && (options.fastMode || options.serviceTier === "fast");
+      const selection = !fastModeAllowed && asksForFast
+        ? {
+          ...options,
+          fastMode: false,
+          ...(options.serviceTier === "fast" ? { serviceTier: "standard" as const } : {}),
+        }
+        : options;
+      if (selection) {
+        onChange(modelId, selection);
       } else {
         onChange(modelId);
       }
       setOpen(false);
     },
-    [onChange],
+    [fastModeAllowed, onChange],
   );
 
   const handleRequestClose = useCallback(() => {
@@ -504,7 +525,6 @@ export const ModelPicker = memo(function ModelPicker({
   const legacyFastChip = fastModeAllowed && !onFastModeChange && typeof onFastModeToggle === "function";
   const legacyFastSupported = legacyFastChip
     && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
-  const lockedFastSupported = fastModeSupported ?? modelSupportsFastMode(selectedModel);
   const serviceTierSupported = serviceTierMode
     && (modelSupportsServiceTier(selectedModel, "fast") || modelSupportsServiceTier(selectedModel, "standard"));
   // A locked account shows Standard even if the chat's stored cloud tier is
@@ -586,6 +606,7 @@ export const ModelPicker = memo(function ModelPicker({
                 effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange && fastModeAllowed ? { onFastModeChange } : {})}
+                {...(fastModeLocked ? { onFastModeLocked: handleFastModeLocked } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
@@ -612,25 +633,6 @@ export const ModelPicker = memo(function ModelPicker({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-      {!fastModeAllowed && lockedFastSupported && onFastModeLocked ? (
-        <button
-          type="button"
-          data-model-picker-fast-locked="true"
-          aria-label="Fast mode is off for your account. Open Settings to turn it on."
-          title="Fast mode is off for your account. Click to turn it on."
-          onClick={onFastModeLocked}
-          className={cn(
-            "inline-flex shrink-0 items-center justify-center rounded-md border font-sans font-semibold transition-colors",
-            compact
-              ? "ade-chat-composer-fast-toggle h-6 gap-0.5 px-1.5 text-[9px]"
-              : "h-8 gap-1 px-2 text-[11px]",
-            "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/45 hover:border-fg/[0.14] hover:bg-fg/[0.05] hover:text-muted-fg/75",
-          )}
-        >
-          <Lightning size={compact ? 10 : 13} weight="regular" />
-          <span className={cn(compact ? "ade-chat-composer-fast-label" : undefined)}>Fast</span>
-        </button>
-      ) : null}
       {legacyFastSupported ? (
         <LegacyFastModeButton
           active={fastModeOn}
