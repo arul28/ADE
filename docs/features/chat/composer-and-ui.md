@@ -976,15 +976,16 @@ chat pane mount, which happens either way.
   pick as well, and are harder to talk into a pick from inside the prompt.
   Jev answers what this user would want. The chip shows only when the pick
   is clearly off: another model Jev is at least 0.7 sure of, or an effort
-  Jev puts at least 0.7 probability on being two or more levels away. A
-  model the user picked by hand is never moved to a weaker one, and no model
-  is moved up for a request Jev puts at the lowest effort. Asked only what
+  Jev puts at least 0.7 probability on being two or more levels away. This
+  question only suggests a model the catalogue rates stronger (both
+  intelligence scores known): it sees model names, not how hard the request
+  is, so it would send real work to a small model the user once used. No model is moved up for a request Jev puts at the lowest effort. Asked only what
   the user would pick, Jev copies them (five "say hello" chats on Opus give
   Opus again), so a third question, `cheapest`, asks for the cheapest model
   that does the request well, with each model's intelligence index and
   price from the catalogue (`HintChoice.facts`). Alone it sends real work to
-  the smallest model too, so it shows (`cheaperChoice`, even over a model
-  picked by hand) only at 0.9 confidence or more, on a request Jev puts at
+  the smallest model too, so it shows (`cheaperChoice`, the only path to a
+  weaker model) only at 0.9 confidence or more, on a request Jev puts at
   the lowest effort, for a weaker model than the current one, and when a
   fourth question, `wouldTake` (noul), puts at least 0.5 on this user taking
   a cheaper model for this request. Jev answers it from the user's last five

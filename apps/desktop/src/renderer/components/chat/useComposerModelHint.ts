@@ -94,8 +94,6 @@ export type ComposerModelHintArgs = {
    * settings differ) must not share one answer.
    */
   ownerBinding: OpenProjectBinding | null;
-  /** The user picked this model by hand: it is only ever suggested a stronger model. */
-  modelChosen: boolean;
   /** True whenever the picker itself could not change the model (a turn running, a locked or fixed model). */
   hidden: boolean;
   /**
@@ -131,7 +129,6 @@ export function useComposerModelHint({
   allowedModelIds,
   pin,
   ownerBinding,
-  modelChosen,
   hidden,
   effortPickedByHand,
   onModelChange,
@@ -237,10 +234,9 @@ export function useComposerModelHint({
       catalog: answered.catalog,
       current,
       currentEffort: reasoningEffort,
-      modelChosen,
       fromHistory: answered.fromHistory,
     });
-  }, [answered, modelId, reasoningEffort, modelChosen, outsideChoices]);
+  }, [answered, modelId, reasoningEffort, outsideChoices]);
 
   // An answer about other text never shows under this text.
   const fresh = answered != null && changeShare(answered.text, text) < MIN_CHANGE_SHARE;
