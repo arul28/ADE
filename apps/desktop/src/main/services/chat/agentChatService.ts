@@ -1235,7 +1235,7 @@ import {
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
-import { isSameGitRepository, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { gitRemoteIdentity, isSameGitRepository, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
@@ -50394,7 +50394,9 @@ export function createAgentChatService(args: {
     if (
       current.branchRef !== args.capsule.source.branchRef
       || current.headSha !== args.capsule.source.headSha
-      || !isSameGitRepository(current.originUrl, args.capsule.source.originUrl)
+      // Both origins are this machine's (the capsule was built here), so both
+      // resolve aliases locally.
+      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(args.capsule.source.originUrl)
     ) {
       throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }

@@ -213,7 +213,8 @@ function storeLookup(key: string, result: SshConfigLookup): void {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  const retrySoon = result.failed || (result.missing && kept !== result);
+  // Missing ssh retries soon too, so a newly installed ssh is used promptly.
+  const retrySoon = result.failed || result.missing;
   cache.set(key, { ...kept, expiresAt: Date.now() + (retrySoon ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
 }
 
@@ -226,7 +227,8 @@ function resolveSshHostname(remote: SshRemote): Promise<string | null> {
   const lookup = runSshConfigLookup(remote)
     .then((result) => {
       storeLookup(key, result);
-      return result.hostname;
+      // The kept answer: a failed refresh still returns the last good one.
+      return cache.get(key)?.hostname ?? result.hostname;
     })
     .finally(() => {
       inFlight.delete(key);
