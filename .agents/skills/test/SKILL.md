@@ -60,9 +60,10 @@ the findings from the diff and say that quality evidence was unavailable.
 
 The suite is about 25,000 tests. Most of them test real behavior, but the
 weak ones cluster in "regression:" and "no longer" tests written to satisfy
-a finding. These rules stop that. They are the same rules as **Writing tests** in
-`AGENTS.md` and `CLAUDE.md`, which every agent follows while it works; this
-skill enforces them on the branch.
+a finding. These rules stop that. This list is the one copy: `AGENTS.md`
+points every agent here before it writes or edits a test, and this skill
+enforces it on the branch. A test that breaks one is a defect even when it
+passes.
 
 - **Tests come after validation.** This skill is where new tests are written.
   The work phase validated the change by hand, in the app, or with an agent,
@@ -99,6 +100,16 @@ skill enforces them on the branch.
   cross-machine, IPC or sync contract a caller depends on — and no existing
   test may already catch its failure. UI layout, copy, wiring, render-only
   checks, and one past bug instance do not qualify. Most branches add none.
+- **Test through the public seam:** the exported function, the IPC handler,
+  the service API, what the user sees and does.
+- **Mock only at process boundaries:** file system, network, child processes,
+  Electron APIs, IPC. Never mock the module under test.
+- **Wait on events, receipts, promises or fake timers, never wall-clock
+  sleeps.** A test that needs a `sleep` or a raised timeout to pass is wrong;
+  fix the seam.
+- **Flaky tests: drop by default.** Keep one only when it guards a real
+  contract nothing else covers, and then fix the root cause (never a longer
+  timeout or a sleep). Otherwise delete it and say which and why in the PR.
 - **Double-check every test you wrote.** Revert the fix locally or break the
   behavior on purpose and confirm the test fails. A test that still passes
   proves nothing — delete it.

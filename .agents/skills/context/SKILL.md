@@ -225,7 +225,7 @@ plane · app/browser/iOS-sim/macOS-VM control · Linear (via `ade`) · computer-
 + proof drawer. Depth → the matching `ade-*` skill.
 **Dev loop:** /context → work → /quality → /test → /ship. Utilities: /audit,
 /finalize, /optimize, /release, /update-providers. Open each skill when you reach it.
-**Tests:** [commands for this area — see AGENTS.md "Validation"]
+**Tests:** [commands for this area — see AGENTS.md "Tests and checks"]
 
 Ready to assist with [feature].
 ```

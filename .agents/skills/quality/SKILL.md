@@ -330,7 +330,7 @@ Cite the doc section in the finding.
    reasons do that.
 
    **Check pass — once, here.** Do not typecheck or run tests after each fix in
-   steps 6–7. When the last fix is in, run one pass (see **Running checks** in
+   steps 6–7. When the last fix is in, run one pass (see **Tests and checks** in
    `AGENTS.md`): the typecheck of each package the branch touched, and the test
    files that cover the touched code (colocated `*.test.ts(x)` and the tests
    that import it). Never the full suite or all shards; CI is the full gate.
