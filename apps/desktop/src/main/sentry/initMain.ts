@@ -21,8 +21,9 @@ import {
   shouldEnableSentry,
 } from "../../shared/sentry/config";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
+import { registerDesktopSentryDiagnostics } from "./desktopDiagnostics";
 import { installIpcErrorCapture } from "./ipcCapture";
-import { sentryMachineContext, sentryProcessTags } from "./machineContext";
+import { sentryMachineContext, sentryProcessTags, startNodeSentryDiagnostics } from "./machineContext";
 import { hasPriorTelemetryOptOut } from "./priorOptOut";
 
 let started = false;
@@ -62,6 +63,8 @@ export function initMainSentry(options: {
   connectSentry(Sentry);
   Sentry.setTags(sentryProcessTags("main"));
   Sentry.setContext("machine", { ...sentryMachineContext(), locale: app.getLocale?.() ?? null });
+  startNodeSentryDiagnostics();
+  registerDesktopSentryDiagnostics();
   installIpcErrorCapture(options.ipcLabel);
   return true;
 }

@@ -194,3 +194,8 @@ export function resolveMachineAdeLayout(
     personalChatsWorkspaceRoot: path.join(adeDir, "personal-chats", "workspaces"),
   };
 }
+
+/** The brain's machine log: every brain on this ADE home writes it, and error reports read its tail. */
+export function brainLogPath(layout: Pick<MachineAdeLayout, "runtimeDir"> = resolveMachineAdeLayout()): string {
+  return path.join(layout.runtimeDir, "brain.jsonl");
+}

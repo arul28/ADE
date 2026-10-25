@@ -96,6 +96,11 @@ import {
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import {
+  registerSentryDiagnosticAttachment,
+  registerSentryDiagnosticContext,
+} from "../../desktop/src/shared/sentry/diagnostics";
+import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -26217,7 +26222,7 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout, isSyncCapableAdeHome },
+    { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },
     { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
@@ -26253,7 +26258,7 @@ async function runServe(
 
   const layout = resolveMachineAdeLayout();
   const headlessProjectLogger: Logger = createBrainLogger(
-    path.join(layout.runtimeDir, "brain.jsonl"),
+    brainLogPath(layout),
   );
   reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
   const {
@@ -27109,6 +27114,16 @@ async function runServe(
     },
   });
   keepAwakeService?.start();
+  // What a brain report needs to explain a missing project or a lost scope
+  // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
+  // when Sentry is off.
+  const unregisterBrainDiagnostics = [
+    registerSentryDiagnosticContext("brain_state", () => ({
+      role: options.role,
+      ...scopeRegistry.diagnosticSnapshot(),
+    })),
+    registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry.diagnosticPaths())),
+  ];
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
@@ -27497,6 +27512,8 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
+    // A stopped brain must not describe itself in later reports from this process.
+    for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;

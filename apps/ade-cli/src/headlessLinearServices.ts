@@ -89,7 +89,7 @@ import {
   readGitHubRateLimitState,
 } from "../../desktop/src/main/services/github/githubRateLimit";
 import { createBrainLogger } from "./services/runtime/brainLogger";
-import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { brainLogPath } from "./services/projects/machineLayout";
 import type { AdeRuntimePaths } from "./bootstrap";
 import {
   createHeadlessLinearCredentialService,
@@ -773,7 +773,7 @@ let sharedBrainRequestAccountingLogger: Logger | null = null;
 function getBrainRequestAccountingLogger(): Logger {
   if (!sharedBrainRequestAccountingLogger) {
     sharedBrainRequestAccountingLogger = createBrainLogger(
-      path.join(resolveMachineAdeLayout().runtimeDir, "brain.jsonl"),
+      brainLogPath(),
     );
   }
   return sharedBrainRequestAccountingLogger;

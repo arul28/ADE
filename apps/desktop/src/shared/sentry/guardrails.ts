@@ -9,6 +9,9 @@
  * finding it; the thousandth copy adds nothing. Once the hourly total is
  * spent, a new problem in the same hour is dropped too: the total is the
  * guarantee, and it is sized so that takes a dozen different failures.
+ *
+ * A day cap sits on top: a machine that keeps one problem for a whole day
+ * sends its first copies of each hour, not 24 hours of them.
  */
 
 import { isExpectedOutcomeText, isOfflineFetchFailure } from "./expectedFailure";
@@ -16,11 +19,16 @@ import { isExpectedOutcomeText, isOfflineFetchFailure } from "./expectedFailure"
 export type SentryBudget = {
   perFingerprintPerHour: number;
   totalPerHour: number;
+  /** Absent: no day cap. */
+  perFingerprintPerDay?: number;
+  totalPerDay?: number;
 };
 
 export const DEFAULT_SENTRY_BUDGET: SentryBudget = {
   perFingerprintPerHour: 5,
   totalPerHour: 60,
+  perFingerprintPerDay: 15,
+  totalPerDay: 150,
 };
 
 /**
@@ -31,33 +39,66 @@ export const DEFAULT_SENTRY_BUDGET: SentryBudget = {
 export const FATAL_SENTRY_BUDGET: SentryBudget = {
   perFingerprintPerHour: 10,
   totalPerHour: 30,
+  perFingerprintPerDay: 30,
+  totalPerDay: 100,
 };
 
 const HOUR_MS = 60 * 60 * 1000;
-const MAX_TRACKED_FINGERPRINTS = 500;
+export const DAY_MS = 24 * HOUR_MS;
+const MAX_TRACKED_KEYS = 500;
 
 export type EventLimiter = {
   /** True when the event may be sent; records it against the budget. */
   admit: (fingerprint: string, nowMs?: number) => boolean;
 };
 
+/**
+ * One counting window of a limiter: events in total, events per key, and
+ * bytes for a limiter that also counts size. Shared by the event budget here
+ * and the attachment budget (`diagnostics.ts`).
+ */
+export type LimiterWindow = { start: number; total: number; bytes: number; perKey: Map<string, number> };
+
+export function createLimiterWindow(): LimiterWindow {
+  return { start: 0, total: 0, bytes: 0, perKey: new Map() };
+}
+
+export function rollLimiterWindow(window: LimiterWindow, lengthMs: number, nowMs: number): void {
+  if (nowMs - window.start < lengthMs) return;
+  window.start = nowMs;
+  window.total = 0;
+  window.bytes = 0;
+  window.perKey.clear();
+}
+
+/** Whether one more event of `key` fits; an absent cap does not limit. */
+export function limiterWindowHasRoom(window: LimiterWindow, key: string, total: number | undefined, perKey: number | undefined): boolean {
+  if (total !== undefined && window.total >= total) return false;
+  const seen = window.perKey.get(key) ?? 0;
+  if (perKey !== undefined && seen >= perKey) return false;
+  return window.perKey.has(key) || window.perKey.size < MAX_TRACKED_KEYS;
+}
+
+export function countInLimiterWindow(window: LimiterWindow, key: string, bytes = 0): void {
+  window.perKey.set(key, (window.perKey.get(key) ?? 0) + 1);
+  window.total += 1;
+  window.bytes += bytes;
+}
+
 export function createEventLimiter(budget: SentryBudget = DEFAULT_SENTRY_BUDGET): EventLimiter {
-  let windowStart = 0;
-  let total = 0;
-  const perFingerprint = new Map<string, number>();
+  const hour = createLimiterWindow();
+  const day = createLimiterWindow();
+  const hasDayCap = budget.totalPerDay !== undefined || budget.perFingerprintPerDay !== undefined;
   return {
     admit(fingerprint, nowMs = Date.now()) {
-      if (nowMs - windowStart >= HOUR_MS) {
-        windowStart = nowMs;
-        total = 0;
-        perFingerprint.clear();
+      rollLimiterWindow(hour, HOUR_MS, nowMs);
+      if (!limiterWindowHasRoom(hour, fingerprint, budget.totalPerHour, budget.perFingerprintPerHour)) return false;
+      if (hasDayCap) {
+        rollLimiterWindow(day, DAY_MS, nowMs);
+        if (!limiterWindowHasRoom(day, fingerprint, budget.totalPerDay, budget.perFingerprintPerDay)) return false;
+        countInLimiterWindow(day, fingerprint);
       }
-      if (total >= budget.totalPerHour) return false;
-      const seen = perFingerprint.get(fingerprint) ?? 0;
-      if (seen >= budget.perFingerprintPerHour) return false;
-      if (!perFingerprint.has(fingerprint) && perFingerprint.size >= MAX_TRACKED_FINGERPRINTS) return false;
-      perFingerprint.set(fingerprint, seen + 1);
-      total += 1;
+      countInLimiterWindow(hour, fingerprint);
       return true;
     },
   };

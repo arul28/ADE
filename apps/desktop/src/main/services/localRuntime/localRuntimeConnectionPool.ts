@@ -72,6 +72,7 @@ import {
   localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
 import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
+import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
@@ -703,6 +704,14 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
   });
 }
 
+type LocalRuntimeConnectionStats = {
+  connects: number;
+  disconnects: number;
+  lastConnectedAt: string | null;
+  lastDisconnectedAt: string | null;
+  projectReregistrations: number;
+};
+
 export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
@@ -1236,6 +1245,14 @@ export class LocalRuntimeConnectionPool {
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   /** When a folder was last registered again because the brain forgot its id. */
   private readonly staleProjectReregisteredAtByRoot = new Map<string, number>();
+  /** Connection history for error reports (`diagnosticSnapshot`). */
+  private readonly connectionStats: LocalRuntimeConnectionStats = {
+    connects: 0,
+    disconnects: 0,
+    lastConnectedAt: null,
+    lastDisconnectedAt: null,
+    projectReregistrations: 0,
+  };
   private readonly projectRegistrationsByRoot = new Map<string, {
     acceptsMatchingWaiters: boolean;
     intent: ProjectRegistrationIntent;
@@ -1376,6 +1393,10 @@ export class LocalRuntimeConnectionPool {
       && this.serviceHealthStatus.state !== "error";
   }
 
+  private runtimeMode(): LocalRuntimeStatus["runtimeMode"] {
+    return this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary";
+  }
+
   private statusSnapshot(): LocalRuntimeStatus {
     return {
       connectionState: this.activeClient
@@ -1392,7 +1413,7 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
-      runtimeMode: this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary",
+      runtimeMode: this.runtimeMode(),
       appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
       serviceInstall: { ...this.serviceInstallStatus },
@@ -1612,8 +1633,44 @@ export class LocalRuntimeConnectionPool {
   /** Moves the brain client the pool is connected to. A change of client is a connection change. */
   private setActiveClient(client: RuntimeRpcClient | null): void {
     if (this.activeClient === client) return;
+    const previous = this.activeClient;
     this.activeClient = client;
     this.bumpServiceStateGeneration();
+    const now = new Date().toISOString();
+    if (client) {
+      this.connectionStats.connects += 1;
+      this.connectionStats.lastConnectedAt = now;
+    } else if (previous) {
+      this.connectionStats.disconnects += 1;
+      this.connectionStats.lastDisconnectedAt = now;
+    }
+    // A step in the trail of the next error: a failure right after the brain
+    // changed is read differently from one in a steady connection.
+    addSentryBreadcrumb("brain", client ? "brain.connected" : "brain.disconnected", {
+      connects: this.connectionStats.connects,
+      runtimeMode: this.runtimeMode(),
+      previousPid: this.activeRuntimePid,
+    }, client ? "info" : "warning");
+  }
+
+  /**
+   * The brain connection as an error report describes it: the status the UI
+   * shows, the connection history, and the project id this window holds for
+   * each folder, so a report of "Unknown projectId" names which folder it was.
+   */
+  diagnosticSnapshot(): Record<string, unknown> {
+    const status = this.statusSnapshot();
+    return {
+      connectionState: status.connectionState,
+      runtimeMode: status.runtimeMode,
+      pid: status.pid,
+      appVersion: this.appVersion,
+      serviceHealth: status.serviceHealth.state,
+      versionSkew: status.versionSkew,
+      lastWedge: status.lastWedge,
+      ...this.connectionStats,
+      projects: [...this.projectsByRoot.entries()].map(([rootPath, project]) => ({ rootPath, projectId: project.projectId })),
+    };
   }
 
   /**
@@ -2108,10 +2165,7 @@ export class LocalRuntimeConnectionPool {
     if (now - lastAt < STALE_PROJECT_REREGISTER_INTERVAL_MS) return false;
     this.staleProjectReregisteredAtByRoot.set(normalizedRoot, now);
     this.projectsByRoot.delete(normalizedRoot);
-    this.logger.warn("local_runtime.project_id_unknown_reregistering", {
-      rootPath: normalizedRoot,
-      projectId: project.projectId,
-    });
+    this.connectionStats.projectReregistrations += 1;
     return true;
   }
 
@@ -2125,7 +2179,18 @@ export class LocalRuntimeConnectionPool {
       return await call(project);
     } catch (error) {
       if (!this.dropStaleProjectRecord(rootPath, project, error)) throw error;
-      return await call(await this.ensureProject(rootPath));
+      const fresh = await this.ensureProject(rootPath);
+      // The id the brain hands out now. A different one from the id that was
+      // refused means the folder's id changed; the same one means the brain
+      // had lost the folder from its list.
+      this.logger.warn("local_runtime.project_reregistered", {
+        rootPath,
+        refusedProjectId: project.projectId,
+        projectId: fresh.projectId,
+        idChanged: fresh.projectId !== project.projectId,
+        runtimePid: this.activeRuntimePid,
+      });
+      return await call(fresh);
     }
   }
 

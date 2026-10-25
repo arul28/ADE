@@ -3,6 +3,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, p
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
+import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryUserResolver } from "../shared/sentry/eventFilter";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -231,7 +232,14 @@ import {
   remoteBindingMatchesProject,
 } from "./services/attention/attentionItemRouting";
 import { pathKey, pathsEqual } from "./services/shared/pathCompare";
-import { assertLocalProjectDataAvailable, deriveProjectId, ProjectRegistry, recordLocalProjectDatabaseIdentity } from "../../../ade-cli/src/services/projects/projectRegistry";
+import {
+  assertLocalProjectDataAvailable,
+  deriveProjectId,
+  ProjectRegistry,
+  recordLocalProjectDatabaseIdentity,
+} from "../../../ade-cli/src/services/projects/projectRegistry";
+import { projectRegistryDiagnosticAttachment } from "../../../ade-cli/src/services/projects/projectRegistryJournal";
+import { isRemoteMachineEvent } from "./sentry/desktopDiagnostics";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "../../../ade-cli/src/services/runtime/compileCachePrune";
 import {
@@ -2281,6 +2289,13 @@ app.whenReady().then(async () => {
       }
     },
   });
+  // Every desktop report says which brain it talked to and which project id
+  // it held per folder; a report about an unknown project id also gets the
+  // machine's project list and its journal (`shared/sentry/diagnostics.ts`).
+  registerSentryDiagnosticContext("brain_connection", () => localRuntimePool.diagnosticSnapshot());
+  // A failure on another machine's brain is about that machine's list.
+  const attachProjectRegistry = projectRegistryDiagnosticAttachment(new ProjectRegistry(machineAdeLayout).diagnosticPaths());
+  registerSentryDiagnosticAttachment("project-registry", (event) => (isRemoteMachineEvent(event) ? null : attachProjectRegistry(event)));
   // App Control screencasts follow what the windows show: a lane no window
   // holds streams no frames, in the brain or in a project hosted here.
   setAppControlFrameLanesListener(() => {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { recordLogTailLine } from "../../../shared/sentry/diagnostics";
 import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -320,6 +321,9 @@ export function createFileLogger(
       ...(meta ? { meta } : {})
     }, errorAwareReplacer());
 
+    // The same text goes on the next error report, so the report shows what
+    // this process did just before the failure (`shared/sentry/diagnostics.ts`).
+    recordLogTailLine(line);
     const payload = `${line}\n`;
     if (idleCloseTimer) {
       clearTimeout(idleCloseTimer);

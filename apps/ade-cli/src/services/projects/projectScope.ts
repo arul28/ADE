@@ -5,6 +5,9 @@ import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteComman
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
+import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
+import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
+import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -163,6 +166,7 @@ export class ProjectScopeRegistry {
    */
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
+  private readonly reportUnknownProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
@@ -307,6 +311,39 @@ export class ProjectScopeRegistry {
     }
   }
 
+  /**
+   * The brain's own report when a caller names a project it does not have.
+   * The caller (a window, a phone) reports only "the brain said no"; this one
+   * says what the brain knew at that moment, with the project list and its
+   * journal attached. Once per id per process: every poll after the first
+   * adds nothing. A project the user removed is not a failure: a window or
+   * phone that still holds its id is told so and moves on.
+   */
+  private reportUnknownProjectId(projectId: ProjectId): void {
+    if (!this.reportUnknownProjectIdOnce(projectId)) return;
+    try {
+      if (wasRemovedFromRegistry(this.projectRegistry.path, projectId)) return;
+      const registered = this.projectRegistry.list();
+      captureProblem("The brain was asked for a project that is not in its project list", {
+        fingerprint: ["brain", "project_id_unknown"],
+        tags: { [DIAGNOSTIC_ATTACH_TAG]: PROJECT_REGISTRY_ATTACH },
+        extra: {
+          projectId,
+          // This machine opened the project's database before, so the
+          // project was registered here once and has since gone from the list.
+          openedHereBefore: this.projectRegistry.readDatabaseIdentity(projectId) !== null,
+          registeredCount: registered.length,
+          registered: registered.map((record) => ({ projectId: record.projectId, rootPath: record.rootPath })),
+          bootedScopes: [...this.scopes.keys()],
+          syncHostProjectId: this.syncHostProjectId,
+          brainUptimeSec: Math.round(process.uptime()),
+        },
+      });
+    } catch {
+      // Reporting must never change the answer.
+    }
+  }
+
   onDispose(listener: (projectId: ProjectId) => void): () => void {
     this.disposeListeners.add(listener);
     return () => {
@@ -323,6 +360,17 @@ export class ProjectScopeRegistry {
    */
   getIfBooted(projectId: ProjectId): Promise<ProjectScope> | null {
     return this.scopes.get(projectId) ?? null;
+  }
+
+  /** What a brain report says about this brain's projects (`brain_state` context). */
+  diagnosticSnapshot(): Record<string, unknown> {
+    return {
+      registeredProjects: this.projectRegistry.list().length,
+      bootingOrBootedScopes: this.scopes.size,
+      readyScopes: [...this.readyScopes.keys()],
+      failedScopes: [...this.failedScopes.keys()],
+      syncHostProjectId: this.syncHostProjectId,
+    };
   }
 
   /** Return only a scope whose boot has already completed. */
@@ -352,6 +400,7 @@ export class ProjectScopeRegistry {
       // project it now names instead of being told the project is unknown.
       const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
+      this.reportUnknownProjectId(projectId);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 

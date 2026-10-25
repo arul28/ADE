@@ -41,6 +41,15 @@ per project root on first project-scoped JSON-RPC call, and is the
 single runtime through which desktop, `ade code`, and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
+The desktop app, the brain, the `ade` CLI and a project move all write
+`projects.json`. Each write (`ProjectRegistry.mutate`) holds
+`projects.json.lock`, reads the file fresh, and appends one line to
+`projects.journal.jsonl` (`projectRegistryJournal.ts`), so two writers that
+overlap no longer erase each other's projects. A project id is the hash of its
+folder as this machine resolves it on each read; when that differs from the
+stored id, the stored id becomes an alias in `project-aliases.json`, as after a
+move, and the change is reported to Sentry.
+
 Each local project this machine has opened gets an identity file at
 `~/.ade/project-data/<projectId>.json` holding its database file's device and
 inode. The desktop, the brain's project scope and the CLI record it when they

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { enableSentryDiagnostics, recordLogTailLine } from "./diagnostics";
 import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
@@ -199,5 +200,31 @@ describe("createSentryEventHooks", () => {
     // The same code after crossing the wire as a message prefix.
     expect(isExpectedOutcome(new Error("project_moving: This project is being moved."))).toBe(true);
     expect(isExpectedOutcome(codedError("The project folder is gone.", "project_corrupt"))).toBe(false);
+  });
+
+  // Last in the file: it turns diagnostics on for the rest of this process.
+  it("attaches the log tail without its secrets, once per issue", () => {
+    enableSentryDiagnostics();
+    const pushToken = "pt_9f8e7d6c5b4a39281706f5e4"; // gitleaks:allow (a fake token the scrub must remove)
+    const machineKey = "mk_live_0a1b2c3d4e5f60718293"; // gitleaks:allow (a fake key the scrub must remove)
+    // A line past the cut: only a JSON line is scrubbed by key, and a cut one is no longer JSON.
+    recordLogTailLine(JSON.stringify({ ts: "t1", level: "info", event: "sync.paired", meta: { pushToken, machineKey, devices: "d".repeat(4_000) } }));
+    recordLogTailLine(JSON.stringify({ ts: "t2", level: "warn", event: "runtime.slow", meta: { action: "lane.list", accessToken: "short-secret-123" } }));
+    const hooks = createSentryEventHooks();
+    const firstHint: { attachments?: Array<{ filename: string; data: string | Uint8Array }> } = {};
+    const repeatHint: typeof firstHint = {};
+    const otherIssueHint: typeof firstHint = {};
+
+    hooks.beforeSend(errorEvent("lane list failed"), firstHint);
+    hooks.beforeSend(errorEvent("lane list failed"), repeatHint);
+    hooks.beforeSend(errorEvent("chat send failed"), otherIssueHint);
+
+    const tail = firstHint.attachments?.find((file) => file.filename.startsWith("ade-log-tail"));
+    const text = String(tail?.data ?? "");
+    expect(text).toContain('"event":"sync.paired"');
+    expect(text).toContain('"action":"lane.list"');
+    for (const secret of [pushToken, machineKey, "short-secret-123"]) expect(text).not.toContain(secret);
+    expect(repeatHint.attachments).toBeUndefined();
+    expect(otherIssueHint.attachments?.some((file) => file.filename.startsWith("ade-log-tail"))).toBe(true);
   });
 });

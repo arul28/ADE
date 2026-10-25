@@ -88,12 +88,21 @@ function isExclusiveFileLockContention(error: unknown): boolean {
   return code === "EBUSY";
 }
 
-function unlinkExclusiveFileLockIfStale(lockPath: string): boolean {
+/**
+ * Remove a lock whose owner is gone. With `staleAfterMs`, a lock older than
+ * that is gone too, whatever its pid says: a pid can be reused by a live
+ * process after the holder crashed, and a lock held only for a quick write
+ * is never that old.
+ */
+function unlinkExclusiveFileLockIfStale(lockPath: string, staleAfterMs?: number): boolean {
   try {
     const stat = fs.statSync(lockPath);
-    const owner = readExclusiveFileLockOwner(lockPath);
-    if (owner.pid != null && processExists(owner.pid)) return false;
-    if (owner.pid == null && Date.now() - stat.mtimeMs <= 30_000) return false;
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (staleAfterMs === undefined || ageMs <= staleAfterMs) {
+      const owner = readExclusiveFileLockOwner(lockPath);
+      if (owner.pid != null && processExists(owner.pid)) return false;
+      if (owner.pid == null && ageMs <= 30_000) return false;
+    }
     fs.unlinkSync(lockPath);
     return true;
   } catch (error) {
@@ -112,6 +121,60 @@ function unlinkExclusiveFileLockIfOwner(lockPath: string, ownerId: string | null
   }
 }
 
+type ExclusiveFileLockOptions = {
+  waitMs: number;
+  label: string;
+  /** Treat a lock older than this as abandoned, whatever its pid (see `unlinkExclusiveFileLockIfStale`). */
+  staleAfterMs?: number;
+};
+
+/**
+ * One attempt to take the lock: the open file when it is ours, null when the
+ * caller should wait and try again. Throws the timeout error once the
+ * deadline has passed, and any error that is not contention.
+ */
+function tryClaimExclusiveFileLock(
+  lockPath: string,
+  owner: ExclusiveFileLockOwner,
+  deadline: number,
+  options: ExclusiveFileLockOptions,
+): number | null {
+  let created: number | null = null;
+  while (created == null) {
+    try {
+      created = fs.openSync(lockPath, "wx", 0o600);
+    } catch (error) {
+      if (!isExclusiveFileLockContention(error)) throw error;
+      // The holder is gone: the lock is free now, so claim it right away.
+      if (unlinkExclusiveFileLockIfStale(lockPath, options.staleAfterMs)) continue;
+      if (Date.now() >= deadline) {
+        throw new ExclusiveFileLockTimeoutError(
+          `Timed out waiting for ${options.label} at ${lockPath}.`,
+          { cause: error },
+        );
+      }
+      return null;
+    }
+  }
+  // The file is ours now. If its owner record cannot be written, give it back
+  // rather than hold (or strand) a lock nobody can identify.
+  try {
+    fs.writeFileSync(created, serializeExclusiveFileLockOwner(owner), "utf8");
+  } catch (error) {
+    try { fs.closeSync(created); } catch {}
+    try { fs.unlinkSync(lockPath); } catch {}
+    throw error;
+  }
+  return created;
+}
+
+function releaseExclusiveFileLock(fd: number, lockPath: string, owner: ExclusiveFileLockOwner): void {
+  try {
+    fs.closeSync(fd);
+  } catch {}
+  unlinkExclusiveFileLockIfOwner(lockPath, owner.id);
+}
+
 /**
  * Runs `task` while holding the lock at `lockPath`. A current holder is waited
  * for for up to `waitMs`; past that this throws ExclusiveFileLockTimeoutError
@@ -120,48 +183,47 @@ function unlinkExclusiveFileLockIfOwner(lockPath: string, ownerId: string | null
 export async function withExclusiveFileLock<T>(
   lockPath: string,
   task: () => Promise<T>,
-  options: { waitMs: number; label: string },
+  options: ExclusiveFileLockOptions,
 ): Promise<T> {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + options.waitMs;
   const owner = createExclusiveFileLockOwner();
-  let fd: number | null = null;
+  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
   while (fd == null) {
-    let created: number;
-    try {
-      created = fs.openSync(lockPath, "wx", 0o600);
-    } catch (error) {
-      if (!isExclusiveFileLockContention(error)) throw error;
-      if (unlinkExclusiveFileLockIfStale(lockPath)) continue;
-      if (Date.now() >= deadline) {
-        throw new ExclusiveFileLockTimeoutError(
-          `Timed out waiting for ${options.label} at ${lockPath}.`,
-          { cause: error },
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      continue;
-    }
-    // The file is ours now. If its owner record cannot be written, give it back
-    // rather than hold (or strand) a lock nobody can identify.
-    try {
-      fs.writeFileSync(created, serializeExclusiveFileLockOwner(owner), "utf8");
-    } catch (error) {
-      try { fs.closeSync(created); } catch {}
-      try { fs.unlinkSync(lockPath); } catch {}
-      throw error;
-    }
-    fd = created;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
   }
-
   try {
     return await task();
   } finally {
-    if (fd != null) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-    }
-    unlinkExclusiveFileLockIfOwner(lockPath, owner.id);
+    releaseExclusiveFileLock(fd, lockPath, owner);
+  }
+}
+
+const SYNC_RETRY_MS = 15;
+const syncSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * `withExclusiveFileLock` for synchronous callers. The wait blocks the
+ * thread, so keep `waitMs` short and the task small: a read and a write of
+ * one file, never a child process or a network call.
+ */
+export function withExclusiveFileLockSync<T>(
+  lockPath: string,
+  task: () => T,
+  options: ExclusiveFileLockOptions,
+): T {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + options.waitMs;
+  const owner = createExclusiveFileLockOwner();
+  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+  while (fd == null) {
+    Atomics.wait(syncSleepCell, 0, 0, SYNC_RETRY_MS);
+    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+  }
+  try {
+    return task();
+  } finally {
+    releaseExclusiveFileLock(fd, lockPath, owner);
   }
 }

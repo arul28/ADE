@@ -64,3 +64,7 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 # commit range still scans clean; the squash merge leaves no literal on main.
 1309799f229e3bd432b2601fdf5aafa3415396bd:apps/desktop/src/shared/mcpServerImport.test.ts:generic-api-key:45
 1309799f229e3bd432b2601fdf5aafa3415396bd:apps/desktop/src/shared/mcpServerImport.test.ts:generic-api-key:55
+
+# Fake secret-shaped values the Sentry log-tail scrub test must remove (PR #1897).
+b5f4ebe0754ef03976f93946f0bba465d6aa0471:apps/desktop/src/shared/sentry/eventFilter.test.ts:generic-api-key:208
+b5f4ebe0754ef03976f93946f0bba465d6aa0471:apps/desktop/src/shared/sentry/eventFilter.test.ts:generic-api-key:209
