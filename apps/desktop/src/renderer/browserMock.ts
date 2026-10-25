@@ -6047,6 +6047,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStateEvent: noop,
     },
     remoteRuntime: {
+      runDoctor: async (id: string) => (id === "mock-windows"
+        ? {
+            checks: [
+              { route: "lan", endpoint: "192.168.1.40:8787", ok: false, error: "Failed to connect to sync endpoint: connect ETIMEDOUT 192.168.1.40:8787", failure: "timeout" },
+              { route: "relay", endpoint: "relay.ade-app.dev", ok: false, error: "Sync endpoint closed before the connection opened.", failure: "host_offline" },
+            ],
+            diagnosis: {
+              tone: "danger",
+              title: "windows isn't connected to ADE's relay.",
+              fix: "Make sure windows is awake, online, and ADE is open there. If it is, open Connections on windows and press Check to see what's blocking it.",
+            },
+          }
+        : {
+            checks: [
+              { route: "lan", endpoint: "192.168.1.24:8787", ok: false, error: "Failed to connect to sync endpoint: connect EHOSTUNREACH 192.168.1.24:8787", failure: "unreachable" },
+              { route: "tailnet", endpoint: "100.64.0.2:8787", ok: true, latencyMs: 41 },
+            ],
+            diagnosis: { tone: "success", title: "Studio Mac is reachable through Tailscale." },
+            hostStall: { durationMs: 12_400, endedAt: Date.now() - 2 * 60_000, loadAverage1m: 21.3, cpuCount: 8 },
+          }),
       listTargets: browserMockFlag("mockOneMachine") ? resolved([]) : resolved([{
         id: "mock-remote",
         name: "Studio Mac",
@@ -6093,6 +6113,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now(),
           connectedAt: Date.now(),
+          // The Studio froze just before this reconnect (from its hello).
+          hostStall: { durationMs: 12_400, endedAt: Date.now() - 2 * 60_000, loadAverage1m: 21.3, cpuCount: 8 },
         }, {
           target: {
             id: "mock-windows",
@@ -6339,6 +6361,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     sync: {
       getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       getLocalStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      checkLocalReachability: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return {
+          checkedAt: new Date().toISOString(),
+          tone: "warning" as const,
+          title: "Devices on your network or tailnet can reach this computer. Others can't.",
+          checks: [
+            { id: "listener" as const, label: "ADE on this computer", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            {
+              id: "relay" as const,
+              label: "Relay",
+              state: "failed" as const,
+              detail: "This computer is not connected to ADE's relay.",
+              fix: "This computer sends its traffic through the Tailscale exit node \"mullvad-se\". Turn the exit node off, or allow ADE's relay through it.",
+            },
+            { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach this computer." },
+            
+          ],
+        };
+      },
       refreshDiscovery: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       listDevices: resolved([]),
       updateLocalDevice: resolvedArg(BROWSER_MOCK_LOCAL_DEVICE),

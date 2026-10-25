@@ -288,7 +288,9 @@ export function diagnoseHostReachability(
     tailnetCheck(facts),
   ];
   const exitNode = facts.tailscale?.exitNodeName ?? null;
-  if (exitNode !== null) {
+  // A failed relay already names the exit node in its fix; say it once.
+  const relayBlamesExitNode = checks[1]?.state === "failed" && checks[1]?.fix?.includes("exit node") === true;
+  if (exitNode !== null && !relayBlamesExitNode) {
     checks.push({
       id: "exit_node",
       label: "Exit node",
