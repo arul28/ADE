@@ -282,15 +282,17 @@ Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-Use Node 24 (the version in `.nvmrc`) for repository development. CI and the
-release builds use it too. `npm run build:static` in `apps/ade-cli` embeds the
-Node it runs on in the headless runtime, so a release brain built by CI gets
-Node 24's proxy and system-certificate support; the build warns when it embeds
-a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
-than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
+Use Node 22 (the version in `.nvmrc`) for repository development; CI's tests
+run on it too. Release builds use Node 24: `npm run build:static` in
+`apps/ade-cli` embeds the Node it runs on in the headless runtime, so a release
+brain gets Node 24's proxy and system-certificate support. The build warns when
+it embeds a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one
+older than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
 `ADE_STATIC_NODE_BINARY` to use another Node binary for that build. The `ade`
-CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
-(a brain says so once at start) and otherwise works as before.
+CLI runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY` (a brain
+says so once at start) and otherwise works as before. Tests stay on Node 22
+because the suites that start a brain from source (`tsx`) miss their startup
+budget on Node 24 in CI.
 
 ### On Windows
 
