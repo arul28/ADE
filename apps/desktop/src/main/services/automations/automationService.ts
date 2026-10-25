@@ -565,7 +565,12 @@ type AutomationIngressEventRow = {
   error_message: string | null;
   cursor: string | null;
   received_at: string;
+  /** Who started its runs; null while none has. See `claimIngressRunStart`. */
+  run_claim?: string | null;
 };
+
+/** The ingress claim every row written before claims existed is given: it already ran or never will. */
+const LEGACY_INGRESS_RUN_CLAIM = "legacy";
 
 // Retention/count bounds live in `state/dbMaintenanceApi` so the ingress writer,
 // the kvDb maintenance hooks, and the storage ledger enforce identical policy.
@@ -1388,8 +1393,39 @@ function parseActiveHours(value: NonNullable<AutomationTrigger["activeHours"]>, 
   return {
     startMin: parseClock(value.start, 22 * 60),
     endMin: parseClock(value.end, 6 * 60),
-    currentMin: now.getHours() * 60 + now.getMinutes(),
+    currentMin: minuteOfDayInZone(now, value.timezone),
   };
+}
+
+const zoneClockFormatters = new Map<string, Intl.DateTimeFormat | null>();
+
+/**
+ * The minute of the day on the clock of `timezone`, an IANA name such as
+ * "America/Chicago". "local", a blank zone, or one this runtime's ICU does not
+ * know reads the brain machine's own clock, which is all active hours ever
+ * did before the zone was honored, so a rule written that way behaves as it
+ * always has.
+ */
+function minuteOfDayInZone(now: Date, timezone: string | null | undefined): number {
+  const zone = timezone?.trim() ?? "";
+  if (zone && zone.toLowerCase() !== "local") {
+    let formatter = zoneClockFormatters.get(zone);
+    if (formatter === undefined) {
+      try {
+        formatter = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "numeric", hourCycle: "h23" });
+      } catch {
+        formatter = null;
+      }
+      zoneClockFormatters.set(zone, formatter);
+    }
+    if (formatter) {
+      const parts = formatter.formatToParts(now);
+      const hour = Number(parts.find((part) => part.type === "hour")?.value);
+      const minute = Number(parts.find((part) => part.type === "minute")?.value);
+      if (Number.isFinite(hour) && Number.isFinite(minute)) return (hour % 24) * 60 + minute;
+    }
+  }
+  return now.getHours() * 60 + now.getMinutes();
 }
 
 function isWithinActiveHours(hours: NonNullable<AutomationTrigger["activeHours"]>, now = new Date()): boolean {
@@ -1803,6 +1839,12 @@ export function createAutomationService({
         foreign key(project_id) references projects(id)
       )
     `);
+    if (!columnExists("automation_ingress_events", "run_claim")) {
+      safeAlter("alter table automation_ingress_events add column run_claim text");
+      // Rows from before claims existed either ran or were dropped long ago;
+      // none of them may be picked up as interrupted by a restart replay.
+      db.run("update automation_ingress_events set run_claim = ? where run_claim is null", [LEGACY_INGRESS_RUN_CLAIM]);
+    }
     db.run("create unique index if not exists idx_automation_ingress_events_project_key on automation_ingress_events(project_id, source, event_key)");
     db.run("create index if not exists idx_automation_ingress_events_project_received on automation_ingress_events(project_id, received_at desc)");
 
@@ -4543,12 +4585,28 @@ export function createAutomationService({
   const runRule = async (
     rule: AutomationRule,
     trigger: TriggerContext,
-    options: { dryRun?: boolean } = {},
+    options: {
+      dryRun?: boolean;
+      /**
+       * Called when this run's turn in the queue comes, before anything else.
+       * False means another dispatch already took the event, so this one stops.
+       */
+      claimStart?: () => boolean;
+    } = {},
   ): Promise<AutomationRun | null> => {
+    const { claimStart, ...runOptions } = options;
     const previous = runQueuesByAutomationId.get(rule.id) ?? Promise.resolve();
     const queued = previous
       .catch(() => undefined)
       .then(() => {
+        if (claimStart && !claimStart()) {
+          logger.info("automations.trigger.suppressed", {
+            automationId: rule.id,
+            triggerType: trigger.triggerType,
+            reason: "already-claimed",
+          });
+          return null;
+        }
         const isManualTrigger = trigger.triggerType === "manual";
         const latestRule = findRule(rule.id);
         // A manual run executes the rule the caller picked — running a DISABLED
@@ -4576,7 +4634,7 @@ export function createAutomationService({
           });
           return null;
         }
-        return runRuleNow(currentRule, trigger, options);
+        return runRuleNow(currentRule, trigger, runOptions);
       });
     runQueuesByAutomationId.set(rule.id, queued);
     try {
@@ -4972,6 +5030,31 @@ export function createAutomationService({
     return row?.cursor ?? null;
   };
 
+  /**
+   * Take an ingress event for one dispatch, at the moment its first run is
+   * about to start. A webhook run can wait minutes in its rule's queue, and a
+   * restart replays what never got this far; the claim is what keeps that
+   * replay and a still-queued original from both running it. A token rather
+   * than a flag, so the rules of one dispatch all pass.
+   */
+  const claimIngressRunStart = (eventId: string, runClaim: string): boolean =>
+    db.runChanged(
+      "update automation_ingress_events set run_claim = ? where id = ? and project_id = ? and (run_claim is null or run_claim = ?)",
+      [runClaim, eventId, projectId, runClaim],
+    ) > 0;
+
+  /** Event keys this machine accepted from `sources` whose runs never started. */
+  const listUnstartedIngressEventKeys = (sources: readonly AutomationIngressSource[]): Array<{ source: AutomationIngressSource; eventKey: string }> => {
+    if (!sources.length) return [];
+    return db.all<{ source: string; event_key: string }>(
+      `select source, event_key from automation_ingress_events
+        where project_id = ? and run_claim is null and status in ('received', 'dispatched')
+          and source in (${sources.map(() => "?").join(", ")})
+        order by received_at asc`,
+      [projectId, ...sources],
+    ).map((row) => ({ source: row.source as AutomationIngressSource, eventKey: row.event_key }));
+  };
+
   const dispatchIngressTrigger = async (args: {
     source: AutomationIngressSource;
     eventKey: string;
@@ -4999,11 +5082,20 @@ export function createAutomationService({
     changedFields?: string[];
     linearAgent?: TriggerLinearAgentContext | null;
     webhook?: TriggerWebhookRequest | null;
+    /**
+     * Run an event this machine accepted before a restart and never started,
+     * instead of treating its row as a duplicate. Anything else (already
+     * started, ignored, failed, unknown) still returns the existing row.
+     */
+    resume?: boolean;
   }): Promise<AutomationIngressEventRecord | null> => {
     const eventKey = args.eventKey.trim();
     if (!eventKey.length) return null;
-    const eventId = randomUUID();
+    let eventId: string = randomUUID();
     const receivedAt = nowIso();
+    // Every rule this call starts claims the event with the same token, so one
+    // event can start several rules while a second dispatch of it starts none.
+    const runClaim = `${receivedAt}|${randomUUID()}`;
     let existing: AutomationIngressEventRow | null = null;
     db.run("begin immediate");
     try {
@@ -5015,7 +5107,7 @@ export function createAutomationService({
         `
           select
             id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-            cursor, received_at
+            cursor, received_at, run_claim
           from automation_ingress_events
           where project_id = ? and source = ? and event_key = ? and received_at >= ?
           limit 1
@@ -5059,7 +5151,14 @@ export function createAutomationService({
       }
       throw error;
     }
-    if (existing) return toIngressEvent(existing);
+    if (existing) {
+      const resumable = args.resume === true
+        && existing.run_claim == null
+        && (existing.status === "received" || existing.status === "dispatched");
+      if (!resumable) return toIngressEvent(existing);
+      eventId = existing.id;
+      logger.info("automations.ingress_event_resumed", { source: args.source, eventId, eventKey });
+    }
     if (args.cursor) upsertIngressCursor(args.source, args.cursor);
 
     const trigger: TriggerContext = {
@@ -5122,7 +5221,7 @@ export function createAutomationService({
     let firstError: string | null = null;
     for (const rule of matched) {
       try {
-        await runRule(rule, trigger);
+        await runRule(rule, trigger, { claimStart: () => claimIngressRunStart(eventId, runClaim) });
       } catch (error) {
         firstError = firstError ?? (error instanceof Error ? error.message : String(error));
       }
@@ -5540,6 +5639,10 @@ export function createAutomationService({
 
     async dispatchIngressTrigger(args: Parameters<typeof dispatchIngressTrigger>[0]): Promise<AutomationIngressEventRecord | null> {
       return await dispatchIngressTrigger(args);
+    },
+
+    listUnstartedIngressEventKeys(sources: readonly AutomationIngressSource[]) {
+      return listUnstartedIngressEventKeys(sources);
     },
 
     onRuleDeleted(listener: (rule: AutomationRule) => void): () => void {

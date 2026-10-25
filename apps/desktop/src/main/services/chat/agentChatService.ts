@@ -5260,6 +5260,20 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  /**
+   * The one refinement of a title this process wrote from the first prompt
+   * alone, once a run shows what the chat is actually about. `armed`: that
+   * title exists and waits for a completed run. `due`: a run completed before
+   * it existed. Unset on a reloaded chat, so an old title is never rewritten.
+   */
+  autoTitleRefine?: "armed" | "due";
+  /**
+   * What a fork inherited, for its first title: the source chat's title and
+   * requests. A fork's own first message is usually a follow-up ("now do the
+   * same for mobile") that names nothing on its own. In memory only; a fork
+   * reloaded before its first title falls back to its own messages.
+   */
+  autoTitleInheritedContext?: string[];
   /** Monotonic guard for explicit metadata requests and later user edits. */
   sessionMetadataGenerationVersion: number;
   /** Revision of any persisted title write, including same-text user edits. */
@@ -5693,7 +5707,6 @@ type ResolvedChatConfig = {
   titleGenerationEnabled: boolean;
   titleModelId: string | null;
   titleReasoningEffort: string | null;
-  titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
   summaryReasoningEffort: string | null;
@@ -7653,8 +7666,40 @@ const REJECTED_TITLES = new Set([
   "untitled", "untitled chat", "new chat", "new session",
   "chat", "session", "ai chat", "codex chat", "claude chat",
   "cursor chat", "droid chat", "opencode chat", "open code chat",
-  "cursor agent", "local agent"
+  "cursor agent", "local agent",
+  // A model that echoes the prompt's field name or a stand-in instead of
+  // writing one. They pass every shape check, so only the list catches them.
+  "title", "titles", "chat title", "session title", "thread title", "new title",
+  "short title", "concise title", "your title", "no title", "thread", "new thread",
+  "untitled thread", "untitled session", "placeholder", "none", "null", "undefined",
+  "n a", "tbd"
 ]);
+
+const FORK_TITLE_CONTEXT_MAX_CHARS = 280;
+
+/**
+ * Title-prompt lines for a fork: the source's title, its first request and the
+ * last one before the fork point. The first names the subject; the last is
+ * what the fork's own follow-up ("now do the same for mobile") refers to.
+ */
+function forkTitleContext(
+  sourceTitle: string | null | undefined,
+  envelopes: readonly AgentChatEventEnvelope[],
+): string[] | undefined {
+  const requests = envelopes.flatMap(({ event }) => {
+    if (event.type !== "user_message") return [];
+    const text = (event.displayText ?? event.text).replace(/\s+/g, " ").trim();
+    return text.length ? [text.slice(0, FORK_TITLE_CONTEXT_MAX_CHARS)] : [];
+  });
+  const first = requests[0];
+  const last = requests.length > 1 ? requests[requests.length - 1] : undefined;
+  const lines = [
+    sourceTitle?.trim() ? `Forked from chat: ${sourceTitle.trim()}` : null,
+    first ? `Earlier request: ${first}` : null,
+    last ? `Latest earlier request: ${last}` : null,
+  ].filter((line): line is string => line != null);
+  return lines.length ? lines : undefined;
+}
 
 const GENERIC_REMAINDER_TOKENS = new Set([
   "ok", "okay", "yes", "no", "true", "false",
@@ -17594,6 +17639,10 @@ export function createAgentChatService(args: {
 
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleChanged = currentTitle?.trim() !== title;
+    // ADE pushes its own titles to Codex (`thread/name/set`), which reports
+    // them straight back. That echo is ADE's title, not the runtime's; taking
+    // it as one would stop ADE refining a title it wrote itself.
+    if (!titleChanged && !managed.runtimeTitleAdopted) return null;
     if (titleChanged) {
       persistSessionTitleMetadata(managed, title, false);
     }
@@ -17653,7 +17702,13 @@ export function createAgentChatService(args: {
 
   const maybeAutoTitleSession = async (
     managed: ManagedChatSession,
-    args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
+    args: {
+      stage: "initial" | "final";
+      latestUserText?: string | null;
+      summary?: string | null;
+      /** Replace the title the initial stage wrote, not just a default one. */
+      refine?: boolean;
+    }
   ): Promise<void> => {
     if (managed.deleted) return;
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
@@ -17679,7 +17734,8 @@ export function createAgentChatService(args: {
     }
     if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
     const titleAfterWait = sessionService.get(managed.session.id)?.title ?? null;
-    if (hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
+    const refiningOwnTitle = args.refine === true && managed.autoTitleStage === "initial";
+    if (!refiningOwnTitle && hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
 
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
@@ -17694,6 +17750,7 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleContext = [
       `Lane: ${laneName}`,
+      ...(managed.autoTitleInheritedContext ?? []),
       `Model: ${getModelById(managed.session.modelId ?? "")?.displayName ?? managed.session.model}`,
       `Primary request: ${seed}`,
       args.summary?.trim().length
@@ -17719,8 +17776,12 @@ export function createAgentChatService(args: {
               modelId: descriptor.id,
               systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
               prompt: [
-                args.stage === "final"
+                refiningOwnTitle
+                  ? "Its first run has finished. Write a concise title for this coding chat that names what the run actually did, not how the request was phrased."
+                  : args.stage === "final"
                   ? "Write a final concise title for this completed coding chat."
+                  : managed.autoTitleInheritedContext?.length
+                  ? "Write a concise title for this coding chat. It was forked from an earlier chat: name the subject it inherited, plus the new direction its primary request takes."
                   : "Write a concise title for this new coding chat.",
                 titleContext.join("\n"),
               ].join("\n\n"),
@@ -17746,7 +17807,15 @@ export function createAgentChatService(args: {
           },
         });
       if (adopted) {
+        logger.info("agent_chat.auto_title_generated", {
+          sessionId: managed.session.id,
+          stage: args.stage,
+          refine: refiningOwnTitle,
+          changed: adopted.trim() !== String(titleAfterWait ?? "").trim(),
+          attemptCount,
+        });
         managed.autoTitleStage = args.stage;
+        if (args.stage === "initial") armAutoTitleRefine(managed);
         return;
       }
 
@@ -17766,6 +17835,7 @@ export function createAgentChatService(args: {
       const fallbackTitle = setManagedSessionTitle(managed, deterministic);
       if (!fallbackTitle) return;
       managed.autoTitleStage = args.stage;
+      if (args.stage === "initial") armAutoTitleRefine(managed);
       logger.info("agent_chat.auto_title_deterministic_fallback", {
         sessionId: managed.session.id,
         stage: args.stage,
@@ -17775,6 +17845,29 @@ export function createAgentChatService(args: {
     } finally {
       managed.autoTitleInFlight = false;
     }
+  };
+
+  /**
+   * The first-prompt title is a guess: "fix it" names nothing. Once a run has
+   * completed, ask once more with what the agent actually did. Exactly once
+   * per chat, whichever of the title and the run lands first.
+   */
+  const startAutoTitleRefine = (managed: ManagedChatSession): void => {
+    managed.autoTitleRefine = undefined;
+    // Deferred a tick: arming happens inside the initial stage, which still
+    // holds `autoTitleInFlight` until its own `finally` has run.
+    void Promise.resolve().then(() => maybeAutoTitleSession(managed, { stage: "final", refine: true }));
+  };
+
+  function armAutoTitleRefine(managed: ManagedChatSession): void {
+    if (managed.autoTitleRefine === "due") startAutoTitleRefine(managed);
+    else managed.autoTitleRefine = "armed";
+  }
+
+  const noteAutoTitleRunCompleted = (managed: ManagedChatSession): void => {
+    if (managed.autoTitleStage === "final") return;
+    if (managed.autoTitleRefine === "armed") startAutoTitleRefine(managed);
+    else if (managed.autoTitleStage === "none") managed.autoTitleRefine = "due";
   };
 
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
@@ -18754,9 +18847,6 @@ export function createAgentChatService(args: {
     const titleReasoningEffort = typeof titleReasoningEffortRaw === "string" && titleReasoningEffortRaw.trim().length
       ? titleReasoningEffortRaw.trim()
       : null;
-    const titleRefreshOnComplete = si?.titles?.refreshOnComplete
-      ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
-      ?? true;
 
     // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
@@ -18779,7 +18869,6 @@ export function createAgentChatService(args: {
       titleGenerationEnabled,
       titleModelId,
       titleReasoningEffort,
-      titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
       summaryReasoningEffort,
@@ -23470,6 +23559,7 @@ export function createAgentChatService(args: {
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
       settleClaudeGoalOnTurnEnd(managed, event.status);
+      if (event.status === "completed") noteAutoTitleRunCompleted(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -31816,6 +31906,13 @@ export function createAgentChatService(args: {
               turnId,
             });
             emitClaudeTranscriptRetraction(managed, retractedUuids, "model_refusal_fallback", turnId);
+            // `local` is a subagent or side question that fell back on its
+            // own; the chat stays on its model. Session scope (or none, from
+            // an older CLI) means Claude Code now runs this chat on the
+            // fallback, so the picker, the next resume and pricing follow it.
+            if (fallbackMsg.scope !== "local" && typeof fallbackMsg.fallback_model === "string") {
+              followClaudeRefusalFallbackModel(managed, fallbackMsg.fallback_model);
+            }
             continue;
           }
 
@@ -44551,6 +44648,139 @@ export function createAgentChatService(args: {
     return { behavior: "completed", result: choice };
   };
 
+  /**
+   * Render an MCP server's elicitation (a form it needs filled, or an
+   * authorization link) as the same card Codex and Copilot raise for theirs.
+   *
+   * Without this callback the Agent SDK declines every elicitation on the
+   * spot, so a server that asks for input looked to the user like a tool that
+   * failed for no reason. It parks on `runtime.approvals` for the same reason
+   * the resume dialog does: every turn-ending path already settles that map.
+   */
+  const buildClaudeElicitationHandler = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): NonNullable<ClaudeSDKOptions["onElicitation"]> => async (request, options) => {
+    const serverName = request.serverName?.trim() || "MCP server";
+    const mode = request.mode ?? "form";
+    const url = mode === "url" ? request.url?.trim() || null : null;
+    const message = request.message?.trim()
+      || (mode === "url" ? `Open the ${serverName} authorization link?` : `${serverName} is requesting input.`);
+    const schema = asRecord(request.requestedSchema);
+    const questions = mode === "form" ? mcpElicitationQuestions(schema) : [];
+    const logElicitation = (result: string): void => {
+      logger.info("chat.claude.mcp_elicitation", { sessionId: managed.session.id, server: serverName, mode, result });
+    };
+    // A host policy that refuses whatever it is not told to allow has no one
+    // behind it to answer a card, which is what the SDK's own decline means.
+    if (codexApprovalDeniesByPolicy(managed.session)) {
+      logElicitation("declined_by_policy");
+      return { action: "decline" };
+    }
+    const itemId = `mcp-elicitation:${serverName}:${options.requestId || randomUUID()}`;
+    const pendingRequest: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "claude",
+      kind: questions.length ? "structured_question" : "approval",
+      title: request.title?.trim() || `${request.displayName?.trim() || serverName} permission`,
+      description: message,
+      questions,
+      allowsFreeform: questions.some((question) => question.allowsFreeform === true),
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        mcpElicitation: true,
+        serverName,
+        mode,
+        persistenceSupported: false,
+        ...(url ? { url } : {}),
+      },
+      turnId: runtime.activeTurnId ?? null,
+    };
+    emitPendingInputRequest(managed, pendingRequest, {
+      kind: "tool_call",
+      description: message,
+      detail: { serverName, mode, persistenceSupported: false },
+    });
+
+    let abandoned = false;
+    let response: {
+      decision?: AgentChatApprovalDecision;
+      answers?: Record<string, string | string[]>;
+      responseText?: string | null;
+    };
+    try {
+      runtime.pauseIdleWatchdog?.();
+      response = await new Promise<typeof response>((resolve) => {
+        const entry = { kind: "question" as const, resolve, request: pendingRequest };
+        runtime.approvals.set(itemId, entry);
+        const onAbort = (): void => {
+          if (runtime.approvals.get(itemId) !== entry) return;
+          runtime.approvals.delete(itemId);
+          abandoned = true;
+          resolve({ decision: "cancel" });
+        };
+        if (options.signal.aborted) onAbort();
+        else options.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    } finally {
+      runtime.approvals.delete(itemId);
+      runtime.resumeIdleWatchdog?.();
+    }
+
+    if (abandoned) {
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId: pendingRequest.turnId ?? null,
+        questions: pendingRequest.questions,
+      });
+      logElicitation("cancelled");
+      return { action: "cancel" };
+    }
+    if (response.decision === "cancel" || response.decision === "decline") {
+      logElicitation(response.decision);
+      return { action: response.decision };
+    }
+    logElicitation("accepted");
+    if (mode !== "form") return { action: "accept" };
+    return {
+      action: "accept",
+      content: mcpElicitationContent(schema, response.answers, response.responseText) as Record<string, string | number | boolean | string[]>,
+    };
+  };
+
+  /**
+   * Point the chat at the model Claude Code switched it to after a refusal.
+   * The live query is already on it, so nothing is sent to the CLI; this only
+   * makes ADE's record agree. A preset or credential route keeps its model:
+   * moving off it would change the endpoint, which Claude did not do.
+   */
+  const followClaudeRefusalFallbackModel = (managed: ManagedChatSession, fallbackModel: string): void => {
+    const modelId = resolveClaudeCliModelIdFromRuntimeValue(fallbackModel);
+    const skip = (reason: string): void => {
+      logger.info("agent_chat.claude_refusal_fallback_model_kept", {
+        sessionId: managed.session.id,
+        fallbackModel,
+        reason,
+      });
+    };
+    if (!modelId) return skip("unknown_model");
+    if (managed.session.modelId === modelId) return;
+    if (managed.session.presetId?.trim() || managed.session.credentialId?.trim()) return skip("launch_route");
+    const previousModelId = managed.session.modelId ?? managed.session.model;
+    managed.session.modelId = modelId;
+    managed.session.model = modelId;
+    persistChatState(managed);
+    emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated" });
+    logger.info("agent_chat.claude_refusal_fallback_model_followed", {
+      sessionId: managed.session.id,
+      fromModelId: previousModelId,
+      toModelId: modelId,
+    });
+  };
+
   /** The Claude Code each runtime's latest query was built on: a refusal names the build refused. */
   const claudeExecutableByRuntime = new WeakMap<ClaudeRuntime, ClaudeCodeExecutableResolution>();
   /** Runtimes whose pre-warm already started again after a fall-forward (once each). */
@@ -45009,6 +45239,7 @@ export function createAgentChatService(args: {
       if (!claudeResumeDialogPreference?.isDismissed()) {
         opts.supportedDialogKinds = [...CLAUDE_SUPPORTED_DIALOG_KINDS];
       }
+      opts.onElicitation = buildClaudeElicitationHandler(managed, runtime);
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
       // Tool search is left to the pinned CLI's default, for every session,
@@ -49305,6 +49536,10 @@ export function createAgentChatService(args: {
         },
       }));
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
+      createdManaged.autoTitleInheritedContext = forkTitleContext(
+        hasCustomChatSessionTitle(sourceSession.title, sourceProvider) ? sourceSession.title : null,
+        keptEnvelopes,
+      );
     }
 
     let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;

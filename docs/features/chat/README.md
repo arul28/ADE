@@ -4047,6 +4047,49 @@ wired, only the declaration is withheld. Every dialog logs
 same sessions as the tool gate: a lightweight or embedder-owned personal chat
 declares no kinds.
 
+### Claude MCP elicitations
+
+An MCP server can ask for input mid-tool (a form, or an authorization link).
+Without `Options.onElicitation` the Agent SDK declines every such request on
+the spot, so the tool looked like it failed for no reason. ADE passes
+`buildClaudeElicitationHandler` to the same sessions that get dialogs, and it
+raises the card Codex and Copilot already raise: `providerMetadata.mcpElicitation`,
+a `structured_question` built by `mcpElicitationQuestions` for a form (an
+`approval` when the schema has no fields), and the **Open authorization**
+button for a URL. It parks on `runtime.approvals` like `resume_return`, so
+every turn-ending path settles it; the SDK's abort signal cancels it.
+Accept answers `{action: "accept", content}` with `mcpElicitationContent`;
+Deny answers `decline`; an interrupt answers `cancel`. A host policy with
+`fallback: "deny"` declines without a card. Every elicitation logs
+`chat.claude.mcp_elicitation`. The card lives on the chat's own brain, so a
+remote client answers it through the chat's pinned `respondToInput` like any
+other card.
+
+### Refusal fallback follows the model
+
+When Claude Code retries a refused turn on its fallback model
+(`system/model_refusal_fallback`) with `scope: "session"` (or no scope, from
+an older CLI), it now runs the chat on that model. ADE writes the fallback's
+registry id to `session.modelId`/`model` (`followClaudeRefusalFallbackModel`)
+and emits `session_meta_updated`, so the picker, the next resume and pricing
+agree with the CLI. `scope: "local"` (a subagent or side question) changes
+nothing, and a chat on a harness preset or stored credential keeps its model.
+The fallback *prompt* dialog stays undeclared (above).
+
+### Title refinement
+
+The first title is written from the first prompt alone. After the chat's
+first completed run, ADE asks once more with the run's output
+(`autoTitleRefine`, then `maybeAutoTitleSession({ stage: "final", refine:
+true })`), whichever of the title and the run lands first. It only rewrites a
+title ADE wrote itself in this process: never a manual title, a runtime's own
+title, or a reloaded chat's. A runtime that echoes ADE's own title back
+(Codex `thread/name/set`) does not count as a runtime title. A fork carries
+its source's title and first and latest requests into its first title prompt
+(`autoTitleInheritedContext`), so "now do the same for mobile" is named after
+what it inherited. Placeholder answers such as `title`, `thread` or `none` are
+rejected like the other generic titles.
+
 ## Fragile and tricky wiring
 
 - **Transcript measurement is in layout pixels.** The hosted web client

@@ -136,7 +136,11 @@ export type CustomWebhookServiceDeps = {
     summary: string;
     eventName: string | null;
     webhook: { method: string; headers: Record<string, string>; query: Record<string, string>; body: unknown };
+    /** Start a delivery accepted before a restart whose run never started. */
+    resume?: boolean;
   }) => Promise<AutomationIngressEventRecord | null>;
+  /** Event keys of webhook deliveries this machine accepted whose runs never started. */
+  listUnstartedEventKeys?: () => string[];
   onDeliveriesChanged?: (hookId: string) => void;
   fetchImpl?: typeof fetch;
 };
@@ -563,6 +567,47 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return entry && entry.expiresAt > Date.now() ? entry : null;
   };
 
+  const dispatchSummary = (config: AutomationWebhookTriggerConfig, eventLabel: string | null): string => {
+    const preset = webhookPresetDef(config.preset);
+    return `${config.preset && config.preset !== "generic" ? preset.label : "Webhook"}${eventLabel ? `: ${eventLabel}` : ""}`;
+  };
+
+  /** Write a dispatched delivery's real outcome once its run has started or failed to. */
+  const settleDispatch = (
+    deliveryId: string,
+    hookId: string,
+    dispatched: Promise<AutomationIngressEventRecord | null>,
+  ): void => {
+    void dispatched.then((ingress) => {
+      if (!ingress) return;
+      // Only a dispatched run stays `ran` and keeps its duplicate key. An
+      // ignored or failed one started nothing, so the sender's redelivery must
+      // be allowed to try again rather than read as a duplicate.
+      const outcome: AutomationWebhookDeliveryOutcome = ingress.status === "failed"
+        ? "error"
+        : ingress.status === "ignored" ? "filtered" : "ran";
+      const detail = outcome === "error"
+        ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}`
+        : outcome === "filtered"
+          ? "No run started: the automation's other conditions (active hours, event or branch) did not match."
+          : null;
+      deps.db.run(
+        `update automation_webhook_deliveries
+            set ingress_event_id = ?, outcome = ?, detail = ?, dedupe_key = case when ? = 'ran' then dedupe_key else null end
+          where project_id = ? and id = ?`,
+        [ingress.id, outcome, detail, outcome, deps.projectId, deliveryId],
+      );
+      deps.onDeliveriesChanged?.(hookId);
+    }).catch((error: unknown) => {
+      deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
+      deps.db.run(
+        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
+        [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
+      );
+      deps.onDeliveriesChanged?.(hookId);
+    });
+  };
+
   const receive = async (
     request: WebhookIncomingRequest,
     options: {
@@ -708,45 +753,72 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       event_key: eventKey,
       prompt_text: prompt,
     });
-    const preset = webhookPresetDef(config.preset);
     // Reply first: the run can take minutes and senders time out in seconds.
-    void deps.dispatch({
+    // The ingress row is written before `dispatch` first yields, so once this
+    // returns the delivery survives a restart (see `resumeInterruptedDeliveries`).
+    settleDispatch(deliveryId, hookId, deps.dispatch({
       hookId,
       via: request.via,
       eventKey,
       automationId: rule.id,
-      summary: `${config.preset && config.preset !== "generic" ? preset.label : "Webhook"}${eventLabel ? `: ${eventLabel}` : ""}`,
+      summary: dispatchSummary(config, eventLabel),
       eventName: eventLabel,
       webhook: { method: base.method, headers: request.headers, query: request.query, body: parsedBody },
-    }).then((ingress) => {
-      if (!ingress) return;
-      // Only a dispatched run stays `ran` and keeps its duplicate key. An
-      // ignored or failed one started nothing, so the sender's redelivery must
-      // be allowed to try again rather than read as a duplicate.
-      const outcome: AutomationWebhookDeliveryOutcome = ingress.status === "failed"
-        ? "error"
-        : ingress.status === "ignored" ? "filtered" : "ran";
-      const detail = outcome === "error"
-        ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}`
-        : outcome === "filtered"
-          ? "No run started: the automation's other conditions (active hours, event or branch) did not match."
-          : null;
-      deps.db.run(
-        `update automation_webhook_deliveries
-            set ingress_event_id = ?, outcome = ?, detail = ?, dedupe_key = case when ? = 'ran' then dedupe_key else null end
-          where project_id = ? and id = ?`,
-        [ingress.id, outcome, detail, outcome, deps.projectId, deliveryId],
-      );
-      deps.onDeliveriesChanged?.(hookId);
-    }).catch((error: unknown) => {
-      deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
-      deps.db.run(
-        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
-        [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
-      );
-      deps.onDeliveriesChanged?.(hookId);
-    });
+    }));
     return { status: 202, outcome: "ran", deliveryId };
+  };
+
+  /**
+   * Start the deliveries this machine answered (and the relay forgot) whose
+   * runs never started because ADE stopped first: a crash, an update, a
+   * restart while they waited behind a long run. Each runs once: its ingress
+   * row is claimed when a run starts, so one that did start is not picked up.
+   * Runs once per service, at start.
+   */
+  let resumedInterrupted = false;
+  const resumeInterruptedDeliveries = (): void => {
+    if (resumedInterrupted || !deps.listUnstartedEventKeys) return;
+    resumedInterrupted = true;
+    const eventKeys = deps.listUnstartedEventKeys();
+    if (!eventKeys.length) return;
+    const rows = eventKeys.flatMap((eventKey) => deps.db.all<DeliveryRow>(
+      `select * from automation_webhook_deliveries
+        where project_id = ? and event_key = ? and outcome = 'ran' and ingress_event_id is null
+        order by received_at asc limit 1`,
+      [deps.projectId, eventKey],
+    ));
+    for (const row of rows) {
+      const match = findRuleForHook(row.hook_id);
+      if (row.body_truncated === 1 || !match || row.rule_id !== match.rule.id || !row.event_key) {
+        // Its body was not kept whole, or its automation is gone or changed.
+        // Say so, and free the sender's id so a resend is not a duplicate.
+        deps.db.run(
+          "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
+          [
+            row.body_truncated === 1
+              ? "ADE restarted before this ran, and the body was too large to keep, so it cannot run now. Have the service send it again."
+              : "ADE restarted before this ran, and the automation it was for has since changed or been removed.",
+            deps.projectId,
+            row.id,
+          ],
+        );
+        deps.onDeliveriesChanged?.(row.hook_id);
+        continue;
+      }
+      const headers = parseJsonRecord(row.headers_json);
+      const body = parseWebhookBody(Buffer.from(row.body_text ?? "", "utf8"), row.content_type);
+      deps.logger.info("automations.webhook_delivery_resumed", { hookId: row.hook_id, deliveryId: row.id });
+      settleDispatch(row.id, row.hook_id, deps.dispatch({
+        hookId: row.hook_id,
+        via: row.via as AutomationWebhookDeliveryVia,
+        eventKey: row.event_key,
+        automationId: match.rule.id,
+        summary: dispatchSummary(match.config, row.event_label),
+        eventName: row.event_label,
+        webhook: { method: row.method, headers, query: parseJsonRecord(row.query_json), body },
+        resume: true,
+      }));
+    }
   };
 
   /** Run a logged delivery again with the automation as it is now. */
@@ -854,6 +926,11 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     retireEndpoint,
     retireForDeletedRule,
     start() {
+      try {
+        resumeInterruptedDeliveries();
+      } catch (error) {
+        deps.logger.warn("automations.webhook_resume_failed", { error: errorMessage(error) });
+      }
       if (!relayDrain.start()) return;
       void retireOrphans()
         // Registration is idempotent; refreshing it on start heals a relay
