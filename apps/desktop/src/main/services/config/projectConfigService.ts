@@ -85,6 +85,7 @@ import {
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
 import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
+import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
@@ -3074,12 +3075,17 @@ function readLocalHashFromDisk(filePath: string): string {
 }
 
 function changedOnDiskError(): Error {
-  return codedError(
-    encodeCodedErrorMessage(
+  // An answer, not a defect: someone edited the file, and Settings re-reads
+  // and retries. Marked so the IPC boundary logs it instead of opening an issue.
+  return markExpected(
+    codedError(
+      encodeCodedErrorMessage(
+        PROJECT_CONFIG_CHANGED_ON_DISK,
+        ".ade/local.yaml changed on disk since these settings were read. Reload and try again.",
+      ),
       PROJECT_CONFIG_CHANGED_ON_DISK,
-      ".ade/local.yaml changed on disk since these settings were read. Reload and try again.",
     ),
-    PROJECT_CONFIG_CHANGED_ON_DISK,
+    "user",
   );
 }
 
