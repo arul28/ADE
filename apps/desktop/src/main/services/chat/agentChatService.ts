@@ -6936,6 +6936,20 @@ function formatCodexDurationMs(value: unknown): string {
   return `${minutes}m`;
 }
 
+/**
+ * Codex's sleep tool as a normal tool row (call, then result under one item
+ * id), the way other providers' `sleep N` shell waits read.
+ */
+function codexSleepToolEvents(item: Record<string, unknown>, itemId: string, turnId: string | undefined) {
+  const durationMs = numberOrNull(item.durationMs ?? item.duration_ms);
+  const duration = formatCodexDurationMs(durationMs);
+  return {
+    duration,
+    call: { type: "tool_call", tool: "sleep", args: { duration, durationMs }, itemId, turnId },
+    result: { type: "tool_result", tool: "sleep", result: `Waited ${duration}`, itemId, turnId, status: "completed" },
+  } satisfies { duration: string; call: AgentChatEvent; result: AgentChatEvent };
+}
+
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -41078,36 +41092,18 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // Codex's sleep tool reads as a normal tool row (call, then result under
-    // one item id), the way other providers' `sleep N` shell waits read.
     if (itemType === "sleep") {
-      const durationMs = numberOrNull(item.durationMs ?? item.duration_ms);
-      const duration = formatCodexDurationMs(durationMs);
+      const sleep = codexSleepToolEvents(item, itemId, turnId);
       if (eventKind === "started") {
         emitChatEvent(managed, {
           type: "activity",
           activity: "working",
-          detail: `Waiting ${duration}`,
+          detail: `Waiting ${sleep.duration}`,
           turnId,
         });
-        emitChatEvent(managed, {
-          type: "tool_call",
-          tool: "sleep",
-          args: { duration, durationMs },
-          itemId,
-          turnId,
-        });
+        emitChatEvent(managed, sleep.call);
       }
-      if (eventKind === "completed") {
-        emitChatEvent(managed, {
-          type: "tool_result",
-          tool: "sleep",
-          result: `Waited ${duration}`,
-          itemId,
-          turnId,
-          status: "completed",
-        });
-      }
+      if (eventKind === "completed") emitChatEvent(managed, sleep.result);
       return;
     }
 
@@ -41701,6 +41697,15 @@ export function createAgentChatService(args: {
           ...(resourceLinks.length ? { resourceLinks } : {}),
         });
       }
+      rememberReconciledItemSignature(runtime, turnId, signature);
+      return true;
+    }
+    // A sleep that finished while we were not listening still needs its call,
+    // or the row has no duration. The call merges into any live one by item id.
+    if (itemType === "sleep" && !isCodexReconciledItemInProgress(item.status)) {
+      const sleep = codexSleepToolEvents(item, itemId, turnId);
+      emitChatEvent(managed, sleep.call);
+      emitChatEvent(managed, sleep.result);
       rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }

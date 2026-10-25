@@ -3364,6 +3364,7 @@ function renderEvent(
     );
   }
 
+  // Legacy pill for saved chats; new Codex sleeps arrive as tool rows.
   if (event.type === "codex_sleep") {
     const duration = formatCompactDuration(event.durationMs);
     const isRunning = event.status === "running";
