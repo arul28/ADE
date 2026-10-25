@@ -3080,6 +3080,12 @@ type ClaudeRuntime = {
    */
   foregroundBashToolUseIds: Set<string>;
   /**
+   * Bash calls ADE moved to the background for a steer. They were the turn's
+   * foreground work, which Stop always ended, so every Stop still stops them,
+   * even a Stop that spares background jobs the agent started on its own.
+   */
+  steerBackgroundedBashToolUseIds: Set<string>;
+  /**
    * Stash for Task-tool inputs captured at the assistant tool_use boundary,
    * keyed by the Task tool_use_id. Lets the `system:task_*` system-message
    * path enrich its envelopes with the `subagent_type` the model picked
@@ -29571,6 +29577,7 @@ export function createAgentChatService(args: {
           CLAUDE_BACKGROUND_TASKS_TIMEOUT_MS,
           () => control.backgroundTasks!(toolUseId),
         );
+        if (moved) runtime.steerBackgroundedBashToolUseIds.add(toolUseId);
         logger.info("agent_chat.claude_steer_backgrounded_bash", {
           sessionId: managed.session.id,
           toolUseId,
@@ -29615,6 +29622,28 @@ export function createAgentChatService(args: {
       message: outcome.message,
       ...(turnId ? { turnId } : {}),
     });
+  };
+
+  /** Stop the Bash calls a steer moved to the background (see the field). */
+  const stopSteerBackgroundedClaudeBash = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): Promise<void> => {
+    if (!runtime.steerBackgroundedBashToolUseIds.size) return;
+    const toolUseIds = new Set(runtime.steerBackgroundedBashToolUseIds);
+    runtime.steerBackgroundedBashToolUseIds.clear();
+    const taskIds = [...runtime.activeSubagents.values()]
+      .filter((task) => task.parentToolUseId != null && toolUseIds.has(task.parentToolUseId))
+      .map((task) => task.taskId);
+    for (const taskId of taskIds) {
+      const result = await stopTask({ sessionId: managed.session.id, taskId });
+      logger.info("agent_chat.claude_stop_steer_backgrounded_bash", {
+        sessionId: managed.session.id,
+        taskId,
+        stopped: result.stopped,
+        ...(result.reason ? { reason: result.reason } : {}),
+      });
+    }
   };
 
   const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
@@ -45615,6 +45644,7 @@ export function createAgentChatService(args: {
     runtime.scheduledWorkSignatures.clear();
     runtime.scheduledWorkLastEvents.clear();
     runtime.foregroundBashToolUseIds.clear();
+    runtime.steerBackgroundedBashToolUseIds.clear();
     // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
@@ -46853,6 +46883,7 @@ export function createAgentChatService(args: {
       emittedSubagentStartIds: new Set(),
       detachedToolCalls: new Map(),
       foregroundBashToolUseIds: new Set(),
+      steerBackgroundedBashToolUseIds: new Set(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
       subagentSpawnNameById: new Map(),
@@ -63641,6 +63672,9 @@ export function createAgentChatService(args: {
     // Claude Code drops a detached WebFetch/WebSearch on any interrupt, even in
     // the stop modes that spare background jobs.
     closeDetachedClaudeToolCalls(managed, runtime, "Stopped before the result arrived.");
+    // A Stop that spares background jobs still ends the Bash calls a steer
+    // moved there: before the steer they were this chat's foreground work.
+    if (!stopModeStopsBackground(mode)) await stopSteerBackgroundedClaudeBash(managed, runtime);
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
       runtime.interruptEventsEmitted = true;

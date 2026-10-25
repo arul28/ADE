@@ -97,7 +97,9 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
   }
   const wake = metadata.scheduledWake;
   if (wake && typeof wake.kind === "string") {
-    return make("schedule", SCHEDULE_SENDER[wake.kind] ?? "Scheduled wake-up", null, wake.reason?.trim());
+    // The "Woke on schedule" divider above already names the reason, so the
+    // row previews the prompt itself.
+    return make("schedule", SCHEDULE_SENDER[wake.kind] ?? "Scheduled wake-up", null);
   }
   return null;
 }
