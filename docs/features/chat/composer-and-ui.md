@@ -1044,11 +1044,13 @@ chat pane mount, which happens either way.
   surface that mounts the picker gets it, and the composer toolbar keeps one
   control where it used to spend two.
   **The account gate comes first.** When the account has not allowed Fast
-  (`fastModeAllowed === false`), the popover offers no per-row chip at all and
-  the picker draws a muted lightning beside the trigger. That lightning is not
-  a toggle: clicking it opens Settings → Chat → Fast mode and rings that row
-  with the "show me" spotlight. No banner, toast or repeated "Fast is disabled"
-  copy — the muted glyph and the Settings row are the whole story. The composer
+  (`fastModeAllowed === false`), the composer toolbar shows no Fast control:
+  Fast is rarely used, so it stays out of sight. The popover's per-row Fast
+  chips stay, but they do not turn Fast on. A press closes the popover and
+  calls `onFastModeLocked`, which opens a small `confirmDialog` ("Turn on Fast
+  mode in Settings"). Continue opens Settings → Chat → Fast mode and rings that
+  row with the "show me" spotlight. A surface that passes no `onFastModeLocked`
+  gets no Fast chips while locked. No banner or toast. The composer
   never sends `fastMode: true` while locked; the brain refuses it anyway.
   The row chip renders whenever that
   descriptor advertises `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows,

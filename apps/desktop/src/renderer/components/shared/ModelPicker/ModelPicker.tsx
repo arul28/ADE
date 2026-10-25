@@ -144,13 +144,16 @@ export type ModelPickerProps = {
    */
   fastModeUnavailableReason?: string | null;
   /**
-   * Whether this ADE account allows Fast at all. False keeps the selector's
-   * Fast half out of the popover and renders a muted lightning beside the
-   * trigger that leads to Settings instead of turning anything on. Absent means
-   * allowed, which is what older surfaces and older hosts assume.
+   * Whether this ADE account allows Fast at all. False never turns Fast on:
+   * without `onFastModeLocked` the popover has no Fast half, and with it the
+   * Fast chips stay but call `onFastModeLocked` instead. Absent means allowed,
+   * which is what older surfaces and older hosts assume.
    */
   fastModeAllowed?: boolean;
-  /** Where the locked lightning goes: the Fast-mode row in Settings. */
+  /**
+   * Called when the user tries to turn Fast on while the account does not
+   * allow it. The popover closes first; the caller asks to open Settings.
+   */
   onFastModeLocked?: () => void;
   /** Cursor Cloud's nullable three-state service-tier control. */
   serviceTierMode?: boolean;
@@ -458,8 +461,20 @@ export const ModelPicker = memo(function ModelPicker({
     [availableSet],
   );
 
+  // A locked account keeps the Fast chips, but pressing one asks the caller to
+  // send the user to Settings instead of turning anything on.
+  const fastModeLockedPrompt = !fastModeAllowed && onFastModeLocked ? onFastModeLocked : null;
+  const handleFastModeLocked = useCallback(() => {
+    setOpen(false);
+    fastModeLockedPrompt?.();
+  }, [fastModeLockedPrompt]);
+
   const handleSelect = useCallback(
     (modelId: string, options?: ModelPickerSelection) => {
+      if (fastModeLockedPrompt && options?.fastMode) {
+        handleFastModeLocked();
+        return;
+      }
       if (options) {
         onChange(modelId, options);
       } else {
@@ -467,7 +482,7 @@ export const ModelPicker = memo(function ModelPicker({
       }
       setOpen(false);
     },
-    [onChange],
+    [fastModeLockedPrompt, handleFastModeLocked, onChange],
   );
 
   const handleRequestClose = useCallback(() => {
@@ -504,7 +519,6 @@ export const ModelPicker = memo(function ModelPicker({
   const legacyFastChip = fastModeAllowed && !onFastModeChange && typeof onFastModeToggle === "function";
   const legacyFastSupported = legacyFastChip
     && (fastModeSupported ?? modelSupportsFastMode(selectedModel));
-  const lockedFastSupported = fastModeSupported ?? modelSupportsFastMode(selectedModel);
   const serviceTierSupported = serviceTierMode
     && (modelSupportsServiceTier(selectedModel, "fast") || modelSupportsServiceTier(selectedModel, "standard"));
   // A locked account shows Standard even if the chat's stored cloud tier is
@@ -586,11 +600,18 @@ export const ModelPicker = memo(function ModelPicker({
                 effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange && fastModeAllowed ? { onFastModeChange } : {})}
+                {...(!serviceTierMode && onFastModeChange && fastModeLockedPrompt
+                  ? { onFastModeChange: (next: boolean) => { if (next) handleFastModeLocked(); } }
+                  : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
                   serviceTier: serviceTierForDisplay,
                   onServiceTierChange: (modelId: string, next: CursorCloudServiceTier | null) => {
+                    if (fastModeLockedPrompt && next === "fast") {
+                      handleFastModeLocked();
+                      return;
+                    }
                     const nextTier = fastModeAllowed ? next : "standard";
                     const model = modelList.find((entry) => entry.id === modelId);
                     if (!model) return;
@@ -612,25 +633,6 @@ export const ModelPicker = memo(function ModelPicker({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-      {!fastModeAllowed && lockedFastSupported && onFastModeLocked ? (
-        <button
-          type="button"
-          data-model-picker-fast-locked="true"
-          aria-label="Fast mode is off for your account. Open Settings to turn it on."
-          title="Fast mode is off for your account. Click to turn it on."
-          onClick={onFastModeLocked}
-          className={cn(
-            "inline-flex shrink-0 items-center justify-center rounded-md border font-sans font-semibold transition-colors",
-            compact
-              ? "ade-chat-composer-fast-toggle h-6 gap-0.5 px-1.5 text-[9px]"
-              : "h-8 gap-1 px-2 text-[11px]",
-            "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/45 hover:border-fg/[0.14] hover:bg-fg/[0.05] hover:text-muted-fg/75",
-          )}
-        >
-          <Lightning size={compact ? 10 : 13} weight="regular" />
-          <span className={cn(compact ? "ade-chat-composer-fast-label" : undefined)}>Fast</span>
-        </button>
-      ) : null}
       {legacyFastSupported ? (
         <LegacyFastModeButton
           active={fastModeOn}

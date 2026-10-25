@@ -996,8 +996,9 @@ Every client is told the answer, so no surface has to guess: the session summary
 carries `fastModeAllowed`, and `chat.getLaunchDefaults` carries it for a new
 chat. Absent means an older host that cannot enforce the permission, which
 clients treat as allowed. On desktop and web a false value locks the model
-picker's Fast half and draws the composer's lightning muted; clicking it opens
-Settings → Chat → Fast mode, where the "show me" spotlight rings the row. The
+picker's Fast half: the composer shows no Fast control, and a Fast chip in the
+picker opens a small dialog. Its Continue button opens Settings → Chat → Fast
+mode, where the "show me" spotlight rings the row. The
 phone draws the same muted bolt, disables the picker's Fast switch, and offers
 the switch in Settings › Chat; the hosted web client reaches the same row over
 the sync host (`chat.getFastModeEnabled` / `chat.setFastModeEnabled`), because

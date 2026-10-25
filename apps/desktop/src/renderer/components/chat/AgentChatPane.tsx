@@ -5106,8 +5106,18 @@ export function AgentChatPane({
     setCursorCloudServiceTier(null);
   }, [fastModeAllowedForComposer, setFastModeState]);
   const goTo = useGoTo();
-  const openFastModeSetting = useCallback(() => {
-    // The same "show me" path ADE Tips uses: land on the row, then ring it.
+  const openFastModeSetting = useCallback(async () => {
+    // Fast stays out of sight until the account turns it on, so a try asks
+    // first. Continue takes the "show me" path ADE Tips uses: land on the
+    // row, then ring it.
+    const confirmed = await confirmDialog({
+      title: "Turn on Fast mode in Settings",
+      message: "Fast mode is off for your account.",
+      confirmLabel: "Continue",
+      tone: "accent",
+      icon: <Lightning size={18} weight="duotone" />,
+    });
+    if (!confirmed) return;
     goTo("/settings?tab=chat#fast-mode");
     showSpotlight({
       spots: [{ selector: settingsCardSelector("fast-mode"), label: "Turn on Fast mode here" }],
@@ -16535,7 +16545,7 @@ export function AgentChatPane({
               title={fastModeAllowedForComposer ? undefined : "Fast mode is off for your account. Click to turn it on."}
               onClick={() => {
                 if (!fastModeAllowedForComposer) {
-                  openFastModeSetting();
+                  void openFastModeSetting();
                   return;
                 }
                 handleHandoffFastModeChange(!handoffFastMode);
