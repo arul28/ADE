@@ -1731,7 +1731,9 @@ export function createGitOperationsService({
         runGitRepoCached(
           ["remote", "get-url", "origin"],
           { cwd: lane.worktreePath, timeoutMs: 8_000 },
-          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "stable" },
+          // Volatile: people repoint origin in a terminal, which no ADE
+          // command sees, so a long cache would keep the old repository.
+          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "volatile" },
         ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)

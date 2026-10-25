@@ -185,7 +185,6 @@ import type { createProjectSecretService } from "../secrets/projectSecretService
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
-import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
@@ -11757,8 +11756,13 @@ export function registerIpc({
     try {
       return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
-      // An unknown or missing lane reads as no remote, as it always has here.
-      return fallback;
+      // An unknown lane, or one whose worktree is gone (an unmounted drive),
+      // reads as no remote. The lane row still knows its branch.
+      try {
+        return { remoteUrl: null, branch: ctx.laneService.getLaneBaseAndBranch(laneId).branchRef?.trim() || null };
+      } catch {
+        return fallback;
+      }
     }
   });
 

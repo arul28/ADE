@@ -78,7 +78,7 @@ export function classifyGitPushFailure(
   if (rejectedReason === "stale info") {
     return {
       kind: "stale_lease",
-      message: `The force push to ${branch} stopped because the remote branch changed since this lane last fetched it. Fetch, check the new remote commits, then push again.`,
+      message: `The force push to ${branch} stopped because the remote branch changed since this lane last fetched it. Fetch, check the new remote commits, then force push again if you still want to replace them.`,
     };
   }
   if (rejectedReason === "non-fast-forward" || rejectedReason === "fetch first") {

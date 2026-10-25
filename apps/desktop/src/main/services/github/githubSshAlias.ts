@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import { captureError, captureProblem } from "../../../shared/sentry/capture";
 import {
   githubRepoRefFromSlug,
@@ -92,7 +92,7 @@ function readHostname(stdout: string): string | null {
 
 type SshConfigLookup = { hostname: string | null; failed: boolean };
 
-function reportLookupFailure(error: NodeJS.ErrnoException & { killed?: boolean }): void {
+function reportLookupFailure(error: ExecFileException): void {
   // No ssh on PATH (a Windows host without the OpenSSH client) is an expected
   // setup: the alias stays unresolved, as it was before ADE read ssh config.
   if (error.code === "ENOENT") return;
@@ -125,16 +125,16 @@ function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
           // The alias stays unresolved and the remote is treated as not
           // GitHub, as before ADE read ssh config.
           if (error) {
-            reportLookupFailure(error);
             resolve({ hostname: null, failed: true });
+            reportLookupFailure(error);
             return;
           }
           resolve({ hostname: readHostname(String(stdout ?? "")), failed: false });
         },
       );
     } catch (error) {
-      captureError(error, { fingerprint: ["github-ssh-alias", "spawn"], tags: { kind: "spawn" } });
       resolve({ hostname: null, failed: true });
+      captureError(error, { fingerprint: ["github-ssh-alias", "spawn"], tags: { kind: "spawn" } });
     }
   });
 }
