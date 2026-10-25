@@ -187,8 +187,6 @@ const STDERR_TAIL_LIMIT = 4_000;
  * a fragment cut from it could hold half a secret.
  */
 const STDERR_LINE_LIMIT = 16_000;
-/** How long an exited agent's stderr may stay open before its exit is reported anyway. */
-const STDERR_CLOSE_GRACE_MS = 500;
 
 /**
  * OAuth query values and secrets never reach a log line or an error message.
@@ -463,7 +461,9 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   /**
    * Stderr is redacted a whole line at a time: a secret split across two
    * chunks (`?state` then `=value`) is matched only once both halves arrive.
-   * The unfinished last line joins the tail once stderr closes.
+   * The exit reports the unfinished last line (redacted) in its tail; the log
+   * gets that line once stderr closes, since stderr can still deliver its
+   * rest after `exit`.
    */
   let stderrPartial = "";
   let droppingStderrLine = false;
@@ -477,6 +477,9 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     if (stderrPartial) appendStderr(stderrPartial);
     stderrPartial = "";
   };
+  const stderrTailWithPartial = () =>
+    stderrPartial ? `${stderrTail}${redactAcpDiagnosticText(stderrPartial)}`.slice(-STDERR_TAIL_LIMIT) : stderrTail;
+  child.stderr?.once("close", flushStderrPartial);
   child.stderr?.on("data", (chunk: Buffer | string) => {
     let text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     if (diagnosticLineHandlers.size) readStderrLine(chunk);
@@ -503,24 +506,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   });
   child.on("exit", (code, signal) => {
     logEvent("info", "agent_chat.acp_process_exit", { code, signal });
-    // Stderr can still deliver after `exit`; its last line is redacted and
-    // reported once the stream closes. A grandchild holding it open does not
-    // hold up the exit for long.
-    const settle = () => {
-      flushStderrPartial();
-      settleExit({ code, signal, stderrTail });
-    };
-    const stderr = child.stderr;
-    if (!stderr || stderr.destroyed || stderr.readableEnded) {
-      settle();
-      return;
-    }
-    const grace = setTimeout(settle, STDERR_CLOSE_GRACE_MS);
-    grace.unref?.();
-    stderr.once("close", () => {
-      clearTimeout(grace);
-      settle();
-    });
+    settleExit({ code, signal, stderrTail: stderrTailWithPartial() });
   });
 
   const connection: AcpConnection = {
@@ -535,7 +521,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       initializeResult = value;
     },
     isAlive: () => !disposed && !exited,
-    readStderrTail: () => (stderrPartial ? `${stderrTail}${redactAcpDiagnosticText(stderrPartial)}`.slice(-STDERR_TAIL_LIMIT) : stderrTail),
+    readStderrTail: stderrTailWithPartial,
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {
