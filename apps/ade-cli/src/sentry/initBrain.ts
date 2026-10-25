@@ -22,7 +22,11 @@ import {
 } from "../../../desktop/src/shared/sentry/config";
 import { createSentryEventHooks } from "../../../desktop/src/shared/sentry/eventFilter";
 import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
-import { sentryMachineContext, sentryProcessTags } from "../../../desktop/src/main/sentry/machineContext";
+import {
+  sentryMachineContext,
+  sentryProcessTags,
+  startNodeSentryDiagnostics,
+} from "../../../desktop/src/main/sentry/machineContext";
 import { hasPriorTelemetryOptOut } from "../../../desktop/src/main/sentry/priorOptOut";
 
 declare const __ADE_VERSION__: string | undefined;
@@ -45,7 +49,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;
-  const hooks = createSentryEventHooks();
+  const hooks = createSentryEventHooks({ diagnostics: true });
   Sentry.init({
     dsn: resolveSentryDsn("brain", process.env),
     release: sentryReleaseName(version),
@@ -72,5 +76,6 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
     "brain.host": process.env.ELECTRON_RUN_AS_NODE === "1" ? "electron" : "node",
   });
   Sentry.setContext("machine", { ...sentryMachineContext(), nodeVersion: process.version });
+  startNodeSentryDiagnostics();
   return true;
 }

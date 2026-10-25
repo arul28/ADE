@@ -12,6 +12,14 @@ import { writeFileAtomic } from "../../../../desktop/src/main/services/state/dur
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
+import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
+import { addSentryBreadcrumb, captureProblem } from "../../../../desktop/src/shared/sentry/capture";
+import {
+  DIAGNOSTIC_ATTACH_TAG,
+  diagnosticEventText,
+  type DiagnosticEvent,
+} from "../../../../desktop/src/shared/sentry/diagnostics";
+import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
 
 export type ProjectId = string;
 
@@ -248,38 +256,41 @@ export class ProjectRegistry {
     }
 
     assertProjectNotMovedAway(normalized);
-    const file = this.read();
-    const now = Date.now();
     const projectId = deriveProjectId(normalized);
-    const existingIndex = file.projects.findIndex(
-      (record) =>
-        record.projectId === projectId || record.rootPath === normalized,
-    );
-    const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
-    this.assertProjectDataAvailable(existing);
+    const matches = (record: ProjectRecord) =>
+      record.projectId === projectId || record.rootPath === normalized;
+    // Checked before `.ade` is created below, which would hide missing data.
+    const known = this.read().projects.find(matches) ?? null;
+    this.assertProjectDataAvailable(known);
     ensureProjectAdeDir(normalized);
     this.recordDatabaseIfPresent(projectId, normalized);
-    const next: ProjectRecord = {
-      projectId,
-      rootPath: normalized,
-      displayName: existing?.displayName ?? path.basename(normalized),
-      addedAt: existing?.addedAt ?? now,
-      lastOpenedAt: now,
-      gitOriginUrl: existing?.gitOriginUrl ?? readGitOriginUrl(normalized),
-      catalogVisibility:
-        existing?.catalogVisibility === "recent" ||
-        registration.catalogVisibility === "recent"
-          ? "recent"
-          : "system",
-      registrationSource: registration.registrationSource,
-    };
-    if (existingIndex >= 0) {
-      file.projects[existingIndex] = next;
-    } else {
-      file.projects.push(next);
-    }
-    this.write(file);
-    return next;
+    // Outside the lock: it starts git, which can take seconds.
+    const gitOriginUrl = known?.gitOriginUrl ?? readGitOriginUrl(normalized);
+    return this.mutate("add", { projectId, rootPath: normalized }, (file) => {
+      const now = Date.now();
+      const existingIndex = file.projects.findIndex(matches);
+      const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
+      const next: ProjectRecord = {
+        projectId,
+        rootPath: normalized,
+        displayName: existing?.displayName ?? path.basename(normalized),
+        addedAt: existing?.addedAt ?? now,
+        lastOpenedAt: now,
+        gitOriginUrl: existing?.gitOriginUrl ?? gitOriginUrl,
+        catalogVisibility:
+          existing?.catalogVisibility === "recent" ||
+          registration.catalogVisibility === "recent"
+            ? "recent"
+            : "system",
+        registrationSource: registration.registrationSource,
+      };
+      if (existingIndex >= 0) {
+        file.projects[existingIndex] = next;
+      } else {
+        file.projects.push(next);
+      }
+      return { file, result: next };
+    });
   }
 
   setCatalogVisibilityByRootPath(
@@ -288,52 +299,46 @@ export class ProjectRegistry {
     registrationSource: ProjectRegistrationSource,
   ): ProjectRecord | null {
     const normalized = normalizeRoot(rootPath);
-    const file = this.read();
-    const index = file.projects.findIndex(
-      (record) => record.rootPath === normalized,
-    );
-    if (index < 0) return null;
-    const current = file.projects[index]!;
+    const current = this.read().projects.find((record) => record.rootPath === normalized);
+    if (!current) return null;
     if (
       current.catalogVisibility === catalogVisibility &&
       current.registrationSource === registrationSource
     ) {
       return current;
     }
-    const next: ProjectRecord = {
-      ...current,
-      catalogVisibility,
-      registrationSource,
-    };
-    file.projects[index] = next;
-    this.write(file);
-    return next;
+    return this.mutate("set_visibility", { rootPath: normalized, catalogVisibility }, (file) => {
+      const index = file.projects.findIndex((record) => record.rootPath === normalized);
+      if (index < 0) return { file: null, result: null };
+      const next: ProjectRecord = {
+        ...file.projects[index]!,
+        catalogVisibility,
+        registrationSource,
+      };
+      file.projects[index] = next;
+      return { file, result: next };
+    });
   }
 
   remove(projectId: ProjectId): boolean {
-    const file = this.read();
-    const nextProjects = file.projects.filter(
-      (record) => record.projectId !== projectId,
-    );
-    if (nextProjects.length === file.projects.length) return false;
-    this.write({ ...file, projects: nextProjects });
-    this.forgetDatabaseIdentity(projectId);
-    return true;
+    const removed = this.mutate("remove", { projectId }, (file) => {
+      const projects = file.projects.filter((record) => record.projectId !== projectId);
+      if (projects.length === file.projects.length) return { file: null, result: false };
+      return { file: { ...file, projects }, result: true };
+    });
+    if (removed) this.forgetDatabaseIdentity(projectId);
+    return removed;
   }
 
   touch(projectId: ProjectId): ProjectRecord {
-    const file = this.read();
-    const index = file.projects.findIndex(
-      (record) => record.projectId === projectId,
-    );
-    if (index < 0) throw new Error(`Unknown projectId: ${projectId}`);
-    const next: ProjectRecord = {
-      ...file.projects[index]!,
-      lastOpenedAt: Date.now(),
-    };
+    const next = this.mutate("touch", { projectId }, (file) => {
+      const index = file.projects.findIndex((record) => record.projectId === projectId);
+      if (index < 0) throw new Error(`Unknown projectId: ${projectId}`);
+      const touched: ProjectRecord = { ...file.projects[index]!, lastOpenedAt: Date.now() };
+      file.projects[index] = touched;
+      return { file, result: touched };
+    });
     this.recordDatabaseIfPresent(projectId, next.rootPath);
-    file.projects[index] = next;
-    this.write(file);
     return next;
   }
 
@@ -398,28 +403,33 @@ export class ProjectRegistry {
     const oldCandidates = oldRoots.map((root) => path.resolve(root));
     const newNormalized = normalizeRoot(newRoot);
     const newId = deriveProjectId(newNormalized);
-    const file = this.read();
-    const index = file.projects.findIndex((record) =>
-      oldCandidates.includes(record.rootPath)
-      || oldCandidates.some((root) => record.projectId === deriveProjectId(root)),
-    );
-    const existing = index >= 0 ? file.projects[index]! : null;
-    const oldId = existing?.projectId ?? deriveProjectId(oldCandidates[0]!);
-    const next: ProjectRecord = {
-      projectId: newId,
-      rootPath: newNormalized,
-      displayName: existing?.displayName ?? path.basename(newNormalized),
-      addedAt: existing?.addedAt ?? Date.now(),
-      lastOpenedAt: Date.now(),
-      gitOriginUrl: existing?.gitOriginUrl ?? readGitOriginUrl(newNormalized),
-      catalogVisibility: existing?.catalogVisibility ?? "recent",
-      registrationSource: existing?.registrationSource ?? "desktop",
-    };
-    const projects = file.projects.filter(
-      (record, i) => i !== index && record.projectId !== newId,
-    );
-    projects.splice(index >= 0 ? Math.min(index, projects.length) : projects.length, 0, next);
-    this.write({ ...file, projects });
+    const oldCandidateIds = oldCandidates.map((root) => deriveProjectId(root));
+    const isOld = (record: ProjectRecord) =>
+      oldCandidates.includes(record.rootPath) || oldCandidateIds.includes(record.projectId);
+    // Outside the lock: it starts git, which can take seconds.
+    const knownOrigin = this.read().projects.find(isOld)?.gitOriginUrl ?? readGitOriginUrl(newNormalized);
+    const { next, oldId } = this.mutate("relocate", { projectId: newId, rootPath: newNormalized }, (file) => {
+      const index = file.projects.findIndex(isOld);
+      const existing = index >= 0 ? file.projects[index]! : null;
+      const relocated: ProjectRecord = {
+        projectId: newId,
+        rootPath: newNormalized,
+        displayName: existing?.displayName ?? path.basename(newNormalized),
+        addedAt: existing?.addedAt ?? Date.now(),
+        lastOpenedAt: Date.now(),
+        gitOriginUrl: existing?.gitOriginUrl ?? knownOrigin,
+        catalogVisibility: existing?.catalogVisibility ?? "recent",
+        registrationSource: existing?.registrationSource ?? "desktop",
+      };
+      const projects = file.projects.filter(
+        (record, i) => i !== index && record.projectId !== newId,
+      );
+      projects.splice(index >= 0 ? Math.min(index, projects.length) : projects.length, 0, relocated);
+      return {
+        file: { ...file, projects },
+        result: { next: relocated, oldId: existing?.projectId ?? oldCandidateIds[0]! },
+      };
+    });
     this.forgetDatabaseIdentity(oldId);
     this.recordDatabaseIfPresent(newId, newNormalized);
     const aliases = this.readAliases();
@@ -513,11 +523,25 @@ export class ProjectRegistry {
   }
 
   private readUncached(): ProjectRegistryFile {
+    const { file, isLegacy } = this.readFromDisk();
+    if (isLegacy) return this.mutate("migrate_v1", {}, (fresh) => ({ file: fresh, result: fresh }));
+    return file;
+  }
+
+  /**
+   * Parse `projects.json`. A record's id is not trusted from the file: it is
+   * the hash of the folder as this machine resolves it now. When that differs
+   * from the id the file stored, the project's id just changed under every
+   * window and phone that holds the old one, which answers "Unknown
+   * projectId" from then on. That is reported, and the old id is kept as an
+   * alias so the brain still finds the project by it.
+   */
+  private readFromDisk(): { file: ProjectRegistryFile; isLegacy: boolean } {
     try {
       const raw = fs.readFileSync(this.layout.projectsPath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        return emptyFile();
+        return { file: emptyFile(), isLegacy: false };
       const rawFile = parsed as {
         version?: unknown;
         projects?: unknown;
@@ -528,9 +552,12 @@ export class ProjectRegistry {
           `Unsupported project registry version: ${String(rawFile.version)}`,
         );
       }
+      const changedIds: Array<{ storedId: string; projectId: string; storedRoot: string; rootPath: string }> = [];
+      const dropped: Array<{ storedId: string | null; storedRoot: string | null; reason: string }> = [];
       const projects = Array.isArray(rawFile.projects)
         ? rawFile.projects
             .map((value) => {
+              let record: ProjectRecord | null;
               if (isLegacy) {
                 const legacyRecord = value as Record<string, unknown>;
                 const legacyRoot =
@@ -540,7 +567,7 @@ export class ProjectRegistry {
                 const matchesDesktopRecents =
                   legacyRoot.length > 0 &&
                   this.legacyRecentProjectRoots.has(legacyRoot);
-                return coerceRecord(value, {
+                record = coerceRecord(value, {
                   catalogVisibility:
                     matchesDesktopRecents || isExistingGitRoot(legacyRoot)
                       ? "recent"
@@ -549,17 +576,27 @@ export class ProjectRegistry {
                     ? "desktop"
                     : "runtime-auto",
                 });
+              } else {
+                const stored = value as Record<string, unknown>;
+                record = coerceRecord(value, {
+                  catalogVisibility:
+                    stored?.catalogVisibility === "recent" ? "recent" : "system",
+                  registrationSource: isProjectRegistrationSource(
+                    stored?.registrationSource,
+                  )
+                    ? stored.registrationSource
+                    : "runtime-auto",
+                });
               }
-              const record = value as Record<string, unknown>;
-              return coerceRecord(value, {
-                catalogVisibility:
-                  record.catalogVisibility === "recent" ? "recent" : "system",
-                registrationSource: isProjectRegistrationSource(
-                  record.registrationSource,
-                )
-                  ? record.registrationSource
-                  : "runtime-auto",
-              });
+              const stored = value as { projectId?: unknown; rootPath?: unknown } | null;
+              const storedId = typeof stored?.projectId === "string" ? stored.projectId : null;
+              const storedRoot = typeof stored?.rootPath === "string" ? stored.rootPath : null;
+              if (!record) {
+                dropped.push({ storedId, storedRoot, reason: storedRoot ? "disallowed_or_unresolvable_root" : "no_root" });
+              } else if (storedId && storedId !== record.projectId) {
+                changedIds.push({ storedId, projectId: record.projectId, storedRoot: storedRoot ?? "", rootPath: record.rootPath });
+              }
+              return record;
             })
             .filter((entry): entry is ProjectRecord => entry != null)
         : [];
@@ -567,17 +604,113 @@ export class ProjectRegistry {
       const file: ProjectRegistryFile = {
         version: 2,
         projects: projects.filter((project) => {
-          if (seen.has(project.rootPath)) return false;
+          if (seen.has(project.rootPath)) {
+            dropped.push({ storedId: project.projectId, storedRoot: project.rootPath, reason: "duplicate_root" });
+            return false;
+          }
           seen.add(project.rootPath);
           return true;
         }),
       };
-      if (isLegacy) this.write(file);
-      return file;
+      if (changedIds.length > 0) this.noteChangedProjectIds(changedIds);
+      if (dropped.length > 0) noteDroppedRecords(this.layout.projectsPath, this.journalPath(), dropped);
+      return { file, isLegacy };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return emptyFile();
+        return { file: emptyFile(), isLegacy: false };
       throw error;
+    }
+  }
+
+  /** Report each id change once per process, and keep the old id working as an alias. */
+  private noteChangedProjectIds(
+    changes: Array<{ storedId: string; projectId: string; storedRoot: string; rootPath: string }>,
+  ): void {
+    const aliases = this.readAliases();
+    let aliasesChanged = false;
+    for (const change of changes) {
+      const key = `${change.storedId}>${change.projectId}`;
+      if (!reportedIdChanges.has(key)) {
+        reportedIdChanges.add(key);
+        const detail = { ...change, writer: describeRegistryWriter(), registryPath: this.layout.projectsPath };
+        forwardLogToSentry("warn", "project_registry.project_id_changed", detail);
+        appendJournalLine(this.journalPath(), { op: "id_changed", ...change });
+        captureProblem("A registered project's id changed when its folder was resolved again", {
+          fingerprint: ["project_registry", "project_id_changed"],
+          tags: { [DIAGNOSTIC_ATTACH_TAG]: "project_registry" },
+          extra: detail,
+        });
+      }
+      // The same edge rule `relocate` keeps: the new id never has an alias of
+      // its own, so a folder that flips back and forth cannot make a cycle.
+      if (aliases[change.storedId] !== change.projectId) {
+        aliases[change.storedId] = change.projectId;
+        aliasesChanged = true;
+      }
+      if (aliases[change.projectId] !== undefined) {
+        delete aliases[change.projectId];
+        aliasesChanged = true;
+      }
+    }
+    if (!aliasesChanged) return;
+    try {
+      fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
+      writeFileAtomic(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
+    } catch {
+      // The alias is a convenience; the report above is the record.
+    }
+  }
+
+  private lockPath(): string {
+    return `${this.layout.projectsPath}.lock`;
+  }
+
+  journalPath(): string {
+    return path.join(path.dirname(this.layout.projectsPath), "projects.journal.jsonl");
+  }
+
+  /**
+   * Every change to `projects.json` goes through here. The desktop app, the
+   * brain, the `ade` CLI and a project move all write the file, and each
+   * write is a read, a change and a rename. Without a lock, two writers that
+   * overlap each keep their own copy, and the second rename erases what the
+   * first one added. The lock spans the fresh read and the write only, never
+   * git or other slow work. The journal records who changed what.
+   */
+  private mutate<T>(
+    op: string,
+    detail: Record<string, unknown>,
+    change: (file: ProjectRegistryFile) => { file: ProjectRegistryFile | null; result: T },
+  ): T {
+    const lockPath = this.lockPath();
+    const run = (lockWaitMs: number | null) => {
+      const before = this.readFromDisk().file;
+      const { file, result } = change(cloneRegistryFile(before));
+      if (file) {
+        this.write(file);
+        appendRegistryJournal(this.journalPath(), op, detail, before, file, lockWaitMs);
+      }
+      return result;
+    };
+    // A write inside a write in this process (the v1 upgrade during a read
+    // under `mutate`) already holds the lock.
+    if (heldRegistryLocks.has(lockPath)) return run(0);
+    const startedAt = Date.now();
+    try {
+      return withExclusiveFileLockSync(lockPath, () => {
+        heldRegistryLocks.add(lockPath);
+        try {
+          return run(Date.now() - startedAt);
+        } finally {
+          heldRegistryLocks.delete(lockPath);
+        }
+      }, { waitMs: REGISTRY_LOCK_WAIT_MS, label: "the ADE project list" });
+    } catch (error) {
+      if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
+      // A holder that never lets go must not stop ADE from opening projects:
+      // write without the lock, as every ADE before this one did, and say so.
+      forwardLogToSentry("warn", "project_registry.lock_timeout", { op, lockPath, waitedMs: Date.now() - startedAt });
+      return run(null);
     }
   }
 
@@ -588,10 +721,139 @@ export class ProjectRegistry {
       recursive: true,
       mode: 0o700,
     });
-    const tempPath = `${this.layout.projectsPath}.${process.pid}.${Date.now()}.tmp`;
     const payload = `${JSON.stringify({ version: 2, projects: file.projects }, null, 2)}\n`;
-    fs.writeFileSync(tempPath, payload, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tempPath, this.layout.projectsPath);
+    // `writeFileAtomic` also gets past Windows refusing a rename over a file
+    // another process has open (EPERM, EBUSY), which a plain rename does not.
+    writeFileAtomic(this.layout.projectsPath, payload, { mode: 0o600 });
+  }
+
+  /**
+   * The project list as it is now and the newest journal lines, for an error
+   * report about a project the brain could not find.
+   */
+  diagnosticFile(): { filename: string; data: string } | null {
+    const read = (filePath: string) => {
+      try {
+        return fs.readFileSync(filePath, "utf8");
+      } catch (error) {
+        return `[${(error as NodeJS.ErrnoException).code ?? "unreadable"}]`;
+      }
+    };
+    const journal = read(this.journalPath());
+    return {
+      filename: "project-registry.txt",
+      data: [
+        `# ${this.layout.projectsPath}`,
+        read(this.layout.projectsPath),
+        `# ${this.aliasesPath()}`,
+        read(this.aliasesPath()),
+        `# ${this.journalPath()} (newest last)`,
+        journal.length > REGISTRY_JOURNAL_REPORT_CHARS ? journal.slice(-REGISTRY_JOURNAL_REPORT_CHARS) : journal,
+      ].join("\n"),
+    };
+  }
+}
+
+/**
+ * The project list file for a report that is about it: one the registry or
+ * the brain tagged, or any error that names an unknown project id (the
+ * desktop's copy of the brain's answer). Every other report goes without it.
+ */
+export function projectRegistryDiagnosticAttachment(
+  registry: ProjectRegistry,
+): (event: DiagnosticEvent) => { filename: string; data: string } | null {
+  return (event) => {
+    const asked = event.tags?.[DIAGNOSTIC_ATTACH_TAG] === "project_registry";
+    if (!asked && !/Unknown projectId/.test(diagnosticEventText(event))) return null;
+    return registry.diagnosticFile();
+  };
+}
+
+const REGISTRY_LOCK_WAIT_MS = 2_000;
+const REGISTRY_JOURNAL_MAX_BYTES = 512 * 1024;
+const REGISTRY_JOURNAL_REPORT_CHARS = 64 * 1024;
+const heldRegistryLocks = new Set<string>();
+const reportedIdChanges = new Set<string>();
+const reportedDrops = new Set<string>();
+
+/** Which program wrote: the desktop app, the brain, or an `ade` command. */
+function describeRegistryWriter(): string {
+  if ((process as { type?: string }).type === "browser") return "desktop-main";
+  const args = process.argv.slice(2).filter((arg) => !arg.startsWith("-"));
+  if (args[0] === "serve") return "brain";
+  return args.length > 0 ? `cli ${args.slice(0, 2).join(" ")}` : path.basename(process.argv[1] ?? process.argv0 ?? "node");
+}
+
+function noteDroppedRecords(
+  registryPath: string,
+  journalPath: string,
+  dropped: Array<{ storedId: string | null; storedRoot: string | null; reason: string }>,
+): void {
+  for (const record of dropped) {
+    const key = `${record.storedId ?? ""}|${record.storedRoot ?? ""}|${record.reason}`;
+    if (reportedDrops.has(key)) continue;
+    reportedDrops.add(key);
+    // A record the next write will not keep: the project disappears for every
+    // window that knew it. A breadcrumb and a log line, not an issue, since a
+    // duplicate is often the same folder registered twice on purpose.
+    forwardLogToSentry("warn", "project_registry.record_dropped", { ...record, registryPath, writer: describeRegistryWriter() });
+    appendJournalLine(journalPath, { op: "record_dropped", ...record });
+  }
+}
+
+function recordSummary(records: ProjectRecord[], ids: Set<string>): Array<{ projectId: string; rootPath: string }> {
+  return records
+    .filter((record) => ids.has(record.projectId))
+    .map((record) => ({ projectId: record.projectId, rootPath: record.rootPath }));
+}
+
+/**
+ * One line per write: who, what, and which ids came or went. Read by
+ * `diagnosticFile` and by a person debugging a project that vanished. Kept to
+ * the newest half once it passes 512 KB.
+ */
+function appendRegistryJournal(
+  journalPath: string,
+  op: string,
+  detail: Record<string, unknown>,
+  before: ProjectRegistryFile,
+  after: ProjectRegistryFile,
+  lockWaitMs: number | null,
+): void {
+  try {
+    const beforeIds = new Set(before.projects.map((record) => record.projectId));
+    const afterIds = new Set(after.projects.map((record) => record.projectId));
+    const added = new Set([...afterIds].filter((id) => !beforeIds.has(id)));
+    const removed = new Set([...beforeIds].filter((id) => !afterIds.has(id)));
+    if (removed.size > 0) {
+      addSentryBreadcrumb("project_registry", `project_registry.${op}`, { removed: [...removed], writer: describeRegistryWriter() }, "warning");
+    }
+    appendJournalLine(journalPath, {
+      op,
+      ...detail,
+      count: { before: beforeIds.size, after: afterIds.size },
+      ...(added.size > 0 ? { added: recordSummary(after.projects, added) } : {}),
+      ...(removed.size > 0 ? { removed: recordSummary(before.projects, removed) } : {}),
+      lockWaitMs,
+    });
+  } catch {
+    // The journal is diagnostics; a failed append must not fail the write.
+  }
+}
+
+function appendJournalLine(journalPath: string, entry: Record<string, unknown>): void {
+  try {
+    const line = JSON.stringify({ ts: new Date().toISOString(), pid: process.pid, writer: describeRegistryWriter(), ...entry });
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true, mode: 0o700 });
+    fs.appendFileSync(journalPath, `${line}\n`, { mode: 0o600 });
+    const size = fs.statSync(journalPath).size;
+    if (size > REGISTRY_JOURNAL_MAX_BYTES) {
+      const text = fs.readFileSync(journalPath, "utf8");
+      const keep = text.slice(text.length - Math.floor(REGISTRY_JOURNAL_MAX_BYTES / 2));
+      writeFileAtomic(journalPath, keep.slice(keep.indexOf("\n") + 1), { mode: 0o600 });
+    }
+  } catch {
+    // The journal is diagnostics only.
   }
 }
 

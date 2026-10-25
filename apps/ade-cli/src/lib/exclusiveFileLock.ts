@@ -165,3 +165,59 @@ export async function withExclusiveFileLock<T>(
     unlinkExclusiveFileLockIfOwner(lockPath, owner.id);
   }
 }
+
+const SYNC_RETRY_MS = 15;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `withExclusiveFileLock` for synchronous callers. The wait blocks the
+ * thread, so keep `waitMs` short and the task small: a read and a write of
+ * one file, never a child process or a network call.
+ */
+export function withExclusiveFileLockSync<T>(
+  lockPath: string,
+  task: () => T,
+  options: { waitMs: number; label: string },
+): T {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + options.waitMs;
+  const owner = createExclusiveFileLockOwner();
+  let fd: number | null = null;
+  while (fd == null) {
+    let created: number;
+    try {
+      created = fs.openSync(lockPath, "wx", 0o600);
+    } catch (error) {
+      if (!isExclusiveFileLockContention(error)) throw error;
+      if (unlinkExclusiveFileLockIfStale(lockPath)) continue;
+      if (Date.now() >= deadline) {
+        throw new ExclusiveFileLockTimeoutError(
+          `Timed out waiting for ${options.label} at ${lockPath}.`,
+          { cause: error },
+        );
+      }
+      sleepSync(SYNC_RETRY_MS);
+      continue;
+    }
+    try {
+      fs.writeFileSync(created, serializeExclusiveFileLockOwner(owner), "utf8");
+    } catch (error) {
+      try { fs.closeSync(created); } catch {}
+      try { fs.unlinkSync(lockPath); } catch {}
+      throw error;
+    }
+    fd = created;
+  }
+
+  try {
+    return task();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {}
+    unlinkExclusiveFileLockIfOwner(lockPath, owner.id);
+  }
+}

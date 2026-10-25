@@ -96,6 +96,10 @@ import {
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import {
+  registerSentryDiagnosticAttachment,
+  registerSentryDiagnosticContext,
+} from "../../desktop/src/shared/sentry/diagnostics";
 import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -26218,7 +26222,7 @@ async function runServe(
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { resolveMachineAdeLayout, isSyncCapableAdeHome },
-    { ProjectRegistry },
+    { ProjectRegistry, projectRegistryDiagnosticAttachment },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
       createMultiProjectRpcRequestHandler,
@@ -27109,6 +27113,15 @@ async function runServe(
     },
   });
   keepAwakeService?.start();
+  // What a brain report needs to explain a missing project or a lost scope
+  // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
+  // when Sentry is off.
+  const brainScopeRegistry = scopeRegistry;
+  registerSentryDiagnosticContext("brain_state", () => ({
+    mode: options.role,
+    ...brainScopeRegistry.diagnosticSnapshot(),
+  }));
+  registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry));
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the

@@ -9,6 +9,9 @@
  * finding it; the thousandth copy adds nothing. Once the hourly total is
  * spent, a new problem in the same hour is dropped too: the total is the
  * guarantee, and it is sized so that takes a dozen different failures.
+ *
+ * A day cap sits on top: a machine that keeps one problem for a whole day
+ * sends its first copies of each hour, not 24 hours of them.
  */
 
 import { isExpectedOutcomeText, isOfflineFetchFailure } from "./expectedFailure";
@@ -16,11 +19,16 @@ import { isExpectedOutcomeText, isOfflineFetchFailure } from "./expectedFailure"
 export type SentryBudget = {
   perFingerprintPerHour: number;
   totalPerHour: number;
+  /** Absent: no day cap. */
+  perFingerprintPerDay?: number;
+  totalPerDay?: number;
 };
 
 export const DEFAULT_SENTRY_BUDGET: SentryBudget = {
   perFingerprintPerHour: 5,
   totalPerHour: 60,
+  perFingerprintPerDay: 15,
+  totalPerDay: 150,
 };
 
 /**
@@ -31,9 +39,12 @@ export const DEFAULT_SENTRY_BUDGET: SentryBudget = {
 export const FATAL_SENTRY_BUDGET: SentryBudget = {
   perFingerprintPerHour: 10,
   totalPerHour: 30,
+  perFingerprintPerDay: 30,
+  totalPerDay: 100,
 };
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const MAX_TRACKED_FINGERPRINTS = 500;
 
 export type EventLimiter = {
@@ -41,23 +52,45 @@ export type EventLimiter = {
   admit: (fingerprint: string, nowMs?: number) => boolean;
 };
 
+type LimiterWindow = { start: number; total: number; perFingerprint: Map<string, number> };
+
+function createWindow(): LimiterWindow {
+  return { start: 0, total: 0, perFingerprint: new Map() };
+}
+
+function rollWindow(window: LimiterWindow, lengthMs: number, nowMs: number): void {
+  if (nowMs - window.start < lengthMs) return;
+  window.start = nowMs;
+  window.total = 0;
+  window.perFingerprint.clear();
+}
+
+function windowHasRoom(window: LimiterWindow, fingerprint: string, total: number | undefined, perFingerprint: number | undefined): boolean {
+  if (total !== undefined && window.total >= total) return false;
+  const seen = window.perFingerprint.get(fingerprint) ?? 0;
+  if (perFingerprint !== undefined && seen >= perFingerprint) return false;
+  return window.perFingerprint.has(fingerprint) || window.perFingerprint.size < MAX_TRACKED_FINGERPRINTS;
+}
+
+function countInWindow(window: LimiterWindow, fingerprint: string): void {
+  window.perFingerprint.set(fingerprint, (window.perFingerprint.get(fingerprint) ?? 0) + 1);
+  window.total += 1;
+}
+
 export function createEventLimiter(budget: SentryBudget = DEFAULT_SENTRY_BUDGET): EventLimiter {
-  let windowStart = 0;
-  let total = 0;
-  const perFingerprint = new Map<string, number>();
+  const hour = createWindow();
+  const day = createWindow();
+  const hasDayCap = budget.totalPerDay !== undefined || budget.perFingerprintPerDay !== undefined;
   return {
     admit(fingerprint, nowMs = Date.now()) {
-      if (nowMs - windowStart >= HOUR_MS) {
-        windowStart = nowMs;
-        total = 0;
-        perFingerprint.clear();
+      rollWindow(hour, HOUR_MS, nowMs);
+      if (!windowHasRoom(hour, fingerprint, budget.totalPerHour, budget.perFingerprintPerHour)) return false;
+      if (hasDayCap) {
+        rollWindow(day, DAY_MS, nowMs);
+        if (!windowHasRoom(day, fingerprint, budget.totalPerDay, budget.perFingerprintPerDay)) return false;
+        countInWindow(day, fingerprint);
       }
-      if (total >= budget.totalPerHour) return false;
-      const seen = perFingerprint.get(fingerprint) ?? 0;
-      if (seen >= budget.perFingerprintPerHour) return false;
-      if (!perFingerprint.has(fingerprint) && perFingerprint.size >= MAX_TRACKED_FINGERPRINTS) return false;
-      perFingerprint.set(fingerprint, seen + 1);
-      total += 1;
+      countInWindow(hour, fingerprint);
       return true;
     },
   };

@@ -23,11 +23,48 @@ export function initRendererSentry(): void {
       ...defaults,
       Sentry.browserTracingIntegration(),
     ],
-    beforeSend: hooks.beforeSend,
+    beforeSend: (event, hint) => {
+      const kept = hooks.beforeSend(event, hint);
+      if (kept) addRendererState(kept as { contexts?: Record<string, unknown> });
+      return kept;
+    },
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
   });
   connectSentry(Sentry);
   // No `process` tag here: the renderer's scope is merged into main's, where
   // it would overwrite main's own. The SDK tags each event's `event.process`.
+}
+
+const MB = 1024 * 1024;
+
+/**
+ * The window's own state at the moment of the error: its JavaScript heap
+ * against its limit (a window close to the limit is about to be killed for
+ * memory), the route, and how long it has been open. Main adds the rest.
+ */
+function addRendererState(event: { contexts?: Record<string, unknown> }): void {
+  try {
+    const memory = (performance as Performance & {
+      memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
+    }).memory;
+    event.contexts = {
+      ...(event.contexts ?? {}),
+      renderer_state: {
+        route: window.location.hash || window.location.pathname,
+        openForSec: Math.round(performance.now() / 1000),
+        visibility: document.visibilityState,
+        ...(memory
+          ? {
+              heapUsedMb: Math.round(memory.usedJSHeapSize / MB),
+              heapTotalMb: Math.round(memory.totalJSHeapSize / MB),
+              heapLimitMb: Math.round(memory.jsHeapSizeLimit / MB),
+            }
+          : {}),
+        domNodes: document.getElementsByTagName("*").length,
+      },
+    };
+  } catch {
+    // Best effort.
+  }
 }

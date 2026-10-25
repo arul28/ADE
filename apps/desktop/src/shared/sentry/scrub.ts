@@ -8,7 +8,10 @@
  * prompts, transcripts, model output, file contents and terminal output never
  * goes at all. The second half is enforced at the call sites (nothing passes
  * that text to Sentry); this module is the backstop for secrets that ride
- * along inside an error message, a URL or a log field.
+ * along inside an error message, a URL or a log field. The one exception is
+ * the log tail files a report attaches (`diagnostics.ts`), which carry log
+ * lines as written with only their secrets removed (`scrubSecretsValue`), by
+ * the owner's choice on 2026-10-24.
  *
  * Pure TypeScript with no SDK import, so every process can load it.
  */
@@ -75,10 +78,11 @@ export function scrubRelayPath(input: string): string {
  */
 const CONTENT_KEY = /^(?:prompt|prompts|text|content|contents|message_text|messageText|body|input|inputs|output|outputs|transcript|diff|patch|stdout|stderr_text|clipboard|selection|excerpt|messageExcerpt|query_text|instructions|raw|payload|args|argv|env)$/i;
 
-export function scrubString(input: string): string {
+export function scrubString(input: string, options?: { maxLength?: number }): string {
   if (!input) return input;
-  let output = input.length > MAX_STRING_LENGTH
-    ? `${input.slice(0, MAX_STRING_LENGTH)}… [truncated ${input.length - MAX_STRING_LENGTH} chars]`
+  const maxLength = options?.maxLength ?? MAX_STRING_LENGTH;
+  let output = input.length > maxLength
+    ? `${input.slice(0, maxLength)}… [truncated ${input.length - maxLength} chars]`
     : input;
   for (const pattern of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
@@ -126,6 +130,27 @@ export function scrubValue(value: unknown, depth = 0, key?: string): unknown {
     return output;
   }
   return String(value);
+}
+
+/**
+ * Secrets only, for the diagnostic files a report attaches (`diagnostics.ts`):
+ * a log line keeps its content keys (`args`, `payload`, a prompt length or
+ * text), because those files exist to show what the process was doing. Keys
+ * that name a secret are still dropped and secret shapes still redacted.
+ */
+export function scrubSecretsValue(value: unknown, depth = 0, key?: string): unknown {
+  if (key !== undefined && SECRET_KEY.test(key) && (typeof value === "string" || (typeof value === "object" && value !== null))) {
+    return REDACTED;
+  }
+  if (typeof value === "string") return scrubString(value);
+  if (value == null || typeof value !== "object") return value;
+  if (depth >= MAX_DEPTH) return "[depth limit]";
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ITEMS).map((item) => scrubSecretsValue(item, depth + 1));
+  const output: Record<string, unknown> = {};
+  for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+    output[entryKey] = scrubSecretsValue(entryValue, depth + 1, entryKey);
+  }
+  return output;
 }
 
 export function scrubRecord(record: Record<string, unknown> | undefined | null): Record<string, unknown> | undefined {
