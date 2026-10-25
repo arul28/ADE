@@ -2925,7 +2925,10 @@ Form-mode JSON Schema properties become paged questions (enum/oneOf,
 boolean, freeform primitive, and multiselect array); answers are coerced back
 to the schema before ADE replies. Approval/URL mode shows **Allow once** and
 **Deny**, an **Open authorization** action only for safe web URLs, and
-**Always allow** only when `_meta.persist` includes `always`. Provider
+**Always allow** only when `_meta.persist` includes `always`. Claude chats
+raise the same card for an MCP server's elicitation (`onElicitation`); it
+offers no **Always allow**, because the Agent SDK has no persistent consent
+for elicitations, so every request is answered on its own. Provider
 full-auto mode does not auto-answer these app/connector consent requests.
 `serverRequest/resolved` emits the usual resolution event so a request
 completed outside the card cannot leave the composer locked.

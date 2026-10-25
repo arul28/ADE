@@ -771,8 +771,8 @@ Claude JSONL `ai-title` or Codex thread names over it.
   dispose. AI title calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since
   slower local models were timing out at the prior 8 s budget.
 
-At session close, when `refreshOnComplete` is enabled, the transcript
-tail (last 2000 chars) is re-summarized into a final title through the
+At session close, when an AI provider is available (not guest mode), the
+transcript tail (last 2000 chars) is re-summarized into a final title through the
 same cheap-helper-then-launch-model walk. Failure logs a warn and moves on —
 the title contract never fails the session. End-of-session AI summaries
 are not generated; the row keeps its deterministic `summary` fallback.

@@ -448,9 +448,10 @@ end-of-session summaries:
 - `summaries.modelId` (`null` clears a project override)
 - `summaries.reasoningEffort`
 
-`titles.refreshOnComplete` is parsed but is not a gate either: a chat's
+`titles.refreshOnComplete` is parsed but is not a gate either. A chat's
 title is refined once after its first completed run, and only when ADE
-wrote that title itself.
+wrote that title itself; a terminal session's title is refreshed at close
+whenever an AI provider is available.
 
 `titles.modelId` / `summaries.modelId` are parsed but do not pick the
 model. Chat, lane, metadata, handoff, and continuity callers use one
