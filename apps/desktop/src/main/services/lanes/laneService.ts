@@ -10,7 +10,10 @@ import {
   branchNameFromHeadRef,
   getHeadSha,
   GIT_REMOTE_FETCH_TIMEOUT_MS,
+  GIT_TREE_WRITE_IDLE_TIMEOUT_MS,
+  GIT_TREE_WRITE_PROGRESS_ENV,
   GIT_TREE_WRITE_TIMEOUT_MS,
+  GitTimeoutError,
   parseGitCheckoutProgressLine,
   runGit,
   runGitOrThrow,
@@ -73,6 +76,8 @@ import type {
   LaneBranchDriftKind,
   LaneBranchProfile,
   LaneBranchSwitchArgs,
+  CancelLaneGitWriteArgs,
+  CancelLaneGitWriteResult,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
   LaneGitHubIssue,
@@ -580,7 +585,23 @@ function stablePathThroughExistingAncestor(targetPath: string): string {
 }
 
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
-const CHECKOUT_TIMEOUT_MESSAGE = `Git did not finish the checkout within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped it. The lane folder may hold files from both branches. Open a terminal in the lane and run \`git status\` before you continue.`;
+const CHECKOUT_LEFTOVER_HINT = "The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.";
+const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
+const CHECKOUT_CANCEL_MESSAGE = `You stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
+const LANE_CREATE_CANCEL_MESSAGE = "Lane creation was cancelled.";
+const LANE_DELETE_CANCEL_MESSAGE = "You stopped the delete. The lane is still here, and part of its folder may already be gone. Delete the lane again to finish.";
+
+/**
+ * Limits for a git command that writes a tree and prints progress (a checkout
+ * with `--progress`, or `worktree add`): the hard bound, and a stop when git
+ * prints nothing for GIT_TREE_WRITE_IDLE_TIMEOUT_MS. `worktree remove` prints
+ * nothing, so it keeps only the hard bound.
+ */
+const TREE_WRITE_GIT_LIMITS = {
+  timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+  idleTimeoutMs: GIT_TREE_WRITE_IDLE_TIMEOUT_MS,
+  env: GIT_TREE_WRITE_PROGRESS_ENV,
+} as const;
 
 async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean> {
   if (!worktreePath) return false;
@@ -4311,21 +4332,21 @@ export function createLaneService({
       const onCheckoutProgress = runtimeOptions.onCheckoutProgress;
       let gitStarted = false;
       try {
+        // Cancelled before git ran (e.g. while waiting on the worktree mutex):
+        // nothing was created, so there is nothing to clean up, and the
+        // cleanup below must not delete a branch this call never made.
+        const createSignal = runtimeOptions.signal;
         await runGitWorktreeMutation(() => {
-          // Cancelled before git ran (e.g. while waiting on the worktree
-          // mutex): nothing was created, so there is nothing to clean up, and
-          // the cleanup below must not delete a branch this call never made.
-          if (runtimeOptions.signal?.aborted) throw new Error("Lane creation was cancelled.");
           gitStarted = true;
           return runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
             cwd: projectRoot,
-            timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+            ...TREE_WRITE_GIT_LIMITS,
+            cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
             ...(onCheckoutProgress
               ? {
-                  // Git only prints checkout progress to a pipe once its delay
-                  // elapses; a zero delay streams it from the first file.
-                  env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+                  // English progress lines, which the parser reads.
+                  env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
                   onStderrLine: (line: string) => {
                     const parsed = parseGitCheckoutProgressLine(line);
                     if (parsed) onCheckoutProgress(parsed);
@@ -4333,14 +4354,14 @@ export function createLaneService({
                 }
               : {}),
           });
-        });
+        }, createSignal ? { signal: createSignal, message: LANE_CREATE_CANCEL_MESSAGE } : undefined);
       } catch (addError) {
-        // A cancelled checkout leaves a half-written worktree registered (and
-        // still locked "initializing" by the killed git) plus a fresh branch.
-        // Nothing else owns them yet, so remove both. Only on abort: a plain
-        // `worktree add -b` failure (e.g. the branch already exists) must not
-        // delete a branch this call never created.
-        if (gitStarted && runtimeOptions.signal?.aborted) {
+        // A cancelled or stopped checkout leaves a half-written worktree
+        // registered (and still locked "initializing" by the killed git) plus
+        // a fresh branch. Nothing else owns them yet, so remove both. Only
+        // then: a plain `worktree add -b` failure (e.g. the branch already
+        // exists) must not delete a branch this call never created.
+        if (gitStarted && (runtimeOptions.signal?.aborted || addError instanceof GitTimeoutError)) {
           await cleanupCreatedWorktreeLaneAfterCreateFailure({ laneId, branchRef, worktreePath, cause: addError });
         }
         throw addError;
@@ -4715,16 +4736,74 @@ export function createLaneService({
     };
   };
 
-  const runGitWorktreeMutation = async <T>(work: () => Promise<T>): Promise<T> => {
+  /**
+   * Stop handles for lane git writes in flight. Create, child create, import
+   * and branch switch register under the caller's operation id, and
+   * `cancelGitWrite` aborts them; a delete registers under its lane id for
+   * `cancelDelete`. The prefixes keep a caller's id from naming a delete.
+   */
+  const laneGitWriteControllers = new Map<string, AbortController>();
+  const beginLaneGitWrite = (
+    operationId: string | null | undefined,
+    outerSignal?: AbortSignal,
+    key: string | null = operationId?.trim() ? `op:${operationId.trim()}` : null,
+  ): { signal: AbortSignal; end: () => void } => {
+    if (key && laneGitWriteControllers.has(key)) {
+      throw new Error(`Operation '${operationId ?? key}' is already running.`);
+    }
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort();
+    if (outerSignal?.aborted) controller.abort();
+    else outerSignal?.addEventListener("abort", forwardAbort, { once: true });
+    if (key) laneGitWriteControllers.set(key, controller);
+    return {
+      signal: controller.signal,
+      end: () => {
+        outerSignal?.removeEventListener("abort", forwardAbort);
+        if (key && laneGitWriteControllers.get(key) === controller) laneGitWriteControllers.delete(key);
+      },
+    };
+  };
+  const abortLaneGitWrite = (key: string): boolean => {
+    const controller = laneGitWriteControllers.get(key);
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    return true;
+  };
+
+  /**
+   * Runs `work` after every earlier worktree mutation in this project. With a
+   * `signal`, aborting while it waits leaves the queue at once with
+   * `cancelMessage`; once `work` starts, the signal is the work's to obey, so
+   * no caller cleans up while git still writes.
+   */
+  const runGitWorktreeMutation = async <T>(
+    work: () => Promise<T>,
+    cancel?: { signal: AbortSignal; message: string },
+  ): Promise<T> => {
     if (gitWorktreeMutationOwner.getStore()) {
       return work();
     }
-    const run = gitWorktreeMutationQueue.then(() => gitWorktreeMutationOwner.run(true, work));
+    let started = false;
+    const run = gitWorktreeMutationQueue.then(() => {
+      if (cancel?.signal.aborted) throw new AdeExpectedError(cancel.message, "user");
+      started = true;
+      return gitWorktreeMutationOwner.run(true, work);
+    });
     gitWorktreeMutationQueue = run.then(
       () => undefined,
       () => undefined,
     );
-    return run;
+    if (!cancel) return run;
+    const { signal, message } = cancel;
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        if (!started) reject(new AdeExpectedError(message, "user"));
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+      run.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
   };
 
   const pruneDeleteProgressHistory = (now = Date.now()): void => {
@@ -5484,7 +5563,7 @@ export function createLaneService({
         }
         const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
         try {
-          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
+          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
         } catch (error) {
           // The folder was absent before `add`, so anything there now is this
           // failed attempt's. Clear it and its registration, or every later
@@ -6181,181 +6260,199 @@ export function createLaneService({
         linearIssue,
         githubIssue,
         jiraIssue,
+        operationId,
       }: CreateLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
-      const requestedStartPoint = startPoint?.trim() ?? "";
-      if (parentLaneId) {
-        const parent = getLaneRow(parentLaneId);
-        if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-        if (parent.status === "archived") throw new Error("Parent lane is archived");
+      const gitWrite = beginLaneGitWrite(operationId, runtimeOptions.signal);
+      runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
+      try {
+        const requestedStartPoint = startPoint?.trim() ?? "";
+        if (parentLaneId) {
+          const parent = getLaneRow(parentLaneId);
+          if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
+          if (parent.status === "archived") throw new Error("Parent lane is archived");
 
-        const trimmedBaseBranch = baseBranch?.trim() ?? "";
-        const requestedBaseRef = parent.lane_type === "primary"
-          ? (trimmedBaseBranch.length > 0 ? trimmedBaseBranch : defaultBaseRef)
-          : parent.branch_ref;
+          const trimmedBaseBranch = baseBranch?.trim() ?? "";
+          const requestedBaseRef = parent.lane_type === "primary"
+            ? (trimmedBaseBranch.length > 0 ? trimmedBaseBranch : defaultBaseRef)
+            : parent.branch_ref;
 
-        // If we are branching directly from the current primary checkout, ensure
-        // it is in sync with remote before using it as the base.
-        if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS });
-          const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-          if (upstreamRes.exitCode === 0) {
-            const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+          // If we are branching directly from the current primary checkout, ensure
+          // it is in sync with remote before using it as the base.
+          if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
+            await runGitOrThrow(["fetch", "--prune"], {
               cwd: parent.worktree_path,
-              timeoutMs: 10_000
+              timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
+              signal: gitWrite.signal,
+              cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             });
-            if (behindRes.exitCode === 0) {
-              const behindCount = parseInt(behindRes.stdout.trim(), 10);
-              if (behindCount > 0) {
-                throw new Error(
-                  `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
-                );
+            const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+            if (upstreamRes.exitCode === 0) {
+              const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+                cwd: parent.worktree_path,
+                timeoutMs: 10_000
+              });
+              if (behindRes.exitCode === 0) {
+                const behindCount = parseInt(behindRes.stdout.trim(), 10);
+                if (behindCount > 0) {
+                  throw new Error(
+                    `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
+                  );
+                }
               }
             }
           }
-        }
-        let parentHeadSha: string | null;
-        if (requestedStartPoint) {
-          const result = await runGit(["rev-parse", "--verify", requestedStartPoint], {
-            cwd: parent.worktree_path,
-            timeoutMs: 10_000,
-          });
-          if (result.exitCode !== 0 || !result.stdout.trim().length) {
-            throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+          let parentHeadSha: string | null;
+          if (requestedStartPoint) {
+            const result = await runGit(["rev-parse", "--verify", requestedStartPoint], {
+              cwd: parent.worktree_path,
+              timeoutMs: 10_000,
+            });
+            if (result.exitCode !== 0 || !result.stdout.trim().length) {
+              throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+            }
+            parentHeadSha = result.stdout.trim();
+          } else if (parent.lane_type === "primary") {
+            const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+            if (result.exitCode !== 0 || !result.stdout.trim().length) {
+              throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
+            }
+            parentHeadSha = result.stdout.trim();
+          } else {
+            parentHeadSha = await getHeadSha(parent.worktree_path);
           }
-          parentHeadSha = result.stdout.trim();
-        } else if (parent.lane_type === "primary") {
-          const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-          if (result.exitCode !== 0 || !result.stdout.trim().length) {
-            throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
-          }
-          parentHeadSha = result.stdout.trim();
-        } else {
-          parentHeadSha = await getHeadSha(parent.worktree_path);
+          if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
+          return await createWorktreeLane({
+            name,
+            description,
+            baseRef: requestedBaseRef,
+            startPoint: parentHeadSha,
+            parentLaneId: parent.lane_type === "primary" ? null : parent.id,
+            branchName,
+            linearIssue,
+            githubIssue,
+            jiraIssue,
+          }, runtimeOptions);
         }
-        if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
+
+        // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
+        const trimmedBase = baseBranch?.trim() ?? "";
+        const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
+        const startRef = requestedStartPoint || requestedBaseRef;
+        const headRes = await runGit(
+          requestedStartPoint ? ["rev-parse", "--verify", requestedStartPoint] : ["rev-parse", requestedBaseRef],
+          { cwd: projectRoot, timeoutMs: 10_000 },
+        );
+        const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+        if (requestedStartPoint && !resolvedHead) {
+          throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+        }
+        const resolvedStartPoint = resolvedHead || startRef;
+
         return await createWorktreeLane({
           name,
           description,
           baseRef: requestedBaseRef,
-          startPoint: parentHeadSha,
-          parentLaneId: parent.lane_type === "primary" ? null : parent.id,
+          startPoint: resolvedStartPoint,
+          parentLaneId: null,
           branchName,
           linearIssue,
           githubIssue,
           jiraIssue,
         }, runtimeOptions);
+      } finally {
+        gitWrite.end();
       }
-
-      // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
-      const trimmedBase = baseBranch?.trim() ?? "";
-      const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
-      const startRef = requestedStartPoint || requestedBaseRef;
-      const headRes = await runGit(
-        requestedStartPoint ? ["rev-parse", "--verify", requestedStartPoint] : ["rev-parse", requestedBaseRef],
-        { cwd: projectRoot, timeoutMs: 10_000 },
-      );
-      const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
-      if (requestedStartPoint && !resolvedHead) {
-        throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
-      }
-      const resolvedStartPoint = resolvedHead || startRef;
-
-      return await createWorktreeLane({
-        name,
-        description,
-        baseRef: requestedBaseRef,
-        startPoint: resolvedStartPoint,
-        parentLaneId: null,
-        branchName,
-        linearIssue,
-        githubIssue,
-        jiraIssue,
-      }, runtimeOptions);
     },
 
     async createChild(
       args: CreateChildLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
-      const parent = getLaneRow(args.parentLaneId);
-      if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
-      if (parent.status === "archived") throw new Error("Parent lane is archived");
+      const gitWrite = beginLaneGitWrite(args.operationId, runtimeOptions.signal);
+      runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
+      try {
+        const parent = getLaneRow(args.parentLaneId);
+        if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
+        if (parent.status === "archived") throw new Error("Parent lane is archived");
 
-      const trimmedBaseBranchRef = args.baseBranchRef?.trim() ?? "";
-      const hasOverride = trimmedBaseBranchRef.length > 0 && trimmedBaseBranchRef !== parent.branch_ref;
+        const trimmedBaseBranchRef = args.baseBranchRef?.trim() ?? "";
+        const hasOverride = trimmedBaseBranchRef.length > 0 && trimmedBaseBranchRef !== parent.branch_ref;
 
-      if (hasOverride) {
-        let localBranchName = trimmedBaseBranchRef;
-        const localExists = await runGit(
-          ["show-ref", "--verify", "--quiet", `refs/heads/${trimmedBaseBranchRef}`],
-          { cwd: projectRoot, timeoutMs: 8_000 },
-        ).then((r) => r.exitCode === 0);
-
-        if (!localExists) {
-          const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: trimmedBaseBranchRef });
-          localBranchName = resolved.localBranchName;
-          const resolvedLocalExists = await runGit(
-            ["show-ref", "--verify", "--quiet", `refs/heads/${resolved.localBranchName}`],
+        if (hasOverride) {
+          let localBranchName = trimmedBaseBranchRef;
+          const localExists = await runGit(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${trimmedBaseBranchRef}`],
             { cwd: projectRoot, timeoutMs: 8_000 },
           ).then((r) => r.exitCode === 0);
-          if (!resolvedLocalExists) {
-            await runGitOrThrow(
-              ["branch", "--track", resolved.localBranchName, resolved.remoteRef],
-              { cwd: projectRoot, timeoutMs: 15_000 },
-            );
+
+          if (!localExists) {
+            const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: trimmedBaseBranchRef });
+            localBranchName = resolved.localBranchName;
+            const resolvedLocalExists = await runGit(
+              ["show-ref", "--verify", "--quiet", `refs/heads/${resolved.localBranchName}`],
+              { cwd: projectRoot, timeoutMs: 8_000 },
+            ).then((r) => r.exitCode === 0);
+            if (!resolvedLocalExists) {
+              await runGitOrThrow(
+                ["branch", "--track", resolved.localBranchName, resolved.remoteRef],
+                { cwd: projectRoot, timeoutMs: 15_000 },
+              );
+            }
           }
+
+          const headRes = await runGit(["rev-parse", localBranchName], { cwd: projectRoot, timeoutMs: 10_000 });
+          const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+            ? headRes.stdout.trim()
+            : localBranchName;
+
+          return await createWorktreeLane({
+            name: args.name,
+            description: args.description,
+            baseRef: localBranchName,
+            startPoint,
+            parentLaneId: parent.id,
+            folder: args.folder,
+            branchName: args.branchName,
+            linearIssue: args.linearIssue ?? null,
+          }, runtimeOptions);
         }
 
-        const headRes = await runGit(["rev-parse", localBranchName], { cwd: projectRoot, timeoutMs: 10_000 });
-        const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
-          ? headRes.stdout.trim()
-          : localBranchName;
+        if (parent.lane_type === "primary") {
+          const requestedBaseRef = defaultBaseRef;
+          const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
+          const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+            ? headRes.stdout.trim()
+            : requestedBaseRef;
 
+          return await createWorktreeLane({
+            name: args.name,
+            description: args.description,
+            baseRef: requestedBaseRef,
+            startPoint,
+            parentLaneId: null,
+            folder: args.folder,
+            branchName: args.branchName,
+            linearIssue: args.linearIssue ?? null,
+          }, runtimeOptions);
+        }
+
+        const parentHeadSha = await getHeadSha(parent.worktree_path);
+        if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
         return await createWorktreeLane({
           name: args.name,
           description: args.description,
-          baseRef: localBranchName,
-          startPoint,
+          baseRef: parent.branch_ref,
+          startPoint: parentHeadSha,
           parentLaneId: parent.id,
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
         }, runtimeOptions);
+      } finally {
+        gitWrite.end();
       }
-
-      if (parent.lane_type === "primary") {
-        const requestedBaseRef = defaultBaseRef;
-        const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
-        const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
-          ? headRes.stdout.trim()
-          : requestedBaseRef;
-
-        return await createWorktreeLane({
-          name: args.name,
-          description: args.description,
-          baseRef: requestedBaseRef,
-          startPoint,
-          parentLaneId: null,
-          folder: args.folder,
-          branchName: args.branchName,
-          linearIssue: args.linearIssue ?? null,
-        }, runtimeOptions);
-      }
-
-      const parentHeadSha = await getHeadSha(parent.worktree_path);
-      if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
-      return await createWorktreeLane({
-        name: args.name,
-        description: args.description,
-        baseRef: parent.branch_ref,
-        startPoint: parentHeadSha,
-        parentLaneId: parent.id,
-        folder: args.folder,
-        branchName: args.branchName,
-        linearIssue: args.linearIssue ?? null,
-      }, runtimeOptions);
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
@@ -6509,6 +6606,8 @@ export function createLaneService({
          * on another machine must not publish work the person never pushed.
          */
         publishUpstream?: boolean;
+        /** Lets `cancelGitWrite` stop the checkout. */
+        operationId?: string;
       },
       runtimeOptions: { laneId?: string } = {},
     ): Promise<LaneSummary> {
@@ -6583,12 +6682,33 @@ export function createLaneService({
         }
 
         // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
-        await runGitWorktreeMutation(() =>
-          runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
-            cwd: projectRoot,
-            timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS
-          })
-        );
+        const gitWrite = beginLaneGitWrite(args.operationId);
+        let gitStarted = false;
+        try {
+          // Cancelled while queued: git never ran, so there is no folder to clear.
+          await runGitWorktreeMutation(() => {
+            gitStarted = true;
+            return runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+              cwd: projectRoot,
+              ...TREE_WRITE_GIT_LIMITS,
+              signal: gitWrite.signal,
+              cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
+            });
+          }, { signal: gitWrite.signal, message: LANE_CREATE_CANCEL_MESSAGE });
+        } catch (addError) {
+          // A stopped `worktree add` leaves a half-written folder at this
+          // lane's fresh path. The branch is not this call's (the catch below
+          // deletes it only when this call created it), so keep it.
+          if (gitStarted && (gitWrite.signal.aborted || addError instanceof GitTimeoutError)) {
+            const cleanupErrors = await removeUnownedWorktreeAndBranch({ worktreePath, branchRef: null });
+            if (cleanupErrors.length > 0) {
+              logger.warn("laneService.importBranch.stopped_add_cleanup_failed", { worktreePath, cleanupErrors });
+            }
+          }
+          throw addError;
+        } finally {
+          gitWrite.end();
+        }
         worktreeAdded = true;
 
         // Preserve a remote lane tree by recording the parent directly. This
@@ -6841,173 +6961,188 @@ export function createLaneService({
     },
 
     async switchBranch(args: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> {
-      const laneId = args.laneId.trim();
-      if (!laneId) throw new Error("laneId is required.");
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      if (row.status === "archived") throw new Error("Lane is archived.");
+      const gitWrite = beginLaneGitWrite(args.operationId);
+      // Stopped before git ran: nothing in the folder changed.
+      const throwIfSwitchStopped = (): void => {
+        if (gitWrite.signal.aborted) throw new AdeExpectedError("The branch switch was cancelled.", "user");
+      };
+      try {
+        const laneId = args.laneId.trim();
+        if (!laneId) throw new Error("laneId is required.");
+        const row = getLaneRow(laneId);
+        if (!row) throw new Error(`Lane not found: ${laneId}`);
+        if (row.status === "archived") throw new Error("Lane is archived.");
 
-      const mode = args.mode ?? "existing";
-      const rawBranchName = args.branchName.trim();
-      if (!rawBranchName) throw new Error("Branch name is required.");
+        const mode = args.mode ?? "existing";
+        const rawBranchName = args.branchName.trim();
+        if (!rawBranchName) throw new Error("Branch name is required.");
 
-      const preview = await previewBranchSwitch(args);
-      if (preview.dirty) {
-        throw new Error("This lane has uncommitted changes. Commit or stash them before switching branches.");
-      }
-      if (preview.duplicateLaneId) {
-        throw new Error(`Branch '${preview.targetBranchRef}' is already active in lane '${preview.duplicateLaneName ?? preview.duplicateLaneId}'.`);
-      }
-      if (preview.activeWork.length > 0 && !args.acknowledgeActiveWork) {
-        throw new Error("This lane has active sessions. Confirm the branch switch to continue.");
-      }
-
-      const previousBranchRef = row.branch_ref;
-      upsertBranchProfileForRow(row);
-
-      let targetBranchRef = preview.targetBranchRef;
-      let targetProfileRow = getBranchProfileRow(row.id, targetBranchRef);
-      const now = new Date().toISOString();
-      let pendingProfileUpsert: {
-        branchRef: string;
-        baseRef: string;
-        parentLaneId: string | null;
-        sourceBranchRef: string | null;
-        lastCheckedOutAt: string;
-      } | null = null;
-
-      if (mode === "create") {
-        const baseRef = args.baseRef?.trim();
-        if (!baseRef) {
-          throw new Error("Base branch is required when creating a branch inside a lane.");
+        const preview = await previewBranchSwitch(args);
+        if (preview.dirty) {
+          throw new Error("This lane has uncommitted changes. Commit or stash them before switching branches.");
         }
-        const baseRefRes = await runGit(["rev-parse", "--verify", baseRef], {
-          cwd: row.worktree_path,
-          timeoutMs: 10_000,
-        });
-        if (baseRefRes.exitCode !== 0 || !baseRefRes.stdout.trim()) {
-          throw new Error(`Base branch '${baseRef}' was not found.`);
+        if (preview.duplicateLaneId) {
+          throw new Error(`Branch '${preview.targetBranchRef}' is already active in lane '${preview.duplicateLaneName ?? preview.duplicateLaneId}'.`);
         }
-        const branchExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${targetBranchRef}`], {
-          cwd: row.worktree_path,
-          timeoutMs: 8_000,
-        }).then((res) => res.exitCode === 0);
-        if (branchExists) {
-          throw new Error(`Branch '${targetBranchRef}' already exists. Switch to it instead of creating it.`);
+        if (preview.activeWork.length > 0 && !args.acknowledgeActiveWork) {
+          throw new Error("This lane has active sessions. Confirm the branch switch to continue.");
         }
-        const startPoint = args.startPoint?.trim() || row.branch_ref;
-        const startPointRes = await runGit(["rev-parse", "--verify", startPoint], {
-          cwd: row.worktree_path,
-          timeoutMs: 10_000,
-        });
-        if (startPointRes.exitCode !== 0 || !startPointRes.stdout.trim()) {
-          throw new Error(`Start point '${startPoint}' was not found.`);
-        }
-        await runGitOrThrow(["checkout", "-b", targetBranchRef, startPoint], {
-          cwd: row.worktree_path,
-          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
-        });
-        targetProfileRow = null;
-        pendingProfileUpsert = {
-          branchRef: targetBranchRef,
-          baseRef,
-          parentLaneId: null,
-          sourceBranchRef: startPoint,
-          lastCheckedOutAt: now,
-        };
-      } else {
-        const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawBranchName}`], {
-          cwd: row.worktree_path,
-          timeoutMs: 8_000,
-        }).then((res) => res.exitCode === 0);
-        let remoteRef: string | null = null;
-        if (!localExists) {
-          const remoteExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${rawBranchName}`], {
+
+        const previousBranchRef = row.branch_ref;
+        upsertBranchProfileForRow(row);
+
+        let targetBranchRef = preview.targetBranchRef;
+        let targetProfileRow = getBranchProfileRow(row.id, targetBranchRef);
+        const now = new Date().toISOString();
+        let pendingProfileUpsert: {
+          branchRef: string;
+          baseRef: string;
+          parentLaneId: string | null;
+          sourceBranchRef: string | null;
+          lastCheckedOutAt: string;
+        } | null = null;
+
+        if (mode === "create") {
+          const baseRef = args.baseRef?.trim();
+          if (!baseRef) {
+            throw new Error("Base branch is required when creating a branch inside a lane.");
+          }
+          const baseRefRes = await runGit(["rev-parse", "--verify", baseRef], {
+            cwd: row.worktree_path,
+            timeoutMs: 10_000,
+          });
+          if (baseRefRes.exitCode !== 0 || !baseRefRes.stdout.trim()) {
+            throw new Error(`Base branch '${baseRef}' was not found.`);
+          }
+          const branchExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${targetBranchRef}`], {
             cwd: row.worktree_path,
             timeoutMs: 8_000,
           }).then((res) => res.exitCode === 0);
-          if (remoteExists) {
-            remoteRef = rawBranchName;
-            targetBranchRef = localBranchNameFromRemoteRef(rawBranchName);
-          } else {
-            const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: rawBranchName });
-            remoteRef = resolved.remoteRef;
-            targetBranchRef = resolved.localBranchName;
+          if (branchExists) {
+            throw new Error(`Branch '${targetBranchRef}' already exists. Switch to it instead of creating it.`);
           }
-        }
-
-        const checkoutCmd = remoteRef
-          ? ["checkout", "--track", "--ignore-other-worktrees", remoteRef]
-          : ["checkout", "--ignore-other-worktrees", targetBranchRef];
-        await runGitOrThrow(checkoutCmd, {
-          cwd: row.worktree_path,
-          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
-        });
-
-        const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
-        pendingProfileUpsert = {
-          branchRef: targetBranchRef,
-          baseRef: args.baseRef?.trim() || existingProfile?.baseRef || defaultBaseRef,
-          parentLaneId: existingProfile?.parentLaneId ?? null,
-          sourceBranchRef: existingProfile?.sourceBranchRef ?? null,
-          lastCheckedOutAt: now,
-        };
-      }
-
-      // Wrap the profile upsert + lanes update in a single transaction so a
-      // partial failure can't leave the lane row referencing the new branch
-      // while the profile still points at the old one.
-      db.run("begin");
-      try {
-        if (pendingProfileUpsert) {
-          upsertBranchProfileForRow(row, pendingProfileUpsert);
-        }
-        const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
-        const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
-        const parentLaneId = targetProfile?.parent_lane_id ?? null;
-        db.run(
-          `
-            update lanes
-            set branch_ref = ?,
-                base_ref = ?,
-                parent_lane_id = ?
-            where id = ?
-              and project_id = ?
-          `,
-          [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
-        );
-        db.run("commit");
-      } catch (err) {
-        try { db.run("rollback"); } catch { /* swallow rollback failures */ }
-        if (previousBranchRef && previousBranchRef !== targetBranchRef) {
-          try {
-            await runGitOrThrow(["checkout", "--ignore-other-worktrees", previousBranchRef], {
+          const startPoint = args.startPoint?.trim() || row.branch_ref;
+          const startPointRes = await runGit(["rev-parse", "--verify", startPoint], {
+            cwd: row.worktree_path,
+            timeoutMs: 10_000,
+          });
+          if (startPointRes.exitCode !== 0 || !startPointRes.stdout.trim()) {
+            throw new Error(`Start point '${startPoint}' was not found.`);
+          }
+          throwIfSwitchStopped();
+          await runGitOrThrow(["checkout", "--progress", "-b", targetBranchRef, startPoint], {
+            cwd: row.worktree_path,
+            ...TREE_WRITE_GIT_LIMITS,
+            timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+            signal: gitWrite.signal,
+            cancelMessage: CHECKOUT_CANCEL_MESSAGE,
+          });
+          targetProfileRow = null;
+          pendingProfileUpsert = {
+            branchRef: targetBranchRef,
+            baseRef,
+            parentLaneId: null,
+            sourceBranchRef: startPoint,
+            lastCheckedOutAt: now,
+          };
+        } else {
+          const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${rawBranchName}`], {
+            cwd: row.worktree_path,
+            timeoutMs: 8_000,
+          }).then((res) => res.exitCode === 0);
+          let remoteRef: string | null = null;
+          if (!localExists) {
+            const remoteExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${rawBranchName}`], {
               cwd: row.worktree_path,
-              timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-              timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
-            });
-          } catch (rollbackErr) {
-            logger.warn("laneService.switchBranch_git_rollback_failed", {
-              laneId: row.id,
-              previousBranchRef,
-              targetBranchRef,
-              error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
-            });
+              timeoutMs: 8_000,
+            }).then((res) => res.exitCode === 0);
+            if (remoteExists) {
+              remoteRef = rawBranchName;
+              targetBranchRef = localBranchNameFromRemoteRef(rawBranchName);
+            } else {
+              const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: rawBranchName });
+              remoteRef = resolved.remoteRef;
+              targetBranchRef = resolved.localBranchName;
+            }
           }
-        }
-        throw err;
-      }
-      invalidateLaneListCache();
 
-      const refreshed = (await listLanes({ includeArchived: false, includeStatus: true })).find((lane) => lane.id === row.id);
-      if (!refreshed) throw new Error(`Lane not found after branch switch: ${row.id}`);
-      return {
-        lane: refreshed,
-        previousBranchRef,
-        activeWork: preview.activeWork,
-      };
+          throwIfSwitchStopped();
+          const checkoutCmd = remoteRef
+            ? ["checkout", "--progress", "--track", "--ignore-other-worktrees", remoteRef]
+            : ["checkout", "--progress", "--ignore-other-worktrees", targetBranchRef];
+          await runGitOrThrow(checkoutCmd, {
+            cwd: row.worktree_path,
+            ...TREE_WRITE_GIT_LIMITS,
+            timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+            signal: gitWrite.signal,
+            cancelMessage: CHECKOUT_CANCEL_MESSAGE,
+          });
+
+          const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
+          pendingProfileUpsert = {
+            branchRef: targetBranchRef,
+            baseRef: args.baseRef?.trim() || existingProfile?.baseRef || defaultBaseRef,
+            parentLaneId: existingProfile?.parentLaneId ?? null,
+            sourceBranchRef: existingProfile?.sourceBranchRef ?? null,
+            lastCheckedOutAt: now,
+          };
+        }
+
+        // Wrap the profile upsert + lanes update in a single transaction so a
+        // partial failure can't leave the lane row referencing the new branch
+        // while the profile still points at the old one.
+        db.run("begin");
+        try {
+          if (pendingProfileUpsert) {
+            upsertBranchProfileForRow(row, pendingProfileUpsert);
+          }
+          const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
+          const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
+          const parentLaneId = targetProfile?.parent_lane_id ?? null;
+          db.run(
+            `
+              update lanes
+              set branch_ref = ?,
+                  base_ref = ?,
+                  parent_lane_id = ?
+              where id = ?
+                and project_id = ?
+            `,
+            [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
+          );
+          db.run("commit");
+        } catch (err) {
+          try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+          if (previousBranchRef && previousBranchRef !== targetBranchRef) {
+            try {
+              await runGitOrThrow(["checkout", "--progress", "--ignore-other-worktrees", previousBranchRef], {
+                cwd: row.worktree_path,
+                ...TREE_WRITE_GIT_LIMITS,
+                timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+              });
+            } catch (rollbackErr) {
+              logger.warn("laneService.switchBranch_git_rollback_failed", {
+                laneId: row.id,
+                previousBranchRef,
+                targetBranchRef,
+                error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+              });
+            }
+          }
+          throw err;
+        }
+        invalidateLaneListCache();
+
+        const refreshed = (await listLanes({ includeArchived: false, includeStatus: true })).find((lane) => lane.id === row.id);
+        if (!refreshed) throw new Error(`Lane not found after branch switch: ${row.id}`);
+        return {
+          lane: refreshed,
+          previousBranchRef,
+          activeWork: preview.activeWork,
+        };
+      } finally {
+        gitWrite.end();
+      }
     },
 
     /**
@@ -8741,7 +8876,7 @@ export function createLaneService({
           const addArgs = localBranch.exitCode === 0
             ? ["worktree", "add", targetPath, branchName]
             : ["worktree", "add", "-b", branchName, targetPath, `origin/${branchName}`];
-          await runGitOrThrow(addArgs, { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
+          await runGitOrThrow(addArgs, { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
         });
         try {
           commitLaneRestoreState(laneId, targetPath);
@@ -8963,6 +9098,12 @@ export function createLaneService({
         throw error;
       }
       broadcastDeleteEvent(progress);
+      // `cancelDelete` stops the worktree removal through this. Nothing else
+      // in the delete listens: once the folder is gone, the rest must finish.
+      const deleteGitWrite = beginLaneGitWrite(null, undefined, `delete:${laneId}`);
+      const throwIfDeleteStopped = (): void => {
+        if (deleteGitWrite.signal.aborted) throw new AdeExpectedError(LANE_DELETE_CANCEL_MESSAGE, "user");
+      };
 
       try {
         const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
@@ -9066,6 +9207,9 @@ export function createLaneService({
         await new Promise((resolve) => setTimeout(resolve, 250));
 
         if (hasWorktree) {
+          // The one slow step with no progress to watch, so the user can stop
+          // it. It also waits here behind other lane git writes.
+          progress.cancellable = true;
           await runStep("git_worktree_remove", async () => {
             const targetPath = normAbs(row.worktree_path);
             // Rails that must hold for ANY worktree path, not just the ones ADE
@@ -9238,7 +9382,11 @@ export function createLaneService({
                 cwd: projectRoot,
                 timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
                 env: { LC_ALL: "C" },
+                signal: deleteGitWrite.signal,
               });
+              // Stopped: leave the rest of the folder for the next delete
+              // rather than falling through to the manual cleanup below.
+              if (removeRes.cancelled) throwIfDeleteStopped();
               if (removeRes.exitCode === 0) {
                 if (!fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);
@@ -9271,8 +9419,9 @@ export function createLaneService({
                 }
                 const forcedRes = await runGit(
                   ["worktree", "remove", "--force", row.worktree_path],
-                  { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },
+                  { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS, signal: deleteGitWrite.signal },
                 );
+                if (forcedRes.cancelled) throwIfDeleteStopped();
                 if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);
                   return { detail: `${row.worktree_path} (with submodules)` };
@@ -9309,8 +9458,9 @@ export function createLaneService({
                 `${row.worktree_path} (recovered from stale state)`,
                 `git worktree remove failed (${original})`
               );
-            });
+            }, { signal: deleteGitWrite.signal, message: LANE_DELETE_CANCEL_MESSAGE });
           });
+          progress.cancellable = false;
         }
 
         if (deleteBranch && row.branch_ref) {
@@ -9436,16 +9586,40 @@ export function createLaneService({
         return { leftoverWorktree: progress.leftoverWorktree ?? null };
       } catch (error) {
         progress.leftoverWorktree = null;
-        finalize("failed");
+        const stoppedByUser = error instanceof Error && error.message === LANE_DELETE_CANCEL_MESSAGE;
+        finalize(stoppedByUser ? "cancelled" : "failed");
         finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
       } finally {
+        deleteGitWrite.end();
         storageLock.release();
       }
     },
 
+    /**
+     * Stops a running delete while it removes the lane folder (the only step
+     * that can take minutes). Earlier steps are quick, and once the folder is
+     * gone the delete must finish, so outside that step this refuses.
+     */
     cancelDelete(laneId: string): { cancelled: boolean; reason?: string } {
-      return { cancelled: false, reason: `Lane deletes run to completion once started: ${laneId}` };
+      const progress = deleteProgressByLaneId.get(laneId);
+      if (!progress || progress.overallStatus !== "running") {
+        return { cancelled: false, reason: "No delete is running for this lane." };
+      }
+      if (!progress.cancellable || !abortLaneGitWrite(`delete:${laneId}`)) {
+        return { cancelled: false, reason: "This delete can no longer be stopped." };
+      }
+      logger.info("lane.delete.cancel_requested", { laneId });
+      return { cancelled: true };
+    },
+
+    /** Stops the git checkout of a create, child create, import or branch switch started with this operation id. */
+    cancelGitWrite(args: CancelLaneGitWriteArgs): CancelLaneGitWriteResult {
+      const operationId = typeof args?.operationId === "string" ? args.operationId.trim() : "";
+      if (!operationId) throw new Error("operationId is required.");
+      const cancelled = abortLaneGitWrite(`op:${operationId}`);
+      if (cancelled) logger.info("lane.git_write.cancel_requested", { operationId });
+      return { cancelled };
     },
 
     async getDeleteRisk(laneId: string): Promise<LaneDeleteRisk> {

@@ -288,6 +288,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["lane.createFromUnstaged", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.unarchive", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.archiveAndReclaim", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],

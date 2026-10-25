@@ -72,6 +72,9 @@ export function LaneBranchSwitcher({
   const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
   const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<PendingBranchSwitch | null>(null);
+  /** The checkout in flight, so Stop can cancel it; null once stop is asked. */
+  const [switchOperationId, setSwitchOperationId] = useState<string | null>(null);
+  const inFlightSwitchRef = useRef<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -190,14 +193,23 @@ export function LaneBranchSwitcher({
           return;
         }
       }
-      await window.ade.git.checkoutBranch({
-        laneId: lane.id,
-        branchName,
-        mode,
-        startPoint: request.startPoint,
-        baseRef: request.baseRef,
-        acknowledgeActiveWork: request.acknowledgeActiveWork,
-      });
+      const operationId = crypto.randomUUID();
+      inFlightSwitchRef.current = operationId;
+      setSwitchOperationId(operationId);
+      try {
+        await window.ade.git.checkoutBranch({
+          laneId: lane.id,
+          branchName,
+          mode,
+          startPoint: request.startPoint,
+          baseRef: request.baseRef,
+          acknowledgeActiveWork: request.acknowledgeActiveWork,
+          operationId,
+        });
+      } finally {
+        inFlightSwitchRef.current = null;
+        setSwitchOperationId(null);
+      }
       await refreshLanes();
       setBranches(await window.ade.git.listBranches({ laneId: lane.id }));
       setPendingSwitch(null);
@@ -211,6 +223,16 @@ export function LaneBranchSwitcher({
       if (succeeded) setOpen(false);
     }
   }, [lane, refreshLanes]);
+
+  const stopSwitch = useCallback((operationId: string) => {
+    setSwitchOperationId(null);
+    void window.ade.lanes.cancelGitWrite({ operationId })
+      .then((result) => {
+        // Git had not started: offer Stop again while the switch lasts.
+        if (!result?.cancelled && inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);
+      })
+      .catch(() => {});
+  }, []);
 
   const branchRow = (branch: LaneBranchOption, kind: "local" | "remote") => {
     const owned = Boolean(branch.ownedByLaneId);
@@ -262,6 +284,18 @@ export function LaneBranchSwitcher({
         <span className="truncate">{laneBranchLabel(lane.branchRef)}</span>
         <CaretDown size={10} className="shrink-0 opacity-60" />
       </button>
+      {switchOperationId ? (
+        <button
+          type="button"
+          className="ml-1 shrink-0 rounded px-1.5 text-[11px] transition-colors hover:bg-[color-mix(in_srgb,var(--color-fg)_6%,transparent)]"
+          style={{ color: COLORS.textMuted }}
+          onClick={() => stopSwitch(switchOperationId)}
+          title="Stop the branch switch. Files from both branches may stay in the lane folder."
+          data-testid="lane-branch-switch-stop"
+        >
+          Stop
+        </button>
+      ) : null}
       {error && !open ? (
         <span className="ml-2 inline-flex min-w-0 items-center gap-1 text-[11px]" style={{ color: COLORS.danger }} title={error}>
           <span className="truncate">{error}</span>

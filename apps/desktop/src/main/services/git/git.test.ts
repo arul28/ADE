@@ -344,8 +344,45 @@ describe("runGit cancellation", () => {
     abort.abort();
     // A cwd that does not exist: a spawned git would fail differently.
     const result = await runGit(["status"], { cwd: path.join(os.tmpdir(), "ade-no-such-dir-for-abort-test"), signal: abort.signal });
-    expect(result).toEqual({ exitCode: 130, stdout: "", stderr: "git was cancelled" });
+    expect(result).toEqual({ exitCode: 130, stdout: "", stderr: "git was cancelled", cancelled: true });
   });
+
+  // Hooks are shell scripts; Windows runs the same timer code.
+  it.skipIf(process.platform === "win32")("stops a git that prints nothing for idleTimeoutMs, while output keeps one running", async () => {
+    const repo = initRepo("ade-git-idle-");
+    const worktrees = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-idle-wt-"));
+    try {
+      git(repo, ["branch", "side"]);
+      const hook = path.join(repo, ".git", "hooks", "post-checkout");
+      // A silent hook stands in for a stuck checkout. Its output goes nowhere,
+      // so stopping git closes git's pipes at once.
+      fs.writeFileSync(hook, "#!/bin/sh\nexec sleep 5 >/dev/null 2>&1 </dev/null\n", { mode: 0o755 });
+      const stalled = await runGit(["worktree", "add", path.join(worktrees, "stalled"), "side"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 300,
+      });
+      expect(stalled).toMatchObject({ exitCode: 124, timedOut: true, stalled: true });
+      await expect(runGitOrThrow(["worktree", "add", "-b", "stalled-2", path.join(worktrees, "stalled-2"), "main"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 300,
+      })).rejects.toMatchObject({ name: "GitTimeoutError", stalled: true });
+
+      // Slow but talking: runs about twice the limit, and each line resets it.
+      fs.writeFileSync(hook, "#!/bin/sh\nfor i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
+      const busy = await runGit(["worktree", "add", "-b", "busy", path.join(worktrees, "busy"), "main"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 800,
+      });
+      expect(busy.exitCode).toBe(0);
+      expect(busy.timedOut).toBeUndefined();
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(worktrees, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 function initRepo(prefix: string): string {

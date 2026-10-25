@@ -11,7 +11,12 @@ import { quoteShellArg } from "../../../shared/shell";
 import { GIT_TOOLCHAIN_MISSING, XCODE_LICENSE_NOT_AGREED } from "../../../shared/xcodeToolchain";
 import { GIT_CONFIG_OVERRIDE_ARGS, GIT_NO_PROMPT_ENV, GIT_READ_ENV } from "./gitReadEnv";
 
-export { GIT_REMOTE_FETCH_TIMEOUT_MS, GIT_TREE_WRITE_TIMEOUT_MS } from "./gitTimeouts";
+export {
+  GIT_REMOTE_FETCH_TIMEOUT_MS,
+  GIT_TREE_WRITE_IDLE_TIMEOUT_MS,
+  GIT_TREE_WRITE_PROGRESS_ENV,
+  GIT_TREE_WRITE_TIMEOUT_MS,
+} from "./gitTimeouts";
 export { branchNameFromHeadRef } from "./gitRefs";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
@@ -155,8 +160,17 @@ export type GitRunOptions = {
   signal?: AbortSignal;
   /** Written to git's stdin, which is then closed (e.g. `check-ignore --stdin`). */
   stdin?: string;
-  /** What `runGitOrThrow` says when the timeout stops git, instead of git's output. */
+  /**
+   * Stops git when it writes nothing to stdout or stderr for this long, even
+   * inside `timeoutMs`. Only useful when git prints progress as it works
+   * (`--progress` plus `GIT_PROGRESS_DELAY=0`); a quiet command would be
+   * stopped while it still works.
+   */
+  idleTimeoutMs?: number;
+  /** What `runGitOrThrow` says when a time limit stops git, instead of git's output. */
   timeoutMessage?: string;
+  /** What `runGitOrThrow` says when `signal` stops git, instead of git's output. */
+  cancelMessage?: string;
 };
 
 export type GitRunResult = {
@@ -164,6 +178,10 @@ export type GitRunResult = {
   stdout: string;
   stderr: string;
   timedOut?: boolean;
+  /** Set with `timedOut` when `idleTimeoutMs` stopped git. */
+  stalled?: boolean;
+  /** `signal` stopped git. */
+  cancelled?: boolean;
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
 };
@@ -299,6 +317,14 @@ type GitChild = {
   once(event: "spawn", listener: () => void): unknown;
 };
 
+function describeIdleLimit(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) {
+    const minutes = ms / 60_000;
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  return `${Math.round(ms / 1000)} seconds`;
+}
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -308,7 +334,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   // Already cancelled (e.g. while queued for a git slot): never spawn a git
   // that would start writing only to be killed.
   if (opts.signal?.aborted) {
-    return { exitCode: 130, stdout: "", stderr: "git was cancelled" };
+    return { exitCode: 130, stdout: "", stderr: "git was cancelled", cancelled: true };
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
@@ -353,12 +379,13 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    let terminationReason: "timeout" | "abort" | null = null;
+    let terminationReason: "timeout" | "stall" | "abort" | null = null;
     let terminationFallback: NodeJS.Timeout | null = null;
     const finish = (result: GitRunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(onTimeout);
+      if (idleTimer) clearTimeout(idleTimer);
       if (terminationFallback) clearTimeout(terminationFallback);
       opts.signal?.removeEventListener("abort", onAbort);
       if (typeof child.pid === "number" && child.pid > 0) {
@@ -367,19 +394,30 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       resolve(result);
     };
 
-    const finishTermination = () => finish({
-      exitCode: terminationReason === "timeout" ? 124 : 130,
-      stdout,
-      stderr: stderr.length ? stderr : terminationReason === "timeout" ? "git timed out" : "git was cancelled",
-      ...(terminationReason === "timeout" ? { timedOut: true } : {}),
-      stdoutTruncated,
-      stderrTruncated,
-    });
+    const finishTermination = () => {
+      const reason = terminationReason;
+      let reasonFields: Partial<GitRunResult> = { cancelled: true };
+      if (reason === "timeout") reasonFields = { timedOut: true };
+      else if (reason === "stall") reasonFields = { timedOut: true, stalled: true };
+      let fallbackStderr = "git was cancelled";
+      if (reason === "timeout") fallbackStderr = "git timed out";
+      else if (reason === "stall") fallbackStderr = `Git made no progress for ${describeIdleLimit(opts.idleTimeoutMs ?? 0)}, so ADE stopped it.`;
+      finish({
+        exitCode: reason === "abort" ? 130 : 124,
+        stdout,
+        // A stalled git's stderr is its progress lines, which explain nothing.
+        stderr: reason === "stall" || !stderr.length ? fallbackStderr : stderr,
+        ...reasonFields,
+        stdoutTruncated,
+        stderrTruncated,
+      });
+    };
 
-    const terminateAndWait = (reason: "timeout" | "abort") => {
+    const terminateAndWait = (reason: "timeout" | "stall" | "abort") => {
       if (terminationReason) return;
       terminationReason = reason;
       clearTimeout(onTimeout);
+      if (idleTimer) clearTimeout(idleTimer);
       // The off-thread worker does the Windows taskkill synchronously, then
       // reports close. Do not let callers clean up a worktree while Git may
       // still be writing to it. The fallback covers a stuck worker/taskkill.
@@ -392,10 +430,19 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     };
 
     const onTimeout = setTimeout(() => terminateAndWait("timeout"), timeoutMs);
+    const idleTimeoutMs = opts.idleTimeoutMs && opts.idleTimeoutMs > 0 ? opts.idleTimeoutMs : null;
+    let idleTimer: NodeJS.Timeout | null = null;
+    const armIdleTimer = () => {
+      if (idleTimeoutMs === null || terminationReason || settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => terminateAndWait("stall"), idleTimeoutMs);
+    };
+    armIdleTimer();
 
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
     child.stdout.on("data", (d: Buffer | string) => {
+      armIdleTimer();
       if (stdoutTruncated) return;
       const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
       const next = appendChunkWithCap({
@@ -411,6 +458,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
     let stderrLineBuffer = "";
     child.stderr.on("data", (d: Buffer | string) => {
+      armIdleTimer();
       const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
       if (opts.onStderrLine) {
         stderrLineBuffer += chunk.toString("utf8");
@@ -676,9 +724,23 @@ export function resetGitCommonDirCacheForTests(): void {
   gitCommonDirInFlight.clear();
 }
 
+/** `runGitOrThrow` throws this when `timeoutMs` or `idleTimeoutMs` stopped git. */
+export class GitTimeoutError extends Error {
+  constructor(message: string, readonly stalled: boolean) {
+    super(message);
+    this.name = "GitTimeoutError";
+  }
+}
+
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
   const res = await runGit(args, opts);
-  if (res.timedOut && opts.timeoutMessage) throw new Error(opts.timeoutMessage);
+  if (res.cancelled) throw markExpected(new Error(opts.cancelMessage ?? "Git was cancelled."), "user");
+  if (res.timedOut) {
+    throw new GitTimeoutError(
+      opts.timeoutMessage ?? formatGitExecutionError(res.stderr.trim() || `git ${args.join(" ")} timed out`),
+      res.stalled === true,
+    );
+  }
   if (res.exitCode !== 0) {
     throw gitCommandError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`);
   }

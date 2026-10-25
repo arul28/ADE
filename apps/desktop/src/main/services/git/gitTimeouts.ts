@@ -11,6 +11,22 @@
 export const GIT_TREE_WRITE_TIMEOUT_MS = 15 * 60_000;
 
 /**
+ * How long a checkout or `worktree add` may print no progress before ADE stops
+ * it. A slow tree write that still moves runs up to GIT_TREE_WRITE_TIMEOUT_MS;
+ * a stuck one stops here instead of holding the lane queue. Git prints a line
+ * as files finish, so only one file that takes longer than this (a large Git
+ * LFS download, say) or a silent hook reaches the limit.
+ */
+export const GIT_TREE_WRITE_IDLE_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * Makes a checkout or `worktree add` print progress to ADE's pipe from the first
+ * file, so GIT_TREE_WRITE_IDLE_TIMEOUT_MS sees it work. A checkout also needs
+ * `--progress`; `worktree add` prints it on its own.
+ */
+export const GIT_TREE_WRITE_PROGRESS_ENV = { GIT_PROGRESS_DELAY: "0" } as const;
+
+/**
  * Bound for a fetch. A busy or distant remote can take minutes on a large repo.
  * The lane Fetch button keeps its own shorter budget (GIT_FETCH_TIMEOUT_MS in
  * shared/defaultRemoteLaneBase.ts), because new-lane creation waits on it.

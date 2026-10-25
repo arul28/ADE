@@ -416,6 +416,8 @@ import type {
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
+  CancelLaneGitWriteResult,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -6971,14 +6973,27 @@ const adeBridge = {
       }
       clearGitReadCaches();
     },
-    cancelDelete: async (args: {
-      laneId: string;
-    }): Promise<{ cancelled: boolean; reason?: string }> =>
-      callProjectRuntimeActionOr(
+    cancelDelete: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ cancelled: boolean; reason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "cancelDelete",
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+      ),
+    cancelGitWrite: async (
+      args: CancelLaneGitWriteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CancelLaneGitWriteResult> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "lane",
+        "cancelGitWrite",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCancelGitWrite, args),
       ),
     listDeleteProgress: async (): Promise<LaneDeleteProgress[]> =>
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>

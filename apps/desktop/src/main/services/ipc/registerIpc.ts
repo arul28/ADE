@@ -293,6 +293,7 @@ import type {
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -7731,6 +7732,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return ctx.laneService.cancelDelete(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesCancelGitWrite, async (_event, arg: CancelLaneGitWriteArgs) => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.cancelGitWrite(arg);
   });
 
   ipcMain.handle(IPC.lanesListDeleteProgress, async () => {

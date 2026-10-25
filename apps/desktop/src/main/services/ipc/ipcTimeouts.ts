@@ -235,6 +235,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
     case IPC.lanesSwitchBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "switchBranch");
+    // The lane branch picker's switch: the same checkout as lane.switchBranch.
+    case IPC.gitCheckoutBranch:
+      return localRuntimeActionIpcTimeoutMs("git", "checkoutBranch");
     case IPC.lanesUnarchive:
       return localRuntimeActionIpcTimeoutMs("lane", "unarchive");
     case IPC.lanesArchiveAndReclaim:

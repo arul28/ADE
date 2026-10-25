@@ -347,6 +347,7 @@ describe("ipcInvokeTimeoutMs", () => {
     ["lane", "createFromUnstaged", IPC.lanesCreateFromUnstaged],
     ["lane", "importBranch", IPC.lanesImportBranch],
     ["lane", "switchBranch", IPC.lanesSwitchBranch],
+    ["git", "checkoutBranch", IPC.gitCheckoutBranch],
     ["lane", "unarchive", IPC.lanesUnarchive],
     ["lane", "archiveAndReclaim", IPC.lanesArchiveAndReclaim],
     ["lane", "delete", IPC.lanesDelete],

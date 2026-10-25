@@ -6826,7 +6826,7 @@ describe("laneService - branchSwitch", () => {
 
         expect(result.previousBranchRef).toBe("feature/c");
         expect(result.lane.branchRef).toBe("feature/new");
-        expect(checkoutCalls.some((cmd) => cmd[0] === "checkout" && cmd[1] === "-b" && cmd[2] === "feature/new")).toBe(true);
+        expect(checkoutCalls.some((cmd) => cmd[0] === "checkout" && cmd[cmd.indexOf("-b") + 1] === "feature/new")).toBe(true);
 
         const profile = service.listBranchProfiles("lane-c").find((p) => p.branchRef === "feature/new");
         expect(profile?.sourceBranchRef).toBe("feature/c");
