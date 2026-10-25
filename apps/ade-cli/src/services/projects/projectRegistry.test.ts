@@ -436,7 +436,8 @@ describe("ProjectRegistry", () => {
       const makeProject = (name: string) => {
         const dir = path.join(root, name);
         fs.mkdirSync(dir);
-        return fs.realpathSync(dir);
+        // `.native` expands Windows short names (RUNNER~1), as the registry does.
+        return fs.realpathSync.native(dir);
       };
       return { layout, registry: new ProjectRegistry(layout), makeProject };
     }

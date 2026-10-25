@@ -27117,11 +27117,13 @@ async function runServe(
   // What a brain report needs to explain a missing project or a lost scope
   // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
   // when Sentry is off.
-  registerSentryDiagnosticContext("brain_state", () => ({
-    role: options.role,
-    ...scopeRegistry.diagnosticSnapshot(),
-  }));
-  registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry.diagnosticPaths()));
+  const unregisterBrainDiagnostics = [
+    registerSentryDiagnosticContext("brain_state", () => ({
+      role: options.role,
+      ...scopeRegistry.diagnosticSnapshot(),
+    })),
+    registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry.diagnosticPaths())),
+  ];
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the
@@ -27510,6 +27512,8 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   const disposeServeResources = async () => {
+    // A stopped brain must not describe itself in later reports from this process.
+    for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;

@@ -205,8 +205,8 @@ describe("createSentryEventHooks", () => {
   // Last in the file: it turns diagnostics on for the rest of this process.
   it("attaches the log tail without its secrets, once per issue", () => {
     enableSentryDiagnostics();
-    const pushToken = "pt_9f8e7d6c5b4a39281706f5e4";
-    const machineKey = "mk_live_0a1b2c3d4e5f60718293";
+    const pushToken = "pt_9f8e7d6c5b4a39281706f5e4"; // gitleaks:allow (a fake token the scrub must remove)
+    const machineKey = "mk_live_0a1b2c3d4e5f60718293"; // gitleaks:allow (a fake key the scrub must remove)
     // A line past the cut: only a JSON line is scrubbed by key, and a cut one is no longer JSON.
     recordLogTailLine(JSON.stringify({ ts: "t1", level: "info", event: "sync.paired", meta: { pushToken, machineKey, devices: "d".repeat(4_000) } }));
     recordLogTailLine(JSON.stringify({ ts: "t2", level: "warn", event: "runtime.slow", meta: { action: "lane.list", accessToken: "short-secret-123" } }));

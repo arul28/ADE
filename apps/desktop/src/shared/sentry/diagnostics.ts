@@ -214,8 +214,11 @@ function packAttachment(filename: string, text: string): DiagnosticHintAttachmen
   return { filename, data: text, contentType: "text/plain" };
 }
 
+const utf8 = new TextEncoder();
+
+/** Bytes as sent: UTF-8 for plain text (this module also loads in the renderer, so no `Buffer`). */
 function attachmentBytes(file: DiagnosticHintAttachment): number {
-  return typeof file.data === "string" ? file.data.length : file.data.byteLength;
+  return typeof file.data === "string" ? utf8.encode(file.data).byteLength : file.data.byteLength;
 }
 
 /**
