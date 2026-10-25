@@ -236,6 +236,7 @@ import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
 import {
   codexMcpToolApproval,
   mcpElicitationContent,
+  mcpElicitationDefaultAnswers,
   mcpElicitationQuestions,
   mcpElicitationSessionPersistScope,
 } from "./codexMcpElicitation";
@@ -44673,6 +44674,9 @@ export function createAgentChatService(args: {
     return { behavior: "completed", result: choice };
   };
 
+  /** How long a Claude MCP prompt card waits for an answer before giving up. */
+  const CLAUDE_MCP_ELICITATION_TIMEOUT_MS = 5 * 60_000;
+
   /**
    * Render an MCP server's elicitation (a form it needs filled, or an
    * authorization link) as the same card Codex and Copilot raise for theirs.
@@ -44728,9 +44732,51 @@ export function createAgentChatService(args: {
       logElicitation("declined_by_policy");
       return { action: "decline" };
     }
-    const { abandoned, response } = await parkClaudeCard(managed, runtime, pendingRequest, options.signal, ui);
+    // Nobody is waiting on a full-auto chat or an automation run, so the
+    // prompt is answered on the spot and the run never stalls on it: a yes/no
+    // is accepted, a form takes its own defaults, and a form that needs a
+    // value only a person has, or a sign-in link, is declined. The card and
+    // its receipt still record what was answered on the user's behalf.
+    const unattended = Boolean(managed.session.automationRunId)
+      || (managed.session.interactionMode !== "plan"
+        && resolveSessionClaudeAccessMode(managed.session, "default") === "bypassPermissions");
+    if (unattended) {
+      emitPendingInputRequest(managed, pendingRequest, ui);
+      const answers = mode === "form" ? mcpElicitationDefaultAnswers(schema) : null;
+      if (!answers) {
+        emitPendingInputResolved(managed, { itemId, decision: "decline", turnId: pendingRequest.turnId ?? null, questions });
+        logElicitation("declined_unattended");
+        return { action: "decline" };
+      }
+      emitPendingInputResolved(managed, { itemId, decision: "accept", turnId: pendingRequest.turnId ?? null, answers, questions });
+      logElicitation("accepted_unattended");
+      return {
+        action: "accept",
+        content: mcpElicitationContent(schema, answers, null) as Record<string, string | number | boolean | string[]>,
+      };
+    }
+    // The MCP tool is stuck until the server hears back, and so is the turn.
+    // An unanswered card gives up after a while so the agent carries on
+    // without it instead of waiting on someone who stepped away.
+    const timeout = new AbortController();
+    const onSdkAbort = (): void => timeout.abort();
+    if (options.signal.aborted) timeout.abort();
+    else options.signal.addEventListener("abort", onSdkAbort, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      timeout.abort();
+    }, CLAUDE_MCP_ELICITATION_TIMEOUT_MS);
+    let parked: Awaited<ReturnType<typeof parkClaudeCard>>;
+    try {
+      parked = await parkClaudeCard(managed, runtime, pendingRequest, timeout.signal, ui);
+    } finally {
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", onSdkAbort);
+    }
+    const { abandoned, response } = parked;
     if (abandoned) {
-      logElicitation("cancelled");
+      logElicitation(timedOut ? "timed_out" : "cancelled");
       return { action: "cancel" };
     }
     if (response.decision === "cancel" || response.decision === "decline") {

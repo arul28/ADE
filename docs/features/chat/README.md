@@ -4061,7 +4061,18 @@ every turn-ending path settles it; the SDK's abort signal cancels it.
 Accept answers `{action: "accept", content}` with `mcpElicitationContent`;
 Deny answers `decline`; an interrupt answers `cancel`. A host policy with
 `fallback: "deny"` declines on the spot, and still writes the card and its
-`decline` receipt, as for Codex. Every elicitation logs
+`decline` receipt, as for Codex.
+
+Nobody answers a full-auto chat (`bypassPermissions`, outside plan mode) or
+an automation run (`automationRunId`), and the MCP tool, and with it the
+turn, is stuck until the server hears back. So ADE answers there itself,
+writing the card and its receipt: a form with no fields (a yes/no) is
+accepted, a form whose required fields all have a schema `default` is
+accepted with those defaults (`mcpElicitationDefaultAnswers`), and a form
+that needs a value only a person has, or a URL sign-in, is declined. Anywhere
+else the card waits at most `CLAUDE_MCP_ELICITATION_TIMEOUT_MS` (5 minutes);
+then it answers `cancel`, so the tool returns and the agent carries on. Every
+elicitation logs
 `chat.claude.mcp_elicitation`. The card lives on the chat's own brain, so a
 remote client answers it through the chat's pinned `respondToInput` like any
 other card. It appears only when a server the chat uses actually asks, and

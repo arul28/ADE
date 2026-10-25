@@ -2928,8 +2928,12 @@ to the schema before ADE replies. Approval/URL mode shows **Allow once** and
 **Always allow** only when `_meta.persist` includes `always`. Claude chats
 raise the same card for an MCP server's elicitation (`onElicitation`); it
 offers no **Always allow**, because the Agent SDK has no persistent consent
-for elicitations, so every request is answered on its own. Provider
-full-auto mode does not auto-answer these app/connector consent requests.
+for elicitations, so every request is answered on its own. In a Claude
+full-auto chat or an automation run ADE answers the card itself (a yes/no is
+accepted, a form takes its schema defaults, anything else is declined) and
+shows the receipt; an unanswered Claude card cancels itself after 5 minutes.
+Codex full-auto mode does not auto-answer these app/connector consent
+requests.
 `serverRequest/resolved` emits the usual resolution event so a request
 completed outside the card cannot leave the composer locked.
 

@@ -192,3 +192,33 @@ export function mcpElicitationContent(
   }
   return content;
 }
+
+/**
+ * The answers a form would get if nobody changed anything: each field's
+ * schema `default`, in the string shape a card answer has, so
+ * `mcpElicitationContent` coerces them like typed answers. Null when a
+ * required field has no default, because then only a person can fill it.
+ */
+export function mcpElicitationDefaultAnswers(schemaValue: unknown): Record<string, string | string[]> | null {
+  const schema = readRecord(schemaValue);
+  const properties = readRecord(schema?.properties) ?? {};
+  const required = new Set(
+    Array.isArray(schema?.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+  const answers: Record<string, string | string[]> = {};
+  for (const [id, propertyValue] of Object.entries(properties)) {
+    const fallback = readRecord(propertyValue)?.default;
+    if (fallback === undefined || fallback === null) {
+      if (required.has(id)) return null;
+      continue;
+    }
+    if (Array.isArray(fallback)) {
+      answers[id] = fallback.map((value) => (typeof value === "string" ? value : JSON.stringify(value)));
+    } else {
+      answers[id] = typeof fallback === "string" ? fallback : JSON.stringify(fallback);
+    }
+  }
+  return answers;
+}
