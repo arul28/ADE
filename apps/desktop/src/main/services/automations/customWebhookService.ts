@@ -529,6 +529,14 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return out;
   };
 
+  /**
+   * The log keeps a parsed body as JSON (`bodyForLog`), whatever it arrived
+   * as, so a logged body re-parses as JSON-or-text. Reading it with the
+   * sender's form content type would turn the JSON into one bogus form field.
+   */
+  const parseStoredOrSentBody = (rawBody: Buffer, contentType: string | null, stored: boolean): unknown =>
+    parseWebhookBody(rawBody, stored ? null : contentType);
+
   const bodyForLog = (rawBody: Buffer, parsed: unknown): { text: string; truncated: boolean } => {
     let text: string;
     if (parsed && typeof parsed === "object") {
@@ -625,6 +633,8 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       /** A replay: the signature was settled when the request first arrived, and this is its state then. */
       replayedSignature?: AutomationWebhookDeliverySummary["signature"];
       skipDedupe?: boolean;
+      /** `rawBody` is a logged body (`bodyForLog`), not the bytes the sender sent. */
+      storedBody?: boolean;
     } = {},
   ): Promise<WebhookReceiveResult> => {
     const hookId = request.hookId.trim().toLowerCase();
@@ -669,7 +679,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       return { status: 413, outcome: "too_large", deliveryId };
     }
 
-    const parsedBody = parseWebhookBody(request.rawBody, contentType);
+    const parsedBody = parseStoredOrSentBody(request.rawBody, contentType, options.storedBody === true);
     const view: WebhookRequestView = { body: parsedBody, headers: request.headers, query: request.query };
     const eventLabel = webhookEventLabel(view, match?.config.preset);
     const logged = bodyForLog(request.rawBody, parsedBody);
@@ -829,7 +839,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         continue;
       }
       const headers = parseJsonRecord(row.headers_json);
-      const body = parseWebhookBody(Buffer.from(row.body_text ?? "", "utf8"), row.content_type);
+      const body = parseStoredOrSentBody(Buffer.from(row.body_text ?? "", "utf8"), row.content_type, true);
       deps.logger.info("automations.webhook_delivery_resumed", { hookId: row.hook_id, deliveryId: row.id });
       settleDispatch(row.id, row.hook_id, deps.dispatch({
         hookId: row.hook_id,
@@ -857,8 +867,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       throw new Error("That request failed the signature check, so ADE will not run it. Fix the signing secret, then have the service send it again.");
     }
     const body = row.body_text ?? "";
-    // The stored body is pretty-printed JSON or the original text; either
-    // re-parses to the same value, so placeholders and filters read the same.
+    // The stored body is pretty-printed JSON or the original text; read as
+    // JSON-or-text (`storedBody`) either re-parses to the same value, so
+    // placeholders and filters read the same.
     const result = await receive({
       hookId: row.hook_id,
       method: row.method,
@@ -871,6 +882,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       // the original signature could not match it again anyway.
       replayedSignature: row.signature === "verified" || row.signature === "unchecked" ? row.signature : "not_required",
       skipDedupe: true,
+      storedBody: true,
     });
     if (!result.deliveryId) return null;
     const replayed = loadDeliveryRow(result.deliveryId);

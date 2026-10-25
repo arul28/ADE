@@ -685,13 +685,15 @@ describe("customWebhookService", () => {
     });
     const { service: before } = setupService({ rules, dispatch: firstDispatch });
     seedHook(HOOK_ID, HOOK_TOKEN, null);
+    // Form-encoded, as GitHub can send it: the log keeps the parsed body as
+    // JSON, which must not be re-read as a form after the restart.
     const deliver = (deliveryId: string, action: string) => before.receive({
       hookId: HOOK_ID,
       token: HOOK_TOKEN,
       method: "POST",
-      headers: { "content-type": "application/json", "x-github-delivery": deliveryId },
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-github-delivery": deliveryId },
       query: {},
-      rawBody: Buffer.from(JSON.stringify({ action }), "utf8"),
+      rawBody: Buffer.from(`payload=${encodeURIComponent(JSON.stringify({ action }))}`, "utf8"),
       via: "local",
     });
     const pending = await deliver("gh-pending", "opened");
