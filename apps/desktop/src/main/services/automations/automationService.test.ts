@@ -30,6 +30,7 @@ type SqlValue = string | number | null | Uint8Array;
 
 type AdeDb = {
   run: (sql: string, params?: SqlValue[]) => void;
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 };
