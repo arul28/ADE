@@ -57,7 +57,7 @@ export function classifyGitPushFailure(
   if (/refusing to allow an? [^\n]*to create or update workflow/i.test(text)) {
     return {
       kind: "workflow_scope",
-      message: `GitHub refused the push to ${branch} because it changes a file in .github/workflows and the credential lacks the "workflow" scope. Use a token or sign-in with that scope, or push from a terminal that has it.`,
+      message: `GitHub refused the push to ${branch} because it changes a file in .github/workflows and the credential cannot change workflows. A token needs the "workflow" scope; a GitHub App needs the Workflows repository permission. Use a credential that has it, or push from a terminal that does.`,
     };
   }
   if (/\bGH006\b/.test(text) || remoteRejectedLower.includes("protected branch")) {

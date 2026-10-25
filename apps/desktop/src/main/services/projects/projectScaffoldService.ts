@@ -206,7 +206,8 @@ export function createProjectScaffoldService({
         `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
       );
     }
-    cloneArgs.push(url, rootPath);
+    // `--` so a URL that starts with "-" cannot be read as a git option.
+    cloneArgs.push("--", url, rootPath);
 
     try {
       const cloneRes = await runGit(cloneArgs, {
