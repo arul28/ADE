@@ -8433,7 +8433,7 @@ export function createLaneService({
       const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
       if (hardBlock) throw new Error(hardBlock.message);
       if (risk.dirty && args.forceDirty !== true) {
-        throw new Error("This lane has uncommitted files. Confirm that those changes may be lost.");
+        throw new AdeExpectedError("This lane has uncommitted files. Confirm that those changes may be lost.", "user");
       }
       if (laneReclaimInFlight.has(args.laneId)) {
         throw new Error("Archive & Reclaim is already running for this lane.");
@@ -9262,6 +9262,13 @@ export function createLaneService({
               // changes and unpushed commits, so let Git remove it with one
               // --force instead of deleting the folder by hand.
               if (!force && /containing submodules/i.test(original)) {
+                // Chats and terminals were still running after the check; a
+                // forced removal would take whatever they wrote since.
+                const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
+                if (unsavedWork) {
+                  logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork, stage: "submodule_retry" });
+                  throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
+                }
                 const forcedRes = await runGit(
                   ["worktree", "remove", "--force", row.worktree_path],
                   { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },

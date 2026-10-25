@@ -9,7 +9,7 @@ export const UNCOMMITTED_CHANGES_REASON = "Lane has uncommitted changes.";
 /**
  * Why removing the worktree would lose work, as a sentence for the user, or
  * null when nothing would be lost. Work is an uncommitted or untracked file, a
- * changed submodule, or a submodule commit that no remote has.
+ * changed submodule, or a submodule commit that no remote-tracking branch has.
  * `--ignore-submodules=none` keeps a user's `diff.ignoreSubmodules` from hiding
  * a changed submodule. Git keeps a worktree's submodule repositories inside the
  * worktree's own git dir, so removing the worktree removes their commits too.
@@ -98,9 +98,11 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
     if (!remotes.stdout.trim()) {
       return `Submodule ${relPath} has no remote, so its commits may exist only in this lane.`;
     }
-    // A commit on a tag a remote has is saved too; machine reset asks the same.
+    // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
+    // never have been pushed, and it lives in this worktree's own submodule
+    // repository, which the removal deletes.
     const unpushed = await runGit(
-      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes", "--tags"],
+      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
       { cwd: submodulePath, timeoutMs },
     );
     if (unpushed.exitCode !== 0) {

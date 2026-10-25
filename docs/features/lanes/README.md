@@ -202,10 +202,13 @@ Shared git engine (every lane service reaches git through these):
   personal `status.showUntrackedFiles=no` or `diff.noprefix` cannot change
   what ADE reads, and it sets `GIT_TERMINAL_PROMPT=0`, so a missing sign-in
   fails at once with a hint instead of waiting for the timeout. The AI git
-  tools spawn git themselves with the same overrides. Tree writes (checkout,
-  `worktree add` / `remove`) allow 15 minutes and fetches 5
-  (`gitTimeouts.ts`); the lane actions that run them, and every caller above
-  them, wait longer (`LANE_GIT_WRITE_ACTION_TIMEOUT_MS`). Path lists are read
+  tools spawn git themselves with the same overrides. Lane checkouts and
+  `worktree add` / `remove` allow 15 minutes and lane fetches 5
+  (`gitTimeouts.ts`). The lane create, import, switch, unarchive, reclaim and
+  delete actions, and every caller above them, wait longer
+  (`LANE_GIT_WRITE_ACTION_TIMEOUT_MS`). The Fetch button and Sync keep a 60 s
+  fetch, and the PR integration simulation a 60 s `worktree add`, because
+  their actions run on the 30 s default budget. Path lists are read
   with `-z`, and branch names from the full `refs/heads/` ref. It holds
   the process-wide 12-slot git concurrency semaphore (mutating commands bypass
   it), invalidates the repo cache after any ref-affecting command, and exposes

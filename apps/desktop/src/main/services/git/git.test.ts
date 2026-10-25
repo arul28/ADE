@@ -369,7 +369,8 @@ describe("runGit under a personal git config", () => {
   it("still sees new files, keeps a/ b/ patch prefixes, raw -z names, and a branch shadowed by a tag", async () => {
     const repo = initRepo("ade-git-personal-config-");
     setPersonalConfig(repo);
-    const oddName = "café \"q\" a.txt";
+    // Windows cannot create a file name with `"` in it.
+    const oddName = process.platform === "win32" ? "café q a.txt" : "café \"q\" a.txt";
     fs.writeFileSync(path.join(repo, oddName), "new\n", "utf8");
     fs.writeFileSync(path.join(repo, "README.md"), "hi\nmore\n", "utf8");
 
@@ -428,6 +429,9 @@ describe("describeUnsavedWorktreeWork", () => {
     git(lane, ["add", "b"]);
     git(lane, ["commit", "-q", "-m", "bump b"]);
     expect(git(lane, ["status", "--porcelain", "--ignore-submodules=none"])).toBe("");
+    expect(await describeUnsavedWorktreeWork(lane)).toBe("Submodule b has commits that no remote has.");
+    // A tag that was never pushed does not save the commit.
+    git(sub, ["tag", "local-only"]);
     expect(await describeUnsavedWorktreeWork(lane)).toBe("Submodule b has commits that no remote has.");
 
     git(sub, ["push", "-q", "origin", "HEAD:refs/heads/saved"]);

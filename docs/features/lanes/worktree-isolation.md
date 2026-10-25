@@ -118,12 +118,14 @@ the directory first:
    uncommitted or untracked file (whatever `status.showUntrackedFiles` says,
    because `git worktree remove` would delete it), a changed submodule, files
    in an uninitialized submodule's folder, and a submodule commit that no
-   remote branch or tag has. Git keeps a linked worktree's submodule
+   remote-tracking branch has (a tag does not count: it may never have been
+   pushed, and it is deleted with the worktree). Git keeps a linked worktree's submodule
    repositories inside that worktree's admin directory, so removing the
-   worktree removes those commits too. A submodule with no remote, nested
-   deeper than four levels, or that ADE cannot read also stops the delete.
+   worktree removes those commits too. A submodule with no remote, nested four
+   or more levels down, or that ADE cannot read also stops the delete.
    Without force the delete stops with the reason and "Enable force delete
-   after confirming warnings."; archive-and-reclaim asks the same way.
+   after confirming warnings.". Archive-and-reclaim runs the same check and
+   asks for `forceDirty` instead.
 3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.

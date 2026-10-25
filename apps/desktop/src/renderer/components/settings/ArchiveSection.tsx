@@ -353,7 +353,7 @@ export function ArchiveSection() {
           title: `${names} has unsaved work`,
           // A submodule commit lives in the lane's folder, not on the branch.
           message: dirtyLanes.every((item) => /^Lane has uncommitted changes\./i.test(item.error))
-            ? "Deleting loses it. Committed work stays on the branch."
+            ? "Deleting loses it. Commits on the lane's branch stay."
             : "Deleting also removes files and commits that exist only in this lane's folders.",
           confirmLabel: "Delete anyway",
           destructive: true,
