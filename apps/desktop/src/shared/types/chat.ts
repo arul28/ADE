@@ -614,7 +614,9 @@ export type AgentChatHostContinuationMetadata = {
     /** Background work the agent was waiting on was lost with its agent process. */
     | "background_work_lost"
     /** A subagent is blocked on a question; ADE relays it to the parent agent. */
-    | "subagent_question";
+    | "subagent_question"
+    /** A subagent waits on a card only the user can answer; ADE tells the parent agent. */
+    | "subagent_awaiting_user";
 };
 
 export type AgentChatContinuityRecovery = {
@@ -3377,6 +3379,13 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   claudeTag?: string | null;
   awaitingInput?: boolean;
   pendingInputItemId?: string | null;
+  /**
+   * True when the card the chat waits on is one only the user may answer (a
+   * real-input lease, a shared-desktop consent, a secret): no agent can answer
+   * or decline it, so a coordinator should wait or tell the user, not start a
+   * second chat. Absent when nothing waits or an agent may answer.
+   */
+  pendingInputUserOnly?: boolean;
   /**
    * Live-only Codex non-blocking `requestUserInput` (Astra steering).
    * Never persisted; must not set awaitingInput / pendingInputItemId.

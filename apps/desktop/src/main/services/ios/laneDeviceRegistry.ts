@@ -237,6 +237,14 @@ export type LaneDeviceRegistry = {
    * is not one of them; the lane's own device is `deviceDelete`.
    */
   deviceDeleteExtra(args: { laneId: string; udid: string }): Promise<boolean>;
+  /**
+   * Swap the bindings: the lane's extra device `udid` becomes its own device,
+   * and its old ADE device becomes an extra in its place. Rows only; the
+   * caller has already stopped what used the old device, and detached an
+   * attached one (extras are ADE devices only). Null when `udid` is not one
+   * of the lane's extras.
+   */
+  promoteExtra(args: { laneId: string; udid: string }): { device: AppleLaneDevice; previous: AppleLaneDevice | null } | null;
   /** Every device this project's lanes hold: their own and their extras (`extra: true`). */
   list(): AppleLaneDevice[];
   /** Create on first ask — what `launch` and `open-device` call. */
@@ -707,6 +715,16 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       // The same udid-then-name precedence the installed list is matched
       // with, so a re-attach is never mistaken for a takeover.
       if (matchesSimulatorName(existing, wanted)) return existing;
+      const ownExtras = readExtras(laneId);
+      const ownExtra = ownExtras.find((device) => device.udid === wanted)
+        ?? ownExtras.find((device) => matchesSimulatorName(device, wanted));
+      if (ownExtra) {
+        throw new AdeExpectedError(
+          `${APPLE_DEVICE_IS_EXTRA_CODE}: ${ownExtra.name} is one of this lane's extra devices. To make it the lane's `
+          + `device (the old one stays installed), run: ade apple device-promote --device ${ownExtra.udid}`,
+          "user",
+        );
+      }
       throw new AppleDeviceExistsError(existing);
     }
     const installed = await deps.listInstalledSimulators();
@@ -723,7 +741,12 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (extraHolder) {
       throw new AdeExpectedError(
         `${APPLE_DEVICE_IS_EXTRA_CODE}: ${match.name} (${match.udid}) is an extra device of lane `
-        + `${laneNameFor(extraHolder.laneId) ?? extraHolder.laneId}. Drive it with --device ${match.udid}.`,
+        + `${laneNameFor(extraHolder.laneId) ?? extraHolder.laneId}. Drive it with --device ${match.udid}.`
+        // Its own lane can make it the lane's device instead, keeping what is
+        // installed on it; another lane cannot take it at all.
+        + (extraHolder.laneId === laneId
+          ? ` To make it this lane's device, run: ade apple device-promote --device ${match.udid}`
+          : ""),
         "user",
       );
     }
@@ -1197,6 +1220,37 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       forgetExtra(laneId, device.udid);
       deps.logger.info("apple.lane_extra_device_deleted", { laneId, udid: device.udid });
       return true;
+    },
+    promoteExtra(args: { laneId: string; udid: string }) {
+      const laneId = requireLaneId(args.laneId);
+      const extra = readExtras(laneId).find((device) => device.udid === args.udid?.trim());
+      if (!extra) return null;
+      const previous = readOne(laneId);
+      if (previous && !isAdeOwnedLaneDevice(previous.origin)) {
+        throw new AdeExpectedError(
+          `${previous.name} is an attached simulator; detach it before promoting ${extra.name}.`,
+          "user",
+        );
+      }
+      const { extra: _extra, ...promoted } = extra;
+      // The extra row goes first and the old device's extra row comes last, so
+      // a crash in between leaves a device bound once (or not at all, which
+      // the cleanup pass re-adopts from its marker), never twice.
+      forgetExtra(laneId, extra.udid);
+      if (previous) forget(laneId);
+      write(promoted);
+      writeMarker(promoted.udid, { laneId, name: promoted.name, createdAt: promoted.createdAt });
+      if (previous) {
+        const demoted: AppleLaneDevice = { ...previous, extra: true };
+        writeExtra(demoted);
+        writeMarker(previous.udid, { laneId, name: previous.name, createdAt: previous.createdAt, extra: true });
+      }
+      deps.logger.info("apple.lane_extra_device_promoted", {
+        laneId,
+        udid: promoted.udid,
+        previousUdid: previous?.udid ?? null,
+      });
+      return { device: promoted, previous: previous ? { ...previous, extra: true } : null };
     },
     list: readAllHeld,
     async ensure(args: { laneId: string }) {

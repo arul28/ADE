@@ -1079,6 +1079,35 @@ something moves it and only the surface watching the lane can say so.
 Reporting the second as the first is the bug this exists to prevent: it sends
 somebody to System Settings to fix a permission that was never missing.
 
+### Panels and alerts are windows a lane must see
+
+Layer 0 was the only layer listed for a long time, which hid the windows that
+block an app: a modal alert or Save/Open panel sits at layer 8, a floating
+palette at layer 3. `WindowLayerPolicy` (`WindowListScope.swift`) now admits
+layer 0 for everyone and layers 1–23 only for a lane app (a pid the lane
+launched or holds a window of), a lookup that named the window by id, or the
+system Open/Save panel service in a lane's own listing. Nothing at layer 24 (the
+menu band) or above is ever listed. A panel entry must also be on screen and
+published as an Accessibility window, so an app's reusable hidden panels and
+tooltips do not fill the list. Listings mark them `[panel]` and `[modal panel]`;
+`observe` walks panels first so the element cap cannot cut an alert off behind a
+long document; `press` with no target goes to the newest modal panel, where a
+person's keys would; `park` leaves a panel that already opened on the lane
+display where its app put it.
+
+A panel the system draws for another app (`com.apple.appkit.xpc.openAndSavePanelService`)
+cannot be moved through Accessibility, and taking that process would give one
+lane every app's next panel. `claim`/`park` refuse it with that reason, and a
+lane listing shows it only while it sits on the lane's display.
+
+The 1 s watcher sweep moves a new panel of a lane app onto the lane display the
+same way it moves a window. When it cannot — the window never answers
+Accessibility, or it is a sheet attached to a window that stays on the user's
+screen — it records the window and `observe` returns a `warnings` line naming
+it, so the agent stops instead of typing into the user's display. The note is
+dropped as soon as the window ends, is taken by a lane, or reaches the lane
+display.
+
 ### Reconciliation is narrower than it sounds
 
 `display.reconcile` destroys displays *this process* created whose lane is not

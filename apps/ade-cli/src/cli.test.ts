@@ -3728,6 +3728,56 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("reads a chat's text from a file or stdin, keeping every line and dropping a BOM", () => {
+    // Windows `ade.cmd` runs through cmd.exe, which ends the command at the
+    // first line feed: a multi-line argument arrives cut to one line. A file
+    // (or stdin) never passes through it, so the text arrives whole.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-text-file-"));
+    const reportPath = path.join(dir, "report.md");
+    const report = "\uFEFFFirst line\nSecond line\n\nA line with $(cygpath) and 'quotes'\n";
+    fs.writeFileSync(reportPath, report, "utf8");
+    // The text flags trim the edges; every line in between arrives whole, and
+    // the BOM PowerShell 5 writes never becomes the first character.
+    const expected = report.slice(1).trimEnd();
+
+    const sent = buildCliPlan(["chat", "message", "session-1", "--kind", "auto", "--text-file", reportPath]);
+    expect(sent.kind).toBe("execute");
+    if (sent.kind !== "execute") return;
+    expect(sent.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "messageSession",
+        args: { sessionId: "session-1", text: expected },
+      },
+    });
+
+    // The create path takes the same text through --prompt-file, and refuses
+    // to guess when both forms are given.
+    const created = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--model",
+      "anthropic/claude-opus-4-8",
+      "--prompt-file",
+      reportPath,
+    ]));
+    expect(created.steps).toHaveLength(3);
+    const sendParams = (created.steps[2]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
+    });
+    expect(sendParams).toMatchObject({ arguments: { args: { text: report.slice(1) } } });
+
+    expect(() => buildCliPlan([
+      "chat", "message", "session-1", "--text", "one", "--text-file", reportPath,
+    ])).toThrow(/--text-file or --text, not both/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("chains chat create --prompt into a first chat send", () => {
     const plan = buildCliPlan([
       "chat",
@@ -3743,10 +3793,12 @@ describe("ADE CLI", () => {
     ]);
 
     const executePlan = expectExecutePlan(plan);
-    expect(executePlan.steps).toHaveLength(2);
+    // session, the lane's chats for the shared-lane warning, then the send.
+    expect(executePlan.steps).toHaveLength(3);
     expect(executePlan.steps[0]?.key).toBe("session");
+    expect(executePlan.steps[1]?.key).toBe("laneChats");
 
-    const sendStep = executePlan.steps[1]!;
+    const sendStep = executePlan.steps[2]!;
     const sendParams = (sendStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
       session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
     });
@@ -11868,10 +11920,12 @@ describe("ADE CLI", () => {
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(3);
+    // session, the lane's chats for the shared-lane warning, attach, kickoff.
+    expect(plan.steps).toHaveLength(4);
     expect(plan.steps[0]?.key).toBe("session");
+    expect(plan.steps[1]?.key).toBe("laneChats");
 
-    const attachStep = plan.steps[1]!;
+    const attachStep = plan.steps[2]!;
     const attachParams = (attachStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
       session: { domain: "chat", action: "createSession", result: { id: "session-x" } },
     });
@@ -11892,8 +11946,8 @@ describe("ADE CLI", () => {
       "ENG-431",
       "--no-kickoff",
     ]));
-    expect(noKickoffPlan.steps).toHaveLength(2);
-    expect(noKickoffPlan.steps[1]?.key).toBe("attach");
+    expect(noKickoffPlan.steps).toHaveLength(3);
+    expect(noKickoffPlan.steps[2]?.key).toBe("attach");
 
     const summary = summarizeExecution({
       plan: noKickoffPlan,
@@ -14441,22 +14495,30 @@ describe("ADE CLI", () => {
     const enter = buildCliPlan(["apple", "key", "Return", "--text"]);
     expect(enter.kind).toBe("execute");
     if (enter.kind !== "execute") return;
+    // A real key press now, not a typed character: the helper sends key-down
+    // and key-up, so arrows, escape and ⌘-shortcuts work.
     expect(enter.steps[0]?.params).toMatchObject({
-      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "\n" } },
+      arguments: { domain: "ios_simulator", action: "pressKey", args: { key: "return" } },
     });
 
     const tab = buildCliPlan(["apple", "key", "tab"]);
     if (tab.kind !== "execute") throw new Error("expected an execute plan");
-    expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { text: "\t" } } });
+    expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { key: "tab" } } });
+
+    const commandRight = buildCliPlan(["apple", "key", "right", "--cmd"]);
+    if (commandRight.kind !== "execute") throw new Error("expected an execute plan");
+    expect(commandRight.steps[0]?.params).toMatchObject({
+      arguments: { action: "pressKey", args: { key: "right", modifiers: ["cmd"] } },
+    });
 
     // Regression: `--device <udid>` before the key name was read as the key.
     const onDevice = buildCliPlan(["apple", "key", "--device", "ABC-123", "return"]);
     if (onDevice.kind !== "execute") throw new Error("expected an execute plan");
     expect(onDevice.steps[0]?.params).toMatchObject({
-      arguments: { action: "typeText", args: { deviceUdid: "ABC-123", text: "\n" } },
+      arguments: { action: "pressKey", args: { deviceUdid: "ABC-123", key: "return" } },
     });
 
-    expect(() => buildCliPlan(["apple", "key", "escape"])).toThrow(/Valid keys: return, enter, tab/);
+    expect(() => buildCliPlan(["apple", "key", "nonsense"])).toThrow(/Valid keys: return, enter/);
   });
 
   it("attaches shell starts to the active ADE chat session from the environment", () => {
