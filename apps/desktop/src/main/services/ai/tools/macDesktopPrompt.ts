@@ -8,8 +8,7 @@
  * turn, forever, by every one of them. `buildMacDesktopDirective` answers
  * `null` for those lanes, and `composeLaunchDirectives` drops nulls — so a lane
  * with the tool off produces a byte-identical prompt to one built before this
- * file existed. `macDesktopDirectiveOffPromptIsUnchanged` in the tests is what
- * holds that. A capable lane is told it can start a screen before one is
+ * file existed. A capable lane is told it can start a screen before one is
  * active, then gets an updated line when it starts. The chat service keys the
  * line like its other epoch directives, so it is not repeated on every turn.
  *

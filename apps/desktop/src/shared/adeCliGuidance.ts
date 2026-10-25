@@ -231,7 +231,7 @@ export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 export const ADE_CLI_SESSION_SCREEN_RULES = [
   "Screens and proof: every `ade` command works from this terminal.",
   "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
-  "- Pick the surface: a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS or SwiftUI app is `ade apple`; any other desktop app is this lane's own screen, `ade mac-desktop` (`ade screen` on Windows).",
+  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade mac-desktop` (`ade screen` on Windows), and you stop it when you finish.",
   "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
