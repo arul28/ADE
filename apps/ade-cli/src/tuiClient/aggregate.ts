@@ -264,6 +264,9 @@ const TOOL_TARGET_KEYS = [
   "description",
   "task",
   "message",
+  // Codex's sleep tool carries only how long it waits; desktop reads the same
+  // key as its sleep target, so the row reads `sleep 30s` there too.
+  "duration",
 ] as const;
 
 function toolTargetText(args: unknown): string | null {
