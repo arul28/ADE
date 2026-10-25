@@ -115,7 +115,8 @@ const lastTimeoutReportAt = new Map<string, number>();
 
 function isTimeoutBurstRepeat(label: string, now: number): boolean {
   const last = lastTimeoutReportAt.get(label);
-  if (last != null && now - last < TIMEOUT_BURST_MS) return true;
+  // `now >= last`: a clock set back must not hold every later timeout as a repeat.
+  if (last != null && now >= last && now - last < TIMEOUT_BURST_MS) return true;
   lastTimeoutReportAt.set(label, now);
   return false;
 }

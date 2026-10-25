@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { markExpected } from "../../../shared/expectedError";
+import { quoteShellArg } from "../../../shared/shell";
 import { GIT_TOOLCHAIN_MISSING, XCODE_LICENSE_NOT_AGREED } from "../../../shared/xcodeToolchain";
 import { GIT_READ_ENV } from "./gitReadEnv";
 import { terminateProcessTree } from "../shared/processExecution";
@@ -711,7 +712,8 @@ export function formatGitExecutionError(raw: string): string {
     const name = (reservedFile.split(/[\\/]/).pop() ?? "").split(".")[0].toUpperCase();
     return `Git can't add "${reservedFile}". Windows reserves the name ${name} for a device, so no program can open that file. `
       + `A command such as "2>NUL" in a Unix-style shell usually makes it by mistake. `
-      + `Delete the file, then try again. In Git Bash, from the project folder, run: rm "${reservedFile}"`;
+      // Git Bash is a POSIX shell: quoted for it, a folder named `$(…)` stays text.
+      + `Delete the file, then try again. In Git Bash, from the project folder, run: rm ${quoteShellArg(reservedFile, { platform: "linux" })}`;
   }
   if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
