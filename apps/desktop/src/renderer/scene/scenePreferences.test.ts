@@ -4,9 +4,9 @@ import { SCENE_DEFAULTS_REVISION, normalizeScenePreferences } from "./scenePrefe
 
 afterEach(() => { delete window.__adeWebClient; });
 
-// What clients stored before today's defaults: the first shuffle, then the
-// plain background #1883 made the default.
-const OLD_SHUFFLE_DEFAULT = {
+// What clients stored before the reset to sharp, per-screen pictures: the
+// first shuffle, then the plain background #1883 made the default.
+const REVISION_1_SHUFFLE = {
   mode: "shuffle",
   imageId: null,
   showImage: true,
@@ -16,29 +16,35 @@ const OLD_SHUFFLE_DEFAULT = {
   shuffleEvery: "wake",
   shuffleExclude: [],
   choiceMade: false,
-  defaultsRevision: SCENE_DEFAULTS_REVISION,
+  defaultsRevision: 1,
 };
-const OLD_PLAIN_DEFAULT = { ...OLD_SHUFFLE_DEFAULT, mode: "plain", dim: 30 };
+const REVISION_1_PLAIN = { ...REVISION_1_SHUFFLE, mode: "plain", dim: 30 };
+const CURRENT = { ...REVISION_1_SHUFFLE, texture: "none", dim: 30, defaultsRevision: SCENE_DEFAULTS_REVISION };
 
 it.each([
-  [true, null, undefined, "plain", true],
-  [false, null, undefined, "shuffle", true],
-  [true, OLD_SHUFFLE_DEFAULT, {}, "plain", true],
-  [false, OLD_SHUFFLE_DEFAULT, {}, "shuffle", true],
-  [true, OLD_PLAIN_DEFAULT, {}, "plain", true],
-  [false, OLD_PLAIN_DEFAULT, {}, "shuffle", true],
-  [false, OLD_PLAIN_DEFAULT, { choiceMade: true }, "plain", true],
-  [true, OLD_SHUFFLE_DEFAULT, { choiceMade: true }, "shuffle", true],
-  [false, OLD_SHUFFLE_DEFAULT, { choiceMade: true }, "shuffle", true],
-  [true, OLD_SHUFFLE_DEFAULT, { texture: "grain" }, "shuffle", true],
-  [false, OLD_SHUFFLE_DEFAULT, { dim: 20 }, "shuffle", true],
-  [true, OLD_SHUFFLE_DEFAULT, { matchTheme: false }, "shuffle", true],
-  [false, OLD_SHUFFLE_DEFAULT, { showImage: false }, "shuffle", false],
-  [true, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "ade:lake", choiceMade: true }, "image", true],
-])("keeps a chosen scene on web=%s from %j with %j", (web, stored, preference, mode, showImage) => {
+  // Nothing stored, or anything stored before the reset: this client's default, no pick.
+  [true, null, "plain", true, false],
+  [false, null, "shuffle", true, false],
+  [true, REVISION_1_SHUFFLE, "plain", true, false],
+  [false, REVISION_1_SHUFFLE, "shuffle", true, false],
+  [false, REVISION_1_PLAIN, "shuffle", true, false],
+  [false, { ...REVISION_1_PLAIN, choiceMade: true }, "shuffle", true, false],
+  [false, { ...REVISION_1_SHUFFLE, mode: "gradient", choiceMade: true }, "shuffle", true, false],
+  [false, { ...REVISION_1_SHUFFLE, mode: "image", imageId: "ade:snow-range", showImage: false, choiceMade: true }, "shuffle", true, false],
+  // Chosen since the reset: the choice stands.
+  [true, { ...CURRENT, choiceMade: true }, "shuffle", true, true],
+  [false, { ...CURRENT, mode: "plain", choiceMade: true }, "plain", true, true],
+  [false, { ...CURRENT, mode: "gradient", choiceMade: true }, "gradient", true, true],
+  [false, { ...CURRENT, showImage: false }, "shuffle", false, false],
+  [true, { ...CURRENT, mode: "image", imageId: "ade:snow-range", choiceMade: true }, "image", true, true],
+  [false, { ...CURRENT, mode: "image", imageId: "user:abc", choiceMade: true }, "image", true, true],
+  // A pick of a picture ADE stopped shipping shuffles instead of showing the gradient.
+  [false, { ...CURRENT, mode: "image", imageId: "ade:castle-lake", choiceMade: true }, "shuffle", true, true],
+])("reads web=%s stored %j as mode %s (showImage %s, choiceMade %s)", (web, stored, mode, showImage, choiceMade) => {
   window.__adeWebClient = web;
-  const normalized = normalizeScenePreferences(stored === null ? undefined : { ...stored, ...preference });
+  const normalized = normalizeScenePreferences(stored ?? undefined);
   expect(normalized.mode).toBe(mode);
   expect(normalized.showImage).toBe(showImage);
-  expect(normalized.choiceMade).toBe((preference as { choiceMade?: boolean } | undefined)?.choiceMade === true);
+  expect(normalized.choiceMade).toBe(choiceMade);
+  expect(normalized.defaultsRevision).toBe(SCENE_DEFAULTS_REVISION);
 });

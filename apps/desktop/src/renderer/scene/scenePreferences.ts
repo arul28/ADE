@@ -1,4 +1,5 @@
 import { isWebClientMode } from "../lib/webClientMode";
+import { findBundledScene } from "./sceneLibrary";
 
 /**
  * What fills the window behind the top bar, the welcome screen and the new
@@ -41,15 +42,14 @@ export type ScenePreferences = {
 /**
  * Bump to put every user back on the shipped default once, whatever they had
  * chosen. Preferences carrying an older revision (or none) are replaced by
- * `DEFAULT_SCENE_PREFERENCES` on the next read; after that the user's choices
+ * this client's default on the next read; after that the user's choices
  * stand until the next bump.
  *
  * 1 — pictures ship: shuffle, a new picture on each wake, every picture in.
- *     Later defaults (plain, then shuffle over the pictures that fit the
- *     screen) reached existing users through `isUntouchedPastDefault`, not a
- *     bump, so choices were kept.
+ * 2 — sharp pictures sized per screen: everyone starts again on the shuffle
+ *     of the pictures that fit their screen (plain on the web client).
  */
-export const SCENE_DEFAULTS_REVISION = 1;
+export const SCENE_DEFAULTS_REVISION = 2;
 
 /**
  * The desktop default: a picture that fits the screen, a new one on each wake.
@@ -90,29 +90,6 @@ export function defaultScenePreferences(): ScenePreferences {
 
 const MAX_LISTED = 200;
 
-/**
- * Defaults that shipped before and were persisted without the user choosing
- * them: the first shuffle (12% veil, halftone) and the plain background that
- * replaced it (30% veil, halftone). Saved exactly like this and never picked,
- * they read as today's default. Any pick (`choiceMade`) or tuned look stands.
- */
-const PAST_DEFAULTS: { mode: SceneMode; texture: SceneTexture; dim: number }[] = [
-  { mode: "shuffle", texture: "dots", dim: 12 },
-  { mode: "plain", texture: "dots", dim: 30 },
-];
-
-function isUntouchedPastDefault(raw: Record<string, unknown>): boolean {
-  const texture = raw.texture ?? "dots";
-  return raw.choiceMade !== true
-    && !(typeof raw.imageId === "string" && raw.imageId.trim())
-    && raw.shuffleEvery !== "launch" && raw.shuffleEvery !== "hour" && raw.shuffleEvery !== "day"
-    && !(Array.isArray(raw.shuffleExclude) && raw.shuffleExclude.length > 0)
-    && !(Array.isArray(raw.shuffleInclude) && raw.shuffleInclude.length > 0)
-    && raw.matchTheme !== false
-    && raw.showImage !== false
-    && PAST_DEFAULTS.some((past) => raw.mode === past.mode && texture === past.texture && (raw.dim === undefined || raw.dim === past.dim));
-}
-
 function idList(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 120))].slice(0, MAX_LISTED)
@@ -122,11 +99,14 @@ function idList(value: unknown): string[] {
 export function normalizeScenePreferences(value: unknown): ScenePreferences {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const stale = raw.defaultsRevision !== SCENE_DEFAULTS_REVISION;
-  if (stale || isUntouchedPastDefault(raw)) return defaultScenePreferences();
+  if (stale) return defaultScenePreferences();
   const mode: SceneMode = raw.mode === "image" || raw.mode === "shuffle" || raw.mode === "gradient" || raw.mode === "plain"
     ? raw.mode
     : DEFAULT_SCENE_PREFERENCES.mode;
-  const imageId = typeof raw.imageId === "string" && raw.imageId.trim() ? raw.imageId.trim().slice(0, 120) : null;
+  const storedId = typeof raw.imageId === "string" && raw.imageId.trim() ? raw.imageId.trim().slice(0, 120) : null;
+  // A bundled picture ADE no longer ships reads as no pick, so its user
+  // shuffles instead of landing on the gradient.
+  const imageId = storedId && storedId.startsWith("ade:") && !findBundledScene(storedId) ? null : storedId;
   const texture: SceneTexture = raw.texture === "none" || raw.texture === "grain" || raw.texture === "dots"
     ? raw.texture
     : DEFAULT_SCENE_PREFERENCES.texture;

@@ -94,6 +94,21 @@ streaming in the background, perf runs off.
 | Renderer | 17.4% | 131 MB | 25%, 300 MB |
 | Brain (`cli.cjs serve`) | 4.5% | 55 MB | 10%, 250 MB |
 
+### Window wallpaper (scene picture)
+
+GPU process physical footprint (`footprint -p`) with a picture scene against
+the plain background, 2560×1440 window, the screen reported as 2560×1440 through
+CDP `Emulation.setDeviceMetricsOverride` (`screenWidth`/`screenHeight` only),
+each state after a reload and a forced GC, 3 rounds, median. The renderer's
+footprint moved ±40 MB between identical reloads, so it is not a usable signal
+here. Mac Studio M4 Max, isolated first-run dev app, nothing else open in it,
+2026-10-25.
+
+| Picture on a 1440p screen | Before | Baseline | Ceiling |
+|---|---|---|---|
+| Standard picture (3840×2400 file before, 2560×1600 copy now), over plain | +25 MB | +11 MB | +20 MB |
+| Ultrawide picture (5120×1440, unchanged) | +21 MB | +20 MB | +30 MB |
+
 ### Idle, no chats, 5 min (background work)
 
 The dev app on Work with no chat running, one window, DevTools closed, 150 s
