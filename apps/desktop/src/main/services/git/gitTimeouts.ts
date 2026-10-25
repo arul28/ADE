@@ -19,9 +19,10 @@ export const GIT_REMOTE_FETCH_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * How long a caller waits for a lane action that runs these commands. It covers
- * the most git work one of them does: two fetches and two tree writes (a lane
- * from a PR branch fetches twice before its `worktree add`; a delete may
- * remove a tree twice). A caller that gives up sooner reports a failure while
+ * the most git work one of them does: three fetches and two tree writes. A lane
+ * from a PR branch fetches twice to check the branch and once more to import
+ * it, writes the tree, and removes it again if a later step fails; a delete may
+ * remove a tree twice. A caller that gives up sooner reports a failure while
  * git is still writing, and a retry then finds a half-made lane.
  */
-export const LANE_GIT_WRITE_ACTION_TIMEOUT_MS = 2 * GIT_REMOTE_FETCH_TIMEOUT_MS + 2 * GIT_TREE_WRITE_TIMEOUT_MS + 2 * 60_000;
+export const LANE_GIT_WRITE_ACTION_TIMEOUT_MS = 3 * GIT_REMOTE_FETCH_TIMEOUT_MS + 2 * GIT_TREE_WRITE_TIMEOUT_MS + 2 * 60_000;

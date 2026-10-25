@@ -514,7 +514,9 @@ export function createGitOperationsService({
       throw new AdeExpectedError("Lane has uncommitted changes. Commit or stash before sync.", "user");
     }
 
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    // Sync runs on the default 30 s action budget, so its fetch keeps the
+    // short Fetch-button bound.
+    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);

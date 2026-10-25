@@ -64,7 +64,13 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
     // submodule of this lane.
     if (submodulePath === repoPath || !isWithinDir(repoPath, submodulePath)) continue;
     // Git skips a path that is not a folder; it is not a submodule checkout.
-    if (!fs.statSync(submodulePath, { throwIfNoEntry: false })?.isDirectory()) continue;
+    let stats: fs.Stats | undefined;
+    try {
+      stats = fs.statSync(submodulePath, { throwIfNoEntry: false });
+    } catch (error) {
+      return `ADE could not check submodule ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (!stats?.isDirectory()) continue;
     const realSubmodulePath = realPathOrNull(submodulePath);
     if (!realSubmodulePath || realSubmodulePath === realRepoPath || !isWithinDir(realRepoPath, realSubmodulePath)) {
       return `Submodule ${relPath} points outside the lane, so ADE cannot check it.`;

@@ -351,7 +351,10 @@ export function ArchiveSection() {
           .join(", ");
         const force = await confirmDialog({
           title: `${names} has unsaved work`,
-          message: "Deleting loses it. Committed work stays on the branch.",
+          // A submodule commit lives in the lane's folder, not on the branch.
+          message: dirtyLanes.every((item) => /^Lane has uncommitted changes\./i.test(item.error))
+            ? "Deleting loses it. Committed work stays on the branch."
+            : "Deleting also removes files and commits that exist only in this lane's folders.",
           confirmLabel: "Delete anyway",
           destructive: true,
         });

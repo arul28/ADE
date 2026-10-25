@@ -274,6 +274,8 @@ export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT
  */
 export const ARCHIVE_RESTORE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000;
 export const ARCHIVE_DELETE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000;
+/** Cancelling a new-lane launch waits out an in-flight checkout, then deletes the lane. */
+export const CHAT_CANCEL_LAUNCH_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000;
 
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
@@ -292,7 +294,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["pr.createLaneFromPrBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   // Cancelling a new-lane launch waits out an in-flight checkout, then fully
   // deletes the chat and the lane (worktree + local and remote branch).
-  ["chat.cancelLaunch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000],
+  ["chat.cancelLaunch", CHAT_CANCEL_LAUNCH_TIMEOUT_MS],
   ["lane.archive", 120_000],
   // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
   // merged PR. The 30s default reported a failure while the merge went on.
