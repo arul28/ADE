@@ -296,9 +296,10 @@ extension WindowControl {
         guard offLaneWindows.values.contains(where: { $0.pid == pid }) else { return }
         let live = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (windowId, note) in offLaneWindows where note.pid == pid {
-            guard let window = live[windowId], window.laneId == nil, !window.minimized, !isOnLaneDisplay(window.frame) else {
+            let window = live[windowId]
+            let stillOffLane = window.map { $0.laneId == nil && !$0.minimized && !isOnLaneDisplay($0.frame) } ?? false
+            if !stillOffLane {
                 offLaneWindows.removeValue(forKey: windowId)
-                continue
             }
         }
     }

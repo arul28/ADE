@@ -3691,6 +3691,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
     const xcrunAvailable = tools.find((tool) => tool.name === "xcrun")?.available ?? false;
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
+    // Why a lane device ADE powered off is off, from the list read above: a
+    // pane that polls the status must not pay a second `simctl list` for it.
+    const powerOffNotices = isDarwin
+      ? await devicePowerOffNotices(runtime.key, devices).catch(() => [] as string[])
+      : [];
     return {
       platform: process.platform,
       supported: isDarwin && xcrunAvailable && xcodebuildAvailable,
@@ -3702,6 +3707,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       laneDevice: laneDevice ?? null,
       laneId: runtime.laneId,
       helper: helperToolInfo(),
+      ...(powerOffNotices.length ? { deviceNotices: powerOffNotices } : {}),
       // The same redaction rule as `getStreamStatus`: the shape, never the
       // address or the token.
       stream: currentStatusStream(runtime),
@@ -6591,8 +6597,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * Why each of the lane's devices is off, when ADE powered it off: one
    * sentence per device for `status` and `device-list`. A device that is
    * Booted again (by anything) has nothing to explain.
+   *
+   * `installed` is the device list the caller already read, so a status read
+   * that polls (the pane asks every two seconds while a group is open) does not
+   * add a `simctl` list of its own; see `computeStatus`.
    */
-  const devicePowerOffNotices = async (laneId: string): Promise<string[]> => {
+  const devicePowerOffNotices = async (
+    laneId: string,
+    installed?: readonly IosSimulatorDevice[],
+  ): Promise<string[]> => {
     if (!laneId) return [];
     const devices = laneDevices.list().filter((device) => device.laneId === laneId);
     if (!devices.length) return [];
@@ -6600,9 +6613,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       .map((device) => ({ device, record: laneMaintenance().readPowerOff(device.udid) }))
       .filter((entry): entry is { device: AppleLaneDevice; record: AppleDevicePowerOffRecord } => entry.record !== null);
     if (!records.length) return [];
-    const installed = await listDevices().catch(() => [] as IosSimulatorDevice[]);
+    const listed = installed ?? await listDevices().catch(() => [] as IosSimulatorDevice[]);
     return records
-      .filter(({ device }) => installed.find((entry) => entry.udid === device.udid)?.state !== "Booted")
+      .filter(({ device }) => listed.find((entry) => entry.udid === device.udid)?.state !== "Booted")
       .map(({ device, record }) => describeDevicePowerOff(
         record,
         device.name,
@@ -7286,12 +7299,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   return guardAgentDeviceActions({
-    getStatus: async (statusArgs: IosSimulatorStatusArgs = {}): Promise<IosSimulatorStatus> => {
-      const status = await getStatus(statusArgs);
-      if (process.platform !== "darwin") return status;
-      const notices = await devicePowerOffNotices(resolveRuntimeUntracked(statusArgs).key).catch(() => []);
-      return notices.length ? { ...status, deviceNotices: notices } : status;
-    },
+    getStatus,
     getControlOwner,
     getClaimedDevice,
     claim,

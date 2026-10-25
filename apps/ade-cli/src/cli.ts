@@ -13440,7 +13440,9 @@ function readChatTextFile(args: string[], fileFlags: readonly string[], inlineFl
   } catch (error) {
     throw new CliUsageError(`${fileFlag} could not read ${source === "-" ? "stdin" : source}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  text = text.replace(/^﻿/, "");
+  // A UTF-8 BOM (PowerShell 5 writes one) would otherwise become the first
+  // character of the message.
+  text = text.replace(/^\uFEFF/, "");
   if (!text.trim()) throw new CliUsageError(`${fileFlag} ${source === "-" ? "got no text on stdin" : `${source} is empty`}.`);
   return text;
 }

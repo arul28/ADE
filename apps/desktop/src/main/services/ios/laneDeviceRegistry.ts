@@ -715,8 +715,9 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       // The same udid-then-name precedence the installed list is matched
       // with, so a re-attach is never mistaken for a takeover.
       if (matchesSimulatorName(existing, wanted)) return existing;
-      const ownExtra = readExtras(laneId).find((device) => device.udid === wanted)
-        ?? readExtras(laneId).find((device) => matchesSimulatorName(device, wanted));
+      const ownExtras = readExtras(laneId);
+      const ownExtra = ownExtras.find((device) => device.udid === wanted)
+        ?? ownExtras.find((device) => matchesSimulatorName(device, wanted));
       if (ownExtra) {
         throw new AdeExpectedError(
           `${APPLE_DEVICE_IS_EXTRA_CODE}: ${ownExtra.name} is one of this lane's extra devices. To make it the lane's `
@@ -1226,7 +1227,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       if (!extra) return null;
       const previous = readOne(laneId);
       if (previous && !isAdeOwnedLaneDevice(previous.origin)) {
-        throw new Error(`${previous.name} is an attached simulator; detach it before promoting ${extra.name}.`);
+        throw new AdeExpectedError(
+          `${previous.name} is an attached simulator; detach it before promoting ${extra.name}.`,
+          "user",
+        );
       }
       const { extra: _extra, ...promoted } = extra;
       // The extra row goes first and the old device's extra row comes last, so

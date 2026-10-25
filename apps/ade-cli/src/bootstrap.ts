@@ -85,7 +85,10 @@ import { createRebaseSuggestionService } from "../../desktop/src/main/services/l
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
-import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
+import {
+  createProjectHealthService,
+  createProjectHealthTurnStateReader,
+} from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
@@ -3463,21 +3466,7 @@ export async function createAdeRuntime(args: {
       db,
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
-      readChatTurnStates: async (sessionIds) => {
-        const summaries = await agentChatService?.listSessions(undefined, {
-          sessionIds,
-          includeArchived: false,
-          includeAutomation: true,
-          includeIdentity: true,
-          includeSideChats: true,
-        }) ?? [];
-        return summaries.map((summary) => ({
-          sessionId: summary.sessionId,
-          status: summary.status,
-          ...(summary.runtimeAlive !== undefined ? { runtimeAlive: summary.runtimeAlive } : {}),
-          ownedElsewhere: summary.runtimeOwnedElsewhere != null,
-        }));
-      },
+      readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

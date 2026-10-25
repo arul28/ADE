@@ -16469,7 +16469,7 @@ export function createAgentChatService(args: {
   ): string | undefined => {
     const preview = managed.preview?.trim() || undefined;
     const limited = isUsageLimitTurn(done, managed.usageLimitResume?.turnId)
-      || (done.status === "failed" && (isUsageLimitFailureText(preview) || /\bhit your (?:session|weekly|usage) limit\b/i.test(preview ?? "")));
+      || (done.status === "failed" && isUsageLimitFailureText(preview));
     if (!limited) return preview;
     return `Stopped at the usage limit before the job ran${preview ? ` (${clipText(preview, 120)})` : ""}. `
       + "ADE continues the chat when the limit resets.";

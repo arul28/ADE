@@ -91,13 +91,18 @@ export function describeDevicePowerOff(
   record: AppleDevicePowerOffRecord,
   deviceName: string,
   next: string,
+  nowMs: number = Date.now(),
 ): string {
   const at = new Date(record.at);
   const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  // A device can stay off for days, so "at 10:12" alone would read as today.
+  const when = at.toDateString() === new Date(nowMs).toDateString()
+    ? `at ${clock}`
+    : `on ${at.getMonth() + 1}/${at.getDate()} at ${clock}`;
   const why = record.reason === "cleanup"
     ? "in a Clean up"
     : `after ${record.idleMinutes} min idle`;
-  return `ADE powered ${deviceName || "this simulator"} off ${why} at ${clock}; ${next}`;
+  return `ADE powered ${deviceName || "this simulator"} off ${why} ${when}; ${next}`;
 }
 
 /** Simulator.app is running: `ps` shows its main executable. */

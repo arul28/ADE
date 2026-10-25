@@ -35,6 +35,7 @@ import type {
   SessionWakeReason,
   TestRunSummary,
   TestSuiteDefinition,
+  CostSnapshot,
   UsageSnapshot,
 } from "../../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
@@ -652,22 +653,26 @@ const USAGE_SUMMARY_TOP_MODELS = 5;
  */
 function summarizeUsageSnapshot(snapshot: unknown): unknown {
   if (!snapshot || typeof snapshot !== "object") return snapshot;
-  const { costs, adeCosts: _adeCosts, ...rest } = snapshot as UsageSnapshot;
+  const { costs, adeCosts, ...rest } = snapshot as UsageSnapshot;
+  const summarizeCost = (cost: CostSnapshot) => ({
+    provider: cost.provider,
+    last30dCostUsd: cost.last30dCostUsd,
+    todayCostUsd: cost.todayCostUsd,
+    ...(cost.costUsdByPreset ? { costUsdByPreset: cost.costUsdByPreset } : {}),
+    topModels30d: Object.entries(cost.tokenBreakdown ?? {})
+      .filter(([, breakdown]) => (breakdown?.costUsd ?? 0) > 0)
+      .sort(([, a], [, b]) => (b.costUsd ?? 0) - (a.costUsd ?? 0))
+      .slice(0, USAGE_SUMMARY_TOP_MODELS)
+      .map(([model, breakdown]) => ({ model, costUsd: Math.round((breakdown.costUsd ?? 0) * 100) / 100 })),
+    ...(cost.estimation ? { estimation: cost.estimation } : {}),
+    ...(cost.pricingSource ? { pricingSource: cost.pricingSource } : {}),
+  });
   return {
     ...rest,
-    costs: (costs ?? []).map((cost) => ({
-      provider: cost.provider,
-      last30dCostUsd: cost.last30dCostUsd,
-      todayCostUsd: cost.todayCostUsd,
-      ...(cost.costUsdByPreset ? { costUsdByPreset: cost.costUsdByPreset } : {}),
-      topModels30d: Object.entries(cost.tokenBreakdown ?? {})
-        .filter(([, breakdown]) => (breakdown?.costUsd ?? 0) > 0)
-        .sort(([, a], [, b]) => (b.costUsd ?? 0) - (a.costUsd ?? 0))
-        .slice(0, USAGE_SUMMARY_TOP_MODELS)
-        .map(([model, breakdown]) => ({ model, costUsd: Math.round((breakdown.costUsd ?? 0) * 100) / 100 })),
-      ...(cost.estimation ? { estimation: cost.estimation } : {}),
-      ...(cost.pricingSource ? { pricingSource: cost.pricingSource } : {}),
-    })),
+    costs: (costs ?? []).map(summarizeCost),
+    // The ADE-attributed subset is the same shape; dropping it silently left a
+    // caller unable to tell "no ADE spend" from "not in this answer".
+    ...(adeCosts ? { adeCosts: adeCosts.map(summarizeCost) } : {}),
     detail: "summary",
   };
 }

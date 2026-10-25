@@ -73,6 +73,57 @@ export type ProjectHealthChatTurnState = {
   ownedElsewhere?: boolean;
 };
 
+/**
+ * The chat service, as `readChatTurnStates` needs it: one summary read for a
+ * named set of chats. Both hosts that build this service (the desktop brain and
+ * the CLI brain) read the same five options, so the shape lives here once.
+ */
+export type ProjectHealthChatSessionLister = {
+  listSessions(
+    laneId: string | undefined,
+    options: {
+      sessionIds: readonly string[];
+      includeArchived: boolean;
+      includeAutomation: boolean;
+      includeIdentity: boolean;
+      includeSideChats: boolean;
+    },
+  ): Promise<ReadonlyArray<{
+    sessionId: string;
+    status: string;
+    runtimeAlive?: boolean;
+    runtimeOwnedElsewhere?: unknown;
+  }>>;
+};
+
+/**
+ * `readChatTurnStates` from the chat service's own summaries.
+ *
+ * A host with no chat service still gets a reader (it answers nothing), so the
+ * dependency is always wired and the rule stays in one place: a chat is stuck
+ * only when the service says a turn runs and no runtime holds it.
+ */
+export function createProjectHealthTurnStateReader(
+  service: ProjectHealthChatSessionLister | null | undefined,
+): (sessionIds: string[]) => Promise<ProjectHealthChatTurnState[]> {
+  return async (sessionIds) => {
+    if (!service) return [];
+    const summaries = await service.listSessions(undefined, {
+      sessionIds,
+      includeArchived: false,
+      includeAutomation: true,
+      includeIdentity: true,
+      includeSideChats: true,
+    });
+    return summaries.map((summary) => ({
+      sessionId: summary.sessionId,
+      status: summary.status,
+      ...(summary.runtimeAlive !== undefined ? { runtimeAlive: summary.runtimeAlive } : {}),
+      ownedElsewhere: summary.runtimeOwnedElsewhere != null,
+    }));
+  };
+}
+
 const REPORT_CACHE_MS = 30_000;
 /** A lane with no activity for this long, and no open PR, counts as stale. */
 const STALE_AFTER_DAYS = 14;
