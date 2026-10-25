@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
-import { resolveGithubRemoteRepo } from "../../desktop/src/main/services/github/githubSshAlias";
-import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
+import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
+import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
+import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -631,21 +632,6 @@ async function runGitHeadlessAsync(
   return result;
 }
 
-function parseGitHubRepoFromRemoteUrl(
-  remoteUrlRaw: string,
-): { owner: string; name: string } | null {
-  const repo = parseGithubRemoteUrl(remoteUrlRaw);
-  return repo ? { owner: repo.owner, name: repo.repo } : null;
-}
-
-/** Same as above, plus SSH aliases whose ssh config on this machine points at GitHub. */
-async function resolveGitHubRepoFromRemoteUrl(
-  remoteUrlRaw: string,
-): Promise<{ owner: string; name: string } | null> {
-  const repo = await resolveGithubRemoteRepo(remoteUrlRaw);
-  return repo ? { owner: repo.owner, name: repo.repo } : null;
-}
-
 function repoIdentityFromGitHubResponse(
   data: Record<string, unknown>,
   fallbackOwner: string,
@@ -658,8 +644,8 @@ function repoIdentityFromGitHubResponse(
       ? { owner: fullNameParts[0]!.trim(), name: fullNameParts[1]!.trim() }
       : null;
   const repoFromUrl =
-    parseGitHubRepoFromRemoteUrl(asString(data.clone_url)) ??
-    parseGitHubRepoFromRemoteUrl(asString(data.html_url)) ??
+    githubRepoRefFromRemoteUrl(asString(data.clone_url)) ??
+    githubRepoRefFromRemoteUrl(asString(data.html_url)) ??
     null;
   const owner =
     asString((data.owner as Record<string, unknown> | undefined)?.login).trim() ||
@@ -681,7 +667,7 @@ function repoIdentityFromGitHubResponse(
 async function detectGitHubRepoAsync(
   projectRoot: string,
 ): Promise<{ owner: string; name: string } | null> {
-  return await resolveGitHubRepoFromRemoteUrl(await readGitOriginAsync(projectRoot) ?? "");
+  return await resolveGithubRepoRef(await readGitOriginAsync(projectRoot) ?? "");
 }
 
 function parseNextGitHubLink(linkHeader: string | null): string | null {
@@ -1307,7 +1293,7 @@ export function createHeadlessGitHubService(
       readGitOriginAsync(projectRoot),
       readCredentialInventoryAsync(),
     ]);
-    const repo = await resolveGitHubRepoFromRemoteUrl(origin ?? "");
+    const repo = await resolveGithubRepoRef(origin ?? "");
     const candidate = inventory.candidates.find((entry) => entry.source === "pat") ?? null;
     return await verifyGithubCredentialSource({
       source: "pat",
@@ -1913,7 +1899,7 @@ export function createHeadlessGitHubService(
       readGitOriginAsync(projectRoot),
       readCredentialInventoryAsync(),
     ]);
-    const repo = await resolveGitHubRepoFromRemoteUrl(origin ?? "");
+    const repo = await resolveGithubRepoRef(origin ?? "");
     const hasOrigin = Boolean(origin);
     const inventoryFailuresBySource = new Map(
       inventory.failures.map((failure) => [failure.source, failure] as const),
@@ -2249,7 +2235,7 @@ export function createHeadlessGitHubService(
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);
       return {
-        repo: await resolveGitHubRepoFromRemoteUrl(origin ?? ""),
+        repo: await resolveGithubRepoRef(origin ?? ""),
         hasOrigin: Boolean(origin),
       };
     },
@@ -2339,7 +2325,7 @@ export function createHeadlessGitHubService(
     async getAppUserTokenForRelay() {
       return await appUserAuth.getValidTokenForRelay();
     },
-    parseGitHubRepoFromRemoteUrl,
+    parseGitHubRepoFromRemoteUrl: githubRepoRefFromRemoteUrl,
     parseNextLink: parseNextGitHubLink,
     setToken(nextToken: string) {
       const clean = nextToken.trim();
@@ -2568,11 +2554,9 @@ export function createHeadlessGitHubService(
         );
         if (pushRes.exitCode !== 0) {
           await cleanupLocalOrigin();
-          const detail = pushRes.stderr.trim() || `exit ${pushRes.exitCode}`;
-          const failure = classifyGitPushFailure(detail);
-          throw new Error(
-            `Failed to push to origin: ${failure ? `${failure.message}\n\n${detail}` : detail}`,
-          );
+          throw gitPushError(pushRes.stderr.trim() || `exit ${pushRes.exitCode}`, {
+            prefix: "Failed to push to origin:",
+          });
         }
         resultState = "pushed";
       } else {

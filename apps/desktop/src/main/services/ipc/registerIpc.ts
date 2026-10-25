@@ -11752,48 +11752,14 @@ export function registerIpc({
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     const fallback = { remoteUrl: null, branch: null } as const;
     if (!laneId) return fallback;
-    let worktreePath: string;
-    let knownBranch: string | null = null;
+    // One owner for the read, shared with the runtime action: it strips
+    // credentials and names GitHub's host for an SSH alias of GitHub.
     try {
-      const info = ctx.laneService.getLaneBaseAndBranch(laneId);
-      worktreePath = info.worktreePath;
-      knownBranch = info.branchRef?.trim() || null;
+      return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
+      // An unknown or missing lane reads as no remote, as it always has here.
       return fallback;
     }
-    if (!worktreePath) return fallback;
-    const [remoteRes, branchRes] = await Promise.all([
-      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-      knownBranch
-        ? Promise.resolve(null)
-        : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-    ]);
-    const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
-    // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
-    // before exposing the URL to the renderer, so secrets do not cross the IPC
-    // boundary.
-    const remoteUrl = ((): string | null => {
-      if (!rawRemote) return rawRemote;
-      try {
-        const parsed = new URL(rawRemote);
-        if (parsed.username || parsed.password) {
-          parsed.username = "";
-          parsed.password = "";
-          return parsed.toString();
-        }
-        return rawRemote;
-      } catch {
-        // Non-URL form (e.g. SSH `git@host:owner/repo.git`) — return unchanged;
-        // these never embed user credentials.
-        return rawRemote;
-      }
-    })();
-    let branch = knownBranch;
-    if (!branch && branchRes && branchRes.exitCode === 0) {
-      const out = branchRes.stdout.trim();
-      branch = out && out !== "HEAD" ? out : null;
-    }
-    return { remoteUrl, branch };
   });
 
   ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {

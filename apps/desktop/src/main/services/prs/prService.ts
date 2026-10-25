@@ -169,7 +169,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
-import { classifyGitPushFailure, gitPushError } from "../git/gitPushFailure";
+import { classifyGitPushFailure, runGitPushOrThrow } from "../git/gitPushFailure";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -2515,12 +2515,7 @@ export function createPrService({
     const pushArgs = upstreamCheck.exitCode === 0
       ? ["push", "--force-with-lease"]
       : ["push", "-u", "origin", headBranch];
-    const pushed = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
-    if (pushed.exitCode !== 0) {
-      throw gitPushError(pushed.stderr.trim() || pushed.stdout.trim() || `git ${pushArgs.join(" ")} failed`, {
-        branch: headBranch,
-      });
-    }
+    await runGitPushOrThrow(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: headBranch });
   };
 
   const restoreAutoRebaseChildLane = async (args: {

@@ -1,4 +1,5 @@
 import type { GitCommitSummary } from "../../../shared/types";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 
 export type HistoryGitActionId =
@@ -99,12 +100,9 @@ function laneCommitDeepLink(laneId: string, commitSha: string): string {
   return `/lanes?${params.toString()}`;
 }
 
-const GITHUB_REPO_RE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+)$/;
-
 function githubCommitUrl(remoteUrl: string | null, commitSha: string): string | null {
-  if (!remoteUrl) return null;
-  const match = GITHUB_REPO_RE.exec(remoteUrl.trim().replace(/\.git$/, ""));
-  return match ? `https://github.com/${match[1]}/${match[2]}/commit/${commitSha}` : null;
+  const repo = githubRepoRefFromRemoteUrl(remoteUrl);
+  return repo ? `https://github.com/${repo.owner}/${repo.name}/commit/${commitSha}` : null;
 }
 
 function defaultBranchNameForCommit(commit: GitCommitSummary): string {

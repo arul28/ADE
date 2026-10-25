@@ -1,4 +1,4 @@
-import { gitCommandError } from "./git";
+import { formatGitExecutionError, gitCommandError, runGit, type GitRunOptions } from "./git";
 
 /**
  * Why a remote refused a `git push`, read from git's output.
@@ -15,6 +15,7 @@ export type GitPushFailureKind =
   | "secret_detected"
   | "workflow_scope"
   | "branch_protected"
+  | "repository_rule"
   | "stale_lease"
   | "non_fast_forward"
   | "hook_declined"
@@ -59,14 +60,19 @@ export function classifyGitPushFailure(
       message: `GitHub refused the push to ${branch} because it changes a file in .github/workflows and the credential lacks the "workflow" scope. Use a token or sign-in with that scope, or push from a terminal that has it.`,
     };
   }
-  if (
-    /\bGH006\b|\bGH013\b/.test(text)
-    || remoteRejectedLower.includes("protected branch")
-    || remoteRejectedLower.includes("repository rule violations")
-  ) {
+  if (/\bGH006\b/.test(text) || remoteRejectedLower.includes("protected branch")) {
     return {
       kind: "branch_protected",
-      message: `The remote refused the push because branch rules protect ${branch} (for example, required pull requests or status checks). Push to another branch and open a pull request, or ask a repository admin to change the rule.`,
+      message: `The remote refused the push because branch protection covers ${branch} (for example, required pull requests or status checks). Push to another branch and open a pull request, or ask a repository admin to change the rule.`,
+    };
+  }
+  // GH013 covers every repository rule, not only branch protection: signed
+  // commits, required pull requests, blocked paths, file size. The remote
+  // lists the rule it applied, so the sentence does not guess the fix.
+  if (/\bGH013\b/.test(text) || remoteRejectedLower.includes("repository rule violations")) {
+    return {
+      kind: "repository_rule",
+      message: `A repository rule refused the push to ${branch}. The remote's output below names the rule and what it needs.`,
     };
   }
   if (rejectedReason === "stale info") {
@@ -116,14 +122,30 @@ export function classifyGitPushFailure(
   return null;
 }
 
+type GitPushErrorOptions = {
+  branch?: string | null;
+  /** Leads the message, for flows that word the failure themselves. */
+  prefix?: string;
+};
+
 /**
  * The error for a failed push: the classified sentence followed by git's raw
  * output, or the plain git error when the failure has no known shape.
  */
-export function gitPushError(raw: string, options: { branch?: string | null } = {}): Error {
+export function gitPushError(raw: string, options: GitPushErrorOptions = {}): Error {
   const detail = (raw ?? "").trim();
   const failure = classifyGitPushFailure(detail, options);
-  return failure
-    ? gitCommandError(detail, detail ? `${failure.message}\n\n${detail}` : failure.message)
-    : gitCommandError(detail);
+  const body = failure ? `${failure.message}\n\n${detail}` : formatGitExecutionError(detail);
+  return gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
+}
+
+/** Runs `git push …` and throws {@link gitPushError} when it fails. */
+export async function runGitPushOrThrow(
+  args: string[],
+  opts: GitRunOptions & { branch?: string | null },
+): Promise<void> {
+  const { branch, ...runOpts } = opts;
+  const res = await runGit(args, runOpts);
+  if (res.exitCode === 0) return;
+  throw gitPushError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`, { branch });
 }

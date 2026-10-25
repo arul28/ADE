@@ -1,3 +1,5 @@
+import type { GitHubRepoRef } from "./types/git";
+
 export type GithubRepoSlug = {
   owner: string;
   repo: string;
@@ -23,6 +25,11 @@ function parsePathParts(pathname: string): GithubRepoSlug | null {
 // block port 22. It serves the same repositories as github.com.
 const GITHUB_REMOTE_HOSTS = new Set(["github.com", "ssh.github.com"]);
 
+/** Whether a remote host name is GitHub's own (not an alias of it). */
+export function isGithubRemoteHost(host: string): boolean {
+  return GITHUB_REMOTE_HOSTS.has(host.toLowerCase());
+}
+
 export function parseGithubRemoteUrl(remoteUrl: string | null | undefined): GithubRepoSlug | null {
   const value = typeof remoteUrl === "string" ? remoteUrl.trim() : "";
   if (!value) return null;
@@ -40,11 +47,20 @@ export function parseGithubRemoteUrl(remoteUrl: string | null | undefined): Gith
 
   try {
     const url = new URL(value);
-    if (!GITHUB_REMOTE_HOSTS.has(url.hostname.toLowerCase())) return null;
+    if (!isGithubRemoteHost(url.hostname)) return null;
     return parsePathParts(url.pathname);
   } catch {
     return null;
   }
+}
+
+/** `parseGithubRemoteUrl` in the `{ owner, name }` shape GitHub API code uses. */
+export function githubRepoRefFromRemoteUrl(remoteUrl: string | null | undefined): GitHubRepoRef | null {
+  return githubRepoRefFromSlug(parseGithubRemoteUrl(remoteUrl));
+}
+
+export function githubRepoRefFromSlug(slug: GithubRepoSlug | null): GitHubRepoRef | null {
+  return slug ? { owner: slug.owner, name: slug.repo } : null;
 }
 
 export function githubRepoSlugsEqual(

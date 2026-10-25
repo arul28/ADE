@@ -7,7 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
-import { gitPushError } from "../git/gitPushFailure";
+import { runGitPushOrThrow } from "../git/gitPushFailure";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -7697,12 +7697,11 @@ export function createLaneService({
         const lane = getLaneRow(laneId);
         if (!lane) continue;
 
-        const pushed = await runGit(["push", "--force-with-lease"], { cwd: lane.worktree_path, timeoutMs: 120_000 });
-        if (pushed.exitCode !== 0) {
-          throw gitPushError(pushed.stderr.trim() || pushed.stdout.trim() || "git push --force-with-lease failed", {
-            branch: lane.branch_ref,
-          });
-        }
+        await runGitPushOrThrow(["push", "--force-with-lease"], {
+          cwd: lane.worktree_path,
+          timeoutMs: 120_000,
+          branch: lane.branch_ref,
+        });
         laneItem.pushed = true;
         run.pushedLaneIds.push(laneId);
         emitRunLog({

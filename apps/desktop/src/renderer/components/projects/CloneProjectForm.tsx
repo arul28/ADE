@@ -76,17 +76,20 @@ type Tab = "url" | "my-repos";
 
 const SLUG_PATTERN = /([^/:]+?)(?:\.git)?$/;
 
-// `user@host:owner/repo` through an ssh config alias (`git@github.com-work:…`).
-// Only the machine that clones can read its ssh config, so the form lets the
+// `user@host:owner/repo` or `ssh://user@host/owner/repo` through an ssh
+// config alias (`git@github.com-work:…`). Only the machine that clones can read its ssh config, so the form lets the
 // shape through and the clone call decides whether the alias points at GitHub.
-const SSH_ALIAS_REPO_PATTERN = /^[^@\s/:]+@[A-Za-z0-9][A-Za-z0-9._-]*:[^/\s]+\/[^/\s]+$/;
+const SSH_ALIAS_REPO_PATTERNS = [
+  /^[^@\s/:]+@[A-Za-z0-9][A-Za-z0-9._-]*:[^/\s]+\/[^/\s]+$/,
+  /^ssh:\/\/(?:[^@\s/]+@)?[A-Za-z0-9][A-Za-z0-9._-]*(?::\d+)?\/[^/\s]+\/[^/\s]+$/i,
+];
 
 // The URL shapes the clone call accepts, so the UI shows a hint before the
 // call would reject with `invalid_github_url`.
 function isGitHubRepoUrl(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return false;
-  return parseGithubRemoteUrl(trimmed) !== null || SSH_ALIAS_REPO_PATTERN.test(trimmed);
+  return parseGithubRemoteUrl(trimmed) !== null || SSH_ALIAS_REPO_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 const inputStyle: CSSProperties = {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
-import { gitPushError } from "./gitPushFailure";
+import { runGitPushOrThrow } from "./gitPushFailure";
 import { getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
@@ -1506,12 +1506,7 @@ export function createGitOperationsService({
 
           const cmd = upstreamRes.exitCode === 0 ? ["push"] : ["push", "-u", "origin", lane.branchRef];
           if (forceWithLease) cmd.push("--force-with-lease");
-          const res = await runGit(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
-          if (res.exitCode !== 0) {
-            throw gitPushError(res.stderr.trim() || res.stdout.trim() || `git ${cmd.join(" ")} failed`, {
-              branch: lane.branchRef,
-            });
-          }
+          await runGitPushOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: lane.branchRef });
         }
       });
       return action;

@@ -109,11 +109,11 @@ export async function findRecentProjectForRepo(
     repo: repo.repoName,
   };
 
-  const candidates: Array<{ project: RecentProjectSummary; remoteUrl: string }> = [];
+  const candidates: Array<{ project: RecentProjectSummary; remoteUrl: string; slug: GithubRepoSlug | null }> = [];
   for (const project of recentProjects) {
     if (project.remote || project.kind === "remote" || project.exists === false) continue;
     const remoteUrl = readOriginRemoteUrl(project.rootPath);
-    if (remoteUrl) candidates.push({ project, remoteUrl });
+    if (remoteUrl) candidates.push({ project, remoteUrl, slug: parseGithubRemoteUrl(remoteUrl) });
   }
 
   const match = (project: RecentProjectSummary): ProjectFindForRepoResult => ({
@@ -121,14 +121,15 @@ export async function findRecentProjectForRepo(
     displayName: project.displayName,
   });
   // A plain GitHub origin answers from the file alone. Only when none matches
-  // does an SSH-alias origin cost an `ssh -G` lookup.
-  for (const { project, remoteUrl } of candidates) {
-    if (githubRepoSlugsEqual(parseGithubRemoteUrl(remoteUrl), targetSlug)) return match(project);
+  // does an origin that is not plainly GitHub cost an `ssh -G` alias lookup.
+  for (const { project, slug } of candidates) {
+    if (githubRepoSlugsEqual(slug, targetSlug)) return match(project);
   }
-  for (const { project, remoteUrl } of candidates) {
-    if (parseGithubRemoteUrl(remoteUrl)) continue;
-    if (githubRepoSlugsEqual(await resolveGithubRemoteRepo(remoteUrl), targetSlug)) return match(project);
-  }
+  // Concurrent, so several alias origins cost one lookup's time, not the sum.
+  const aliased = candidates.filter((candidate) => !candidate.slug);
+  const resolved = await Promise.all(aliased.map(({ remoteUrl }) => resolveGithubRemoteRepo(remoteUrl)));
+  const index = resolved.findIndex((slug) => githubRepoSlugsEqual(slug, targetSlug));
+  if (index >= 0) return match(aliased[index]!.project);
 
   return null;
 }
