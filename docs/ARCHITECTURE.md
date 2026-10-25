@@ -649,7 +649,8 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │       └── sync-bootstrap-token
 └── ~/.ade/                      # Stable-channel ADE home (beta/alpha use their own homes)
     ├── global-state.json        # Recent projects list
-    ├── projects.json            # Machine project registry
+    ├── projects.json            # Machine project registry (written under projects.json.lock)
+    ├── projects.journal.jsonl   # One line per registry write: who, what, ids added/removed
     ├── personal-chats/
     │   ├── state/               # Hidden chat runtime DB, transcripts, attachments
     │   └── workspaces/          # Separate provider cwd + personal terminal scratch
