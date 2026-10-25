@@ -576,7 +576,13 @@ export function useMacDesktopRealInput(args: {
       () => setInputError(null),
       (caught: unknown) => {
         const line = macDesktopInputRefusal(caught, { laneId });
-        setInputError(line);
+        // Escape sends the release and gives control back in the same
+        // moment; when the give-back lands first the host refuses the
+        // release, and there is nothing left for it to undo. Showing that as
+        // "Input refused" right after the person handed control back was a
+        // false alarm.
+        const release = call.kind === "releaseInput" || call.kind === "releaseCursor";
+        if (!release) setInputError(line);
         // Once per distinct refusal: a held key against a lost lease would
         // otherwise write a log line per repeat.
         if (loggedRef.current !== line) {

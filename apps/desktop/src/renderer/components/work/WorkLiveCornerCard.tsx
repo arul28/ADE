@@ -1350,6 +1350,7 @@ export function WorkLiveCornerCard({
       sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
       desktopTool={desktopTool}
+      hostPlatform={toolContext.hostPlatform ?? null}
       supported={desktopTool === "windows-desktop"
         ? toolContext.supportsWindowsDesktop !== false
         : toolContext.supportsMacDesktop !== false}

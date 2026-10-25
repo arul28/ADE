@@ -84,18 +84,43 @@ export function getGitHubSnapshotCoalesced(
   } = {},
   options?: { projectRoot?: string | null },
 ): Promise<GitHubPrSnapshot> {
+  const rootKey = projectKey(options?.projectRoot);
+  // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
+  // answers every snapshot read with the same refusal, and every PR event
+  // here used to ask it again over the relay. Remember that answer briefly;
+  // a forced read (a person asking) always goes through.
+  const remembered = githubSnapshotAuthRefusals.get(rootKey);
+  if (!args.force && remembered && Date.now() - remembered.at < GITHUB_SNAPSHOT_AUTH_REFUSAL_TTL_MS) {
+    return Promise.reject(remembered.error);
+  }
   return coalesceInFlight(
     githubSnapshotInFlight,
     JSON.stringify({
-      projectRoot: projectKey(options?.projectRoot),
+      projectRoot: rootKey,
       force: args.force === true,
       automaticRefresh: args.automaticRefresh === true,
       includeExternalClosed: args.includeExternalClosed === true,
       historyPageLimit: args.historyPageLimit ?? null,
     }),
-    () => window.ade.prs.getGitHubSnapshot(args),
+    () => window.ade.prs.getGitHubSnapshot(args).then(
+      (snapshot) => {
+        githubSnapshotAuthRefusals.delete(rootKey);
+        return snapshot;
+      },
+      (error: unknown) => {
+        if (GITHUB_SNAPSHOT_AUTH_REFUSAL.test(error instanceof Error ? error.message : String(error))) {
+          githubSnapshotAuthRefusals.set(rootKey, { at: Date.now(), error });
+        }
+        throw error;
+      },
+    ),
   );
 }
+
+const GITHUB_SNAPSHOT_AUTH_REFUSAL_TTL_MS = 60_000;
+/** The prService sentences for "this machine has no usable GitHub credential". */
+const GITHUB_SNAPSHOT_AUTH_REFUSAL = /GitHub auth missing|GitHub token could not be decrypted|GitHub auth is invalid/i;
+const githubSnapshotAuthRefusals = new Map<string, { at: number; error: unknown }>();
 
 export function refreshPrsCoalesced(
   args: { prId?: string; prIds?: string[] } = {},

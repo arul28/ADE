@@ -210,9 +210,8 @@ function locationDotState(
   isPrimary: boolean,
   web: WebRowChrome | null,
 ): DotState {
-  if (location.summary.kind !== "remote") {
-    return location.summary.exists === false ? "offline" : "online";
-  }
+  if (location.summary.exists === false) return "offline";
+  if (location.summary.kind !== "remote") return "online";
   if (web && isPrimary) {
     if (web.status === "live") return "online";
     if (web.status === "connecting") return "busy";
@@ -306,7 +305,8 @@ function ProjectMachineStack({
         <div className="ade-welcome-machines-menu" role="menu" aria-label="Open on machine">
           {entries.map(({ location, name, dot }) => {
             const isPrimary = location === primary;
-            const canSelect = !isPrimary && Boolean(onSelectMachine) && !busy;
+            const missing = location.summary.exists === false;
+            const canSelect = !isPrimary && !missing && Boolean(onSelectMachine) && !busy;
             return (
               <button
                 key={machineLocationKey(location)}
@@ -322,7 +322,7 @@ function ProjectMachineStack({
               >
                 <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
                 <span className="ade-welcome-machines-name">{name}</span>
-                <span className="ade-welcome-machines-state">{isPrimary ? "this row" : DOT_LABEL[dot]}</span>
+                <span className="ade-welcome-machines-state">{isPrimary ? "this row" : missing ? "folder missing" : DOT_LABEL[dot]}</span>
               </button>
             );
           })}

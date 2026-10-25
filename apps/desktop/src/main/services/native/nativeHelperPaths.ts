@@ -84,9 +84,13 @@ export function resolveLinuxDesktopDriverBinary(input: {
     input.logger?.debug("linux_desktop.driver_path_override_ignored", { path: override });
   }
   const runtimeRoot = env.ADE_RUNTIME_ROOT?.trim();
+  // A source checkout builds into `resources/native/linux-<arch>/` (see
+  // scripts/build-linux-desktop-driver.mjs); the runtime archive flattens it.
+  const archDir = `linux-${process.arch === "arm64" ? "arm64" : "x64"}`;
   const candidates = [
     ...(runtimeRoot ? [path.join(runtimeRoot, "native", MAC_DESKTOP_DRIVER_BINARY)] : []),
     ...daemonNativeCandidates(MAC_DESKTOP_DRIVER_BINARY),
+    ...daemonNativeCandidates(path.join(archDir, MAC_DESKTOP_DRIVER_BINARY)),
   ];
   return candidates.find(isExecutableFile) ?? candidates[0] ?? null;
 }

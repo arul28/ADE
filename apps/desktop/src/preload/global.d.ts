@@ -115,6 +115,8 @@ import type {
   MacDesktopRecordingStatus,
   MacDesktopRecheckPermissionsArgs,
   MacDesktopReleaseArgs,
+  MacDesktopWindowActionArgs,
+  MacDesktopWindowActionResult,
   MacDesktopRequestPermissionArgs,
   MacDesktopScreenshotArgs,
   MacDesktopScreenshotResult,
@@ -3503,6 +3505,10 @@ declare global {
           args: MacDesktopReleaseArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ released: number }>;
+        closeWindow: (
+          args: MacDesktopWindowActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindowActionResult>;
         observe: (
           args: MacDesktopObserveArgs,
           pin?: OpenProjectBinding | null,

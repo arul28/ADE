@@ -4,15 +4,45 @@ import { useAppStore } from "../../state/appStore";
 import { localCheckoutForRemote } from "./projectTabGrouping";
 
 /**
- * The remote binding a person picked on purpose (the Chats machine picker),
- * which the local preference leaves alone until the window is back on a local
- * checkout. One per renderer, like the window it belongs to.
+ * The remote bindings a person picked on purpose (the Home machine menu),
+ * which the local preference leaves alone for as long as their tab stays open.
+ * Kept in localStorage: the window restores its remote tabs after a reload or
+ * a restart, and a pick held only in memory would be forgotten by then, so
+ * the restored tab moved back to this computer and closed.
  */
-let explicitRemotePickKey: string | null = null;
+const EXPLICIT_PICKS_STORAGE_KEY = "ade.projectTabs.explicitRemotePicks";
+const MAX_EXPLICIT_PICKS = 50;
+
+function readExplicitPicks(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(EXPLICIT_PICKS_STORAGE_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeExplicitPicks(keys: readonly string[]): void {
+  try {
+    window.localStorage.setItem(EXPLICIT_PICKS_STORAGE_KEY, JSON.stringify(keys.slice(-MAX_EXPLICIT_PICKS)));
+  } catch {
+    // Storage full or unavailable: the pick still holds until the next reload.
+  }
+}
+
+let explicitRemotePicks: Set<string> | null = null;
+
+function explicitPicks(): Set<string> {
+  explicitRemotePicks ??= new Set(readExplicitPicks());
+  return explicitRemotePicks;
+}
 
 /** Marks a remote binding as chosen on purpose, before switching to it. */
 export function rememberExplicitRemotePick(bindingKey: string): void {
-  explicitRemotePickKey = bindingKey;
+  const picks = explicitPicks();
+  picks.delete(bindingKey);
+  picks.add(bindingKey);
+  writeExplicitPicks([...picks]);
 }
 
 /**
@@ -30,6 +60,8 @@ export function usePreferLocalCheckout(args: {
   /** False while something else owns the window's binding (web, restore, Chats, a transition, a new tab). */
   enabled: boolean;
   remoteBinding: RemoteOpenProjectBinding | null;
+  /** The window's open remote tabs; a pick whose tab closed is forgotten. */
+  openRemoteKeys: readonly string[];
   remoteOrigin: string | null;
   openLocalTabs: readonly RecentProjectSummary[];
   knownLocalTabs: readonly RecentProjectSummary[];
@@ -38,7 +70,7 @@ export function usePreferLocalCheckout(args: {
   ) => void;
   setTabOrder: (update: (prev: string[]) => string[]) => void;
 }): void {
-  const { enabled, remoteBinding, remoteOrigin, openLocalTabs, knownLocalTabs, setOpenRemoteProjectTabs, setTabOrder } = args;
+  const { enabled, remoteBinding, openRemoteKeys, remoteOrigin, openLocalTabs, knownLocalTabs, setOpenRemoteProjectTabs, setTabOrder } = args;
   // One attempt per remote binding while it stays bound, so a checkout that
   // fails to open cannot loop. Back on a local checkout, every remote binding
   // gets the preference again.
@@ -47,13 +79,25 @@ export function usePreferLocalCheckout(args: {
   useEffect(() => {
     if (remoteBinding) return;
     attemptedKeyRef.current = null;
-    explicitRemotePickKey = null;
   }, [remoteBinding]);
+
+  // Only once the window's tabs are restored (`enabled`): before that the
+  // list is empty and would forget every pick.
+  const openRemoteKeysSignature = openRemoteKeys.join("\n");
+  useEffect(() => {
+    if (!enabled) return;
+    const open = new Set(openRemoteKeysSignature ? openRemoteKeysSignature.split("\n") : []);
+    const picks = explicitPicks();
+    const kept = [...picks].filter((key) => open.has(key));
+    if (kept.length === picks.size) return;
+    explicitRemotePicks = new Set(kept);
+    writeExplicitPicks(kept);
+  }, [enabled, openRemoteKeysSignature]);
 
   useEffect(() => {
     if (!enabled || !remoteBinding) return;
     const remoteKey = remoteBinding.key;
-    if (attemptedKeyRef.current === remoteKey || explicitRemotePickKey === remoteKey) return;
+    if (attemptedKeyRef.current === remoteKey || explicitPicks().has(remoteKey)) return;
     const rootPath = localCheckoutForRemote({ remoteOrigin, openLocalTabs, knownLocalTabs });
     if (!rootPath) return;
     attemptedKeyRef.current = remoteKey;

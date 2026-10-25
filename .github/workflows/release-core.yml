@@ -753,6 +753,37 @@ jobs:
         with:
           node-version: 24
 
+      # The Linux lane-screen helper (Rust, static musl) ships inside the
+      # runtime's native archive. It builds in the background while npm
+      # installs, so it adds nothing to these jobs' wall time (and they are
+      # minutes off the release's critical path, which runs through darwin-x64
+      # and the Mac build). Pure Rust: no musl-tools needed.
+      - name: Restore Linux desktop driver cargo cache
+        if: ${{ startsWith(matrix.target, 'linux-') }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: linux-desktop-driver-cargo-v1-${{ runner.arch }}-${{ hashFiles('apps/desktop/native/ADEDesktopDriverLinux/Cargo.lock') }}
+          restore-keys: linux-desktop-driver-cargo-v1-${{ runner.arch }}-
+      - name: Start Linux desktop driver build
+        if: ${{ startsWith(matrix.target, 'linux-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rust_target=$([ "${{ matrix.target }}" = "linux-arm64" ] && echo aarch64-unknown-linux-musl || echo x86_64-unknown-linux-musl)
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup target add "$rust_target"
+          log="$RUNNER_TEMP/linux-desktop-driver.log"
+          # Detached so it outlives this step; "Finish" below waits for it.
+          setsid nohup bash -c 'node apps/desktop/scripts/build-linux-desktop-driver.mjs --target "$1" > "$2" 2>&1; echo $? > "$2.exit"' _ "${{ matrix.target }}" "$log" > /dev/null 2>&1 &
+          echo "ADE_REQUIRE_LINUX_DESKTOP_DRIVER=1" >> "$GITHUB_ENV"
+
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
       # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
@@ -786,19 +817,22 @@ jobs:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: node apps/desktop/scripts/set-release-version.mjs
 
-      # The Linux lane-screen helper (Rust, static musl) ships inside the
-      # runtime's native archive; package-native-deps refuses to package a
-      # Linux runtime without it.
-      - name: Build Linux desktop driver
+      - name: Finish Linux desktop driver build
         if: ${{ startsWith(matrix.target, 'linux-') }}
         shell: bash
         run: |
           set -euo pipefail
-          rust_target=$([ "${{ matrix.target }}" = "linux-arm64" ] && echo aarch64-unknown-linux-musl || echo x86_64-unknown-linux-musl)
-          sudo apt-get update -q && sudo apt-get install -y -q musl-tools
-          rustup target add "$rust_target"
-          node apps/desktop/scripts/build-linux-desktop-driver.mjs --target ${{ matrix.target }}
-          echo "ADE_REQUIRE_LINUX_DESKTOP_DRIVER=1" >> "$GITHUB_ENV"
+          log="$RUNNER_TEMP/linux-desktop-driver.log"
+          for _ in $(seq 1 600); do [ -f "$log.exit" ] && break; sleep 1; done
+          cat "$log"
+          [ "$(cat "$log.exit" 2>/dev/null)" = "0" ]
+          # The helper answers `ping` with no X server, so a broken binary
+          # fails here rather than on a user's box.
+          # Input held open a moment: the helper exits when its stdin closes.
+          reply=$( (printf '{"id":"1","op":"ping"}\n'; sleep 3) \
+            | timeout 20 apps/desktop/resources/native/${{ matrix.target }}/ade-desktop-driver host --ade-home "$RUNNER_TEMP/ade-home")
+          echo "$reply"
+          grep -q '"linux"' <<< "$reply"
 
       - name: Build ADE runtime binary
         env:

@@ -298,6 +298,7 @@ export function WorkToolHeader({
       definition,
       statuses[tool],
       workToolAvailability(tool, context),
+      context.hostPlatform ?? null,
     );
     return tooltipLabel;
   };
@@ -442,6 +443,7 @@ export function WorkToolHeader({
               entry,
               status,
               workToolAvailability(entry.id, context),
+              context.hostPlatform ?? null,
             );
             return (
               <PaneTooltip key={entry.id} label={label} side="bottom">

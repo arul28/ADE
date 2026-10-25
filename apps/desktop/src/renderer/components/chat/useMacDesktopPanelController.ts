@@ -822,6 +822,32 @@ export function useMacDesktopPanelController({
   const releaseWindowById = useCallback((windowId: number) => { void releaseWindow(windowId); }, [releaseWindow]);
 
   /**
+   * Linux: open an app on the lane's screen (its windows cannot come from
+   * anywhere else). Resolves to the error sentence, or null once it started.
+   */
+  const openApp = useCallback(async (target: string): Promise<string | null> => {
+    try {
+      await macDesktopApi().open({ laneId, target, chatSessionId: sessionId }, pinRef.current);
+      await refreshStatus();
+      return null;
+    } catch (error) {
+      return errorText(error);
+    }
+  }, [errorText, laneId, refreshStatus, sessionId]);
+
+  /** Linux: a window's own close button, in place of the Mac's "Release". */
+  const closeWindowById = useCallback((windowId: number) => {
+    void (async () => {
+      try {
+        await macDesktopApi().closeWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
+        await refreshStatus();
+      } catch (error) {
+        setStatusError(errorText(error));
+      }
+    })();
+  }, [errorText, laneId, refreshStatus, sessionId, setStatusError]);
+
+  /**
    * Escape: the way out, and it is not only about full screen.
    *
    * This used to bind only while expanded, and only called `setExpanded`.
@@ -1018,7 +1044,7 @@ export function useMacDesktopPanelController({
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,
     toggleRecording, saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow,
-    releaseWindow, releaseWindowById, selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
+    releaseWindow, releaseWindowById, openApp, closeWindowById, selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
   };
 }
 

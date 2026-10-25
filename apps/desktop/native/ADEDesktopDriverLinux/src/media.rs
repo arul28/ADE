@@ -140,6 +140,8 @@ pub struct StreamServer {
     running: Arc<AtomicBool>,
     pub want_key: Arc<AtomicBool>,
     count: Arc<AtomicUsize>,
+    /// The picture size the encoder was started at, for the config record.
+    size: Mutex<(u32, u32)>,
 }
 
 impl StreamServer {
@@ -154,6 +156,7 @@ impl StreamServer {
             running: Arc::new(AtomicBool::new(true)),
             want_key: Arc::new(AtomicBool::new(true)),
             count: Arc::new(AtomicUsize::new(0)),
+            size: Mutex::new((0, 0)),
         };
         let (clients, config, running, want_key, count) =
             (server.clients.clone(), server.config.clone(), server.running.clone(), server.want_key.clone(), server.count.clone());
@@ -203,8 +206,12 @@ impl StreamServer {
         self.count.load(Ordering::SeqCst)
     }
 
+    /// The config record every viewer parses (`iosSimVideoRecords.ts`): JSON
+    /// with the WebCodecs codec string and the picture size, Annex-B units.
     pub fn set_config(&self, codec: &str) {
-        let rec = record(KIND_CONFIG, false, codec.as_bytes());
+        let (width, height) = *self.size.lock().unwrap();
+        let body = serde_json::json!({ "codec": codec, "width": width, "height": height, "annexB": true }).to_string();
+        let rec = record(KIND_CONFIG, false, body.as_bytes());
         let mut cfg = self.config.lock().unwrap();
         if cfg.as_ref().map(|c| c.as_slice() == rec.as_slice()).unwrap_or(false) {
             return;
@@ -258,6 +265,7 @@ struct LiveEncoder {
 impl LiveEncoder {
     fn start(w: u32, h: u32, fps: u32, server: Arc<StreamServer>, codec_out: Arc<Mutex<Option<String>>>) -> DResult<LiveEncoder> {
         let (path, codec) = require_ffmpeg()?;
+        *server.size.lock().unwrap() = (w, h);
         let kbps = bitrate_kbps(w, h);
         let mut cmd = Command::new(path);
         cmd.args(["-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr0"])
@@ -417,8 +425,10 @@ fn push_nal(
             let mut guard = codec_out.lock().unwrap();
             if guard.as_deref() != Some(c.as_str()) {
                 *guard = Some(c.clone());
-                server.set_config(&c);
             }
+            // Deduplicated by the record's bytes, so a size change with the
+            // same profile still reaches the viewers.
+            server.set_config(&c);
         }
     }
     if t == 5 {

@@ -199,11 +199,12 @@ export function useMacDesktopToolStatus(args: {
 export function macDesktopStatusLineText(
   state: MacDesktopToolState | null,
   desktopTool: DesktopWorkTool = "mac-desktop",
+  hostPlatform: NodeJS.Platform | null = null,
 ): {
   line: string;
   live: boolean;
 } {
-  const desktopName = desktopToolProductName(desktopTool);
+  const desktopName = desktopToolProductName(desktopTool, hostPlatform);
   // Never "active" on the strength of a read that failed: that is how the card
   // kept saying "active · 1 window" about a display that was gone.
   if (state && state.confirmed === false) return { line: `${desktopName} is not answering`, live: false };

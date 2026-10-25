@@ -38,6 +38,7 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
+  workToolCardLabel,
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
@@ -208,13 +209,16 @@ export function workToolSummary(
   definition: WorkToolDefinition,
   status: WorkToolStatus | undefined,
   availability: WorkToolAvailability,
+  /** The lane's host, for a tool named per host (Linux Desktop). */
+  hostPlatform?: NodeJS.Platform | null,
 ): { line: string | null; tooltipLabel: string } {
   const line = availability.available
     ? (status?.line
       ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}`
       : definition.hint ?? null)
     : availability.reason;
-  return { line, tooltipLabel: line ? `${definition.label} — ${line}` : definition.label };
+  const label = hostPlatform === undefined ? definition.label : workToolCardLabel(definition.id, hostPlatform);
+  return { line, tooltipLabel: line ? `${label} — ${line}` : label };
 }
 
 /**
@@ -661,7 +665,7 @@ export function useWorkToolStatuses(args: {
   const issueTabsProjectRoot = useActiveProjectRoot();
   const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool);
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool, context.hostPlatform ?? null);
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
