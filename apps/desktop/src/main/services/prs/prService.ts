@@ -169,6 +169,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { classifyGitPushFailure, gitPushError } from "../git/gitPushFailure";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -2511,11 +2512,15 @@ export function createPrService({
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
-    if (upstreamCheck.exitCode === 0) {
-      await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-      return;
+    const pushArgs = upstreamCheck.exitCode === 0
+      ? ["push", "--force-with-lease"]
+      : ["push", "-u", "origin", headBranch];
+    const pushed = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    if (pushed.exitCode !== 0) {
+      throw gitPushError(pushed.stderr.trim() || pushed.stdout.trim() || `git ${pushArgs.join(" ")} failed`, {
+        branch: headBranch,
+      });
     }
-    await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
   };
 
   const restoreAutoRebaseChildLane = async (args: {
@@ -4477,12 +4482,11 @@ export function createPrService({
     if (pushResult.exitCode === 0) return;
 
     const detail = (pushResult.stderr || pushResult.stdout).trim();
-    const detailLower = detail.toLowerCase();
-    if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
-      throw new Error(
-        `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`
-      );
+    const failure = classifyGitPushFailure(detail, { branch: headBranch });
+    if (failure?.kind === "non_fast_forward") {
+      throw new Error(`${failure.message} ADE did not force-push.\n\n${detail}`);
     }
+    if (failure) throw new Error(`${failure.message}\n\n${detail}`);
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 

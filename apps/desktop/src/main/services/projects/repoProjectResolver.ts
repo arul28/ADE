@@ -6,6 +6,7 @@ import {
   parseGithubRemoteUrl,
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
+import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
 import type {
   ProjectFindForRepoArgs,
   ProjectFindForRepoResult,
@@ -15,7 +16,7 @@ import type {
 type OriginCacheEntry = {
   configPath: string;
   mtimeMs: number;
-  slug: GithubRepoSlug | null;
+  remoteUrl: string | null;
 };
 
 const originCache = new Map<string, OriginCacheEntry>();
@@ -68,7 +69,7 @@ export function readOriginRemoteUrlFromGitConfig(configText: string): string | n
   return null;
 }
 
-function readGithubOriginSlug(rootPath: string): GithubRepoSlug | null {
+function readOriginRemoteUrl(rootPath: string): string | null {
   const configPath = resolveGitConfigPath(rootPath);
   if (!configPath) return null;
 
@@ -85,38 +86,48 @@ function readGithubOriginSlug(rootPath: string): GithubRepoSlug | null {
     && cached.configPath === configPath
     && cached.mtimeMs === stat.mtimeMs
   ) {
-    return cached.slug;
+    return cached.remoteUrl;
   }
 
-  let slug: GithubRepoSlug | null = null;
+  let remoteUrl: string | null = null;
   try {
-    const remoteUrl = readOriginRemoteUrlFromGitConfig(fs.readFileSync(configPath, "utf8"));
-    slug = parseGithubRemoteUrl(remoteUrl);
+    remoteUrl = readOriginRemoteUrlFromGitConfig(fs.readFileSync(configPath, "utf8"));
   } catch {
-    slug = null;
+    remoteUrl = null;
   }
 
-  originCache.set(rootPath, { configPath, mtimeMs: stat.mtimeMs, slug });
-  return slug;
+  originCache.set(rootPath, { configPath, mtimeMs: stat.mtimeMs, remoteUrl });
+  return remoteUrl;
 }
 
-export function findRecentProjectForRepo(
+export async function findRecentProjectForRepo(
   recentProjects: RecentProjectSummary[],
   repo: ProjectFindForRepoArgs,
-): ProjectFindForRepoResult {
+): Promise<ProjectFindForRepoResult> {
   const targetSlug: GithubRepoSlug = {
     owner: repo.repoOwner,
     repo: repo.repoName,
   };
 
+  const candidates: Array<{ project: RecentProjectSummary; remoteUrl: string }> = [];
   for (const project of recentProjects) {
     if (project.remote || project.kind === "remote" || project.exists === false) continue;
-    const slug = readGithubOriginSlug(project.rootPath);
-    if (!githubRepoSlugsEqual(slug, targetSlug)) continue;
-    return {
-      rootPath: project.rootPath,
-      displayName: project.displayName,
-    };
+    const remoteUrl = readOriginRemoteUrl(project.rootPath);
+    if (remoteUrl) candidates.push({ project, remoteUrl });
+  }
+
+  const match = (project: RecentProjectSummary): ProjectFindForRepoResult => ({
+    rootPath: project.rootPath,
+    displayName: project.displayName,
+  });
+  // A plain GitHub origin answers from the file alone. Only when none matches
+  // does an SSH-alias origin cost an `ssh -G` lookup.
+  for (const { project, remoteUrl } of candidates) {
+    if (githubRepoSlugsEqual(parseGithubRemoteUrl(remoteUrl), targetSlug)) return match(project);
+  }
+  for (const { project, remoteUrl } of candidates) {
+    if (parseGithubRemoteUrl(remoteUrl)) continue;
+    if (githubRepoSlugsEqual(await resolveGithubRemoteRepo(remoteUrl), targetSlug)) return match(project);
   }
 
   return null;

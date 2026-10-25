@@ -4842,8 +4842,9 @@ export function registerIpc({
       const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
       if (!repoOwner || !repoName) return null;
       // One tested implementation: parses each recent project's git origin
-      // from .git/config (no git subprocess), cached by config mtime.
-      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      // from .git/config (no git subprocess), cached by config mtime. Only an
+      // SSH-alias origin runs `ssh -G`.
+      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
     },
   );
 

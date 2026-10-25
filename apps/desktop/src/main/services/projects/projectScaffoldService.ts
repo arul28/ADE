@@ -15,6 +15,7 @@ import { codedError } from "../../../shared/codedError";
 import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
+import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
 import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 
@@ -152,7 +153,7 @@ export function createProjectScaffoldService({
     if (!url) {
       throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
     }
-    const repoRef = githubService.parseGitHubRepoFromRemoteUrl(url);
+    const repoRef = await resolveGithubRemoteRepo(url);
     if (!repoRef) {
       throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
     }
@@ -163,7 +164,7 @@ export function createProjectScaffoldService({
     }
 
     const explicitName = (input.name ?? "").trim();
-    const name = validateProjectName(explicitName.length > 0 ? explicitName : repoRef.name);
+    const name = validateProjectName(explicitName.length > 0 ? explicitName : repoRef.repo);
     const rootPath = path.join(parentDir, name);
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {

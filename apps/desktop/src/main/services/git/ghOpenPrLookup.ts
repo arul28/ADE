@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 
-import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
+import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
 import {
   EMPTY_GH_OPEN_PR_SUMMARY,
   GH_PR_LIST_JSON_FIELDS,
@@ -23,7 +23,7 @@ async function resolveOriginOwner(worktreePath: string): Promise<string | null> 
     timeoutMs: 5_000,
   }).catch(() => null);
   if (!result || result.exitCode !== 0) return null;
-  return parseGithubRemoteUrl(result.stdout.trim())?.owner ?? null;
+  return (await resolveGithubRemoteRepo(result.stdout.trim()))?.owner ?? null;
 }
 
 /**

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { resolveGithubRemoteRepo } from "../../desktop/src/main/services/github/githubSshAlias";
+import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -632,26 +634,16 @@ async function runGitHeadlessAsync(
 function parseGitHubRepoFromRemoteUrl(
   remoteUrlRaw: string,
 ): { owner: string; name: string } | null {
-  const remote = remoteUrlRaw.trim();
-  if (!remote) return null;
-  const ssh = remote.match(/^git@github\.com:(.+)$/i);
-  if (ssh) {
-    const [owner, name] = ssh[1]!.replace(/\.git$/i, "").split("/");
-    if (owner && name) return { owner, name };
-  }
-  try {
-    const url = new URL(remote);
-    if (!/github\.com$/i.test(url.hostname)) return null;
-    const parts = url.pathname
-      .replace(/^\/+/, "")
-      .replace(/\.git$/i, "")
-      .split("/");
-    const owner = parts[0]?.trim() ?? "";
-    const name = parts[1]?.trim() ?? "";
-    return owner && name ? { owner, name } : null;
-  } catch {
-    return null;
-  }
+  const repo = parseGithubRemoteUrl(remoteUrlRaw);
+  return repo ? { owner: repo.owner, name: repo.repo } : null;
+}
+
+/** Same as above, plus SSH aliases whose ssh config on this machine points at GitHub. */
+async function resolveGitHubRepoFromRemoteUrl(
+  remoteUrlRaw: string,
+): Promise<{ owner: string; name: string } | null> {
+  const repo = await resolveGithubRemoteRepo(remoteUrlRaw);
+  return repo ? { owner: repo.owner, name: repo.repo } : null;
 }
 
 function repoIdentityFromGitHubResponse(
@@ -689,7 +681,7 @@ function repoIdentityFromGitHubResponse(
 async function detectGitHubRepoAsync(
   projectRoot: string,
 ): Promise<{ owner: string; name: string } | null> {
-  return parseGitHubRepoFromRemoteUrl(await readGitOriginAsync(projectRoot) ?? "");
+  return await resolveGitHubRepoFromRemoteUrl(await readGitOriginAsync(projectRoot) ?? "");
 }
 
 function parseNextGitHubLink(linkHeader: string | null): string | null {
@@ -1315,7 +1307,7 @@ export function createHeadlessGitHubService(
       readGitOriginAsync(projectRoot),
       readCredentialInventoryAsync(),
     ]);
-    const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
+    const repo = await resolveGitHubRepoFromRemoteUrl(origin ?? "");
     const candidate = inventory.candidates.find((entry) => entry.source === "pat") ?? null;
     return await verifyGithubCredentialSource({
       source: "pat",
@@ -1921,7 +1913,7 @@ export function createHeadlessGitHubService(
       readGitOriginAsync(projectRoot),
       readCredentialInventoryAsync(),
     ]);
-    const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
+    const repo = await resolveGitHubRepoFromRemoteUrl(origin ?? "");
     const hasOrigin = Boolean(origin);
     const inventoryFailuresBySource = new Map(
       inventory.failures.map((failure) => [failure.source, failure] as const),
@@ -2257,7 +2249,7 @@ export function createHeadlessGitHubService(
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);
       return {
-        repo: parseGitHubRepoFromRemoteUrl(origin ?? ""),
+        repo: await resolveGitHubRepoFromRemoteUrl(origin ?? ""),
         hasOrigin: Boolean(origin),
       };
     },
@@ -2576,8 +2568,10 @@ export function createHeadlessGitHubService(
         );
         if (pushRes.exitCode !== 0) {
           await cleanupLocalOrigin();
+          const detail = pushRes.stderr.trim() || `exit ${pushRes.exitCode}`;
+          const failure = classifyGitPushFailure(detail);
           throw new Error(
-            `Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`,
+            `Failed to push to origin: ${failure ? `${failure.message}\n\n${detail}` : detail}`,
           );
         }
         resultState = "pushed";

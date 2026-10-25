@@ -19,11 +19,19 @@ function parsePathParts(pathname: string): GithubRepoSlug | null {
   return owner && repo ? { owner, repo } : null;
 }
 
+// `ssh.github.com` is GitHub's SSH endpoint on port 443, for networks that
+// block port 22. It serves the same repositories as github.com.
+const GITHUB_REMOTE_HOSTS = new Set(["github.com", "ssh.github.com"]);
+
 export function parseGithubRemoteUrl(remoteUrl: string | null | undefined): GithubRepoSlug | null {
   const value = typeof remoteUrl === "string" ? remoteUrl.trim() : "";
   if (!value) return null;
 
-  const scpLike = value.match(/^(?:[^@]+@)?github\.com:([^/]+)\/(.+?)\/?$/i);
+  // A URL with a scheme (`ssh://git@github.com:22/…`) is not scp-like: its
+  // colon starts a port, not the path.
+  const scpLike = value.includes("://")
+    ? null
+    : value.match(/^(?:[^@]+@)?(?:ssh\.)?github\.com:([^/]+)\/(.+?)\/?$/i);
   if (scpLike) {
     const owner = scpLike[1]?.trim() ?? "";
     const repo = stripGitSuffix(scpLike[2]?.trim() ?? "");
@@ -32,7 +40,7 @@ export function parseGithubRemoteUrl(remoteUrl: string | null | undefined): Gith
 
   try {
     const url = new URL(value);
-    if (url.hostname.toLowerCase() !== "github.com") return null;
+    if (!GITHUB_REMOTE_HOSTS.has(url.hostname.toLowerCase())) return null;
     return parsePathParts(url.pathname);
   } catch {
     return null;

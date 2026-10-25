@@ -1,5 +1,7 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
+import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { gitPushError } from "./gitPushFailure";
 import { getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
@@ -70,6 +72,12 @@ type CachedReadEntry<T> = {
 };
 
 type GitOriginRemoteSummary = {
+  /**
+   * Origin's URL without credentials. An SSH alias whose ssh config points at
+   * GitHub (`git@github.com-work:org/repo`) comes back with `github.com` as
+   * its host, because callers use this URL to name the GitHub repository and
+   * only this machine can read its ssh config.
+   */
   remoteUrl: string | null;
   branch: string | null;
 };
@@ -1496,18 +1504,14 @@ export function createGitOperationsService({
             timeoutMs: 10_000
           });
 
-          if (upstreamRes.exitCode === 0) {
-            const cmd = ["push"];
-            if (forceWithLease) cmd.push("--force-with-lease");
-            await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
-            return;
+          const cmd = upstreamRes.exitCode === 0 ? ["push"] : ["push", "-u", "origin", lane.branchRef];
+          if (forceWithLease) cmd.push("--force-with-lease");
+          const res = await runGit(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          if (res.exitCode !== 0) {
+            throw gitPushError(res.stderr.trim() || res.stdout.trim() || `git ${cmd.join(" ")} failed`, {
+              branch: lane.branchRef,
+            });
           }
-
-          const cmd = ["push", "-u", "origin", lane.branchRef];
-          if (forceWithLease) {
-            cmd.push("--force-with-lease");
-          }
-          await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
         }
       });
       return action;
@@ -1739,7 +1743,8 @@ export function createGitOperationsService({
           : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
       ]);
       const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
-      const remoteUrl = ((): string | null => {
+      const githubAliasUrl = rawRemote ? await resolveGithubSshAliasUrl(rawRemote) : null;
+      const remoteUrl = githubAliasUrl ?? ((): string | null => {
         if (!rawRemote) return rawRemote;
         try {
           const parsed = new URL(rawRemote);
