@@ -277,6 +277,22 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
           key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - name: "TEMP diagnostic: brain start from source"
+        if: matrix.shard == 4
+        continue-on-error: true
+        run: |
+          cd apps/ade-cli
+          L="file://$PWD/node_modules/tsx/dist/loader.mjs"
+          for i in 1 2; do
+            H=$(mktemp -d); S="$H/sock/ade.sock"; mkdir -p "$H/sock"
+            start=$(date +%s%N)
+            ADE_HOME="$H" ADE_RUNTIME_SOCKET_PATH="$S" ADE_CLI_VERSION=2.0.0 ADE_DEFAULT_ROLE=cto NODE_OPTIONS="--import $L" \
+              node src/cli.ts serve --socket "$S" --no-sync > "$H/out.log" 2> "$H/err.log" & pid=$!
+            for t in $(seq 1 600); do [ -S "$S" ] && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+            echo "run $i: socket=$([ -S "$S" ] && echo yes || echo no) alive=$(kill -0 $pid 2>/dev/null && echo yes || echo no) ms=$(( ($(date +%s%N)-start)/1000000 ))"
+            echo "--- stderr"; head -c 6000 "$H/err.log"; echo "--- stdout"; head -c 2000 "$H/out.log"
+            kill $pid 2>/dev/null || true; sleep 1
+          done
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
