@@ -236,7 +236,7 @@ export function diagnoseDoctorChecks(
       return {
         tone: "danger",
         title: `${machine} isn't connected to ADE's relay.`,
-        fix: `Make sure ${machine} is awake, online, and ADE is open there. If it is, run "Check that other devices can reach this computer" on it.`,
+        fix: `Make sure ${machine} is awake, online, and ADE is open there. If it is, open Connections on ${machine} and press Check to see what's blocking it.`,
       };
     case "no_network":
       return {
