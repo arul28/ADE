@@ -41078,22 +41078,36 @@ export function createAgentChatService(args: {
       return;
     }
 
+    // Codex's sleep tool reads as a normal tool row (call, then result under
+    // one item id), the way other providers' `sleep N` shell waits read.
     if (itemType === "sleep") {
       const durationMs = numberOrNull(item.durationMs ?? item.duration_ms);
-      const status = eventKind === "completed" ? "completed" : "running";
-      emitChatEvent(managed, {
-        type: "activity",
-        activity: "working",
-        detail: `Waiting ${formatCodexDurationMs(durationMs)}`,
-        turnId,
-      });
-      emitChatEvent(managed, {
-        type: "codex_sleep",
-        itemId,
-        turnId,
-        durationMs,
-        status,
-      });
+      const duration = formatCodexDurationMs(durationMs);
+      if (eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "working",
+          detail: `Waiting ${duration}`,
+          turnId,
+        });
+        emitChatEvent(managed, {
+          type: "tool_call",
+          tool: "sleep",
+          args: { duration, durationMs },
+          itemId,
+          turnId,
+        });
+      }
+      if (eventKind === "completed") {
+        emitChatEvent(managed, {
+          type: "tool_result",
+          tool: "sleep",
+          result: `Waited ${duration}`,
+          itemId,
+          turnId,
+          status: "completed",
+        });
+      }
       return;
     }
 

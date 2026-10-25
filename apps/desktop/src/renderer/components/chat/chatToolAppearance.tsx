@@ -9,6 +9,7 @@ import {
   FileCode,
   FolderOpen,
   Globe,
+  Hourglass,
   ListBullets,
   ListChecks,
   MagnifyingGlass,
@@ -75,6 +76,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   exec_command: { label: "Shell", icon: Terminal, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "codex", sourceTone: "warning", getTarget: a => String(a.command ?? a.cmd ?? "") || null },
   apply_patch: { label: "Patch", icon: Scissors, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "codex", sourceTone: "success" },
   update_plan: { label: "Plan", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "codex", sourceTone: "accent" },
+  sleep: { label: "Sleep", icon: Hourglass, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "codex", sourceTone: "info", getTarget: a => String(a.duration ?? "") || null },
   computer_use: { label: "Computer Use", icon: Cpu, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "codex", sourceTone: "info", getTarget: a => {
     const status = String(a.status ?? "").trim();
     return status ? `· ${status}` : null;
