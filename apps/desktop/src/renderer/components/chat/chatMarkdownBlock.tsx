@@ -15,7 +15,7 @@ import {
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
-import { chatMarkdownUrlTransform } from "./chatMarkdown";
+import { RTL_FOLLOWS_FIRST_BLOCK_CLASS, RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS, chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
@@ -291,22 +291,24 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     h4: ({ children }) => (
       <h4 dir="auto" className="mb-1.5 mt-4 font-sans text-[length:calc(var(--chat-font-size)*13.5/14)] font-semibold leading-snug first:mt-0">{children}</h4>
     ),
-    ul: ({ children }) => <ul dir="auto" className="my-3 list-disc space-y-1.5 ps-5">{children}</ul>,
-    ol: ({ children }) => <ol dir="auto" className="my-3 list-decimal space-y-1.5 ps-5">{children}</ol>,
+    ul: ({ children }) => <ul className={`my-3 list-disc space-y-1.5 ps-5 ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>{children}</ul>,
+    ol: ({ children }) => <ol className={`my-3 list-decimal space-y-1.5 ps-5 ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>{children}</ol>,
     li: ({ children }) => (
       <li dir="auto" className={neu ? "ps-1 text-(color:--chat-ink)/86" : "ps-1 text-fg/88"}>{children}</li>
     ),
     blockquote: ({ children }) => (
       <blockquote
-        dir="auto"
-        className={neu ? "border-s-2 border-(color:--chat-ink)/20 ps-4 italic text-(color:--chat-ink)/74" : "border-s-2 border-(color:--chat-ink)/20 ps-4 italic text-fg/72"}
+        className={cn(
+          neu ? "border-s-2 border-(color:--chat-ink)/20 ps-4 italic text-(color:--chat-ink)/74" : "border-s-2 border-(color:--chat-ink)/20 ps-4 italic text-fg/72",
+          RTL_FOLLOWS_FIRST_BLOCK_CLASS,
+        )}
       >
         {children}
       </blockquote>
     ),
     table: ({ children }) => (
       <div className="my-4 overflow-x-auto rounded-xl border border-(color:--chat-ink)/[0.06] bg-(color:--chat-table-bg) shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
-        <table dir="auto" className="min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]">{children}</table>
+        <table className={`${RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS} min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]`}>{children}</table>
       </div>
     ),
     thead: ({ children, node: _, ...props }) => <thead className="bg-(color:--chat-ink)/[0.04]" {...props}>{children}</thead>,

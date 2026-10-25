@@ -210,18 +210,26 @@ function ChatMarkdownAnchor({
   );
 }
 
-// Prose blocks take `dir="auto"`: each paragraph, list, heading, quote and
-// cell reads right to left when it starts with Hebrew or Arabic, and spacing
-// is logical (`ps-`, `border-s-`, `text-start`) so bullets and quote rules
-// follow it. English renders exactly as before. Code blocks stay left to right.
+/**
+ * Right-to-left text in chat markdown. Each paragraph, heading, list item and
+ * cell takes `dir="auto"`, so it reads right to left when it starts with
+ * Hebrew or Arabic. A list, quote or table follows its first block instead:
+ * `dir="auto"` on it would skip children that carry their own `dir` and stay
+ * left to right, leaving bullets and the quote rule on the wrong side. Spacing
+ * is logical (`ps-`, `border-s-`, `text-start`) so it flips with them. English
+ * renders exactly as before; code blocks stay left to right.
+ */
+export const RTL_FOLLOWS_FIRST_BLOCK_CLASS = "[&:has(>:first-child:dir(rtl))]:[direction:rtl]";
+export const RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS = "[&:has(tr:first-child>:first-child:dir(rtl))]:[direction:rtl]";
+
 export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overrides = {}): Components {
   const accent = toneAccents(tone);
   return {
     p: ({ children }) => (
       <p dir="auto" className="mb-3 max-w-full whitespace-pre-wrap break-words last:mb-0">{children}</p>
     ),
-    ul: ({ children }) => <ul dir="auto" className="mb-3 list-disc space-y-1 ps-5 last:mb-0">{children}</ul>,
-    ol: ({ children }) => <ol dir="auto" className="mb-3 list-decimal space-y-1 ps-5 last:mb-0">{children}</ol>,
+    ul: ({ children }) => <ul className={`mb-3 list-disc space-y-1 ps-5 last:mb-0 ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>{children}</ul>,
+    ol: ({ children }) => <ol className={`mb-3 list-decimal space-y-1 ps-5 last:mb-0 ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>{children}</ol>,
     li: ({ children }) => <li dir="auto" className="break-words [overflow-wrap:anywhere]">{children}</li>,
     h1: ({ children }) => (
       <h1 dir="auto" className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*19/14)] font-semibold leading-snug tracking-[-0.015em] text-fg/92 first:mt-0">
@@ -285,7 +293,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       );
     },
     blockquote: ({ children }) => (
-      <blockquote dir="auto" className={`mb-3 border-s-2 ps-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder}`}>
+      <blockquote className={`mb-3 border-s-2 ps-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder} ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>
         {children}
       </blockquote>
     ),
@@ -294,7 +302,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     a: ({ children, href }) => <ChatMarkdownAnchor href={href} className={accent.link}>{children}</ChatMarkdownAnchor>,
     table: ({ children }) => (
       <div className="mb-3 max-w-full overflow-x-auto last:mb-0">
-        <table dir="auto" className="w-full min-w-0 border-collapse text-start">{children}</table>
+        <table className={`w-full min-w-0 border-collapse text-start ${RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS}`}>{children}</table>
       </div>
     ),
     th: ({ children }) => (

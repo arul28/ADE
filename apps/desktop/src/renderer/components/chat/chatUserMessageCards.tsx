@@ -91,7 +91,7 @@ export function UserTypedText({
     );
   }
   return (
-    <div dir="auto" className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
+    <div dir="auto" className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white [unicode-bidi:plaintext]">
       <ChatContextSegments segments={segments} />
     </div>
   );

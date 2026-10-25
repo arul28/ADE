@@ -8910,9 +8910,9 @@ function AgentChatComposerImpl({
                     // inherits `text-align: center` from centered empty-state
                     // ancestors, so pasting a URL (which swaps textarea → rich
                     // editor) makes the whole prompt box render and type centered.
-                    // Start, not left, so a Hebrew or Arabic prompt (dir="auto")
-                    // lines up on the right.
-                    "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-start font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
+                    // Start, not left, so a Hebrew or Arabic line (dir="auto",
+                    // per-line `plaintext` direction) lines up on the right.
+                    "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-start [unicode-bidi:plaintext] font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
                     dragActive ? "opacity-30" : "",
                     parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                     // Re-homed inside the question card, the editor drops the
@@ -9119,7 +9119,7 @@ function AgentChatComposerImpl({
                   spellCheck={true}
                   aria-label={composerInputAccessibleLabel}
                   className={cn(
-                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-start text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-start [unicode-bidi:plaintext] text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                     // The textarea sits above the token overlay with transparent text, so the
                     // default (opaque) selection background would paint over the overlay and
                     // make the selected text vanish entirely. A translucent selection reads as
