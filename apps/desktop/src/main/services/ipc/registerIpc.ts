@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, shell, systemPreferences, webContents } from "electron";
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
@@ -213,6 +213,8 @@ import {
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
 import { parseAttentionItem } from "../attention/attentionItemRouting";
+import { createUserActivityProbe } from "../attention/userActivityProbe";
+import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import { isTrustedAdeRendererSender } from "./trustedRendererSender";
@@ -2098,6 +2100,14 @@ export function registerIpc({
     onAccountSnapshot: onAttentionAccountSnapshot,
     onPreferences: onAttentionPreferences,
     onSessionMuted: onAttentionSessionMuted,
+    readUserActive: () => userActivityProbe.read(),
+  });
+  // Lock and sleep tell the phone at once; otherwise the last "in use" report
+  // would keep it quiet until that report ages out.
+  const userActivityProbe = createUserActivityProbe({
+    powerMonitor,
+    onAway: () => void attentionAccountCoordinator.reportUserAway(),
+    onBack: () => void attentionAccountCoordinator.reportUserBack(),
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -6446,6 +6456,19 @@ export function registerIpc({
     const snapshot = await syncStatusReaders.readMachine(arg);
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
+  });
+
+  // This computer only, like getLocalStatus: the check is "can other devices
+  // reach the computer you are sitting at", answered by its own brain.
+  ipcMain.handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
+    if (!localRuntimeConnectionPool) {
+      throw new Error("ADE's background service isn't running on this computer. Restart ADE, then check again.");
+    }
+    return await localRuntimeConnectionPool.callSync<HostReachabilityReport>(
+      "sync.checkReachability",
+      {},
+      { timeoutMs: 30_000 },
+    );
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {

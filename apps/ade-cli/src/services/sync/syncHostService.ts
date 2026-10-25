@@ -1,4 +1,5 @@
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
+import { readRecentHostStall } from "../runtime/hostStallRecord";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
@@ -1677,6 +1678,7 @@ export function buildSyncHostHelloOkPayload(args: {
     ...args.localCommandDescriptors.map((entry) => entry.action),
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
+  const recentHostStall = readRecentHostStall();
   const payload: PairedRuntimeHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
@@ -1703,6 +1705,9 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.connectionTransport ? { connectionTransport: args.connectionTransport } : {}),
     ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
     ...(args.projectHost ? { projectHost: args.projectHost } : {}),
+    // Only while there is something to say: a device that reconnects after
+    // this machine froze learns why instead of blaming its network.
+    ...(recentHostStall ? { hostHealth: { lastStall: recentHostStall } } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,

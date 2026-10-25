@@ -2,7 +2,12 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { CheckCircle, CircleNotch, XCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
-import type { RemoteRuntimeDoctorCheck } from "../../../shared/types";
+import type {
+  RemoteRuntimeDoctorCheck,
+  RemoteRuntimeDoctorFailure,
+  RemoteRuntimeDoctorResult,
+} from "../../../shared/types";
+import { HostStallNote } from "./HostStallNote";
 
 const wrapStyle: CSSProperties = {
   display: "grid",
@@ -37,9 +42,44 @@ function routeLabel(kind: RemoteRuntimeDoctorCheck["route"]): string {
   }
 }
 
+/** The failing part, in a few words, beside the route's raw error. */
+function failureLabel(failure: RemoteRuntimeDoctorFailure | undefined): string | null {
+  switch (failure) {
+    case "host_offline":
+      return "Not connected to the relay";
+    case "no_network":
+      return "This computer is offline";
+    case "timeout":
+      return "No answer in time";
+    case "unreachable":
+      return "Nothing answered";
+    case "pairing":
+      return "Pairing out of date";
+    case "authentication":
+      return "Not signed in";
+    case "identity":
+      return "A different computer answered";
+    case "capability":
+    case "protocol":
+      return "Different ADE version";
+    case "superseded":
+      return "Another connection took over";
+    default:
+      return null;
+  }
+}
+
+const DIAGNOSIS_COLOR: Record<NonNullable<RemoteRuntimeDoctorResult["diagnosis"]>["tone"], string> = {
+  success: COLORS.success,
+  warning: COLORS.warning,
+  danger: COLORS.danger,
+};
+
 type ConnectionDoctorPanelProps = {
   /** Saved target id or discovered machine id, passed to runDoctor. */
   machineId: string;
+  /** For the freeze note ("Studio froze for 12s"). */
+  machineName?: string | null;
 };
 
 /**
@@ -47,8 +87,9 @@ type ConnectionDoctorPanelProps = {
  * each candidate route with a pass/fail, latency, and error text — so "Test"
  * answers "why can't I connect" without leaving the panel.
  */
-export function ConnectionDoctorPanel({ machineId }: ConnectionDoctorPanelProps) {
+export function ConnectionDoctorPanel({ machineId, machineName = null }: ConnectionDoctorPanelProps) {
   const [checks, setChecks] = useState<RemoteRuntimeDoctorCheck[] | null>(null);
+  const [result, setResult] = useState<RemoteRuntimeDoctorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -57,11 +98,13 @@ export function ConnectionDoctorPanel({ machineId }: ConnectionDoctorPanelProps)
     setLoading(true);
     setError(null);
     setChecks(null);
+    setResult(null);
     void (async () => {
       try {
-        const result = await window.ade.remoteRuntime.runDoctor(machineId);
+        const next = await window.ade.remoteRuntime.runDoctor(machineId);
         if (cancelled) return;
-        setChecks(result.checks);
+        setChecks(next.checks);
+        setResult(next);
       } catch (err) {
         if (cancelled) return;
         setError(extractError(err));
@@ -115,6 +158,19 @@ export function ConnectionDoctorPanel({ machineId }: ConnectionDoctorPanelProps)
         </div>
       ) : null}
 
+      {result?.diagnosis ? (
+        <div role="status" style={{ display: "grid", gap: 2, fontFamily: SANS_FONT, fontSize: 12 }}>
+          <span style={{ color: DIAGNOSIS_COLOR[result.diagnosis.tone], fontWeight: 600 }}>
+            {result.diagnosis.title}
+          </span>
+          {result.diagnosis.fix ? (
+            <span style={{ color: COLORS.textSecondary }}>{result.diagnosis.fix}</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      <HostStallNote stall={result?.hostStall} machineName={machineName} />
+
       {checks && checks.length > 0
         ? checks.map((check, index) => (
             <div key={`${check.route}:${check.endpoint}:${index}`} style={rowStyle}>
@@ -135,8 +191,13 @@ export function ConnectionDoctorPanel({ machineId }: ConnectionDoctorPanelProps)
                   {check.endpoint}
                 </span>
                 {check.error ? (
-                  <div style={{ color: COLORS.danger, fontSize: 11.5, marginTop: 2 }}>
-                    {check.error}
+                  <div style={{ fontSize: 11.5, marginTop: 2 }}>
+                    {failureLabel(check.failure) ? (
+                      <span style={{ color: COLORS.danger }}>{failureLabel(check.failure)} · </span>
+                    ) : null}
+                    <span style={{ color: failureLabel(check.failure) ? COLORS.textMuted : COLORS.danger }}>
+                      {check.error}
+                    </span>
                   </div>
                 ) : null}
               </div>

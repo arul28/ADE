@@ -24,6 +24,8 @@ import type {
   SyncTerminalInputAckPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
+import { hostStallFromHello } from "../../../shared/connectionDiagnosis";
+import { announceHostStall } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
 import {
@@ -329,6 +331,13 @@ export class AdeSyncClient {
     this.connection.on("envelope", (envelope) => this.handleEnvelope(envelope));
     this.connection.on("helloOk", (payload) => {
       applyProjectHostHello(payload.projectHost ?? null, this);
+      // The host froze just before this reconnect: say so, or the drop reads
+      // as this browser's network.
+      announceHostStall({
+        stall: hostStallFromHello(payload, Date.now()),
+        machineKey: payload.brain?.deviceId,
+        machineName: payload.brain?.deviceName,
+      });
       this.beginRestoration(payload);
     });
     this.connection.on("pairingRejected", ({ envId }) => {

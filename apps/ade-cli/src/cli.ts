@@ -525,6 +525,7 @@ import {
   readBrainLoopWatchdogLastWedge,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import { recordHostStall } from "./services/runtime/hostStallRecord";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { servesMachineRuntimeEndpoint, startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
@@ -26293,7 +26294,15 @@ async function runServe(
     socketPath,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
+    onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      // A wedge the watchdog ended by restarting: devices that reconnect in
+      // the next few minutes learn this machine froze, not that their network did.
+      recordHostStall({
+        durationMs: breadcrumb.blockedMs,
+        endedAtMs: Date.parse(breadcrumb.ts),
+        restarted: true,
+      });
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
         surface: "api",

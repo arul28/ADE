@@ -1871,6 +1871,12 @@ declare global {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         /** Always reads this physical machine's local ADE brain, even in a remote-bound window. */
         getLocalStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
+        /**
+         * "Can my other devices reach this computer?", answered by this
+         * computer's own brain. Always this physical machine; absent on the
+         * web client.
+         */
+        checkLocalReachability?: () => Promise<import("../shared/connectionDiagnosis").HostReachabilityReport>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
@@ -2050,9 +2056,10 @@ declare global {
           seenAt?: string;
           dismissedAt?: string | null;
         }) => Promise<import("../shared/types").AttentionAcknowledgmentOutcome>;
+        /** Older hosts and the web client resolve `void`: activity unknown. */
         reportPresence: (
           presence: import("../shared/types").AttentionPresence,
-        ) => Promise<void>;
+        ) => Promise<import("../shared/types").AttentionPresenceReceipt | void>;
         /** `null` = the account service is unreachable right now; keep the current preferences. */
         getPreferences: (accountOwnerId: string) => Promise<
           import("../shared/types").AttentionPreferences | null

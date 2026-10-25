@@ -1466,9 +1466,14 @@ export class SyncConnection {
   }
 
   private errorForClose(event: Pick<CloseEvent, "code" | "reason">): SyncConnectionError {
+    const host = this.status.hostName?.trim() || "This computer";
     switch (event.code) {
       case 4501:
-        return new SyncConnectionError("Can't reach this computer. Retrying…", "relay_host_offline");
+        // The relay answered: it is the computer that is not connected to it.
+        return new SyncConnectionError(
+          `${host} isn't connected to ADE's relay. Make sure it's awake, online, and ADE is open there. Retrying…`,
+          "relay_host_offline",
+        );
       case 4507:
         return new SyncConnectionError("Your computer couldn't accept the connection. Retrying…", "relay_bridge_rejected");
       case 4508:
@@ -1488,7 +1493,12 @@ export class SyncConnection {
       case 4000:
         return new SyncConnectionError("Connection lost. Reconnecting.", "relay_partner_closed");
       case 4008:
-        return new SyncConnectionError("Connection became unresponsive. Reconnecting.", "connection_stale");
+        // It had been working: a computer that stops answering is usually
+        // overloaded, asleep or off the network, not misconfigured.
+        return new SyncConnectionError(
+          `${host} stopped responding. It may be overloaded, asleep, or off the network. Reconnecting.`,
+          "connection_stale",
+        );
       default:
         return new SyncConnectionError(event.reason || "Connection lost. Reconnecting.", "connection_closed");
     }

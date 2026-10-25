@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { hostStallFromHello } from "../../../shared/connectionDiagnosis";
 import type {
   DesktopPairedMachineCredentials,
 } from "../../../shared/types/pairedRuntime";
@@ -398,6 +399,7 @@ export async function bootstrapPairedRuntime(args: {
           capabilities: initializeInfo.capabilities,
           compatibilityWarnings: initializeInfo.compatibilityWarnings,
           projects,
+          hostStall: hostStallFromHello(transport.connection.hello, Date.now()),
         },
       };
     } catch (error) {

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -96,6 +97,7 @@ import {
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
+  type AttentionPresenceReceipt,
   type AttentionSnapshot,
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
@@ -6168,6 +6170,8 @@ const adeBridge = {
       ),
     getLocalStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncGetLocalStatus, args),
+    checkLocalReachability: async (): Promise<HostReachabilityReport> =>
+      ipcRenderer.invoke(IPC.syncCheckLocalReachability),
     refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.refreshDiscovery", {}, () =>
         ipcRenderer.invoke(IPC.syncRefreshDiscovery),
@@ -6590,7 +6594,7 @@ const adeBridge = {
       dismissedAt?: string | null;
     }): Promise<AttentionAcknowledgmentOutcome> =>
       ipcRenderer.invoke(IPC.attentionAcknowledge, args),
-    reportPresence: async (presence: AttentionPresence): Promise<void> =>
+    reportPresence: async (presence: AttentionPresence): Promise<AttentionPresenceReceipt | void> =>
       ipcRenderer.invoke(IPC.attentionReportPresence, presence),
     getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences | null> =>
       ipcRenderer.invoke(IPC.attentionGetPreferences, { accountOwnerId }),

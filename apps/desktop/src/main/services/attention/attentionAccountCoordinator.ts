@@ -12,6 +12,7 @@ import {
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
+  type AttentionPresenceReceipt,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -50,6 +51,11 @@ type AttentionAccountCoordinatorOptions = {
   onPreferences?: (accountOwnerId: string, preferences: AttentionPreferences) => void;
   /** A mute the relay accepted; desktop notifications apply it at once. */
   onSessionMuted?: (accountOwnerId: string, sessionId: string, muted: boolean) => void;
+  /**
+   * Whether the person is using this computer (OS input clock). Stamped on
+   * every presence report as `userActive`; `null` leaves it out.
+   */
+  readUserActive?: () => boolean | null;
 };
 
 type AttentionSnapshotRequest = {
@@ -190,6 +196,8 @@ export class AttentionAccountCoordinator {
   private relayRetryAtMs = 0;
   /** The last account-snapshot failure logged, so a long outage logs its edge. */
   private loggedAccountSnapshotFailure: string | null = null;
+  /** The last presence a window reported, resent on lock, sleep and wake. */
+  private lastPresence: Record<string, unknown> | null = null;
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
 
@@ -544,11 +552,55 @@ export class AttentionAccountCoordinator {
     throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
   }
 
-  async reportPresence(input: unknown): Promise<void> {
-    const presence = isRecord(input) ? input : null;
-    if (!presence || typeof presence.deviceId !== "string" || !presence.deviceId.trim()) {
+  /**
+   * Report this window's presence. Returns whether the person is using the
+   * computer, so the window keeps its heartbeat fresh while they work in
+   * another app (a hidden window otherwise reports every two minutes, past
+   * the relay's presence window).
+   */
+  async reportPresence(input: unknown): Promise<AttentionPresenceReceipt> {
+    const reported = isRecord(input) ? input : null;
+    if (!reported || typeof reported.deviceId !== "string" || !reported.deviceId.trim()) {
       throw new Error("A valid Activity presence payload is required.");
     }
+    // A window may say it is going away (`false`); "in use" only comes from
+    // the OS clock here.
+    const userActive = reported.platform === "iOS"
+      ? null
+      : reported.userActive === false
+        ? false
+        : this.options.readUserActive?.() ?? null;
+    const { userActive: _callerClaim, ...rest } = reported;
+    const presence: Record<string, unknown> = userActive === null ? rest : { ...rest, userActive };
+    this.lastPresence = rest;
+    await this.sendPresence(presence);
+    return { userActive };
+  }
+
+  /**
+   * The screen locked or the machine is going to sleep: say so now. The relay
+   * would otherwise keep the phone quiet on the last "in use" report until it
+   * ages out of its presence window.
+   */
+  async reportUserAway(): Promise<void> {
+    const last = this.lastPresence;
+    if (!last) return;
+    await this.sendPresence({
+      ...last,
+      appForeground: false,
+      userActive: false,
+      observedAt: new Date().toISOString(),
+    }).catch(() => {});
+  }
+
+  /** Unlocked or awake again: refresh the last report with the live clock. */
+  async reportUserBack(): Promise<void> {
+    const last = this.lastPresence;
+    if (!last) return;
+    await this.reportPresence({ ...last, observedAt: new Date().toISOString() }).catch(() => {});
+  }
+
+  private async sendPresence(presence: Record<string, unknown>): Promise<void> {
     if (this.currentAccountOwnerId() && this.options.accountAttentionClient) {
       // Presence is a best-effort heartbeat with nobody waiting on it, and the
       // next one carries the latest state. While the relay is unreachable the

@@ -1006,6 +1006,7 @@ export const IPC = {
   cloudAgentsLaunch: "ade.cloudAgents.launch",
   syncGetStatus: "ade.sync.getStatus",
   syncGetLocalStatus: "ade.sync.getLocalStatus",
+  syncCheckLocalReachability: "ade.sync.checkLocalReachability",
   syncRefreshDiscovery: "ade.sync.refreshDiscovery",
   syncListDevices: "ade.sync.listDevices",
   syncUpdateLocalDevice: "ade.sync.updateLocalDevice",

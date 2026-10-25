@@ -337,6 +337,8 @@ export class RemoteConnectionService {
         // Warnings come from the version too ("missing capabilities … update
         // ADE on that machine"); an updated machine must not keep the old ones.
         compatibilityWarnings: result.compatibilityWarnings,
+        // A clean reconnect clears an older freeze; a fresh one replaces it.
+        hostStall: result.hostStall ?? null,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
     });
@@ -691,7 +693,11 @@ export class RemoteConnectionService {
     if (!target && !credentials) {
       throw new Error("Remote target or paired machine was not found.");
     }
-    return await runRemoteRuntimeDoctor({ target, credentials });
+    return await runRemoteRuntimeDoctor({
+      target,
+      credentials,
+      machineName: target?.name ?? discoveredMachine?.machineName ?? credentials?.hostIdentity?.name ?? null,
+    });
   }
 
   removeTarget(targetId: string): boolean {
@@ -778,6 +784,7 @@ export class RemoteConnectionService {
           lastErrorInfo: status.lastErrorInfo ?? null,
           lastAttemptedAt: status.lastAttemptedAt ?? null,
           connectedAt: status.connectedAt ?? target.lastConnectedAt,
+          ...(status.hostStall ? { hostStall: status.hostStall } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
         };
       });
@@ -881,6 +888,7 @@ export class RemoteConnectionService {
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
+        hostStall: connectedResult.hostStall ?? null,
         projects: connectedResult.projects,
         connectedAt: connectedResult.target.lastConnectedAt ?? Date.now(),
         lastAttemptedAt: Date.now(),
