@@ -220,5 +220,7 @@ export function mcpElicitationDefaultAnswers(schemaValue: unknown): Record<strin
       answers[id] = typeof fallback === "string" ? fallback : JSON.stringify(fallback);
     }
   }
+  // A required name the schema never describes has no default either.
+  for (const id of required) if (!(id in answers)) return null;
   return answers;
 }

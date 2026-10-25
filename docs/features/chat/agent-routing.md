@@ -824,8 +824,8 @@ The 0.144.5 server-request surface is handled in the same adapter. ADE answers
 `mcpServer/elicitation/request` becomes the unified pending-input UI for form
 and URL modes; primitive/enum/multiselect fields are coerced back into the
 requested schema. `serverRequest/resolved` clears a pending card when the
-server resolves it elsewhere. Elicitations are never silently approved by
-full-auto mode, and `Always allow` is sent only when the request `_meta`
+server resolves it elsewhere. Codex elicitations are never silently approved by
+full-auto mode (Claude's are; see the chat README), and `Always allow` is sent only when the request `_meta`
 explicitly permits persistent consent. JSON-RPC envelope decoding tolerates the
 `emittedAtMs` field that 0.145 adds to notifications, so a newer server's
 timestamp envelope never fails a decode.

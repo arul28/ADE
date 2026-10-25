@@ -44732,28 +44732,43 @@ export function createAgentChatService(args: {
       logElicitation("declined_by_policy");
       return { action: "decline" };
     }
+    const accept = (answers: Record<string, string | string[]> | undefined, responseText: string | null | undefined) => ({
+      action: "accept" as const,
+      content: mcpElicitationContent(schema, answers, responseText) as Record<string, string | number | boolean | string[]>,
+    });
+    const notice = (text: string): void => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: text,
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+    };
     // Nobody is waiting on a full-auto chat or an automation run, so the
     // prompt is answered on the spot and the run never stalls on it: a yes/no
     // is accepted, a form takes its own defaults, and a form that needs a
-    // value only a person has, or a sign-in link, is declined. The card and
-    // its receipt still record what was answered on the user's behalf.
-    const unattended = Boolean(managed.session.automationRunId)
-      || (managed.session.interactionMode !== "plan"
-        && resolveSessionClaudeAccessMode(managed.session, "default") === "bypassPermissions");
+    // value only a person has, or a sign-in link, is declined. A dry-run
+    // (plan mode) automation declines everything, since saying yes may change
+    // something. The card, its receipt and a notice record what was answered
+    // on the user's behalf.
+    const inPlan = resolveSessionClaudeInteractionMode(managed.session) === "plan";
+    const automationRun = Boolean(managed.session.automationRunId);
+    const unattended = automationRun
+      || (!inPlan && resolveSessionClaudeAccessMode(managed.session, "default") === "bypassPermissions");
     if (unattended) {
       emitPendingInputRequest(managed, pendingRequest, ui);
-      const answers = mode === "form" ? mcpElicitationDefaultAnswers(schema) : null;
+      const answers = mode === "form" && !inPlan ? mcpElicitationDefaultAnswers(schema) : null;
+      const where = automationRun ? "this automation run" : "this full-auto chat";
       if (!answers) {
         emitPendingInputResolved(managed, { itemId, decision: "decline", turnId: pendingRequest.turnId ?? null, questions });
+        notice(`Declined ${serverName}'s request automatically: nobody can answer it in ${where}.`);
         logElicitation("declined_unattended");
         return { action: "decline" };
       }
       emitPendingInputResolved(managed, { itemId, decision: "accept", turnId: pendingRequest.turnId ?? null, answers, questions });
+      notice(`Answered ${serverName}'s request automatically${questions.length ? " with its defaults" : ""} in ${where}.`);
       logElicitation("accepted_unattended");
-      return {
-        action: "accept",
-        content: mcpElicitationContent(schema, answers, null) as Record<string, string | number | boolean | string[]>,
-      };
+      return accept(answers, null);
     }
     // The MCP tool is stuck until the server hears back, and so is the turn.
     // An unanswered card gives up after a while so the agent carries on
@@ -44776,6 +44791,7 @@ export function createAgentChatService(args: {
     }
     const { abandoned, response } = parked;
     if (abandoned) {
+      if (timedOut) notice(`${serverName}'s request got no answer in 5 minutes, so it was skipped and the agent carried on.`);
       logElicitation(timedOut ? "timed_out" : "cancelled");
       return { action: "cancel" };
     }
@@ -44785,10 +44801,7 @@ export function createAgentChatService(args: {
     }
     logElicitation("accepted");
     if (mode !== "form") return { action: "accept" };
-    return {
-      action: "accept",
-      content: mcpElicitationContent(schema, response.answers, response.responseText) as Record<string, string | number | boolean | string[]>,
-    };
+    return accept(response.answers, response.responseText);
   };
 
   /**

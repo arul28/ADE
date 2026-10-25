@@ -4063,15 +4063,18 @@ Deny answers `decline`; an interrupt answers `cancel`. A host policy with
 `fallback: "deny"` declines on the spot, and still writes the card and its
 `decline` receipt, as for Codex.
 
-Nobody answers a full-auto chat (`bypassPermissions`, outside plan mode) or
-an automation run (`automationRunId`), and the MCP tool, and with it the
-turn, is stuck until the server hears back. So ADE answers there itself,
-writing the card and its receipt: a form with no fields (a yes/no) is
-accepted, a form whose required fields all have a schema `default` is
-accepted with those defaults (`mcpElicitationDefaultAnswers`), and a form
-that needs a value only a person has, or a URL sign-in, is declined. Anywhere
-else the card waits at most `CLAUDE_MCP_ELICITATION_TIMEOUT_MS` (5 minutes);
-then it answers `cancel`, so the tool returns and the agent carries on. Every
+While a card is up, the MCP tool is stuck until the server hears back, and
+so is the turn. Nobody answers a full-auto chat (`bypassPermissions`, outside
+plan mode) or an automation run (`automationRunId`, whatever its permission
+mode), so there ADE answers itself and writes the card, its receipt and an
+info `system_notice` saying so. A form with no fields (a yes/no) is accepted.
+A form whose required fields all have a schema `default` is accepted with
+those defaults (`mcpElicitationDefaultAnswers`). A form that needs a value
+only a person has, or a URL sign-in, is declined, and so is everything in a
+dry-run (plan mode) automation. Anywhere else the card waits at most
+`CLAUDE_MCP_ELICITATION_TIMEOUT_MS` (5 minutes). Then it answers `cancel` with
+a notice, so the tool returns and the agent carries on; an answer sent after
+that is settled like any other closed card. Every
 elicitation logs
 `chat.claude.mcp_elicitation`. The card lives on the chat's own brain, so a
 remote client answers it through the chat's pinned `respondToInput` like any
