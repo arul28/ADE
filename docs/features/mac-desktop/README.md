@@ -3,7 +3,8 @@
 Each lane can own a private macOS screen. ADE creates a virtual display named
 after the lane, parks the lane's windows on it, and drives those windows through
 the Accessibility API. Without an active input lease, the user's pointer stays
-on a real display.
+on a real display, except where a lane display is the only route to one (see
+**A real display must never sit behind a lane display** below).
 
 The Work tools pane shows that screen live, the `ade mac-desktop` command family
 drives it (aliases `ade mac-desk` and `ade desk`; `ade desktop` stays the app
@@ -47,6 +48,29 @@ display; a lane's own lease or gesture is never interrupted. On a single
 5120x1440 display, relative HID pushes diagonally into the corner crossed onto
 the lane display without the fence and stop just inside the corner with it.
 The offscreen-region fallback has no virtual display to fence.
+
+**A real display must never sit behind a lane display.** When a monitor or
+an AirPlay screen (extended) connects while a lane display is up, macOS can
+put it beside the lane display, or restore an arrangement it remembered with
+one. That screen then shares an edge only with the lane display, so the fence
+keeps the person from ever reaching it. Measured on macOS 27 with a second
+display added: moving only the lane display away left the new screen floating,
+and macOS pulled a lane display back beside it. So the placement pass first
+finds every real display the main display cannot reach through real displays
+alone (`Geometry.cutOffRealDisplays`; only a shared edge counts, not a corner)
+and moves it flush against them (`Geometry.reconnectedRealDisplayFrames`). It
+goes on the side it was already on, overlapping at least half the shorter edge.
+That happens in the same session-only configuration that re-places the lane
+chain. It gets three tries per cut-off, counted once the window server accepts
+a move and re-armed only by a later pass that finds nothing cut off (or by a
+change to the set of real displays), so a window server that keeps undoing it
+is not fought forever. It never lands the screen on another helper's lane
+display.
+If a screen still cannot be reached, the fence stops guarding every lane display
+on the route to it (`Geometry.laneDisplaysOnRouteToCutOffRealDisplays`,
+recomputed on each display change, never per event) rather than trap the
+person. While it does, the pointer can rest on those lane displays and a click
+there reaches a lane window: reaching their own screen comes first.
 
 Four rules make the isolation hold:
 
@@ -106,7 +130,7 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PointerFence.swift` | Listen-only pointer fence for unleased physical movement onto ADE displays. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PointerFence.swift` | Listen-only pointer fence for unleased physical movement onto ADE displays, except lane displays on the route to a cut-off real display. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/ScrollDelta.swift` | A scroll direction and line count as wheel deltas, for the real and background paths. |
@@ -118,7 +142,8 @@ required.
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
 | `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion and the offscreen-fallback arithmetic. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion, the offscreen-fallback arithmetic, and display arrangement: the corner chain, finding a real display cut off behind a lane display, and moving it back. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayLayout.swift` | The active displays as the placement pass and the pointer fence both read them: real displays (one per mirror set), the main display by id, and every ADE lane display. |
 | `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`. |
 | `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, handoff, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |

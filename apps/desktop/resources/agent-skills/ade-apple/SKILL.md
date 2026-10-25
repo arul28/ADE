@@ -1,12 +1,13 @@
 ---
 name: ade-apple
-description: Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
+description: Use this skill when you need to see an iOS app or an iOS SwiftUI view actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
 ---
 
 # ADE Apple Development
 
-This skill is for iOS and SwiftUI apps. For a macOS app, a dev Electron app or
-a web page, the **ade-computer-use** skill picks the right surface.
+This skill is for iOS apps and iOS SwiftUI views. For a macOS app, a dev
+Electron app or a web page, the **ade-computer-use** skill picks the right
+surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
 `$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
