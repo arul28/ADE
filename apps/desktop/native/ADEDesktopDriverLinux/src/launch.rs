@@ -241,6 +241,14 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
         // The renderer only builds its accessibility tree when asked.
         prefix.push("--force-renderer-accessibility".into());
         prefix.push("--ozone-platform=x11".into());
+        // Xvfb has no GPU, so Chromium composites every frame through
+        // SwiftShader, a software GL. Software compositing draws the same
+        // pixels for about a fifth of the CPU (Chrome scrolling a Wikipedia
+        // page at 1080p on 2 vCPUs: 132% of a core to 28%), and WebGL keeps
+        // working through the GPU process. An app's own GPU switch wins.
+        if !args.iter().chain(extra.iter()).any(|a| a.starts_with("--disable-gpu") || a.starts_with("--enable-gpu") || a.starts_with("--use-gl") || a.starts_with("--use-angle")) {
+            prefix.push("--disable-gpu-compositing".into());
+        }
         if root {
             prefix.push("--no-sandbox".into());
         }
@@ -251,6 +259,7 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
         // instance instead of a tab in the first one.
         let dir = lane_dir.join("profiles").join(program.file_name().unwrap().to_string_lossy().to_string());
         let _ = std::fs::create_dir_all(&dir);
+        clear_stale_chromium_lock(&dir);
         prefix.extend([
             format!("--user-data-dir={}", dir.display()),
             "--no-first-run".into(),
@@ -275,4 +284,28 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
     prefix.append(&mut args);
     prefix.extend(extra.iter().cloned());
     Ok(LaunchPlan { program, args: prefix, app_name, bundle_id, profile_dir, env })
+}
+
+/// Chromium locks its profile with a `SingletonLock` symlink naming
+/// `<hostname>-<pid>`. A lock left by a Chrome that is gone (the helper was
+/// killed, the machine rebooted, or a VM came back under a new hostname, as
+/// cloud boxes do on resume) makes the next launch exit 21 with "profile in
+/// use" and no window. Remove it when no live process on this host holds it.
+fn clear_stale_chromium_lock(profile: &Path) {
+    let lock = profile.join("SingletonLock");
+    let Ok(target) = std::fs::read_link(&lock) else { return };
+    let target = target.to_string_lossy().to_string();
+    let (host, pid) = match target.rsplit_once('-') {
+        Some((host, pid)) => (host.to_string(), pid.parse::<i32>().ok()),
+        None => (String::new(), None),
+    };
+    let this_host = std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
+    let alive = host == this_host
+        && pid.map(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0).unwrap_or(false);
+    if alive {
+        return;
+    }
+    for name in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+        let _ = std::fs::remove_file(profile.join(name));
+    }
 }

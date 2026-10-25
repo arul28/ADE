@@ -99,6 +99,13 @@ adds `--force-renderer-accessibility` to Chromium-family browsers and to
 Electron apps (an app with `resources/app.asar` beside its binary), and the
 accessibility status flags on the bus cover apps that check them.
 
+`app.launch` also gives them `--disable-gpu-compositing` (unless the caller
+passes its own GPU switch): Xvfb has no GPU, so Chromium would composite every
+frame through SwiftShader, about four times the CPU of software compositing.
+WebGL keeps working. A Chromium profile lock left by a Chrome that is gone (a
+killed helper, a reboot, a cloud VM resumed under a new hostname) is removed
+before launch; otherwise Chrome exits with "profile in use" and no window.
+
 Measured on a 2-vCPU box: Chrome on a Wikipedia article, 383 elements in about
 0.3–0.6 s.
 
@@ -123,8 +130,8 @@ time over 1.5 s unless `keepIdle`. With no desktop app attached, the proof is
 filed as recorded (the demo engine is the desktop app's).
 
 Measured at 1920x1080 on a 2-vCPU box: a still screen costs the helper and
-ffmpeg about 1% of one core; scrolling a page at ~25 fps costs the helper ~5%
-and ffmpeg ~25%; Chrome itself, drawing in software, costs far more than both.
+ffmpeg about 1% of one core; scrolling a page at ~25 fps costs the helper ~4%,
+ffmpeg ~19% and Chrome ~30%.
 An empty lane screen (Xvfb + openbox) is about 37 MB.
 
 ## Setup
@@ -170,7 +177,11 @@ screen is remote, and every call reaches it through the lane's pin like any
 other lane screen (`callPinnedRuntimeAction`, the `mac_desktop` action domain,
 the stream over the sync socket). "Bring to my screen", claim, release and
 present do not exist on Linux: every window on the lane's screen is already
-the lane's. A watch-only client (the phone, a browser tab without control)
+the lane's. So the pane's **Add app** opens an app on the screen instead (an
+app name, a path or a web address, with Chrome, Firefox and Terminal one click
+away; `macDesktop.open`), and a window card offers **Close**
+(`macDesktop.closeWindow`) where a Mac card offers Release. Both carry the
+lane's pin like every other pane call. A watch-only client (the phone, a browser tab without control)
 gets **Stop** through `macDesktop.stopSeat`, as on Windows.
 
 ## Not in scope

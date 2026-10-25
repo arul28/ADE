@@ -781,6 +781,7 @@ jobs:
           rustup target add "$rust_target"
           log="$RUNNER_TEMP/linux-desktop-driver.log"
           # Detached so it outlives this step; "Finish" below waits for it.
+          # shellcheck disable=SC2016 # $1/$2 expand in the child shell.
           setsid nohup bash -c 'node apps/desktop/scripts/build-linux-desktop-driver.mjs --target "$1" > "$2" 2>&1; echo $? > "$2.exit"' _ "${{ matrix.target }}" "$log" > /dev/null 2>&1 &
           echo "ADE_REQUIRE_LINUX_DESKTOP_DRIVER=1" >> "$GITHUB_ENV"
 
@@ -931,7 +932,7 @@ jobs:
             exit 1
           fi
           node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
-          if [[ "${{ matrix.target }}" == linux-* ]]; then
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
             grep -q '^\./native/ade-desktop-driver$' "$archive_listing"
           fi
 

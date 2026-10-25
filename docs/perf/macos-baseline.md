@@ -1325,9 +1325,12 @@ rows: the ceilings are proposals and need approval.
 | Live stream, scrolling: ffmpeg (libx264 ultrafast) | same | 22% | 25% | proposed 40% |
 | Frame capture, 1920x1080 | helper timing log | 11–18 ms (GetImage) | 2 ms (MIT-SHM) | proposed 5 ms |
 | Recording while scrolling: ffmpeg | 10 s window, 30 fps MP4 | 44% (superfast) | 35% (ultrafast) | proposed 50% |
+| Chrome launched by `ade screen open`, scrolling | 10 s window, stream reader attached | 132% (SwiftShader compositing) | 28–34% (`--disable-gpu-compositing`) | proposed 60% |
 
-Chrome itself is the large cost on such a box (115–165% of a core while
-scrolling or animating, ~710 MB PSS for one tab), because it draws in software;
-nothing in ADE's path comes close. Over the ADE account relay from a Mac, the
+Chrome is still the largest cost on such a box (~710 MB PSS for one tab).
+Before, it composited every frame through SwiftShader, a software GL, at
+115–165% of a core; the helper now launches Chromium and Electron apps with
+software compositing, which draws the same pixels for about a quarter of the
+CPU at the same delivered frame rate (25 fps), and WebGL still works. Over the ADE account relay from a Mac, the
 desktop app pinned to the box decoded 38 H.264 frames in a 9 s scroll window
 at ~0.8 Mb/s.
