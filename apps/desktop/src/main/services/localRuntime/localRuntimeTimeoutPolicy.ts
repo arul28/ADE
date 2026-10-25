@@ -268,6 +268,13 @@ export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_
 export const LANE_ENV_SETUP_TIMEOUT_MS = 45 * 60_000;
 export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT_MS - 30_000;
 
+/**
+ * Archive batches: one lane at its full git bound (LANE_GIT_WRITE_ACTION_TIMEOUT_MS)
+ * plus the time the batch's other items had before this change.
+ */
+export const ARCHIVE_RESTORE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000;
+export const ARCHIVE_DELETE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
@@ -295,8 +302,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["lane.applyTemplate", LANE_ENV_SETUP_TIMEOUT_MS],
   // Archive restore/delete walk a batch one item at a time, and a lane in the
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
-  ["archive.restore", 10 * 60_000],
-  ["archive.delete", 15 * 60_000],
+  ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
+  ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +

@@ -337,20 +337,21 @@ export function ArchiveSection() {
     setBusy(true);
     try {
       let result = await deleteInBatches(refs, pin);
-      // A lane with uncommitted files is refused unless forced. Ask once, by
-      // name, instead of silently discarding someone's unfinished work.
-      // Match the refusal itself, not "could not verify whether…", which
-      // `force` would not get past either.
+      // A lane with unsaved work (uncommitted files, or submodule commits no
+      // remote has) is refused unless forced. Ask once, by name, instead of
+      // silently discarding someone's unfinished work. Match the refusal's
+      // own advice, not "could not verify whether…", which `force` would not
+      // get past either.
       const dirtyLanes = result.failed.filter(
-        (item) => item.kind === "lane" && /has uncommitted changes/i.test(item.error),
+        (item) => item.kind === "lane" && /enable force delete/i.test(item.error),
       );
       if (dirtyLanes.length > 0) {
         const names = dirtyLanes
           .map((ref) => items?.find((item) => item.kind === "lane" && item.id === ref.id)?.title ?? ref.id)
           .join(", ");
         const force = await confirmDialog({
-          title: `${names} has uncommitted changes`,
-          message: "Deleting loses them. Committed work stays on the branch.",
+          title: `${names} has unsaved work`,
+          message: "Deleting loses it. Committed work stays on the branch.",
           confirmLabel: "Delete anyway",
           destructive: true,
         });

@@ -63,17 +63,24 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
     // `path = .` names the lane itself, and a path outside it is not a
     // submodule of this lane.
     if (submodulePath === repoPath || !isWithinDir(repoPath, submodulePath)) continue;
-    if (!fs.existsSync(submodulePath)) continue;
+    // Git skips a path that is not a folder; it is not a submodule checkout.
+    if (!fs.statSync(submodulePath, { throwIfNoEntry: false })?.isDirectory()) continue;
     const realSubmodulePath = realPathOrNull(submodulePath);
     if (!realSubmodulePath || realSubmodulePath === realRepoPath || !isWithinDir(realRepoPath, realSubmodulePath)) {
       return `Submodule ${relPath} points outside the lane, so ADE cannot check it.`;
     }
     if (!fs.existsSync(path.join(submodulePath, ".git"))) {
       // Git skips the folder of an uninitialized submodule in its own checks,
-      // and `worktree remove` deletes whatever is in it.
-      return fs.readdirSync(submodulePath).length > 0
-        ? `Submodule folder ${relPath} holds files that are not in any repository.`
-        : null;
+      // and `worktree remove` deletes whatever is in it. An empty one holds
+      // nothing; check the next submodule.
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(submodulePath);
+      } catch (error) {
+        return `ADE could not check submodule folder ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (entries.length > 0) return `Submodule folder ${relPath} holds files that are not in any repository.`;
+      continue;
     }
     if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
       return `Submodule ${relPath} is nested too deep for ADE to check.`;

@@ -3,6 +3,7 @@ import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
+  longRunningLocalRuntimeActionTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
@@ -127,7 +128,12 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
   const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
-  return channel ? ipcInvokeTimeoutMs(channel) : null;
+  if (channel) return ipcInvokeTimeoutMs(channel);
+  // An action with a long budget and no IPC twin (chat.cancelLaunch, say) gets
+  // the same renderer budget on a remote machine as on this one.
+  return longRunningLocalRuntimeActionTimeoutMs(`${request.domain}.${request.action}`) === null
+    ? null
+    : localRuntimeActionIpcTimeoutMs(request.domain, request.action);
 }
 
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
@@ -393,9 +399,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.appListOnboardingProjectChats:
       return 40_000;
     case IPC.archiveRestore:
-      return 10 * 60_000;
+      return localRuntimeActionIpcTimeoutMs("archive", "restore");
     case IPC.archiveDelete:
-      return 15 * 60_000;
+      return localRuntimeActionIpcTimeoutMs("archive", "delete");
     // Streams up to 50 MB to a paired host over HTTP. The upload client's own
     // budget is 5 minutes, so on the 30s default the renderer reported a
     // failure — and dropped the pending attachment chip — for an upload that

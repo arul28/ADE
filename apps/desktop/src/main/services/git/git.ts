@@ -12,6 +12,7 @@ import { GIT_TOOLCHAIN_MISSING, XCODE_LICENSE_NOT_AGREED } from "../../../shared
 import { GIT_CONFIG_OVERRIDE_ARGS, GIT_NO_PROMPT_ENV, GIT_READ_ENV } from "./gitReadEnv";
 
 export { GIT_REMOTE_FETCH_TIMEOUT_MS, GIT_TREE_WRITE_TIMEOUT_MS } from "./gitTimeouts";
+export { branchNameFromHeadRef } from "./gitRefs";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
@@ -572,17 +573,6 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
     invalidateGitRepoCache(knownGitCommonDir(opts.cwd));
   }
   return result;
-}
-
-/**
- * The branch name in the output of `git rev-parse --symbolic-full-name HEAD` or
- * `git symbolic-ref HEAD`. Read the full ref, never the short form: when a tag
- * has the branch's name, `--abbrev-ref` and `--short` print `heads/<name>`.
- * Any other value, such as `HEAD` for a detached HEAD, comes back as it is.
- */
-export function branchNameFromHeadRef(stdout: string): string {
-  const ref = stdout.trim();
-  return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
 }
 
 /** The commit sha `ref` resolves to in `cwd`, or null when it does not resolve. */

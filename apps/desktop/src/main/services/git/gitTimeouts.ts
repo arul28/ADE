@@ -10,13 +10,18 @@
  */
 export const GIT_TREE_WRITE_TIMEOUT_MS = 15 * 60_000;
 
-/** Bound for a fetch. A busy or distant remote can take minutes on a large repo. */
+/**
+ * Bound for a fetch. A busy or distant remote can take minutes on a large repo.
+ * The lane Fetch button keeps its own shorter budget (GIT_FETCH_TIMEOUT_MS in
+ * shared/defaultRemoteLaneBase.ts), because new-lane creation waits on it.
+ */
 export const GIT_REMOTE_FETCH_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * How long a caller waits for a lane action that runs these commands: creating
- * a lane fetches its base and then writes the tree, and a delete may remove a
- * tree twice. A caller that gives up sooner reports a failure while git is
- * still writing, and a retry then finds a half-made lane.
+ * How long a caller waits for a lane action that runs these commands. It covers
+ * the most git work one of them does: two fetches and two tree writes (a lane
+ * from a PR branch fetches twice before its `worktree add`; a delete may
+ * remove a tree twice). A caller that gives up sooner reports a failure while
+ * git is still writing, and a retry then finds a half-made lane.
  */
-export const LANE_GIT_WRITE_ACTION_TIMEOUT_MS = GIT_REMOTE_FETCH_TIMEOUT_MS + GIT_TREE_WRITE_TIMEOUT_MS + 2 * 60_000;
+export const LANE_GIT_WRITE_ACTION_TIMEOUT_MS = 2 * GIT_REMOTE_FETCH_TIMEOUT_MS + 2 * GIT_TREE_WRITE_TIMEOUT_MS + 2 * 60_000;

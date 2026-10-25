@@ -168,7 +168,7 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, GIT_TREE_WRITE_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -4756,15 +4756,18 @@ export function createPrService({
       ? parseRemoteBranchSha(lsRemote.stdout, args.headBranch)
       : null;
 
-    // When git could not reach the remote, its error is the answer, not
-    // "branch not found".
-    let remoteFailure = lsRemote.exitCode === 0 ? "" : lsRemote.stderr.trim();
+    // When git could not reach the remote at all, its error is the answer,
+    // not "branch not found". A remote that answered without the branch
+    // settles it, whatever a later fetch says.
+    let remoteFailure = "";
     if (!remoteSha) {
       const fetched = await runGit(["fetch", "--prune", "origin"], {
         cwd: projectRoot,
         timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
       });
-      if (fetched.exitCode !== 0) remoteFailure = fetched.stderr.trim() || remoteFailure;
+      if (lsRemote.exitCode !== 0 && fetched.exitCode !== 0) {
+        remoteFailure = fetched.stderr.trim() || lsRemote.stderr.trim();
+      }
       const cached = await runGit(["rev-parse", "--verify", `refs/remotes/${remoteRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
@@ -9534,7 +9537,7 @@ export function createPrService({
     try {
       await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, sequentialStartSha], {
         cwd: projectRoot,
-        timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+        timeoutMs: 60_000,
       });
 
       for (const laneId of sourceLaneIds) {

@@ -23,6 +23,7 @@ import {
 import { terminateProcessTree } from "../../shared/processExecution";
 import { userProcessEnv } from "../../shared/hostRuntimeEnv";
 import { GIT_CONFIG_OVERRIDE_ARGS, GIT_NO_PROMPT_ENV, GIT_READ_ENV } from "../../git/gitReadEnv";
+import { branchNameFromHeadRef } from "../../git/gitRefs";
 
 /** The env and leading options ADE's own git runner uses, for the tools that spawn git directly. */
 const toolGitEnv = (): NodeJS.ProcessEnv => ({ ...process.env, ...GIT_READ_ENV, ...GIT_NO_PROMPT_ENV });
@@ -2466,7 +2467,7 @@ function createGitStatusTool(cwd: string) {
           toolGitArgs(["rev-parse", "--symbolic-full-name", "HEAD"]),
           { cwd, timeout: 5_000, env: toolGitEnv() }
         );
-        return { branch: branch.trim().replace(/^refs\/heads\//, ""), status: stdout.trim(), clean: stdout.trim() === "" };
+        return { branch: branchNameFromHeadRef(branch), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
         return { error: `git status failed: ${getErrorMessage(err)}` };
       }

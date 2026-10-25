@@ -42,10 +42,6 @@ function stripGitStatusPath(raw: string): string {
   return raw.trim();
 }
 
-function parseNumstatZ(stdout: string): Array<{ addRaw: string; delRaw: string; filePath: string }> {
-  return parseNumstatRecordsZ(stdout).map(({ addRaw, delRaw, path: filePath }) => ({ addRaw, delRaw, filePath }));
-}
-
 function parsePorcelainStatusZ(stdout: string): DiffChanges {
   const unstaged: FileChange[] = [];
   const staged: FileChange[] = [];
@@ -89,7 +85,7 @@ function parsePorcelainStatusZ(stdout: string): DiffChanges {
 
 function applyNumstat(changes: FileChange[], stdout: string): void {
   const byPath = new Map(changes.map((change) => [change.path, change]));
-  for (const { addRaw, delRaw, filePath } of parseNumstatZ(stdout)) {
+  for (const { addRaw, delRaw, path: filePath } of parseNumstatRecordsZ(stdout)) {
     const change = byPath.get(filePath);
     if (!change) continue;
     const additions = Number.parseInt(addRaw, 10);

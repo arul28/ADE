@@ -1,12 +1,14 @@
+// The env and leading options for every git process ADE starts, reads and
+// writes alike. The git runner (git.ts) applies them; a caller that spawns git
+// itself (the AI git tools) imports them from here. A leaf module, so such a
+// caller does not import the git runner.
+
 /**
  * Env for a git process ADE starts beside the user's own git commands. Without
  * it, a read such as `git status` takes `.git/index.lock` to save its refreshed
  * index, and a commit or checkout the user runs at that moment fails with
  * "Unable to create index.lock". It changes only the locks git calls optional;
  * a command that must write the index still locks it.
- *
- * A leaf module, so a caller that only spawns git itself does not import the
- * git runner.
  */
 export const GIT_READ_ENV = { GIT_OPTIONAL_LOCKS: "0" } as const;
 

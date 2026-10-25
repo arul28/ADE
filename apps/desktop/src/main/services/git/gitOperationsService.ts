@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { branchNameFromHeadRef, getHeadSha, GIT_REMOTE_FETCH_TIMEOUT_MS, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -514,7 +514,7 @@ export function createGitOperationsService({
       throw new AdeExpectedError("Lane has uncommitted changes. Commit or stash before sync.", "user");
     }
 
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS });
+    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);

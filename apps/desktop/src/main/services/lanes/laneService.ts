@@ -6984,10 +6984,10 @@ export function createLaneService({
         if (previousBranchRef && previousBranchRef !== targetBranchRef) {
           try {
             await runGitOrThrow(["checkout", "--ignore-other-worktrees", previousBranchRef], {
-          cwd: row.worktree_path,
-          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
-        });
+              cwd: row.worktree_path,
+              timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+              timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+            });
           } catch (rollbackErr) {
             logger.warn("laneService.switchBranch_git_rollback_failed", {
               laneId: row.id,
@@ -9231,7 +9231,12 @@ export function createLaneService({
               // A large worktree (node_modules, say) can take minutes to walk, and a
               // timeout mid-remove leaves a half-deleted worktree that blocks
               // future deletes.
-              const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
+              // English messages, so the submodule refusal below matches on any locale.
+              const removeRes = await runGit(removeArgs, {
+                cwd: projectRoot,
+                timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+                env: { LC_ALL: "C" },
+              });
               if (removeRes.exitCode === 0) {
                 if (!fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);
