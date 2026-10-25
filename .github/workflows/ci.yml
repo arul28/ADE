@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
 
       # One cache per dependency group, so each job restores only the
       # node_modules it uses, and a PR that changes one lockfile saves only
@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -172,7 +172,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -196,7 +196,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -230,7 +230,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -245,7 +245,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -270,7 +270,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -286,7 +286,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -307,7 +307,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -332,7 +332,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -360,7 +360,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -377,7 +377,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -395,7 +395,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - run: cd apps/tunnel-relay && npm ci
       - run: cd apps/tunnel-relay && npm run typecheck
 
@@ -407,7 +407,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - run: cd apps/tunnel-relay && npm ci
       - name: Run fake and workerd relay tests
         run: cd apps/tunnel-relay && npm test
@@ -423,7 +423,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - run: cd apps/account-directory && npm ci
       - run: cd apps/account-directory && npm run typecheck
       - run: cd apps/account-directory && npm run build
@@ -436,7 +436,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - run: cd apps/account-directory && npm ci
       - run: cd apps/account-directory && npm test
 
@@ -447,7 +447,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -488,7 +488,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24  # embedded in the runtime binary; matches release-core.yml
 
       # npm's download cache, restored on every run but saved only from main.
       # setup-node's `cache: npm` saved a separate copy for every PR (a PR's
@@ -573,7 +573,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
 
       # Caches the installed node_modules, not npm's download cache: on
       # Windows the slow part of `npm ci` is writing ~100k files, which took
@@ -901,7 +901,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
       - run: node scripts/validate-docs.mjs
       # Asserts that every platform-gated test assertion has a runner in this
       # workflow that actually executes it, and bans the vacuous
