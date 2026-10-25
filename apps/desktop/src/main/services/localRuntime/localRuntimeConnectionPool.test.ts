@@ -50,6 +50,7 @@ import {
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
 } from "./localRuntimeTimeoutPolicy";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 type RawPendingRequest = {
   resolve: (value: unknown) => void;
@@ -2408,7 +2409,7 @@ describe("local runtime connection pool", () => {
       expect.objectContaining({
         arguments: expect.objectContaining({ domain: "lane", action: "delete" }),
       }),
-      { timeoutMs: 4 * 60_000 },
+      { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS },
     );
 
     resolveCall({ domain: "lane", action: "delete", result: null, statusHints: {} });

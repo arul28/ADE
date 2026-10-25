@@ -89,7 +89,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { safeSegment } from "../shared/packLegacyUtils";
-import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -316,7 +316,7 @@ async function readCommitMessagesSince(cwd: string, mergeBaseRef: string | null,
 }
 
 async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string): Promise<Set<string>> {
-  const res = await runGit(["diff", "--name-only", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
+  const res = await runGit(["diff", "--name-only", "-z", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
   if (res.exitCode !== 0) return new Set<string>();
   return new Set(parseDiffNameOnly(res.stdout));
 }
@@ -359,7 +359,7 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
   insertions: number;
   deletions: number;
 }> {
-  const res = await runGit(["diff", "--numstat", `${mergeBase}..${headSha}`], {
+  const res = await runGit(["diff", "--numstat", "-z", `${mergeBase}..${headSha}`], {
     cwd,
     timeoutMs: 15_000
   });
@@ -374,13 +374,9 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
   const files = new Set<string>();
   let insertions = 0;
   let deletions = 0;
-  for (const rawLine of res.stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const [insRaw, delRaw, file] = line.split(/\t/);
-    if (!file) continue;
+  for (const { addRaw, delRaw, path: file } of parseNumstatRecordsZ(res.stdout)) {
     files.add(file);
-    const ins = Number(insRaw);
+    const ins = Number(addRaw);
     const del = Number(delRaw);
     if (Number.isFinite(ins)) insertions += ins;
     if (Number.isFinite(del)) deletions += del;
@@ -1167,8 +1163,8 @@ export function createConflictService({
     const hasMerge = gitDir.length > 0 && fs.existsSync(path.join(gitDir, "MERGE_HEAD"));
     const kind: GitConflictState["kind"] = hasRebase ? "rebase" : hasMerge ? "merge" : null;
 
-    const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
-    const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
+    const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
 
     let mergeHeadSha: string | null = null;
     if (kind === "merge" && gitDir.length) {
@@ -2465,14 +2461,14 @@ export function createConflictService({
 
       const laneDiff = await (async () => {
         if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.laneHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.base}..${diffMode.laneHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
           return res.exitCode === 0 ? truncate(`Lane diff (${filePath})`, res.stdout, MAX_DIFF_CHARS) : "";
         }
         if (diffMode.kind === "base-ref") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.baseRef}..${diffMode.laneHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.baseRef}..${diffMode.laneHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
@@ -2483,7 +2479,7 @@ export function createConflictService({
 
       const peerDiff = await (async () => {
         if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.peerHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.base}..${diffMode.peerHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
@@ -3651,7 +3647,7 @@ export function createConflictService({
     const outputLogPath = path.join(runDir, "output.log");
     await fs.promises.writeFile(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
 
-    const diffResult = await runGit(["diff", "--binary"], {
+    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
       cwd: cwdLane.worktreePath,
       timeoutMs: 45_000,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
@@ -4172,7 +4168,7 @@ export function createConflictService({
     if (!run) throw new Error(`External resolver run not found: ${runId}`);
 
     const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
-    const diffResult = await runGit(["diff", "--binary"], {
+    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
       cwd: cwdLane.worktreePath,
       timeoutMs: 45_000,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
@@ -4692,7 +4688,7 @@ export function createConflictService({
 
       // Rebase failed — parse conflicting files and abort
       const statusRes = await runGit(
-        ["diff", "--name-only", "--diff-filter=U"],
+        ["diff", "--name-only", "-z", "--diff-filter=U"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       const conflictingFiles = statusRes.exitCode === 0

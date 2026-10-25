@@ -66,7 +66,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
-      "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
+      "cancelDelete", "cancelGitWrite", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
       "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
       "detachJiraIssueFromSession",

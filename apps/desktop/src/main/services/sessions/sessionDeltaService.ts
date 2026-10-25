@@ -111,23 +111,14 @@ export function createSessionDeltaService(args: {
     const diffArgs = completedWithoutCommitDelta ? null : useCommitRange ? [startSha, endSha] : [startSha || "HEAD"];
 
     const numStatRes = diffArgs
-      ? await runGit(["diff", "--numstat", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
-      : { stdout: "", exitCode: 0 };
-    const nameRes = diffArgs
-      ? await runGit(["diff", "--name-only", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
+      ? await runGit(["diff", "--numstat", "-z", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
       : { stdout: "", exitCode: 0 };
 
     const parsedStat = parseNumStat(numStatRes.stdout);
     const touched = new Set<string>([...parsedStat.files]);
 
-    if (nameRes.exitCode === 0) {
-      for (const line of nameRes.stdout.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
-        touched.add(line);
-      }
-    }
-
     if (!useCommitRange && !completedWithoutCommitDelta) {
-      const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+      const statusRes = await runGit(["status", "--porcelain=v1", "-z"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
       if (statusRes.exitCode === 0) {
         for (const rel of parsePorcelainPaths(statusRes.stdout)) {
           touched.add(rel);

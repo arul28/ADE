@@ -288,6 +288,7 @@ export const IPC = {
   lanesUnarchive: "ade.lanes.unarchive",
   lanesDelete: "ade.lanes.delete",
   lanesDeleteCancel: "ade.lanes.delete.cancel",
+  lanesCancelGitWrite: "ade.lanes.cancelGitWrite",
   lanesRevealWorktree: "ade.lanes.revealWorktree",
   lanesRevealLeftoverWorktree: "ade.lanes.revealLeftoverWorktree",
   lanesDeleteLeftoverWorktree: "ade.lanes.deleteLeftoverWorktree",
