@@ -7884,7 +7884,7 @@ export function createPrService({
         const deleteFlag = state === "merged" ? "-D" : "-d";
         const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
         if (deleted.exitCode === 0) result.localDeleted = true;
-        else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
+        else result.localError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete local branch ${branchName}`;
       }
     }
 
@@ -7901,7 +7901,7 @@ export function createPrService({
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
           const deleted = await runGit(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
           if (deleted.exitCode === 0) result.remoteDeleted = true;
-          else result.remoteError = deleted.stderr || deleted.stdout || `Failed to delete remote branch ${branchName}`;
+          else result.remoteError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete remote branch ${branchName}`;
         }
       }
     }

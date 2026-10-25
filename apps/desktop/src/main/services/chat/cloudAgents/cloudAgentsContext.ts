@@ -174,7 +174,8 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       timeoutMs: PUSH_TIMEOUT_MS,
     }).catch((error: unknown) => ({ exitCode: 1, stdout: "", stderr: String(error) }));
     if (pushed.exitCode === 0) return true;
-    const stderr = pushed.stderr.trim().slice(-300);
+    // Redacted before the tail is cut, so a cut cannot strand a URL query.
+    const stderr = redactGitOutput(pushed.stderr.trim()).slice(-300);
     // Rejected because origin is ahead: fine when the lane holds nothing origin
     // lacks (the cloud agent pushed past it), since the VM checks out origin.
     // A lane with commits of its own would start the agent without them.
@@ -201,9 +202,9 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       }
     }
     if (options.onFailure === "throw") {
-      throw new Error(`Could not push ${lane.branchRef} to origin, so the cloud VM cannot check it out: ${redactGitOutput(stderr) || "git push failed"}`);
+      throw new Error(`Could not push ${lane.branchRef} to origin, so the cloud VM cannot check it out: ${stderr || "git push failed"}`);
     }
-    logger.warn("cloud_agents.lane_branch_push_failed", { laneId: lane.id, branch: lane.branchRef, stderr: redactGitOutput(stderr) });
+    logger.warn("cloud_agents.lane_branch_push_failed", { laneId: lane.id, branch: lane.branchRef, stderr });
     return false;
   };
 

@@ -452,20 +452,37 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
 
   child.stdout?.on("data", readStdoutLine);
   const readStderrLine = createLineSplitter((line) => emitDiagnosticLine(line, "stderr"));
-  child.stderr?.on("data", (chunk: Buffer | string) => {
-    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+  /**
+   * Stderr is redacted a whole line at a time: a secret split across two
+   * chunks (`?state` then `=value`) is matched only once both halves arrive.
+   * The unfinished last line joins the tail when the process ends.
+   */
+  let stderrPartial = "";
+  const appendStderr = (text: string) => {
     const safe = redactAcpDiagnosticText(text);
     stderrTail = `${stderrTail}${safe}`.slice(-STDERR_TAIL_LIMIT);
     const trimmed = safe.trim();
     if (trimmed.length) logEvent("warn", "agent_chat.acp_stderr", { text: trimmed.slice(0, 1_000) });
-    if (diagnosticLineHandlers.size) readStderrLine(text);
+  };
+  const flushStderrPartial = () => {
+    if (stderrPartial) appendStderr(stderrPartial);
+    stderrPartial = "";
+  };
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    const text = `${stderrPartial}${typeof chunk === "string" ? chunk : chunk.toString("utf8")}`;
+    const end = text.lastIndexOf("\n") + 1;
+    stderrPartial = text.slice(end);
+    if (end > 0) appendStderr(text.slice(0, end));
+    if (diagnosticLineHandlers.size) readStderrLine(chunk);
   });
   child.on("error", (error) => {
     logEvent("error", "agent_chat.acp_process_error", { error: error.message });
+    flushStderrPartial();
     settleExit({ code: null, signal: null, stderrTail: `${stderrTail}\n${error.message}`.trim() });
   });
   child.on("exit", (code, signal) => {
     logEvent("info", "agent_chat.acp_process_exit", { code, signal });
+    flushStderrPartial();
     settleExit({ code, signal, stderrTail });
   });
 
@@ -481,7 +498,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       initializeResult = value;
     },
     isAlive: () => !disposed && !exited,
-    readStderrTail: () => stderrTail,
+    readStderrTail: () => (stderrPartial ? `${stderrTail}${redactAcpDiagnosticText(stderrPartial)}`.slice(-STDERR_TAIL_LIMIT) : stderrTail),
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {

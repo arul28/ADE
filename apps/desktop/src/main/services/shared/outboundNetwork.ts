@@ -133,8 +133,10 @@ async function addSystemCertificates(logger?: NetworkLogger): Promise<number> {
 
 function readSystemCertificatesOffThread(): Promise<string[]> {
   return new Promise((resolve, reject) => {
+    // Referenced on purpose: a short CLI command awaits this read, and an
+    // unref'd worker would let the process exit before the command runs. The
+    // worker ends itself once it has posted.
     const worker = new Worker(SYSTEM_CA_WORKER_SOURCE, { eval: true });
-    worker.unref();
     worker.once("message", (message: { ok: boolean; certificates?: string[]; error?: string }) => {
       void worker.terminate();
       if (message.ok) resolve(message.certificates ?? []);
