@@ -10,6 +10,8 @@
  * differ only by an option.
  */
 
+import { BUILT_IN_BROWSER_SEARCH_ENGINES, browserSearchUrl } from "../../shared/types/builtInBrowser";
+
 /** `mailto:`, `ade://`, `https://` — anything that already names a scheme. */
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 const HTTP_SCHEME_RE = /^https?:/i;
@@ -61,6 +63,12 @@ export type BrowserUrlCompletionOptions = {
    */
   scheme?: "any" | "http";
   hostRule?: "loose" | "strict";
+  /**
+   * The search URL for `fallback: "search"`, `%s` where the query goes, from
+   * the person's search engine setting. Must already be validated
+   * (`resolveBrowserSearchTemplate`); omitted means Google.
+   */
+  searchTemplate?: string;
 };
 
 /**
@@ -81,7 +89,7 @@ export function completeBrowserUrl(
   if (isLoopbackAuthority(trimmed)) return `http://${trimmed}`;
   if (looksLikeBareHost(trimmed, options.hostRule)) return `https://${trimmed}`;
   if (options.fallback === "search") {
-    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+    return browserSearchUrl(options.searchTemplate ?? BUILT_IN_BROWSER_SEARCH_ENGINES[0].template, trimmed);
   }
   return options.fallback === "passthrough" ? trimmed : null;
 }

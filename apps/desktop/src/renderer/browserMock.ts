@@ -166,6 +166,16 @@ import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
+const MOCK_TERMINAL_SHELL_SETTINGS = {
+  defaultShellId: null,
+  savedShellMissing: false,
+  automaticShell: "/bin/zsh",
+  shells: [
+    { id: "/bin/zsh", label: "zsh", path: "/bin/zsh" },
+    { id: "/bin/bash", label: "bash", path: "/bin/bash" },
+    { id: "/opt/homebrew/bin/fish", label: "fish", path: "/opt/homebrew/bin/fish" },
+  ],
+};
 
 const noop = () => () => {};
 /**
@@ -8372,6 +8382,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      listTrustedCertificates: resolved({ certificates: [] }),
+      revokeTrustedCertificates: resolvedArg({ certificates: [] }),
       browserSettings: createMockBrowserSettings(),
       agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
@@ -8952,6 +8964,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       write: resolvedArg(undefined),
       resize: resolvedArg(undefined),
       dispose: resolvedArg(undefined),
+      getShellSettings: resolved(MOCK_TERMINAL_SHELL_SETTINGS),
+      setDefaultShell: resolvedArg(MOCK_TERMINAL_SHELL_SETTINGS),
       setDataSubscriptions: resolvedArg(undefined),
       onData: noop,
       onExit: noop,

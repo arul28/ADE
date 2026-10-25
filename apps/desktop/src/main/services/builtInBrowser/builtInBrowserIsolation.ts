@@ -76,11 +76,13 @@ export function createBuiltInBrowserIsolatedSessions(args: {
       live.set(isolation.partition, { session: isolatedSession, downloadListener });
     },
 
-    /** Wipe every sign-in no live tab uses any more. */
-    release(livePartitions: ReadonlySet<string>): void {
+    /** Wipe every sign-in no live tab uses any more. Returns the partitions wiped. */
+    release(livePartitions: ReadonlySet<string>): string[] {
+      const released: string[] = [];
       for (const [partition, { session: isolatedSession, downloadListener }] of live) {
         if (livePartitions.has(partition)) continue;
         live.delete(partition);
+        released.push(partition);
         if (downloadListener) {
           try {
             isolatedSession.removeListener("will-download", downloadListener);
@@ -97,6 +99,7 @@ export function createBuiltInBrowserIsolatedSessions(args: {
         });
         wiping.set(partition, wipe);
       }
+      return released;
     },
   };
 }

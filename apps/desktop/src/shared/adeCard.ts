@@ -45,6 +45,8 @@ export type AdeCardVariant =
   | "pr_stack_land"
   /** A PR Watch / Ship wake: what changed on the PR, and that the agent was told. */
   | "pr_watch_wake"
+  /** A terminal watch wake: what a watched ADE terminal printed, and that the agent was told. */
+  | "terminal_watch_wake"
   | "claude_session_quota"
   /** A chat's new-lane setup record (fetch, checkout, environment, start agent). */
   | "lane_setup"
@@ -160,6 +162,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_conflict",
   "pr_stack_land",
   "pr_watch_wake",
+  "terminal_watch_wake",
   "claude_session_quota",
   "cross_machine_batch_move_approval",
   "lane_setup",

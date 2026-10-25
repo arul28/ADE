@@ -74,6 +74,7 @@ const NON_DIRECTIVE_METADATA_KEYS = [
   "agentRelay",
   "hostContinuation",
   "prWatchWake",
+  "terminalWatchWake",
 ] as const;
 
 /**
@@ -129,6 +130,8 @@ const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
   "agentRelay",
   // PR Watch telling the agent about its PR: the watch wrote it, not the user.
   "prWatchWake",
+  // A terminal watch relaying new output: the watch wrote it, not the user.
+  "terminalWatchWake",
 ] as const;
 
 /**

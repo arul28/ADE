@@ -287,6 +287,7 @@ import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
 import { appleEventAddresses } from "../apple/appleDeviceState";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
+import { useChatTerminalWatches } from "./ChatTerminalWatches";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
@@ -16270,6 +16271,13 @@ export function AgentChatPane({
     // re-subscribes when the chat's machine resolves or changes.
   }, [selectedSessionId, chatRuntimePinKey, shellsReloadNonce, isPersonalPane]);
 
+  // The chat's terminal watches, read on (and stopped on) the chat's machine.
+  const chatTerminalWatches = useChatTerminalWatches(
+    isPersonalPane ? null : selectedSessionId,
+    chatRuntimePin,
+    chatRuntimePinKey,
+  );
+
   const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
   const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
   // Held while its five flags hold: an inline object here is a fresh prop on
@@ -16342,6 +16350,8 @@ export function AgentChatPane({
       shellsPin={chatRuntimePin}
       shellsLoadError={shellsLoadError}
       onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
+      terminalWatches={chatTerminalWatches.watches}
+      onStopTerminalWatch={chatTerminalWatches.stop}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}

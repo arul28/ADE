@@ -63,6 +63,8 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatChildRoster } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
+import { TerminalWatchRow } from "./ChatTerminalWatches";
+import type { TerminalWatchSummary } from "../../../shared/terminalWatch";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
@@ -1166,6 +1168,8 @@ export function ChatSubagentsPanel({
   shellsPin = null,
   shellsLoadError = false,
   onRetryShells,
+  terminalWatches = [],
+  onStopTerminalWatch,
 }: {
   sessionId?: string | null;
   snapshots: ChatSubagentSnapshot[];
@@ -1250,6 +1254,9 @@ export function ChatSubagentsPanel({
   /** The shells read failed: state it with a retry, never an empty section. */
   shellsLoadError?: boolean;
   onRetryShells?: () => void;
+  /** The chat's live terminal watches (`ade terminal watch`), each with Stop. */
+  terminalWatches?: TerminalWatchSummary[];
+  onStopTerminalWatch?: (watch: TerminalWatchSummary) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [paneUi, setPaneUi] = useState<PaneUiStorageState>(() => readPaneUiState(sessionId));
@@ -1632,8 +1639,9 @@ export function ChatSubagentsPanel({
   const hasWorkflowRuns = workflowTaskIds.size > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
+  const hasWatches = terminalWatches.length > 0;
   const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasWorkflowRuns || shells.length > 0
-    || shellsLoadError || hasBackground || hasScheduled;
+    || shellsLoadError || hasWatches || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1752,6 +1760,24 @@ export function ChatSubagentsPanel({
             loadError={shellsLoadError}
             onRetry={onRetryShells}
           />
+        </section>
+      ) : null}
+
+      {/* ── Watching (terminals that wake this chat on new output) ── */}
+      {hasWatches ? (
+        <section className="pb-3" data-testid="chat-info-terminal-watches">
+          <SectionHeader
+            label="Watching"
+            hint={`${terminalWatches.length}`}
+            tone="shells"
+            emphasized
+            sticky={stickyHeaders}
+          />
+          <div className="space-y-px px-2 pb-1">
+            {terminalWatches.map((watch) => (
+              <TerminalWatchRow key={watch.watchId} watch={watch} onStop={onStopTerminalWatch} />
+            ))}
+          </div>
         </section>
       ) : null}
 

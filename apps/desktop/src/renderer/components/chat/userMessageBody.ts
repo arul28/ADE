@@ -12,12 +12,15 @@ import { parseThreadReviewBlock, type ParsedThreadReviewComment } from "../../..
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 type BoardMove = NonNullable<NonNullable<UserMessageEvent["metadata"]>["boardMove"]>;
 type PrWatchWake = NonNullable<NonNullable<UserMessageEvent["metadata"]>["prWatchWake"]>;
+type TerminalWatchWake = NonNullable<NonNullable<UserMessageEvent["metadata"]>["terminalWatchWake"]>;
+/** A watch wake (PR or terminal): only its id and card are drawn. */
+type WatchWake = { watchId: string; card: NonNullable<PrWatchWake["card"] | TerminalWatchWake["card"]> };
 
 type UserMessageBody =
   /** A board move ADE sent on the user's behalf: one centred line, not a bubble. */
   | { kind: "board-move"; move: BoardMove; line: string }
-  /** ADE woke the agent for a PR change: a card, with the agent's text folded away. */
-  | { kind: "wake-card"; wake: PrWatchWake & { card: NonNullable<PrWatchWake["card"]> } }
+  /** ADE woke the agent for a PR change or terminal output: a card, with the agent's text folded away. */
+  | { kind: "wake-card"; wake: WatchWake }
   /** A hidden prompt (a brief, a handoff): only its short display line shows. */
   | { kind: "brief"; text: string }
   /** A send that carried thread comments: the review card, then what the user typed. */
@@ -92,8 +95,8 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
 export function resolveUserMessageBody(event: UserMessageEvent): UserMessageBody {
   const boardMove = event.metadata?.boardMove;
   if (boardMove) return { kind: "board-move", move: boardMove, line: event.displayText?.trim() || event.text };
-  const wake = event.metadata?.prWatchWake;
-  if (wake?.card) return { kind: "wake-card", wake: { ...wake, card: wake.card } };
+  const wake = event.metadata?.prWatchWake ?? event.metadata?.terminalWatchWake;
+  if (wake?.card) return { kind: "wake-card", wake: { watchId: wake.watchId, card: wake.card } };
   const displayText = event.displayText?.trim() ?? "";
   if (event.metadata?.hideFullPrompt === true) return { kind: "brief", text: displayText };
   const pastedPrompt = userMessageHasPastedPrompt(event);

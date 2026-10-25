@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Copy, Eye, EyeSlash, LockKey, Prohibit, Sparkle } from "@phosphor-icons/react";
+import { Copy, Eye, EyeSlash, FileLock, LockKey, Prohibit, Sparkle } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import {
   PROJECT_SECRET_ACTION_QUESTION_ID,
+  PROJECT_SECRET_DELIVERY_OPTIONS,
+  PROJECT_SECRET_DELIVERY_QUESTION_ID,
+  PROJECT_SECRET_FILE_WHERE_IT_GOES,
   PROJECT_SECRET_VALUE_QUESTION_ID,
   PROJECT_SECRET_WHERE_IT_GOES,
   generateProjectSecretValue,
   projectSecretNameError,
+  type ProjectSecretDelivery,
   type ProjectSecretRequestCard,
 } from "../../../shared/projectSecretRequest";
 import { ownQuestionValue } from "../../../shared/pendingInputAnswers";
@@ -158,11 +162,66 @@ function SecretValueField({
   );
 }
 
-function WhereItGoes({ className }: { className?: string }) {
+function WhereItGoes({ className, delivery = "secrets" }: { className?: string; delivery?: ProjectSecretDelivery }) {
+  const Icon = delivery === "file" ? FileLock : LockKey;
   return (
-    <div className={cn("flex items-center gap-1.5 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/45", className)}>
-      <LockKey size={11} weight="regular" className="flex-none" />
-      {PROJECT_SECRET_WHERE_IT_GOES}
+    <div
+      data-testid="project-secret-where"
+      data-delivery={delivery}
+      className={cn("flex items-start gap-1.5 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.45] text-fg/45", className)}
+    >
+      <Icon size={11} weight="regular" className="mt-[2px] flex-none" />
+      {delivery === "file" ? PROJECT_SECRET_FILE_WHERE_IT_GOES : PROJECT_SECRET_WHERE_IT_GOES}
+    </div>
+  );
+}
+
+/**
+ * Where the value goes. The agent's ask is the default; the person decides,
+ * and the line under the field says what that choice means.
+ */
+function DeliveryChoice({
+  value,
+  onChange,
+  disabled,
+  suggested,
+}: {
+  value: ProjectSecretDelivery;
+  onChange: (next: ProjectSecretDelivery) => void;
+  disabled: boolean;
+  suggested: ProjectSecretDelivery;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Where ADE keeps it"
+      data-testid="project-secret-delivery"
+      className={cn("inline-flex rounded-lg border bg-black/15 p-0.5", HAIRLINE)}
+    >
+      {PROJECT_SECRET_DELIVERY_OPTIONS.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            title={option.description}
+            data-testid={`project-secret-delivery-${option.value}`}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[length:calc(var(--chat-font-size)*11.5/14)] transition-colors disabled:opacity-40",
+              selected ? "bg-fg/[0.08] text-fg/88" : "text-fg/45 hover:text-fg/72",
+            )}
+          >
+            {option.label}
+            {option.value === suggested && option.value === "file" ? (
+              <span className="ml-1 text-fg/32">· asked</span>
+            ) : null}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -177,23 +236,29 @@ export function ProjectSecretRequestComposer({
   onSave,
   onKeepExisting,
   onDecline,
+  fileDeliveryAvailable = true,
 }: {
   request: PendingInputRequest;
   card: ProjectSecretRequestCard;
   responding: boolean;
-  onSave: (value: string) => void;
+  onSave: (value: string, delivery: ProjectSecretDelivery) => void;
   onKeepExisting: () => void;
   onDecline: () => void;
+  /** This chat's runtime can write temporary files (it says so by asking where). */
+  fileDeliveryAvailable?: boolean;
 }) {
   const [value, setValue] = useState("");
-  const [replacing, setReplacing] = useState(!card.exists);
+  const [delivery, setDelivery] = useState<ProjectSecretDelivery>(card.delivery);
+  const [replacingExisting, setReplacing] = useState(!card.exists);
+  // A file never touches the project's secret, so there is nothing to keep.
+  const replacing = replacingExisting || delivery === "file";
   const inputRef = useRef<HTMLInputElement | null>(null);
   const canSave = value.trim().length > 0 && !responding;
 
   const save = useCallback(() => {
     if (!canSave) return;
-    onSave(value);
-  }, [canSave, onSave, value]);
+    onSave(value, delivery);
+  }, [canSave, delivery, onSave, value]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (isImeComposing(event)) return;
@@ -251,6 +316,11 @@ export function ProjectSecretRequestComposer({
       ) : null}
 
       <div className="px-3.5 pb-3 pt-2">
+        {fileDeliveryAvailable ? (
+          <div className="pb-2">
+            <DeliveryChoice value={delivery} onChange={setDelivery} disabled={responding} suggested={card.delivery} />
+          </div>
+        ) : null}
         {replacing ? (
           <SecretValueField
             value={value}
@@ -268,7 +338,7 @@ export function ProjectSecretRequestComposer({
             {card.name} already has a value in this project. Keep it, or replace it with a new one.
           </div>
         )}
-        <WhereItGoes className="mt-2" />
+        <WhereItGoes className="mt-2" delivery={delivery} />
       </div>
 
       <div className={cn("flex items-center gap-2.5 border-t px-3 py-2.5", HAIRLINE)}>
@@ -311,7 +381,7 @@ export function ProjectSecretRequestComposer({
           </>
         ) : (
           <>
-            {card.exists ? (
+            {card.exists && delivery !== "file" ? (
               <button
                 type="button"
                 disabled={responding}
@@ -329,7 +399,7 @@ export function ProjectSecretRequestComposer({
               onClick={save}
               className={PRIMARY_BUTTON}
             >
-              {responding ? "Saving…" : card.exists ? "Replace" : "Save"}
+              {responding ? "Saving…" : delivery === "file" ? "Save to file" : card.exists ? "Replace" : "Save"}
             </button>
           </>
         )}
@@ -339,15 +409,20 @@ export function ProjectSecretRequestComposer({
 }
 
 /** The answers payload for each outcome — the value only ever in the secret slot. */
-export function projectSecretSaveAnswers(card: ProjectSecretRequestCard, value: string): Record<string, string> {
+export function projectSecretSaveAnswers(
+  card: ProjectSecretRequestCard,
+  value: string,
+  delivery: ProjectSecretDelivery = "secrets",
+): Record<string, string> {
   return {
-    ...(card.exists ? { [PROJECT_SECRET_ACTION_QUESTION_ID]: "replace" } : {}),
+    [PROJECT_SECRET_DELIVERY_QUESTION_ID]: delivery,
+    ...(card.exists && delivery === "secrets" ? { [PROJECT_SECRET_ACTION_QUESTION_ID]: "replace" } : {}),
     [PROJECT_SECRET_VALUE_QUESTION_ID]: value,
   };
 }
 
 export function projectSecretKeepAnswers(): Record<string, string> {
-  return { [PROJECT_SECRET_ACTION_QUESTION_ID]: "keep" };
+  return { [PROJECT_SECRET_DELIVERY_QUESTION_ID]: "secrets", [PROJECT_SECRET_ACTION_QUESTION_ID]: "keep" };
 }
 
 /**
@@ -378,13 +453,20 @@ export function ProjectSecretRequestReceipt({
     );
   }
   const action = ownQuestionValue(answers, PROJECT_SECRET_ACTION_QUESTION_ID);
+  const deliveryAnswer = ownQuestionValue(answers, PROJECT_SECRET_DELIVERY_QUESTION_ID);
+  const chosen = Array.isArray(deliveryAnswer) ? deliveryAnswer[0] : deliveryAnswer;
+  // An answer with no pick (an older client) went where the agent asked.
+  const toFile = (chosen ?? card.delivery) === "file";
   const kept = resolution === "accepted"
+    && !toFile
     && (Array.isArray(action) ? action.includes("keep") : action === "keep");
   let text: string;
   if (resolution === "accepted") {
     text = kept
       ? "· kept the existing value"
-      : "saved to this project · never shown to the agent";
+      : toFile
+        ? "· in a temporary private file · kept out of chat"
+        : "saved to this project · never shown to the agent";
   } else {
     text = resolution === "declined" ? "· declined" : "· closed before it was answered";
   }

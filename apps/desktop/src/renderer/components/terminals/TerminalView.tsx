@@ -25,6 +25,8 @@ import {
   type TerminalImagePasteIo,
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
+import { parseOsc52Payload } from "./osc52";
+import { showToast } from "../app/toast/toastStore";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -159,6 +161,18 @@ type CachedRuntime = {
   pendingHydrationBytes: number;
   frameWriteChunks: string[];
   frameWriteBytes: number;
+  /**
+   * The pending frame writes include output that arrived while this terminal
+   * could not be seen. It is written later as catch-up, so a clipboard copy
+   * in it is not acted on.
+   */
+  frameWriteDeferred: boolean;
+  /**
+   * Writes xterm has queued but not parsed yet whose bytes are history
+   * (hydration, snapshots, replay, deferred catch-up). While any is pending,
+   * OSC 52 copies are dropped: old output must never reach the clipboard again.
+   */
+  clipboardReplayWrites: number;
   inputWriteChunks: string[];
   inputWriteBytes: number;
   inputFlushTimer: ReturnType<typeof setTimeout> | null;
@@ -1489,25 +1503,78 @@ function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImage
     : pasteNativeClipboardImageShortcut(runtime);
 }
 
-async function writeTerminalSelectionToClipboard(text: string): Promise<void> {
+async function writeTerminalSelectionToClipboard(text: string): Promise<boolean> {
   try {
     const appBridge = window.ade?.app;
     const writeClipboardText = appBridge?.writeClipboardText;
     if (typeof writeClipboardText === "function") {
       const result: unknown = await writeClipboardText.call(appBridge, text);
-      if (result !== false) return;
+      if (result !== false) return true;
     }
   } catch {
     // Browser-preview/test fallback below covers missing or partial bridges.
   }
   const writeText = navigator.clipboard?.writeText;
-  if (typeof writeText !== "function") return;
+  if (typeof writeText !== "function") return false;
   try {
     await writeText.call(navigator.clipboard, text);
+    return true;
   } catch {
     // Ignore clipboard permission failures; there is no useful terminal-side
     // recovery once the copy key has been handled.
+    return false;
   }
+}
+
+/**
+ * Queue history for xterm to parse with clipboard copies switched off.
+ *
+ * `term.write` only queues: xterm parses later, in order, and runs each
+ * write's callback right after parsing that write. An empty write placed just
+ * ahead of the history therefore runs its callback exactly when parsing
+ * reaches the history, and the history's own callback runs when it is done,
+ * so the switch covers those bytes and nothing queued before or after them.
+ */
+function writeTerminalHistory(runtime: CachedRuntime, data: string): void {
+  let queued = true;
+  let entered = false;
+  runtime.term.write("", () => {
+    if (!queued) return;
+    entered = true;
+    runtime.clipboardReplayWrites += 1;
+  });
+  try {
+    runtime.term.write(data, () => {
+      if (entered) runtime.clipboardReplayWrites = Math.max(0, runtime.clipboardReplayWrites - 1);
+    });
+  } catch (error) {
+    queued = false;
+    throw error;
+  }
+}
+
+/**
+ * A program may set the clipboard only from the terminal the user is in: the
+ * one that is on screen, in the focused window, and holds keyboard focus. A
+ * background tab, a parked pane, or a terminal behind another app cannot.
+ */
+function runtimeMayWriteClipboard(runtime: CachedRuntime): boolean {
+  if (runtime.disposed || runtime.clipboardReplayWrites > 0) return false;
+  if (runtime.refs === 0 || !runtime.visible) return false;
+  if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
+  const focused = document.activeElement;
+  return Boolean(focused && runtime.host.contains(focused));
+}
+
+/** xterm's OSC 52 handler. Always claims the sequence; reads are never answered. */
+function handleTerminalOsc52(runtime: CachedRuntime, data: string): boolean {
+  const request = parseOsc52Payload(data);
+  if (request.kind !== "write" || !runtimeMayWriteClipboard(runtime)) return true;
+  void writeTerminalSelectionToClipboard(request.text).then((copied) => {
+    if (!copied) return;
+    showToast({ id: "terminal-osc52-copy", tone: "neutral", title: "Copied from terminal", durationMs: 2_500 });
+  });
+  return true;
 }
 
 function teardownRuntime(runtime: CachedRuntime) {
@@ -1779,11 +1846,14 @@ function flushFrameWriteChunksSync(runtime: CachedRuntime) {
   if (runtime.disposed) return;
   if (runtime.frameWriteChunks.length === 0) return;
   const merged = runtime.frameWriteChunks.join("");
+  const deferred = runtime.frameWriteDeferred;
   runtime.frameWriteChunks.length = 0;
   runtime.frameWriteBytes = 0;
+  runtime.frameWriteDeferred = false;
   const followOutput = shouldFollowTerminalOutput(runtime);
   try {
-    runtime.term.write(merged);
+    if (deferred) writeTerminalHistory(runtime, merged);
+    else runtime.term.write(merged);
     if (hasRenderableTerminalText(merged)) {
       runtime.hasAppliedTerminalContent = true;
     }
@@ -1834,6 +1904,7 @@ function discardScheduledFrameWrites(runtime: CachedRuntime) {
   clearFrameWriteSchedule(runtime);
   runtime.frameWriteChunks.length = 0;
   runtime.frameWriteBytes = 0;
+  runtime.frameWriteDeferred = false;
 }
 
 function flushPendingFrameWrites(runtime: CachedRuntime) {
@@ -1865,6 +1936,7 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
     // elsewhere. Keep only the bounded pending tail and write it when the
     // terminal is revealed; that avoids doing xterm layout/buffer work for
     // invisible CLI sessions.
+    runtime.frameWriteDeferred = true;
     return;
   }
   runtime.flushRafId = requestAnimationFrame(flush);
@@ -1996,7 +2068,7 @@ function applyPendingReplaceWhenFitted(
     if (text) {
       updateTerminalInputModes(runtime, text);
       try {
-        runtime.term.write(text);
+        writeTerminalHistory(runtime, text);
         runtime.hasAppliedTerminalContent = hasRenderableTerminalText(text);
       } catch {
         // ignore write errors after disposal
@@ -2247,7 +2319,7 @@ function flushHydrationData(
   if (merged.length) {
     updateTerminalInputModes(runtime, merged);
     try {
-      runtime.term.write(options.eraseStale ? `${ERASE_SCREEN_AND_SCROLLBACK}${merged}` : merged);
+      writeTerminalHistory(runtime, options.eraseStale ? `${ERASE_SCREEN_AND_SCROLLBACK}${merged}` : merged);
       if (hasRenderableTerminalText(merged)) {
         runtime.hasAppliedTerminalContent = true;
       }
@@ -3036,6 +3108,8 @@ function createRuntime(args: {
     pendingHydrationBytes: 0,
     frameWriteChunks: [],
     frameWriteBytes: 0,
+    frameWriteDeferred: false,
+    clipboardReplayWrites: 0,
     inputWriteChunks: [],
     inputWriteBytes: 0,
     inputFlushTimer: null,
@@ -3068,6 +3142,11 @@ function createRuntime(args: {
     replayMode: false,
     replayLoadedBytes: null
   };
+
+  // Programs copy with OSC 52 (vim, tmux, `/copy`, printf over SSH). xterm
+  // frames the sequence across chunks and terminators; the handler decides.
+  // Disposed with the terminal.
+  term.parser.registerOscHandler(52, (data) => handleTerminalOsc52(runtime, data));
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
   // Electron default-menu Edit→Paste, right-click, middle-click) before xterm

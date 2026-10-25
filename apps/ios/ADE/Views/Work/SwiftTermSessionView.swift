@@ -134,6 +134,19 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private var transcriptEndOffset: Int?
   private var historyAtStart = false
 
+  // True while SwiftTerm parses bytes that are history (a hydrate, a rebuild,
+  // older pages). SwiftTerm acts on OSC 52 as it parses, synchronously inside
+  // `feed`, so an old copy in replayed output would set the clipboard again.
+  private var feedingHistory = false
+  /// About 1 MiB of base64, the cap the desktop terminal uses.
+  private static let maxClipboardCopyBytes = 768 * 1024
+
+  private func feedHistory(_ view: TerminalView, _ bytes: ArraySlice<UInt8>) {
+    feedingHistory = true
+    defer { feedingHistory = false }
+    view.feed(byteArray: bytes)
+  }
+
   // Never feed bytes before the PTY has our real cols/rows: the hydrate
   // snapshot would wrap at the desktop width. Events queue until first layout.
   private var readyToFeed = false
@@ -457,7 +470,13 @@ final class TerminalSessionController: NSObject, ObservableObject {
     guard !bytes.isEmpty else { return }
     transcript.append(bytes)
     enforceTranscriptCap()
-    terminalView?.feed(byteArray: [UInt8](bytes)[...])
+    if let view = terminalView {
+      if countsAsLive {
+        view.feed(byteArray: [UInt8](bytes)[...])
+      } else {
+        feedHistory(view, [UInt8](bytes)[...])
+      }
+    }
     if !bytes.isEmpty { hasPainted = true }
     if countsAsLive, !isPinnedToBottom {
       liveChunksWhileScrolledUp += 1
@@ -482,7 +501,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
     view.getTerminal().resetToInitialState()
     let payload = bytes ?? transcript
     if !payload.isEmpty {
-      view.feed(byteArray: [UInt8](payload)[...])
+      feedHistory(view, [UInt8](payload)[...])
     }
     isPinnedToBottom = true
     liveChunksWhileScrolledUp = 0
@@ -531,7 +550,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
     view.holdScrollOnOutput = false
     view.getTerminal().resetToInitialState()
     if !transcript.isEmpty {
-      view.feed(byteArray: [UInt8](transcript)[...])
+      feedHistory(view, [UInt8](transcript)[...])
     }
     DispatchQueue.main.async { [weak self] in
       guard let self, let view = self.terminalView else { return }
@@ -776,6 +795,8 @@ extension TerminalSessionController: TerminalViewDelegate {
   nonisolated func clipboardCopy(source: TerminalView, content: Data) {
     let text = String(bytes: content, encoding: .utf8) ?? String(decoding: content, as: UTF8.self)
     MainActor.assumeIsolated {
+      // Replayed history never copies again, and an oversized copy is dropped.
+      guard !feedingHistory, !content.isEmpty, content.count <= Self.maxClipboardCopyBytes else { return }
       UIPasteboard.general.string = text
     }
   }

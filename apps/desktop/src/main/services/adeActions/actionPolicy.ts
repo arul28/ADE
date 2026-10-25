@@ -76,6 +76,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Keep-awake preferences are machine-wide power policy. The desktop, phone,
   // and direct user clients can change them; session-bound agents cannot.
   keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
+  // The machine's default shell for the user's own terminals is the user's
+  // choice. Agents can read it; only user clients change it.
+  pty: { only: ["setDefaultShell"] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -1141,8 +1144,23 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "writeTextAtomic",
     "writeWorkspaceText",
   ],
-  pty: ["create", "dispose", "list", "resize", "resumeSession", "sendToSession", "write"],
-  terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
+  pty: [
+    "create",
+    "dispose",
+    "getShellSettings",
+    "list",
+    "resize",
+    "resumeSession",
+    "sendToSession",
+    "setDefaultShell",
+    "write",
+  ],
+  terminal: [
+    "list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli",
+    // A chat's terminal watches: an agent arms one for itself (`ade terminal
+    // watch`), and a person stops it from the chat's pane on any machine.
+    "watch", "unwatch", "listWatches",
+  ],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   // Read-only for everyone except the desktop that owns the pane:
@@ -1151,7 +1169,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
   // `listDevServers` and `probePort` let a Browser on another machine see this
-  // machine's dev servers; both only read.
+  // machine's dev servers; both only read. `stopDevServer` stops one a chat's
+  // agent started, re-checked against the process on the port; an agent is
+  // pinned to its own chat.
   work_tools: [
     "getLaneState",
     "setActiveTool",
@@ -1160,6 +1180,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "acknowledgeShow",
     "listDevServers",
     "probePort",
+    "stopDevServer",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
