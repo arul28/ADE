@@ -114,7 +114,7 @@ type SshConfigLookup = {
 
 /**
  * No ssh on PATH (a Windows host without the OpenSSH client) is an expected
- * setup and a final answer: no alias can resolve on this machine.
+ * setup: no alias resolves until ssh appears, so it is not reported.
  */
 function isMissingSsh(error: { code?: unknown } | null | undefined): boolean {
   return error?.code === "ENOENT";
@@ -200,7 +200,9 @@ function storeLookup(key: string, result: SshConfigLookup): void {
   const previous = cache.get(key);
   // A failed refresh keeps the last answer, so the repository key does not
   // flip back to the alias while ssh is briefly unable to answer.
-  const kept = result.failed && previous?.hostname ? { ...previous, failed: false, missing: false } : result;
+  const kept = (result.failed || result.missing) && previous?.hostname
+    ? { ...previous, failed: false, missing: false }
+    : result;
   cache.delete(key);
   if (cache.size >= CACHE_CAPACITY) {
     for (const [entryKey, entry] of cache) {
@@ -211,7 +213,8 @@ function storeLookup(key: string, result: SshConfigLookup): void {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(key, { ...kept, expiresAt: Date.now() + (result.failed ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
+  const retrySoon = result.failed || (result.missing && kept !== result);
+  cache.set(key, { ...kept, expiresAt: Date.now() + (retrySoon ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
 }
 
 function resolveSshHostname(remote: SshRemote): Promise<string | null> {
@@ -278,11 +281,11 @@ export type CanonicalGitOrigin = {
 
 type CanonicalLookupMode = {
   /**
-   * "cache" never starts ssh: for an origin another machine sent, whose host
-   * names that machine's ssh config. It resolves only hosts this machine
-   * already resolved for its own checkouts.
+   * "none" never resolves an alias: for an origin another machine sent. Its
+   * host names that machine's ssh config, and the same alias name can point
+   * somewhere else here.
    */
-  lookup?: "spawn" | "cache";
+  lookup?: "spawn" | "none";
 };
 
 /** {@link canonicalGitOriginUrl}, and whether the ssh lookup failed. */
@@ -306,9 +309,8 @@ export function resolveCanonicalGitOrigin(
   ) {
     return { url: value, lookupFailed: false };
   }
-  const lookup = mode.lookup === "cache"
-    ? cache.get(cacheKey(remote)) ?? { hostname: null, failed: false, missing: false }
-    : resolveSshHostnameSync(remote);
+  if (mode.lookup === "none") return { url: value, lookupFailed: false };
+  const lookup = resolveSshHostnameSync(remote);
   if (lookup.hostname && isGithubRemoteHost(lookup.hostname) && parseGithubRemoteUrl(remote.withGithubHost)) {
     return { url: remote.withGithubHost, lookupFailed: false };
   }
@@ -340,12 +342,12 @@ export function gitRemoteIdentity(remoteUrl: string | null | undefined): string 
 }
 
 /**
- * The identity of an origin that another machine sent. It never starts ssh:
- * the host belongs to the sender's ssh config, and a current sender already
- * sends the canonical form.
+ * The identity of an origin that another machine sent. It never resolves an
+ * alias: the host belongs to the sender's ssh config, and a current sender
+ * already sends the canonical form. `ssh.github.com` still folds to GitHub.
  */
 export function peerGitRemoteIdentity(remoteUrl: string | null | undefined): string | null {
-  return normalizeGitRemoteIdentity(resolveCanonicalGitOrigin(remoteUrl, { lookup: "cache" }).url);
+  return normalizeGitRemoteIdentity(resolveCanonicalGitOrigin(remoteUrl, { lookup: "none" }).url);
 }
 
 /**

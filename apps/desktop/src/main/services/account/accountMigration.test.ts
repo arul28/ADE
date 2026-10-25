@@ -435,14 +435,19 @@ describe("runAccountMigration", () => {
     putItem({ scope: legacy, kind: "project_secret", key: "DELETED_NEW", value: "old-deleted", updatedAt: "1" });
     putItem({ scope: current, kind: "project_secret", key: "BOTH", value: "new-both", updatedAt: "2" });
     putItem({ scope: current, kind: "project_secret", key: "DELETED_NEW", value: null, updatedAt: "2", deleted: true });
-    const settingRows = new Map<string, { scope: string; key: string; value: unknown }>([
+    const settingRows = new Map<string, { scope: string; key: string; value: unknown; updatedAt?: string }>([
       [`${legacy}|ctx.fact`, { scope: legacy, key: "ctx.fact", value: "old fact" }],
       [`${legacy}|cto.homeMachine`, { scope: legacy, key: "cto.homeMachine", value: "old-home" }],
       [`${current}|cto.homeMachine`, { scope: current, key: "cto.homeMachine", value: "new-home" }],
-      [`${legacy}|mcp.off`, { scope: legacy, key: "mcp.off", value: ["old-server"] }],
+      [`${legacy}|mcp.off`, { scope: legacy, key: "mcp.off", value: ["old-server"], updatedAt: "2026-01-01T00:00:00.000Z" }],
+      [`${legacy}|ctx.recreated`, { scope: legacy, key: "ctx.recreated", value: "set again", updatedAt: "2026-03-01T00:00:00.000Z" }],
     ]);
-    // Deleted under the new key on another machine: the copy must not revive it.
-    const deletedSettingKeys = new Map([[current, ["mcp.off"]]]);
+    // Deleted under the new key on another machine: an older row stays deleted,
+    // a row an older ADE wrote after the deletion still copies.
+    const deletedSettingKeys = new Map([[current, [
+      { key: "mcp.off", updatedAt: "2026-02-01T00:00:00.000Z" },
+      { key: "ctx.recreated", updatedAt: "2026-02-01T00:00:00.000Z" },
+    ]]]);
     const vaultSet = vi.fn(async (
       scope: string,
       kind: string,
@@ -497,12 +502,13 @@ describe("runAccountMigration", () => {
     expect(settingRows.get(`${current}|ctx.fact`)?.value).toBe("old fact");
     expect(settingRows.get(`${current}|cto.homeMachine`)?.value).toBe("new-home");
     expect(settingRows.has(`${current}|mcp.off`)).toBe(false);
+    expect(settingRows.get(`${current}|ctx.recreated`)?.value).toBe("set again");
     expect(vaultSet.mock.calls.map((call) => call[4])).toEqual([{ expectedAccountUserId: "user-a" }]);
 
     // The receipt makes it once per project: a second run copies nothing.
     runner.start();
     await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledTimes(2));
     expect(vaultSet).toHaveBeenCalledTimes(1);
-    expect(settingsSet).toHaveBeenCalledTimes(1);
+    expect(settingsSet).toHaveBeenCalledTimes(2);
   });
 });

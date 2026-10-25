@@ -42,8 +42,9 @@ import {
   isCrossMachineHandoffActive,
   pickCrossMachineTargetConfig,
   withoutCrossMachinePermissionFields,
+  normalizeGitRemoteIdentity,
 } from "../../../shared/crossMachineHandoff";
-import { gitRemoteIdentity, peerGitRemoteIdentity } from "../github/githubSshAlias";
+import { gitRemoteIdentity } from "../github/githubSshAlias";
 import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
@@ -582,10 +583,13 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     online: machine.online,
     unavailableReason: machine.online ? null : "Offline",
     // Both sides normalized here: SSH and HTTPS forms of one remote must
-    // match whatever shape the transport reports.
+    // match whatever shape the transport reports. The roster carries an
+    // identity the other machine already normalized; a machine on an ADE
+    // older than SSH-alias resolution reports its alias host, so an alias
+    // checkout there matches only after that machine updates.
     hasRepository: machine.projects && originUrl
       ? machine.projects.some((project) =>
-        peerGitRemoteIdentity(project.origin) === gitRemoteIdentity(originUrl))
+        normalizeGitRemoteIdentity(project.origin) === gitRemoteIdentity(originUrl))
       : null,
   });
 

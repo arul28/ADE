@@ -11,7 +11,7 @@ const sshState = vi.hoisted(() => ({
   ]),
   calls: [] as string[][],
 }));
-const execFileFailure = vi.hoisted(() => ({ hosts: new Set<string>(), calls: 0 }));
+const execFileFailure = vi.hoisted(() => ({ hosts: new Set<string>(), missing: new Set<string>(), calls: 0 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -30,6 +30,11 @@ vi.mock("node:child_process", async (importOriginal) => {
     execFile: ((command: string, args: string[], _options: unknown, callback: (error: unknown, stdout: string) => void) => {
       if (command !== "ssh") throw new Error(`unexpected command ${command}`);
       const host = args[args.length - 1]!;
+      if (execFileFailure.missing.has(host)) {
+        execFileFailure.calls += 1;
+        callback(Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" }), "");
+        return;
+      }
       if (execFileFailure.hosts.has(host)) {
         execFileFailure.calls += 1;
         callback(Object.assign(new Error("ssh exited 255"), { code: 255 }), "");
@@ -73,10 +78,10 @@ describe("resolveCanonicalGitOrigin", () => {
     const before = sshState.calls.length;
     gitRemoteIdentity("git@github.com-work:Acme/Other.git");
     expect(sshState.calls.length).toBe(before);
-    // An origin from another machine never starts ssh: a host this machine
-    // resolved still matches, an unknown one stays as sent.
-    expect(peerGitRemoteIdentity("git@github.com-work:Acme/Shop.git")).toBe("github.com/acme/shop");
-    expect(peerGitRemoteIdentity("git@peer-only-alias:Acme/Shop.git")).toBe("peer-only-alias/acme/shop");
+    // An origin from another machine never resolves an alias, even one this
+    // machine knows: the same alias name can point elsewhere over there.
+    expect(peerGitRemoteIdentity("git@github.com-work:Acme/Shop.git")).toBe("github.com-work/acme/shop");
+    expect(peerGitRemoteIdentity("ssh://git@ssh.github.com:443/Acme/Shop.git")).toBe("github.com/acme/shop");
     expect(sshState.calls.length).toBe(before);
   });
 
@@ -90,16 +95,27 @@ describe("resolveCanonicalGitOrigin", () => {
       lookupFailed: true,
     });
 
-    vi.useFakeTimers();
+    // Only the clock is fake, so the background refresh settles on real ticks.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
     try {
       sshState.hostnames.set("flaky-alias", "github.com");
       expect(resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git").url).toBe("git@github.com:Acme/Shop.git");
       // The answer expires and the background refresh fails.
       sshState.hostnames.set("flaky-alias", "");
-      vi.advanceTimersByTime(61_000);
+      vi.setSystemTime(Date.now() + 61_000);
       execFileFailure.hosts.add("flaky-alias");
       resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git");
       await vi.waitFor(() => expect(execFileFailure.calls).toBe(1));
+      await settle();
+      expect(resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git").url).toBe("git@github.com:Acme/Shop.git");
+      // ssh then disappears from PATH: the good answer still holds.
+      vi.setSystemTime(Date.now() + 61_000);
+      execFileFailure.hosts.delete("flaky-alias");
+      execFileFailure.missing.add("flaky-alias");
+      resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git");
+      await vi.waitFor(() => expect(execFileFailure.calls).toBe(2));
+      await settle();
       expect(resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git").url).toBe("git@github.com:Acme/Shop.git");
     } finally {
       vi.useRealTimers();

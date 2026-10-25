@@ -86,12 +86,16 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
       return await bridge.list(scope);
     },
 
-    /** Keys in one scope that some machine deleted (`list` hides them). */
-    async deletedKeys(scope: string): Promise<AccountSettingsResult<string[]>> {
+    /** Keys in one scope that some machine deleted, with the stamp (`list` hides them). */
+    async deletedKeys(scope: string): Promise<AccountSettingsResult<Array<{ key: string; updatedAt: string }>>> {
       return await bridge.call(
         "deletedKeys",
         [scope],
-        (raw) => (Array.isArray(raw) ? raw.filter((key): key is string => typeof key === "string") : []),
+        (raw) => (Array.isArray(raw)
+          ? raw.flatMap((entry) => (isRecord(entry) && typeof entry.key === "string" && typeof entry.updatedAt === "string"
+            ? [{ key: entry.key, updatedAt: entry.updatedAt }]
+            : []))
+          : []),
       );
     },
 
