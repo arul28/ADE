@@ -531,8 +531,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           ...(dispatch.resume ? { resume: true } : {}),
         }),
         listUnstartedEventKeys: () => automationServiceForWebhooks
-          .listUnstartedIngressEventKeys(["webhook-relay", "local-webhook"])
-          .map((entry) => entry.eventKey),
+          .listUnstartedIngressEventKeys(["webhook-relay", "local-webhook"]),
         onDeliveriesChanged: (hookId) => automationServiceForWebhooks.notifyWebhookDeliveries(hookId),
       })
     : null;

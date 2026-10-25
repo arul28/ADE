@@ -566,7 +566,7 @@ type AutomationIngressEventRow = {
   cursor: string | null;
   received_at: string;
   /** Who started its runs; null while none has. See `claimIngressRunStart`. */
-  run_claim?: string | null;
+  run_claim: string | null;
 };
 
 /** The ingress claim every row written before claims existed is given: it already ran or never will. */
@@ -1381,7 +1381,7 @@ function deriveQueueStatus(args: {
   return "actionable-findings";
 }
 
-function parseActiveHours(value: NonNullable<AutomationTrigger["activeHours"]>, now = new Date()): { startMin: number; endMin: number; currentMin: number } {
+function parseActiveHours(value: NonNullable<AutomationTrigger["activeHours"]>): { startMin: number; endMin: number } {
   const parseClock = (raw: string, fallback: number): number => {
     const match = /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
     if (!match) return fallback;
@@ -1393,43 +1393,51 @@ function parseActiveHours(value: NonNullable<AutomationTrigger["activeHours"]>, 
   return {
     startMin: parseClock(value.start, 22 * 60),
     endMin: parseClock(value.end, 6 * 60),
-    currentMin: minuteOfDayInZone(now, value.timezone),
   };
 }
 
 const zoneClockFormatters = new Map<string, Intl.DateTimeFormat | null>();
 
 /**
- * The minute of the day on the clock of `timezone`, an IANA name such as
- * "America/Chicago". "local", a blank zone, or one this runtime's ICU does not
- * know reads the brain machine's own clock, which is all active hours ever
- * did before the zone was honored, so a rule written that way behaves as it
- * always has.
+ * The formatter for an IANA zone such as "America/Chicago": undefined for
+ * "local" or a blank zone, null for one this runtime's ICU does not know.
+ */
+function zoneClockFormatter(timezone: string | null | undefined): Intl.DateTimeFormat | null | undefined {
+  const zone = timezone?.trim() ?? "";
+  if (!zone || zone.toLowerCase() === "local") return undefined;
+  let formatter = zoneClockFormatters.get(zone);
+  if (formatter === undefined) {
+    try {
+      formatter = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "numeric", hourCycle: "h23" });
+    } catch {
+      // Unknown here; `syncFromConfig` warns about it once per zone.
+      formatter = null;
+    }
+    zoneClockFormatters.set(zone, formatter);
+  }
+  return formatter;
+}
+
+/**
+ * The minute of the day on the clock of `timezone`. "local", a blank zone, or
+ * one this runtime does not know reads the brain machine's own clock, which is
+ * all active hours ever did before the zone was honored, so a rule written
+ * that way behaves as it always has.
  */
 function minuteOfDayInZone(now: Date, timezone: string | null | undefined): number {
-  const zone = timezone?.trim() ?? "";
-  if (zone && zone.toLowerCase() !== "local") {
-    let formatter = zoneClockFormatters.get(zone);
-    if (formatter === undefined) {
-      try {
-        formatter = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "numeric", hourCycle: "h23" });
-      } catch {
-        formatter = null;
-      }
-      zoneClockFormatters.set(zone, formatter);
-    }
-    if (formatter) {
-      const parts = formatter.formatToParts(now);
-      const hour = Number(parts.find((part) => part.type === "hour")?.value);
-      const minute = Number(parts.find((part) => part.type === "minute")?.value);
-      if (Number.isFinite(hour) && Number.isFinite(minute)) return (hour % 24) * 60 + minute;
-    }
+  const formatter = zoneClockFormatter(timezone);
+  if (formatter) {
+    const parts = formatter.formatToParts(now);
+    const hour = Number(parts.find((part) => part.type === "hour")?.value);
+    const minute = Number(parts.find((part) => part.type === "minute")?.value);
+    if (Number.isFinite(hour) && Number.isFinite(minute)) return (hour % 24) * 60 + minute;
   }
   return now.getHours() * 60 + now.getMinutes();
 }
 
 function isWithinActiveHours(hours: NonNullable<AutomationTrigger["activeHours"]>, now = new Date()): boolean {
-  const { startMin, endMin, currentMin } = parseActiveHours(hours, now);
+  const { startMin, endMin } = parseActiveHours(hours);
+  const currentMin = minuteOfDayInZone(now, hours.timezone);
   if (startMin === endMin) return true;
   if (startMin < endMin) return currentMin >= startMin && currentMin < endMin;
   return currentMin >= startMin || currentMin < endMin;
@@ -2743,7 +2751,7 @@ export function createAutomationService({
     `
       select
         id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-        cursor, received_at
+        cursor, received_at, run_claim
       from automation_ingress_events
       where project_id = ? and id = ?
       limit 1
@@ -2767,7 +2775,7 @@ export function createAutomationService({
       `
         select
           id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-          cursor, received_at
+          cursor, received_at, run_claim
         from automation_ingress_events
         where project_id = ?
         order by received_at desc
@@ -4906,11 +4914,21 @@ export function createAutomationService({
     }
   };
 
+  const warnedActiveHoursZones = new Set<string>();
   const syncFromConfig = () => {
     const rules = listRules();
     const desired = new Set<string>();
     for (const rule of rules) {
       if (!rule.enabled) continue;
+      for (const trigger of rule.triggers) {
+        const zone = trigger.activeHours?.timezone?.trim();
+        // An unknown zone falls back to this machine's clock, which can be
+        // hours off; say so once rather than let the rule look flaky.
+        if (zone && zoneClockFormatter(zone) === null && !warnedActiveHoursZones.has(zone)) {
+          warnedActiveHoursZones.add(zone);
+          logger.warn("automations.active_hours_zone_unknown", { automationId: rule.id, timezone: zone });
+        }
+      }
       const ingressSetupError = getIngressSetupError(rule);
       if (ingressSetupError) {
         logger.warn("automations.external_trigger_waiting_for_ingress", {
@@ -5043,16 +5061,17 @@ export function createAutomationService({
       [runClaim, eventId, projectId, runClaim],
     ) > 0;
 
-  /** Event keys this machine accepted from `sources` whose runs never started. */
-  const listUnstartedIngressEventKeys = (sources: readonly AutomationIngressSource[]): Array<{ source: AutomationIngressSource; eventKey: string }> => {
+  /** Event keys this machine accepted from `sources` whose runs never started, oldest first. */
+  const listUnstartedIngressEventKeys = (sources: readonly AutomationIngressSource[]): string[] => {
     if (!sources.length) return [];
-    return db.all<{ source: string; event_key: string }>(
-      `select source, event_key from automation_ingress_events
+    return db.all<{ event_key: string }>(
+      `select event_key from automation_ingress_events
         where project_id = ? and run_claim is null and status in ('received', 'dispatched')
           and source in (${sources.map(() => "?").join(", ")})
-        order by received_at asc`,
+        group by event_key
+        order by min(received_at) asc`,
       [projectId, ...sources],
-    ).map((row) => ({ source: row.source as AutomationIngressSource, eventKey: row.event_key }));
+    ).map((row) => row.event_key);
   };
 
   const dispatchIngressTrigger = async (args: {

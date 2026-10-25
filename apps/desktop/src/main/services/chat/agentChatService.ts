@@ -1669,7 +1669,7 @@ import {
 } from "./claudeToolGate";
 import {
   codexApprovalAutoAccepts,
-  codexApprovalDeniesByPolicy,
+  permissionPolicyDeniesByFallback,
   codexApprovalPathStaysWithinRoot,
   codexCommandApprovalStaysWithinRoot,
   codexPermissionsStayWithinRoot,
@@ -7699,6 +7699,18 @@ function forkTitleContext(
     last ? `Latest earlier request: ${last}` : null,
   ].filter((line): line is string => line != null);
   return lines.length ? lines : undefined;
+}
+
+type AutoTitleMode = "initial" | "complete" | "refine";
+
+function autoTitleInstruction(mode: AutoTitleMode, forked: boolean): string {
+  if (mode === "refine") {
+    return "Its first run has finished. Write a concise title for this coding chat that names what the run actually did, not how the request was phrased.";
+  }
+  if (mode === "complete") return "Write a final concise title for this completed coding chat.";
+  return forked
+    ? "Write a concise title for this coding chat. It was forked from an earlier chat: name the subject it inherited, plus the new direction its primary request takes."
+    : "Write a concise title for this new coding chat.";
 }
 
 const GENERIC_REMAINDER_TOKENS = new Set([
@@ -17639,10 +17651,11 @@ export function createAgentChatService(args: {
 
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleChanged = currentTitle?.trim() !== title;
-    // ADE pushes its own titles to Codex (`thread/name/set`), which reports
-    // them straight back. That echo is ADE's title, not the runtime's; taking
-    // it as one would stop ADE refining a title it wrote itself.
-    if (!titleChanged && !managed.runtimeTitleAdopted) return null;
+    // An unchanged title changes nothing. In particular ADE pushes its own
+    // titles to Codex (`thread/name/set`), which reports them straight back:
+    // that echo is ADE's title, not the runtime's, and taking it as one would
+    // stop ADE refining a title it wrote itself.
+    if (!titleChanged) return null;
     if (titleChanged) {
       persistSessionTitleMetadata(managed, title, false);
     }
@@ -17703,25 +17716,29 @@ export function createAgentChatService(args: {
   const maybeAutoTitleSession = async (
     managed: ManagedChatSession,
     args: {
-      stage: "initial" | "final";
+      /**
+       * `initial`: the first title, from the first prompt. `complete`: the
+       * session ended; only rescues a still-default title. `refine`: the first
+       * run finished; may replace the title `initial` wrote.
+       */
+      mode: AutoTitleMode;
       latestUserText?: string | null;
       summary?: string | null;
-      /** Replace the title the initial stage wrote, not just a default one. */
-      refine?: boolean;
     }
   ): Promise<void> => {
+    const stage = args.mode === "initial" ? "initial" : "final";
     if (managed.deleted) return;
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
     if (sessionIsManuallyNamed(managed)) return;
     if (managed.runtimeTitleAdopted) return;
     if (managed.autoTitleInFlight) return;
-    if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
-    if (args.stage === "final" && managed.autoTitleStage === "final") return;
+    if (stage === "initial" && managed.autoTitleStage !== "none") return;
+    if (stage === "final" && managed.autoTitleStage === "final") return;
 
     const seed = sanitizeAutoTitle(args.latestUserText ?? managed.autoTitleSeed ?? "", 180);
     if (!seed) return;
 
-    if (args.stage === "initial" && nativeTitleWaitMs > 0) {
+    if (stage === "initial" && nativeTitleWaitMs > 0) {
       const deadline = Date.now() + nativeTitleWaitMs;
       while (Date.now() < deadline) {
         if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
@@ -17734,7 +17751,7 @@ export function createAgentChatService(args: {
     }
     if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
     const titleAfterWait = sessionService.get(managed.session.id)?.title ?? null;
-    const refiningOwnTitle = args.refine === true && managed.autoTitleStage === "initial";
+    const refiningOwnTitle = args.mode === "refine" && managed.autoTitleStage === "initial";
     if (!refiningOwnTitle && hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
 
     const auth = await detectAuth();
@@ -17776,13 +17793,7 @@ export function createAgentChatService(args: {
               modelId: descriptor.id,
               systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
               prompt: [
-                refiningOwnTitle
-                  ? "Its first run has finished. Write a concise title for this coding chat that names what the run actually did, not how the request was phrased."
-                  : args.stage === "final"
-                  ? "Write a final concise title for this completed coding chat."
-                  : managed.autoTitleInheritedContext?.length
-                  ? "Write a concise title for this coding chat. It was forked from an earlier chat: name the subject it inherited, plus the new direction its primary request takes."
-                  : "Write a concise title for this new coding chat.",
+                autoTitleInstruction(args.mode, Boolean(managed.autoTitleInheritedContext?.length)),
                 titleContext.join("\n"),
               ].join("\n\n"),
               taskType: "session_title",
@@ -17797,7 +17808,7 @@ export function createAgentChatService(args: {
           onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
             logger.warn("agent_chat.auto_title_failed", {
               sessionId: managed.session.id,
-              stage: args.stage,
+              stage,
               modelId: descriptor.id,
               provider,
               providerLevelFailure,
@@ -17809,13 +17820,12 @@ export function createAgentChatService(args: {
       if (adopted) {
         logger.info("agent_chat.auto_title_generated", {
           sessionId: managed.session.id,
-          stage: args.stage,
-          refine: refiningOwnTitle,
+          mode: args.mode,
           changed: adopted.trim() !== String(titleAfterWait ?? "").trim(),
           attemptCount,
         });
-        managed.autoTitleStage = args.stage;
-        if (args.stage === "initial") armAutoTitleRefine(managed);
+        managed.autoTitleStage = stage;
+        if (stage === "initial") armAutoTitleRefine(managed);
         return;
       }
 
@@ -17834,11 +17844,11 @@ export function createAgentChatService(args: {
       if (deterministic.split(/\s+/u).filter(Boolean).length < 2) return;
       const fallbackTitle = setManagedSessionTitle(managed, deterministic);
       if (!fallbackTitle) return;
-      managed.autoTitleStage = args.stage;
-      if (args.stage === "initial") armAutoTitleRefine(managed);
+      managed.autoTitleStage = stage;
+      if (stage === "initial") armAutoTitleRefine(managed);
       logger.info("agent_chat.auto_title_deterministic_fallback", {
         sessionId: managed.session.id,
-        stage: args.stage,
+        stage,
         attemptCount,
         titleLength: fallbackTitle.length,
       });
@@ -17856,7 +17866,7 @@ export function createAgentChatService(args: {
     managed.autoTitleRefine = undefined;
     // Deferred a tick: arming happens inside the initial stage, which still
     // holds `autoTitleInFlight` until its own `finally` has run.
-    void Promise.resolve().then(() => maybeAutoTitleSession(managed, { stage: "final", refine: true }));
+    void Promise.resolve().then(() => maybeAutoTitleSession(managed, { mode: "refine" }));
   };
 
   function armAutoTitleRefine(managed: ManagedChatSession): void {
@@ -17864,7 +17874,7 @@ export function createAgentChatService(args: {
     else managed.autoTitleRefine = "armed";
   }
 
-  const noteAutoTitleRunCompleted = (managed: ManagedChatSession): void => {
+  const maybeStartAutoTitleRefine = (managed: ManagedChatSession): void => {
     if (managed.autoTitleStage === "final") return;
     if (managed.autoTitleRefine === "armed") startAutoTitleRefine(managed);
     else if (managed.autoTitleStage === "none") managed.autoTitleRefine = "due";
@@ -23559,7 +23569,7 @@ export function createAgentChatService(args: {
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
       settleClaudeGoalOnTurnEnd(managed, event.status);
-      if (event.status === "completed") noteAutoTitleRunCompleted(managed);
+      if (event.status === "completed") maybeStartAutoTitleRefine(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -26685,7 +26695,7 @@ export function createAgentChatService(args: {
       detail?: Record<string, unknown>;
     },
   ): boolean => {
-    if (!codexApprovalDeniesByPolicy(managed.session)) return false;
+    if (!permissionPolicyDeniesByFallback(managed.session)) return false;
     refuseCodexApprovalByPolicy(managed, runtime, id, response, request, ui);
     return true;
   };
@@ -27781,7 +27791,7 @@ export function createAgentChatService(args: {
     }
 
     void maybeAutoTitleSession(managed, {
-      stage: "final",
+      mode: "complete",
       summary: options?.summary ?? managed.preview,
     });
 
@@ -44528,13 +44538,67 @@ export function createAgentChatService(args: {
   const CLAUDE_SUPPORTED_DIALOG_KINDS = ["resume_return"] as const;
 
   /**
+   * Raise a blocking card for a Claude SDK callback and wait for its answer.
+   *
+   * It parks on `runtime.approvals` and not a private map: every turn-ending
+   * path already settles that registry, and a waiter parked anywhere else
+   * survives the death of the runtime holding it. When the SDK aborts the
+   * request first, nobody answered, so this writes the cancel receipt itself;
+   * without it the card is redrawn by the next re-derivation with no waiter.
+   */
+  const parkClaudeCard = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    pendingRequest: PendingInputRequest,
+    signal: AbortSignal,
+    ui: { kind: "tool_call"; description: string; detail?: Record<string, unknown> },
+  ): Promise<{
+    abandoned: boolean;
+    response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+  }> => {
+    const itemId = pendingRequest.itemId ?? pendingRequest.requestId;
+    emitPendingInputRequest(managed, pendingRequest, ui);
+    let abandoned = false;
+    try {
+      runtime.pauseIdleWatchdog?.();
+      const response = await new Promise<{
+        decision?: AgentChatApprovalDecision;
+        answers?: Record<string, string | string[]>;
+        responseText?: string | null;
+      }>((resolve) => {
+        const entry = { kind: "question" as const, resolve, request: pendingRequest };
+        runtime.approvals.set(itemId, entry);
+        const onAbort = (): void => {
+          // Only when this entry is still the live one: a replaced waiter
+          // belongs to a newer card and must not be resolved by this signal.
+          if (runtime.approvals.get(itemId) !== entry) return;
+          runtime.approvals.delete(itemId);
+          abandoned = true;
+          resolve({ decision: "cancel" });
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (abandoned) {
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: "cancel",
+          turnId: pendingRequest.turnId ?? null,
+          questions: pendingRequest.questions,
+        });
+      }
+      return { abandoned, response };
+    } finally {
+      runtime.approvals.delete(itemId);
+      runtime.resumeIdleWatchdog?.();
+    }
+  };
+
+  /**
    * Render Claude's `resume_return` dialog as an ordinary ADE question card.
    *
-   * Same shape as the `AskUserQuestion` interception: emit the card, park on a
-   * resolver in `runtime.approvals`, and let `respondToInput` deliver the
-   * answer. It has to be that registry and not a private map — every
-   * turn-ending path already settles `runtime.approvals`, and a waiter parked
-   * anywhere else survives the death of the runtime holding it.
+   * Same shape as the `AskUserQuestion` interception: the card parks through
+   * `parkClaudeCard`, and `respondToInput` delivers the answer.
    *
    * An unrecognized kind answers `{behavior: "cancelled"}`, which is what the
    * SDK requires of a host that was sent a kind it did not declare.
@@ -44583,48 +44647,12 @@ export function createAgentChatService(args: {
       providerMetadata: { dialogKind: "resume_return" },
       turnId: runtime.activeTurnId ?? null,
     };
-    emitPendingInputRequest(managed, pendingRequest, {
+    const { abandoned, response } = await parkClaudeCard(managed, runtime, pendingRequest, options.signal, {
       kind: "tool_call",
       description: pendingRequest.description ?? "Resume session",
       detail: { dialogKind: "resume_return" },
     });
-
-    let abandoned = false;
-    let response: {
-      decision?: AgentChatApprovalDecision;
-      answers?: Record<string, string | string[]>;
-      responseText?: string | null;
-    };
-    try {
-      runtime.pauseIdleWatchdog?.();
-      response = await new Promise<typeof response>((resolve) => {
-        const entry = { kind: "question" as const, resolve, request: pendingRequest };
-        runtime.approvals.set(itemId, entry);
-        const onAbort = (): void => {
-          // Only when this entry is still the live one: a replaced waiter
-          // belongs to a newer dialog and must not be resolved by this signal.
-          if (runtime.approvals.get(itemId) !== entry) return;
-          runtime.approvals.delete(itemId);
-          abandoned = true;
-          resolve({ decision: "cancel" });
-        };
-        if (options.signal.aborted) onAbort();
-        else options.signal.addEventListener("abort", onAbort, { once: true });
-      });
-    } finally {
-      runtime.approvals.delete(itemId);
-      runtime.resumeIdleWatchdog?.();
-    }
-
     if (abandoned) {
-      // The user never answered, so nothing wrote a receipt. Without one the
-      // card is redrawn by the next re-derivation with no waiter behind it.
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pendingRequest.turnId ?? null,
-        questions: pendingRequest.questions,
-      });
       logDialog("cancelled");
       return { behavior: "cancelled" };
     }
@@ -44654,8 +44682,8 @@ export function createAgentChatService(args: {
    *
    * Without this callback the Agent SDK declines every elicitation on the
    * spot, so a server that asks for input looked to the user like a tool that
-   * failed for no reason. It parks on `runtime.approvals` for the same reason
-   * the resume dialog does: every turn-ending path already settles that map.
+   * failed for no reason. It parks through `parkClaudeCard`, like the resume
+   * dialog.
    */
   const buildClaudeElicitationHandler = (
     managed: ManagedChatSession,
@@ -44671,12 +44699,6 @@ export function createAgentChatService(args: {
     const logElicitation = (result: string): void => {
       logger.info("chat.claude.mcp_elicitation", { sessionId: managed.session.id, server: serverName, mode, result });
     };
-    // A host policy that refuses whatever it is not told to allow has no one
-    // behind it to answer a card, which is what the SDK's own decline means.
-    if (codexApprovalDeniesByPolicy(managed.session)) {
-      logElicitation("declined_by_policy");
-      return { action: "decline" };
-    }
     const itemId = `mcp-elicitation:${serverName}:${options.requestId || randomUUID()}`;
     const pendingRequest: PendingInputRequest = {
       requestId: itemId,
@@ -44698,44 +44720,19 @@ export function createAgentChatService(args: {
       },
       turnId: runtime.activeTurnId ?? null,
     };
-    emitPendingInputRequest(managed, pendingRequest, {
-      kind: "tool_call",
-      description: message,
-      detail: { serverName, mode, persistenceSupported: false },
-    });
-
-    let abandoned = false;
-    let response: {
-      decision?: AgentChatApprovalDecision;
-      answers?: Record<string, string | string[]>;
-      responseText?: string | null;
-    };
-    try {
-      runtime.pauseIdleWatchdog?.();
-      response = await new Promise<typeof response>((resolve) => {
-        const entry = { kind: "question" as const, resolve, request: pendingRequest };
-        runtime.approvals.set(itemId, entry);
-        const onAbort = (): void => {
-          if (runtime.approvals.get(itemId) !== entry) return;
-          runtime.approvals.delete(itemId);
-          abandoned = true;
-          resolve({ decision: "cancel" });
-        };
-        if (options.signal.aborted) onAbort();
-        else options.signal.addEventListener("abort", onAbort, { once: true });
-      });
-    } finally {
-      runtime.approvals.delete(itemId);
-      runtime.resumeIdleWatchdog?.();
+    const ui = { kind: "tool_call" as const, description: message, detail: { serverName, mode, persistenceSupported: false } };
+    // A host policy that refuses whatever it is not told to allow has no one
+    // behind it to answer a card. The card and its receipt are still written,
+    // as for Codex: a refusal the transcript never mentions reads as the agent
+    // silently deciding not to act.
+    if (permissionPolicyDeniesByFallback(managed.session)) {
+      emitPendingInputRequest(managed, pendingRequest, ui);
+      emitPendingInputResolved(managed, { itemId, decision: "decline", turnId: pendingRequest.turnId ?? null, questions });
+      logElicitation("declined_by_policy");
+      return { action: "decline" };
     }
-
+    const { abandoned, response } = await parkClaudeCard(managed, runtime, pendingRequest, options.signal, ui);
     if (abandoned) {
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pendingRequest.turnId ?? null,
-        questions: pendingRequest.questions,
-      });
       logElicitation("cancelled");
       return { action: "cancel" };
     }
@@ -53502,7 +53499,7 @@ export function createAgentChatService(args: {
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
-        stage: "initial",
+        mode: "initial",
         latestUserText: autoTitleSeed,
       });
     }

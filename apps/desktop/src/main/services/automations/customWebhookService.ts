@@ -38,6 +38,7 @@ import {
 } from "../../../shared/automationWebhooks";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { INGRESS_EVENT_RETENTION_MS } from "../state/dbMaintenanceApi";
 import { ACCOUNT_RELAY_TOKEN_HEADER, DEFAULT_GITHUB_RELAY_API_BASE_URL } from "../github/githubRelayConfig";
 import { resolvePlaceholders, type TriggerContext } from "./automationService";
 import { createWebhookRelayDrain } from "./webhookRelayDrain";
@@ -94,7 +95,7 @@ type DeliveryRow = {
   id: string;
   hook_id: string;
   rule_id: string | null;
-  via: string;
+  via: AutomationWebhookDeliveryVia;
   method: string;
   received_at: string;
   outcome: string;
@@ -401,16 +402,24 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         row.content_type, row.body_text, row.body_truncated ? 1 : 0, row.prompt_text,
       ],
     );
+    // A delivery still waiting for its run to start is kept past the cap: it
+    // is what a restart replays (`resumeInterruptedDeliveries`), and a burst
+    // behind a long run would otherwise evict exactly the oldest, pending one.
+    // Only within the ingress retention window, after which nothing replays it.
     deps.db.run(
       `delete from automation_webhook_deliveries
         where project_id = ? and hook_id = ?
+          and not (outcome = 'ran' and ingress_event_id is null and received_at >= ?)
           and id not in (
             select id from automation_webhook_deliveries
              where project_id = ? and hook_id = ?
              order by received_at desc, rowid desc
              limit ${DELIVERIES_KEPT_PER_HOOK}
           )`,
-      [deps.projectId, row.hook_id, deps.projectId, row.hook_id],
+      [
+        deps.projectId, row.hook_id, new Date(Date.now() - INGRESS_EVENT_RETENTION_MS).toISOString(),
+        deps.projectId, row.hook_id,
+      ],
     );
     deps.onDeliveriesChanged?.(row.hook_id);
   };
@@ -441,7 +450,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     id: row.id,
     hookId: row.hook_id,
     ruleId: row.rule_id,
-    via: row.via as AutomationWebhookDeliveryVia,
+    via: row.via,
     method: row.method,
     receivedAt: row.received_at,
     outcome: row.outcome as AutomationWebhookDeliveryOutcome,
@@ -778,16 +787,29 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
   let resumedInterrupted = false;
   const resumeInterruptedDeliveries = (): void => {
     if (resumedInterrupted || !deps.listUnstartedEventKeys) return;
-    resumedInterrupted = true;
     const eventKeys = deps.listUnstartedEventKeys();
-    if (!eventKeys.length) return;
-    const rows = eventKeys.flatMap((eventKey) => deps.db.all<DeliveryRow>(
-      `select * from automation_webhook_deliveries
-        where project_id = ? and event_key = ? and outcome = 'ran' and ingress_event_id is null
-        order by received_at asc limit 1`,
-      [deps.projectId, eventKey],
-    ));
-    for (const row of rows) {
+    const rowsByKey = new Map<string, DeliveryRow>();
+    if (eventKeys.length) {
+      for (const row of deps.db.all<DeliveryRow>(
+        `select * from automation_webhook_deliveries
+          where project_id = ? and outcome = 'ran' and ingress_event_id is null
+            and event_key in (${eventKeys.map(() => "?").join(", ")})
+          order by received_at asc`,
+        [deps.projectId, ...eventKeys],
+      )) {
+        if (row.event_key && !rowsByKey.has(row.event_key)) rowsByKey.set(row.event_key, row);
+      }
+    }
+    // Set only once the reads worked, so a locked database on this start
+    // leaves the replay for the next one. A second pass is safe either way:
+    // the ingress claim lets only one dispatch of an event start a run.
+    resumedInterrupted = true;
+    for (const eventKey of eventKeys) {
+      if (!rowsByKey.has(eventKey) && eventKey.startsWith("webhook:")) {
+        deps.logger.warn("automations.webhook_resume_missing_delivery", { eventKey });
+      }
+    }
+    for (const row of rowsByKey.values()) {
       const match = findRuleForHook(row.hook_id);
       if (row.body_truncated === 1 || !match || row.rule_id !== match.rule.id || !row.event_key) {
         // Its body was not kept whole, or its automation is gone or changed.
@@ -810,7 +832,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       deps.logger.info("automations.webhook_delivery_resumed", { hookId: row.hook_id, deliveryId: row.id });
       settleDispatch(row.id, row.hook_id, deps.dispatch({
         hookId: row.hook_id,
-        via: row.via as AutomationWebhookDeliveryVia,
+        via: row.via,
         eventKey: row.event_key,
         automationId: match.rule.id,
         summary: dispatchSummary(match.config, row.event_label),
