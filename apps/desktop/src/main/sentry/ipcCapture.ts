@@ -34,7 +34,7 @@ let lastSuspendAt = 0;
 let lastResumeAt = 0;
 let watchingResume = false;
 
-function watchResume(): void {
+function watchPowerEvents(): void {
   if (watchingResume || !app.isReady()) return;
   watchingResume = true;
   powerMonitor.on("suspend", () => {
@@ -48,29 +48,30 @@ function watchResume(): void {
 /** Asleep this long during one call means the call straddled a sleep. */
 const SLEPT_DURING_CALL_MS = 5_000;
 
-/**
- * A timeout whose call straddled a sleep: nothing hung, the machine was off.
- *
- * Two signals, because the `resume` event alone misses most of them: on wake,
- * the overdue timer fires before `resume` is delivered, and a dark wake
- * (Power Nap) emits no `resume` at all. Timers and `performance.now()` run on
- * the monotonic clock, which stops while macOS sleeps; the wall clock does
- * not. A gap between the two is time spent asleep (Sentry saw 30s timeouts
- * reported 5 to 55 minutes after the call began). Where the monotonic clock
- * counts sleep, the gap stays 0 and only the `resume` check applies.
- */
+/** The deadline an IPC timeout names, or null when the error is not one. */
 function ipcTimeoutLimitMs(error: unknown): number | null {
   const limitMs = Number(IPC_TIMEOUT_MESSAGE.exec(error instanceof Error ? error.message : "")?.[1]);
   return limitMs > 0 ? limitMs : null;
 }
 
+/**
+ * A timeout whose call straddled a sleep: nothing hung, the machine was off.
+ *
+ * Three signals, because the `resume` event alone misses most of them: on
+ * wake, the overdue timer fires before `resume` is delivered, and a dark wake
+ * (Power Nap) emits no `resume` at all. `suspend` comes before the sleep, so
+ * it is already known when the timer fires (Sentry saw 10-minute timeouts
+ * fire 3 to 11 minutes late with no `resume` yet). Timers and
+ * `performance.now()` run on the monotonic clock, which stops while macOS
+ * sleeps; the wall clock does not. A gap between the two is time spent asleep
+ * (Sentry saw 30s timeouts reported 5 to 55 minutes after the call began).
+ * Where the monotonic clock counts sleep, the gap stays 0 and only the event
+ * checks apply.
+ */
 function sleptThroughTimeout(error: unknown, startedAt: number, startedMono: number): boolean {
   const limitMs = ipcTimeoutLimitMs(error);
   if (limitMs == null) return false;
   if (lastResumeAt >= startedAt + limitMs) return true;
-  // The timer fires on wake before `resume` arrives, but `suspend` came
-  // before the sleep. Where the monotonic clock counts sleep, this is the
-  // only sign of it (Sentry: 10-minute timeouts reported 3 to 11 minutes late).
   if (lastSuspendAt >= startedAt) return true;
   const asleepMs = (Date.now() - startedAt) - (performance.now() - startedMono);
   return asleepMs >= SLEPT_DURING_CALL_MS;
@@ -137,7 +138,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
     originalHandle(channel, async (event, ...args) => {
       const startedAt = Date.now();
       const startedMono = performance.now();
-      watchResume();
+      watchPowerEvents();
       try {
         const result = await runInCapturedIpcCall(() => listener(event, ...args));
         const durationMs = Date.now() - startedAt;

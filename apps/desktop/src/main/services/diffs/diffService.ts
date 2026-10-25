@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { parseNameStatusRecords, runGit } from "../git/git";
+import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
 import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
@@ -388,7 +388,7 @@ async function withWorkingTreeIndex<T>(
       if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
     }
     const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
-    if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "git add failed");
+    if (add.exitCode !== 0) throw gitCommandError(add.stderr.trim() || "git add failed");
     return await fn(env);
   } finally {
     try {

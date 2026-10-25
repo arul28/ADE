@@ -695,6 +695,8 @@ const WINDOWS_RESERVED_FILE_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..
  * instead of discarding the output.
  */
 function windowsReservedFileInGitError(raw: string): string | null {
+  // Elsewhere these are ordinary names, and git fails on them for other reasons.
+  if (process.platform !== "win32") return null;
   const file = GIT_UNINDEXABLE_FILE.exec(raw)?.[1];
   if (!file) return null;
   const name = file.split(/[\\/]/).pop() ?? "";
