@@ -8,7 +8,9 @@ import {
   type MacDesktopPermissions,
   type MacDesktopRequestPermissionArgs,
   type MacDesktopRecheckPermissionsArgs,
+  type LinuxDesktopHostFacts,
 } from "../../../shared/types/macDesktop";
+import { readLinuxHostFacts } from "../linuxDesktop/linuxDesktopSetup";
 import { resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
   createMacDesktopDriverClient,
@@ -84,6 +86,8 @@ export type MacDesktopDriverLifecycle = {
   hasDriver(): boolean;
   isDriverRunning(): boolean;
   driverHealth(): MacDesktopDriverHealth | null;
+  /** Linux: the missing system packages the helper last reported, or null. */
+  linuxHostFacts(): LinuxDesktopHostFacts | null;
   /** One stack sample of the running driver, for a capture that stalled. */
   sampleCaptureStall(reason: string): void;
   refreshDriverHealth(): Promise<void>;
@@ -186,6 +190,9 @@ export function createMacDesktopDriverLifecycle(
     }
   };
 
+  /** Linux: what the helper last said is missing on the machine. */
+  let linuxHostFacts: LinuxDesktopHostFacts | null = null;
+
   const refreshDriverHealth = async (target: DriverBackend | null = backend): Promise<void> => {
     if (!target) return;
     const before = new Map(deps.listDisplays().map((display) => [display.laneId, display]));
@@ -195,6 +202,7 @@ export function createMacDesktopDriverLifecycle(
       if (driverLaneIds) reconcileWithDriver(driverLaneIds, before);
       target.client.setVersion(asNullableString(reply.version));
       if (permissionsSupported) applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
+      if (reply.linux !== undefined) linuxHostFacts = readLinuxHostFacts(reply.linux);
       const mode = asNullableString(reply.displayMode);
       if (mode === "virtual" || mode === "offscreen-region" || mode === "unavailable") displayMode = mode;
     } catch (error) {
@@ -299,6 +307,7 @@ export function createMacDesktopDriverLifecycle(
     hasDriver() { return backend !== null; },
     isDriverRunning() { return Boolean(backend?.client.isRunning()); },
     driverHealth() { return backend?.client.getHealth() ?? null; },
+    linuxHostFacts() { return linuxHostFacts; },
     sampleCaptureStall(reason) { backend?.client.sampleCaptureStall?.(reason); },
     refreshDriverHealth: async () => refreshDriverHealth(),
     reconcileDisplays,

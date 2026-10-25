@@ -126,10 +126,10 @@ export function createWindowsDesktopOperations(deps: WindowsDesktopOperationsDep
       if (!current) deps.emit({ type: "lease-changed", laneId, lease: decision.lease });
     },
 
-    /** focus/minimize/close are Windows-only: the Mac helper has no such op. */
+    /** focus/minimize/close: Windows and Linux. The Mac helper has no such op. */
     assertWindowVerbsSupported(verb: string): void {
       deps.assertSupported();
-      if (deps.platform !== "win32") {
+      if (deps.platform !== "win32" && deps.platform !== "linux") {
         throw deps.serviceError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
           `\`ade screen ${verb}\` is Windows-only; this Mac's screen driver has no window ${verb}. Use \`ade screen release\` or \`ade screen quit\` for a lane app instead.`,

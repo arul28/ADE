@@ -163,6 +163,11 @@ export type SeatProviderConfig = {
   }) => number | undefined;
   /** Windows only: the two ops the Mac helper does not answer. */
   windows?: SeatProviderWindowsHooks;
+  /**
+   * Raise, minimize or close one of the lane's own windows, for a seat that
+   * answers the window verbs without the rest of the Windows hooks (Linux).
+   */
+  windowAction?: SeatProviderWindowsHooks["windowAction"];
 };
 
 export function createSeatProvider(
@@ -339,6 +344,11 @@ export function createSeatProvider(
       { timeoutMs: RECORDING_STOP_TIMEOUT_MS },
     ),
   };
+
+  if (config.windowAction) {
+    const windowAction = config.windowAction;
+    provider.windowAction = (args) => windowAction(request, args);
+  }
 
   if (config.windows) {
     const hooks = config.windows;

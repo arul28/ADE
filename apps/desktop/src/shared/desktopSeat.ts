@@ -19,11 +19,14 @@ import type {
 
 /** The product name a host's lane screen goes by. */
 export function desktopProductName(platform: string | null | undefined): string {
-  return platform === "win32" ? "Windows Desktop" : "Mac Desktop";
+  if (platform === "win32") return "Windows Desktop";
+  if (platform === "linux") return "Linux Desktop";
+  return "Mac Desktop";
 }
 
 /**
- * The one rule for {@link DesktopSeatKind}. Any non-Windows host is `mac`. On
+ * The one rule for {@link DesktopSeatKind}. A Linux host is `linux`, any other
+ * non-Windows host is `mac`. On
  * Windows the display's own `seatMode` wins; when it is absent (an older
  * runtime), the host's seat mode or an `offscreen-region` display means shared.
  */
@@ -32,6 +35,7 @@ export function desktopSeatKind(input: {
   display?: { seatMode?: WindowsDesktopSeatMode | null; mode?: MacDesktopDisplayMode | null } | null;
   windowsDesktop?: { seatMode?: WindowsDesktopSeatMode | null } | null;
 }): DesktopSeatKind {
+  if (input.platform === "linux") return "linux";
   if (input.platform !== "win32") return "mac";
   const displaySeat = input.display?.seatMode ?? null;
   if (displaySeat) return displaySeat === "shared" ? "windows-shared" : "windows-private";
@@ -97,8 +101,11 @@ export function windowsDesktopPrivateUnavailableMessage(
  * Pure, and in the shared contract, so the service attaches it and an older
  * runtime's reply can still be summarized by the CLI the same way.
  */
+export const LINUX_DESKTOP_SEAT_DESCRIPTION =
+  "a private virtual screen (its own X display) on this Linux machine; nothing else draws on it, and its pointer and keyboard are the lane's alone";
+
 export function describeDesktopSeat(
-  status: Pick<MacDesktopStatus, "supported" | "display" | "windowsDesktop"> & {
+  status: Pick<MacDesktopStatus, "supported" | "display" | "windowsDesktop" | "linuxDesktop"> & {
     /** A host platform string; a reply from an older runtime carries it as plain text. */
     platform: string | null | undefined;
     displayMode?: MacDesktopDisplayMode;
@@ -106,6 +113,29 @@ export function describeDesktopSeat(
 ): DesktopSeatSummary {
   const product = desktopProductName(status.platform);
   const display = status.display ?? null;
+  if (status.platform === "linux") {
+    const install = status.linuxDesktop?.installCommand ?? null;
+    return {
+      product,
+      seat: display ? "virtual-display" : null,
+      seatDescription: display ? LINUX_DESKTOP_SEAT_DESCRIPTION : null,
+      // The lane's X display has no human pointer on it, so real input is
+      // background input; a person who takes control from a viewer still wins.
+      realInputNeedsLease: false,
+      realInputSentence: display ? "needs no lease (the screen's pointer and keyboard are the lane's own)" : null,
+      privateAvailable: null,
+      privateUnavailable: null,
+      heldBy: null,
+      setupDone: status.linuxDesktop ? status.linuxDesktop.missing.length === 0 : null,
+      passwordSaved: null,
+      locked: null,
+      nextStep: !status.supported
+        ? null
+        : install && !display
+          ? `Ask the user to install what a Linux lane screen needs (ade screen setup --allow-prompt from a trusted ADE client, or on this machine: ${install}). An agent cannot do this step.`
+          : !display ? "ade screen start --text" : null,
+    };
+  }
   if (status.platform !== "win32") {
     const mode = display?.mode ?? null;
     return {

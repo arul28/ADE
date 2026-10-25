@@ -447,6 +447,7 @@ import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
+import { createLinuxDesktopSeatAdapter } from "./services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
@@ -5470,7 +5471,12 @@ app.whenReady().then(async () => {
           logger: macDesktopLogger,
           adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
         })
-        : null,
+        : process.platform === "linux"
+          ? createLinuxDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+          })
+          : null,
       adeHome: process.env.ADE_HOME?.trim() || null,
       // `ade-media` on macOS; this desktop's Chromium engine everywhere, which
       // is what turns a Windows lane's MP4 recording into its demo.

@@ -1403,7 +1403,7 @@ function commandHelpText(key: string): string | undefined {
     key === "screen" || key === "windows-desktop" || key === "windows-desk"
     // On a Windows host the Mac name is an alias of the same Windows screen,
     // and the Mac page (virtual display, ⌘, System Settings) would mislead.
-    || (process.platform === "win32" && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
+    || ((process.platform === "win32" || process.platform === "linux") && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
   ) {
     // The neutral family and the Windows name share one host-neutral help; the
     // Mac-only name keeps its own.
@@ -22696,7 +22696,9 @@ function checkComputerUseReadiness(): ReadinessCheck {
       ? undefined
       : isDarwin
         ? "Install or expose screencapture/open/swift/osascript on PATH, or use an external proof backend."
-        : "Use ADE desktop on macOS or an external proof backend for computer-use capture.",
+        : process.platform === "linux"
+          ? "On Linux, capture from the lane's own screen: ade screen start --text, then ade proof screenshot (or ade screen proof)."
+          : "Use ADE desktop on macOS or an external proof backend for computer-use capture.",
     details: {
       platform: process.platform,
       screenshotReady,

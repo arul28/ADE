@@ -1303,3 +1303,31 @@ with its actions pane showing. Two `route-sweep.mjs` runs and one
 The roster now also reads each chat's spawn kind and parent (from the sidecar
 it already opened, or a tracked CLI row's `resume_metadata_json`); the
 before/after gap is run-order noise, not a speedup.
+
+## Linux lane screen on a 2-vCPU box (2026-10-25)
+
+Not the macOS baseline machine: a boat.dev sandbox (Ubuntu 24.04, x86_64,
+2 vCPU, 4 GB, no GPU), the helper from `native/ADEDesktopDriverLinux` built at
+this branch, one lane screen at 1920x1080 with Google Chrome on a Wikipedia
+article, nothing else running on that display. CPU is the sum of `utime+stime`
+from `/proc` over the window, as % of one core; memory is PSS. Driven through
+the helper's NDJSON wire (a Python harness on the box) for the stream and
+recording rows, and through `ade screen` for the action rows. These are new
+rows: the ceilings are proposals and need approval.
+
+| Metric | How | Before (first build) | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Empty lane screen (Xvfb + openbox), memory | PSS | — | 37 MB | proposed 80 MB |
+| `ade screen start` | wall clock, CLI | — | 1.6 s | proposed 3 s |
+| Observe, Chrome on Wikipedia (266–383 elements) | driver `observe` | — | 0.29–0.59 s | proposed 1.5 s |
+| Live stream, still screen: helper + ffmpeg | 8 s window, one reader | — | 0.4–0.7% + 0.9–1.7% | proposed 3% |
+| Live stream, scrolling (~23–26 fps delivered): helper | 10 s window | 18% (frames over the X socket) | 5.3% (MIT-SHM) | proposed 10% |
+| Live stream, scrolling: ffmpeg (libx264 ultrafast) | same | 22% | 25% | proposed 40% |
+| Frame capture, 1920x1080 | helper timing log | 11–18 ms (GetImage) | 2 ms (MIT-SHM) | proposed 5 ms |
+| Recording while scrolling: ffmpeg | 10 s window, 30 fps MP4 | 44% (superfast) | 35% (ultrafast) | proposed 50% |
+
+Chrome itself is the large cost on such a box (115–165% of a core while
+scrolling or animating, ~710 MB PSS for one tab), because it draws in software;
+nothing in ADE's path comes close. Over the ADE account relay from a Mac, the
+desktop app pinned to the box decoded 38 H.264 frames in a 9 s scroll window
+at ~0.8 Mb/s.

@@ -142,11 +142,15 @@ export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";
 
 /**
- * What a Linux host says instead. Neither seat exists there: it is not a
- * wrong-OS mistake to correct, just not built yet.
+ * What a Linux host says when its brain has no Linux seat adapter (an older
+ * runtime, or a service built without one).
  */
 export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
-  "Lane screens are not supported on Linux yet. Use ade browser for web pages and ade app-control for Electron apps.";
+  "This ADE runtime has no Linux lane screen. Update ADE on this machine.";
+
+/** The one sentence every non-Linux rejection of the Linux seat carries. */
+export const LINUX_DESKTOP_LINUX_ONLY_MESSAGE =
+  "A Linux Desktop screen is only available on a Linux runtime host.";
 
 /** The one sentence every non-Windows rejection carries. */
 export const WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE =
@@ -1068,6 +1072,8 @@ export type MacDesktopStatus = {
    * read it; the Windows cards are the only readers.
    */
   windowsDesktop?: WindowsDesktopStatus | null;
+  /** Linux only: missing system packages and the command that installs them. */
+  linuxDesktop?: LinuxDesktopHostFacts | null;
   /**
    * What an agent needs to read first: which product and seat this is, whether
    * real input needs the lease, and the exact next command when something
@@ -1107,7 +1113,7 @@ export type DesktopSeatSummary = {
  * Which kind of lane screen a host and display describe: a Mac virtual display,
  * the private Windows child session, or the user's shared Windows desktop.
  */
-export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared";
+export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared" | "linux";
 
 // The seat logic (`describeDesktopSeat`, `desktopSeatKind`, the product name,
 // the seat sentences and the next-step table) lives in `../desktopSeat`, and is
@@ -1116,6 +1122,7 @@ export {
   WINDOWS_DESKTOP_NEXT_STEP,
   WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION,
   WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION,
+  LINUX_DESKTOP_SEAT_DESCRIPTION,
   describeDesktopSeat,
   desktopProductName,
   desktopSeatKind,
@@ -1411,7 +1418,33 @@ export function reduceMacDesktopNotParked(
 export type DesktopSeatProviderId =
   | "mac-virtual-display"
   | "windows-child-session"
-  | "windows-shared-desktop";
+  | "windows-shared-desktop"
+  | "linux-xvfb";
+
+/**
+ * What a Linux host's helper reports about the machine: which of the system
+ * packages a lane screen needs are missing, and the one command that installs
+ * them. Null on every other host and from a helper that predates it.
+ */
+export type LinuxDesktopHostFacts = {
+  /** The helper's names: `xvfb`, `openbox`, `dbus`, `at-spi2-core`, `ffmpeg`. */
+  missing: string[];
+  /** `x264` or `openh264`: the H.264 encoder the system ffmpeg offers. */
+  encoder: string | null;
+  /** The shell command that installs what is missing, or null. */
+  installCommand: string | null;
+};
+
+/** `ade screen setup` on a Linux host. */
+export type LinuxDesktopSetupResult = {
+  installed: boolean;
+  alreadyInstalled: boolean;
+  /** The install command, for the user to run when ADE cannot. */
+  command: string | null;
+  /** True when only the user can finish it (sudo needs a password, no root). */
+  needsUser: boolean;
+  message: string;
+};
 
 /** Which Windows seat a lane asked for. */
 export type WindowsDesktopSeatMode = "private" | "shared";
@@ -1857,6 +1890,13 @@ export type MacDesktopServiceApi = {
    * service itself passed it for a local user's explicit click.
    */
   setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
+  /**
+   * Linux only: installs the system packages a lane screen needs (Xvfb, a
+   * window manager, D-Bus, AT-SPI, ffmpeg) when the machine allows it without
+   * a password, or answers with the command for the user to run. Rejects on
+   * any other host.
+   */
+  setupLinuxDesktop(args: { allowPrompt: boolean }): Promise<LinuxDesktopSetupResult>;
   /**
    * Windows only: the user approved taking the private screen from whichever
    * lane holds it. Signs the old holder out (a clean slate) and starts a fresh

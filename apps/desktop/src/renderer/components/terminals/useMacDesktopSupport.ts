@@ -49,8 +49,11 @@ export function desktopToolContext(support: MacDesktopSupport | null): {
   hostPlatform: NodeJS.Platform | null;
 } {
   return {
-    supportsMacDesktop: support ? support.platform === "darwin" && support.supported : null,
-    macDesktopUnsupportedReason: support?.platform === "darwin" ? support.reason : "This lane’s host isn’t a Mac",
+    // A Linux host's lane screen is served by the same pane (as Linux Desktop).
+    supportsMacDesktop: support ? (support.platform === "darwin" || support.platform === "linux") && support.supported : null,
+    macDesktopUnsupportedReason: support?.platform === "darwin" || support?.platform === "linux"
+      ? support.reason
+      : "This lane’s host isn’t a Mac",
     // The same read answers both seats: a Windows host that can host a screen
     // shows Windows Desktop, a Mac host shows Mac Desktop, and only one is
     // available at a time because one platform answers.

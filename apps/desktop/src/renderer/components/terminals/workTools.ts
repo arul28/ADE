@@ -187,14 +187,22 @@ export function workToolContextLabel(id: WorkSidebarTab, context: WorkToolHeader
   return context.status?.line ?? null;
 }
 
-export function workToolLabel(id: WorkSidebarTab): string {
+/**
+ * On a Linux host the lane-screen tool is the same pane as Mac Desktop (the
+ * service, stream and takeover are shared), named for the host it runs on.
+ */
+function hostLaneScreenLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null | undefined): string | null {
+  return id === "mac-desktop" && hostPlatform === "linux" ? desktopProductName("linux") : null;
+}
+
+export function workToolLabel(id: WorkSidebarTab, hostPlatform?: NodeJS.Platform | null): string {
   const definition = WORK_TOOL_DEFINITIONS_BY_ID.get(id);
-  return definition?.tabLabel ?? definition?.label ?? id;
+  return hostLaneScreenLabel(id, hostPlatform) ?? definition?.tabLabel ?? definition?.label ?? id;
 }
 
 /** Card / picker name. Identical to `workToolLabel` for every tool today. */
-export function workToolCardLabel(id: WorkSidebarTab): string {
-  return WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.label ?? id;
+export function workToolCardLabel(id: WorkSidebarTab, hostPlatform?: NodeJS.Platform | null): string {
+  return hostLaneScreenLabel(id, hostPlatform) ?? WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.label ?? id;
 }
 
 /**
@@ -377,14 +385,20 @@ export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolCont
   const platform = context.hostPlatform ?? null;
   if (!platform) return false;
   if (id === "windows-desktop") return platform !== "win32";
-  if (id === "mac-desktop" || id === "ios") return platform !== "darwin";
+  // A Linux host's lane screen is the Mac Desktop pane, named for Linux.
+  if (id === "mac-desktop") return platform !== "darwin" && platform !== "linux";
+  if (id === "ios") return platform !== "darwin";
   return false;
 }
 
 /** The tool cards this host can show, in catalogue order. A chat without a side chat shows no Side chat card. */
 export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WORK_TOOL_DEFINITIONS {
   return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context)
-    && (definition.id !== "side-chat" || context.hasSideChat === true));
+    && (definition.id !== "side-chat" || context.hasSideChat === true))
+    .map((definition) => {
+      const label = hostLaneScreenLabel(definition.id, context.hostPlatform);
+      return label ? { ...definition, label, hint: `${label} is off` } : definition;
+    });
 }
 
 /** The lane-screen tools: one per host platform, never both. */
@@ -403,9 +417,10 @@ export function hostDesktopTool(context: Pick<WorkToolContext, "hostPlatform">):
   return context.hostPlatform === "win32" ? "windows-desktop" : "mac-desktop";
 }
 
-/** "Mac Desktop" or "Windows Desktop", from the one shared naming rule. */
-export function desktopToolProductName(tool: DesktopWorkTool): string {
-  return desktopProductName(tool === "windows-desktop" ? "win32" : "darwin");
+/** "Mac Desktop", "Linux Desktop" or "Windows Desktop", from the one shared naming rule. */
+export function desktopToolProductName(tool: DesktopWorkTool, hostPlatform?: NodeJS.Platform | null): string {
+  if (tool === "windows-desktop") return desktopProductName("win32");
+  return desktopProductName(hostPlatform === "linux" ? "linux" : "darwin");
 }
 
 export function isAvailableWorkSidebarTab(

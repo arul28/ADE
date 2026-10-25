@@ -275,6 +275,7 @@ export async function installSystemdService(
       message: serviceManagerResultText(enable) || "systemctl enable --now failed.",
     };
   }
+  const lingerNote = ensureLinger(run);
   const oldPid = state?.mainPid ?? null;
   const restart = run("systemctl", ["--user", "restart", unitName], { encoding: "utf8" });
   if (restart.status !== 0) {
@@ -321,7 +322,7 @@ export async function installSystemdService(
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: targetPath,
-        message: `ADE service systemd user service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
+        message: `ADE service systemd user service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.${lingerNote}`,
       };
     }
     return handoverFailure(
@@ -336,8 +337,24 @@ export async function installSystemdService(
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: targetPath,
-    message: "ADE service systemd user service installed.",
+    message: `ADE service systemd user service installed.${lingerNote}`,
   };
+}
+
+/**
+ * A systemd user service runs only while its user has a session, so on a
+ * headless server the brain stops at logout and does not come back after a
+ * reboot. Lingering keeps the user's manager running without a login. Best
+ * effort: most distributions let a user set their own linger without a
+ * password; where polkit refuses, the install still succeeds and says how.
+ */
+function ensureLinger(run: ServiceManagerSpawnSync): string {
+  const user = process.env.USER?.trim() || process.env.LOGNAME?.trim() || "";
+  const show = run("loginctl", ["show-user", ...(user ? [user] : []), "--property=Linger"], { encoding: "utf8" });
+  if (show.status === 0 && /Linger=yes/.test(serviceManagerResultText(show))) return "";
+  const enable = run("loginctl", ["enable-linger", ...(user ? [user] : [])], { encoding: "utf8" });
+  if (enable.status === 0) return "";
+  return ` To keep ADE running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
 }
 
 export function uninstallSystemdService(): ServiceManagerResult {

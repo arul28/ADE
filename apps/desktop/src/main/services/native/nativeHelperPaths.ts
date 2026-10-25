@@ -62,6 +62,36 @@ export function resolveWindowsDesktopDriverBinary(input: {
 }
 
 /**
+ * The Linux lane-screen helper (`native/ADEDesktopDriverLinux`, Rust).
+ *
+ * A Linux host runs the headless brain only, so there is no Electron
+ * `resources` directory: the helper ships in the brain's native runtime
+ * archive (`<ADE_RUNTIME_ROOT>/native/ade-desktop-driver`) and is otherwise
+ * found the way the daemon finds every helper. `ADE_LINUX_DESKTOP_DRIVER_PATH`
+ * is the developer override, honored only when it names an executable file.
+ * Returns `null` off Linux rather than throwing.
+ */
+export function resolveLinuxDesktopDriverBinary(input: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
+} = {}): string | null {
+  if ((input.platform ?? process.platform) !== "linux") return null;
+  const env = input.env ?? process.env;
+  const override = env.ADE_LINUX_DESKTOP_DRIVER_PATH?.trim();
+  if (override) {
+    if (isExecutableFile(override)) return override;
+    input.logger?.debug("linux_desktop.driver_path_override_ignored", { path: override });
+  }
+  const runtimeRoot = env.ADE_RUNTIME_ROOT?.trim();
+  const candidates = [
+    ...(runtimeRoot ? [path.join(runtimeRoot, "native", MAC_DESKTOP_DRIVER_BINARY)] : []),
+    ...daemonNativeCandidates(MAC_DESKTOP_DRIVER_BINARY),
+  ];
+  return candidates.find(isExecutableFile) ?? candidates[0] ?? null;
+}
+
+/**
  * The Mac Desktop native helper, resolved in `resources/native`.
  *
  * Every native binary is materialized into the same `resources/native`

@@ -786,6 +786,20 @@ jobs:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: node apps/desktop/scripts/set-release-version.mjs
 
+      # The Linux lane-screen helper (Rust, static musl) ships inside the
+      # runtime's native archive; package-native-deps refuses to package a
+      # Linux runtime without it.
+      - name: Build Linux desktop driver
+        if: ${{ startsWith(matrix.target, 'linux-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rust_target=$([ "${{ matrix.target }}" = "linux-arm64" ] && echo aarch64-unknown-linux-musl || echo x86_64-unknown-linux-musl)
+          sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+          rustup target add "$rust_target"
+          node apps/desktop/scripts/build-linux-desktop-driver.mjs --target ${{ matrix.target }}
+          echo "ADE_REQUIRE_LINUX_DESKTOP_DRIVER=1" >> "$GITHUB_ENV"
+
       - name: Build ADE runtime binary
         env:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
@@ -883,6 +897,9 @@ jobs:
             exit 1
           fi
           node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
+          if [[ "${{ matrix.target }}" == linux-* ]]; then
+            grep -q '^\./native/ade-desktop-driver$' "$archive_listing"
+          fi
 
       - name: Assemble signed Windows standalone runtime bundle
         if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}

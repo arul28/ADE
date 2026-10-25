@@ -39,6 +39,7 @@ export const LANE_DESKTOP_LABELS: Record<DesktopSeatKind, string> = {
   mac: LANE_MAC_DESKTOP_LABEL,
   "windows-private": "Private Windows screen",
   "windows-shared": "Using your main Windows desktop",
+  linux: "Private Linux screen",
 };
 
 /**

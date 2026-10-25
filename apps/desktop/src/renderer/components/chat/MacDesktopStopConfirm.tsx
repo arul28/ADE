@@ -114,6 +114,10 @@ export function MacDesktopStopConfirmHost() {
  * places that stop a screen cannot describe it differently.
  */
 export const STOP_CONFIRM_COPY: Record<DesktopSeatKind, { action: string; consequence: string }> = {
+  linux: {
+    action: "Stop Linux Desktop",
+    consequence: "The lane's screen closes, and the apps open on it quit, even with unsaved work.",
+  },
   mac: {
     action: "Stop Mac Desktop",
     consequence: "Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen.",

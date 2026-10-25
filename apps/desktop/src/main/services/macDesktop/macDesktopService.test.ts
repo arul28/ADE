@@ -650,7 +650,10 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
     ["Mac with a display", "darwin", true, display({}), null, "mac", "virtual-display", true, null],
     ["Mac in the off-screen fallback", "darwin", true, display({ mode: "offscreen-region" }), null, "mac", "offscreen-region", true, null],
     ["Mac with no display yet", "darwin", true, null, null, "mac", null, true, /ade screen start/],
-    ["an unsupported host", "linux", false, null, null, "mac", null, true, null],
+    ["an unsupported host", "freebsd", false, null, null, "mac", null, true, null],
+    // A Linux lane screen is its own X display: no human pointer, no lease.
+    ["Linux with a display", "linux", true, display({}), null, "linux", "virtual-display", false, null],
+    ["Linux with no display yet", "linux", true, null, null, "linux", null, false, /ade screen start/],
     ["Windows private screen", "win32", true, display({ seatMode: "private" }), host({}), "windows-private", "private", false, null],
     ["Windows main desktop", "win32", true, display({ seatMode: "shared" }), host({}), "windows-shared", "shared", true, null],
     ["an older runtime's off-screen display", "win32", true, display({ mode: "offscreen-region" }), host({}), "windows-shared", "shared", true, null],
@@ -664,7 +667,7 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
   ])("%s", (_case, platform, supported, shownDisplay, windowsDesktop, kind, seat, lease, nextStep) => {
     expect(desktopSeatKind({ platform, display: shownDisplay, windowsDesktop })).toBe(kind);
     const summary = describeDesktopSeat({ platform, supported, display: shownDisplay, windowsDesktop });
-    expect(summary.product).toBe(platform === "win32" ? "Windows Desktop" : "Mac Desktop");
+    expect(summary.product).toBe(platform === "win32" ? "Windows Desktop" : platform === "linux" ? "Linux Desktop" : "Mac Desktop");
     expect(summary.seat).toBe(seat);
     // A seat says whether real input needs a lease; no seat, no sentence.
     if (seat) expect(summary.realInputNeedsLease).toBe(lease);
@@ -677,8 +680,9 @@ describe("desktop seat summary (the status `seat` every text surface leads with)
 describe("macDesktopService capability gate", () => {
   it.each([
     ["Windows", "win32", /macOS/],
-    // Linux has no seat at all: it says so instead of "needs macOS".
-    ["Linux", "linux", /not supported on Linux/],
+    // A Linux host whose service has no Linux seat adapter says to update,
+    // instead of "needs macOS".
+    ["Linux", "linux", /no Linux lane screen/],
   ] as const)("getStatus answers on %s with supported:false and an unsupported driver", async (_host, platform, reason) => {
     const { service, driver } = makeService({ platform });
     const status = await service.getStatus({ laneId: "lane-1" });

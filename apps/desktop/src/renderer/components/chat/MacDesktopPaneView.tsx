@@ -155,7 +155,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool,
   } = controller;
   const windowsHost = desktopTool === "windows-desktop" || status?.platform === "win32";
-  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop");
+  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop", status?.platform ?? null);
   /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
   const seatKind = desktopSeatKind({
     platform: windowsHost ? "win32" : status?.platform,

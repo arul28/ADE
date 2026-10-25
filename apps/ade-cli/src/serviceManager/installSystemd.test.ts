@@ -99,7 +99,7 @@ function systemdSpawn(options: {
 const INACTIVE: SystemdShowState = { activeState: "inactive", mainPid: 0 };
 
 function systemdCallArgs(calls: Array<{ command: string; args: string[] }>): string[][] {
-  return calls.filter((call) => call.args[1] !== "show").map((call) => call.args);
+  return calls.filter((call) => call.command === "systemctl" && call.args[1] !== "show").map((call) => call.args);
 }
 
 describe("systemd service install", () => {

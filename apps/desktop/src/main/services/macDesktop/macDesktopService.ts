@@ -89,6 +89,7 @@ import {
   type WindowsDesktopStatus,
   type WindowsDesktopTakeoverArgs,
   MAC_DESKTOP_ANSWER_CODES,
+  type LinuxDesktopSetupResult,
 } from "../../../shared/types/macDesktop";
 import type {
   ComputerUseArtifactIngestionRequest,
@@ -129,6 +130,7 @@ import {
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
 import { createWindowsDesktopOperations } from "../windowsDesktop/windowsDesktopOperations";
+import { installLinuxDesktopPackages, linuxDesktopInstallCommand } from "../linuxDesktop/linuxDesktopSetup";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -352,10 +354,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const handoffPath = deps.handOffAppsOnExit && seatSupported && seatAdapter.id === "mac-virtual-display"
     ? path.join(deps.projectRoot, MAC_DESKTOP_HANDOFF_FILE)
     : null;
-  // A Linux host has no seat at all; say that rather than "needs macOS".
-  const linuxHost = platform === "linux";
+  // A Linux host whose brain has no Linux adapter says so rather than
+  // "needs macOS"; with the adapter, the adapter's own words apply.
+  const linuxHost = platform === "linux" && seatAdapter.platform !== "linux";
   const unsupportedMessage = linuxHost ? LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE : seatAdapter.unsupportedMessage;
-  const unsupportedTitle = linuxHost ? "Lane screens are not on Linux yet" : seatAdapter.unsupportedTitle;
+  const unsupportedTitle = linuxHost ? "Update ADE for Linux lane screens" : seatAdapter.unsupportedTitle;
   const captureOutcome = (outcome: MacDesktopAnalyticsProperties["outcome"]): void => {
     deps.captureAnalytics?.({ action: "mac_desktop", outcome });
   };
@@ -832,7 +835,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // Windows only. The native event carries only a hint (typically
         // `{locked}`); the authoritative shape is `windows.status`, so this
         // refreshes through the provider and republishes the normalized status.
-        if (seatAdapter.id === "mac-virtual-display") return;
+        if (seatAdapter.platform !== "win32") return;
         const provider = driverLifecycle.activeProvider();
         if (!provider?.windowsStatus) return;
         void provider.windowsStatus().then((status) => {
@@ -997,6 +1000,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       responsibleAppName: responsibleAppName(),
       signing: signingState(),
       windowsDesktop: windowsOps.withOperation(await readWindowsDesktopStatus()),
+      ...(seatAdapter.platform === "linux" ? { linuxDesktop: driverLifecycle.linuxHostFacts() } : {}),
     };
     return { ...base, seat: describeDesktopSeat(base) };
   };
@@ -1008,7 +1012,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    * `windows.status` degrades to null instead of failing the whole status.
    */
   const readWindowsDesktopStatus = async (): Promise<WindowsDesktopStatus | null> => {
-    if (seatAdapter.id === "mac-virtual-display") return null;
+    if (seatAdapter.platform !== "win32") return null;
     // Never queue a read behind a long create: answer from the last real one.
     if (windowsLongOperationInFlight > 0) return lastWindowsDesktopStatus;
     const provider = driverLifecycle.activeProvider();
@@ -1030,7 +1034,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (requested && requested in MAC_DESKTOP_RESOLUTION_PRESETS) return requested;
     const stored = deps.readSetting?.<string>(MAC_DESKTOP_RESOLUTION_SETTING_KEY) ?? null;
     if (stored && stored in MAC_DESKTOP_RESOLUTION_PRESETS) return stored as MacDesktopResolutionPreset;
-    return MAC_DESKTOP_DEFAULT_RESOLUTION;
+    // A Linux screen is drawn and encoded in software, usually on a small
+    // server: 1080p unless the user picked a size.
+    return seatAdapter.platform === "linux" ? "1080p" : MAC_DESKTOP_DEFAULT_RESOLUTION;
   };
 
   /**
@@ -1083,9 +1089,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     // policy boundary, rather than letting an agent's ask reach the driver.
     // The helper also enforces all of this; a pre-check keeps a held or locked
     // host from spending the private sign-in timeout before failing.
-    const windows = seatAdapter.id === "mac-virtual-display" ? null : await readWindowsDesktopStatus();
+    const windows = seatAdapter.platform === "win32" ? await readWindowsDesktopStatus() : null;
     let seatMode: WindowsDesktopSeatMode | undefined;
-    if (seatAdapter.id !== "mac-virtual-display") {
+    if (seatAdapter.platform === "linux" && args.seatMode === "shared") {
+      throw new MacDesktopError(
+        "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+        "A Linux lane screen is always its own private display; there is no shared desktop to use. Run: ade screen start --text",
+      );
+    }
+    if (seatAdapter.platform === "win32") {
       seatMode = args.seatMode ?? "private";
       if (seatMode === "private") {
         // The derived reason is the one place the state becomes a refusal, so
@@ -1139,13 +1151,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       name: seatAdapter.displayName(laneName),
       width: size.width,
       height: size.height,
-      scale: seatAdapter.platform === "win32" ? 1 : 2,
+      scale: seatAdapter.platform === "darwin" ? 2 : 1,
       ...(seatMode ? { seatMode } : {}),
       ...(args.sharedDesktopConsent === true ? { sharedDesktopConsent: true } : {}),
     };
     // The private sign-in wait serializes the helper's requests; status reads
     // fall back to the cache for its duration.
-    const longWindowsCreate = seatAdapter.id !== "mac-virtual-display" && seatMode === "private";
+    const longWindowsCreate = seatAdapter.platform === "win32" && seatMode === "private";
     if (longWindowsCreate) windowsLongOperationInFlight += 1;
     let reply: DriverDisplayReply;
     // Only a move reported during THIS create may be applied to its reply.
@@ -1168,7 +1180,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       mode: (reply.mode as MacDesktopDisplayMode) ?? driverLifecycle.displayMode,
       width: asNumber(reply.width, size.width),
       height: asNumber(reply.height, size.height),
-      scale: asNumber(reply.scale, seatAdapter.platform === "win32" ? 1 : 2),
+      scale: asNumber(reply.scale, seatAdapter.platform === "darwin" ? 2 : 1),
       origin: {
         x: asNumber(asRecord(reply.origin).x, 0),
         y: asNumber(asRecord(reply.origin).y, 0),
@@ -1380,7 +1392,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
      */
     async setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult> {
       assertSupported();
-      if (seatAdapter.id === "mac-virtual-display") {
+      if (seatAdapter.platform !== "win32") {
         throw new MacDesktopError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
           "Windows Desktop setup is only available on a Windows runtime host.",
@@ -1413,6 +1425,40 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     },
 
     /**
+     * Linux only: installs the system packages a lane screen needs. CTO-only
+     * (it changes the machine), and never prompts: with no root and no
+     * passwordless sudo it answers with the command for the user to run.
+     * `allowPrompt` false only reports what would be installed.
+     */
+    async setupLinuxDesktop(args: { allowPrompt: boolean }): Promise<LinuxDesktopSetupResult> {
+      assertSupported();
+      if (seatAdapter.platform !== "linux") {
+        throw new MacDesktopError(
+          "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+          "Linux Desktop setup is only available on a Linux runtime host.",
+        );
+      }
+      await driverLifecycle.ensureDriver();
+      const missing = driverLifecycle.linuxHostFacts()?.missing ?? [];
+      if (!args.allowPrompt) {
+        const command = linuxDesktopInstallCommand(missing);
+        return {
+          installed: missing.length === 0,
+          alreadyInstalled: missing.length === 0,
+          command,
+          needsUser: false,
+          message: missing.length
+            ? `Missing: ${missing.join(", ")}. Run ade screen setup --allow-prompt to install, or on this machine: ${command}`
+            : "Everything a Linux lane screen needs is installed.",
+        };
+      }
+      const result = await installLinuxDesktopPackages(missing);
+      // The helper re-checks what is on the machine on every ping.
+      await driverLifecycle.refreshDriverHealth();
+      return result;
+    },
+
+    /**
      * Windows only: the user approved taking the private screen from whichever
      * lane holds it. Signs the old holder out (a clean slate) and starts a
      * fresh private seat for this lane.
@@ -1422,7 +1468,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
      */
     async takeoverWindowsDesktop(args: WindowsDesktopTakeoverArgs): Promise<MacDesktopStatus> {
       assertSupported();
-      if (seatAdapter.id === "mac-virtual-display") {
+      if (seatAdapter.platform !== "win32") {
         throw new MacDesktopError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
           "Windows Desktop takeover is only available on a Windows runtime host.",

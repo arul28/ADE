@@ -408,6 +408,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
    *   its own pointer and keyboard, so nothing of the user's moves. A person
    *   who took control from the pane, or another chat holding the lease, still
    *   wins: those refusals stand.
+   * - Linux: no lease, for the same reason as Windows private: the lane's X
+   *   display has its own pointer and keyboard.
    * - Windows shared: the lease, taken for the acting chat on the strength of
    *   the user's shared-seat consent (only a consented lane has a shared seat).
    */
@@ -418,7 +420,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     controllerId: string | null | undefined,
   ): Promise<void> => {
     const seat = seatOf(laneId, display);
-    if (seat === "windows-private") {
+    // A Linux lane screen is its own X display: no human pointer is on it,
+    // so its real input is the private-seat case.
+    if (seat === "windows-private" || seat === "linux") {
       const decision = leases.checkRealInput({ laneId, holderId });
       if (decision.ok || decision.code === MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE) return;
       throw deps.serviceError(decision.code, decision.message);

@@ -44,6 +44,7 @@ import {
   type DesktopSeatSummary,
   type MacDesktopDisplay,
   type WindowsDesktopStatus,
+  type LinuxDesktopHostFacts,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
   asString,
@@ -93,7 +94,9 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
     MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
     (host) => host === "win32"
       ? "This needs a Windows host with the ADE desktop driver installed (or the verb is Mac-only). Check: ade screen status --text"
-      : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
+      : host === "linux"
+        ? "This verb is not available on a Linux lane screen (claim, release and present are Mac-only; every window on a Linux screen is already the lane's). Check: ade screen status --text"
+        : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
   ],
   [
     MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
@@ -340,8 +343,10 @@ export function formatMacDesktopStatus(value: unknown): string {
   const windows = firstArray(status, ["windows"]);
   const lanes = firstArray(status, ["lanes"]);
   const windowsDesktop = firstRecord(status, ["windowsDesktop"]);
+  const linuxDesktop = firstRecord(status, ["linuxDesktop"]);
   const platform = hostPlatform(status);
   const windowsHost = platform === "win32";
+  const linuxHost = platform === "linux";
   // The service attaches the summary; an older runtime's reply is summarized
   // here with the same shared function, field by field, so a summary from a
   // runtime that predates a field still gets it.
@@ -350,6 +355,7 @@ export function formatMacDesktopStatus(value: unknown): string {
     supported: status.supported === true,
     display: display as MacDesktopDisplay | null,
     windowsDesktop: windowsDesktop as WindowsDesktopStatus | null,
+    linuxDesktop: linuxDesktop as LinuxDesktopHostFacts | null,
   });
   const seat: DesktopSeatSummary = { ...derived, ...(firstRecord(status, ["seat"]) as Partial<DesktopSeatSummary> | null) };
   const operation = windowsDesktop ? firstRecord(windowsDesktop, ["operation"]) : null;
@@ -387,6 +393,16 @@ export function formatMacDesktopStatus(value: unknown): string {
     ...seatRows,
     ["session", display?.displayId],
   ];
+  const missing = linuxDesktop && Array.isArray(linuxDesktop.missing)
+    ? linuxDesktop.missing.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const linuxRows: Array<[string, unknown]> = [
+    ...seatRows,
+    ["display", display?.displayId != null ? `:${display.displayId}` : null],
+    ["encoder", linuxDesktop ? asString(linuxDesktop.encoder) ?? "none (install ffmpeg)" : null],
+    ["missing packages", missing.length ? missing.join(", ") : linuxDesktop ? "none" : null],
+    ["install with", linuxDesktop ? asString(linuxDesktop.installCommand) : null],
+  ];
   const shared: Array<[string, unknown]> = [
     ["size", display?.width && display?.height ? `${display.width}x${display.height}` : null],
     ["windows", windows.length || display?.windowCount],
@@ -409,7 +425,7 @@ export function formatMacDesktopStatus(value: unknown): string {
   ];
   const header = renderKeyValues(screenTitle(status), [
     ...common,
-    ...(windowsHost ? windowsRows : macRows),
+    ...(windowsHost ? windowsRows : linuxHost ? linuxRows : macRows),
     ...shared,
     ...(windowsHost ? windowsFacts : []),
     ["host is local", status.hostIsLocal],
@@ -422,7 +438,7 @@ export function formatMacDesktopStatus(value: unknown): string {
     : [header];
   // The Windows shared seat reports `offscreen-region` too; its seat line
   // already says what that means there.
-  if (!windowsHost && macDesktopIsOffscreenRegion(display, status)) {
+  if (!windowsHost && !linuxHost && macDesktopIsOffscreenRegion(display, status)) {
     sections.push(
       "",
       "Windows are parked in an off-screen region of the main display — this Mac has no virtual display.",

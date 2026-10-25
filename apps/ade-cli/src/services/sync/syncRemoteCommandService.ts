@@ -6553,8 +6553,8 @@ function registerMacDesktopRemoteCommands({
     // EITHER seat: the private screen, or the user's main desktop ("Using your
     // main Windows desktop"), so the user always has the way out from any
     // trusted device. `stopPrivate` above stays for phones that predate this.
-    // A Mac lane's display is still not a viewer's to stop: that takes the
-    // controller-only `macDesktop.stop`.
+    // A Linux lane's screen too. A Mac lane's display is still not a viewer's
+    // to stop: that takes the controller-only `macDesktop.stop`.
     register("macDesktop.stopSeat", {
       viewerAllowed: true,
       controllerAllowed: true,
@@ -6562,10 +6562,13 @@ function registerMacDesktopRemoteCommands({
     }, async (payload) => {
       const laneId = requireString(payload.laneId, "macDesktop.stopSeat requires laneId.");
       const status = await macDesktopService.getStatus({ laneId });
-      if (status.platform !== "win32" || !status.windowsDesktop) {
-        throw new Error("Only a Windows screen can be stopped by a watch-only viewer.");
+      // A Linux lane screen is the lane's own X display on a remote machine,
+      // like the private Windows screen: any trusted viewer may stop it.
+      const linux = status.platform === "linux";
+      if (!linux && (status.platform !== "win32" || !status.windowsDesktop)) {
+        throw new Error("Only a Windows or Linux screen can be stopped by a watch-only viewer.");
       }
-      if (!status.display) throw new Error("This lane has no Windows screen to stop.");
+      if (!status.display) throw new Error(`This lane has no ${linux ? "Linux" : "Windows"} screen to stop.`);
       return await macDesktopService.stop({ laneId });
     });
 
