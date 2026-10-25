@@ -329,6 +329,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDetach", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.devicePromote", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // Removing runtimes shuts down, moves or erases every simulator on them first.
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
@@ -350,6 +351,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   // Waits on the user's answer to the shared-seat card, then the start.
   ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // Waits on the user's answer to the real-input card (withdrawn at 170 s).
+  ["mac_desktop.requestInputLease", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   // See WINDOWS_DESKTOP_TYPE_TIMEOUT_MS.
   ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_TIMEOUT_MS],
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],

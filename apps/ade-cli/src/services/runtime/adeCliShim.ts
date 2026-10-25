@@ -132,6 +132,47 @@ export function renderAdeCliShim(args: {
 }
 
 /**
+ * The extensionless `ade` a Windows brain writes next to `ade.cmd`, for Git
+ * Bash. Git Bash looks up a bare `ade` without trying `.cmd`, so it found
+ * nothing. It also skips cmd.exe, which ends a command line at its first line
+ * feed and cut every multi-line `--prompt` or `--text` to one line. It sets
+ * the same defaults as the `.cmd` and runs the same entry with "$@".
+ *
+ * Paths use forward slashes, which Git Bash runs as Windows paths. The brain
+ * defaults keep their own spelling: a named pipe needs its backslashes.
+ */
+export function renderAdeCliGitBashShim(args: {
+  entryPath: string;
+  execPath: string;
+  brain: AdeCliShimBrain;
+  nodeModulePaths?: readonly string[];
+}): string {
+  const toSh = (value: string): string => value.replace(/\\/g, "/");
+  const nodeModulePaths = (args.nodeModulePaths ?? []).filter((entry) => shimSafe(entry, "linux")).map(toSh);
+  const isJsEntry = /\.(?:cjs|mjs|js)$/i.test(args.entryPath);
+  const defaults = [
+    ["ADE_HOME", args.brain.adeHome],
+    ["ADE_RUNTIME_SOCKET_PATH", args.brain.socketPath],
+  ].filter((entry): entry is [string, string] => shimSafe(entry[1], "linux"));
+  const lines = ["#!/bin/sh"];
+  if (defaults.length) {
+    lines.push(
+      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
+      ...defaults.map(([name, value]) => `  ${name}=${shellQuote(value)}; export ${name}`),
+      "fi",
+    );
+  }
+  if (isJsEntry && nodeModulePaths.length) {
+    // Node on Windows splits NODE_PATH on `;`.
+    lines.push(`NODE_PATH=${shellQuote(nodeModulePaths.join(";"))}\${NODE_PATH:+;$NODE_PATH}; export NODE_PATH`);
+  }
+  lines.push(isJsEntry
+    ? `ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(toSh(args.execPath))} ${shellQuote(toSh(args.entryPath))} "$@"`
+    : `exec ${shellQuote(toSh(args.entryPath))} "$@"`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
  * One shim directory per (CLI, runtime, brain). Two brains that share a CLI
  * entry, such as a lane's dev brain and the installed one, get separate shims
  * and never overwrite each other's defaults.

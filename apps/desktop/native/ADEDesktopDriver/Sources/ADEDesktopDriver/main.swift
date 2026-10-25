@@ -924,8 +924,14 @@ final class DriverRuntime: NSObject {
             log("observe on lane \(laneId) captured no frame: \(error)")
         }
 
+        // A modal panel blocks its app, so it is what the agent has to read
+        // first: panels walk before ordinary windows, and the element cap
+        // never cuts the alert off behind a long document window.
+        let walkOrder = parked.enumerated()
+            .sorted { ($0.element.layer, -$0.offset) > ($1.element.layer, -$1.offset) }
+            .map(\.element)
         let observation = accessibility.observe(
-            windows: parked,
+            windows: walkOrder,
             limit: limit,
             windowControl: windows,
             timeBudget: AXTimeouts.observeWalk
@@ -978,6 +984,10 @@ final class DriverRuntime: NSObject {
         ]
         if let captureFailure {
             result["captureError"] = .string(captureFailure)
+        }
+        let warnings = windows.offLaneWarnings(laneId: laneId)
+        if !warnings.isEmpty {
+            result["warnings"] = .array(warnings.map(JSONValue.string))
         }
         return result
     }

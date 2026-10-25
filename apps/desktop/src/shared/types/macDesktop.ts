@@ -300,6 +300,11 @@ export type MacDesktopWindow = {
   /** Set when this app refuses to run twice, so one lane holds it at a time. */
   singleInstance: boolean;
   /**
+   * Mac only: the window-server layer. 0 is an ordinary window, 3 a floating
+   * palette, 8 an app-modal alert or panel. Absent from an older driver.
+   */
+  layer?: number;
+  /**
    * The owning app's icon, base64 PNG (32x32), for lists that name apps.
    *
    * Sent on the FIRST window of each bundle id in a reply and null on the
@@ -451,6 +456,12 @@ export type MacDesktopObservation = {
   truncatedReason?: MacDesktopWalkStop | null;
   /** Apps that did not answer accessibility during this observation. */
   stalledApps?: string[];
+  /**
+   * Things the agent must know about this lane's screen, one sentence each:
+   * for example a new window of a lane app that opened on the user's display
+   * and could not be moved. Absent when there is nothing to say.
+   */
+  warnings?: string[];
   /** One line describing what produced this frame, e.g. "click · Sign in". */
   caption: string | null;
   /** The host that captured it, so text output can name the right screen. */

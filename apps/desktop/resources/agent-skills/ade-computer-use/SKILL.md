@@ -279,6 +279,17 @@ watching it, and `stop` no longer quits it. A claimed window goes back alone.
 
 Window ids die with their process. Re-run `windows` rather than caching one.
 
+Panels and alerts of the lane's apps are windows too. `windows` and `observe`
+mark them `[panel]` (a floating palette) or `[modal panel]` (an alert or dialog
+that blocks its app until it closes). Their elements come first in `observe`,
+and `press` with no target sends the key to the modal panel when one is up. A
+new panel that opens on the user's screen is moved onto the lane's display; if
+ADE cannot move it, `observe` ends with a `Warning:` line naming the window.
+Then do not act on it: ask the user to close it or drag it onto the lane's
+screen. A macOS Open/Save panel of a sandboxed app is drawn by the system, not
+the app; ADE lists it when it sits on the lane's display but cannot claim or
+move it.
+
 `open` answers before the app has a window (`watching: yes`, no windows yet).
 Wait for it before you observe — `ade mac-desktop wait --label "<window title>"
 --timeout 8000 --text`, or re-run `windows`. A document app such as TextEdit

@@ -5644,6 +5644,21 @@ app.whenReady().then(async () => {
       db,
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
+      readChatTurnStates: async (sessionIds) => {
+        const summaries = await agentChatService.listSessions(undefined, {
+          sessionIds,
+          includeArchived: false,
+          includeAutomation: true,
+          includeIdentity: true,
+          includeSideChats: true,
+        });
+        return summaries.map((summary) => ({
+          sessionId: summary.sessionId,
+          status: summary.status,
+          ...(summary.runtimeAlive !== undefined ? { runtimeAlive: summary.runtimeAlive } : {}),
+          ownedElsewhere: summary.runtimeOwnedElsewhere != null,
+        }));
+      },
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

@@ -231,6 +231,29 @@ a chat you do not own:
   person (money, credentials, a product call) are theirs: ask them, or leave
   the card for them. Approvals and secret questions are never relayed to you.
   Approvals are the person's to answer unless you were told you may approve.
+- When a subagent waits on a card only the person can answer (a real-input
+  lease, a consent, a secret), you get one message that says so, also from
+  another project or machine. `ade chat status` shows the same as `only the
+  user can answer this`. That chat is waiting, not stuck: do not start a
+  second chat for the same work or on the same lane. Tell the person, then
+  carry on with other work.
+- **Long or multi-line text goes through a file or stdin, not an argument.**
+  `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
+  <session> --text-file -` read stdin (or a path instead of `-`). The file is
+  read on this machine, so this works with `--machine` too:
+
+  ```bash
+  ade chat message "$ADE_PARENT_CHAT_SESSION_ID" --kind auto --text-file - <<'REPORT_END'
+  ...the report...
+  REPORT_END
+  ```
+
+  On Windows, never pass multi-line text as an argument: `ade.cmd` runs
+  through cmd.exe, which cuts the command at the first line break, so the
+  other agent gets only the first line. In PowerShell, write the text to a
+  file (`$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $text
+  -Encoding utf8`) and pass `--text-file $f`. In Git Bash, call `ade` (not
+  `ade.cmd`) and use a here-doc as above.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
@@ -727,7 +750,10 @@ them yourself.
 If `command -v ade` fails (PowerShell: `Get-Command ade`):
 
 1. Try `${ADE_CLI_PATH:-}` if set (PowerShell: `& $env:ADE_CLI_PATH ...`).
+   On Windows it is `ade.cmd`; from Git Bash prefer step 2.
 2. Try `${ADE_CLI_BIN_DIR:-}/ade` if set (PowerShell: `& "$env:ADE_CLI_BIN_DIR\ade.cmd" ...`).
+   On Windows that folder holds `ade.cmd` for PowerShell and cmd.exe and an
+   `ade` script for Git Bash.
 3. In an ADE source checkout, after confirming it exists, use `node apps/ade-cli/dist/cli.cjs ...`.
 
 The normal reason to skip ADE CLI is that it is truly unreachable after these fallbacks.

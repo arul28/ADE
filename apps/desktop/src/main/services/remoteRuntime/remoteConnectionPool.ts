@@ -227,6 +227,7 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Waits on the user's answer to the shared-seat card, then the start.
   ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.requestInputLease", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A long Windows `type` is typed one character at a time.
   ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
