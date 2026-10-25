@@ -1,12 +1,14 @@
 /**
  * The pictures ADE ships as scenes. Files live in `public/scenes/`, with a
- * small copy in `public/scenes/thumbs/` for Settings tiles; ids are prefixed
- * `ade:` so they can never collide with a user's own (`user:`).
+ * small copy in `public/scenes/thumbs/` for Settings tiles and colour
+ * sampling; ids are prefixed `ade:` so they can never collide with a user's
+ * own (`user:`).
  *
  * `position` is the CSS background-position that keeps the subject in frame
  * when the window's aspect ratio crops the picture. `width` and `height` are
  * the file's pixels, so `sceneFitsScreen` can tell which pictures stay sharp
- * on the screen in use.
+ * on the screen in use. `small` is a 2560×1600 copy in `public/scenes/2560/`
+ * that a screen it covers loads instead (`sceneSrcForScreen`).
  */
 
 import { isCssZoomedBrowserSurface } from "../lib/webClientMode";
@@ -19,10 +21,16 @@ export type BundledScene = {
   position: string;
   width: number;
   height: number;
+  small?: { src: string; width: number; height: number };
 };
 
 function scene(file: string, name: string, width: number, height: number, position = "50% 50%"): BundledScene {
   return { id: `ade:${file}`, name, src: `./scenes/${file}.jpg`, thumb: `./scenes/thumbs/${file}.jpg`, position, width, height };
+}
+
+function withSmallCopy(picture: BundledScene): BundledScene {
+  const file = picture.id.slice("ade:".length);
+  return { ...picture, small: { src: `./scenes/2560/${file}.jpg`, width: 2560, height: 1600 } };
 }
 
 export const BUNDLED_SCENES: readonly BundledScene[] = [
@@ -33,20 +41,12 @@ export const BUNDLED_SCENES: readonly BundledScene[] = [
   scene("rooftop-city", "Rooftop city", 5120, 1440),
   scene("tree-village", "Tree village", 5120, 1440),
   // Standard (16:10).
-  scene("mountain-vista", "Mountain vista", 3840, 2400),
-  scene("alpine-chalet", "Alpine chalet", 3840, 2400),
-  scene("blossom-geese", "Blossom geese", 3840, 2400),
-  scene("bay-city", "Bay city", 3840, 2400),
-  scene("neon-city", "Neon city", 3840, 2400),
-  scene("star-destroyer", "Star destroyer", 3840, 2400),
-  // The first set. Small, so they only count as a fit on small screens.
-  scene("fuji-street", "Fuji street", 2140, 1200, "50% 45%"),
-  scene("alpine-path", "Alpine path", 1308, 736, "50% 40%"),
-  scene("castle-lake", "Castle lake", 1256, 572, "60% 45%"),
-  scene("cherry-blossom", "Cherry blossom", 1472, 736, "60% 40%"),
-  scene("storm-field", "Storm field", 1595, 736, "55% 45%"),
-  scene("midnight-city", "Midnight city", 1330, 736, "50% 40%"),
-  scene("web-swing", "Web swing", 1308, 736),
+  withSmallCopy(scene("mountain-vista", "Mountain vista", 3840, 2400)),
+  withSmallCopy(scene("alpine-chalet", "Alpine chalet", 3840, 2400)),
+  withSmallCopy(scene("blossom-geese", "Blossom geese", 3840, 2400)),
+  withSmallCopy(scene("bay-city", "Bay city", 3840, 2400)),
+  withSmallCopy(scene("neon-city", "Neon city", 3840, 2400)),
+  withSmallCopy(scene("star-destroyer", "Star destroyer", 3840, 2400)),
 ];
 
 export function findBundledScene(id: string | null | undefined): BundledScene | null {
@@ -77,6 +77,17 @@ export function sceneFitsScreen(picture: ScreenPixels, screen: ScreenPixels): bo
   const screenShape = screen.width / screen.height;
   const kept = Math.min(pictureShape, screenShape) / Math.max(pictureShape, screenShape);
   return upscale <= MAX_UPSCALE && kept >= MIN_SHAPE_KEPT;
+}
+
+/**
+ * The file to draw on this screen: the 2560×1600 copy when it covers the
+ * screen without stretching (1080p, 1440p), else the full picture. A decoded
+ * picture costs memory for every pixel, so a screen that cannot show 3840
+ * pixels does not pay for them.
+ */
+export function sceneSrcForScreen(picture: BundledScene, screen: ScreenPixels): string {
+  const small = picture.small;
+  return small && screen.width <= small.width && screen.height <= small.height ? small.src : picture.src;
 }
 
 /**

@@ -34,7 +34,10 @@ it.each([
   [false, OLD_SHUFFLE_DEFAULT, { dim: 20 }, "shuffle", true],
   [true, OLD_SHUFFLE_DEFAULT, { matchTheme: false }, "shuffle", true],
   [false, OLD_SHUFFLE_DEFAULT, { showImage: false }, "shuffle", false],
-  [true, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "ade:lake", choiceMade: true }, "image", true],
+  [true, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "ade:snow-range", choiceMade: true }, "image", true],
+  [false, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "user:abc", choiceMade: true }, "image", true],
+  // A pick of a picture ADE stopped shipping shuffles instead of showing the gradient.
+  [false, OLD_SHUFFLE_DEFAULT, { mode: "image", imageId: "ade:castle-lake", choiceMade: true }, "shuffle", true],
 ])("keeps a chosen scene on web=%s from %j with %j", (web, stored, preference, mode, showImage) => {
   window.__adeWebClient = web;
   const normalized = normalizeScenePreferences(stored === null ? undefined : { ...stored, ...preference });

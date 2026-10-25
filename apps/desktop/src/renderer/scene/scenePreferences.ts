@@ -1,4 +1,5 @@
 import { isWebClientMode } from "../lib/webClientMode";
+import { findBundledScene } from "./sceneLibrary";
 
 /**
  * What fills the window behind the top bar, the welcome screen and the new
@@ -126,7 +127,10 @@ export function normalizeScenePreferences(value: unknown): ScenePreferences {
   const mode: SceneMode = raw.mode === "image" || raw.mode === "shuffle" || raw.mode === "gradient" || raw.mode === "plain"
     ? raw.mode
     : DEFAULT_SCENE_PREFERENCES.mode;
-  const imageId = typeof raw.imageId === "string" && raw.imageId.trim() ? raw.imageId.trim().slice(0, 120) : null;
+  const storedId = typeof raw.imageId === "string" && raw.imageId.trim() ? raw.imageId.trim().slice(0, 120) : null;
+  // A bundled picture ADE no longer ships reads as no pick, so its user
+  // shuffles instead of landing on the gradient.
+  const imageId = storedId && storedId.startsWith("ade:") && !findBundledScene(storedId) ? null : storedId;
   const texture: SceneTexture = raw.texture === "none" || raw.texture === "grain" || raw.texture === "dots"
     ? raw.texture
     : DEFAULT_SCENE_PREFERENCES.texture;

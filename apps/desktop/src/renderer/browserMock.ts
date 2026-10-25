@@ -1122,7 +1122,7 @@ if (BROWSER_MOCK_DEMO && typeof window !== "undefined") {
       const scene = {
         ...DEFAULT_SCENE_PREFERENCES,
         mode: "image" as const,
-        imageId: "ade:midnight-city",
+        imageId: "ade:neon-city",
         // The film is video: a dot texture over the picture costs several MB.
         ...(BROWSER_MOCK_FILM ? { texture: "none" as const } : {}),
         choiceMade: true,

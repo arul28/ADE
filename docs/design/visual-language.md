@@ -114,11 +114,16 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   Halftone is picked on such a screen. The Phosphor theme's scanlines layer,
   drawn over the UI, is off at fractional scales (1.01–1.99 dppx) for the same
   reason. Any new repeating pattern finer than a few pixels needs the same gate.
-- **Pictures.** Bundled pictures are `public/scenes/*.jpg` with a 480×300 copy
-  in `public/scenes/thumbs/` for Settings tiles, listed in `sceneLibrary.ts`
-  with their pixel size. Users add their own; they are re-encoded to at most
-  5120px JPEG and stored in IndexedDB (`userScenes.ts`), never on disk or in
-  sync.
+- **Pictures.** Bundled pictures are `public/scenes/*.jpg`: 5120×1440 for
+  ultrawide screens and 3840×2400 for the rest, nothing smaller. Each has a
+  480×300 copy in `public/scenes/thumbs/` for Settings tiles and for the
+  palette sample, and each 3840×2400 picture a 2560×1600 copy in
+  `public/scenes/2560/` that a screen it covers (1080p, 1440p) draws instead
+  (`sceneSrcForScreen`): a decoded picture costs memory for every pixel. They
+  are listed in `sceneLibrary.ts` with their pixel size; a stored pick of a
+  picture no longer shipped reads as no pick. Users add their own; they are
+  re-encoded to at most 5120px JPEG and stored in IndexedDB (`userScenes.ts`),
+  never on disk or in sync.
 - **Only pictures that fit the screen shuffle by default.** `sceneFitsScreen`
   compares a picture with the screen's device pixels: it must cover the screen
   stretched at most 1.35×, and its shape must keep at least 60% of itself when

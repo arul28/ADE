@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { getAppearanceState, useAppearanceStore } from "../state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES, type ScenePreferences, type SceneTexture } from "./scenePreferences";
-import { BUNDLED_SCENES, findBundledScene, isUserSceneId, readScreenPixels, sceneFitsScreen, type ScreenPixels } from "./sceneLibrary";
+import { BUNDLED_SCENES, findBundledScene, isUserSceneId, readScreenPixels, sceneFitsScreen, sceneSrcForScreen, type ScreenPixels } from "./sceneLibrary";
 import { extractScenePalette, type ScenePalette } from "./scenePalette";
 import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummary } from "./userScenes";
 
@@ -87,7 +87,9 @@ function load(id: string): void {
     entries.set(id, { url, palette: null, done: !url });
     emit();
     if (!url) return;
-    const palette = await extractScenePalette(id, url);
+    // The colours come from a 48px sample, so a bundled picture samples its
+    // thumbnail instead of decoding the full file a second time.
+    const palette = await extractScenePalette(id, bundled?.thumb ?? url);
     if (!stillWanted()) return;
     entries.set(id, { url, palette, done: true });
     emit();
@@ -242,8 +244,9 @@ export function useActiveScene(): ActiveScene {
   const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
   useSyncExternalStore(subscribe, () => snapshotVersion);
   // Moving to a display of another size re-renders, so shuffle re-checks its
-  // pick against the pictures that fit there.
-  useScreenPixels();
+  // pick against the pictures that fit there and a bundled picture loads the
+  // file sized for it.
+  const screen = useScreenPixels();
   const usesUserLibrary = prefs.mode === "shuffle" || isUserSceneId(prefs.imageId);
 
   useEffect(() => {
@@ -262,12 +265,13 @@ export function useActiveScene(): ActiveScene {
   const entry = entries.get(id);
   // A user picture that no longer exists falls back to the gradient.
   if (entry?.done && !entry.url) return { kind: "gradient" };
+  const bundled = findBundledScene(id);
   return {
     kind: "image",
     id,
     name: sceneName(id),
-    url: entry?.url ?? null,
-    position: findBundledScene(id)?.position ?? "50% 50%",
+    url: bundled ? sceneSrcForScreen(bundled, screen) : entry?.url ?? null,
+    position: bundled?.position ?? "50% 50%",
     showImage: prefs.showImage,
     texture: prefs.texture,
     dim: prefs.dim,

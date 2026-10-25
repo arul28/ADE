@@ -755,7 +755,7 @@ Renderer — settings:
   mesh), `image` (one picture), and `shuffle` (a picture from the library,
   changed on launch, wake, hourly, or daily; the desktop default, drawing from
   the pictures sized for the screen in use). Pictures are bundled (`public/scenes/*.jpg` through
-  `sceneLibrary.ts`) or the user's own — re-encoded to at most 5120 px JPEG and
+  `sceneLibrary.ts`, with a 2560×1600 copy for 1080p and 1440p screens) or the user's own — re-encoded to at most 5120 px JPEG and
   kept in IndexedDB by `userScenes.ts`, never on disk or in sync.
   `scenePalette.ts` extracts the picture's palette, `sceneTheme.ts`
   (`themeTintedByScene`) tints the theme from it when App colours is **From
