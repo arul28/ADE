@@ -261,7 +261,7 @@ import {
   type DevServerRecord,
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
-import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { brainLogPath, resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
@@ -728,7 +728,7 @@ let macDesktopMachineLogger: Logger | null | undefined;
 function getMacDesktopMachineLogger(): Logger | null {
   if (macDesktopMachineLogger !== undefined) return macDesktopMachineLogger;
   try {
-    macDesktopMachineLogger = createBrainLogger(path.join(resolveMachineAdeLayout().runtimeDir, "brain.jsonl"));
+    macDesktopMachineLogger = createBrainLogger(brainLogPath());
   } catch {
     macDesktopMachineLogger = null;
   }

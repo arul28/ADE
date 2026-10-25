@@ -5,7 +5,7 @@
  * can all take it.
  */
 import { expectedErrorKind } from "../expectedError";
-import { applySentryDiagnostics, createAttachmentLimiter } from "./diagnostics";
+import { applySentryDiagnostics, type DiagnosticEvent, type DiagnosticHint } from "./diagnostics";
 import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
 import { forwardLogToSentry } from "./logBridge";
 import {
@@ -19,7 +19,7 @@ import {
   type ScrubbableSpan,
 } from "./scrub";
 
-type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & { type?: string; level?: string };
+type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & { type?: string; level?: string };
 
 let resolveUserId: (() => string | null | undefined) | null = null;
 
@@ -61,23 +61,11 @@ function isUnreadableClick(crumb: { category?: string; message?: string }): bool
   return !READABLE_CLICK_TARGET.test(crumb.message ?? "");
 }
 
-export type SentryEventHookOptions = {
-  budget?: SentryBudget;
-  /**
-   * Add the log tail, registered contexts and files (`diagnostics.ts`) to each
-   * event that is sent. Main and the brain only, after
-   * `enableSentryDiagnostics`: the renderer's events reach main's hooks and
-   * get them there.
-   */
-  diagnostics?: boolean;
-};
-
-export function createSentryEventHooks(options: SentryEventHookOptions = {}) {
-  const limiter = createEventLimiter(options.budget);
+export function createSentryEventHooks(budget?: SentryBudget) {
+  const limiter = createEventLimiter(budget);
   const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
-  const attachmentLimiter = options.diagnostics ? createAttachmentLimiter() : null;
   return {
-    beforeSend<T>(event: T, hint?: { originalException?: unknown; attachments?: Array<{ filename: string; data: string | Uint8Array }> }): T | null {
+    beforeSend<T>(event: T, hint?: DiagnosticHint & { originalException?: unknown }): T | null {
       const candidate = event as unknown as FilterableEvent;
       // An error its throw site marked as an answer (`shared/expectedError.ts`)
       // that someone caught and reported: a direct capture or a logged error.
@@ -104,22 +92,16 @@ export function createSentryEventHooks(options: SentryEventHookOptions = {}) {
       if (!admitted) return null;
       const userId = currentUserId();
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
-      if (attachmentLimiter) {
-        applySentryDiagnostics(
-          candidate as Parameters<typeof applySentryDiagnostics>[0],
-          hint as Parameters<typeof applySentryDiagnostics>[1],
-          budgetKey,
-          attachmentLimiter,
-        );
-      }
+      // A no-op outside main and the brain (`enableSentryDiagnostics`).
+      applySentryDiagnostics(candidate, hint, budgetKey);
       return scrubEvent(candidate) as unknown as T;
     },
     beforeBreadcrumb<T>(breadcrumb: T): T | null {
-      const crumb = breadcrumb as unknown as ScrubbableBreadcrumb & { category?: string };
+      const crumb = breadcrumb as unknown as ScrubbableBreadcrumb & { category?: string; message?: string };
       // Console output can carry anything a library printed; ADE's own logger
       // already contributes the useful lines as `log` breadcrumbs.
       if (crumb.category === "console") return null;
-      if (isUnreadableClick(crumb as { category?: string; message?: string })) return null;
+      if (isUnreadableClick(crumb)) return null;
       return scrubBreadcrumb(crumb) as unknown as T;
     },
     /** Spans never pass `beforeSend`; this is their only scrub. */

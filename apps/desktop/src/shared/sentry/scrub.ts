@@ -9,9 +9,8 @@
  * goes at all. The second half is enforced at the call sites (nothing passes
  * that text to Sentry); this module is the backstop for secrets that ride
  * along inside an error message, a URL or a log field. The one exception is
- * the log tail files a report attaches (`diagnostics.ts`), which carry log
- * lines as written with only their secrets removed (`scrubSecretsValue`), by
- * the owner's choice on 2026-10-24.
+ * the log tail files a report attaches (`diagnostics.ts`): they carry log
+ * lines as written, with only their secrets removed (`scrubDiagnosticText`).
  *
  * Pure TypeScript with no SDK import, so every process can load it.
  */
@@ -151,6 +150,26 @@ export function scrubSecretsValue(value: unknown, depth = 0, key?: string): unkn
     output[entryKey] = scrubSecretsValue(entryValue, depth + 1, entryKey);
   }
   return output;
+}
+
+/**
+ * Remove secrets from a diagnostic file line by line. A JSON line is scrubbed
+ * by key (`accessToken`, `pushToken`, `secret`) as well as by shape; any other
+ * line, including a JSON line cut short, by shape only.
+ */
+export function scrubDiagnosticText(text: string, maxLineLength = MAX_STRING_LENGTH): string {
+  if (!text) return text;
+  return text.split("\n").map((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        return JSON.stringify(scrubSecretsValue(JSON.parse(trimmed)));
+      } catch {
+        // Not JSON after all; scrub it as text.
+      }
+    }
+    return scrubString(line, { maxLength: maxLineLength });
+  }).join("\n");
 }
 
 export function scrubRecord(record: Record<string, unknown> | undefined | null): Record<string, unknown> | undefined {

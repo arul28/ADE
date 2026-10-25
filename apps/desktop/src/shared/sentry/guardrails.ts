@@ -44,53 +44,61 @@ export const FATAL_SENTRY_BUDGET: SentryBudget = {
 };
 
 const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
-const MAX_TRACKED_FINGERPRINTS = 500;
+export const DAY_MS = 24 * HOUR_MS;
+const MAX_TRACKED_KEYS = 500;
 
 export type EventLimiter = {
   /** True when the event may be sent; records it against the budget. */
   admit: (fingerprint: string, nowMs?: number) => boolean;
 };
 
-type LimiterWindow = { start: number; total: number; perFingerprint: Map<string, number> };
+/**
+ * One counting window of a limiter: events in total, events per key, and
+ * bytes for a limiter that also counts size. Shared by the event budget here
+ * and the attachment budget (`diagnostics.ts`).
+ */
+export type LimiterWindow = { start: number; total: number; bytes: number; perKey: Map<string, number> };
 
-function createWindow(): LimiterWindow {
-  return { start: 0, total: 0, perFingerprint: new Map() };
+export function createLimiterWindow(): LimiterWindow {
+  return { start: 0, total: 0, bytes: 0, perKey: new Map() };
 }
 
-function rollWindow(window: LimiterWindow, lengthMs: number, nowMs: number): void {
+export function rollLimiterWindow(window: LimiterWindow, lengthMs: number, nowMs: number): void {
   if (nowMs - window.start < lengthMs) return;
   window.start = nowMs;
   window.total = 0;
-  window.perFingerprint.clear();
+  window.bytes = 0;
+  window.perKey.clear();
 }
 
-function windowHasRoom(window: LimiterWindow, fingerprint: string, total: number | undefined, perFingerprint: number | undefined): boolean {
+/** Whether one more event of `key` fits; an absent cap does not limit. */
+export function limiterWindowHasRoom(window: LimiterWindow, key: string, total: number | undefined, perKey: number | undefined): boolean {
   if (total !== undefined && window.total >= total) return false;
-  const seen = window.perFingerprint.get(fingerprint) ?? 0;
-  if (perFingerprint !== undefined && seen >= perFingerprint) return false;
-  return window.perFingerprint.has(fingerprint) || window.perFingerprint.size < MAX_TRACKED_FINGERPRINTS;
+  const seen = window.perKey.get(key) ?? 0;
+  if (perKey !== undefined && seen >= perKey) return false;
+  return window.perKey.has(key) || window.perKey.size < MAX_TRACKED_KEYS;
 }
 
-function countInWindow(window: LimiterWindow, fingerprint: string): void {
-  window.perFingerprint.set(fingerprint, (window.perFingerprint.get(fingerprint) ?? 0) + 1);
+export function countInLimiterWindow(window: LimiterWindow, key: string, bytes = 0): void {
+  window.perKey.set(key, (window.perKey.get(key) ?? 0) + 1);
   window.total += 1;
+  window.bytes += bytes;
 }
 
 export function createEventLimiter(budget: SentryBudget = DEFAULT_SENTRY_BUDGET): EventLimiter {
-  const hour = createWindow();
-  const day = createWindow();
+  const hour = createLimiterWindow();
+  const day = createLimiterWindow();
   const hasDayCap = budget.totalPerDay !== undefined || budget.perFingerprintPerDay !== undefined;
   return {
     admit(fingerprint, nowMs = Date.now()) {
-      rollWindow(hour, HOUR_MS, nowMs);
-      if (!windowHasRoom(hour, fingerprint, budget.totalPerHour, budget.perFingerprintPerHour)) return false;
+      rollLimiterWindow(hour, HOUR_MS, nowMs);
+      if (!limiterWindowHasRoom(hour, fingerprint, budget.totalPerHour, budget.perFingerprintPerHour)) return false;
       if (hasDayCap) {
-        rollWindow(day, DAY_MS, nowMs);
-        if (!windowHasRoom(day, fingerprint, budget.totalPerDay, budget.perFingerprintPerDay)) return false;
-        countInWindow(day, fingerprint);
+        rollLimiterWindow(day, DAY_MS, nowMs);
+        if (!limiterWindowHasRoom(day, fingerprint, budget.totalPerDay, budget.perFingerprintPerDay)) return false;
+        countInLimiterWindow(day, fingerprint);
       }
-      countInWindow(hour, fingerprint);
+      countInLimiterWindow(hour, fingerprint);
       return true;
     },
   };

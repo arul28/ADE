@@ -1,28 +1,34 @@
 /**
  * What an ADE error report carries beyond the error, so that one report is
  * enough to find the cause:
- *   - the last lines this process logged, from info up, as the attachment
+ *   - the last lines this process logged, as the attachment
  *     `ade-log-tail.jsonl.gz`;
  *   - contexts other modules register (the brain connection, memory), read
  *     when the event is sent, so they describe the moment of the failure;
  *   - files other modules register (the project list journal, the brain's
  *     log), attached the same way.
  *
- * Only main and the brain apply this (`createSentryEventHooks({ diagnostics:
- * true })`). Renderer events pass through main's `beforeSend`, so they get
- * main's diagnostics too.
+ * Every process's `beforeSend` calls `applySentryDiagnostics`, but it does
+ * nothing until `enableSentryDiagnostics` runs, which only main and the brain
+ * do. Renderer events pass through main's `beforeSend`, so they get main's
+ * diagnostics too.
  *
  * Contexts cost nothing against the quota: the error quota counts events, not
  * bytes. Attachments have a quota of their own (1 GB a month for the whole
  * organization), so a process attaches files only to the first event of an
  * issue each day, and to a fixed number of events each day in total.
  */
-import { scrubSecretsValue, scrubString } from "./scrub";
+import { countInLimiterWindow, createLimiterWindow, DAY_MS, limiterWindowHasRoom, rollLimiterWindow } from "./guardrails";
+import { scrubDiagnosticText } from "./scrub";
 
 /** Lines kept per process: the last several minutes of a busy brain. */
 const LOG_TAIL_LINES = 1_000;
 /** One line longer than this is cut: a giant meta object says little more. */
 const LOG_TAIL_LINE_CHARS = 1_500;
+/** Past this a line is not parsed to scrub it; only its time, level and event name are kept. */
+const LOG_TAIL_PARSE_CHARS = 64_000;
+/** The start the file logger gives every line, up to the end of its event name. */
+const LOG_LINE_HEAD = /^\{"ts":"[^"]*","level":"[^"]*","event":"[^"]*"/;
 /** The log tail file is the newest lines that fit in this many characters. */
 const LOG_TAIL_ATTACHMENT_CHARS = 256_000;
 /** A registered file is cut to its newest characters past this size. */
@@ -38,11 +44,12 @@ export type DiagnosticAttachmentBudget = {
 };
 
 /**
- * Sized against the organization's 1 GB a month of attachments, about 100 MB
- * of which minidumps use. About 45 machines report, and the first event of an
- * issue is the one a reader opens. A compressed pair of files is about 60 KB,
- * so one process spends at most 1 MB a day, and the organization about 200 MB
- * a month at today's error rate.
+ * One process spends at most `bytesPerDay` (1 MB) a day on files, and a
+ * machine runs two reporting processes (main and the brain). A month for the
+ * organization is then at most 60 MB times the number of machines that
+ * report; in practice far less, since most machines send a few issues a day
+ * and a gzip pair of files is about 60 KB. Check the attachment use in
+ * Sentry's Stats page against the 1 GB before raising any of these.
  */
 export const DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET: DiagnosticAttachmentBudget = {
   perIssuePerDay: 1,
@@ -50,8 +57,12 @@ export const DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET: DiagnosticAttachmentBudget = 
   bytesPerDay: 1_000_000,
 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_TRACKED_ISSUES = 500;
+const BYTES_PER_MB = 1024 * 1024;
+
+/** Bytes as whole megabytes, the unit every diagnostic context uses. */
+export function toMegabytes(bytes: number): number {
+  return Math.round(bytes / BYTES_PER_MB);
+}
 
 let enabled = false;
 let compress: ((text: string) => Uint8Array) | null = null;
@@ -59,13 +70,20 @@ const tail: string[] = new Array(LOG_TAIL_LINES);
 let tailNext = 0;
 let tailCount = 0;
 
-/** The parts of an event the providers may read. */
+/** The parts of an event the providers may read and this module writes. */
 export type DiagnosticEvent = {
   message?: string;
   tags?: Record<string, unknown>;
   contexts?: Record<string, unknown>;
   exception?: { values?: Array<{ type?: string; value?: string }> };
 };
+
+/** An attachment as the SDK takes it from an event hint. */
+export type DiagnosticHintAttachment = { filename: string; data: string | Uint8Array; contentType?: string };
+export type DiagnosticHint = { attachments?: DiagnosticHintAttachment[] };
+
+/** `data` is plain text; the process compresses it on the way out when it can. */
+export type DiagnosticAttachment = { filename: string; data: string };
 
 /** The tag a capture sets to ask for one named file (`registerSentryDiagnosticAttachment`). */
 export const DIAGNOSTIC_ATTACH_TAG = "diagnostic.attach";
@@ -75,9 +93,6 @@ export function diagnosticEventText(event: DiagnosticEvent): string {
   return [event.message ?? "", ...(event.exception?.values ?? []).map((value) => value.value ?? "")].join("\n");
 }
 
-/** `data` is plain text; the process compresses it on the way out when it can. */
-export type DiagnosticAttachment = { filename: string; data: string };
-
 type ContextProvider = () => Record<string, unknown> | null | undefined;
 type AttachmentProvider = (event: DiagnosticEvent) => DiagnosticAttachment | null | undefined;
 
@@ -85,10 +100,10 @@ const contextProviders = new Map<string, ContextProvider>();
 const attachmentProviders = new Map<string, AttachmentProvider>();
 
 /**
- * Called once by a process that sends reports with diagnostics (main, brain).
- * `gzip` comes from the caller because this module also loads in the
- * renderer, which has no `node:zlib`. With it, each file goes out as
- * `<name>.gz`, about an eighth of its size.
+ * Turn diagnostics on for this process (main, brain). `gzip` comes from the
+ * caller because this module also loads in the renderer, which has no
+ * `node:zlib`. With it, each file goes out as `<name>.gz`, about an eighth of
+ * its size.
  */
 export function enableSentryDiagnostics(options: { gzip?: (text: string) => Uint8Array } = {}): void {
   enabled = true;
@@ -96,16 +111,28 @@ export function enableSentryDiagnostics(options: { gzip?: (text: string) => Uint
 }
 
 /**
- * Record one log line, already serialized by the file logger. Cheap: one
- * array slot, no copy unless the line is long. A no-op until diagnostics are
- * on, so dev builds and tests pay nothing.
+ * Record one log line, already serialized by the file logger. Cheap for an
+ * ordinary line: one array slot, no copy. A no-op until diagnostics are on,
+ * so dev builds and tests pay nothing.
  */
 export function recordLogTailLine(line: string): void {
   if (!enabled) return;
   const trimmed = line.endsWith("\n") ? line.slice(0, -1) : line;
-  tail[tailNext] = trimmed.length > LOG_TAIL_LINE_CHARS
-    ? `${trimmed.slice(0, LOG_TAIL_LINE_CHARS)}... [cut ${trimmed.length - LOG_TAIL_LINE_CHARS} chars]`
-    : trimmed;
+  if (trimmed.length <= LOG_TAIL_LINE_CHARS) {
+    tail[tailNext] = trimmed;
+  } else if (trimmed.length > LOG_TAIL_PARSE_CHARS) {
+    // Too long to parse on every write. The head is the logger's own fields,
+    // never a secret.
+    const head = LOG_LINE_HEAD.exec(trimmed)?.[0] ?? "{}";
+    tail[tailNext] = `${head}... [meta of ${trimmed.length} chars left out]`;
+  } else {
+    // Scrubbed whole, before the cut: a cut line is no longer JSON, and only
+    // a JSON line is scrubbed by key (`pushToken`, `machineKey`).
+    const scrubbed = scrubDiagnosticText(trimmed, trimmed.length);
+    tail[tailNext] = scrubbed.length > LOG_TAIL_LINE_CHARS
+      ? `${scrubbed.slice(0, LOG_TAIL_LINE_CHARS)}... [cut ${scrubbed.length - LOG_TAIL_LINE_CHARS} chars]`
+      : scrubbed;
+  }
   tailNext = (tailNext + 1) % LOG_TAIL_LINES;
   if (tailCount < LOG_TAIL_LINES) tailCount += 1;
 }
@@ -121,27 +148,7 @@ export function readLogTail(maxChars = LOG_TAIL_ATTACHMENT_CHARS): string {
     lines.push(line);
     size += line.length + 1;
   }
-  return scrubDiagnosticText(lines.reverse().join("\n"));
-}
-
-/**
- * Remove secrets from a diagnostic file line by line. A JSON line is scrubbed
- * by key (`accessToken`, `secret`) as well as by shape; any other line by
- * shape only.
- */
-export function scrubDiagnosticText(text: string): string {
-  if (!text) return text;
-  return text.split("\n").map((line) => {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("{")) {
-      try {
-        return JSON.stringify(scrubSecretsValue(JSON.parse(trimmed)));
-      } catch {
-        // Not JSON after all (or a cut line); scrub it as text.
-      }
-    }
-    return scrubString(line, { maxLength: LOG_TAIL_LINE_CHARS * 2 });
-  }).join("\n");
+  return scrubDiagnosticText(lines.reverse().join("\n"), LOG_TAIL_LINE_CHARS * 2);
 }
 
 /** A named context set on every event at send time. A provider that throws is skipped. */
@@ -170,40 +177,23 @@ export type AttachmentLimiter = {
 export function createAttachmentLimiter(
   budget: DiagnosticAttachmentBudget = DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET,
 ): AttachmentLimiter {
-  let windowStart = 0;
-  let total = 0;
-  let bytes = 0;
-  const perIssue = new Map<string, number>();
-  const roll = (nowMs: number) => {
-    if (nowMs - windowStart < DAY_MS) return;
-    windowStart = nowMs;
-    total = 0;
-    bytes = 0;
-    perIssue.clear();
-  };
+  const day = createLimiterWindow();
   const hasRoom = (issueKey: string, nowMs: number): boolean => {
-    roll(nowMs);
-    if (total >= budget.totalPerDay || bytes >= budget.bytesPerDay) return false;
-    const seen = perIssue.get(issueKey) ?? 0;
-    if (seen >= budget.perIssuePerDay) return false;
-    return perIssue.has(issueKey) || perIssue.size < MAX_TRACKED_ISSUES;
+    rollLimiterWindow(day, DAY_MS, nowMs);
+    return day.bytes < budget.bytesPerDay
+      && limiterWindowHasRoom(day, issueKey, budget.totalPerDay, budget.perIssuePerDay);
   };
   return {
     hasRoom: (issueKey, nowMs = Date.now()) => hasRoom(issueKey, nowMs),
-    admit(issueKey, size, nowMs = Date.now()) {
-      if (!hasRoom(issueKey, nowMs) || bytes + size > budget.bytesPerDay) return false;
-      const seen = perIssue.get(issueKey) ?? 0;
-      perIssue.set(issueKey, seen + 1);
-      total += 1;
-      bytes += size;
+    admit(issueKey, bytes, nowMs = Date.now()) {
+      if (!hasRoom(issueKey, nowMs) || day.bytes + bytes > budget.bytesPerDay) return false;
+      countInLimiterWindow(day, issueKey, bytes);
       return true;
     },
   };
 }
 
-type Attachment = { filename: string; data: string | Uint8Array; contentType?: string };
-type MutableHint = { attachments?: Attachment[] };
-type MutableEvent = DiagnosticEvent & { contexts?: Record<string, unknown> };
+const processAttachmentLimiter = createAttachmentLimiter();
 
 /** Cut a file to its newest characters, on a line boundary when there is one. */
 export function newestChars(text: string, maxChars = DIAGNOSTIC_FILE_MAX_CHARS): string {
@@ -213,7 +203,7 @@ export function newestChars(text: string, maxChars = DIAGNOSTIC_FILE_MAX_CHARS):
   return newline >= 0 && newline < 2_000 ? cut.slice(newline + 1) : cut;
 }
 
-function packAttachment(filename: string, text: string): Attachment {
+function packAttachment(filename: string, text: string): DiagnosticHintAttachment {
   if (compress) {
     try {
       return { filename: `${filename}.gz`, data: compress(text), contentType: "application/gzip" };
@@ -224,7 +214,7 @@ function packAttachment(filename: string, text: string): Attachment {
   return { filename, data: text, contentType: "text/plain" };
 }
 
-function attachmentBytes(file: Attachment): number {
+function attachmentBytes(file: DiagnosticHintAttachment): number {
   return typeof file.data === "string" ? file.data.length : file.data.byteLength;
 }
 
@@ -234,10 +224,10 @@ function attachmentBytes(file: Attachment): number {
  * beats no report.
  */
 export function applySentryDiagnostics(
-  event: MutableEvent,
-  hint: MutableHint | undefined,
+  event: DiagnosticEvent,
+  hint: DiagnosticHint | undefined,
   issueKey: string,
-  limiter: AttachmentLimiter,
+  limiter: AttachmentLimiter = processAttachmentLimiter,
 ): void {
   if (!enabled) return;
   for (const [name, provider] of contextProviders) {
@@ -252,14 +242,14 @@ export function applySentryDiagnostics(
   // the budget would refuse them anyway.
   if (!hint || !limiter.hasRoom(issueKey)) return;
   try {
-    const files: Attachment[] = [];
+    const files: DiagnosticHintAttachment[] = [];
     const logTail = readLogTail();
     if (logTail) files.push(packAttachment("ade-log-tail.jsonl", logTail));
     for (const provider of attachmentProviders.values()) {
       try {
         const file = provider(event);
         if (!file?.data) continue;
-        files.push(packAttachment(file.filename, scrubDiagnosticText(newestChars(file.data))));
+        files.push(packAttachment(file.filename, scrubDiagnosticText(newestChars(file.data), LOG_TAIL_LINE_CHARS * 2)));
       } catch {
         // Skip the one file.
       }

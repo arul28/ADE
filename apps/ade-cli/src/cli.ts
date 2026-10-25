@@ -100,6 +100,7 @@ import {
   registerSentryDiagnosticAttachment,
   registerSentryDiagnosticContext,
 } from "../../desktop/src/shared/sentry/diagnostics";
+import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -26221,8 +26222,8 @@ async function runServe(
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
-    { resolveMachineAdeLayout, isSyncCapableAdeHome },
-    { ProjectRegistry, projectRegistryDiagnosticAttachment },
+    { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },
+    { ProjectRegistry },
     { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
       createMultiProjectRpcRequestHandler,
@@ -26257,7 +26258,7 @@ async function runServe(
 
   const layout = resolveMachineAdeLayout();
   const headlessProjectLogger: Logger = createBrainLogger(
-    path.join(layout.runtimeDir, "brain.jsonl"),
+    brainLogPath(layout),
   );
   reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
   const {
@@ -27116,12 +27117,11 @@ async function runServe(
   // What a brain report needs to explain a missing project or a lost scope
   // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
   // when Sentry is off.
-  const brainScopeRegistry = scopeRegistry;
   registerSentryDiagnosticContext("brain_state", () => ({
-    mode: options.role,
-    ...brainScopeRegistry.diagnosticSnapshot(),
+    role: options.role,
+    ...scopeRegistry.diagnosticSnapshot(),
   }));
-  registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry));
+  registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(projectRegistry.diagnosticPaths()));
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
   // Declared out here, beside clearSyncRuntimeRpcHandlerFactory, because the

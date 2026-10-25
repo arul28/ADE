@@ -49,7 +49,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;
-  const hooks = createSentryEventHooks({ diagnostics: true });
+  const hooks = createSentryEventHooks();
   Sentry.init({
     dsn: resolveSentryDsn("brain", process.env),
     release: sentryReleaseName(version),

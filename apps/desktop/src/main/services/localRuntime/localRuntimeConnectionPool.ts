@@ -704,6 +704,14 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
   });
 }
 
+type LocalRuntimeConnectionStats = {
+  connects: number;
+  disconnects: number;
+  lastConnectedAt: string | null;
+  lastDisconnectedAt: string | null;
+  projectReregistrations: number;
+};
+
 export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
@@ -1238,11 +1246,11 @@ export class LocalRuntimeConnectionPool {
   /** When a folder was last registered again because the brain forgot its id. */
   private readonly staleProjectReregisteredAtByRoot = new Map<string, number>();
   /** Connection history for error reports (`diagnosticSnapshot`). */
-  private connectionStats = {
+  private readonly connectionStats: LocalRuntimeConnectionStats = {
     connects: 0,
     disconnects: 0,
-    lastConnectedAt: null as string | null,
-    lastDisconnectedAt: null as string | null,
+    lastConnectedAt: null,
+    lastDisconnectedAt: null,
     projectReregistrations: 0,
   };
   private readonly projectRegistrationsByRoot = new Map<string, {
@@ -1385,6 +1393,10 @@ export class LocalRuntimeConnectionPool {
       && this.serviceHealthStatus.state !== "error";
   }
 
+  private runtimeMode(): LocalRuntimeStatus["runtimeMode"] {
+    return this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary";
+  }
+
   private statusSnapshot(): LocalRuntimeStatus {
     return {
       connectionState: this.activeClient
@@ -1401,7 +1413,7 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
-      runtimeMode: this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary",
+      runtimeMode: this.runtimeMode(),
       appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
       serviceInstall: { ...this.serviceInstallStatus },
@@ -1636,7 +1648,7 @@ export class LocalRuntimeConnectionPool {
     // changed is read differently from one in a steady connection.
     addSentryBreadcrumb("brain", client ? "brain.connected" : "brain.disconnected", {
       connects: this.connectionStats.connects,
-      runtimeMode: this.isolatedModeActive ? "isolated" : this.appFallback ? "app_fallback" : "primary",
+      runtimeMode: this.runtimeMode(),
       previousPid: this.activeRuntimePid,
     }, client ? "info" : "warning");
   }
@@ -2154,11 +2166,6 @@ export class LocalRuntimeConnectionPool {
     this.staleProjectReregisteredAtByRoot.set(normalizedRoot, now);
     this.projectsByRoot.delete(normalizedRoot);
     this.connectionStats.projectReregistrations += 1;
-    this.logger.warn("local_runtime.project_id_unknown_reregistering", {
-      rootPath: normalizedRoot,
-      projectId: project.projectId,
-      runtimePid: this.activeRuntimePid,
-    });
     return true;
   }
 
@@ -2181,6 +2188,7 @@ export class LocalRuntimeConnectionPool {
         refusedProjectId: project.projectId,
         projectId: fresh.projectId,
         idChanged: fresh.projectId !== project.projectId,
+        runtimePid: this.activeRuntimePid,
       });
       return await call(fresh);
     }

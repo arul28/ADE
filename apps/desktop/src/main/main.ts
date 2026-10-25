@@ -236,9 +236,10 @@ import {
   assertLocalProjectDataAvailable,
   deriveProjectId,
   ProjectRegistry,
-  projectRegistryDiagnosticAttachment,
   recordLocalProjectDatabaseIdentity,
 } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { projectRegistryDiagnosticAttachment } from "../../../ade-cli/src/services/projects/projectRegistryJournal";
+import { isRemoteMachineEvent } from "./sentry/desktopDiagnostics";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "../../../ade-cli/src/services/runtime/compileCachePrune";
 import {
@@ -2292,7 +2293,9 @@ app.whenReady().then(async () => {
   // it held per folder; a report about an unknown project id also gets the
   // machine's project list and its journal (`shared/sentry/diagnostics.ts`).
   registerSentryDiagnosticContext("brain_connection", () => localRuntimePool.diagnosticSnapshot());
-  registerSentryDiagnosticAttachment("project-registry", projectRegistryDiagnosticAttachment(new ProjectRegistry(machineAdeLayout)));
+  // A failure on another machine's brain is about that machine's list.
+  const attachProjectRegistry = projectRegistryDiagnosticAttachment(new ProjectRegistry(machineAdeLayout).diagnosticPaths());
+  registerSentryDiagnosticAttachment("project-registry", (event) => (isRemoteMachineEvent(event) ? null : attachProjectRegistry(event)));
   // App Control screencasts follow what the windows show: a lane no window
   // holds streams no frames, in the brain or in a project hosted here.
   setAppControlFrameLanesListener(() => {

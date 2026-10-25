@@ -7,6 +7,7 @@ import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
+import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -165,7 +166,7 @@ export class ProjectScopeRegistry {
    */
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
-  private readonly reportedUnknownProjectIds = new Set<ProjectId>();
+  private readonly reportUnknownProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
@@ -315,17 +316,17 @@ export class ProjectScopeRegistry {
    * The caller (a window, a phone) reports only "the brain said no"; this one
    * says what the brain knew at that moment, with the project list and its
    * journal attached. Once per id per process: every poll after the first
-   * adds nothing.
+   * adds nothing. A project the user removed is not a failure: a window or
+   * phone that still holds its id is told so and moves on.
    */
   private reportUnknownProjectId(projectId: ProjectId): void {
-    if (this.reportedUnknownProjectIds.has(projectId)) return;
-    if (this.reportedUnknownProjectIds.size >= 200) return;
-    this.reportedUnknownProjectIds.add(projectId);
+    if (!this.reportUnknownProjectIdOnce(projectId)) return;
     try {
+      if (wasRemovedFromRegistry(this.projectRegistry.path, projectId)) return;
       const registered = this.projectRegistry.list();
       captureProblem("The brain was asked for a project that is not in its project list", {
         fingerprint: ["brain", "project_id_unknown"],
-        tags: { [DIAGNOSTIC_ATTACH_TAG]: "project_registry" },
+        tags: { [DIAGNOSTIC_ATTACH_TAG]: PROJECT_REGISTRY_ATTACH },
         extra: {
           projectId,
           // This machine opened the project's database before, so the

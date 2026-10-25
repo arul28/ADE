@@ -12,6 +12,7 @@ import * as Sentry from "@sentry/electron/renderer";
 import { connectSentry } from "../../shared/sentry/capture";
 import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
 import { SENTRY_TRACES_SAMPLE_RATE } from "../../shared/sentry/config";
+import { toMegabytes } from "../../shared/sentry/diagnostics";
 
 export function initRendererSentry(): void {
   const hooks = createSentryEventHooks();
@@ -23,11 +24,9 @@ export function initRendererSentry(): void {
       ...defaults,
       Sentry.browserTracingIntegration(),
     ],
-    beforeSend: (event, hint) => {
-      const kept = hooks.beforeSend(event, hint);
-      if (kept) addRendererState(kept as { contexts?: Record<string, unknown> });
-      return kept;
-    },
+    // The window's state goes on before the hooks, so it is scrubbed with
+    // the rest of the event.
+    beforeSend: (event, hint) => hooks.beforeSend(addRendererState(event), hint),
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
   });
@@ -36,14 +35,12 @@ export function initRendererSentry(): void {
   // it would overwrite main's own. The SDK tags each event's `event.process`.
 }
 
-const MB = 1024 * 1024;
-
 /**
  * The window's own state at the moment of the error: its JavaScript heap
  * against its limit (a window close to the limit is about to be killed for
  * memory), the route, and how long it has been open. Main adds the rest.
  */
-function addRendererState(event: { contexts?: Record<string, unknown> }): void {
+function addRendererState<T extends { contexts?: Record<string, unknown> }>(event: T): T {
   try {
     const memory = (performance as Performance & {
       memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
@@ -56,9 +53,9 @@ function addRendererState(event: { contexts?: Record<string, unknown> }): void {
         visibility: document.visibilityState,
         ...(memory
           ? {
-              heapUsedMb: Math.round(memory.usedJSHeapSize / MB),
-              heapTotalMb: Math.round(memory.totalJSHeapSize / MB),
-              heapLimitMb: Math.round(memory.jsHeapSizeLimit / MB),
+              heapUsedMb: toMegabytes(memory.usedJSHeapSize),
+              heapTotalMb: toMegabytes(memory.totalJSHeapSize),
+              heapLimitMb: toMegabytes(memory.jsHeapSizeLimit),
             }
           : {}),
         domNodes: document.getElementsByTagName("*").length,
@@ -67,4 +64,5 @@ function addRendererState(event: { contexts?: Record<string, unknown> }): void {
   } catch {
     // Best effort.
   }
+  return event;
 }

@@ -13,13 +13,15 @@ import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./project
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
 import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
-import { addSentryBreadcrumb, captureProblem } from "../../../../desktop/src/shared/sentry/capture";
-import {
-  DIAGNOSTIC_ATTACH_TAG,
-  diagnosticEventText,
-  type DiagnosticEvent,
-} from "../../../../desktop/src/shared/sentry/diagnostics";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
+import {
+  journalRegistryWrite,
+  registryJournalPath,
+  reportChangedProjectIds,
+  reportDroppedRecords,
+  type ChangedProjectId,
+  type DroppedProjectRecord,
+} from "./projectRegistryJournal";
 
 export type ProjectId = string;
 
@@ -432,20 +434,34 @@ export class ProjectRegistry {
     });
     this.forgetDatabaseIdentity(oldId);
     this.recordDatabaseIfPresent(newId, newNormalized);
-    const aliases = this.readAliases();
-    for (const [from, to] of Object.entries(aliases)) {
-      if (to === oldId) aliases[from] = newId;
-    }
-    aliases[oldId] = newId;
-    delete aliases[newId];
-    fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
-    writeFileAtomic(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
+    this.updateAliases((aliases) => {
+      for (const [from, to] of Object.entries(aliases)) {
+        if (to === oldId) aliases[from] = newId;
+      }
+      aliases[oldId] = newId;
+      delete aliases[newId];
+      return true;
+    });
     return next;
   }
 
   /** The current id of a project that was moved, given an id it had before. */
   resolveMovedProjectId(projectId: ProjectId): ProjectId | null {
     return this.readAliases()[projectId] ?? null;
+  }
+
+  /**
+   * Change `project-aliases.json` under the list's lock. A move and a read
+   * that finds a changed id can both rewrite it, and without the lock one
+   * erases the other's alias. `change` returns whether it changed anything.
+   */
+  private updateAliases(change: (aliases: Record<ProjectId, ProjectId>) => boolean): void {
+    this.withRegistryLock("aliases", () => {
+      const aliases = this.readAliases();
+      if (!change(aliases)) return;
+      fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
+      writeFileAtomic(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
+    });
   }
 
   private aliasesPath(): string {
@@ -523,195 +539,190 @@ export class ProjectRegistry {
   }
 
   private readUncached(): ProjectRegistryFile {
-    const { file, isLegacy } = this.readFromDisk();
-    if (isLegacy) return this.mutate("migrate_v1", {}, (fresh) => ({ file: fresh, result: fresh }));
-    return file;
+    const read = this.readFromDisk();
+    this.noteReadFindings(read);
+    if (read.isLegacy) return this.mutate("migrate_v1", {}, (fresh) => ({ file: fresh, result: fresh }));
+    return read.file;
   }
 
   /**
    * Parse `projects.json`. A record's id is not trusted from the file: it is
-   * the hash of the folder as this machine resolves it now. When that differs
-   * from the id the file stored, the project's id just changed under every
-   * window and phone that holds the old one, which answers "Unknown
-   * projectId" from then on. That is reported, and the old id is kept as an
-   * alias so the brain still finds the project by it.
+   * the hash of the folder as this machine resolves it now. `changedIds`
+   * lists records whose stored id differs from that, and `dropped` the ones
+   * this read could not keep; `noteReadFindings` reports both.
    */
-  private readFromDisk(): { file: ProjectRegistryFile; isLegacy: boolean } {
+  private readFromDisk(): {
+    file: ProjectRegistryFile;
+    isLegacy: boolean;
+    changedIds: ChangedProjectId[];
+    dropped: DroppedProjectRecord[];
+  } {
+    const changedIds: ChangedProjectId[] = [];
+    const dropped: DroppedProjectRecord[] = [];
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.layout.projectsPath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        return { file: emptyFile(), isLegacy: false };
-      const rawFile = parsed as {
-        version?: unknown;
-        projects?: unknown;
-      };
-      const isLegacy = rawFile.version === 1;
-      if (!isLegacy && rawFile.version !== 2) {
-        throw new Error(
-          `Unsupported project registry version: ${String(rawFile.version)}`,
-        );
-      }
-      const changedIds: Array<{ storedId: string; projectId: string; storedRoot: string; rootPath: string }> = [];
-      const dropped: Array<{ storedId: string | null; storedRoot: string | null; reason: string }> = [];
-      const projects = Array.isArray(rawFile.projects)
-        ? rawFile.projects
-            .map((value) => {
-              let record: ProjectRecord | null;
-              if (isLegacy) {
-                const legacyRecord = value as Record<string, unknown>;
-                const legacyRoot =
-                  typeof legacyRecord?.rootPath === "string"
-                    ? normalizeRoot(legacyRecord.rootPath)
-                    : "";
-                const matchesDesktopRecents =
-                  legacyRoot.length > 0 &&
-                  this.legacyRecentProjectRoots.has(legacyRoot);
-                record = coerceRecord(value, {
-                  catalogVisibility:
-                    matchesDesktopRecents || isExistingGitRoot(legacyRoot)
-                      ? "recent"
-                      : "system",
-                  registrationSource: matchesDesktopRecents
-                    ? "desktop"
-                    : "runtime-auto",
-                });
-              } else {
-                const stored = value as Record<string, unknown>;
-                record = coerceRecord(value, {
-                  catalogVisibility:
-                    stored?.catalogVisibility === "recent" ? "recent" : "system",
-                  registrationSource: isProjectRegistrationSource(
-                    stored?.registrationSource,
-                  )
-                    ? stored.registrationSource
-                    : "runtime-auto",
-                });
-              }
-              const stored = value as { projectId?: unknown; rootPath?: unknown } | null;
-              const storedId = typeof stored?.projectId === "string" ? stored.projectId : null;
-              const storedRoot = typeof stored?.rootPath === "string" ? stored.rootPath : null;
-              if (!record) {
-                dropped.push({ storedId, storedRoot, reason: storedRoot ? "disallowed_or_unresolvable_root" : "no_root" });
-              } else if (storedId && storedId !== record.projectId) {
-                changedIds.push({ storedId, projectId: record.projectId, storedRoot: storedRoot ?? "", rootPath: record.rootPath });
-              }
-              return record;
-            })
-            .filter((entry): entry is ProjectRecord => entry != null)
-        : [];
-      const seen = new Set<string>();
-      const file: ProjectRegistryFile = {
-        version: 2,
-        projects: projects.filter((project) => {
-          if (seen.has(project.rootPath)) {
-            dropped.push({ storedId: project.projectId, storedRoot: project.rootPath, reason: "duplicate_root" });
-            return false;
-          }
-          seen.add(project.rootPath);
-          return true;
-        }),
-      };
-      if (changedIds.length > 0) this.noteChangedProjectIds(changedIds);
-      if (dropped.length > 0) noteDroppedRecords(this.layout.projectsPath, this.journalPath(), dropped);
-      return { file, isLegacy };
+      raw = fs.readFileSync(this.layout.projectsPath, "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { file: emptyFile(), isLegacy: false };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file: emptyFile(), isLegacy: false, changedIds, dropped };
       throw error;
     }
-  }
-
-  /** Report each id change once per process, and keep the old id working as an alias. */
-  private noteChangedProjectIds(
-    changes: Array<{ storedId: string; projectId: string; storedRoot: string; rootPath: string }>,
-  ): void {
-    const aliases = this.readAliases();
-    let aliasesChanged = false;
-    for (const change of changes) {
-      const key = `${change.storedId}>${change.projectId}`;
-      if (!reportedIdChanges.has(key)) {
-        reportedIdChanges.add(key);
-        const detail = { ...change, writer: describeRegistryWriter(), registryPath: this.layout.projectsPath };
-        forwardLogToSentry("warn", "project_registry.project_id_changed", detail);
-        appendJournalLine(this.journalPath(), { op: "id_changed", ...change });
-        captureProblem("A registered project's id changed when its folder was resolved again", {
-          fingerprint: ["project_registry", "project_id_changed"],
-          tags: { [DIAGNOSTIC_ATTACH_TAG]: "project_registry" },
-          extra: detail,
-        });
-      }
-      // The same edge rule `relocate` keeps: the new id never has an alias of
-      // its own, so a folder that flips back and forth cannot make a cycle.
-      if (aliases[change.storedId] !== change.projectId) {
-        aliases[change.storedId] = change.projectId;
-        aliasesChanged = true;
-      }
-      if (aliases[change.projectId] !== undefined) {
-        delete aliases[change.projectId];
-        aliasesChanged = true;
-      }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { file: emptyFile(), isLegacy: false, changedIds, dropped };
     }
-    if (!aliasesChanged) return;
-    try {
-      fs.mkdirSync(path.dirname(this.aliasesPath()), { recursive: true });
-      writeFileAtomic(this.aliasesPath(), `${JSON.stringify(aliases, null, 2)}\n`);
-    } catch {
-      // The alias is a convenience; the report above is the record.
+    const rawFile = parsed as { version?: unknown; projects?: unknown };
+    const isLegacy = rawFile.version === 1;
+    if (!isLegacy && rawFile.version !== 2) {
+      throw new Error(
+        `Unsupported project registry version: ${String(rawFile.version)}`,
+      );
     }
+    const records = Array.isArray(rawFile.projects) ? rawFile.projects : [];
+    const projects: ProjectRecord[] = [];
+    for (const value of records) {
+      const stored = value && typeof value === "object" ? value as Record<string, unknown> : null;
+      const storedId = typeof stored?.projectId === "string" ? stored.projectId : null;
+      const storedRoot = typeof stored?.rootPath === "string" ? stored.rootPath : null;
+      const record = coerceRecord(value, isLegacy
+        ? this.legacyRegistration(storedRoot)
+        : {
+            catalogVisibility: stored?.catalogVisibility === "recent" ? "recent" : "system",
+            registrationSource: isProjectRegistrationSource(stored?.registrationSource)
+              ? stored.registrationSource
+              : "runtime-auto",
+          });
+      if (!record) {
+        dropped.push({ storedId, storedRoot, reason: storedRoot ? "disallowed_or_unresolvable_root" : "no_root" });
+        continue;
+      }
+      if (storedId && storedId !== record.projectId) {
+        changedIds.push({ storedId, projectId: record.projectId, storedRoot: storedRoot ?? "", rootPath: record.rootPath });
+      }
+      projects.push(record);
+    }
+    const seen = new Set<string>();
+    const file: ProjectRegistryFile = {
+      version: 2,
+      projects: projects.filter((project) => {
+        if (!seen.has(project.rootPath)) {
+          seen.add(project.rootPath);
+          return true;
+        }
+        dropped.push({ storedId: project.projectId, storedRoot: project.rootPath, reason: "duplicate_root" });
+        return false;
+      }),
+    };
+    return { file, isLegacy, changedIds, dropped };
   }
 
-  private lockPath(): string {
-    return `${this.layout.projectsPath}.lock`;
-  }
-
-  journalPath(): string {
-    return path.join(path.dirname(this.layout.projectsPath), "projects.journal.jsonl");
+  /** How a v1 record is classified while upgrading it: recent when the desktop listed it or it is a git checkout. */
+  private legacyRegistration(storedRoot: string | null): ProjectRegistrationIntent {
+    const legacyRoot = storedRoot ? normalizeRoot(storedRoot) : "";
+    const matchesDesktopRecents = legacyRoot.length > 0 && this.legacyRecentProjectRoots.has(legacyRoot);
+    return {
+      catalogVisibility: matchesDesktopRecents || isExistingGitRoot(legacyRoot) ? "recent" : "system",
+      registrationSource: matchesDesktopRecents ? "desktop" : "runtime-auto",
+    };
   }
 
   /**
-   * Every change to `projects.json` goes through here. The desktop app, the
-   * brain, the `ade` CLI and a project move all write the file, and each
-   * write is a read, a change and a rename. Without a lock, two writers that
-   * overlap each keep their own copy, and the second rename erases what the
-   * first one added. The lock spans the fresh read and the write only, never
-   * git or other slow work. The journal records who changed what.
+   * Report what a read found, and keep a changed id working: the stored id
+   * becomes an alias of the new one, so the brain still finds the project by
+   * the id every window and phone holds. Each finding is reported once per
+   * process (`projectRegistryJournal.ts`).
+   */
+  private noteReadFindings(read: { changedIds: ChangedProjectId[]; dropped: DroppedProjectRecord[] }): void {
+    if (read.dropped.length > 0) reportDroppedRecords(read.dropped, this.layout.projectsPath);
+    if (read.changedIds.length === 0) return;
+    reportChangedProjectIds(read.changedIds, this.layout.projectsPath);
+    // Until the next write stores the new ids, every read finds the same
+    // changes; skip the lock when the aliases already say so.
+    const known = this.readAliases();
+    if (read.changedIds.every((change) => known[change.storedId] === change.projectId && known[change.projectId] === undefined)) return;
+    try {
+      this.updateAliases((aliases) => {
+        let changed = false;
+        for (const change of read.changedIds) {
+          // The same edge rule `relocate` keeps: the new id never has an alias
+          // of its own, so a folder that flips back and forth cannot make a cycle.
+          if (aliases[change.storedId] !== change.projectId) {
+            aliases[change.storedId] = change.projectId;
+            changed = true;
+          }
+          if (aliases[change.projectId] !== undefined) {
+            delete aliases[change.projectId];
+            changed = true;
+          }
+        }
+        return changed;
+      });
+    } catch (error) {
+      forwardLogToSentry("warn", "project_registry.alias_write_failed", {
+        code: (error as NodeJS.ErrnoException).code ?? null,
+        error,
+      });
+    }
+  }
+
+  private journalPath(): string {
+    return registryJournalPath(this.layout.projectsPath);
+  }
+
+  /**
+   * Run `task` holding `projects.json.lock`. The desktop app, the brain, the
+   * `ade` CLI and a project move all write the list, and each write is a
+   * read, a change and a rename: without the lock, two writers that overlap
+   * each keep their own copy, and the second rename erases what the first one
+   * added. Re-entrant in this process (a write that finds a changed id
+   * updates the aliases under the same lock). A lock older than 15 s is
+   * abandoned, since a holder only reads and writes one file.
+   */
+  private withRegistryLock<T>(op: string, task: (lockWaitMs: number | null) => T): T {
+    const lockPath = `${this.layout.projectsPath}.lock`;
+    if (heldRegistryLocks.has(lockPath)) return task(0);
+    const startedAt = Date.now();
+    try {
+      return withExclusiveFileLockSync(lockPath, () => {
+        heldRegistryLocks.add(lockPath);
+        try {
+          return task(Date.now() - startedAt);
+        } finally {
+          heldRegistryLocks.delete(lockPath);
+        }
+      }, { waitMs: REGISTRY_LOCK_WAIT_MS, staleAfterMs: REGISTRY_LOCK_STALE_MS, label: "the ADE project list" });
+    } catch (error) {
+      if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
+      // A holder that never lets go must not stop ADE from opening projects:
+      // write without the lock, as every ADE before this one did, and say so.
+      forwardLogToSentry("warn", "project_registry.lock_timeout", { op, lockPath, waitedMs: Date.now() - startedAt });
+      return task(null);
+    }
+  }
+
+  /**
+   * Every change to `projects.json` goes through here: under the lock, a
+   * fresh read (never the cache), the change, the write, and a journal line.
+   * Keep slow work (git) out of `change`; the lock is held while it runs.
    */
   private mutate<T>(
     op: string,
     detail: Record<string, unknown>,
     change: (file: ProjectRegistryFile) => { file: ProjectRegistryFile | null; result: T },
   ): T {
-    const lockPath = this.lockPath();
-    const run = (lockWaitMs: number | null) => {
-      const before = this.readFromDisk().file;
-      const { file, result } = change(cloneRegistryFile(before));
+    return this.withRegistryLock(op, (lockWaitMs) => {
+      const read = this.readFromDisk();
+      this.noteReadFindings(read);
+      const { file, result } = change(cloneRegistryFile(read.file));
       if (file) {
         this.write(file);
-        appendRegistryJournal(this.journalPath(), op, detail, before, file, lockWaitMs);
+        try {
+          journalRegistryWrite({ journalPath: this.journalPath(), op, detail, before: read.file.projects, after: file.projects, lockWaitMs });
+        } catch {
+          // The journal is diagnostics; the write it records already happened.
+        }
       }
       return result;
-    };
-    // A write inside a write in this process (the v1 upgrade during a read
-    // under `mutate`) already holds the lock.
-    if (heldRegistryLocks.has(lockPath)) return run(0);
-    const startedAt = Date.now();
-    try {
-      return withExclusiveFileLockSync(lockPath, () => {
-        heldRegistryLocks.add(lockPath);
-        try {
-          return run(Date.now() - startedAt);
-        } finally {
-          heldRegistryLocks.delete(lockPath);
-        }
-      }, { waitMs: REGISTRY_LOCK_WAIT_MS, label: "the ADE project list" });
-    } catch (error) {
-      if (!(error instanceof ExclusiveFileLockTimeoutError)) throw error;
-      // A holder that never lets go must not stop ADE from opening projects:
-      // write without the lock, as every ADE before this one did, and say so.
-      forwardLogToSentry("warn", "project_registry.lock_timeout", { op, lockPath, waitedMs: Date.now() - startedAt });
-      return run(null);
-    }
+    });
   }
 
   private write(file: ProjectRegistryFile): void {
@@ -727,135 +738,15 @@ export class ProjectRegistry {
     writeFileAtomic(this.layout.projectsPath, payload, { mode: 0o600 });
   }
 
-  /**
-   * The project list as it is now and the newest journal lines, for an error
-   * report about a project the brain could not find.
-   */
-  diagnosticFile(): { filename: string; data: string } | null {
-    const read = (filePath: string) => {
-      try {
-        return fs.readFileSync(filePath, "utf8");
-      } catch (error) {
-        return `[${(error as NodeJS.ErrnoException).code ?? "unreadable"}]`;
-      }
-    };
-    const journal = read(this.journalPath());
-    return {
-      filename: "project-registry.txt",
-      data: [
-        `# ${this.layout.projectsPath}`,
-        read(this.layout.projectsPath),
-        `# ${this.aliasesPath()}`,
-        read(this.aliasesPath()),
-        `# ${this.journalPath()} (newest last)`,
-        journal.length > REGISTRY_JOURNAL_REPORT_CHARS ? journal.slice(-REGISTRY_JOURNAL_REPORT_CHARS) : journal,
-      ].join("\n"),
-    };
+  /** The files a report about the project list attaches (`projectRegistryDiagnosticAttachment`). */
+  diagnosticPaths(): { projectsPath: string; aliasesPath: string } {
+    return { projectsPath: this.layout.projectsPath, aliasesPath: this.aliasesPath() };
   }
-}
-
-/**
- * The project list file for a report that is about it: one the registry or
- * the brain tagged, or any error that names an unknown project id (the
- * desktop's copy of the brain's answer). Every other report goes without it.
- */
-export function projectRegistryDiagnosticAttachment(
-  registry: ProjectRegistry,
-): (event: DiagnosticEvent) => { filename: string; data: string } | null {
-  return (event) => {
-    const asked = event.tags?.[DIAGNOSTIC_ATTACH_TAG] === "project_registry";
-    if (!asked && !/Unknown projectId/.test(diagnosticEventText(event))) return null;
-    return registry.diagnosticFile();
-  };
 }
 
 const REGISTRY_LOCK_WAIT_MS = 2_000;
-const REGISTRY_JOURNAL_MAX_BYTES = 512 * 1024;
-const REGISTRY_JOURNAL_REPORT_CHARS = 64 * 1024;
+const REGISTRY_LOCK_STALE_MS = 15_000;
 const heldRegistryLocks = new Set<string>();
-const reportedIdChanges = new Set<string>();
-const reportedDrops = new Set<string>();
-
-/** Which program wrote: the desktop app, the brain, or an `ade` command. */
-function describeRegistryWriter(): string {
-  if ((process as { type?: string }).type === "browser") return "desktop-main";
-  const args = process.argv.slice(2).filter((arg) => !arg.startsWith("-"));
-  if (args[0] === "serve") return "brain";
-  return args.length > 0 ? `cli ${args.slice(0, 2).join(" ")}` : path.basename(process.argv[1] ?? process.argv0 ?? "node");
-}
-
-function noteDroppedRecords(
-  registryPath: string,
-  journalPath: string,
-  dropped: Array<{ storedId: string | null; storedRoot: string | null; reason: string }>,
-): void {
-  for (const record of dropped) {
-    const key = `${record.storedId ?? ""}|${record.storedRoot ?? ""}|${record.reason}`;
-    if (reportedDrops.has(key)) continue;
-    reportedDrops.add(key);
-    // A record the next write will not keep: the project disappears for every
-    // window that knew it. A breadcrumb and a log line, not an issue, since a
-    // duplicate is often the same folder registered twice on purpose.
-    forwardLogToSentry("warn", "project_registry.record_dropped", { ...record, registryPath, writer: describeRegistryWriter() });
-    appendJournalLine(journalPath, { op: "record_dropped", ...record });
-  }
-}
-
-function recordSummary(records: ProjectRecord[], ids: Set<string>): Array<{ projectId: string; rootPath: string }> {
-  return records
-    .filter((record) => ids.has(record.projectId))
-    .map((record) => ({ projectId: record.projectId, rootPath: record.rootPath }));
-}
-
-/**
- * One line per write: who, what, and which ids came or went. Read by
- * `diagnosticFile` and by a person debugging a project that vanished. Kept to
- * the newest half once it passes 512 KB.
- */
-function appendRegistryJournal(
-  journalPath: string,
-  op: string,
-  detail: Record<string, unknown>,
-  before: ProjectRegistryFile,
-  after: ProjectRegistryFile,
-  lockWaitMs: number | null,
-): void {
-  try {
-    const beforeIds = new Set(before.projects.map((record) => record.projectId));
-    const afterIds = new Set(after.projects.map((record) => record.projectId));
-    const added = new Set([...afterIds].filter((id) => !beforeIds.has(id)));
-    const removed = new Set([...beforeIds].filter((id) => !afterIds.has(id)));
-    if (removed.size > 0) {
-      addSentryBreadcrumb("project_registry", `project_registry.${op}`, { removed: [...removed], writer: describeRegistryWriter() }, "warning");
-    }
-    appendJournalLine(journalPath, {
-      op,
-      ...detail,
-      count: { before: beforeIds.size, after: afterIds.size },
-      ...(added.size > 0 ? { added: recordSummary(after.projects, added) } : {}),
-      ...(removed.size > 0 ? { removed: recordSummary(before.projects, removed) } : {}),
-      lockWaitMs,
-    });
-  } catch {
-    // The journal is diagnostics; a failed append must not fail the write.
-  }
-}
-
-function appendJournalLine(journalPath: string, entry: Record<string, unknown>): void {
-  try {
-    const line = JSON.stringify({ ts: new Date().toISOString(), pid: process.pid, writer: describeRegistryWriter(), ...entry });
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true, mode: 0o700 });
-    fs.appendFileSync(journalPath, `${line}\n`, { mode: 0o600 });
-    const size = fs.statSync(journalPath).size;
-    if (size > REGISTRY_JOURNAL_MAX_BYTES) {
-      const text = fs.readFileSync(journalPath, "utf8");
-      const keep = text.slice(text.length - Math.floor(REGISTRY_JOURNAL_MAX_BYTES / 2));
-      writeFileAtomic(journalPath, keep.slice(keep.indexOf("\n") + 1), { mode: 0o600 });
-    }
-  } catch {
-    // The journal is diagnostics only.
-  }
-}
 
 export function assertLocalProjectDataAvailable(projectRoot: string): void {
   assertProjectNotMovedAway(projectRoot);
