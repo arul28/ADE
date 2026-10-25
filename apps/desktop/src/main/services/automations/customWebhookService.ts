@@ -57,6 +57,8 @@ const RATE_LIMIT_PER_MINUTE = 60;
 /** Header values never kept in the delivery log. */
 const HIDDEN_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", ACCOUNT_RELAY_TOKEN_HEADER]);
 /** Sender-supplied ids, in preference order, that make a redelivery recognisable. */
+/** A delivery ADE answered whose run has not started: what a restart replays. */
+const PENDING_DELIVERY_SQL = "outcome = 'ran' and ingress_event_id is null";
 const SENDER_DELIVERY_ID_HEADERS = ["x-github-delivery", "svix-id", "webhook-id", "linear-delivery", "x-request-id", "request-id"];
 
 export type WebhookIncomingRequest = {
@@ -137,7 +139,7 @@ export type CustomWebhookServiceDeps = {
     summary: string;
     eventName: string | null;
     webhook: { method: string; headers: Record<string, string>; query: Record<string, string>; body: unknown };
-    /** Start a delivery accepted before a restart whose run never started. */
+    /** Run the event even when it was accepted before, as long as its run never started. */
     resume?: boolean;
   }) => Promise<AutomationIngressEventRecord | null>;
   /** Event keys of webhook deliveries this machine accepted whose runs never started. */
@@ -409,7 +411,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     deps.db.run(
       `delete from automation_webhook_deliveries
         where project_id = ? and hook_id = ?
-          and not (outcome = 'ran' and ingress_event_id is null and received_at >= ?)
+          and not (${PENDING_DELIVERY_SQL} and received_at >= ?)
           and id not in (
             select id from automation_webhook_deliveries
              where project_id = ? and hook_id = ?
@@ -765,6 +767,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     // Reply first: the run can take minutes and senders time out in seconds.
     // The ingress row is written before `dispatch` first yields, so once this
     // returns the delivery survives a restart (see `resumeInterruptedDeliveries`).
+    // `resume`: a resend of an event that was accepted but never started (its
+    // row went `error` after a restart) must run, not read as a duplicate of
+    // it. The ingress claim still lets only one dispatch start a run.
     settleDispatch(deliveryId, hookId, deps.dispatch({
       hookId,
       via: request.via,
@@ -773,6 +778,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       summary: dispatchSummary(config, eventLabel),
       eventName: eventLabel,
       webhook: { method: base.method, headers: request.headers, query: request.query, body: parsedBody },
+      resume: true,
     }));
     return { status: 202, outcome: "ran", deliveryId };
   };
@@ -792,7 +798,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     if (eventKeys.length) {
       for (const row of deps.db.all<DeliveryRow>(
         `select * from automation_webhook_deliveries
-          where project_id = ? and outcome = 'ran' and ingress_event_id is null
+          where project_id = ? and ${PENDING_DELIVERY_SQL}
             and event_key in (${eventKeys.map(() => "?").join(", ")})
           order by received_at asc`,
         [deps.projectId, ...eventKeys],
@@ -804,11 +810,6 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     // leaves the replay for the next one. A second pass is safe either way:
     // the ingress claim lets only one dispatch of an event start a run.
     resumedInterrupted = true;
-    for (const eventKey of eventKeys) {
-      if (!rowsByKey.has(eventKey) && eventKey.startsWith("webhook:")) {
-        deps.logger.warn("automations.webhook_resume_missing_delivery", { eventKey });
-      }
-    }
     for (const row of rowsByKey.values()) {
       const match = findRuleForHook(row.hook_id);
       if (row.body_truncated === 1 || !match || row.rule_id !== match.rule.id || !row.event_key) {

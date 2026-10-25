@@ -4060,7 +4060,8 @@ button for a URL. It parks on `runtime.approvals` like `resume_return`, so
 every turn-ending path settles it; the SDK's abort signal cancels it.
 Accept answers `{action: "accept", content}` with `mcpElicitationContent`;
 Deny answers `decline`; an interrupt answers `cancel`. A host policy with
-`fallback: "deny"` declines without a card. Every elicitation logs
+`fallback: "deny"` declines on the spot, and still writes the card and its
+`decline` receipt, as for Codex. Every elicitation logs
 `chat.claude.mcp_elicitation`. The card lives on the chat's own brain, so a
 remote client answers it through the chat's pinned `respondToInput` like any
 other card.
@@ -4080,8 +4081,7 @@ The fallback *prompt* dialog stays undeclared (above).
 
 The first title is written from the first prompt alone. After the chat's
 first completed run, ADE asks once more with the run's output
-(`autoTitleRefine`, then `maybeAutoTitleSession({ stage: "final", refine:
-true })`), whichever of the title and the run lands first. It only rewrites a
+(`autoTitleRefine`, then `maybeAutoTitleSession({ mode: "refine" })`), whichever of the title and the run lands first. It only rewrites a
 title ADE wrote itself in this process: never a manual title, a runtime's own
 title, or a reloaded chat's. A runtime that echoes ADE's own title back
 (Codex `thread/name/set`) does not count as a runtime title. A fork carries

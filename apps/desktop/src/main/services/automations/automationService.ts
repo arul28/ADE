@@ -5102,9 +5102,10 @@ export function createAutomationService({
     linearAgent?: TriggerLinearAgentContext | null;
     webhook?: TriggerWebhookRequest | null;
     /**
-     * Run an event this machine accepted before a restart and never started,
-     * instead of treating its row as a duplicate. Anything else (already
-     * started, ignored, failed, unknown) still returns the existing row.
+     * Run an event this machine accepted before but never started (a restart
+     * replay, or a sender's resend of it) instead of treating its row as a
+     * duplicate. Anything else (already started, ignored, failed) still
+     * returns the existing row.
      */
     resume?: boolean;
   }): Promise<AutomationIngressEventRecord | null> => {

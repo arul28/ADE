@@ -17650,15 +17650,12 @@ export function createAgentChatService(args: {
     if (!title) return null;
 
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
-    const titleChanged = currentTitle?.trim() !== title;
     // An unchanged title changes nothing. In particular ADE pushes its own
     // titles to Codex (`thread/name/set`), which reports them straight back:
     // that echo is ADE's title, not the runtime's, and taking it as one would
     // stop ADE refining a title it wrote itself.
-    if (!titleChanged) return null;
-    if (titleChanged) {
-      persistSessionTitleMetadata(managed, title, false);
-    }
+    if (currentTitle?.trim() === title) return null;
+    persistSessionTitleMetadata(managed, title, false);
     managed.manuallyNamed = false;
     managed.runtimeTitleAdopted = true;
     managed.autoTitleStage = "initial";

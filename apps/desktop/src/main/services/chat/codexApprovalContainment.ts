@@ -91,12 +91,12 @@ export function codexApprovalAutoAccepts(
  *
  * The counterpart of {@link codexApprovalAutoAccepts}, and the reason it is a
  * named function rather than an inline `fallback === "deny"` test at each of
- * the three approval handlers: "what does the policy say about this request"
+ * each approval handler: "what does the policy say about this request"
  * now has exactly two spellings, both here, instead of one here and three
  * pasted into the handlers. Not Codex-specific: Claude's MCP elicitation
  * handler reads it too.
  */
-export function permissionPolicyDeniesByFallback(session: CodexApprovalSession): boolean {
+export function permissionPolicyDeniesByFallback(session: Pick<AgentChatSession, "permissionPolicy">): boolean {
   return session.permissionPolicy?.fallback === "deny";
 }
 
