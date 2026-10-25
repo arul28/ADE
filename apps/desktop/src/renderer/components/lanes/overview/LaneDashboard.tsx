@@ -393,6 +393,7 @@ export function LaneDashboard({
             createdBy={createdBy}
             active={active}
             pin={pin}
+            machineId={machine?.machineId ?? null}
             canReveal={canReveal}
             revealUnavailableReason={machine ? `On ${machine.machineName}` : null}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}

@@ -1876,6 +1876,7 @@ const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
@@ -1939,6 +1940,7 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
   return {
     name: requireString(value.name, "lanes.createChild requires name."),
     parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
     ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
@@ -1957,6 +1959,7 @@ function parseCreateLaneFromUnstagedArgs(value: Record<string, unknown>): Create
 function parseImportBranchArgs(value: Record<string, unknown>): ImportBranchLaneArgs {
   return {
     branchRef: requireString(value.branchRef, "lanes.importBranch requires branchRef."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.name) ? { name: asTrimmedString(value.name)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
@@ -3657,6 +3660,7 @@ function parseGitCheckoutBranchArgs(value: Record<string, unknown>): GitCheckout
   return {
     laneId: requireString(value.laneId, "git.checkoutBranch requires laneId."),
     branchName: requireString(value.branchName, "git.checkoutBranch requires branchName."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.mode) ? { mode: value.mode as GitCheckoutBranchArgs["mode"] } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(asTrimmedString(value.baseRef) ? { baseRef: asTrimmedString(value.baseRef)! } : {}),

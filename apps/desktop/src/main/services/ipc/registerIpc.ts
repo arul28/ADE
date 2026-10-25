@@ -7597,6 +7597,7 @@ export function registerIpc({
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
       githubIssue: arg.githubIssue ?? null,
+      ...(arg.operationId ? { operationId: arg.operationId } : {}),
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);

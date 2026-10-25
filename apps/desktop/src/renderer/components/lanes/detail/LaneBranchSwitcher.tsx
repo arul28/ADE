@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CaretDown, Check, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
 import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
+import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
@@ -56,12 +57,15 @@ export function LaneBranchSwitcher({
   primaryLane,
   active,
   pin = null,
+  machineId = null,
 }: {
   lane: LaneSummary;
   primaryLane: LaneSummary | null;
   active: boolean;
   /** The lane's machine when it is not the tab's. Lists, switches and stops go there. */
   pin?: OpenProjectBinding | null;
+  /** That machine's id, so its lane list refreshes after a switch. */
+  machineId?: string | null;
 }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [open, setOpen] = useState(false);
@@ -217,6 +221,8 @@ export function LaneBranchSwitcher({
         setSwitchOperationId(null);
       }
       await refreshLanes();
+      // Another machine has no change feed here; ask the shared union to re-read it.
+      if (pinRef.current && machineId) requestCrossMachineLanesForMachine(machineId);
       setBranches(await window.ade.git.listBranches({ laneId: lane.id }, pinRef.current));
       setPendingSwitch(null);
       setNewBranchName("");
@@ -228,7 +234,7 @@ export function LaneBranchSwitcher({
       setBusy(false);
       if (succeeded) setOpen(false);
     }
-  }, [lane, refreshLanes]);
+  }, [lane, machineId, refreshLanes]);
 
   const stopSwitch = useCallback((operationId: string) => {
     setSwitchOperationId(null);
@@ -237,7 +243,9 @@ export function LaneBranchSwitcher({
         // Git had not started: offer Stop again while the switch lasts.
         if (!result?.cancelled && inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);
+      });
   }, []);
 
   const branchRow = (branch: LaneBranchOption, kind: "local" | "remote") => {
