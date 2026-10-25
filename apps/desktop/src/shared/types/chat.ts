@@ -2130,6 +2130,7 @@ export type AgentChatEvent =
       }>;
     }
   | {
+      /** Legacy: only in saved chats. New Codex sleeps are `tool_call`/`tool_result` rows. */
       type: "codex_sleep";
       itemId: string;
       turnId?: string;

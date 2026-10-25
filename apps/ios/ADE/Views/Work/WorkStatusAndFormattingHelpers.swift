@@ -430,7 +430,7 @@ func workToolArgPreview(tool: String, argsText: String?) -> String? {
   guard !trimmed.isEmpty else { return nil }
 
   if let object = workJSONObject(from: trimmed) {
-    let keys = ["file_path", "path", "pattern", "query", "command", "cmd", "url", "status", "server"]
+    let keys = ["file_path", "path", "pattern", "query", "command", "cmd", "url", "status", "server", "duration"]
     for key in keys {
       if let value = object[key] as? String,
          let text = nonEmptyWorkToolArgPreview(value) {
@@ -1887,6 +1887,7 @@ func toolDisplayName(_ tool: String) -> String {
   case "image_view": return "Image viewed"
   case "computer_use": return "Computer Use"
   case "mcp_event": return "MCP"
+  case "sleep": return "Sleep"
   default: break
   }
   if trimmed.hasPrefix("functions.") {
@@ -2002,6 +2003,8 @@ func workToolArgPreview(toolName: String, argsText: String?) -> String? {
         .compactMap { $0 }
         .joined(separator: " · ")
       return joined.isEmpty ? nil : joined
+    case "sleep":
+      return stringValue("duration")
     case "delegate_parallel":
       if let tasks = object["tasks"] as? [Any] {
         return "\(tasks.count) task(s)"

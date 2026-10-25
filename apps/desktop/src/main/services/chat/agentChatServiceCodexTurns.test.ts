@@ -16,6 +16,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { turnHasOpenWork } from "../../../shared/turnInFlight";
 
 function codexTurnStartText(payload: Record<string, unknown> | undefined): string {
   const params = payload?.params as { input?: Array<{ text?: unknown }> } | undefined;
@@ -162,6 +163,34 @@ describe("createAgentChatService", () => {
         service.forceDisposeAll();
         vi.useRealTimers();
       }
+    });
+
+    it("keeps a Codex sleep open as one tool row until it completes", async () => {
+      const events: AgentChatEventEnvelope["event"][] = [];
+      const { service } = createService({ onEvent: (envelope: AgentChatEventEnvelope) => events.push(envelope.event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Wait for the build" });
+      const sleepItem = { id: "sleep-1", type: "sleep", durationMs: 30_000 };
+
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "item/started", params: { turnId: "turn-1", item: sleepItem } });
+      expect(turnHasOpenWork(events)).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "tool_call",
+        tool: "sleep",
+        itemId: "sleep-1",
+        args: expect.objectContaining({ duration: "30s" }),
+      }));
+
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "item/completed", params: { turnId: "turn-1", item: sleepItem } });
+      expect(turnHasOpenWork(events)).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "tool_result",
+        tool: "sleep",
+        itemId: "sleep-1",
+        status: "completed",
+      }));
+      expect(events.some((event) => event.type === "codex_sleep")).toBe(false);
+      service.forceDisposeAll();
     });
 
     it("deduplicates Codex compatibility item notifications", async () => {
