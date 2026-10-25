@@ -1224,8 +1224,8 @@ export function redactSecrets(text: string, replacement: string = "[REDACTED]"):
   return text
     // Bearer tokens
     .replace(/\bbearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement)
-    // OpenAI / Anthropic-style keys
-    .replace(/\bsk-[A-Za-z0-9]{12,}\b/g, replacement)
+    // OpenAI / Anthropic-style keys: `sk-ant-api03-…` and `sk-proj-…` bodies carry `-` and `_`
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, replacement)
     // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replacement)
     // Slack tokens
@@ -1248,7 +1248,7 @@ export function looksSensitiveValue(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed.length) return false;
   if (/^bearer\s+/i.test(trimmed)) return true;
-  if (/^sk-[a-z0-9]{12,}/i.test(trimmed)) return true;
+  if (/^sk-[a-z0-9_-]{12,}/i.test(trimmed)) return true;
   if (/^gh[pousr]_[a-z0-9]{20,}/i.test(trimmed)) return true;
   if (/^xox[baprs]-[a-z0-9-]{10,}/i.test(trimmed)) return true;
   if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AuthInfo,
   Certificate,
-  LoginAuthenticationResponseDetails,
+  AuthenticationResponseDetails,
   Session,
   WebContents,
 } from "electron";
@@ -398,7 +398,7 @@ function createAuthenticationHarness() {
   };
 }
 
-function authDetails(): LoginAuthenticationResponseDetails {
+function authDetails(): AuthenticationResponseDetails {
   return { url: "https://example.com/private" };
 }
 

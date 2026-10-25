@@ -1,6 +1,7 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
+import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
@@ -659,6 +660,10 @@ function fixElectronShellPath(): void {
 
 // Must run before any service or child process is created.
 fixElectronShellPath();
+// Main's own fetch/https: a proxy the environment names, and the OS's trusted
+// CAs (read off the main thread). Electron's net.fetch already follows the OS.
+configureOutboundProxyFromEnv(process.env);
+void trustSystemCertificates();
 
 let adeCliAutoInstallScheduled = false;
 

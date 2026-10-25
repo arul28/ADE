@@ -102,6 +102,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
@@ -36626,6 +36627,9 @@ async function runParsedCli(
       // Claude session it may have been started from.
       stripParentClaudeSessionEnv(process.env);
       initBrainSentry({ mode: "serve" });
+      // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
+      // Node's bundled set; read the OS store off the loop and add it.
+      void trustSystemCertificates();
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:
@@ -36766,6 +36770,9 @@ async function main(): Promise<void> {
       process.exitCode = healthy ? 0 : 1;
       return;
     }
+    // A proxy named in the environment applies to every command's outbound
+    // fetch (updates, sign-in, the brain's API calls); loopback stays direct.
+    configureOutboundProxyFromEnv(process.env);
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

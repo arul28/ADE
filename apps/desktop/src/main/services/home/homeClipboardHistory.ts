@@ -9,13 +9,13 @@ import { looksLikeSecret } from "../../../shared/secretText";
 /**
  * Clipboard history for the home page's Clipboard widget.
  *
- * Polls `clipboard.readText()` and `availableFormats()` once a second while
- * the watch is on (the widget is in the active home layout and not paused or
- * hidden). Both are tens of microseconds; a slow read (a huge copy) backs the
- * poll off. An image is read (≈5 ms for a 1440p screenshot) only when it
- * changed: the PNG copy apps put beside it is compared first (≈0.03 ms), and
- * an image with no PNG copy (Print Screen) is re-read at most every few
- * seconds.
+ * Polls the clipboard's text and flavor list once a second while the watch
+ * is on (the widget is in the active home layout and not paused or hidden).
+ * Both are cheap; a slow read (a huge copy) backs the poll off, and a poll
+ * never starts while the last one is still reading. Electron's clipboard
+ * decodes a picture on every read and cannot hand back the raw PNG copy, so an
+ * image is re-read at once when the flavors change and otherwise at most every
+ * few seconds (≈5 ms for a 1440p screenshot).
  *
  * Privacy: copies a password manager marks as concealed and copies that look
  * like secrets are never kept. With "Keep after restart" off nothing is on
@@ -36,15 +36,16 @@ export type HomeClipboardImageRead = {
 };
 
 export type HomeWidgetsClipboard = {
-  readText: () => string;
-  writeText: (text: string) => void;
-  readBuffer: (format: string) => Buffer;
-  /** Whether a format is on the clipboard at all, even with no data (Electron's `clipboard.has`). */
-  has?: (format: string) => boolean;
-  availableFormats?: () => string[];
+  readText: () => Promise<string>;
+  writeText: (text: string) => Promise<void>;
+  /** A raw platform format's bytes; empty when it is absent. */
+  readBuffer: (format: string) => Promise<Buffer>;
+  /** Whether a raw platform format is on the clipboard at all, even with no data. */
+  has?: (format: string) => Promise<boolean>;
+  availableFormats?: () => Promise<string[]>;
   /** Null when the clipboard has no image (or it is empty). */
-  readImage?: () => HomeClipboardImageRead | null;
-  writeImage?: (png: Buffer) => boolean;
+  readImage?: () => Promise<HomeClipboardImageRead | null>;
+  writeImage?: (png: Buffer) => Promise<boolean>;
 };
 
 type Logger = { warn: (event: string, data?: Record<string, unknown>) => void };
@@ -68,8 +69,6 @@ const CLIPBOARD_WRITE_DEBOUNCE_MS = 1_500;
  */
 const CLIPBOARD_IMAGE_REREAD_MS = 3_000;
 const CLIPBOARD_IMAGE_REREAD_MAX_MS = 12_000;
-/** The PNG format apps put beside a bitmap: Windows' registered "PNG", macOS' UTI. */
-const PNG_CLIPBOARD_FORMAT: Partial<Record<NodeJS.Platform, string>> = { win32: "PNG", darwin: "public.png" };
 
 /**
  * Formats a password manager puts on the clipboard to say "do not record
@@ -87,12 +86,12 @@ const CONCEALED_MARKER_FORMATS: Partial<Record<NodeJS.Platform, string[]>> = {
 const WINDOWS_HISTORY_DWORD_FORMAT = "CanIncludeInClipboardHistory";
 
 /** True when a password manager marked what is on the clipboard as not to be recorded. */
-export function isConcealedClipboard(clipboard: HomeWidgetsClipboard, platform: NodeJS.Platform): boolean {
+export async function isConcealedClipboard(clipboard: HomeWidgetsClipboard, platform: NodeJS.Platform): Promise<boolean> {
   for (const format of CONCEALED_MARKER_FORMATS[platform] ?? []) {
     try {
       if (clipboard.has) {
-        if (clipboard.has(format)) return true;
-      } else if (clipboard.readBuffer(format)?.length > 0) {
+        if (await clipboard.has(format)) return true;
+      } else if ((await clipboard.readBuffer(format))?.length > 0) {
         return true;
       }
     } catch {
@@ -101,7 +100,7 @@ export function isConcealedClipboard(clipboard: HomeWidgetsClipboard, platform: 
   }
   if (platform === "win32") {
     try {
-      const buffer = clipboard.readBuffer(WINDOWS_HISTORY_DWORD_FORMAT);
+      const buffer = await clipboard.readBuffer(WINDOWS_HISTORY_DWORD_FORMAT);
       if (buffer && buffer.length >= 4 && buffer.readUInt32LE(0) === 0) return true;
     } catch {
       // Absent.
@@ -122,7 +121,6 @@ export function createClipboardHistory(deps: {
   const settingsPath = path.join(dir, "settings.json");
   const historyPath = path.join(dir, "clipboard-history.json");
   const imagesDir = path.join(dir, "clipboard-images");
-  const pngFormat = PNG_CLIPBOARD_FORMAT[platform] ?? null;
 
   let clipboardEnabled = false;
   let clipboardPersist = false;
@@ -138,6 +136,10 @@ export function createClipboardHistory(deps: {
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInterval = CLIPBOARD_POLL_MS;
+  /** A poll still awaiting the clipboard; the next tick skips rather than overlapping it. */
+  let polling = false;
+  /** Bumped on every start and stop, so a poll that outlives its watch drops what it read. */
+  let watchGeneration = 0;
   let writeTimer: NodeJS.Timeout | null = null;
   /** Disk work runs one at a time, in order, so a removal never races an older write. */
   let diskQueue: Promise<void> = Promise.resolve();
@@ -242,22 +244,6 @@ export function createClipboardHistory(deps: {
     if (clipboardPersist) scheduleHistoryWrite();
   };
 
-  /** A cheap identity for the PNG copy on the clipboard: its length and a hash of its two ends. */
-  const pngProbe = (): { key: string; png: Buffer } | null => {
-    if (!pngFormat) return null;
-    let png: Buffer;
-    try {
-      png = deps.clipboard.readBuffer(pngFormat);
-    } catch {
-      return null;
-    }
-    if (!png || png.length < 8) return null;
-    const edge = 64 * 1024;
-    const hash = createHash("sha1").update(png.subarray(0, edge));
-    if (png.length > edge) hash.update(png.subarray(Math.max(edge, png.length - edge)));
-    return { key: `png:${png.length}:${hash.digest("hex")}`, png };
-  };
-
   /** A cheap identity for pixels: their size and 512 samples spread over the bitmap. */
   const pixelSample = (bitmap: Buffer, width: number, height: number) => {
     const hash = createHash("sha1").update(`${width}x${height}:`);
@@ -269,13 +255,13 @@ export function createClipboardHistory(deps: {
   const pixelHash = (read: HomeClipboardImageRead) =>
     createHash("sha1").update(`${read.width}x${read.height}:`).update(read.bitmap()).digest("hex");
 
-  const recordImage = (read: HomeClipboardImageRead, hash: string, pngCopy: Buffer | null) => {
+  const recordImage = (read: HomeClipboardImageRead, hash: string) => {
     const existing = entries.findIndex((entry) => entry.image?.hash === hash);
     if (existing >= 0) {
       pushEntry({ ...entries[existing]!, copiedAt: Date.now() }, existing);
       return;
     }
-    const full = pngCopy ?? read.png();
+    const full = read.png();
     // One picture bigger than the whole budget is not kept.
     if (full.length === 0 || full.length > CLIPBOARD_IMAGE_BYTES_CAP) return;
     const thumb = read.thumbnail(CLIPBOARD_THUMB_PX);
@@ -290,11 +276,11 @@ export function createClipboardHistory(deps: {
     pushEntry({ id: randomUUID(), text: "", image, copiedAt: Date.now(), length: 0 }, -1);
   };
 
-  const recordText = (text: string) => {
+  const recordText = (text: string, concealed: boolean) => {
     // Only what would be kept is scanned: a copy can be megabytes, and the
     // scan runs on the main thread.
     const kept = text.slice(0, CLIPBOARD_MAX_CHARS);
-    if (isConcealed() || looksLikeSecret(kept)) {
+    if (concealed || looksLikeSecret(kept)) {
       skippedSecrets += 1;
       announce();
       return;
@@ -306,16 +292,30 @@ export function createClipboardHistory(deps: {
     pushEntry(entry, existing);
   };
 
-  const poll = () => {
+  const poll = async () => {
+    if (polling) return;
+    polling = true;
+    const generation = watchGeneration;
+    try {
+      await pollOnce(generation);
+    } finally {
+      polling = false;
+    }
+  };
+
+  const pollOnce = async (generation: number) => {
     const started = performance.now();
     let text: string;
     let formats: string[];
     try {
-      text = deps.clipboard.readText() ?? "";
-      formats = deps.clipboard.availableFormats?.() ?? [];
+      [text, formats] = await Promise.all([
+        deps.clipboard.readText().then((value) => value ?? ""),
+        deps.clipboard.availableFormats?.() ?? Promise.resolve([]),
+      ]);
     } catch {
       return;
     }
+    if (generation !== watchGeneration) return;
     const elapsed = performance.now() - started;
     const nextInterval = elapsed > CLIPBOARD_SLOW_READ_MS ? CLIPBOARD_SLOW_POLL_MS : CLIPBOARD_POLL_MS;
     if (nextInterval !== pollInterval) restartPoll(nextInterval);
@@ -333,67 +333,64 @@ export function createClipboardHistory(deps: {
       const seen = text.trim() ? `t:${text}` : "";
       if (seen === lastSeen) return;
       lastSeen = seen;
-      if (seen && !skipFirst) recordText(text);
+      if (!seen || skipFirst) return;
+      const concealed = await isConcealed();
+      if (generation !== watchGeneration) return;
+      recordText(text, concealed);
       return;
     }
 
-    // An image. With a PNG copy beside it, compare that (cheap) and read the picture only when it changed.
-    const probe = pngProbe();
-    if (probe) {
-      const seen = `i:${probe.key}`;
-      if (seen === lastSeen) return;
-      lastSeen = seen;
-      if (skipFirst) return;
-    } else {
-      // No PNG copy (Print Screen, Paint): re-read the picture now and then, at once when the formats changed.
-      if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
-    }
+    // An image: re-read the picture now and then, at once when the formats changed.
+    if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
     let read: HomeClipboardImageRead | null = null;
     try {
-      read = deps.clipboard.readImage?.() ?? null;
+      read = (await deps.clipboard.readImage?.()) ?? null;
     } catch {
       read = null;
     }
+    if (generation !== watchGeneration) return;
     lastImageReadAt = Date.now();
     if (!read) {
-      if (!probe) lastSeen = "";
+      lastSeen = "";
       return;
     }
-    if (!probe) {
-      const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
-      if (seen === lastSeen) {
-        imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
-        return;
-      }
-      imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
-      lastSeen = seen;
-      if (skipFirst) return;
+    const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
+    if (seen === lastSeen) {
+      imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
+      return;
     }
-    if (isConcealed()) {
+    imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
+    lastSeen = seen;
+    if (skipFirst) return;
+    const concealed = await isConcealed();
+    if (generation !== watchGeneration) return;
+    if (concealed) {
       skippedSecrets += 1;
       announce();
       return;
     }
-    recordImage(read, pixelHash(read), probe?.png ?? null);
+    recordImage(read, pixelHash(read));
   };
 
   function restartPoll(interval: number) {
     if (pollTimer) clearInterval(pollTimer);
     pollInterval = interval;
-    pollTimer = setInterval(poll, interval);
+    pollTimer = setInterval(() => void poll(), interval);
     pollTimer.unref?.();
   }
 
   const startPolling = () => {
     if (pollTimer) return;
+    watchGeneration += 1;
     lastSeen = null;
     restartPoll(CLIPBOARD_POLL_MS);
-    poll();
+    void poll();
   };
 
   const stopPolling = () => {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
+    watchGeneration += 1;
     lastSeen = null;
   };
 
@@ -505,12 +502,12 @@ export function createClipboardHistory(deps: {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry) return false;
       if (!entry.image) {
-        deps.clipboard.writeText(entry.text);
+        await deps.clipboard.writeText(entry.text);
         return true;
       }
       const full = fullImages.get(entry.image.hash)
         ?? await fs.readFile(imageFile(entry.image.hash)).catch(() => null);
-      return Boolean(full && deps.clipboard.writeImage?.(full));
+      return Boolean(full && await deps.clipboard.writeImage?.(full));
     },
     dispose: () => {
       stopPolling();

@@ -23,6 +23,7 @@ import type { Logger } from "../../logging/logger";
 import type { AgentChatDevinCloudConfig } from "../../../../shared/types/chat";
 import type { CursorCloudFleetResult } from "../../../../shared/types/config";
 import type { DevinCloudDirectory } from "../devinCloudDirectory";
+import { redactGitOutput } from "../../../utils/redaction";
 
 const ORIGIN_TTL_MS = 60_000;
 const PUSH_TIMEOUT_MS = 90_000;
@@ -200,9 +201,9 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       }
     }
     if (options.onFailure === "throw") {
-      throw new Error(`Could not push ${lane.branchRef} to origin, so the cloud VM cannot check it out: ${stderr || "git push failed"}`);
+      throw new Error(`Could not push ${lane.branchRef} to origin, so the cloud VM cannot check it out: ${redactGitOutput(stderr) || "git push failed"}`);
     }
-    logger.warn("cloud_agents.lane_branch_push_failed", { laneId: lane.id, branch: lane.branchRef, stderr });
+    logger.warn("cloud_agents.lane_branch_push_failed", { laneId: lane.id, branch: lane.branchRef, stderr: redactGitOutput(stderr) });
     return false;
   };
 

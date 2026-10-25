@@ -48,6 +48,7 @@ import {
 } from "./acpProtocolTypes";
 import type { AcpDialect, AcpSpawnPlan } from "./acpHostTypes";
 import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
+import { redactProcessOutput } from "../../../utils/redaction";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -182,15 +183,16 @@ type ReverseRequestRegistration = {
 const STDERR_TAIL_LIMIT = 4_000;
 
 /**
- * OAuth query values never reach a log line or an error message. Antigravity
- * prints its Google sign-in URL (with `state`) on stderr; a callback URL would
- * carry the `code`.
+ * OAuth query values and secrets never reach a log line or an error message.
+ * Antigravity prints its Google sign-in URL (with `state`) on stderr; a
+ * callback URL would carry the `code`; an agent that fails to start may print
+ * its environment or config, API keys included.
  */
 export function redactAcpDiagnosticText(text: string): string {
-  return text.replace(
+  return redactProcessOutput(text.replace(
     /([?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&\s"']+/gi,
     "$1<redacted>",
-  );
+  ));
 }
 
 /** Split a byte stream into complete lines. Holds the partial tail. */
@@ -443,7 +445,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     try {
       parsed = JSON.parse(trimmed);
     } catch {
-      logEvent("warn", "agent_chat.acp_stdout_unparsable", { text: trimmed.slice(0, 400) });
+      logEvent("warn", "agent_chat.acp_stdout_unparsable", { text: redactAcpDiagnosticText(trimmed.slice(0, 400)) });
       return;
     }
     const frame = normalizeAcpRpcFrame(parsed);

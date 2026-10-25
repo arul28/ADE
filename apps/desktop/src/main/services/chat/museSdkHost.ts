@@ -68,6 +68,7 @@ import { ensureMuseBinary, museProviderOverride, resolveMuseExecutable } from ".
 import { checkMuseVendorFloor } from "../ai/museFallForward";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
+import { redactProcessOutput } from "../../utils/redaction";
 
 /**
  * The params of each view notification ADE models, keyed by method. These are
@@ -292,7 +293,8 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
   const pushStderr = (chunk: string) => {
     for (const line of chunk.split(/\r?\n/)) {
       if (!line.trim()) continue;
-      stderr.push(line);
+      // The tail reaches the chat's error notice, so its secrets go first.
+      stderr.push(redactProcessOutput(line));
       if (stderr.length > STDERR_TAIL_LIMIT) stderr.shift();
     }
   };

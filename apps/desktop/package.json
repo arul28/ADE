@@ -162,7 +162,7 @@
     "clsx": "^2.1.1",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
-    "electron": "^41.5.0",
+    "electron": "^44.9.3",
     "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^7.0.1",

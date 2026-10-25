@@ -512,6 +512,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
+import { redactGitOutput } from "../../utils/redaction";
 import type {
   AgentChatApprovalDecision,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -49787,7 +49788,7 @@ export function createAgentChatService(args: {
       timeoutMs: 30_000,
     });
     if (remote.exitCode !== 0) {
-      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${remote.stderr.trim()}`.trim());
+      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
     }
     // A never-pushed branch is fine with changes: its base commits come from
     // origin's history or the bundle.
@@ -50552,7 +50553,7 @@ export function createAgentChatService(args: {
             },
           );
           if (fetch.exitCode !== 0) {
-            blockingErrors.push(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+            blockingErrors.push(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
           } else {
             const fetchedHead = await runGit(["rev-parse", `refs/remotes/origin/${branchRef}`], {
               cwd: projectRoot,
@@ -50752,7 +50753,7 @@ export function createAgentChatService(args: {
     );
     if (fetch.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`,
       );
     }
     const fetchedHead = await requireGitOutput(
@@ -51218,7 +51219,7 @@ export function createAgentChatService(args: {
           env: await destinationGitEnv(),
         });
         if (fetch.exitCode !== 0) {
-          throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+          throw new Error(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
         }
         const fetchedHead = await requireGitOutput(
           runGit,
