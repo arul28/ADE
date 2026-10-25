@@ -5,6 +5,7 @@ import path from "node:path";
 
 import type { HomeClipboardEntry, HomeClipboardImage, HomeClipboardState } from "../../../shared/types/homeWidgets";
 import { looksLikeSecret } from "../../../shared/secretText";
+import type { Logger as FullLogger } from "../logging/logger";
 
 /**
  * Clipboard history for the home page's Clipboard widget.
@@ -47,7 +48,7 @@ export type HomeWidgetsClipboard = {
   writeImage?: (png: Buffer) => Promise<boolean>;
 };
 
-type Logger = { warn: (event: string, data?: Record<string, unknown>) => void };
+type Logger = Pick<FullLogger, "warn">;
 
 const CLIPBOARD_MAX_ENTRIES = 50;
 const CLIPBOARD_MAX_CHARS = 20_000;
@@ -85,8 +86,9 @@ const WINDOWS_HISTORY_DWORD_FORMAT = "CanIncludeInClipboardHistory";
 
 /**
  * True when a password manager marked what is on the clipboard as not to be
- * recorded. `formats` is the flavor list read with the content, so the marker
- * and the copy it guards come from the same look at the clipboard.
+ * recorded. `formats` is the flavor list the same poll read, so no second
+ * look at the clipboard decides it (Electron reads each flavor separately, so
+ * the text itself is still a read of its own).
  */
 export async function isConcealedClipboard(
   clipboard: HomeWidgetsClipboard,
@@ -103,6 +105,20 @@ export async function isConcealedClipboard(
     }
   }
   return false;
+}
+
+/** One run of the clipboard watch (from a start to the next start or stop). */
+type ClipboardWatch = {
+  /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
+  lastSeen: string | null;
+  /** The flavor list the last poll saw, joined. */
+  formats: string;
+  /** A poll is still awaiting the clipboard; the next tick skips rather than overlapping it. */
+  polling: boolean;
+};
+
+function newClipboardWatch(): ClipboardWatch {
+  return { lastSeen: null, formats: "", polling: false };
 }
 
 export function createClipboardHistory(deps: {
@@ -122,9 +138,11 @@ export function createClipboardHistory(deps: {
   let clipboardPersist = false;
   let entries: HomeClipboardEntry[] = [];
   let skippedSecrets = 0;
-  /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
-  let lastSeen: string | null = null;
-  let lastFormats = "";
+  /**
+   * The watch the polls belong to, replaced on every start and stop: a poll
+   * that outlives its watch sees it is no longer `watch` and drops what it read.
+   */
+  let watch: ClipboardWatch = newClipboardWatch();
   /** When the picture was last read, and how long until the next look. */
   let lastImageReadAt = 0;
   let imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
@@ -132,10 +150,6 @@ export function createClipboardHistory(deps: {
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInterval = CLIPBOARD_POLL_MS;
-  /** Bumped on every start and stop, so a poll that outlives its watch drops what it read. */
-  let watchGeneration = 0;
-  /** The watch whose poll is still awaiting the clipboard; its next tick skips rather than overlapping it. */
-  let pollingGeneration: number | null = null;
   let writeTimer: NodeJS.Timeout | null = null;
   /** Disk work runs one at a time, in order, so a removal never races an older write. */
   let diskQueue: Promise<void> = Promise.resolve();
@@ -217,7 +231,6 @@ export function createClipboardHistory(deps: {
     }
   };
 
-
   /**
    * Puts `entry` first and drops what is over the caps: 50 entries, and at
    * most 30 pictures and 50 MB of full images (the oldest pictures go first).
@@ -288,20 +301,20 @@ export function createClipboardHistory(deps: {
   };
 
   const poll = async () => {
-    const generation = watchGeneration;
-    if (pollingGeneration === generation) return;
-    pollingGeneration = generation;
+    const mine = watch;
+    if (mine.polling) return;
+    mine.polling = true;
     try {
-      await pollOnce(generation);
+      await pollOnce(mine);
     } catch (error) {
       deps.logger?.warn("home.clipboard.poll_failed", { error: error instanceof Error ? error.message : String(error) });
     } finally {
-      if (pollingGeneration === generation) pollingGeneration = null;
+      mine.polling = false;
     }
   };
 
-  /** One look at the clipboard. `lastSeen` moves only while `generation` is still the live watch. */
-  const pollOnce = async (generation: number) => {
+  /** One look at the clipboard. `mine.lastSeen` moves only while `mine` is still the live watch. */
+  const pollOnce = async (mine: ClipboardWatch) => {
     const started = performance.now();
     let text: string;
     let formats: string[];
@@ -310,14 +323,14 @@ export function createClipboardHistory(deps: {
     } catch {
       return;
     }
-    if (generation !== watchGeneration) return;
+    if (mine !== watch) return;
     const elapsed = performance.now() - started;
     const nextInterval = elapsed > CLIPBOARD_SLOW_READ_MS ? CLIPBOARD_SLOW_POLL_MS : CLIPBOARD_POLL_MS;
     if (nextInterval !== pollInterval) restartPoll(nextInterval);
     const formatKey = formats.join("|");
-    const formatsChanged = formatKey !== lastFormats;
-    lastFormats = formatKey;
-    const first = lastSeen == null;
+    const formatsChanged = formatKey !== mine.formats;
+    mine.formats = formatKey;
+    const first = mine.lastSeen == null;
     // The first read is what was on the clipboard before ADE looked; it is
     // recorded only when the history is empty, so a relaunch does not re-add it.
     const skipFirst = first && entries.length > 0;
@@ -326,45 +339,45 @@ export function createClipboardHistory(deps: {
     const imageOnly = !text.trim() && deps.clipboard.readImage != null && formats.some((format) => format.startsWith("image/"));
     if (!imageOnly) {
       const seen = text.trim() ? `t:${text}` : "";
-      if (seen === lastSeen) return;
+      if (seen === mine.lastSeen) return;
       if (!seen || skipFirst) {
-        lastSeen = seen;
+        mine.lastSeen = seen;
         return;
       }
       const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
-      if (generation !== watchGeneration) return;
-      lastSeen = seen;
+      if (mine !== watch) return;
+      mine.lastSeen = seen;
       recordText(text, concealed);
       return;
     }
 
     // An image: re-read the picture now and then, at once when the formats changed.
-    if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
+    if (!first && !formatsChanged && mine.lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
     let read: HomeClipboardImageRead | null = null;
     try {
       read = (await deps.clipboard.readImage?.()) ?? null;
     } catch {
       read = null;
     }
-    if (generation !== watchGeneration) return;
+    if (mine !== watch) return;
     lastImageReadAt = Date.now();
     if (!read) {
-      lastSeen = "";
+      mine.lastSeen = "";
       return;
     }
     const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
-    if (seen === lastSeen) {
+    if (seen === mine.lastSeen) {
       imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
       return;
     }
     imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
     if (skipFirst) {
-      lastSeen = seen;
+      mine.lastSeen = seen;
       return;
     }
     const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
-    if (generation !== watchGeneration) return;
-    lastSeen = seen;
+    if (mine !== watch) return;
+    mine.lastSeen = seen;
     if (concealed) {
       skippedSecrets += 1;
       announce();
@@ -382,8 +395,7 @@ export function createClipboardHistory(deps: {
 
   const startPolling = () => {
     if (pollTimer) return;
-    watchGeneration += 1;
-    lastSeen = null;
+    watch = newClipboardWatch();
     restartPoll(CLIPBOARD_POLL_MS);
     void poll();
   };
@@ -391,8 +403,7 @@ export function createClipboardHistory(deps: {
   const stopPolling = () => {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
-    watchGeneration += 1;
-    lastSeen = null;
+    watch = newClipboardWatch();
   };
 
   /**

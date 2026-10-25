@@ -672,10 +672,9 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
  * for its owner is a {@link GitUntrustedFolderError}; a machine that cannot
  * run git (no developer tools, the Xcode license, no git installed at all) is
  * marked an expected `environment` failure. `message` replaces the text shown
- * when the caller words it itself; the default drops secrets git repeats from
- * a remote URL (a `?access_token=` query).
+ * when the caller words it itself.
  */
-export function gitCommandError(raw: string, message: string = formatGitExecutionError(redactGitOutput(raw))): Error {
+export function gitCommandError(raw: string, message: string = formatGitExecutionError(raw)): Error {
   const ownership = describeGitOwnershipProblem(raw);
   if (ownership) return new GitUntrustedFolderError(ownership);
   const error = new Error(message);
@@ -686,7 +685,8 @@ export function gitCommandError(raw: string, message: string = formatGitExecutio
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
   if (ownership) return gitOwnershipMessage(ownership);
-  if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
+  // Git repeats a remote URL, query and all; a token in it must not reach the message.
+  if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return redactGitOutput(raw);
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }
 

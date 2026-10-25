@@ -113,7 +113,7 @@ export function createProjectScaffoldService({
         const fallbackInit = await runGit(["init"], { cwd: rootPath, timeoutMs: 15_000 });
         if (fallbackInit.exitCode !== 0) {
           const raw = fallbackInit.stderr.trim();
-          throw gitCommandError(raw, `git init failed: ${raw || `exit ${fallbackInit.exitCode}`}`);
+          throw gitCommandError(raw, `git init failed: ${redactGitOutput(raw) || `exit ${fallbackInit.exitCode}`}`);
         }
         const symbolicRef = await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
           cwd: rootPath,

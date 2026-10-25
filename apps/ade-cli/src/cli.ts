@@ -36629,6 +36629,8 @@ async function runParsedCli(
       initBrainSentry({ mode: "serve" });
       // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
       // Node's bundled set; read the OS store off the loop and add it.
+      // The brain's log says once whether the environment's proxy is in use.
+      if (outboundProxyConfigured) process.stderr.write("ADE: network.proxy_configured (HTTPS_PROXY/HTTP_PROXY; loopback direct)\n");
       void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
       return {
@@ -36749,6 +36751,7 @@ const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
  * store) goes to stderr, where the brain's other startup notes go; stdout
  * stays the command's output.
  */
+let outboundProxyConfigured = false;
 const networkWarningLogger = {
   info: () => {},
   warn: (event: string, meta?: Record<string, unknown>) => {
@@ -36787,9 +36790,8 @@ async function main(): Promise<void> {
     // Behind a proxy the OS's CAs (a TLS-inspecting proxy's root) are trusted
     // before the command runs. Without one, only the long-lived brain pays
     // the ~140 ms store read (below), not every short `ade` call.
-    if (configureOutboundProxyFromEnv(process.env, networkWarningLogger)) {
-      await trustSystemCertificates(networkWarningLogger);
-    }
+    outboundProxyConfigured = configureOutboundProxyFromEnv(process.env, networkWarningLogger);
+    if (outboundProxyConfigured) await trustSystemCertificates(networkWarningLogger);
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

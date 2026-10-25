@@ -117,7 +117,7 @@ export type PackagedSyncHostLaunchGateDeps = {
   platform?: NodeJS.Platform;
   detectConflict?: (env: NodeJS.ProcessEnv) => SyncHostSingletonConflict | null | undefined;
   showDialog?: (content: PackagedSyncHostConflictDialogContent) => void;
-  copyToClipboard?: (text: string) => Promise<void>;
+  copyToClipboard?: (text: string) => void | Promise<void>;
   quit?: () => void;
 };
 
@@ -143,7 +143,7 @@ export async function blockPackagedLaunchForCrossChannelSyncConflict(
 
   // Land the quit command before the dialog blocks and the app quits; a
   // clipboard failure must not stop the dialog.
-  await (deps.copyToClipboard ?? ((text) => clipboard.writeText(text)))(content.quitCommand).catch(() => {});
+  await Promise.resolve((deps.copyToClipboard ?? ((text) => clipboard.writeText(text)))(content.quitCommand)).catch(() => {});
   (deps.showDialog ?? showPackagedSyncHostConflictDialog)(content);
   (deps.quit ?? (() => app.quit()))();
   return true;
