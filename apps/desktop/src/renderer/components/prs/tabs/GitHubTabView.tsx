@@ -2,10 +2,18 @@ import React from "react";
 import { CircleNotch, GitMerge, GithubLogo, HandPalm } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
+  GitHubPrListFilters,
   GitHubPrListItem,
   GitHubPrStack,
   PrSummary,
+  SearchGitHubPrsError,
 } from "../../../../shared/types";
+import {
+  GitHubPrFilterChips,
+  GitHubPrFilterMenu,
+  type GitHubFilterOptionsLoader,
+  type GitHubPrFilterFacets,
+} from "../shared/GitHubPrFilters";
 import { EmptyState } from "../../ui/EmptyState";
 import { dialogBus } from "../../../lib/dialogBus";
 import { Banner } from "../../ui/notice";
@@ -46,9 +54,26 @@ const FILTER_ACCENTS: Record<GitHubFilter, string> = {
 /** Width of the list column when there is no project sidebar to hold it. */
 const INLINE_LIST_WIDTH_PX = 340;
 
+/** The GitHub search behind active filters; null when no filter is on. */
+export type GitHubTabFilterSearchView = {
+  loading: boolean;
+  error: SearchGitHubPrsError | null;
+  unavailable: boolean;
+  totalCount: number | null;
+  canLoadMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+};
+
 type GitHubTabViewChrome = {
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
+  onSearchSubmit?: () => void;
+  listFilters?: GitHubPrListFilters;
+  onListFiltersChange?: (next: GitHubPrListFilters) => void;
+  filterFacets?: GitHubPrFilterFacets;
+  filterLoadOptions?: GitHubFilterOptionsLoader | null;
+  filterSearch?: GitHubTabFilterSearchView | null;
   repoLabel: string;
   syncing: boolean;
   syncedAt: string | null;
@@ -213,10 +238,20 @@ function GitHubTabListColumn({
   // In a narrow sidebar the Blocked sort collapses to its hand icon.
   const filterRow = useRowOverflowCollapse();
   const blockedCompact = filterRow.collapsed;
+  const filterSearch = chrome.filterSearch ?? null;
+  const labelColors = React.useMemo(
+    () => new Map((chrome.filterFacets?.labels ?? []).map((label) => [label.name.toLowerCase(), label.color])),
+    [chrome.filterFacets?.labels],
+  );
   return (
     <div className={PRS_LIST_ROOT_CLASS}>
       <div style={{ display: "flex", padding: "0 10px 6px", flexShrink: 0 }}>
-        <GitHubPrSearchInput value={chrome.searchQuery} onChange={chrome.onSearchQueryChange} />
+        <GitHubPrSearchInput
+          value={chrome.searchQuery}
+          onChange={chrome.onSearchQueryChange}
+          onSubmit={chrome.onSearchSubmit}
+          placeholder={chrome.listFilters ? "Search, or label:x author:y assignee:z" : undefined}
+        />
       </div>
       <div
         ref={filterRow.ref}
@@ -235,6 +270,8 @@ function GitHubTabListColumn({
           const active = list.filter === state;
           const accent = toneText(FILTER_ACCENTS[state]);
           const count = list.filterCounts[state];
+          // Under a filter only the active tab's GitHub total is known.
+          const showCount = !filterSearch || active;
           const tabLoading = active && (
             list.loading
             || chrome.syncing
@@ -276,7 +313,7 @@ function GitHubTabListColumn({
                   aria-label={`Loading ${state} pull requests`}
                   style={{ color: active ? accent : COLORS.accent, opacity: 0.9 }}
                 />
-              ) : (
+              ) : showCount ? (
                 <span style={{
                   fontFamily: MONO_FONT,
                   fontSize: 10,
@@ -286,11 +323,20 @@ function GitHubTabListColumn({
                 }}>
                   {count}
                 </span>
-              )}
+              ) : null}
             </button>
           );
         })}
         <div style={{ flex: 1 }} />
+        {chrome.listFilters && chrome.onListFiltersChange && chrome.filterFacets ? (
+          <GitHubPrFilterMenu
+            filters={chrome.listFilters}
+            facets={chrome.filterFacets}
+            loadOptions={chrome.filterLoadOptions ?? null}
+            onChange={chrome.onListFiltersChange}
+            compact={blockedCompact}
+          />
+        ) : null}
         <button
           type="button"
           aria-pressed={list.sort === "blocked"}
@@ -343,6 +389,11 @@ function GitHubTabListColumn({
         ) : null}
       </div>
 
+      {chrome.listFilters && chrome.onListFiltersChange ? (
+        <GitHubPrFilterChips filters={chrome.listFilters} labelColors={labelColors} onChange={chrome.onListFiltersChange} />
+      ) : null}
+      {filterSearch ? <GitHubTabFilterSearchNote search={filterSearch} assigneeFilter={Boolean(chrome.listFilters?.assignee)} /> : null}
+
       {chrome.error ? (
         <Banner
           layout="inline"
@@ -360,7 +411,13 @@ function GitHubTabListColumn({
             fontSize: 12,
             color: COLORS.textMuted,
           }}>
-            {list.loading && !list.hasSnapshot ? "Loading pull requests…" : "No pull requests"}
+            {list.loading && !list.hasSnapshot
+              ? "Loading pull requests…"
+              : filterSearch?.loading
+                ? "Searching GitHub…"
+                : filterSearch
+                  ? "No pull requests match these filters"
+                  : "No pull requests"}
           </div>
         ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (
           <GitHubTabVirtualList
@@ -384,6 +441,22 @@ function GitHubTabListColumn({
             onRowActionError={list.onRowActionError}
           />
         )}
+        {filterSearch?.canLoadMore ? (
+          <div style={{ padding: "12px 12px 16px", borderTop: `1px solid ${fgTint(4)}` }}>
+            <button
+              type="button"
+              aria-label="Load more matching pull requests"
+              disabled={filterSearch.loadingMore}
+              onClick={filterSearch.onLoadMore}
+              style={{
+                ...outlineButton({ height: 30, width: "100%", opacity: filterSearch.loadingMore ? 0.6 : 1 }),
+                justifyContent: "center",
+              }}
+            >
+              {filterSearch.loadingMore ? "Loading more..." : "Load more"}
+            </button>
+          </div>
+        ) : null}
         {list.canLoadOlderHistory ? (
           <div style={{ padding: "12px 12px 16px", borderTop: `1px solid ${fgTint(4)}` }}>
             <button
@@ -412,6 +485,63 @@ function GitHubTabListColumn({
           />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * One quiet line under the filter chips: GitHub is answering, how many match,
+ * or why the list is showing loaded rows instead.
+ */
+function GitHubTabFilterSearchNote({
+  search,
+  assigneeFilter,
+}: {
+  search: GitHubTabFilterSearchView;
+  assigneeFilter: boolean;
+}) {
+  let text: string | null = null;
+  let tone: "dim" | "warn" = "dim";
+  const fallbackTail = assigneeFilter
+    ? " Showing loaded pull requests; the assignee filter needs GitHub."
+    : " Showing matches from loaded pull requests.";
+  if (search.unavailable) {
+    text = `This machine's ADE cannot search GitHub yet.${fallbackTail}`;
+    tone = "warn";
+  } else if (search.error?.kind === "rate_limited") {
+    const retry = search.error.retryAt ? Date.parse(search.error.retryAt) : NaN;
+    const when = Number.isFinite(retry)
+      ? ` until ${new Date(retry).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "";
+    text = `GitHub search is rate limited${when}.${fallbackTail}`;
+    tone = "warn";
+  } else if (search.error) {
+    text = `Could not search GitHub.${fallbackTail}`;
+    tone = "warn";
+  } else if (search.loading) {
+    text = "Searching GitHub…";
+  } else if (search.totalCount != null) {
+    text = `${search.totalCount.toLocaleString()} on GitHub`;
+  }
+  if (!text) return null;
+  return (
+    <div
+      role="status"
+      data-testid="github-pr-filter-search-note"
+      title={search.error?.message}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 12px 0",
+        flexShrink: 0,
+        fontFamily: SANS_FONT,
+        fontSize: 10.5,
+        color: tone === "warn" ? COLORS.warning : COLORS.textDim,
+      }}
+    >
+      {search.loading && !search.error && !search.unavailable ? <CircleNotch size={10} className="animate-spin" aria-hidden /> : null}
+      <span>{text}</span>
     </div>
   );
 }

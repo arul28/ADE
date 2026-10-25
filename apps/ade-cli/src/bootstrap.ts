@@ -105,6 +105,7 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
+import { createPrShellLinkWatcher } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -3236,6 +3237,18 @@ export async function createAdeRuntime(args: {
       })
       : null;
     if (terminalWatchService) teardown.push(() => terminalWatchService.dispose());
+
+    // A chat's own `gh pr create` / `gh pr merge` links that PR to the chat.
+    if (agentChatService) {
+      const chatForShellLinks = agentChatService;
+      const prShellLinkWatcher = createPrShellLinkWatcher({
+        logger,
+        subscribeToEvents: (callback) => chatForShellLinks.subscribeToEvents(callback),
+        linkShellPrAction: (args) => headlessLinearServices.prService.linkShellPrAction(args),
+      });
+      prShellLinkWatcher.start();
+      teardown.push(() => prShellLinkWatcher.dispose());
+    }
 
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own

@@ -1,7 +1,10 @@
 import React from "react";
 import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
-import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
+import type { GitHubPrListItem, PrFile, PrSummary } from "../../../../shared/types/prs";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { pinArg } from "../../../state/laneMachineRouting";
+import { PrRowChangeStat } from "./PrChangeSplit";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText, fgTint } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneChip } from "../../terminals/LaneChip";
@@ -245,13 +248,40 @@ function PrRowMergeFacts({ item }: { item: GitHubPrListItem }) {
   );
 }
 
-function PrRowDiffStat({ additions, deletions }: { additions: number | null; deletions: number | null }) {
-  if (additions == null && deletions == null) return null;
+/**
+ * `+N -N`, plus the code / tests / docs split once this window holds the PR's
+ * files. A hover reads them from the machine that owns the PR row (its pin),
+ * or by coordinates when no row exists.
+ */
+function PrRowDiffStat({
+  item,
+  ownerPr,
+  ownerPin,
+  additions,
+  deletions,
+}: {
+  item: GitHubPrListItem;
+  ownerPr: PrSummary | null;
+  ownerPin: OpenProjectBinding | null;
+  additions: number | null;
+  deletions: number | null;
+}) {
+  const loadFiles = (): Promise<PrFile[]> => (
+    ownerPr && !ownerPr.unmapped
+      ? window.ade.prs.getFiles(ownerPr.id, ...pinArg(ownerPin))
+      : window.ade.prs.getFilesByGithub({
+        repoOwner: item.repoOwner,
+        repoName: item.repoName,
+        githubPrNumber: item.githubPrNumber,
+      })
+  );
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
-      <span style={{ color: COLORS.success }}>+{additions ?? 0}</span>
-      <span style={{ color: COLORS.danger }}>-{deletions ?? 0}</span>
-    </span>
+    <PrRowChangeStat
+      additions={additions}
+      deletions={deletions}
+      changedFiles={ownerPr?.changedFiles ?? item.changedFiles ?? null}
+      source={{ repoOwner: item.repoOwner, repoName: item.repoName, githubPrNumber: item.githubPrNumber, loadFiles }}
+    />
   );
 }
 
@@ -574,6 +604,9 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
         {/* Prefer the live linked row, but fall back to the values carried on the list
             item so a detached PR keeps its diff stats after its lane is gone. */}
         <PrRowDiffStat
+          item={item}
+          ownerPr={ownerPr}
+          ownerPin={linkedPr ? null : foreignPin}
           additions={linkedPr?.additions ?? item.additions ?? null}
           deletions={linkedPr?.deletions ?? item.deletions ?? null}
         />

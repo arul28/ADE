@@ -2262,3 +2262,94 @@ export type PrMobileGithubDetailSnapshot = {
   /** Optional sidecars that failed to load and must not be treated as true zeroes. */
   unavailableParts: string[];
 };
+
+/* ── GitHub tab filters (label / author / assignee) and assignees ── */
+
+/**
+ * Filters for the GitHub tab's list that GitHub answers, not the loaded rows.
+ * `assignee` is a login, `"@me"` (the read account), or `"@none"` (nobody
+ * assigned; `@` keeps it apart from the real GitHub account named `none`).
+ * `author` is a login or `"@me"`. Labels match all of them (GitHub's AND).
+ * See `shared/githubPrSearch.ts` for the parser and the `q` builder.
+ */
+export type GitHubPrListFilters = {
+  labels: string[];
+  author: string | null;
+  assignee: string | null;
+};
+
+export type GitHubPrFilterKind = "label" | "author" | "assignee";
+
+export type GitHubPrFilterOption = {
+  /** Label name, or a person's login. */
+  value: string;
+  /** Label colour (hex without `#`). Labels only. */
+  color?: string | null;
+  description?: string | null;
+  /** Person avatar. People only. */
+  avatarUrl?: string | null;
+  /** Display name for people, when GitHub has one. */
+  name?: string | null;
+};
+
+export type ListGitHubPrFilterOptionsArgs = {
+  kind: GitHubPrFilterKind;
+  /** Matched by GitHub (labels: name/description; people: login/name). */
+  query?: string | null;
+  /** Defaults to the project's GitHub repository. */
+  repoOwner?: string | null;
+  repoName?: string | null;
+};
+
+export type ListGitHubPrFilterOptionsResult = {
+  kind: GitHubPrFilterKind;
+  query: string;
+  options: GitHubPrFilterOption[];
+  /** True when GitHub had no more matches past this page. */
+  complete: boolean;
+};
+
+export type GitHubPrSearchState = "open" | "closed" | "merged" | "all";
+
+export type SearchGitHubPrsArgs = {
+  state: GitHubPrSearchState;
+  filters: GitHubPrListFilters;
+  /** Free text GitHub matches in title and body. */
+  text?: string | null;
+  /** `nextCursor` from the previous page. */
+  cursor?: string | null;
+  /** Skip the short result cache (a Refresh click). */
+  force?: boolean;
+  repoOwner?: string | null;
+  repoName?: string | null;
+};
+
+export type SearchGitHubPrsError = {
+  /** `rate_limited`: GitHub refused for quota; `failed`: anything else. */
+  kind: "rate_limited" | "failed";
+  message: string;
+  retryAt?: string | null;
+};
+
+export type SearchGitHubPrsResult = {
+  items: GitHubPrListItem[];
+  /** GitHub's total match count (capped by GitHub at 1,000 reachable rows). */
+  totalCount: number;
+  nextCursor: string | null;
+  /** The `q` string GitHub was asked, for display and debugging. */
+  query: string;
+  /** Set instead of throwing, so the list can fall back to loaded rows quietly. */
+  error?: SearchGitHubPrsError | null;
+};
+
+export type SetPrAssigneesArgs = {
+  prId: string;
+  add?: string[];
+  remove?: string[];
+};
+
+export type SetPrAssigneesResult = {
+  assignees: PrUser[];
+  /** Logins GitHub silently refused to assign (no access to the repository). */
+  notAssigned: string[];
+};

@@ -994,8 +994,10 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { TerminalWatchService } from "../pty/terminalWatchService";
 import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
+import type { PrShellLinkWatcher } from "../prs/prShellLinkWatcher";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
+import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
@@ -1391,6 +1393,8 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prWatchService: PrWatchService | null;
   terminalWatchService?: TerminalWatchService | null;
+  /** Links PRs a chat's `gh pr create` / `gh pr merge` made to that chat. */
+  prShellLinkWatcher?: PrShellLinkWatcher | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -13184,6 +13188,18 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.prsResolveMedia,
+    async (_event, raw: unknown): Promise<ResolvePrMediaResult> => {
+      const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      return await ensurePrReadContext().prService.resolveMedia({
+        url: typeof record.url === "string" ? record.url : "",
+        repoOwner: typeof record.repoOwner === "string" ? record.repoOwner : "",
+        repoName: typeof record.repoName === "string" ? record.repoName : "",
+      });
+    },
+  );
+
+  ipcMain.handle(
     IPC.prsGetStackLinkOffer,
     async (_event, raw: unknown): Promise<StackLinkOffer | null> =>
       ensurePrReadContext().prService.getStackLinkOffer({
@@ -13606,6 +13622,9 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
   ipcMain.handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
   ipcMain.handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
+  ipcMain.handle(IPC.prsSetAssignees, (_e, args) => ensurePrReadContext().prService.setAssignees(args));
+  ipcMain.handle(IPC.prsListGitHubFilterOptions, (_e, args) => ensurePrReadContext().prService.listGithubFilterOptions(args));
+  ipcMain.handle(IPC.prsSearchGitHubPrs, (_e, args) => ensurePrReadContext().prService.searchGithubPrs(args));
   ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => ensurePrReadContext().prService.requestReviewers(args));
   ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
   ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));

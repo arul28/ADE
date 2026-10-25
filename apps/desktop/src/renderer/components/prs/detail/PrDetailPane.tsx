@@ -26,6 +26,8 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import { summarizePrChangeKinds } from "../../../../shared/prChangeKind";
+import { notePrChangeFiles, prChangeSplitKey } from "../shared/prChangeSplitStore";
 import type { PrSwitcher } from "../shared/PrSwitcher";
 import { formatChatOutputContextBlock } from "../../../../shared/chatOutputContext";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
@@ -479,6 +481,8 @@ export function PrDetailPane({
   const [checksPaletteRequest, setChecksPaletteRequest] = React.useState(0);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? initialPaneWarmCache?.files ?? []);
+  const changeSummary = React.useMemo(() => (files.length > 0 ? summarizePrChangeKinds(files) : null), [files]);
+  const changeSplitKey = prChangeSplitKey(pr);
   const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? initialPaneWarmCache?.commits ?? []);
   const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? initialPaneWarmCache?.status ?? null);
   // Latest direct mergeability re-poll for the selected PR. Used to resolve the
@@ -817,6 +821,8 @@ export function PrDetailPane({
         if (requestId !== detailLoadSeqRef.current) return;
         if (cachedSnapshot) {
           applySnapshotHydration(cachedSnapshot);
+          // The list rows read this PR's split from here instead of GitHub.
+          notePrChangeFiles(changeSplitKey, cachedSnapshot.files);
           if (hasSnapshotHydrationData(cachedSnapshot)) {
             hasVisibleDetailDataRef.current = true;
             setDetailLoading(false);
@@ -839,6 +845,7 @@ export function PrDetailPane({
           liveFilesLoadedForPrRef.current = pr.id;
           setFiles(value);
           updateDetailPaneWarmCache({ files: value });
+          notePrChangeFiles(changeSplitKey, value);
         }))
         .catch(() => []);
       const commitsPromise = fetchCommits()
@@ -899,7 +906,7 @@ export function PrDetailPane({
         setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
+  }, [applySnapshotHydration, changeSplitKey, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -1528,6 +1535,7 @@ export function PrDetailPane({
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         filesCount={files.length}
+        changeSummary={changeSummary}
         checksNote={checksNote}
         author={detail?.author ?? null}
         lane={laneForPr}

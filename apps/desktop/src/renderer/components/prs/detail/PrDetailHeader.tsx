@@ -13,6 +13,8 @@ import { MachineChip } from "../../shared/MachineChip";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { PrUserAvatar } from "../shared/PrUserAvatar";
+import { PrHeaderChangeStat } from "../shared/PrChangeSplit";
+import type { PrChangeKindSummary } from "../../../../shared/prChangeKind";
 import { PrActionsDropdown, type PrActionsContext } from "../shared/PrActionsMenu";
 import { chatLabel } from "../shared/prChatActions";
 import { isTerminalPrState } from "../../../lib/prState";
@@ -91,6 +93,8 @@ export type PrDetailHeaderProps = {
   activeTab: DetailTab;
   onSelectTab: (tab: DetailTab) => void;
   filesCount: number;
+  /** The code / tests / docs / generated split of the files the pane holds. */
+  changeSummary?: PrChangeKindSummary | null;
   checksNote: PrHeaderChecksNote;
   author: PrUser | null;
   lane: LaneSummary | null;
@@ -125,6 +129,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   activeTab,
   onSelectTab,
   filesCount,
+  changeSummary = null,
   checksNote,
   author,
   lane,
@@ -275,6 +280,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
             <ArrowLeft size={10} style={{ color: COLORS.textDim, flexShrink: 0 }} />
             <span className="ade-pr-detail-header-head">{pr.headBranch}</span>
           </span>
+          <PrHeaderChangeStat summary={changeSummary} />
           {lane ? (
             <LaneChip
               laneName={lane.name}

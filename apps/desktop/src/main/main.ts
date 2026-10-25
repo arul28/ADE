@@ -220,6 +220,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrWatchService } from "./services/prs/prWatchService";
 import { createTerminalWatchService } from "./services/pty/terminalWatchService";
+import { createPrShellLinkWatcher } from "./services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -4948,6 +4949,12 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    const prShellLinkWatcher = createPrShellLinkWatcher({
+      logger,
+      subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
+      linkShellPrAction: (args) => prService.linkShellPrAction(args),
+    });
+    prShellLinkWatcher.start();
     prWatchServiceRef = createPrWatchService({
       logger,
       prService,
@@ -6482,6 +6489,7 @@ app.whenReady().then(async () => {
       prPollingService,
       prWatchService: prWatchServiceRef,
       terminalWatchService: terminalWatchServiceRef,
+      prShellLinkWatcher,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -7067,6 +7075,7 @@ app.whenReady().then(async () => {
       ctx.prPollingService?.dispose();
       ctx.prWatchService?.dispose();
       ctx.terminalWatchService?.dispose();
+      ctx.prShellLinkWatcher?.dispose();
     } catch {
       // ignore
     }

@@ -1,5 +1,8 @@
 import type {
+  ListGitHubPrFilterOptionsResult,
   PrMergeContext,
+  SearchGitHubPrsResult,
+  SetPrAssigneesResult,
   PrMobileGithubDetailSnapshot,
   PrMobileSnapshot,
   PrDetailBundle,
@@ -9,6 +12,7 @@ import type {
 } from "../../../shared/types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { PrChatWatchSummary } from "../../../shared/prWatch";
+import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -388,6 +392,12 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return result;
     },
     getChatWatches: (args: unknown) => read("prs.getChatWatches", args, []),
+    // An older host has no resolver: the picture keeps its own fallback.
+    resolveMedia: async (args: unknown) => {
+      const unavailable = { status: "unavailable" as const, reason: "github_error" as const };
+      if (!commands.hasAction("prs.resolveMedia")) return unavailable;
+      return await read<ResolvePrMediaResult>("prs.resolveMedia", args, unavailable);
+    },
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
@@ -442,6 +452,33 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     setLabels: async (args: unknown) => {
       await call("prs.setLabels", args, undefined, false);
+    },
+    // A host without these must say so, so the GitHub tab falls back to loaded
+    // rows (and read-only assignees) instead of reading an empty answer.
+    setAssignees: async (args: unknown) => {
+      if (!commands.hasAction("prs.setAssignees")) throw new Error("This machine's ADE cannot assign people yet. Update it to edit assignees.");
+      const result = await call<SetPrAssigneesResult>("prs.setAssignees", args, { assignees: [], notAssigned: [] }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    listGitHubFilterOptions: async (args: unknown) => {
+      if (!commands.hasAction("prs.listGitHubFilterOptions")) throw new Error("This machine's ADE cannot search GitHub filters yet.");
+      return await read<ListGitHubPrFilterOptionsResult>("prs.listGitHubFilterOptions", args, {
+        kind: "label",
+        query: "",
+        options: [],
+        complete: false,
+      });
+    },
+    searchGitHubPrs: async (args: unknown) => {
+      if (!commands.hasAction("prs.searchGitHubPrs")) throw new Error("This machine's ADE cannot search GitHub yet.");
+      return await call<SearchGitHubPrsResult>("prs.searchGitHubPrs", args, {
+        items: [],
+        totalCount: 0,
+        nextCursor: null,
+        query: "",
+        error: { kind: "failed", message: "GitHub search is unavailable." },
+      });
     },
     requestReviewers: async (args: unknown) => {
       await call("prs.requestReviewers", args, undefined, false);

@@ -2358,6 +2358,37 @@ was never uploaded still shows on the machine that holds the proof. Anyone who
 can comment can write these forms, so `parsePrCompareFence` and
 `prProofIdFromTitle` accept only an https URL and a well-formed proof id.
 
+#### Private repository media
+
+A private repository's attachment (`github.com/user-attachments/assets/<uuid>`
+or the older `github.com/<owner>/<repo>/assets/<n>/<uuid>`) answers 404 to a
+reader without a GitHub credential. `PrImage` and `PrRemoteMedia` show the
+original URL first, so a public repository costs nothing extra. Only after it
+fails to load, and only for one of those two URL shapes inside a `PrMarkdown`
+that knows its repository, `useGithubMediaSrc` calls `prs.resolveMedia` once
+on the machine that owns the PR (the `PrRuntimePinProvider` pin, else the
+chat's pin, else the tab's machine), swaps in the signed copy it returns, and
+keeps the alt text in place meanwhile. When that fails too, today's fallback
+applies (alt text; the "open on GitHub" link).
+
+`githubMediaResolver.ts` runs on that machine. It sends the read token only to
+an attachment URL that `githubAttachmentCanonicalUrl` (`shared/githubMedia.ts`)
+accepted and rebuilt, with manual redirects, and takes the 302's `Location`
+only if `githubSignedMediaUrl` accepts it (the asset bucket with an
+`X-Amz-Signature`, or `private-user-images` with a `jwt`); the signed URL is
+never fetched with the token. An HTML answer (SAML SSO / EMU) or a 401/403/404
+falls back to `POST /markdown` of `![](url)` in the PR's own repository and the
+signed `src` GitHub renders. The content type comes from the bucket's
+`response-content-type` or a tokenless one-byte ranged GET, and must be an
+image or a video (SVG is refused). Results are cached until a minute before
+the signed URL expires, failures for two minutes, 500 entries, with one
+request in flight per URL; the renderer keeps the same cache per machine. No
+media bytes cross IPC or the remote-runtime socket, so seeking works and a
+laptop driving a remote brain loads the signed URL directly. A video that
+fails after its URL expired (paused past five minutes) re-resolves, at most
+once a minute. An older machine without the action answers "unknown action",
+which reads as unavailable.
+
 ### Add to chat
 
 Every part of the PR can be quoted in the chat that works on it: a Brief part,

@@ -2,6 +2,8 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import type {
   CreateLaneFromPrBranchResult,
+  GitHubPrFilterKind,
+  GitHubPrListFilters,
   GitHubPrListItem,
   GitHubPrSnapshot,
   LaneSummary,
@@ -28,6 +30,7 @@ import {
   GITHUB_TAB_SNAPSHOT_FRESH_MS,
   buildSyntheticUnmappedPr,
   githubCoordKey,
+  mergeGitHubListItems,
   selectionTargetForItem,
   formatGitHubSnapshotError,
   initialGitHubFilterSelections,
@@ -56,6 +59,16 @@ import { useCreateLaneFromPrBranch } from "./useCreateLaneFromPrBranch";
 import { GitHubTabView } from "./GitHubTabView";
 import { normalizeGitHubTabSort, type GitHubTabSort } from "./prBlockedSort";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
+import { useGitHubPrFilterSearch } from "./useGitHubPrFilterSearch";
+import {
+  emptyGitHubPrListFilters,
+  githubPrListFiltersKey,
+  hasGitHubPrListFilters,
+  mergeGitHubPrListFilters,
+  normalizeGitHubPrListFilters,
+  parseGitHubPrSearchText,
+} from "../../../../shared/githubPrSearch";
+import type { GitHubFilterOptionsLoader, GitHubPrFilterFacets } from "../shared/GitHubPrFilters";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
@@ -144,6 +157,11 @@ export function GitHubTab({
   const [loadingFilter, setLoadingFilter] = React.useState<GitHubFilter | null>(null);
   const [renderedHydrationItems, setRenderedHydrationItems] = React.useState<GitHubPrListItem[]>([]);
   const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
+  // Label / author / assignee filters. Kept with the tab's other list state in
+  // the in-memory warm cache (not the URL): cheap, and it survives a tab switch.
+  const [listFilters, setListFiltersState] = React.useState<GitHubPrListFilters>(
+    () => normalizeGitHubPrListFilters(initialWarmCacheRef.current?.listFilters ?? emptyGitHubPrListFilters()),
+  );
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
   );
@@ -292,6 +310,7 @@ export function GitHubTab({
     setSelectedItemId(warmCache?.selectedItemId ?? null);
     setSelectedItemIdsByFilter(initialGitHubFilterSelections(warmCache));
     setSearchQuery(warmCache?.searchQuery ?? "");
+    setListFiltersState(normalizeGitHubPrListFilters(warmCache?.listFilters ?? emptyGitHubPrListFilters()));
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
     if (!warmCache?.snapshot) {
@@ -371,10 +390,11 @@ export function GitHubTab({
       selectedItemId,
       selectedItemIdsByFilter,
       searchQuery,
+      listFilters,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot, sort]);
+  }, [externalHistoryLoaded, filter, listFilters, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot, sort]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -436,6 +456,67 @@ export function GitHubTab({
     });
   }, [currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
+  // ── Label / author / assignee filters ──
+  const listFiltersActive = hasGitHubPrListFilters(listFilters);
+  const setListFilters = React.useCallback((next: GitHubPrListFilters) => {
+    const normalized = normalizeGitHubPrListFilters(next);
+    setListFiltersState((current) => (
+      githubPrListFiltersKey(current) === githubPrListFiltersKey(normalized) ? current : normalized
+    ));
+  }, []);
+  // `label:x author:y assignee:z no:assignee` typed in the search box become
+  // filters once the token is finished (a space after it, or Enter).
+  const applySearchText = React.useCallback((value: string, keepTrailingToken: boolean) => {
+    const parsed = parseGitHubPrSearchText(value, { keepTrailingToken });
+    if (parsed.matched) {
+      setListFiltersState((current) => mergeGitHubPrListFilters(current, parsed.filters));
+      setSearchQuery(parsed.text);
+      return;
+    }
+    setSearchQuery(value);
+  }, []);
+  const handleSearchQueryChange = React.useCallback(
+    (value: string) => applySearchText(value, true),
+    [applySearchText],
+  );
+  const handleSearchSubmit = React.useCallback(
+    () => applySearchText(searchQuery, false),
+    [applySearchText, searchQuery],
+  );
+  const filterSearch = useGitHubPrFilterSearch({
+    enabled: listFiltersActive,
+    scopeKey: projectRoot,
+    state: filter,
+    filters: listFilters,
+    text: searchQuery,
+  });
+  // GitHub's answer for exactly this query, else the last answer for the same
+  // filters while the text moves on (matched locally until GitHub replies).
+  const searchPage = filterSearch.exact ?? filterSearch.sameFilters;
+  // Read by Refresh without making the row callbacks change identity per render.
+  const refreshFilterSearchRef = React.useRef<(() => void) | null>(null);
+  refreshFilterSearchRef.current = listFiltersActive ? filterSearch.refresh : null;
+  const searchItems = listFiltersActive && searchPage && !searchPage.error ? searchPage.items : null;
+  const filterLoadOptions = React.useMemo((): GitHubFilterOptionsLoader | null => {
+    const list = window.ade.prs.listGitHubFilterOptions;
+    if (typeof list !== "function") return null;
+    return async (kind: GitHubPrFilterKind, query: string) => (await list({ kind, query })).options;
+  }, []);
+  const filterFacets = React.useMemo((): GitHubPrFilterFacets => {
+    const labels = new Map<string, GitHubPrListItem["labels"][number]>();
+    const authors = new Map<string, string>();
+    for (const item of snapshot ? mergeGitHubListItems(snapshot) : []) {
+      for (const label of item.labels) {
+        if (!labels.has(label.name.toLowerCase())) labels.set(label.name.toLowerCase(), label);
+      }
+      if (item.author && !authors.has(item.author.toLowerCase())) authors.set(item.author.toLowerCase(), item.author);
+    }
+    return {
+      labels: [...labels.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      authors: [...authors.values()].sort((a, b) => a.localeCompare(b)),
+    };
+  }, [snapshot]);
+
   const {
     displayedItems,
     filteredItems,
@@ -453,6 +534,12 @@ export function GitHubTab({
     currentHistoryPageLimit,
     prsByCoordinateMap,
     optimisticTerminalByCoord,
+    searchItems,
+    searchTotalCount: searchItems ? searchPage?.totalCount ?? null : null,
+    searchMatchesText: Boolean(searchItems && filterSearch.exact),
+    // Until GitHub answers (or when it cannot), narrow the loaded rows.
+    localListFilters: listFiltersActive && !searchItems ? listFilters : null,
+    viewerLogin: snapshot?.viewerLogin ?? null,
   });
   useGitHubTargetHistory({
     displayedItems,
@@ -603,6 +690,7 @@ export function GitHubTab({
       if (targeted) {
         await onRefreshAll(args).catch(() => {});
       } else {
+        refreshFilterSearchRef.current?.();
         await Promise.all([
           onRefreshAll().catch(() => {}),
           loadSnapshot({
@@ -895,7 +983,21 @@ export function GitHubTab({
       <GitHubTabView
         chrome={{
           searchQuery,
-          onSearchQueryChange: setSearchQuery,
+          onSearchQueryChange: handleSearchQueryChange,
+          onSearchSubmit: handleSearchSubmit,
+          listFilters,
+          onListFiltersChange: setListFilters,
+          filterFacets,
+          filterLoadOptions,
+          filterSearch: listFiltersActive ? {
+            loading: filterSearch.loading,
+            error: searchPage?.error ?? null,
+            unavailable: filterSearch.unavailable,
+            totalCount: searchItems ? searchPage?.totalCount ?? null : null,
+            canLoadMore: Boolean(searchItems && filterSearch.exact?.nextCursor),
+            loadingMore: filterSearch.loadingMore,
+            onLoadMore: filterSearch.loadMore,
+          } : null,
           repoLabel,
           syncing,
           syncedAt: snapshot?.syncedAt ?? null,

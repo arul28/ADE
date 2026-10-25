@@ -46,6 +46,7 @@ import {
   type PrCompareFigure,
 } from "../../../../shared/prBodyProof";
 import { PrAddToChatButton, PrCompare, PrProofMedia, PrRemoteMedia } from "./PrProofMedia";
+import { PrMediaRepoContext, useGithubMediaSrc } from "./useGithubMediaSrc";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
@@ -324,6 +325,9 @@ function PrImage({
   const [quotable, setQuotable] = useState(false);
   const env = useContext(PrMarkdownEnvContext);
   const from = useContext(PrQuoteSourceContext);
+  // A private repository's attachment 404s here; after that first failure the
+  // PR's machine is asked for a signed copy (see useGithubMediaSrc).
+  const media = useGithubMediaSrc(src);
   // react-markdown reuses img instances positionally, so reset the error flag
   // when the source changes (e.g. a corrected URL in the editor preview).
   useEffect(() => {
@@ -402,15 +406,16 @@ function PrImage({
     );
   }
   // A broken/blocked image degrades to its alt text (or nothing) instead of the
-  // browser's broken-image glyph.
-  if (errored) {
+  // browser's broken-image glyph. While a signed copy is asked for, the alt
+  // text holds its place.
+  if (errored || media.phase === "resolving" || media.phase === "failed") {
     return altText
       ? <span className="text-[11px]" style={{ color: COLORS.textMuted }}>{altText}</span>
       : null;
   }
   const picture = (
     <img
-      src={src}
+      src={media.src}
       alt={altText}
       title={title}
       loading="lazy"
@@ -419,7 +424,9 @@ function PrImage({
       // origin). Suppressing the referrer makes the signed-URL fetch succeed,
       // which is why GitHub itself serves these with referrer stripped.
       referrerPolicy="no-referrer"
-      onError={() => setErrored(true)}
+      onError={() => {
+        if (!media.reportError()) setErrored(true);
+      }}
       onLoad={quote ? (event) => {
         const image = event.currentTarget;
         setQuotable(
@@ -935,18 +942,22 @@ export const PrMarkdown = memo(function PrMarkdown({
     [children],
   );
 
+  const mediaRepo = useMemo(() => ({ repoOwner, repoName }), [repoOwner, repoName]);
+
   return (
     <div
       className={`pr-md-root min-w-0 max-w-full ${variant === "document" ? "text-[13.5px] leading-[1.65]" : "text-[13px] leading-[1.55]"} ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, PR_SAFE_SCHEMA]]}
-        components={components}
-      >
-        {markdown}
-      </ReactMarkdown>
+      <PrMediaRepoContext.Provider value={mediaRepo}>
+        <ReactMarkdown
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, PR_SAFE_SCHEMA]]}
+          components={components}
+        >
+          {markdown}
+        </ReactMarkdown>
+      </PrMediaRepoContext.Provider>
     </div>
   );
 });

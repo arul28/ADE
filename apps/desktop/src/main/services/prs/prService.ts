@@ -30,6 +30,12 @@ import type {
   IntegrationLaneOrigin,
   IntegrationLaneSnapshot,
   GitHubRepoRef,
+  ListGitHubPrFilterOptionsArgs,
+  ListGitHubPrFilterOptionsResult,
+  SearchGitHubPrsArgs,
+  SearchGitHubPrsResult,
+  SetPrAssigneesArgs,
+  SetPrAssigneesResult,
   IntegrationLaneSummary,
   IntegrationPairwiseResult,
   IntegrationProposal,
@@ -147,11 +153,14 @@ import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
+import { createPrListFilterOps } from "./prListFilters";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
+import { createGithubMediaResolver } from "../github/githubMediaResolver";
+import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -200,6 +209,7 @@ import {
   type GetPrChatWatchArgs,
   type PrChatWatchSummary,
   type SetPrChatWatchArgs,
+  type PrMergeQueueRemoval,
 } from "../../../shared/prWatch";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
@@ -1293,6 +1303,11 @@ function githubRateLimitResetAtMsOf(error: unknown): number | null {
  * false positive costs nothing at all, because the no-stack query is the
  * correct query for every repo without GitHub stacks.
  */
+/** What linking a PR that a chat's shell command created or merged came to. */
+export type ShellPrLinkResult =
+  | { status: "linked" | "already_linked"; prId: string }
+  | { status: "skipped"; reason: string };
+
 function isGraphqlUndefinedFieldError(error: unknown): boolean {
   return /field '?stack'?\b|undefined field|doesn't exist on type|cannot query field/i
     .test(getErrorMessage(error));
@@ -1598,6 +1613,7 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
+  let mediaResolver: ReturnType<typeof createGithubMediaResolver> | null = null;
   const chatLinks = createPrChatLinkStore({
     db,
     projectId,
@@ -2100,6 +2116,119 @@ export function createPrService({
    * auto-rebase, lane archive, row refresh. The parsed coordinates stay
    * authoritative; the row only supplies the local half.
    */
+  /**
+   * Repositories whose GitHub has no merge-queue schema (GitHub Enterprise
+   * Server, which ADE does not otherwise support either). Asked once, then
+   * never again for the life of the process.
+   */
+  const mergeQueueUnsupportedRepos = new Set<string>();
+  /** One shell-created PR is checked once at a time, however many events name it. */
+  const shellPrLinksInFlight = new Map<string, Promise<ShellPrLinkResult>>();
+
+  const linkShellPrActionOnce = async (args: {
+    sessionId: string;
+    kind: "create" | "merge";
+    repoOwner: string | null;
+    repoName: string | null;
+    prNumber: number;
+  }): Promise<ShellPrLinkResult> => {
+    const skip = (reason: string): ShellPrLinkResult => {
+      logger.info("prs.shell_link_skipped", { sessionId: args.sessionId, kind: args.kind, prNumber: args.prNumber, reason });
+      return { status: "skipped", reason };
+    };
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return skip("session_missing");
+    const session = db.get<{ lane_id: string | null; tool_type: string | null }>(
+      "select lane_id, tool_type from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    if (!session?.lane_id || !isChatToolType(session.tool_type)) return skip("not_a_lane_chat");
+    const lane = (await laneService.list({ includeArchived: false, includeStatus: false }))
+      .find((entry) => entry.id === session.lane_id);
+    if (!lane) return skip("lane_missing");
+    let repo: GitHubRepoRef;
+    try {
+      repo = await githubService.getRepoOrThrow();
+    } catch {
+      return skip("no_github_repo");
+    }
+    const sameRepo = (owner: unknown, name: unknown) =>
+      String(owner ?? "").toLowerCase() === repo.owner.toLowerCase()
+      && String(name ?? "").toLowerCase() === repo.name.toLowerCase();
+    // A bare number from `gh pr merge 42` means this project's repository.
+    if (args.repoOwner && args.repoName && !sameRepo(args.repoOwner, args.repoName)) return skip("other_repo");
+
+    let pull: any;
+    try {
+      pull = await fetchPr(repo, args.prNumber, { fresh: true });
+    } catch (error) {
+      // The branch auto-map on the next PR sweep still finds an open PR.
+      logger.warn("prs.shell_link_github_read_failed", { prNumber: args.prNumber, error: getErrorMessage(error) });
+      return { status: "skipped", reason: "github_unreadable" };
+    }
+    const headRef = normalizeBranchName(asString(pull?.head?.ref));
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+    if (!sameRepo(pull?.base?.repo?.owner?.login, pull?.base?.repo?.name)) return skip("other_repo");
+    if (!sameRepo(pull?.head?.repo?.owner?.login, pull?.head?.repo?.name)) return skip("fork_head");
+    if (!headRef || headRef !== laneBranch) return skip("head_not_lane_branch");
+    if (headRef === normalizeBranchName(asString(pull?.base?.ref))) return skip("head_is_base");
+
+    let row = getLiveRowForRepoPr(repo.owner, repo.name, args.prNumber);
+    let linkedLane = false;
+    if (!row) {
+      if (listAutoLinkIgnores(repo).has(autoLinkIgnoreKey({
+        owner: repo.owner,
+        repo: repo.name,
+        prNumber: args.prNumber,
+        laneId: lane.id,
+      }))) {
+        return skip("unmapped_by_user");
+      }
+      const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: `https://github.com/${repo.owner}/${repo.name}/pull/${args.prNumber}` });
+      row = getLiveRowForRepoPr(repo.owner, repo.name, args.prNumber) ?? (linked.id ? requireRow(linked.id) : null);
+      linkedLane = true;
+      if (row && (pull?.state === "open")) {
+        try {
+          emitPrEvent?.({
+            type: "pr-auto-linked",
+            timestamp: nowIso(),
+            prId: row.id,
+            laneId: lane.id,
+            laneName: lane.name,
+            prNumber: args.prNumber,
+            prTitle: asString(pull?.title),
+            repoOwner: repo.owner,
+            repoName: repo.name,
+            headBranch: headRef,
+            githubUrl: asString(pull?.html_url),
+          });
+        } catch (error) {
+          logger.warn("prs.auto_map_event_emit_failed", { prNumber: args.prNumber, laneId: lane.id, error: getErrorMessage(error) });
+        }
+      }
+    }
+    if (!row) return skip("row_missing");
+    // An unlink is the user saying "not this chat's PR"; a later command does not overrule it.
+    if (hasChatSessionDismissal(row.id, sessionId)) return skip("unlinked_by_user");
+    const alreadyLinked = Boolean(db.get<{ id: string }>(
+      "select id from pull_request_chat_sessions where project_id = ? and pr_id = ? and session_id = ? limit 1",
+      [projectId, row.id, sessionId],
+    ));
+    if (alreadyLinked && !linkedLane) return { status: "already_linked", prId: row.id };
+    const ok = alreadyLinked || linkPrToChatSession({ prId: row.id, laneId: lane.id, sessionId, allowCrossLane: true });
+    if (!ok) return skip("link_failed");
+    emitPrsUpdated();
+    logger.info("prs.shell_linked", {
+      sessionId,
+      laneId: lane.id,
+      prId: row.id,
+      prNumber: args.prNumber,
+      kind: args.kind,
+      linkedLane,
+    });
+    return { status: "linked", prId: row.id };
+  };
+
   const resolvePrTarget = (
     prId: string,
   ): { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null } => {
@@ -2483,8 +2612,11 @@ export function createPrService({
   const HOT_REFRESH_INTERVAL_PHASE_ONE_MS = 15_000;
   const HOT_REFRESH_INTERVAL_PHASE_TWO_MS = 30_000;
   const hotRefreshStartedAtByPrId = new Map<string, number>();
+  /** GitHub tab filter search; assigned once the row builders below exist. */
+  let prListFilterOps: ReturnType<typeof createPrListFilterOps> | null = null;
 
   const invalidateGithubSnapshotCache = (): void => {
+    prListFilterOps?.invalidateSearchCache();
     cachedGithubSnapshot = null;
     cachedGithubSnapshotAt = 0;
     cachedGithubSnapshotIncludesClosed = false;
@@ -12197,6 +12329,20 @@ export function createPrService({
     return { status, checks, reviews, comments };
   };
 
+  const filterOps = createPrListFilterOps({
+    githubService,
+    graphqlRequest,
+    logger,
+    buildItems: async (rawPulls, repo) => {
+      if (rawPulls.length === 0) return [];
+      const metadata = await loadGithubSnapshotMetadata();
+      return rawPulls.map((rawPull) => gitHubItemFromRawPull(rawPull, repo, metadata, "repo"));
+    },
+    resolvePrTarget: (prId) => resolvePrTarget(prId),
+    refreshAfterMutation: (target) => refreshAfterMutation(target as ReturnType<typeof resolvePrTarget>),
+  });
+  prListFilterOps = filterOps;
+
   return {
     setLinearPrPublishedHandler(handler: LinearPrPublishedHandler | null): void {
       linearPrPublishedHandler = handler;
@@ -12517,6 +12663,21 @@ export function createPrService({
       return await getGithubSnapshot(options);
     },
 
+    /** Labels / people for the GitHub tab's filter pickers (user-initiated, cached). */
+    async listGithubFilterOptions(args: ListGitHubPrFilterOptionsArgs): Promise<ListGitHubPrFilterOptionsResult> {
+      return await filterOps.listFilterOptions(args);
+    },
+
+    /** The GitHub tab's list while a label / author / assignee filter is on. */
+    async searchGithubPrs(args: SearchGitHubPrsArgs): Promise<SearchGitHubPrsResult> {
+      return await filterOps.searchGitHubPrs(args);
+    },
+
+    /** Assign / unassign people; works for a synthetic `gh:` id like every PR mutation. */
+    async setAssignees(args: SetPrAssigneesArgs): Promise<SetPrAssigneesResult> {
+      return await filterOps.setAssignees(args);
+    },
+
     async listGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
       const repo = await resolveGithubStackRepo(args.repo);
       return githubStackStore.list(repo);
@@ -12589,6 +12750,36 @@ export function createPrService({
         if (linkPrToChatSession({ prId: row.id, laneId: row.lane_id, sessionId: args.sessionId, allowCrossLane: true })) linked = true;
       }
       if (linked) emitPrsUpdated();
+    },
+
+    /**
+     * Link a PR that a chat's own shell command created or merged (`gh pr
+     * create`, `gh pr merge`) to that chat, and to its lane when no lane holds
+     * the PR yet. Internal seam for the shell-command watcher, not a renderer
+     * action: the session id comes from the chat event, never from a caller.
+     *
+     * Nothing is linked on the command's word alone. GitHub must confirm the PR
+     * is in this project's repository, comes from that repository (no fork),
+     * and has the chat lane's current branch as its head. A PR the user
+     * unlinked from this chat, or unmapped from this lane, stays unlinked.
+     * `github.autoMapByBranch` does not apply: that setting stops ADE guessing
+     * a PR's lane from its branch, and this is the chat's own verified PR,
+     * linked the way `ade prs create` links one.
+     */
+    async linkShellPrAction(args: {
+      sessionId: string;
+      kind: "create" | "merge";
+      repoOwner: string | null;
+      repoName: string | null;
+      prNumber: number;
+    }): Promise<ShellPrLinkResult> {
+      if (!Number.isSafeInteger(args.prNumber) || args.prNumber <= 0) return { status: "skipped", reason: "bad_number" };
+      const key = `${args.sessionId}:${(args.repoOwner ?? "").toLowerCase()}/${(args.repoName ?? "").toLowerCase()}#${args.prNumber}`;
+      const running = shellPrLinksInFlight.get(key);
+      if (running) return await running;
+      const work = linkShellPrActionOnce(args).finally(() => shellPrLinksInFlight.delete(key));
+      shellPrLinksInFlight.set(key, work);
+      return await work;
     },
 
     /**
@@ -12701,6 +12892,20 @@ export function createPrService({
     },
 
     /** A chat's (or a PR's) live watches. */
+    /**
+     * A private repository's PR picture or video, as a short-lived signed URL
+     * the renderer loads directly. A read on this machine's GitHub credential;
+     * see githubMediaResolver.ts.
+     */
+    async resolveMedia(args: ResolvePrMediaArgs): Promise<ResolvePrMediaResult> {
+      mediaResolver ??= createGithubMediaResolver({
+        getReadToken: () => githubService.getReadTokenOrThrowAsync(),
+        apiRequest: (request) => githubService.apiRequest(request),
+        logger,
+      });
+      return await mediaResolver.resolve(args);
+    },
+
     getChatWatches(args: GetPrChatWatchArgs = {}): PrChatWatchSummary[] {
       const sessionId = args.sessionId?.trim()
         ? resolveCanonicalChatSessionId(args.sessionId.trim()) ?? args.sessionId.trim()
@@ -12933,6 +13138,57 @@ export function createPrService({
     async getActionRuns(prId: string): Promise<PrActionRun[]> {
       const row = requireRow(prId);
       return await getActionRunsByCoords(coordsFromRow(row));
+    },
+
+    /**
+     * The newest time GitHub's merge queue let go of this PR, for PR Watch.
+     * `null` when it was never dropped or the host has no merge queue; a
+     * failed read throws, so the watch can tell "none" from "unknown". A drop
+     * that GitHub already followed with a fresh enqueue is not reported: the
+     * PR is back in the queue.
+     */
+    async getMergeQueueRemoval(prId: string): Promise<PrMergeQueueRemoval | null> {
+      const target = resolvePrTarget(prId);
+      const repoKey = `${target.repo.owner.toLowerCase()}/${target.repo.name.toLowerCase()}`;
+      if (mergeQueueUnsupportedRepos.has(repoKey)) return null;
+      type MergeQueueGraphqlData = {
+        repository?: {
+          pullRequest?: {
+            mergeQueueEntry?: { enqueuedAt?: unknown } | null;
+            timelineItems?: { nodes?: Array<{ id?: unknown; createdAt?: unknown; reason?: unknown } | null> | null } | null;
+          } | null;
+        } | null;
+      };
+      let data: MergeQueueGraphqlData;
+      try {
+        data = await graphqlRequest<MergeQueueGraphqlData>(
+          `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      mergeQueueEntry { enqueuedAt }
+      timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT], last:1){
+        nodes { ... on RemovedFromMergeQueueEvent { id createdAt reason } }
+      }
+    }
+  }
+}`,
+          { owner: target.repo.owner, name: target.repo.name, number: target.prNumber },
+        );
+      } catch (error) {
+        if (isGraphqlUndefinedFieldError(error) || /REMOVED_FROM_MERGE_QUEUE_EVENT|mergeQueueEntry|invalid value/i.test(getErrorMessage(error))) {
+          mergeQueueUnsupportedRepos.add(repoKey);
+          logger.info("prs.merge_queue_unsupported", { repo: repoKey, error: getErrorMessage(error) });
+          return null;
+        }
+        throw error;
+      }
+      const pull = data?.repository?.pullRequest ?? null;
+      const node = pull?.timelineItems?.nodes?.find((entry) => entry && asString(entry.id).trim()) ?? null;
+      if (!node) return null;
+      const createdAt = asString(node.createdAt).trim() || null;
+      const enqueuedAt = asString(pull?.mergeQueueEntry?.enqueuedAt).trim();
+      if (enqueuedAt && createdAt && Date.parse(enqueuedAt) > Date.parse(createdAt)) return null;
+      return { id: asString(node.id).trim(), createdAt, reason: asString(node.reason).trim() || null };
     },
 
     async getActionRunsByGithub(coords: PrGithubCoords): Promise<PrActionRun[]> {

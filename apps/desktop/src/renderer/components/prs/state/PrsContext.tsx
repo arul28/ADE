@@ -35,6 +35,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
+import { notePrChangeFiles, prChangeSplitKey } from "../shared/prChangeSplitStore";
 
 type PrTab = "normal" | "integration" | "rebase";
 
@@ -616,6 +617,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const mergeDetailSnapshots = useCallback((snapshots: PrSnapshotHydration[]) => {
     const validSnapshots = snapshots.filter((snapshot) => snapshot?.prId);
     if (validSnapshots.length === 0) return;
+    // List rows read their code / tests / docs split from these files rather
+    // than asking GitHub. Stored unsummarized, so this is one Map write each.
+    const prById = new Map(prsRef.current.map((pr) => [pr.id, pr] as const));
+    for (const snapshot of validSnapshots) {
+      const pr = prById.get(snapshot.prId);
+      if (pr && snapshot.files?.length) notePrChangeFiles(prChangeSplitKey(pr), snapshot.files);
+    }
     setDetailSnapshotsByPrId((prev) => {
       let changed = false;
       const next = { ...prev };
