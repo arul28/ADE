@@ -61,8 +61,10 @@ alone (`Geometry.cutOffRealDisplays`; only a shared edge counts, not a corner)
 and moves it flush against them (`Geometry.reconnectedRealDisplayFrames`). It
 goes on the side it was already on, overlapping at least half the shorter edge.
 That happens in the same session-only configuration that re-places the lane
-chain. It is tried three times per set of real displays, counted only when a
-move is issued, and it never lands the screen on another helper's lane display.
+chain. It gets three tries per cut-off, counted once the window server accepts
+a move and re-armed only by a later pass that finds nothing cut off, so a
+window server that keeps undoing it is not fought forever. It never lands the
+screen on another helper's lane display.
 If a screen still cannot be reached, the fence stops guarding every lane display
 on the route to it (`Geometry.laneDisplaysOnRouteToCutOffRealDisplays`,
 recomputed on each display change, never per event) rather than trap the

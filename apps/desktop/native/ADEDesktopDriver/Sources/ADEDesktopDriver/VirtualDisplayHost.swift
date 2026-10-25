@@ -27,13 +27,13 @@ enum VirtualDisplayIdentity {
     /// `macDesktop.ts` produces the same prefix; the two must not drift.
     static let namePrefix = "ADE · "
 
-    /// A stable per-lane serial, so two runs of the same lane look like the same
-    /// monitor to anything that remembers monitors.
     /// True for a display any ADE helper made, this one or another.
     static func isADEDisplay(_ displayId: CGDirectDisplayID) -> Bool {
         CGDisplayVendorNumber(displayId) == vendorID
     }
 
+    /// A stable per-lane serial, so two runs of the same lane look like the same
+    /// monitor to anything that remembers monitors.
     static func serial(forLane laneId: String) -> UInt32 {
         var hash: UInt32 = 2_166_136_261
         for byte in laneId.utf8 {
@@ -75,9 +75,10 @@ final class VirtualDisplayHost {
     private var placementAttempts = 0
     private var placementFailureLogged = false
     /// Reconnecting a cut-off real display moves the user's own screen, so it
-    /// gets the same three tries, counted per set of real displays rather than
-    /// per arrangement: the move itself changes the arrangement, and a window
-    /// server that keeps undoing it must not be fought forever.
+    /// gets the same three tries, counted per cut-off rather than per
+    /// arrangement: the move itself changes the arrangement, and a window
+    /// server that keeps undoing it must not be fought forever. Re-armed by a
+    /// pass that finds nothing cut off, or a new set of real displays.
     private var reconnectDisplaySet: [CGDirectDisplayID]?
     private var reconnectAttempts = 0
     private var reconnectFailureLogged = false
@@ -310,12 +311,6 @@ final class VirtualDisplayHost {
         } else {
             placementAttempts = 0
             placementFailureLogged = false
-            // A repair that held is over; a later cut-off is a new one and
-            // gets its own three tries.
-            if !realMoves.isEmpty {
-                reconnectAttempts = 0
-                reconnectFailureLogged = false
-            }
         }
     }
 
@@ -336,7 +331,15 @@ final class VirtualDisplayHost {
         }
         guard let mainIndex = layout.mainIndex else { return (frames, [], "") }
         let cutOff = Geometry.cutOffRealDisplays(realDisplayFrames: frames, mainIndex: mainIndex)
-        guard !cutOff.isEmpty else { return (frames, [], "") }
+        guard !cutOff.isEmpty else {
+            // A pass with nothing cut off proves the last repair held, so a
+            // later cut-off gets its own three tries. Re-armed here, not when
+            // the move is applied: a window server that undoes the move a beat
+            // later never produces this pass and still runs out of attempts.
+            reconnectAttempts = 0
+            reconnectFailureLogged = false
+            return (frames, [], "")
+        }
 
         let names = cutOff.map { "display \(layout.real[$0].id)" }.joined(separator: ", ")
         guard reconnectAttempts < Self.maximumPlacementAttempts,

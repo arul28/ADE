@@ -144,10 +144,10 @@ ade app-control show --floating --text
 # Mac Desktop
 
 Each lane owns a private macOS screen. `ade mac-desktop ...` creates it, parks
-apps on it, and drives them through the Accessibility API. While you use a lane
-screen, nothing captures the user's real display, and their pointer moves only
-under a lease, so you never have to ask before clicking — with one exception,
-the input lease below. While
+apps on it, and drives them through the Accessibility API. ADE captures the
+user's real display only through `--real-screen`, and drives their pointer only
+under a lease, so background and Accessibility clicks need no ask. The one
+exception is real input (`--real`), which asks for that lease below. While
 a lane screen is up, macOS may rearrange the user's screens around it for this
 session.
 
