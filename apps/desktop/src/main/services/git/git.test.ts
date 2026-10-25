@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { gitOwnershipMessage } from "../../../../../ade-cli/src/services/projects/gitOwnership";
+import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import {
   formatGitExecutionError,
+  gitCommandError,
   gitSafeDirectorySpec,
   parseGitOwnershipError,
   getHeadSha,
@@ -216,6 +218,33 @@ describe("macOS git selection", () => {
       expect(message).toContain("Git does not trust");
     } else {
       expect(message).toBe(raw);
+    }
+  });
+
+  // Git for Windows refuses a file named for a device (an agent's `2>NUL` in
+  // Git Bash makes one). The user must delete it, so the error names it and
+  // is an answer, not an ADE bug; elsewhere the name is ordinary.
+  it.each([
+    { platform: "win32", file: "apps/apphost/NUL", explained: true },
+    { platform: "win32", file: "apps/nul.txt", explained: true },
+    { platform: "win32", file: "COM1", explained: true },
+    { platform: "win32", file: "apps/NULL", explained: false },
+    { platform: "darwin", file: "apps/apphost/NUL", explained: false },
+  ])("explains a reserved Windows file name only where it is one: $platform $file", ({ platform, file, explained }) => {
+    const raw = `error: open("${file}"): No such file or directory\nerror: unable to index file '${file}'\nfatal: adding files failed`;
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    try {
+      const error = gitCommandError(raw);
+      expect(isExpectedOutcome(error)).toBe(explained);
+      if (explained) {
+        expect(error.message).toContain(`"${file}"`);
+        expect(error.message).not.toContain("fatal:");
+      } else {
+        expect(error.message).toBe(raw);
+      }
+    } finally {
+      Object.defineProperty(process, "platform", original);
     }
   });
 
