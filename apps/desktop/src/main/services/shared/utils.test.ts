@@ -36,6 +36,7 @@ import {
   hasEnvRefToken,
   looksSensitiveKey,
   looksSensitiveValue,
+  redactSecrets,
   sanitizeStructuredData,
   signalChildProcessTree,
   signalProcessGroup,
@@ -605,13 +606,31 @@ describe("looksSensitiveKey", () => {
   });
 });
 
+describe("redactSecrets", () => {
+  it.each([
+    ["an Anthropic key", `sk-ant-api03-${"z".repeat(20)}_${"z".repeat(12)}-AA`],
+    ["an OpenAI project key", `sk-proj-${"z".repeat(12)}_${"z".repeat(20)}`],
+  ])("removes the whole of %s", (_label, key) => {
+    const redacted = redactSecrets(`Error: request failed with key ${key} (401)`);
+    expect(redacted).toBe("Error: request failed with key [REDACTED] (401)");
+    expect(redacted).not.toContain("zzzz");
+    expect(redacted).not.toContain("sk-");
+  });
+});
+
 describe("looksSensitiveValue", () => {
   it("detects bearer tokens", () => {
     expect(looksSensitiveValue("Bearer abc123")).toBe(true);
   });
 
-  it("detects sk- prefixed keys", () => {
-    expect(looksSensitiveValue("sk-abc123def456ghi7")).toBe(true);
+  // Low-entropy bodies built at runtime: a real-looking key literal would trip
+  // the repo's gitleaks scan. Real Anthropic and OpenAI keys carry `-` and `_`.
+  it.each([
+    ["a plain sk- key", "sk-abc123def456ghi7"],
+    ["an Anthropic key", `sk-ant-api03-${"z".repeat(20)}_${"z".repeat(12)}-AA`],
+    ["an OpenAI project key", `sk-proj-${"z".repeat(12)}_${"z".repeat(20)}`],
+  ])("detects %s", (_label, key) => {
+    expect(looksSensitiveValue(key)).toBe(true);
   });
 
   it("detects GitHub tokens", () => {

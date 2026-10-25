@@ -210,4 +210,26 @@ describe("clipboard history: which windows keep the watch on", () => {
     expect(await texts()).toEqual(["watched again", "seen by window 1"]);
     service.dispose();
   });
+
+  it("records nothing a read returns after history is turned off mid-read", async () => {
+    const dir = tempDir();
+    writeSettings(dir, { enabled: true, persist: false });
+    const { clip, service } = history(dir);
+    await service.load();
+    await copy(clip, "kept before");
+
+    // The next read of the clipboard is still in flight when the user turns history off.
+    let finishRead: (text: string) => void = () => {};
+    clip.readText = () => new Promise<string>((resolve) => { finishRead = resolve; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await service.configure({ enabled: false });
+    finishRead("copied while turning it off");
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const state = await service.getState();
+    expect(state.enabled).toBe(false);
+    expect(state.entries.map((entry) => entry.text)).toEqual(["kept before"]);
+    expect(state.skippedSecrets).toBe(0);
+    service.dispose();
+  });
 });

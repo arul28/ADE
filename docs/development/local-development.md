@@ -56,6 +56,10 @@ First-time setup:
 npm run setup
 ```
 
+Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
+fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
+`npm run dev` runs, and fails with the download's exit code if it cannot.
+
 Daily desktop dev:
 
 ```bash
