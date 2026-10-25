@@ -7,8 +7,8 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
 /**
  * The account's Fast-mode permission, alone at the top of Chat settings.
  *
- * One switch, one explanation of the cost, and the same anchor the composer's
- * muted lightning deep-links to (`fast-mode`). It lives apart from Composer
+ * One switch, one explanation of the cost, and the same anchor the locked Fast
+ * dialog's Continue deep-links to (`fast-mode`). It lives apart from Composer
  * because it is a spend guardrail, not a chat-appearance choice.
  */
 export function FastModeSection() {

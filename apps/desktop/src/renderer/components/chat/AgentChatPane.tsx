@@ -15993,7 +15993,7 @@ export function AgentChatPane({
         .then((defaults) => {
           if (cancelled) return;
           // The machine that will run this draft also owns the account policy
-          // it enforces. Adopt its answer for the locked lightning.
+          // it enforces. Adopt its answer for the Fast-mode lock.
           noteFastModeAllowedFromHost(defaults?.fastModeAllowed);
           const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
           setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));

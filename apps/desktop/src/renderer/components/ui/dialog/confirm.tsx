@@ -35,7 +35,8 @@ export type ConfirmDialogOptions = {
   destructive?: boolean;
   /**
    * The icon tile: `true` for the tone's glyph, a node for the feature's own
-   * glyph. Default: shown when `tone` is set or `destructive`.
+   * glyph. Default: shown when `tone` is set or `destructive`. A shown tile
+   * also tints the panel's edge with the tone, as a notice card does.
    */
   icon?: ReactNode | boolean;
   /**

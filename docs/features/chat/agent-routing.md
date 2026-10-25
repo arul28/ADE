@@ -995,16 +995,16 @@ for that same attempt.
 Every client is told the answer, so no surface has to guess: the session summary
 carries `fastModeAllowed`, and `chat.getLaunchDefaults` carries it for a new
 chat. Absent means an older host that cannot enforce the permission, which
-clients treat as allowed. On desktop and web a false value locks the model
-picker's Fast half: the composer shows no Fast control, and a Fast chip in the
-picker opens a small dialog. Its Continue button opens Settings → Chat → Fast
-mode, where the "show me" spotlight rings the row. The
-phone draws the same muted bolt, disables the picker's Fast switch, and offers
-the switch in Settings › Chat; the hosted web client reaches the same row over
-the sync host (`chat.getFastModeEnabled` / `chat.setFastModeEnabled`), because
-its account-settings adapter has no brain to write. `ade code` answers `/fast`
+clients treat as allowed. On desktop and web a false value never turns Fast
+on: the composer shows no Fast control, and a Fast chip in the model picker
+opens a small dialog. Its Continue button opens Settings → Chat → Fast mode,
+where the "show me" spotlight rings the row. The phone draws a muted bolt,
+disables the picker's Fast switch, and offers the switch in Settings › Chat;
+the hosted web client reaches the same row over the sync host
+(`chat.getFastModeEnabled` / `chat.setFastModeEnabled`), because its
+account-settings adapter has no brain to write. `ade code` answers `/fast`
 with the same sentence. Only the Settings row explains the cost; there is no
-banner and no repeated "Fast is disabled" copy.
+banner and no toast.
 
 An explicit request while it is off is refused, not silently downgraded:
 `ade chat create --fast` and `ade chat handoff --fast` answer
@@ -1020,8 +1020,8 @@ revive a choice nobody remembers making.
 `ModelDescriptor.serviceTiers?: string[]` advertises the optional
 service tiers a model accepts (`"fast"` from every provider catalog, and
 `"ultrafast"` only from a Codex catalog). The composer's
-**Fast** toggle (a yellow Lightning chip next to the model picker)
-shows whenever `modelSupportsFastMode(descriptor)` is true for the
+**Fast** toggle (a Lightning chip on the selected model's row in the
+model picker) shows whenever `modelSupportsFastMode(descriptor)` is true for the
 selected model, independent of provider. `AgentChatSession` carries
 `fastMode?: boolean`; the deprecated persisted/input alias
 `codexFastMode` is still accepted at boundaries for old rows and remote

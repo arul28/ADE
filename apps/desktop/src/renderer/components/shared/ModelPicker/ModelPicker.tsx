@@ -109,8 +109,8 @@ export type ModelPickerProps = {
   /**
    * Fast mode lives inside the picker (a per-row affordance plus a " Fast"
    * suffix on the trigger) so every surface that mounts a ModelPicker gets it
-   * without building its own chip. Omitting `onFastModeChange` renders no fast
-   * affordance at all.
+   * without building its own chip. Omitting `onFastModeChange` (and, on a
+   * locked account, `onFastModeLocked`) renders no fast affordance at all.
    */
   fastMode?: boolean;
   /**
@@ -463,26 +463,32 @@ export const ModelPicker = memo(function ModelPicker({
 
   // A locked account keeps the Fast chips, but pressing one asks the caller to
   // send the user to Settings instead of turning anything on.
-  const fastModeLockedPrompt = !fastModeAllowed && onFastModeLocked ? onFastModeLocked : null;
+  const fastModeLocked = !fastModeAllowed && onFastModeLocked != null;
   const handleFastModeLocked = useCallback(() => {
     setOpen(false);
-    fastModeLockedPrompt?.();
-  }, [fastModeLockedPrompt]);
+    onFastModeLocked?.();
+  }, [onFastModeLocked]);
 
   const handleSelect = useCallback(
     (modelId: string, options?: ModelPickerSelection) => {
-      if (fastModeLockedPrompt && options?.fastMode) {
-        handleFastModeLocked();
-        return;
-      }
-      if (options) {
-        onChange(modelId, options);
+      // The permission, not the callback, is the lock: a selection that asks
+      // for Fast on a locked account goes through at Standard.
+      const asksForFast = options != null && (options.fastMode || options.serviceTier === "fast");
+      const selection = !fastModeAllowed && asksForFast
+        ? {
+          ...options,
+          fastMode: false,
+          ...(options.serviceTier === "fast" ? { serviceTier: "standard" as const } : {}),
+        }
+        : options;
+      if (selection) {
+        onChange(modelId, selection);
       } else {
         onChange(modelId);
       }
       setOpen(false);
     },
-    [fastModeLockedPrompt, handleFastModeLocked, onChange],
+    [fastModeAllowed, onChange],
   );
 
   const handleRequestClose = useCallback(() => {
@@ -600,18 +606,12 @@ export const ModelPicker = memo(function ModelPicker({
                 effectiveFastTier={effectiveFastTier}
                 {...(typeof fastModeSupported === "boolean" ? { fastModeSupported } : {})}
                 {...(!serviceTierMode && onFastModeChange && fastModeAllowed ? { onFastModeChange } : {})}
-                {...(!serviceTierMode && onFastModeChange && fastModeLockedPrompt
-                  ? { onFastModeChange: (next: boolean) => { if (next) handleFastModeLocked(); } }
-                  : {})}
+                {...(fastModeLocked ? { onFastModeLocked: handleFastModeLocked } : {})}
                 {...(fastModeUnavailableReason ? { fastModeUnavailableReason } : {})}
                 {...(serviceTierMode ? {
                   serviceTierMode: true,
                   serviceTier: serviceTierForDisplay,
                   onServiceTierChange: (modelId: string, next: CursorCloudServiceTier | null) => {
-                    if (fastModeLockedPrompt && next === "fast") {
-                      handleFastModeLocked();
-                      return;
-                    }
                     const nextTier = fastModeAllowed ? next : "standard";
                     const model = modelList.find((entry) => entry.id === modelId);
                     if (!model) return;
