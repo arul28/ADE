@@ -15,6 +15,7 @@ import { arePathsEqual, normalizePath } from "../../lib/pathUtils";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon, useFileIconColor } from "./filePresentation";
+import { isImeComposing } from "../../lib/imeComposition";
 
 const ROW_HEIGHT = 28;
 
@@ -541,6 +542,7 @@ export function FilesExplorer({
                       onClick={(event) => event.stopPropagation()}
                       aria-label={`Rename ${node.name}`}
                       onKeyDown={(event) => {
+                        if (isImeComposing(event)) return;
                         if (event.key === "Escape") {
                           event.preventDefault();
                           cancelRename();

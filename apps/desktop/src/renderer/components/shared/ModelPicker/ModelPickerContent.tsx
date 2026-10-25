@@ -48,6 +48,7 @@ import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from ".
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
 import { CustomPickerPane } from "./CustomPickerPane";
 import { useSmartBalanceProviders } from "../../settings/providers/accounts/useProviderInstances";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
  * The two picker families that map onto a multi-account CLI provider.
@@ -732,6 +733,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const handleListKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (isImeComposing(event)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onRequestClose();

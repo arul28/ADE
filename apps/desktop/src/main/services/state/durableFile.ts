@@ -7,10 +7,28 @@ export type AtomicWriteOptions = {
   /**
    * Permission bits for the temp file, e.g. `0o600`. The rename carries them
    * onto the target, so a secret never exists world-readable — not even for the
-   * instant between create and rename.
+   * instant between create and rename. Left out, an existing target keeps its
+   * own bits (see `existingFileMode`).
    */
   mode?: number;
 };
+
+/**
+ * The permission bits of a file that is about to be replaced, or undefined.
+ *
+ * A replace is a new file renamed over the old one, so without this it takes
+ * the default mode: a script loses its executable bit and a file the user
+ * locked to 0o600 becomes readable to others. Windows has no POSIX bits to
+ * keep.
+ */
+export function existingFileMode(filePath: string): number | undefined {
+  if (process.platform === "win32") return undefined;
+  try {
+    return fs.statSync(filePath).mode & 0o777;
+  } catch {
+    return undefined;
+  }
+}
 
 function bestEffortUnlink(filePath: string): void {
   try {
@@ -162,16 +180,20 @@ export function writeFileAtomic(
 ): void {
   const dir = path.dirname(filePath);
   const tempPath = siblingTempPath(filePath);
+  const mode = opts.mode ?? existingFileMode(filePath);
   let fd: number | null = null;
   try {
-    fd = opts.mode != null
-      ? fs.openSync(tempPath, "wx", opts.mode)
+    fd = mode != null
+      ? fs.openSync(tempPath, "wx", mode)
       : fs.openSync(tempPath, "wx");
+    // The open's mode passes through the umask; a kept mode must come out
+    // exactly as it was.
+    if (opts.mode == null && mode != null) fs.fchmodSync(fd, mode);
     fs.writeFileSync(fd, data);
     if (opts.fsync) bestEffortFsync(fd);
     fs.closeSync(fd);
     fd = null;
-    replaceViaRename(tempPath, filePath, opts.mode);
+    replaceViaRename(tempPath, filePath, mode);
 
     // Windows has no directory handle to flush; opening one fails outright, so
     // the attempt is skipped rather than caught.

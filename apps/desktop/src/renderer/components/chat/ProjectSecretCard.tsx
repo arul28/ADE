@@ -16,6 +16,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { Dialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { ChatCard, ChatCardRow, ChatCardSub, ChatCardTitle } from "./chatCardPrimitives";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * The private secret card.
@@ -97,7 +98,7 @@ function SecretValueField({
           placeholder="Paste the value"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
             event.preventDefault();
             onSubmit();
           }}
@@ -195,6 +196,7 @@ export function ProjectSecretRequestComposer({
   }, [canSave, onSave, value]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isImeComposing(event)) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -512,7 +514,7 @@ export function AddProjectSecretDialog({
             aria-invalid={Boolean(nameError)}
             onChange={(event) => setName(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+              if (event.key !== "Enter" || isImeComposing(event)) return;
               event.preventDefault();
               void save();
             }}

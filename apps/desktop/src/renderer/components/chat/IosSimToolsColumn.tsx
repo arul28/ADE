@@ -34,6 +34,7 @@ import {
   MENU_LABEL_CLASS,
 } from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * Device state as typed controls instead of a trip through Settings.
@@ -400,6 +401,7 @@ export function IosSimToolsColumn({
             disabled={locked}
             onChange={(event) => setUrl(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key !== "Enter" || !url.trim()) return;
               onOpenUrl(url.trim());
             }}

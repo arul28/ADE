@@ -15,6 +15,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { Banner } from "../ui/notice";
 import "./IntegrationsSettings.css";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 const JIRA_API_TOKENS_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
@@ -135,20 +136,15 @@ export function JiraSection() {
     setProjectBusy(true);
     setProjectError(null);
     try {
-      const snapshot = await window.ade.projectConfig.get(pinRef.current);
       // The shared layer is never written (`.ade/ade.yaml` is not config
       // input any more), so the binding lives in this checkout's local.yaml.
-      const local = snapshot.local;
-      await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: {
-          ...local,
-          issueTrackers: {
-            ...(local.issueTrackers ?? {}),
-            jira: { projectKeys: nextKeys },
-          },
+      await saveProjectLocalConfig(({ local }) => ({
+        ...local,
+        issueTrackers: {
+          ...(local.issueTrackers ?? {}),
+          jira: { projectKeys: nextKeys },
         },
-      }, pinRef.current);
+      }), pinRef.current);
       setProjectKeys(nextKeys);
       window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT));
     } catch (error) {

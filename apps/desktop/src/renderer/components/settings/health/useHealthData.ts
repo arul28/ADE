@@ -9,6 +9,7 @@ import type { AppResourceUsageSnapshot, LaneCleanupConfig, OpenProjectBinding } 
 import { getAppResourceUsageCoalesced } from "../../../lib/resourcePressure";
 import { baseName } from "../storage/storageView";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { saveProjectLocalConfig } from "../../../lib/projectLocalConfig";
 
 export type StorageData = {
   snapshot: StorageSnapshot | null;
@@ -201,11 +202,7 @@ export function useHealthData(
   }, []);
 
   const savePolicy = React.useCallback(async (next: LaneCleanupConfig) => {
-    const current = await window.ade.projectConfig.get(pin);
-    await window.ade.projectConfig.save({
-      shared: current.shared,
-      local: { ...current.local, laneCleanup: next },
-    }, pin);
+    await saveProjectLocalConfig((current) => ({ ...current.local, laneCleanup: next }), pin);
   }, [pin]);
 
   const setPolicy = React.useCallback((next: LaneCleanupConfig) => {

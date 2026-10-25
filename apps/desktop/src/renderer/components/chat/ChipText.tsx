@@ -435,12 +435,13 @@ export function ChipText({
 
   // No chips: keep the exact original node so nothing about plain messages
   // changes — spacing, selection, and copy stay byte-for-byte what they were.
+  // `dir="auto"` on both: a Hebrew or Arabic message reads right to left.
   if (parts.every((part) => part.type === "text")) {
-    return <div className={className}>{text}</div>;
+    return <div dir="auto" className={className}>{text}</div>;
   }
 
   return (
-    <div className={className}>
+    <div dir="auto" className={className}>
       {parts.map((part, index) => {
         if (part.type === "text") return <span key={`t-${index}`}>{part.text}</span>;
         if (part.type === "attachment") {

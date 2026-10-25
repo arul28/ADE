@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNod
 import { createRoot, type Root } from "react-dom/client";
 import { noticeTone, type NoticeTone } from "../notice/noticeTones";
 import { Dialog } from "./Dialog";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
  * `confirmDialog` / `promptDialog`: the app's replacement for `window.confirm`
@@ -411,7 +412,7 @@ function PromptDialogView({
           setTouched(true);
         }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+          if (event.key === "Enter" && !isImeComposing(event)) {
             event.preventDefault();
             submit();
           }

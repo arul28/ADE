@@ -210,32 +210,36 @@ function ChatMarkdownAnchor({
   );
 }
 
+// Prose blocks take `dir="auto"`: each paragraph, list, heading, quote and
+// cell reads right to left when it starts with Hebrew or Arabic, and spacing
+// is logical (`ps-`, `border-s-`, `text-start`) so bullets and quote rules
+// follow it. English renders exactly as before. Code blocks stay left to right.
 export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overrides = {}): Components {
   const accent = toneAccents(tone);
   return {
     p: ({ children }) => (
-      <p className="mb-3 max-w-full whitespace-pre-wrap break-words last:mb-0">{children}</p>
+      <p dir="auto" className="mb-3 max-w-full whitespace-pre-wrap break-words last:mb-0">{children}</p>
     ),
-    ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
-    ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
-    li: ({ children }) => <li className="break-words [overflow-wrap:anywhere]">{children}</li>,
+    ul: ({ children }) => <ul dir="auto" className="mb-3 list-disc space-y-1 ps-5 last:mb-0">{children}</ul>,
+    ol: ({ children }) => <ol dir="auto" className="mb-3 list-decimal space-y-1 ps-5 last:mb-0">{children}</ol>,
+    li: ({ children }) => <li dir="auto" className="break-words [overflow-wrap:anywhere]">{children}</li>,
     h1: ({ children }) => (
-      <h1 className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*19/14)] font-semibold leading-snug tracking-[-0.015em] text-fg/92 first:mt-0">
+      <h1 dir="auto" className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*19/14)] font-semibold leading-snug tracking-[-0.015em] text-fg/92 first:mt-0">
         {children}
       </h1>
     ),
     h2: ({ children }) => (
-      <h2 className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*16/14)] font-semibold leading-snug tracking-[-0.012em] text-fg/90 first:mt-0">
+      <h2 dir="auto" className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*16/14)] font-semibold leading-snug tracking-[-0.012em] text-fg/90 first:mt-0">
         {children}
       </h2>
     ),
     h3: ({ children }) => (
-      <h3 className="mb-1.5 mt-4 font-sans text-[length:calc(var(--chat-font-size)*14/14)] font-semibold leading-snug tracking-[-0.008em] text-fg/88 first:mt-0">
+      <h3 dir="auto" className="mb-1.5 mt-4 font-sans text-[length:calc(var(--chat-font-size)*14/14)] font-semibold leading-snug tracking-[-0.008em] text-fg/88 first:mt-0">
         {children}
       </h3>
     ),
     h4: ({ children }) => (
-      <h4 className="mb-1.5 mt-3 font-sans text-[length:calc(var(--chat-font-size)*12.5/14)] font-semibold leading-snug text-fg/82 first:mt-0">
+      <h4 dir="auto" className="mb-1.5 mt-3 font-sans text-[length:calc(var(--chat-font-size)*12.5/14)] font-semibold leading-snug text-fg/82 first:mt-0">
         {children}
       </h4>
     ),
@@ -268,6 +272,9 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       }
       return (
         <code
+          // Isolated, so an identifier inside a right-to-left sentence keeps
+          // its own order and does not reorder the words around it.
+          dir="auto"
           className={cn(
             className ?? "rounded-sm px-1 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] break-words [overflow-wrap:anywhere]",
           )}
@@ -278,7 +285,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       );
     },
     blockquote: ({ children }) => (
-      <blockquote className={`mb-3 border-l-2 pl-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder}`}>
+      <blockquote dir="auto" className={`mb-3 border-s-2 ps-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder}`}>
         {children}
       </blockquote>
     ),
@@ -287,11 +294,12 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     a: ({ children, href }) => <ChatMarkdownAnchor href={href} className={accent.link}>{children}</ChatMarkdownAnchor>,
     table: ({ children }) => (
       <div className="mb-3 max-w-full overflow-x-auto last:mb-0">
-        <table className="w-full min-w-0 border-collapse text-left">{children}</table>
+        <table dir="auto" className="w-full min-w-0 border-collapse text-start">{children}</table>
       </div>
     ),
     th: ({ children }) => (
       <th
+        dir="auto"
         className="break-words px-2 py-1 font-semibold"
         style={{ border: "1px solid var(--chat-table-border)" }}
       >
@@ -300,6 +308,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ),
     td: ({ children }) => (
       <td
+        dir="auto"
         className="break-words px-2 py-1 align-top"
         style={{ border: "1px solid var(--chat-table-border)" }}
       >

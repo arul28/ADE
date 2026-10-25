@@ -3,6 +3,7 @@ import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
+import { isImeComposing } from "../../lib/imeComposition";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -6375,6 +6376,10 @@ function AgentChatComposerImpl({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    // While an IME composes, Enter confirms a candidate, arrows move through
+    // candidates and Escape cancels: none of them is a send, a menu pick or a
+    // draft clear.
+    if (isImeComposing(event) || imeComposingRef.current) return;
     if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
     const isPlainHistoryArrow =
@@ -6543,8 +6548,6 @@ function AgentChatComposerImpl({
     }
 
     if (event.key !== "Enter" || event.shiftKey) return;
-    // Enter that confirms an IME candidate is part of typing, not a send.
-    if (event.nativeEvent.isComposing || imeComposingRef.current) return;
     const commandEnter = commandModified;
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
@@ -6634,6 +6637,7 @@ function AgentChatComposerImpl({
    */
   const answerEditorKeyDown = (answer: { placeholder: string; onSubmitAnswer: () => void }) => (
     (event: React.KeyboardEvent<HTMLElement>) => {
+      if (isImeComposing(event) || imeComposingRef.current) return;
       if (event.key === "Escape") {
         // Closes the open menu and nothing else. With no menu open the event is
         // left to bubble to the card, which declines.
@@ -8898,14 +8902,17 @@ function AgentChatComposerImpl({
                     && !(answer != null && approvalResponding)}
                   role="textbox"
                   aria-multiline="true"
+                  dir="auto"
                   aria-label={answer ? "Answer" : composerInputAccessibleLabel}
                   suppressContentEditableWarning
                   className={cn(
-                    // `text-left` is load-bearing: without it the contenteditable
+                    // `text-start` is load-bearing: without it the contenteditable
                     // inherits `text-align: center` from centered empty-state
                     // ancestors, so pasting a URL (which swaps textarea → rich
                     // editor) makes the whole prompt box render and type centered.
-                    "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
+                    // Start, not left, so a Hebrew or Arabic prompt (dir="auto")
+                    // lines up on the right.
+                    "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-start font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
                     dragActive ? "opacity-30" : "",
                     parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                     // Re-homed inside the question card, the editor drops the
@@ -9067,6 +9074,7 @@ function AgentChatComposerImpl({
                 ) : null}
                 <textarea
                   ref={textareaRef}
+                  dir="auto"
                   value={draft}
                   onChange={(event) => {
                     const val = event.target.value;
@@ -9111,7 +9119,7 @@ function AgentChatComposerImpl({
                   spellCheck={true}
                   aria-label={composerInputAccessibleLabel}
                   className={cn(
-                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                    "block min-h-[28px] w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 [field-sizing:content] text-start text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                     // The textarea sits above the token overlay with transparent text, so the
                     // default (opaque) selection background would paint over the overlay and
                     // make the selected text vanish entirely. A translucent selection reads as

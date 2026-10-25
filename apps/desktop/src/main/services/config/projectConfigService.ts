@@ -68,6 +68,7 @@ import {
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
   laneSetupScriptHasWork,
+  PROJECT_CONFIG_CHANGED_ON_DISK,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
@@ -3062,6 +3063,23 @@ function validateEffectiveConfig(
   };
 }
 
+function readLocalHashFromDisk(filePath: string): string {
+  try {
+    return hashContent(fs.readFileSync(filePath, "utf8"));
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return hashContent("");
+    throw err;
+  }
+}
+
+function changedOnDiskError(): Error {
+  const err = new Error(
+    `${PROJECT_CONFIG_CHANGED_ON_DISK}: .ade/local.yaml changed on disk since these settings were read. Reload and try again.`,
+  );
+  (err as Error & { code?: string }).code = PROJECT_CONFIG_CHANGED_ON_DISK;
+  return err;
+}
+
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
@@ -3346,6 +3364,15 @@ export function createProjectConfigService({
     }
 
     const localYaml = toCanonicalYaml(local);
+
+    // Read the file itself, not the cached parse: the cache is keyed on stat
+    // identity, which a same-size edit inside the clock's resolution keeps.
+    const baseLocalHash = typeof candidate.baseLocalHash === "string" ? candidate.baseLocalHash : null;
+    if (baseLocalHash && readLocalHashFromDisk(localPath) !== baseLocalHash) {
+      cachedLocalFile = null;
+      logger.info("projectConfig.save.changedOnDisk", { localPath });
+      throw changedOnDiskError();
+    }
 
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });

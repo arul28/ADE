@@ -12,6 +12,7 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { existingFileMode } from "../state/durableFile";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -969,7 +970,12 @@ export function toOptionalString(value: unknown): string | null {
 export function writeTextAtomic(filePath: string, text: string, options?: { mode?: number }): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, options?.mode != null ? { encoding: "utf8", mode: options.mode } : "utf8");
+  // Left out, an existing target keeps its own permission bits.
+  const keptMode = options?.mode == null ? existingFileMode(filePath) : undefined;
+  const mode = options?.mode ?? keptMode;
+  fs.writeFileSync(tmp, text, mode != null ? { encoding: "utf8", mode } : "utf8");
+  // The create passes through the umask; a kept mode must come out exactly.
+  if (keptMode != null) fs.chmodSync(tmp, keptMode);
   try {
     fs.renameSync(tmp, filePath);
   } catch (error) {

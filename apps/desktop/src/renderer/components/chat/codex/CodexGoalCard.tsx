@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle, Pause, PencilSimple, Play, Target, WarningCircle, X } from "@phosphor-icons/react";
 import type { CodexThreadGoal, CodexThreadGoalStatus } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 const AMBER = "#F59E0B";
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4000;
@@ -164,6 +165,7 @@ export function CodexGoalCard({ goal, onEdit, onClear, onSetStatus, pending = fa
             disabled={pending}
             maxLength={CODEX_GOAL_OBJECTIVE_MAX_CHARS}
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 submitEdit();

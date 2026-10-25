@@ -76,11 +76,24 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
       });
     }
 
+    // A half-written or malformed local.yaml makes the snapshot read throw.
+    // Inside this timer that would escape as an uncaught error and skip the
+    // other changed paths; the next write reloads it.
+    let snapshot: ReturnType<typeof args.adeProjectService.getSnapshot>;
+    try {
+      snapshot = args.adeProjectService.getSnapshot();
+    } catch (error) {
+      args.logger?.warn("project.config_reload.snapshot_failed", {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     args.onEvent?.({
       type: "config-changed",
       at: nowIso(),
       filePath,
-      snapshot: args.adeProjectService.getSnapshot(),
+      snapshot,
     });
   };
 

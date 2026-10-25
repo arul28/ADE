@@ -5,6 +5,7 @@ import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { normalizePath } from "../../../lib/pathUtils";
 import { COLORS, MONO_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { getFileIcon, useFileIconColor } from "../filePresentation";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /** File names come from an in-memory index, so they can land almost immediately. */
 const NAME_DEBOUNCE_MS = 120;
@@ -297,6 +298,7 @@ export function FilesSearchPanel({
       const fromPanel = target != null && panelRef.current?.contains(target) === true;
       const fromField = target?.dataset?.filesSearchField === "1";
       if (!fromPanel && !fromField) return;
+      if (isImeComposing(event)) return;
       if (handleKey(event.key)) event.preventDefault();
     };
     document.addEventListener("keydown", onDocumentKeyDown);
@@ -508,6 +510,7 @@ export function FilesSearchPanel({
         data-testid="files-search-panel"
         style={{ ...SEARCH_PANEL_SURFACE, width: 720, maxWidth: "92%" }}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
           if (handleKey(event.key)) event.preventDefault();
         }}
       >
