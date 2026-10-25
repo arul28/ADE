@@ -6,6 +6,7 @@ import { ToolLogo } from "../terminals/ToolLogos";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { providerToolType, relativeTime, sessionRowDetail, sessionRowStatus, sessionTitle } from "./sessionHelpers";
 import type { SessionStatusTone } from "../../../shared/sessionStatusPresentation";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /** Status word colours: blue is work, amber is your move, red is broken. */
 const STATUS_TONE_CLASS: Record<SessionStatusTone, string> = {
@@ -51,6 +52,7 @@ function RenameField({ initial, onCommit, onCancel }: {
       onFocus={(event) => event.currentTarget.select()}
       onBlur={() => finish(true)}
       onKeyDown={(event) => {
+        if (isImeComposing(event)) return;
         if (event.key === "Enter") finish(true);
         if (event.key === "Escape") finish(false);
       }}

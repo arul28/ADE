@@ -68,6 +68,7 @@ import {
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
   laneSetupScriptHasWork,
+  PROJECT_CONFIG_CHANGED_ON_DISK,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
@@ -83,6 +84,8 @@ import {
 } from "./projectConfigCarryOver";
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
+import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
+import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
@@ -3062,6 +3065,30 @@ function validateEffectiveConfig(
   };
 }
 
+function readLocalHashFromDisk(filePath: string): string {
+  try {
+    return hashContent(fs.readFileSync(filePath, "utf8"));
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return hashContent("");
+    throw err;
+  }
+}
+
+function changedOnDiskError(): Error {
+  // An answer, not a defect: someone edited the file, and Settings re-reads
+  // and retries. Marked so the IPC boundary logs it instead of opening an issue.
+  return markExpected(
+    codedError(
+      encodeCodedErrorMessage(
+        PROJECT_CONFIG_CHANGED_ON_DISK,
+        ".ade/local.yaml changed on disk since these settings were read. Reload and try again.",
+      ),
+      PROJECT_CONFIG_CHANGED_ON_DISK,
+    ),
+    "user",
+  );
+}
+
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
@@ -3346,6 +3373,15 @@ export function createProjectConfigService({
     }
 
     const localYaml = toCanonicalYaml(local);
+
+    // Read the file itself, not the cached parse: the cache is keyed on stat
+    // identity, which a same-size edit inside the clock's resolution keeps.
+    const baseLocalHash = typeof candidate.baseLocalHash === "string" ? candidate.baseLocalHash : null;
+    if (baseLocalHash && readLocalHashFromDisk(localPath) !== baseLocalHash) {
+      cachedLocalFile = null;
+      logger.info("projectConfig.save.changedOnDisk", { localPath });
+      throw changedOnDiskError();
+    }
 
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });

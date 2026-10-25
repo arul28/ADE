@@ -17,6 +17,11 @@ import {
   type ChatScheduledWorkSnapshot,
 } from "./chatScheduledWork";
 
+/** The clock as the machine's locale writes it ("9:00 AM", "09:00", "21:00"). */
+const localClock = (year: number, month: number, day: number, hour: number, minute: number): string =>
+  new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" })
+    .format(new Date(year, month, day, hour, minute));
+
 function envelope(event: AgentChatEvent, index: number): AgentChatEventEnvelope {
   return {
     sessionId: "session-1",
@@ -298,7 +303,7 @@ describe("chatScheduledWork helpers", () => {
   it("computes deterministic next-fire labels for simple cron expressions", () => {
     const nowMs = new Date(2026, 0, 1, 6, 0, 0, 0).getTime();
     expect(scheduledNextFireLabel(snapshot({ cron: "0 9 * * *" }), nowMs))
-      .toBe("next in 3h · 9:00 AM");
+      .toBe(`next in 3h · ${localClock(2026, 0, 1, 9, 0)}`);
     expect(scheduledNextFireLabel(snapshot({ cron: "not a cron expression" }), nowMs)).toBeNull();
   });
 
@@ -317,13 +322,13 @@ describe("chatScheduledWork helpers", () => {
   it("builds a next-fire label for a stepped cron range", () => {
     const nowMs = new Date(2026, 0, 1, 8, 0, 0, 0).getTime();
     expect(scheduledNextFireLabel(snapshot({ cron: "15-45/15 9 * * *" }), nowMs))
-      .toBe("next in 1h 15m · 9:15 AM");
+      .toBe(`next in 1h 15m · ${localClock(2026, 0, 1, 9, 15)}`);
   });
 
   it("uses an explicit next-run timestamp for wakeups", () => {
     const nowMs = new Date(2026, 0, 1, 6, 0, 0, 0).getTime();
     const nextRunAt = new Date(2026, 0, 1, 6, 30, 0, 0).toISOString();
     expect(scheduledNextFireLabel(snapshot({ kind: "wakeup", nextRunAt }), nowMs))
-      .toBe("next in 30m · 6:30 AM");
+      .toBe(`next in 30m · ${localClock(2026, 0, 1, 6, 30)}`);
   });
 });

@@ -81,6 +81,7 @@ import {
   formatTraceRow,
   traceCursorPoint,
 } from "./appControlTrace";
+import { isImeComposing } from "../../lib/imeComposition";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -2003,6 +2004,7 @@ export function ChatAppControlPanel({
             aria-label="Text to type into the focused app element"
             className="h-full min-w-0 flex-1 bg-transparent text-[10.5px] text-fg/85 outline-none placeholder:text-muted-fg/45"
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === "Enter") void typeIntoApp();
             }}
           />

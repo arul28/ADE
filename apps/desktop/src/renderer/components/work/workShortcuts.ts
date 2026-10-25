@@ -3,6 +3,7 @@ import type { KeybindingsSnapshot } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { caretChordIsClaimed, keyChordIsClaimed } from "../../lib/keyboardClaims";
 import { useLatestCallback } from "../../lib/stableIdentity";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * The Work page's shortcuts: a short list of ⌘-chords, one per action, each
@@ -233,7 +234,7 @@ export function useWorkShortcuts(args: WorkShortcutArgs): WorkShortcuts {
   useEffect(() => {
     if (!args.active) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return;
+      if (event.defaultPrevented || isImeComposing(event)) return;
       const keys = bindings.current;
       const caretFree = !caretChordIsClaimed(event.target);
 

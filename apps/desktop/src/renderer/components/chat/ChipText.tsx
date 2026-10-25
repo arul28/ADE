@@ -54,6 +54,7 @@ import { getFileIcon } from "../files/filePresentation";
 import { buildChipMenuEntries } from "./chipMenu";
 import { chipMenuExtras, isChipActionable, openChipTarget, type ChipActionContext } from "./chipActions";
 import { useMachineFacts } from "./useMachineFacts";
+import { cn } from "../ui/cn";
 
 /** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
 function chipTokenTitle(chip: Chip, label: string): string {
@@ -433,14 +434,16 @@ export function ChipText({
     [attachments, text],
   );
 
-  // No chips: keep the exact original node so nothing about plain messages
-  // changes — spacing, selection, and copy stay byte-for-byte what they were.
+  // No chips: one text node, not a span per part.
+  // Hebrew or Arabic reads right to left: `dir="auto"` isolates the message and
+  // `unicode-bidi: plaintext` lets each line take its own direction, so an
+  // English line in a Hebrew message still starts on the left.
   if (parts.every((part) => part.type === "text")) {
-    return <div className={className}>{text}</div>;
+    return <div dir="auto" className={cn(className, "[unicode-bidi:plaintext]")}>{text}</div>;
   }
 
   return (
-    <div className={className}>
+    <div dir="auto" className={cn(className, "[unicode-bidi:plaintext]")}>
       {parts.map((part, index) => {
         if (part.type === "text") return <span key={`t-${index}`}>{part.text}</span>;
         if (part.type === "attachment") {

@@ -15,6 +15,7 @@ import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { LaneIcon as LaneIconValue } from "../../../shared/types";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * Synthetic lane id for the draft-composer “auto-create lane” row.
@@ -468,6 +469,7 @@ export function LaneCombobox({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (isImeComposing(e)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         close();

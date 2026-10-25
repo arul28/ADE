@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { Backdrop, SEARCH_PANEL_SURFACE as PANEL } from "./FilesSearchPanel";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 export type PromptKind = "file" | "directory";
 
@@ -48,6 +49,7 @@ export function CreatePromptModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 submit();

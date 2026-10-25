@@ -48,6 +48,7 @@ import { ImportSessionPreview } from "./ImportSessionPreview";
 import { ImportTopBar } from "./ImportTopBar";
 import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 export { DEFAULT_FORK_MODEL } from "./importBrowserModel";
 
@@ -522,7 +523,7 @@ export function ImportSessionBrowser({
 
   // ── Keyboard: ↑/↓ move the selection, Enter runs the main action ─────────
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    if (event.defaultPrevented || isImeComposing(event)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const target = event.target as HTMLElement;
     const inSearch = Boolean(target.closest("[data-import-search]"));

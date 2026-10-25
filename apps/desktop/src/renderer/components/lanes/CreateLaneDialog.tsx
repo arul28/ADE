@@ -38,6 +38,7 @@ import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import type { LaneMachineOption } from "./laneMachines";
 import { ComposerPopover, LaneMachineChip, LaneTemplateChip } from "./createLaneComposerChips";
 import "./createLaneComposer.css";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type CreateLaneMode = "primary" | "existing" | "child";
 export type CreateLaneSetupStep = {
@@ -493,7 +494,7 @@ export function CreateLaneDialog({
                 onAcceptSuggestedEmoji?.();
                 return;
               }
-              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !isImeComposing(event)) {
                 event.preventDefault();
                 submit();
               }

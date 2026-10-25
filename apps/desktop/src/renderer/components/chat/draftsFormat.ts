@@ -33,13 +33,13 @@ export function fireTimeLabel(iso: string | null | undefined): string {
   const fireAt = Date.parse(iso);
   if (!Number.isFinite(fireAt)) return "";
   const when = new Date(fireAt);
-  const clock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(when);
+  const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(when);
   const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
   const today = new Date();
   const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
   if (dayKey(when) === dayKey(today)) return clock;
   if (dayKey(when) === dayKey(tomorrow)) return `${clock} tomorrow`;
-  const date = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(when);
+  const date = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(when);
   return `${date}, ${clock}`;
 }
 

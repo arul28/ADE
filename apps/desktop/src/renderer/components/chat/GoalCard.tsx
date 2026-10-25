@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PencilSimple, Target, X } from "@phosphor-icons/react";
 import type { ClaudeActiveGoal, CodexThreadGoal, CodexThreadGoalStatus } from "../../../shared/types";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * Shared goal surface used by both providers. Codex keeps its full edit / clear /
@@ -124,6 +125,7 @@ function ClaudeGoalCard({
               onChange={(e) => setDraft(e.target.value)}
               onBlur={submit}
               onKeyDown={(e) => {
+                if (isImeComposing(e)) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   submit();

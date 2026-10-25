@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import type { KeybindingsSnapshot } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { keyChordIsClaimed } from "../../lib/keyboardClaims";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * `⌃⇥` / `⇧⌃⇥`: the next or previous project tab, from any page.
@@ -44,7 +45,7 @@ export function useProjectTabShortcuts(args: {
   useEffect(() => {
     if (!enabled) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (event.defaultPrevented || isImeComposing(event) || event.repeat) return;
       if (keyChordIsClaimed(event.target)) return;
       const direction = eventMatchesBinding(event, bindings.next)
         ? 1

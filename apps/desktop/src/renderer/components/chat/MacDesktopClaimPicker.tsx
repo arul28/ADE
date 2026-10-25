@@ -30,6 +30,7 @@ import {
   MacDesktopMinimizedBadge,
   MacDesktopRowAction,
 } from "./macDesktopWindowList";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * "Add an app to this desktop" — the whole Mac's windows, one click from this
@@ -153,7 +154,7 @@ export function MacDesktopClaimPicker({
         });
         return;
       }
-      if (event.key === "Enter" && !event.isComposing) {
+      if (event.key === "Enter" && !isImeComposing(event)) {
         const row = state.rows[state.active];
         if (!row || row.disabled) return;
         event.preventDefault();

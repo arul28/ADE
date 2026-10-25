@@ -45,6 +45,16 @@ but it is always empty. `save` accepts and discards whatever is passed for it.
 longer promotes a project from the local-only ADE scaffold to the shared one,
 because there is no shared config file left to write.
 
+A save that passes `baseLocalHash` (the `trust.localHash` of the snapshot it
+was edited from) is refused with `project_config_changed_on_disk` when
+`.ade/local.yaml` no longer hashes to it, so an edit made outside ADE (an
+editor, an agent) is never written over. Renderer settings save through
+`saveProjectLocalConfig` (`renderer/lib/projectLocalConfig.ts`), which re-reads
+and re-applies its change up to three times. A save without `baseLocalHash`
+(an older client) writes as before. A `local.yaml` that does not parse is
+logged by the config reload watcher (`project.config_reload.snapshot_failed`)
+and picked up again on the next write.
+
 ## Top-level type
 
 ```ts

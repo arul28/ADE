@@ -13,6 +13,7 @@ import {
   OpenCodeAddAccountDialog,
   useOpenCodeAccounts,
 } from "./providers/opencode/OpenCodeAccounts";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -379,6 +380,7 @@ export function OpenCodeProviderDetailModal({
                         placeholder={provider.placeholder ?? "API key"}
                         onChange={(event) => setKeyValue(event.target.value)}
                         onKeyDown={(event) => {
+                          if (isImeComposing(event)) return;
                           if (event.key === "Enter" && keyValue.trim() && !busy) {
                             event.preventDefault();
                             void save();

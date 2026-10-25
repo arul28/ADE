@@ -417,7 +417,8 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   const outerOverflowClass = copyButtonPosition === "auto" ? "" : "overflow-hidden";
 
   return (
-    <div className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}>
+    // Code reads left to right even inside a right-to-left list or quote.
+    <div dir="ltr" className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}>
       <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
         {isDiff ? (

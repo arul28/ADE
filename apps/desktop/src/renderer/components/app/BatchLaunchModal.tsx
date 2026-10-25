@@ -34,6 +34,7 @@ import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -104,20 +105,21 @@ async function persistProjectDefaultPrompt(projectRoot: string | null | undefine
   if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
     return;
   }
-  const snapshot = await window.ade.projectConfig.get();
-  const nextUi = { ...(snapshot.local.ui ?? {}) };
-  if (value) {
-    nextUi.linearBatchLaunchDefaultPrompt = value;
-  } else {
-    delete nextUi.linearBatchLaunchDefaultPrompt;
-  }
-  const nextLocal = { ...snapshot.local };
-  if (Object.keys(nextUi).length > 0) {
-    nextLocal.ui = nextUi;
-  } else {
-    delete nextLocal.ui;
-  }
-  await window.ade.projectConfig.save({ shared: snapshot.shared, local: nextLocal });
+  await saveProjectLocalConfig((snapshot) => {
+    const nextUi = { ...(snapshot.local.ui ?? {}) };
+    if (value) {
+      nextUi.linearBatchLaunchDefaultPrompt = value;
+    } else {
+      delete nextUi.linearBatchLaunchDefaultPrompt;
+    }
+    const nextLocal = { ...snapshot.local };
+    if (Object.keys(nextUi).length > 0) {
+      nextLocal.ui = nextUi;
+    } else {
+      delete nextLocal.ui;
+    }
+    return nextLocal;
+  });
 }
 
 function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {

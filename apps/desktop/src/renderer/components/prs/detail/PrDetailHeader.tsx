@@ -20,6 +20,7 @@ import { relativeWhen } from "../../../lib/format";
 import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../shared/PrSwitcher";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import "./PrDetailHeader.css";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 type DetailTab = PrDetailRouteTab;
 
@@ -150,6 +151,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   ];
 
   const handleTitleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event)) return;
     if (event.key === "Enter") onSubmitTitle();
     if (event.key === "Escape") onCancelTitleEdit();
   };

@@ -5,6 +5,7 @@ import type { BrowserLinkOpenMode } from "../../../shared/types";
 import { modifierKeyLabel } from "../../lib/platform";
 import { refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: string; icon: Icon }> = [
   { value: "in-app", label: "In ADE", hint: "A tab in the ADE browser, beside your work.", icon: AppWindow },
@@ -48,14 +49,10 @@ export function BrowserLinksSection() {
     setMode(next);
     setBusy(true);
     try {
-      const snapshot = await window.ade.projectConfig.get();
-      await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: {
-          ...snapshot.local,
-          browser: { ...(snapshot.local.browser ?? {}), linkOpenMode: next },
-        },
-      });
+      await saveProjectLocalConfig((snapshot) => ({
+        ...snapshot.local,
+        browser: { ...(snapshot.local.browser ?? {}), linkOpenMode: next },
+      }));
       // Push it into the link router now rather than waiting for a reload:
       // the next click has to obey the choice that was just made.
       setLinkOpenMode(next);

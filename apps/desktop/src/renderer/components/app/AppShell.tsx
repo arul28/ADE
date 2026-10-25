@@ -92,6 +92,7 @@ import {
   musicTabAvailable,
 } from "../music/musicTab";
 import { setMusicTabOpener } from "../music/musicStore";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * A shortcut that opens a machine tab (Browser, Music) from anywhere, project
@@ -111,7 +112,7 @@ function useOpenMachineTabShortcut(
   useEffect(() => {
     if (!available) return undefined;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing) return;
+      if (e.defaultPrevented || isImeComposing(e)) return;
       if (!eventMatchesBinding(e, binding)) return;
       e.preventDefault();
       if (e.repeat) return;

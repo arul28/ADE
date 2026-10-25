@@ -42,6 +42,7 @@ import { providerActionMessage } from "../providerErrorMessage";
 import { pinnedProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { isWebClientMode } from "../../../../lib/webClientMode";
+import { isImeComposing } from "../../../../lib/imeComposition";
 
 /** How long the success state stays up before the sheet closes itself. */
 const SUCCESS_HOLD_MS = 1_800;
@@ -476,6 +477,7 @@ export function AddProviderAccountSheet({
                   placeholder="Paste the code here"
                   onChange={(event) => setCode(event.target.value)}
                   onKeyDown={(event) => {
+                    if (isImeComposing(event)) return;
                     if (event.key === "Enter") void submitCode();
                   }}
                   style={{ ...TEXT_INPUT_STYLE, flex: 1, fontFamily: MONO_FONT, fontSize: 12 }}

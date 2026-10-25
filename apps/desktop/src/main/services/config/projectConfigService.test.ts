@@ -4,6 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
+import { PROJECT_CONFIG_CHANGED_ON_DISK } from "../../../shared/types/config";
 import { createProjectConfigService, mergeAiConfig } from "./projectConfigService";
 
 function makeDb() {
@@ -1463,5 +1464,38 @@ describe("projectConfigService - reads", () => {
     expect(service.get().effective.ai?.compaction?.claude?.atTokens).toBe(400_000);
     // Nothing is written to a shared layer.
     expect(fs.existsSync(path.join(adeDir, "ade.yaml"))).toBe(false);
+  });
+  it("refuses a save edited from an older copy of local.yaml and keeps the outside edit", () => {
+    const { root, adeDir } = makeProjectFixture("config-save-base-hash-");
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(localPath, YAML.stringify({ version: 1, ui: { linearBatchLaunchDefaultPrompt: "first" } }), "utf8");
+    const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: "project-1", db: makeDb(), logger: makeLogger() });
+    const stale = service.get();
+
+    // An editor or an agent rewrites the file after Settings read it.
+    const outside = YAML.stringify({ version: 1, ui: { linearBatchLaunchDefaultPrompt: "written outside ADE" } });
+    fs.writeFileSync(localPath, outside, "utf8");
+
+    expect(() => service.save({
+      shared: stale.shared,
+      local: { ...stale.local, browser: { linkOpenMode: "external" } },
+      baseLocalHash: stale.trust.localHash,
+    })).toThrow(expect.objectContaining({ code: PROJECT_CONFIG_CHANGED_ON_DISK }));
+    expect(fs.readFileSync(localPath, "utf8")).toBe(outside);
+
+    // Re-read and re-applied, the save lands on top of the outside edit.
+    const fresh = service.get();
+    service.save({
+      shared: fresh.shared,
+      local: { ...fresh.local, browser: { linkOpenMode: "external" } },
+      baseLocalHash: fresh.trust.localHash,
+    });
+    const saved = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    expect(saved.ui.linearBatchLaunchDefaultPrompt).toBe("written outside ADE");
+    expect(saved.browser.linkOpenMode).toBe("external");
+
+    // A caller that names no base (an older client) still writes as before.
+    service.save({ shared: stale.shared, local: { ...stale.local } });
+    expect(YAML.parse(fs.readFileSync(localPath, "utf8")).ui.linearBatchLaunchDefaultPrompt).toBe("first");
   });
 });
