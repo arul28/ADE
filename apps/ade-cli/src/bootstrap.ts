@@ -3548,6 +3548,7 @@ export async function createAdeRuntime(args: {
         getJiraService: () => jiraServiceRef,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
+        builtInBrowserService: builtInBrowserBridge,
         macDesktopService,
         // App Control's `onEvent` feeds the runtime event buffer; the live
         // view for phones and the web client reads the same events there.

@@ -186,6 +186,14 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
+  // Close one of the lane's browser tabs from the phone. Optional: an older
+  // brain omits it and the phone's tab rows stay read-only.
+  "workTools.closeBrowserTab",
+  // Edit your own PR comment. Optional: the phone hides Edit against an older brain.
+  "prs.updateComment",
+  // A skill chip's SKILL.md, read from the chat's machine. Optional: an older
+  // brain omits it and the chip stays a plain label.
+  "chat.getSkillInstructions",
   // Proof a chat cites, read from the machine that owns the chat. Optional: an older
   // host omits it and the web client reports the proof as unreadable, not missing.
   "computerUse.listArtifacts",

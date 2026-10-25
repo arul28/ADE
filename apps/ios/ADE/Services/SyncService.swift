@@ -4071,6 +4071,21 @@ final class MacDesktopStreamDecodeQueue {
 /// One slash command as the host's discovery reports it
 /// (`chat.getSlashCommands`). `argumentHint` is the host's cue that the command
 /// accepts input; `source` is `"sdk"` (discovered) or `"local"` (built in).
+/// `chat.getSkillInstructions`: a skill's SKILL.md, or `not_found` when the
+/// chat's machine has no file for it (a provider's built-in skill, say).
+struct WorkSkillInstructions: Decodable, Equatable {
+  let status: String
+  let name: String
+  var description: String? = nil
+  /// "project", "user" or "bundled".
+  var source: String? = nil
+  var path: String? = nil
+  var body: String? = nil
+  var truncated: Bool? = nil
+
+  var isReady: Bool { status == "ready" }
+}
+
 struct HostSlashCommand: Codable, Equatable {
   let name: String
   let description: String?
@@ -4406,6 +4421,10 @@ final class SyncService: ObservableObject {
   /// `refreshLaneGithubPrItems()`; empty when offline or not yet fetched, in
   /// which case the lane-PR chip falls back to the ADE-mapped rows alone.
   @Published private(set) var laneGithubPrItems: [GitHubPrListItem] = []
+  /// The GitHub account the focused machine writes PR comments and reactions
+  /// as, from its last GitHub PR snapshot, keyed by machine and project so a
+  /// switch never shows another account's comments as "yours".
+  @Published private var githubWriteLoginByScope: [String: String] = [:]
   private var laneGithubPrItemsFetchedAt: Date?
 
   var connectionHealth: SyncConnectionHealth {
@@ -12002,6 +12021,16 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
   }
 
+  /// The login this phone's PR edits and reactions are made as, or nil until
+  /// a GitHub PR snapshot from the focused machine has named one.
+  var githubWriteLogin: String? {
+    githubWriteLoginByScope[githubWriteLoginScopeKey]
+  }
+
+  private var githubWriteLoginScopeKey: String {
+    "\(focusedMachineKey ?? "")|\(activeProjectId ?? "")"
+  }
+
   func fetchGitHubPullRequestSnapshot(
     force: Bool = false,
     includeExternalClosed: Bool = false,
@@ -12009,7 +12038,8 @@ final class SyncService: ObservableObject {
     revalidate: Bool = true,
     includeStateCounts: Bool = false
   ) async throws -> GitHubPrSnapshot {
-    try await sendDecodableCommand(
+    let scopeKey = githubWriteLoginScopeKey
+    let snapshot = try await sendDecodableCommand(
       action: "prs.getGitHubSnapshot",
       args: makePrGithubSnapshotArgs(
         force: force,
@@ -12020,6 +12050,13 @@ final class SyncService: ObservableObject {
       ),
       as: GitHubPrSnapshot.self
     )
+    // A reply that lands after a machine or project switch names the old
+    // scope's account; it is filed under that scope, not the new one.
+    let login = (snapshot.writeViewerLogin ?? snapshot.viewerLogin)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let login, !login.isEmpty, githubWriteLoginByScope[scopeKey] != login {
+      githubWriteLoginByScope[scopeKey] = login
+    }
+    return snapshot
   }
 
   func fetchPrMobileGithubDetail(
@@ -12834,6 +12871,27 @@ final class SyncService: ObservableObject {
   /// The host's discovered slash commands for a provider (and lane worktree,
   /// when supplied). Newer hosts return the real registry; callers must keep a
   /// static fallback for an older host or an offline failure.
+  /// Whether this chat's machine can hand over a skill's SKILL.md.
+  func supportsSkillInstructions(sessionId: String) -> Bool {
+    supportsChatRemoteAction("chat.getSkillInstructions", sessionId: sessionId)
+  }
+
+  /// A skill chip's instructions, read on the chat's own machine from the
+  /// skill folders its lane would load.
+  func fetchSkillInstructions(sessionId: String, name: String) async throws -> WorkSkillInstructions {
+    let action = chatActionName("chat.getSkillInstructions", sessionId: sessionId)
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
+      action: action,
+      args: ["sessionId": sessionId, "name": name],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 15_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: WorkSkillInstructions.self
+    )
+  }
+
   func getSlashCommands(provider: String, laneId: String? = nil) async throws -> [HostSlashCommand] {
     try requireInvokableRemoteAction("chat.getSlashCommands")
     var args: [String: Any] = ["provider": provider]
@@ -16314,6 +16372,52 @@ final class SyncService: ObservableObject {
     return try? decode(result, as: WorkToolsObservationPreview.self)
   }
 
+  /// What the machine that owns `laneId` advertises for `action`. A lane of
+  /// another machine answers from that machine's connection, never from the
+  /// focused one, which knows nothing about that lane's tools.
+  func laneCommandDescriptor(_ action: String, laneId: String) -> SyncRemoteCommandDescriptor? {
+    guard let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey else {
+      return commandDescriptor(for: action)
+    }
+    return machineFleet?.connection(for: remote.machineKey)?.commandDescriptor(for: action)
+  }
+
+  /// Whether this phone may close one of the lane's browser tabs. Controller
+  /// only on the host, so a read-only viewer never sees the control.
+  func canCloseWorkToolsBrowserTab(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.closeBrowserTab", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// Closes a tab in the lane's desktop browser, on the lane's own machine
+  /// (`sendCommand` routes a namespaced lane id there). Never queued: a close
+  /// replayed later could land on a tab the user has gone back to. A tab that
+  /// is already gone counts as closed.
+  func closeWorkToolsBrowserTab(laneId: String, tabId: String) async throws {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canCloseWorkToolsBrowserTab(laneId: lane) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Closing tabs from the phone needs a newer ADE on this lane's machine.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard !lane.isEmpty, !tab.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No tab was selected."])
+    }
+    _ = try await sendCommand(
+      action: "workTools.closeBrowserTab",
+      args: ["laneId": lane, "tabId": tab],
+      disconnectOnTimeout: false,
+      timeoutMessage: "The desktop didn't answer in time. The tab may still be open.",
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
   // MARK: - Mac Desktop live stream and takeover
 
   /// Whether this host can stream a lane's Mac Desktop to the phone.
@@ -17014,6 +17118,74 @@ final class SyncService: ObservableObject {
       "prId": prId,
       "body": body,
     ])
+  }
+
+  /// Whether the host can edit a PR comment. Optional: an older brain omits
+  /// `prs.updateComment` and the phone offers no Edit.
+  var supportsPullRequestCommentEdit: Bool {
+    supportsViewerRemoteAction("prs.updateComment")
+  }
+
+  /// Whether the host can add a reaction to a PR or one of its comments.
+  var supportsPullRequestReactions: Bool {
+    supportsViewerRemoteAction("prs.reactToComment")
+  }
+
+  /// Rewrites one of the signed-in account's own comments. `commentId` is the
+  /// comment's REST id (`githubId`); the host checks it belongs to this PR and
+  /// to the account before it writes. Never queued for later: an edit replayed
+  /// over a newer one would undo it.
+  @discardableResult
+  func updatePullRequestComment(prId: String, commentId: Int, body: String, source: String) async throws -> PrComment? {
+    let result = try await sendCommand(
+      action: "prs.updateComment",
+      args: [
+        "prId": prId,
+        "commentId": String(commentId),
+        "body": body,
+        "source": source == "review" ? "review" : "issue",
+      ],
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    return try? decode(result, as: PrComment.self)
+  }
+
+  /// Adds one reaction. `subjectId` is the GitHub node id of the PR or the
+  /// comment (or a comment's REST id, which the host resolves).
+  func reactToPullRequest(prId: String, subjectId: String, content: String) async throws {
+    _ = try await sendCommand(
+      action: "prs.reactToComment",
+      args: [
+        "prId": prId,
+        "commentId": subjectId,
+        "content": content,
+      ],
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// The PR's checks, read from GitHub now. For a PR with a row on the host.
+  func fetchPullRequestChecks(prId: String) async throws -> [PrCheck] {
+    try await sendDecodableCommand(
+      action: "prs.getChecks",
+      args: ["prId": prId],
+      disconnectOnTimeout: false,
+      as: [PrCheck].self
+    )
+  }
+
+  /// The same read for a PR the host knows only by its GitHub coordinates.
+  func fetchPullRequestChecks(repoOwner: String, repoName: String, githubPrNumber: Int) async throws -> [PrCheck] {
+    try await sendDecodableCommand(
+      action: "prs.getChecksByGithub",
+      args: [
+        "repoOwner": repoOwner,
+        "repoName": repoName,
+        "githubPrNumber": githubPrNumber,
+      ],
+      disconnectOnTimeout: false,
+      as: [PrCheck].self
+    )
   }
 
   func setPullRequestLabels(prId: String, labels: [String]) async throws {

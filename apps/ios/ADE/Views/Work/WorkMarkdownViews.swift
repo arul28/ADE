@@ -69,6 +69,7 @@ struct WorkInlineMarkdownText: View {
   /// Timestamps the reader tapped to see as the agent wrote them.
   @State private var revealedTimes: Set<String> = []
   @Environment(\.workMarkdownForeground) private var foregroundOverride
+  @Environment(\.workSkillInstructions) private var skillInstructions
 
   var body: some View {
     Text(
@@ -91,6 +92,10 @@ struct WorkInlineMarkdownText: View {
           } else {
             revealedTimes.insert(raw)
           }
+          return .handled
+        }
+        if let name = workSkillName(from: url) {
+          skillInstructions?.present(name: name)
           return .handled
         }
         return workOpenChipURL(url)

@@ -172,9 +172,28 @@ enum PrFlatPreviewData {
 extension PrFlatPreviewData {
   /// The open, bot-heavy PR as the Duo's column sees it: one failing and one
   /// running check, two open threads, reviewers, labels and an assignee.
-  static func duoModel(state: String = "open") -> PrDuoDetailModel {
+  static func duoModel(state: String = "open", conversation: Bool = false) -> PrDuoDetailModel {
     let pr = pr(state: state)
     var snapshot = snapshot()
+    if conversation {
+      // `pr-conversation`: reactions on the description and on comments, one
+      // of them the viewer's own (editable, its reaction tinted).
+      snapshot.detail?.nodeId = "PR_kwDO1367"
+      snapshot.detail?.reactions = [
+        PrReviewThreadReaction(id: "r1", content: "rocket", user: "octocat"),
+        PrReviewThreadReaction(id: "r2", content: "+1", user: "summary", count: 3),
+      ]
+      snapshot.comments = [
+        PrComment(id: "c1", author: "devin-ai-integration", authorIsBot: true, body: "<!-- devin-review-comment {} -->\nI finished the review.", source: "issue", createdAt: iso(9 * day)),
+        PrComment(id: "c3", author: "octocat", body: "Tried it on the iPad: the lane chips name the right machine now.", source: "issue", createdAt: iso(6 * hour), githubId: 9001, nodeId: "IC_octo", reactions: [
+          PrReviewThreadReaction(id: "r3", content: "heart", user: "arul28"),
+          PrReviewThreadReaction(id: "r4", content: "+1", user: "someone"),
+        ]),
+        PrComment(id: "c2", author: "arul28", body: "Merging once the phone test passes on the MacBook too.", source: "issue", createdAt: iso(5 * hour), githubId: 9002, nodeId: "IC_mine", reactions: [
+          PrReviewThreadReaction(id: "r5", content: "eyes", user: "octocat"),
+        ]),
+      ]
+    }
     snapshot.detail?.labels = [
       PrLabel(name: "mobile", color: "0E8A16", description: nil),
       PrLabel(name: "multi-machine", color: "5319E7", description: nil),
@@ -213,7 +232,16 @@ extension PrFlatPreviewData {
       mergedSummary: state == "merged" ? "Merged into main by arul28 · 3h ago" : nil,
       canArchiveLane: true,
       canMergeAnyway: true,
-      canOpenGitHub: true
+      canOpenGitHub: true,
+      conversation: conversation
+        ? PrConversationControls(
+            viewerLogin: "arul28",
+            canReact: true,
+            canEditComments: true,
+            descriptionSubjectId: snapshot.detail?.nodeId,
+            descriptionReactions: snapshot.detail?.reactions ?? []
+          )
+        : .none
     )
   }
 }
@@ -309,12 +337,13 @@ struct PrsListPreviewHost: View {
 struct PrDetailPreviewHost: View {
   @State var tab: PrDetailTab
   var state = "merged"
+  var conversation = false
   @State private var method: PrMergeMethodOption = .squash
 
   var body: some View {
     NavigationStack {
       PrDuoDetail(
-        model: PrFlatPreviewData.duoModel(state: state),
+        model: PrFlatPreviewData.duoModel(state: state, conversation: conversation),
         actions: .inert,
         tab: $tab,
         mergeMethod: $method,

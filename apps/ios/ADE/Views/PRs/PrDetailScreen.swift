@@ -4,6 +4,7 @@ import UIKit
 struct PrDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.duoLayout) private var duoLayout
+  @Environment(\.scenePhase) private var scenePhase
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
@@ -100,6 +101,16 @@ struct PrDetailView: View {
   @State private var openTiming = ScreenOpenTiming()
   /// A `reload` is running (see `isAwaitingPrSnapshot`).
   @State private var detailLoadInFlight = false
+  /// On screen rather than covered by a pushed page: the live checks poll
+  /// only runs while someone can see it.
+  @State private var isOnScreen = false
+
+  /// How often checks are re-read while CI runs and the PR is on screen. A
+  /// read is two GitHub calls on the host; CI that is still running after
+  /// `liveChecksSlowAfter` is likely queued or stuck, so it is asked less.
+  private static let liveChecksInterval: Duration = .seconds(45)
+  private static let liveChecksSlowInterval: Duration = .seconds(120)
+  private static let liveChecksSlowAfter: Duration = .seconds(600)
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -426,7 +437,26 @@ struct PrDetailView: View {
         unifiedDetail(context: duoLayout.isWide ? .column : .phone)
       }
     }
-    .onAppear { openTiming.opened() }
+    .onAppear {
+      openTiming.opened()
+      isOnScreen = true
+    }
+    .onDisappear { isOnScreen = false }
+    // Live checks: re-read only the checks while some are still running. The
+    // key goes nil (and the loop stops) when CI settles, the PR closes, the
+    // app leaves the foreground, the screen is covered, or the link drops.
+    .task(id: liveChecksPollKey) {
+      guard liveChecksPollKey != nil else { return }
+      await pollChecksWhileRunning()
+    }
+    // Reactions and comment edits need to know which account is "you". The
+    // PRs list learns it; a PR opened straight from a link asks once.
+    .task(id: isLive) {
+      guard isLive, syncService.githubWriteLogin == nil,
+        syncService.supportsPullRequestReactions || syncService.supportsPullRequestCommentEdit
+      else { return }
+      _ = try? await syncService.fetchGitHubPullRequestSnapshot(revalidate: false)
+    }
     .onChange(of: snapshot != nil) { _, loaded in
       if loaded { openTiming.mark("prDetail.snapshot") }
     }
@@ -631,6 +661,15 @@ struct PrDetailView: View {
         commentInput = value
         submitComment()
         editorSheet = nil
+      }
+      .presentationDetents([.medium, .large])
+    case .editComment(let githubId, let source, let body):
+      PrMultilineEditSheet(title: "Edit comment", sectionTitle: "Comment", initialValue: body, submitTitle: "Save") { value in
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        runPrAction("Saving comment", success: "Comment updated") {
+          try await syncService.updatePullRequestComment(prId: effectivePrId, commentId: githubId, body: trimmed, source: source)
+        } onSuccess: { editorSheet = nil }
       }
       .presentationDetents([.medium, .large])
     case .review:
@@ -1055,6 +1094,90 @@ struct PrDetailView: View {
       storeWarmCache()
     }
     hasAttemptedInitialLoad = true
+  }
+
+  // MARK: - Live checks
+
+  /// Whether any check on the PR is still queued or running.
+  private var checksAreRunning: Bool {
+    prChecksSummaryStats(
+      checks: snapshot?.checks ?? [],
+      overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus
+    ).pending > 0
+  }
+
+  /// Non-nil only while the poll should run; it names the PR so a different
+  /// PR in the same view starts its own loop.
+  private var liveChecksPollKey: String? {
+    let state = displayedState
+    guard isLive, isOnScreen, scenePhase == .active,
+      state == "open" || state == "draft",
+      hasAttemptedInitialLoad, checksAreRunning,
+      liveChecksTarget != nil
+    else { return nil }
+    return effectivePrId
+  }
+
+  private enum LiveChecksTarget {
+    case row(String)
+    case github(repoOwner: String, repoName: String, githubPrNumber: Int)
+  }
+
+  /// A PR with a row on the host is read by id; one the host knows only from
+  /// GitHub is read by its coordinates, the way its detail was.
+  private var liveChecksTarget: LiveChecksTarget? {
+    if let pr { return .row(pr.id) }
+    if let coordinates = routedGitHubCoordinates {
+      return .github(repoOwner: coordinates.repoOwner, repoName: coordinates.repoName, githubPrNumber: coordinates.githubPrNumber)
+    }
+    if let githubItem, !githubItem.repoOwner.isEmpty, !githubItem.repoName.isEmpty, githubItem.githubPrNumber > 0 {
+      if let linked = githubItem.linkedPrId { return .row(linked) }
+      return .github(repoOwner: githubItem.repoOwner, repoName: githubItem.repoName, githubPrNumber: githubItem.githubPrNumber)
+    }
+    return nil
+  }
+
+  private func pollChecksWhileRunning() async {
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+    while !Task.isCancelled {
+      let interval = clock.now - startedAt < Self.liveChecksSlowAfter
+        ? Self.liveChecksInterval
+        : Self.liveChecksSlowInterval
+      try? await Task.sleep(for: interval)
+      guard !Task.isCancelled else { return }
+      await refreshChecksOnly()
+    }
+  }
+
+  /// Swaps in fresh checks without the rest of the detail fan-out. When the
+  /// last running check finishes, one full reload picks up what CI settling
+  /// changes elsewhere (the merge box, the status line).
+  private func refreshChecksOnly() async {
+    guard let target = liveChecksTarget else { return }
+    let requestedPrId = effectivePrId
+    let fresh: [PrCheck]
+    do {
+      switch target {
+      case .row(let id):
+        fresh = try await syncService.fetchPullRequestChecks(prId: id)
+      case .github(let owner, let name, let number):
+        fresh = try await syncService.fetchPullRequestChecks(repoOwner: owner, repoName: name, githubPrNumber: number)
+      }
+    } catch {
+      // A slow or dropped read: keep what is shown and try on the next tick.
+      return
+    }
+    guard !Task.isCancelled, requestedPrId == effectivePrId, var current = snapshot else { return }
+    guard current.checks != fresh else { return }
+    let wasRunning = checksAreRunning
+    current.checks = fresh
+    snapshot = current
+    if wasRunning && !checksAreRunning {
+      // Settling clears the poll key, which cancels this task: the reload
+      // runs on its own so it is not cancelled with it.
+      Task { await reload(includeLiveSidecars: true) }
+    }
   }
 
   /// Seed local detail state from the service warm cache on first appearance so
@@ -1488,7 +1611,22 @@ struct PrDetailView: View {
       canMergeAnyway: canRunPrActions
         && (nativeStackMembership == nil || stackMergeCount == 1 || syncService.supportsStackLayeredBypass),
       canOpenGitHub: canOpenCurrentPrInGitHub,
+      conversation: conversationControls,
       phase: detailPhase
+    )
+  }
+
+  /// Reactions and edits need a live host that advertises them, a PR id to
+  /// send, and the account they are made as (so "yours" is known).
+  private var conversationControls: PrConversationControls {
+    let login = syncService.githubWriteLogin
+    let live = isLive && hasActionablePrId
+    return PrConversationControls(
+      viewerLogin: login,
+      canReact: live && login != nil && syncService.supportsPullRequestReactions,
+      canEditComments: live && !isDetailBusy && syncService.supportsPullRequestCommentEdit,
+      descriptionSubjectId: nonEmptyTrimmed(snapshot?.detail?.nodeId),
+      descriptionReactions: snapshot?.detail?.reactions ?? []
     )
   }
 
@@ -1529,7 +1667,18 @@ struct PrDetailView: View {
           try await syncService.setPullRequestLabels(prId: effectivePrId, labels: labels)
         }
       },
-      openGitHub: { openGitHub(urlString: currentPr.githubUrl) }
+      openGitHub: { openGitHub(urlString: currentPr.githubUrl) },
+      react: { subjectId, content in
+        try await syncService.reactToPullRequest(prId: effectivePrId, subjectId: subjectId, content: content)
+      },
+      reactionFailed: { error in
+        ADEHaptics.error()
+        toast = ADEToastMessage(text: "Couldn't add the reaction. \(error.localizedDescription)", kind: .failure)
+      },
+      editComment: { entry in
+        guard let githubId = entry.commentGithubId else { return }
+        editorSheet = .editComment(githubId: githubId, source: entry.commentSource ?? "issue", body: entry.body ?? "")
+      }
     )
   }
 }
@@ -1723,6 +1872,8 @@ struct PrDuoDetailModel {
   var canArchiveLane: Bool
   var canMergeAnyway: Bool
   var canOpenGitHub: Bool
+  /// Reactions and comment edits on the Overview.
+  var conversation: PrConversationControls = .none
   /// Loading and unavailable draw inside the same view, so its chrome (the
   /// edge bar above all) is the same from the first frame.
   var phase: PrDuoPhase = .ready
@@ -1778,6 +1929,9 @@ struct PrDuoDetailActions {
   var requestReviewers: ([String]) -> Void
   var setLabels: ([String]) -> Void
   var openGitHub: () -> Void
+  var react: (_ subjectId: String, _ content: String) async throws -> Void = { _, _ in }
+  var reactionFailed: (Error) -> Void = { _ in }
+  var editComment: (PrDigestEntry) -> Void = { _ in }
 }
 
 /// Where a PR's detail is shown. One view draws all three; only the chrome
@@ -2114,7 +2268,11 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
             canAct: model.canAct,
             onReply: actions.reply,
             onResolve: actions.resolve,
-            isLoading: model.isLoadingDescription
+            isLoading: model.isLoadingDescription,
+            conversation: model.conversation,
+            onReact: actions.react,
+            onReactionError: actions.reactionFailed,
+            onEditComment: actions.editComment
           )
         }
       }

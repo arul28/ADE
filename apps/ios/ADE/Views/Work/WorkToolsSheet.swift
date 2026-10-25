@@ -1,9 +1,13 @@
 import SwiftUI
 import UIKit
 
-/// Read-only view of one Work tool running on the user's Mac: the browser, App
-/// Control, or the lane's Mac Desktop. Each lane tool chip opens its own tool;
-/// the Apple device has its own full-screen viewer and no sheet.
+/// View of one Work tool running on the user's Mac: the browser, App Control,
+/// or the lane's Mac Desktop. Each lane tool chip opens its own tool; the Apple
+/// device has its own full-screen viewer and no sheet.
+///
+/// Watching only, with two exceptions: a browser tab can be closed (its ×,
+/// with a few seconds to undo before the close is sent), and Mac Desktop takes
+/// a finger when the host allows takeover.
 ///
 /// The browser is a `WebContentsView` in ADE Desktop and App Control is a CDP
 /// socket to a local process; neither can be driven from a phone. App Control
@@ -69,6 +73,15 @@ struct WorkToolsSheet: View {
   @State private var macDesktopRefreshTick = 0
   /// The App Control viewer owns the live picture while it is up.
   @State private var appControlViewerPresented = false
+  /// Tabs whose × was tapped and whose close has not been sent yet: each one
+  /// waits `closeUndoWindow` so Undo can take it back. Keyed by tab id.
+  @State private var pendingTabCloses: [String: Task<Void, Never>] = [:]
+  /// Tabs this sheet closed. Hidden at once, before the next poll confirms it.
+  @State private var closedTabIds: Set<String> = []
+  @State private var tabCloseError: String?
+
+  /// How long a closed tab can be taken back before the close is sent.
+  private static let closeUndoWindow: Duration = .seconds(5)
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -76,7 +89,26 @@ struct WorkToolsSheet: View {
   /// populated state with no desktop, no pairing, and no network.
   var previewState: WorkToolsLaneState?
   var previewFrame: UIImage?
+  /// Shows the tab rows' × with no host to send the close to.
+  var previewAllowsTabClose = false
+  /// Opens with this tab's close already waiting on Undo.
+  var previewPendingCloseTabId: String?
   #endif
+
+  /// The fixture holds Undo longer so a slow driven capture can still see it.
+  private var undoWindow: Duration {
+    #if DEBUG
+    if previewAllowsTabClose { return .seconds(previewPendingCloseTabId == nil ? 30 : 600) }
+    #endif
+    return Self.closeUndoWindow
+  }
+
+  private var canCloseTabs: Bool {
+    #if DEBUG
+    if previewAllowsTabClose { return true }
+    #endif
+    return syncService.canCloseWorkToolsBrowserTab(laneId: laneId)
+  }
 
   var body: some View {
     chrome
@@ -100,6 +132,21 @@ struct WorkToolsSheet: View {
     .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
+    .onDisappear { sendPendingTabClosesNow() }
+    #if DEBUG
+    .onChange(of: loaded) { _, isLoaded in
+      guard isLoaded, let id = previewPendingCloseTabId,
+        let tab = state?.browser?.tabs.first(where: { $0.id == id })
+      else { return }
+      scheduleTabClose(tab)
+    }
+    #endif
+    .alert(
+      "Couldn't close the tab",
+      isPresented: Binding(get: { tabCloseError != nil }, set: { if !$0 { tabCloseError = nil } }),
+      actions: { Button("OK", role: .cancel) { tabCloseError = nil } },
+      message: { Text(tabCloseError ?? "") }
+    )
   }
 
   /// The sheet's own stack and Done; embedded (the Duo's tools pane) it has
@@ -162,7 +209,9 @@ struct WorkToolsSheet: View {
           )
         }
         if tool != .macDesktop {
-          Text("Control from the desktop")
+          Text(tool == .browser && canCloseTabs
+            ? "Close tabs here. Browse from the desktop."
+            : "Control from the desktop")
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -251,10 +300,16 @@ struct WorkToolsSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 8)
       }
-      if let tabs = state?.browser?.tabs, !tabs.isEmpty {
+      if !visibleTabs.isEmpty {
+        let canClose = canCloseTabs
         VStack(alignment: .leading, spacing: 10) {
-          ForEach(tabs) { tab in
-            WorkToolsTabRow(tab: tab)
+          ForEach(visibleTabs) { tab in
+            WorkToolsTabRow(
+              tab: tab,
+              isClosing: pendingTabCloses[tab.id] != nil,
+              onClose: canClose ? { scheduleTabClose(tab) } : nil,
+              onUndo: { undoTabClose(tab.id) }
+            )
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -293,6 +348,67 @@ struct WorkToolsSheet: View {
 
   // MARK: - Data
 
+  /// The lane's tabs, less the ones this sheet just closed.
+  private var visibleTabs: [WorkToolsBrowserTab] {
+    (state?.browser?.tabs ?? []).filter { !closedTabIds.contains($0.id) }
+  }
+
+  // MARK: - Closing a tab
+
+  /// The × was tapped: the row turns into "Closing… Undo" and the close goes
+  /// out once the undo window passes. No confirmation dialog: the window is
+  /// the safety, the way Mail's undo-send is.
+  private func scheduleTabClose(_ tab: WorkToolsBrowserTab) {
+    guard pendingTabCloses[tab.id] == nil else { return }
+    ADEHaptics.light()
+    let tabId = tab.id
+    pendingTabCloses[tabId] = Task { @MainActor in
+      try? await Task.sleep(for: undoWindow)
+      guard !Task.isCancelled else { return }
+      pendingTabCloses[tabId] = nil
+      await sendTabClose(tabId)
+    }
+  }
+
+  private func undoTabClose(_ tabId: String) {
+    guard let pending = pendingTabCloses.removeValue(forKey: tabId) else { return }
+    pending.cancel()
+    ADEHaptics.light()
+  }
+
+  private func sendTabClose(_ tabId: String) async {
+    closedTabIds.insert(tabId)
+    #if DEBUG
+    if previewAllowsTabClose { return }
+    #endif
+    do {
+      try await syncService.closeWorkToolsBrowserTab(laneId: laneId, tabId: tabId)
+      await refresh()
+    } catch {
+      // The tab is still open on the desktop: show it again, and say why.
+      closedTabIds.remove(tabId)
+      tabCloseError = error.localizedDescription
+    }
+  }
+
+  /// The sheet is going away with closes still waiting: the user asked for
+  /// them and did not undo, so they go out now rather than being dropped.
+  /// Nothing is left on screen to report a failure on; the tab simply stays
+  /// open on the desktop and in the list next time.
+  private func sendPendingTabClosesNow() {
+    let tabIds = Array(pendingTabCloses.keys)
+    guard !tabIds.isEmpty else { return }
+    for task in pendingTabCloses.values { task.cancel() }
+    pendingTabCloses = [:]
+    let laneId = laneId
+    let syncService = syncService
+    Task { @MainActor in
+      for tabId in tabIds {
+        try? await syncService.closeWorkToolsBrowserTab(laneId: laneId, tabId: tabId)
+      }
+    }
+  }
+
   /// The first open login handoff in this lane, if any.
   private var handoffReason: String? {
     state?.browser?.tabs.compactMap(\.handoffReason).first
@@ -309,7 +425,8 @@ struct WorkToolsSheet: View {
   }
 
   private var browserSubtitle: String? {
-    guard let tabs = state?.browser?.tabs, !tabs.isEmpty else { return nil }
+    let tabs = visibleTabs
+    guard !tabs.isEmpty else { return nil }
     return tabs.count == 1 ? "1 tab" : "\(tabs.count) tabs"
   }
 
@@ -476,8 +593,69 @@ struct WorkToolsSheet: View {
 
 private struct WorkToolsTabRow: View {
   let tab: WorkToolsBrowserTab
+  /// The × was tapped and the close is waiting out its undo window.
+  var isClosing = false
+  /// Nil when this machine does not let the phone close tabs.
+  var onClose: (() -> Void)?
+  var onUndo: () -> Void = {}
 
   var body: some View {
+    if isClosing {
+      closingRow
+    } else {
+      HStack(alignment: .center, spacing: 10) {
+        details
+        if let onClose {
+          Button(action: onClose) {
+            Image(systemName: "xmark")
+              .font(.system(size: 11, weight: .bold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 28, height: 28)
+              .background(ADEKit.track, in: Circle())
+              .contentShape(Circle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Close tab \(displayTitle)")
+        }
+      }
+      .contentShape(Rectangle())
+      .contextMenu {
+        if let onClose {
+          Button(role: .destructive, action: onClose) {
+            Label("Close tab", systemImage: "xmark")
+          }
+        }
+        if let url = tab.url, !url.isEmpty {
+          Button {
+            UIPasteboard.general.string = url
+          } label: {
+            Label("Copy link", systemImage: "link")
+          }
+        }
+      }
+    }
+  }
+
+  /// "Closing “Docs”… Undo", in place of the row, until the close is sent.
+  private var closingRow: some View {
+    HStack(spacing: 10) {
+      Text("Closing “\(displayTitle)”…")
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 0)
+      Button("Undo", action: onUndo)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Undo closing \(displayTitle)")
+    }
+    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+    .transition(.opacity)
+  }
+
+  private var details: some View {
     VStack(alignment: .leading, spacing: 2) {
       HStack(spacing: 6) {
         Text(displayTitle)

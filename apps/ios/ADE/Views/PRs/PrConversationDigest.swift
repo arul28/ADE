@@ -97,6 +97,14 @@ struct PrDigestEntry: Equatable, Identifiable {
   var outdated = false
   /// Reviews only: approved, changes_requested, commented…
   var reviewState: String? = nil
+  /// Conversation comments only: the REST id the edit endpoint takes, and
+  /// whether it is an issue or a review comment.
+  var commentGithubId: Int? = nil
+  var commentSource: String? = nil
+  /// Conversation comments only: what a reaction is added to (the node id, or
+  /// the REST id the host resolves), and the reactions it has.
+  var reactionSubjectId: String? = nil
+  var reactions: [PrReviewThreadReaction] = []
 
   /// Not resolved and not outdated: someone still has to act.
   var isOpenThread: Bool { kind == .thread && !resolved && !outdated }
@@ -399,7 +407,11 @@ func prDigestInputs(
       author: comment.author,
       authorIsBot: comment.authorIsBot,
       at: comment.createdAt ?? comment.updatedAt ?? "",
-      body: comment.body
+      body: comment.body,
+      commentGithubId: comment.githubId,
+      commentSource: comment.source,
+      reactionSubjectId: nonEmptyTrimmed(comment.nodeId) ?? comment.githubId.map(String.init),
+      reactions: comment.reactions ?? []
     ))
   }
   // Older hosts: the activity feed is the only source of the conversation.
