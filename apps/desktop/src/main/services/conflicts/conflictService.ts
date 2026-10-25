@@ -316,7 +316,7 @@ async function readCommitMessagesSince(cwd: string, mergeBaseRef: string | null,
 }
 
 async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string): Promise<Set<string>> {
-  const res = await runGit(["diff", "--name-only", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
+  const res = await runGit(["diff", "--name-only", "-z", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
   if (res.exitCode !== 0) return new Set<string>();
   return new Set(parseDiffNameOnly(res.stdout));
 }
@@ -1167,7 +1167,7 @@ export function createConflictService({
     const hasMerge = gitDir.length > 0 && fs.existsSync(path.join(gitDir, "MERGE_HEAD"));
     const kind: GitConflictState["kind"] = hasRebase ? "rebase" : hasMerge ? "merge" : null;
 
-    const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
     const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
 
     let mergeHeadSha: string | null = null;
@@ -2465,14 +2465,14 @@ export function createConflictService({
 
       const laneDiff = await (async () => {
         if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.laneHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.base}..${diffMode.laneHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
           return res.exitCode === 0 ? truncate(`Lane diff (${filePath})`, res.stdout, MAX_DIFF_CHARS) : "";
         }
         if (diffMode.kind === "base-ref") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.baseRef}..${diffMode.laneHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.baseRef}..${diffMode.laneHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
@@ -2483,7 +2483,7 @@ export function createConflictService({
 
       const peerDiff = await (async () => {
         if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
-          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.peerHeadSha}`, "--", filePath], {
+          const res = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", `${diffMode.base}..${diffMode.peerHeadSha}`, "--", filePath], {
             cwd: laneGit.worktreePath,
             timeoutMs: 25_000
           });
@@ -3651,7 +3651,7 @@ export function createConflictService({
     const outputLogPath = path.join(runDir, "output.log");
     await fs.promises.writeFile(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
 
-    const diffResult = await runGit(["diff", "--binary"], {
+    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
       cwd: cwdLane.worktreePath,
       timeoutMs: 45_000,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
@@ -4172,7 +4172,7 @@ export function createConflictService({
     if (!run) throw new Error(`External resolver run not found: ${runId}`);
 
     const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
-    const diffResult = await runGit(["diff", "--binary"], {
+    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
       cwd: cwdLane.worktreePath,
       timeoutMs: 45_000,
       maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
@@ -4692,7 +4692,7 @@ export function createConflictService({
 
       // Rebase failed — parse conflicting files and abort
       const statusRes = await runGit(
-        ["diff", "--name-only", "--diff-filter=U"],
+        ["diff", "--name-only", "-z", "--diff-filter=U"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
       const conflictingFiles = statusRes.exitCode === 0

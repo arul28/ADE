@@ -287,6 +287,32 @@ type GitChild = {
   once(event: "spawn", listener: () => void): unknown;
 };
 
+/**
+ * Git options ADE puts before every command so a personal git config cannot
+ * change what ADE reads. `status.showUntrackedFiles=no` hides new files from
+ * `git status` and from `git worktree remove`'s own dirty check, so a lane that
+ * holds only new files reads clean and its delete erases them. `normal` is
+ * git's default; a caller's explicit `--untracked-files` still wins.
+ */
+const GIT_CONFIG_OVERRIDE_ARGS = [
+  "-c", "status.showUntrackedFiles=normal",
+  // Patch readers here expect `a/` and `b/` path prefixes, and `git apply`
+  // strips exactly one, so a personal no-prefix setting breaks both.
+  "-c", "diff.noprefix=false",
+  "-c", "diff.mnemonicPrefix=false",
+  "-c", "diff.srcPrefix=a/",
+  "-c", "diff.dstPrefix=b/",
+] as const;
+
+/**
+ * Git must never wait on a terminal prompt: ADE has no terminal to show it, so
+ * a missing sign-in (a fetch, a push, or a Git LFS download during checkout)
+ * would hang until the timeout. With this set, git fails at once and says
+ * why. Git Credential Manager's own sign-in window still opens, because the
+ * user can answer it. A caller's env still wins.
+ */
+const GIT_NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: "0" } as const;
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -300,16 +326,17 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
   }
   const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    // A caller's env wins over GIT_READ_ENV.
-    const envPatch = { ...GIT_READ_ENV, ...(opts.env ?? {}) };
+    // A caller's env wins over GIT_READ_ENV and GIT_NO_PROMPT_ENV.
+    const envPatch = { ...GIT_READ_ENV, ...GIT_NO_PROMPT_ENV, ...(opts.env ?? {}) };
+    const spawnArgs = [...GIT_CONFIG_OVERRIDE_ARGS, ...args];
     // On Windows, CreateProcess runs on the calling thread, so a git spawned
     // here blocks the event loop for 5-1,000 ms. See offThreadSpawn.ts.
     const child: GitChild = offThreadSpawnEnabled()
-      ? spawnOffThread(executable, args, {
+      ? spawnOffThread(executable, spawnArgs, {
         cwd: opts.cwd,
         envPatch,
       })
-      : spawn(executable, args, {
+      : spawn(executable, spawnArgs, {
         cwd: opts.cwd,
         env: { ...process.env, ...envPatch },
         stdio: ["pipe", "pipe", "pipe"],
@@ -558,6 +585,17 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
   return result;
 }
 
+/**
+ * The branch name in the output of `git rev-parse --symbolic-full-name HEAD` or
+ * `git symbolic-ref HEAD`. Read the full ref, never the short form: when a tag
+ * has the branch's name, `--abbrev-ref` and `--short` print `heads/<name>`.
+ * Any other value, such as `HEAD` for a detached HEAD, comes back as it is.
+ */
+export function branchNameFromHeadRef(stdout: string): string {
+  const ref = stdout.trim();
+  return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+}
+
 /** The commit sha `ref` resolves to in `cwd`, or null when it does not resolve. */
 export async function resolveGitCommit(ref: string, cwd: string, options: { timeoutMs?: number } = {}): Promise<string | null> {
   const trimmed = ref.trim();
@@ -703,6 +741,15 @@ function windowsReservedFileInGitError(raw: string): string | null {
   const name = file.split(/[\\/]/).pop() ?? "";
   return WINDOWS_RESERVED_FILE_NAME.test(name) ? file : null;
 }
+/**
+ * Git's own words when it could not sign in to a remote. With prompts off (see
+ * GIT_NO_PROMPT_ENV) these replace a prompt nobody could answer.
+ */
+const GIT_REMOTE_SIGN_IN_FAILED =
+  /terminal prompts disabled|could not read (?:username|password)|authentication failed for|permission denied \(publickey|host key verification failed/i;
+
+const GIT_REMOTE_SIGN_IN_HINT =
+  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal. For SSH, add your key to ssh-agent and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
@@ -715,6 +762,7 @@ export function formatGitExecutionError(raw: string): string {
       // Git Bash is a POSIX shell: quoted for it, a folder named `$(…)` stays text.
       + `Delete the file, then try again. In Git Bash, from the project folder, run: rm ${quoteShellArg(reservedFile, { platform: "linux" })}`;
   }
+  if (GIT_REMOTE_SIGN_IN_FAILED.test(raw)) return `${raw}\n\n${GIT_REMOTE_SIGN_IN_HINT}`;
   if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }

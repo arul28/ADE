@@ -10,13 +10,13 @@ export async function fetchRemoteTrackingBranch(args: {
   try {
     await runGitOrThrow(
       ["fetch", "--prune", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
-      { cwd: args.projectRoot, timeoutMs: 120_000 },
+      { cwd: args.projectRoot, timeoutMs: 5 * 60_000 },
     );
     return true;
   } catch {
     await runGit(["fetch", "--prune", "origin"], {
       cwd: args.projectRoot,
-      timeoutMs: 120_000,
+      timeoutMs: 5 * 60_000,
     });
     return false;
   }

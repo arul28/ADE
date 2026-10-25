@@ -380,11 +380,13 @@ export async function whichCommand(command: string): Promise<string | null> {
 
 // ── Git helpers ─────────────────────────────────────────────────────
 
+/**
+ * Paths from `git diff --name-only -z` or `git show --name-only -z`. The `-z`
+ * form keeps a name with spaces, quotes or non-ASCII characters exactly as it
+ * is; without it, git prints such a name C-quoted (`"caf\303\251.txt"`).
+ */
 export function parseDiffNameOnly(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  return stdout.split("\0").filter((name) => name.length > 0);
 }
 
 // ── Safe JSON parsing ───────────────────────────────────────────────

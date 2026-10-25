@@ -2459,10 +2459,10 @@ function createGitStatusTool(cwd: string) {
         });
         const { stdout: branch } = await execFileAsync(
           "git",
-          ["rev-parse", "--abbrev-ref", "HEAD"],
+          ["rev-parse", "--symbolic-full-name", "HEAD"],
           { cwd, timeout: 5_000 }
         );
-        return { branch: branch.trim(), status: stdout.trim(), clean: stdout.trim() === "" };
+        return { branch: branch.trim().replace(/^refs\/heads\//, ""), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
         return { error: `git status failed: ${getErrorMessage(err)}` };
       }
@@ -2482,7 +2482,7 @@ function createGitDiffTool(cwd: string) {
     }),
     execute: async ({ staged, ref, path: filePath }) => {
       try {
-        const args = ["diff", "--stat", "--patch"];
+        const args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch"];
         if (staged && !ref) args.push("--cached");
         if (ref) args.push(ref);
         if (filePath) {

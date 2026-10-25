@@ -6,9 +6,9 @@ import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
-import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
+import { branchNameFromHeadRef, getHeadSha, gitCommandError, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
-import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
+import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { nonAsarFs } from "../shared/nonAsarFs";
@@ -592,12 +592,78 @@ async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean>
   }
 }
 
+/**
+ * True when removing the worktree would lose work: an uncommitted or untracked
+ * file, a submodule with changes, or a submodule commit that no remote has.
+ * `--ignore-submodules=none` keeps a user's `diff.ignoreSubmodules` from hiding
+ * a changed submodule. Git keeps a worktree's submodule repositories inside the
+ * worktree's own git dir, so removing the worktree removes their commits too.
+ */
 async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000): Promise<boolean> {
-  const result = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs });
+  const result = await runGit(["status", "--porcelain=v1", "--ignore-submodules=none"], { cwd: worktreePath, timeoutMs });
   if (result.exitCode !== 0) {
     throw new Error("ADE could not verify whether the lane has uncommitted files.");
   }
-  return result.stdout.trim().length > 0;
+  if (result.stdout.trim().length > 0) return true;
+  return await hasUnpushedSubmoduleCommits(worktreePath, timeoutMs);
+}
+
+const SUBMODULE_INSPECT_MAX_DEPTH = 4;
+
+/**
+ * Bounds for git commands that write a whole tree. A checkout or `worktree add`
+ * killed partway leaves files from both branches and an index that matches
+ * neither, so the bound only has to catch a git that never returns. A large
+ * repo, Git LFS or a slow disk can take minutes.
+ */
+const GIT_TREE_WRITE_TIMEOUT_MS = 15 * 60_000;
+/** A fetch from a busy or distant remote can take minutes on a large repo. */
+const GIT_FETCH_TIMEOUT_MS = 5 * 60_000;
+
+/** Runs a checkout in an existing lane folder, with a message that says what a stopped one leaves. */
+async function runLaneCheckout(args: string[], worktreePath: string): Promise<void> {
+  const res = await runGit(args, { cwd: worktreePath, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
+  if (res.timedOut) {
+    throw new Error(
+      "Git did not finish the checkout within 15 minutes, so ADE stopped it. The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.",
+    );
+  }
+  if (res.exitCode !== 0) {
+    throw gitCommandError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`);
+  }
+}
+
+/**
+ * True when an initialized submodule under `repoPath` (at any depth) has a
+ * commit on HEAD or a local branch that no remote-tracking ref holds. A
+ * submodule ADE cannot inspect counts as unpushed, so the delete stops.
+ */
+async function hasUnpushedSubmoduleCommits(repoPath: string, timeoutMs: number, depth = 0): Promise<boolean> {
+  if (depth >= SUBMODULE_INSPECT_MAX_DEPTH) return false;
+  if (!fs.existsSync(path.join(repoPath, ".gitmodules"))) return false;
+  const listed = await runGit(
+    ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    { cwd: repoPath, timeoutMs },
+  );
+  // Exit 1 means no submodule path is configured.
+  if (listed.exitCode === 1) return false;
+  if (listed.exitCode !== 0) return true;
+  for (const record of listed.stdout.split("\0")) {
+    const newline = record.indexOf("\n");
+    const relPath = newline >= 0 ? record.slice(newline + 1) : "";
+    if (!relPath) continue;
+    const submodulePath = path.resolve(repoPath, relPath);
+    if (!isWithinDir(repoPath, submodulePath)) continue;
+    // An uninitialized submodule has no `.git` and holds no work.
+    if (!fs.existsSync(path.join(submodulePath, ".git"))) continue;
+    const unpushed = await runGit(
+      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
+      { cwd: submodulePath, timeoutMs },
+    );
+    if (unpushed.exitCode !== 0 || unpushed.stdout.trim().length > 0) return true;
+    if (await hasUnpushedSubmoduleCommits(submodulePath, timeoutMs, depth + 1)) return true;
+  }
+  return false;
 }
 
 async function isSymbolicLinkPath(targetPath: string): Promise<boolean> {
@@ -962,9 +1028,9 @@ function toLaneSummary(args: {
 
 async function detectBranchRef(worktreePath: string, fallback: string): Promise<string> {
   if (!(await isExpectedGitWorktreeRoot(worktreePath))) return fallback;
-  const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
+  const branchRes = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
   if (branchRes.exitCode === 0) {
-    const value = branchRes.stdout.trim();
+    const value = branchNameFromHeadRef(branchRes.stdout);
     if (value && value !== "HEAD") return value;
   }
   return fallback;
@@ -1411,7 +1477,7 @@ async function resolveImportBranchTarget(args: {
   // Refresh cached remote refs, but still allow import when the fetch fails and refs are already present locally.
   await runGit(["fetch", "--prune", "--all"], {
     cwd: args.projectRoot,
-    timeoutMs: 60_000,
+    timeoutMs: GIT_FETCH_TIMEOUT_MS,
   }).catch(() => {});
 
   const directCandidates = new Set<string>();
@@ -2976,12 +3042,6 @@ export function createLaneService({
     });
   };
 
-  const parseConflictingFiles = (stdout: string): string[] =>
-    stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
   const resolveRebaseOrder = (args: { rootLaneId: string; scope: RebaseScope }): string[] => {
     const activeRows = getAllLaneRows(false);
     const childrenByParent = new Map<string, LaneRow[]>();
@@ -3745,12 +3805,12 @@ export function createLaneService({
     );
     if (!primary) return;
 
-    const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+    const branchRes = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], {
       cwd: primary.worktree_path,
       timeoutMs: 8_000
     });
     if (branchRes.exitCode !== 0) return;
-    const detectedBranchRef = branchRes.stdout.trim();
+    const detectedBranchRef = branchNameFromHeadRef(branchRes.stdout);
     if (!detectedBranchRef || detectedBranchRef === "HEAD" || detectedBranchRef === primary.branch_ref) return;
 
     db.run(
@@ -4322,7 +4382,7 @@ export function createLaneService({
           gitStarted = true;
           return runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
             cwd: projectRoot,
-            timeoutMs: 60_000,
+            timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
             ...(onCheckoutProgress
               ? {
@@ -5487,7 +5547,7 @@ export function createLaneService({
         }
         const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
         try {
-          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: 120_000 });
+          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
         } catch (error) {
           // The folder was absent before `add`, so anything there now is this
           // failed attempt's. Clear it and its registration, or every later
@@ -6201,7 +6261,7 @@ export function createLaneService({
         // If we are branching directly from the current primary checkout, ensure
         // it is in sync with remote before using it as the base.
         if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
+          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: GIT_FETCH_TIMEOUT_MS });
           const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
           if (upstreamRes.exitCode === 0) {
             const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
@@ -6589,7 +6649,7 @@ export function createLaneService({
         await runGitWorktreeMutation(() =>
           runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
             cwd: projectRoot,
-            timeoutMs: 60_000
+            timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS
           })
         );
         worktreeAdded = true;
@@ -6906,10 +6966,7 @@ export function createLaneService({
         if (startPointRes.exitCode !== 0 || !startPointRes.stdout.trim()) {
           throw new Error(`Start point '${startPoint}' was not found.`);
         }
-        await runGitOrThrow(["checkout", "-b", targetBranchRef, startPoint], {
-          cwd: row.worktree_path,
-          timeoutMs: 60_000,
-        });
+        await runLaneCheckout(["checkout", "-b", targetBranchRef, startPoint], row.worktree_path);
         targetProfileRow = null;
         pendingProfileUpsert = {
           branchRef: targetBranchRef,
@@ -6942,7 +6999,7 @@ export function createLaneService({
         const checkoutCmd = remoteRef
           ? ["checkout", "--track", "--ignore-other-worktrees", remoteRef]
           : ["checkout", "--ignore-other-worktrees", targetBranchRef];
-        await runGitOrThrow(checkoutCmd, { cwd: row.worktree_path, timeoutMs: 60_000 });
+        await runLaneCheckout(checkoutCmd, row.worktree_path);
 
         const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
         pendingProfileUpsert = {
@@ -6981,10 +7038,7 @@ export function createLaneService({
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
         if (previousBranchRef && previousBranchRef !== targetBranchRef) {
           try {
-            await runGitOrThrow(
-              ["checkout", "--ignore-other-worktrees", previousBranchRef],
-              { cwd: row.worktree_path, timeoutMs: 60_000 },
-            );
+            await runLaneCheckout(["checkout", "--ignore-other-worktrees", previousBranchRef], row.worktree_path);
           } catch (rollbackErr) {
             logger.warn("laneService.switchBranch_git_rollback_failed", {
               laneId: row.id,
@@ -7020,11 +7074,11 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row || row.status === "archived") return null;
       if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) return null;
-      const headRes = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      const headRes = await runGit(["symbolic-ref", "--quiet", "HEAD"], {
         cwd: row.worktree_path,
         timeoutMs: 5_000,
       }).catch(() => null);
-      const headBranchRef = headRes?.exitCode === 0 ? headRes.stdout.trim() : null;
+      const headBranchRef = headRes?.exitCode === 0 ? branchNameFromHeadRef(headRes.stdout) : null;
       const drift = detectLaneBranchDrift({ expectedBranchRef: row.branch_ref, headBranchRef });
       if (!drift) return null;
       // Callers act on this answer (the composer chip re-reads it just before a
@@ -7063,11 +7117,11 @@ export function createLaneService({
         throw new Error("This lane's worktree is unavailable.");
       }
 
-      const headRes = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      const headRes = await runGit(["symbolic-ref", "--quiet", "HEAD"], {
         cwd: row.worktree_path,
         timeoutMs: 5_000,
       });
-      const liveHeadBranchRef = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+      const liveHeadBranchRef = headRes.exitCode === 0 ? branchNameFromHeadRef(headRes.stdout) : "";
       const detectedDrift = detectLaneBranchDrift({
         expectedBranchRef: row.branch_ref,
         headBranchRef: liveHeadBranchRef,
@@ -7620,11 +7674,11 @@ export function createLaneService({
           continue;
         }
 
-        const conflictRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        const conflictRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
           cwd: lane.worktree_path,
           timeoutMs: 15_000
         });
-        laneItem.conflictingFiles = conflictRes.exitCode === 0 ? parseConflictingFiles(conflictRes.stdout) : [];
+        laneItem.conflictingFiles = conflictRes.exitCode === 0 ? parseDiffNameOnly(conflictRes.stdout) : [];
         laneItem.status = "conflict";
         laneItem.error = rebaseRes.stderr.trim() || "Rebase failed with conflicts";
 
@@ -8732,7 +8786,7 @@ export function createLaneService({
           const addArgs = localBranch.exitCode === 0
             ? ["worktree", "add", targetPath, branchName]
             : ["worktree", "add", "-b", branchName, targetPath, `origin/${branchName}`];
-          await runGitOrThrow(addArgs, { cwd: projectRoot, timeoutMs: 120_000 });
+          await runGitOrThrow(addArgs, { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
         });
         try {
           commitLaneRestoreState(laneId, targetPath);
@@ -9241,6 +9295,20 @@ export function createLaneService({
                 return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
               }
               const original = (removeRes.stderr || removeRes.stdout || "").trim();
+              // Git refuses a worktree with initialized submodules unless
+              // forced. The git_status step already checked the submodules for
+              // changes and unpushed commits, so let Git remove it with one
+              // --force instead of deleting the folder by hand.
+              if (!force && /containing submodules/i.test(original)) {
+                const forcedRes = await runGit(
+                  ["worktree", "remove", "--force", row.worktree_path],
+                  { cwd: projectRoot, timeoutMs: 120_000 },
+                );
+                if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
+                  residualWorktreeCleanup.deleteRow(row.worktree_path);
+                  return { detail: `${row.worktree_path} (with submodules)` };
+                }
+              }
               if (!managedWorktreePath) {
                 // Git can give up partway: it unregisters the worktree and
                 // deletes `.git`, then fails on a file Windows still holds open

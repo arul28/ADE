@@ -66,7 +66,7 @@ import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/servi
 import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveLock";
 import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
+import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
@@ -7031,14 +7031,11 @@ async function runTool(args: {
     });
 
     if (mergeResult.exitCode !== 0) {
-      const unmerged = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+      const unmerged = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
         cwd: parent.worktreePath,
         timeoutMs: 12_000
       });
-      const conflictedFiles = unmerged.stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
+      const conflictedFiles = parseDiffNameOnly(unmerged.stdout);
 
       return {
         merged: false,

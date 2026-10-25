@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { GitConflictState } from "../../../shared/types";
+import { parseDiffNameOnly } from "../shared/utils";
 
 export function detectConflictKind(gitDir: string): GitConflictState["kind"] {
   try {
@@ -16,14 +17,8 @@ export function detectConflictKind(gitDir: string): GitConflictState["kind"] {
   return null;
 }
 
+/** Sorted, distinct paths from `git diff --name-only -z`. */
 export function parseNameOnly(stdout: string): string[] {
-  return Array.from(
-    new Set(
-      stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
+  return Array.from(new Set(parseDiffNameOnly(stdout))).sort((a, b) => a.localeCompare(b));
 }
 

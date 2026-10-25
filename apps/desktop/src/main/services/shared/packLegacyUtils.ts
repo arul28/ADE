@@ -72,18 +72,26 @@ export function safeSegment(raw: string): string {
   return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
 }
 
+/**
+ * Totals and paths from `git diff --numstat -z`. A rename's record has an empty
+ * path and is followed by its old and new paths; the new path counts.
+ */
 export function parseNumStat(stdout: string): ParsedNumStat {
   const files = new Set<string>();
   let insertions = 0;
   let deletions = 0;
 
-  const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  for (const line of lines) {
-    const parts = line.split("\t");
+  const records = stdout.split("\0");
+  for (let index = 0; index < records.length; index += 1) {
+    const parts = (records[index] ?? "").split("\t");
     if (parts.length < 3) continue;
-    const ins = parts[0] ?? "0";
+    const ins = parts[0]?.trim() ?? "0";
     const del = parts[1] ?? "0";
-    const filePath = parts.slice(2).join("\t").trim();
+    let filePath = parts.slice(2).join("\t");
+    if (!filePath) {
+      filePath = records[index + 2] ?? "";
+      index += 2;
+    }
     if (filePath.length) files.add(filePath);
 
     const insNum = ins === "-" ? 0 : Number(ins);
@@ -95,24 +103,19 @@ export function parseNumStat(stdout: string): ParsedNumStat {
   return { insertions, deletions, files };
 }
 
+/**
+ * Paths from `git status --porcelain=v1 -z`. A rename or copy record names its
+ * new path and is followed by the old one, which is skipped.
+ */
 export function parsePorcelainPaths(stdout: string): string[] {
   const out = new Set<string>();
-  const lines = stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
-  for (const line of lines) {
-    if (line.startsWith("??")) {
-      const rel = line.slice(2).trim();
-      if (rel.length) out.add(rel);
-      continue;
-    }
-
-    const raw = line.slice(2).trim();
-    const arrow = raw.indexOf("->");
-    if (arrow >= 0) {
-      const rel = raw.slice(arrow + 2).trim();
-      if (rel.length) out.add(rel);
-      continue;
-    }
-    if (raw.length) out.add(raw);
+  const records = stdout.split("\0");
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] ?? "";
+    if (record.length < 4) continue;
+    const code = record.slice(0, 2);
+    out.add(record.slice(3));
+    if (code.includes("R") || code.includes("C")) index += 1;
   }
   return [...out];
 }

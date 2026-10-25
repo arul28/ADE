@@ -1,5 +1,5 @@
 import type { Logger } from "../logging/logger";
-import { runGit } from "../git/git";
+import { branchNameFromHeadRef, runGit } from "../git/git";
 import { getErrorMessage } from "../shared/utils";
 
 export type CloudLaneMirrorSyncResult =
@@ -39,8 +39,8 @@ export async function syncCloudLaneMirror(args: {
       logger.info("cloud_lane_mirror.fetch_failed", { branch, stderr: fetched.stderr.slice(-300) });
       return "skipped_fetch_failed";
     }
-    const head = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, timeoutMs: 15_000 });
-    const checkedOut = head.exitCode === 0 ? head.stdout.trim() : null;
+    const head = await runGit(["symbolic-ref", "--quiet", "HEAD"], { cwd, timeoutMs: 15_000 });
+    const checkedOut = head.exitCode === 0 ? branchNameFromHeadRef(head.stdout) : null;
     if (checkedOut !== branch) {
       logger.info("cloud_lane_mirror.wrong_branch", { branch, checkedOut });
       return "skipped_wrong_branch";

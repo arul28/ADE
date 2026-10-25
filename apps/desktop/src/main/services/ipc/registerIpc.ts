@@ -185,7 +185,7 @@ import type { createProjectSecretService } from "../secrets/projectSecretService
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
-import { runGit } from "../git/git";
+import { branchNameFromHeadRef, runGit } from "../git/git";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
@@ -11765,7 +11765,7 @@ export function registerIpc({
       runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
       knownBranch
         ? Promise.resolve(null)
-        : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
+        : runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
     ]);
     const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
     // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
@@ -11789,7 +11789,7 @@ export function registerIpc({
     })();
     let branch = knownBranch;
     if (!branch && branchRes && branchRes.exitCode === 0) {
-      const out = branchRes.stdout.trim();
+      const out = branchNameFromHeadRef(branchRes.stdout);
       branch = out && out !== "HEAD" ? out : null;
     }
     return { remoteUrl, branch };

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
@@ -45,7 +45,7 @@ import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import { isRecord, safeJsonParse } from "../shared/utils";
+import { isRecord, parseDiffNameOnly, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
 type LaneInfo = {
@@ -521,7 +521,7 @@ export function createGitOperationsService({
       if (!gitDir) return false;
       const kind = detectConflictKind(gitDir);
       if (kind !== expected) return false;
-      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+      const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
         cwd: lane.worktreePath,
         timeoutMs: 10_000
       });
@@ -1157,14 +1157,11 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
-      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha, "--"], {
+      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", "-z", sha, "--"], {
         cwd: lane.worktreePath,
         timeoutMs: 12_000
       });
-      return res
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
+      return parseDiffNameOnly(res);
     },
 
     async getCommitMessage(args: GitGetCommitMessageArgs): Promise<string> {
@@ -1523,7 +1520,7 @@ export function createGitOperationsService({
         const gitDir = await getAbsoluteGitDir(lane.worktreePath);
         const kind = gitDir ? detectConflictKind(gitDir) : null;
 
-        const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
           cwd: lane.worktreePath,
           timeoutMs: 10_000
         });
@@ -1737,7 +1734,7 @@ export function createGitOperationsService({
         ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)
-          : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+          : runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
       ]);
       const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
       const remoteUrl = ((): string | null => {
@@ -1756,7 +1753,7 @@ export function createGitOperationsService({
       })();
       let branch = lane.branchRef?.trim() || null;
       if (!branch && branchRes?.exitCode === 0) {
-        const out = branchRes.stdout.trim();
+        const out = branchNameFromHeadRef(branchRes.stdout);
         branch = out && out !== "HEAD" ? out : null;
       }
       return { remoteUrl, branch };
