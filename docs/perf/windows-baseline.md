@@ -468,14 +468,14 @@ Everything below ran in Git Bash or PowerShell 7 on this PC.
 
 ### Start the dev app for measuring
 
-Use Node 22 in every shell that runs node or npm:
+Use Node 24 (the version in `.nvmrc`) in every shell that runs node or npm:
 
 ```bash
-eval "$(fnm env --shell bash)"; fnm use 22        # Git Bash
+eval "$(fnm env --shell bash)"; fnm use 24        # Git Bash
 ```
 
 ```powershell
-fnm env --shell powershell | Out-String | Invoke-Expression; fnm use 22
+fnm env --shell powershell | Out-String | Invoke-Expression; fnm use 24
 ```
 
 Start the app from **PowerShell**. Git Bash rewrites `\\.\pipe\...` (the

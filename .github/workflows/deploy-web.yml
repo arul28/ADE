@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
       - name: Build web client
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: cd apps/account-directory && npm ci
       - name: Apply D1 migrations and deploy production Worker
         run: cd apps/account-directory && npm run deploy:production -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: cd apps/webhook-relay && npm ci
       - name: Deploy Worker
         run: cd apps/webhook-relay && npm run deploy -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: cd apps/tunnel-relay && npm ci
       - name: Deploy Worker
         run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
@@ -246,7 +246,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: cd apps/push-relay && npm ci
       - name: Mint Clerk smoke tokens and deploy Worker
         env:

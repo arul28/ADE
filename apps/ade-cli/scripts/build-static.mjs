@@ -159,7 +159,7 @@ async function assertEmbeddedNodeVersion(binaryPath, target) {
   }
   if (compareNodeVersions(version, MIN_EMBEDDED_NODE) >= 0) {
     if (compareNodeVersions(version, PROXY_CAPABLE_NODE) < 0) {
-      process.stdout.write(`Warning: embedding Node ${version}; a runtime older than ${PROXY_CAPABLE_NODE} ignores HTTPS_PROXY. Release builds use Node 24 (release-core.yml).\n`);
+      process.stdout.write(`Warning: embedding Node ${version}; a runtime older than ${PROXY_CAPABLE_NODE} ignores HTTPS_PROXY. Release builds use Node 24 (.nvmrc).\n`);
     }
     return;
   }

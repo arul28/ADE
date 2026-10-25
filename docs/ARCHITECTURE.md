@@ -2099,7 +2099,7 @@ Per-app scripts:
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, push-relay, `packages/sdk`, and `packages/chat-ui` with a shared cache keyed `nm-v3-` on those lockfiles (including the two package lockfiles). (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
+1. **Install** (`install` job) — checkout, setup Node 24, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, push-relay, `packages/sdk`, and `packages/chat-ui` with a shared cache keyed `nm-v3-` on those lockfiles (including the two package lockfiles). (`apps/tunnel-relay` and `apps/account-directory` have independent Worker jobs that run `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.

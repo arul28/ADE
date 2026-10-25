@@ -117,8 +117,8 @@ remote commands, or host update flows, verify:
 
 ## 7. Node / test-env discipline
 
-**Check:** Desktop/renderer tests run under **Node 22** (`.nvmrc`); a newer
-default breaks `window.localStorage` and produces spurious renderer failures —
+**Check:** Desktop/renderer tests run under **Node 24** (`.nvmrc`); Node 25 or
+newer breaks `window.localStorage` and produces spurious renderer failures —
 do not "fix" those by editing the tests. Each app has its own lockfile; a
 `package.json` change without a regenerated `package-lock.json` is a CI break.
 
