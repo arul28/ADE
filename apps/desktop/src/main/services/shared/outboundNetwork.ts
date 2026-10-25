@@ -8,8 +8,9 @@ import type { Logger } from "../logging/logger";
  * `ade` CLI, the brain included) on company networks: a proxy named in the
  * environment, and a company root CA the OS trusts. Node's `fetch` and
  * `https` honour neither by default. Electron's `net.fetch` already follows
- * the OS for both; this covers the global `fetch`, `http`/`https` and
- * WebSocket calls.
+ * the OS for both; this covers the global `fetch` and `http`/`https`. The
+ * `ws` WebSockets (paired machines, the relay) open their own sockets and
+ * are not proxied, as before.
  *
  * Child processes are left alone: they inherit `HTTPS_PROXY` and friends as
  * they always did, and nothing here adds an environment variable they would
@@ -86,21 +87,6 @@ export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv, logger?: N
     logger?.warn("network.proxy_configure_failed", { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
-}
-
-/** One agent for every direct peer socket; it carries no proxy. */
-let directPeerAgent: http.Agent | null = null;
-
-/**
- * Options for a WebSocket to another ADE machine. Direct sync is plain
- * `ws://` to a LAN or tailnet address, which a company proxy cannot reach and
- * `NO_PROXY` cannot list (it has no address ranges), so those connect
- * directly. The relay (`wss://`, on the internet) keeps the proxy.
- */
-export function peerSocketOptions(url: string): { agent?: http.Agent } {
-  if (!url.startsWith("ws://")) return {};
-  directPeerAgent ??= new http.Agent();
-  return { agent: directPeerAgent };
 }
 
 /** Reads the OS trust store off the calling thread: it takes ~140 ms on macOS. */

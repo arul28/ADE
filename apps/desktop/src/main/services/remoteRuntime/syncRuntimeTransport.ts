@@ -41,7 +41,6 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
-import { peerSocketOptions } from "../shared/outboundNetwork";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -308,8 +307,7 @@ export async function openSyncEnvelopeConnection(
   const socketEndpoint = withSyncRelayCorrelationId(endpoint, options.correlationId);
   const timeoutMs = normalizeTimeout(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
   if (options.signal?.aborted) throw abortError(options.signal);
-  // A direct ws:// route skips a company proxy; the wss:// relay keeps it.
-  const ws = options.createWebSocket?.(socketEndpoint) ?? new WebSocket(socketEndpoint, peerSocketOptions(socketEndpoint));
+  const ws = options.createWebSocket?.(socketEndpoint) ?? new WebSocket(socketEndpoint);
   const connection = createConnection(endpoint, ws);
 
   if (options.signal?.aborted) {

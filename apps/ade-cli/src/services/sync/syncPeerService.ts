@@ -22,7 +22,6 @@ import {
   DEFAULT_MAX_CHANGESET_BATCH_BYTES,
   DEFAULT_MAX_CHANGESET_BATCH_ROWS,
 } from "./changesetPump";
-import { peerSocketOptions } from "../../../../desktop/src/main/services/shared/outboundNetwork";
 
 type SyncPeerServiceArgs = {
   db: AdeDb;
@@ -597,9 +596,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       emitStatus();
 
       await new Promise<void>((resolve, reject) => {
-        const peerUrl = `ws://${status.host}:${String(status.port)}`;
-        // A LAN or tailnet peer is reached directly, never through a company proxy.
-        const socket = new WebSocket(peerUrl, peerSocketOptions(peerUrl));
+        const socket = new WebSocket(`ws://${status.host}:${String(status.port)}`);
         ws = socket;
         pendingConnect = { resolve, reject };
         pendingConnectSocket = socket;
