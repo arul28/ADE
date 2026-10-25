@@ -136,7 +136,7 @@ import {
   omitRemoteCaller,
   readMachineCallScope,
 } from "./services/account/agentRemoteRpc";
-import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
+import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 
 type HandlerEntry = {
@@ -1094,7 +1094,7 @@ async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
 ): Promise<ProjectRecord> {
-  const identity = normalizeGitRemoteIdentity(originUrl);
+  const identity = gitRemoteIdentity(originUrl);
   const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(identity) : null;
   if (!identity || !match) {
     throw new JsonRpcError(
@@ -1103,7 +1103,7 @@ async function cloneRepositoryForRemoteAgent(
     );
   }
   const existing = projectRegistry.list()
-    .find((record) => normalizeGitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
+    .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
   if (existing) return existing;
   const repoName = match[2]!;
   const parentDir = defaultParentDir(projectRegistry);

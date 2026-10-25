@@ -23,6 +23,7 @@ import type { Logger } from "../../logging/logger";
 import type { AgentChatDevinCloudConfig } from "../../../../shared/types/chat";
 import type { CursorCloudFleetResult } from "../../../../shared/types/config";
 import type { DevinCloudDirectory } from "../devinCloudDirectory";
+import { resolveGithubSshAliasUrl } from "../../github/githubSshAlias";
 
 const ORIGIN_TTL_MS = 60_000;
 const PUSH_TIMEOUT_MS = 90_000;
@@ -108,9 +109,11 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
   /** This project's origin as a match key, `owner/repo`, and its default branch. */
   const origin = async (): Promise<ProjectOrigin> => {
     if (originCache && Date.now() - originCache.at < ORIGIN_TTL_MS) return originCache;
-    const url = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8_000 })
+    const rawUrl = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8_000 })
       .then((result) => (result.exitCode === 0 ? result.stdout.trim() : ""))
       .catch(() => "");
+    // Cloud agents name repositories by their github.com URL, not an SSH alias.
+    const url = (await resolveGithubSshAliasUrl(rawUrl)) ?? rawUrl;
     const head = await runGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd: projectRoot, timeoutMs: 8_000 })
       .then((result) => (result.exitCode === 0 ? result.stdout.trim().replace(/^origin\//, "") : ""))
       .catch(() => "");

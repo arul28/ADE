@@ -1,3 +1,4 @@
+import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -104,7 +105,8 @@ function readGitOriginUrl(rootPath: string): string | null {
   });
   if (result.status !== 0) return null;
   const value = result.stdout.trim();
-  return value.length ? value : null;
+  // The identity form: an SSH alias of GitHub becomes `github.com`.
+  return canonicalGitOriginUrl(value.length ? value : null);
 }
 
 function ensureProjectAdeDir(rootPath: string): void {
@@ -178,9 +180,11 @@ function coerceRecord(
       Number.isFinite(record.lastOpenedAt)
         ? record.lastOpenedAt
         : now,
+    // Records written before ADE resolved SSH aliases hold the alias form;
+    // reading gives every record the identity form.
     gitOriginUrl:
       typeof record.gitOriginUrl === "string" && record.gitOriginUrl.trim()
-        ? record.gitOriginUrl.trim()
+        ? canonicalGitOriginUrl(record.gitOriginUrl)
         : null,
     catalogVisibility: registration.catalogVisibility,
     registrationSource: registration.registrationSource,

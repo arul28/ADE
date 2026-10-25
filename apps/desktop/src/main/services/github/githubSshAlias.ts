@@ -1,5 +1,6 @@
-import { execFile, type ExecFileException } from "node:child_process";
+import { execFile, spawnSync, type ExecFileException } from "node:child_process";
 import { captureError, captureProblem } from "../../../shared/sentry/capture";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
   githubRepoRefFromSlug,
   isGithubRemoteHost,
@@ -24,6 +25,9 @@ import type { GitHubRepoRef } from "../../../shared/types/git";
  */
 
 const SSH_CONFIG_TIMEOUT_MS = 3_000;
+// The synchronous lookup blocks its process, so it gets a shorter limit. It
+// runs once for each alias host; later reads use the cache.
+const SSH_CONFIG_SYNC_TIMEOUT_MS = 1_500;
 const SSH_CONFIG_MAX_OUTPUT_BYTES = 64 * 1024;
 const CACHE_TTL_MS = 60_000;
 // A failed lookup (timeout, broken config) is retried sooner than an answer.
@@ -40,7 +44,7 @@ type SshRemote = {
   withGithubHost: string;
 };
 
-type CacheEntry = { hostname: string | null; expiresAt: number };
+type CacheEntry = { hostname: string | null; failed: boolean; expiresAt: number };
 
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<string | null>>();
@@ -92,11 +96,17 @@ function readHostname(stdout: string): string | null {
 
 type SshConfigLookup = { hostname: string | null; failed: boolean };
 
-function reportLookupFailure(error: ExecFileException): void {
-  // No ssh on PATH (a Windows host without the OpenSSH client) is an expected
-  // setup: the alias stays unresolved, as it was before ADE read ssh config.
-  if (error.code === "ENOENT") return;
-  const kind = error.killed ? "timeout" : "failed";
+/**
+ * No ssh on PATH (a Windows host without the OpenSSH client) is an expected
+ * setup and a final answer: no alias can resolve on this machine.
+ */
+function isMissingSsh(error: { code?: unknown } | null | undefined): boolean {
+  return error?.code === "ENOENT";
+}
+
+function reportLookupFailure(error: { code?: unknown; killed?: boolean }, timedOut = Boolean(error.killed)): void {
+  if (isMissingSsh(error)) return;
+  const kind = timedOut ? "timeout" : "failed";
   captureProblem(`ssh -G lookup for a git remote alias ${kind}`, {
     fingerprint: ["github-ssh-alias", kind],
     tags: { kind },
@@ -105,11 +115,38 @@ function reportLookupFailure(error: ExecFileException): void {
   });
 }
 
-function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
+function sshConfigArgs(remote: SshRemote): string[] {
   const args = ["-G"];
   if (remote.user && SAFE_SSH_TOKEN.test(remote.user)) args.push("-l", remote.user);
   if (remote.port && /^\d+$/.test(remote.port)) args.push("-p", remote.port);
   args.push(remote.host);
+  return args;
+}
+
+function runSshConfigLookupSync(remote: SshRemote): SshConfigLookup {
+  try {
+    const result = spawnSync("ssh", sshConfigArgs(remote), {
+      timeout: SSH_CONFIG_SYNC_TIMEOUT_MS,
+      maxBuffer: SSH_CONFIG_MAX_OUTPUT_BYTES,
+      windowsHide: true,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (result.error || result.status !== 0) {
+      const error = (result.error ?? {}) as { code?: unknown };
+      const timedOut = (result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT" || result.signal != null;
+      reportLookupFailure(error, timedOut);
+      return { hostname: null, failed: !isMissingSsh(error) };
+    }
+    return { hostname: readHostname(String(result.stdout ?? "")), failed: false };
+  } catch (error) {
+    captureError(error, { fingerprint: ["github-ssh-alias", "spawn"], tags: { kind: "spawn" } });
+    return { hostname: null, failed: true };
+  }
+}
+
+function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
+  const args = sshConfigArgs(remote);
   return new Promise((resolve) => {
     try {
       execFile(
@@ -125,7 +162,7 @@ function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
           // The alias stays unresolved and the remote is treated as not
           // GitHub, as before ADE read ssh config.
           if (error) {
-            resolve({ hostname: null, failed: true });
+            resolve({ hostname: null, failed: !isMissingSsh(error) });
             reportLookupFailure(error);
             return;
           }
@@ -139,24 +176,34 @@ function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
   });
 }
 
-async function resolveSshHostname(remote: SshRemote): Promise<string | null> {
-  const key = `${remote.user ?? ""}\u0000${remote.host.toLowerCase()}\u0000${remote.port ?? ""}`;
-  const now = Date.now();
+function cacheKey(remote: SshRemote): string {
+  return `${remote.user ?? ""}\u0000${remote.host.toLowerCase()}\u0000${remote.port ?? ""}`;
+}
+
+function storeLookup(key: string, { hostname, failed }: SshConfigLookup): void {
+  cache.delete(key);
+  if (cache.size >= CACHE_CAPACITY) {
+    for (const [entryKey, entry] of cache) {
+      if (entry.expiresAt <= Date.now()) cache.delete(entryKey);
+    }
+  }
+  if (cache.size >= CACHE_CAPACITY) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, { hostname, failed, expiresAt: Date.now() + (failed ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
+}
+
+function resolveSshHostname(remote: SshRemote): Promise<string | null> {
+  const key = cacheKey(remote);
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > now) return cached.hostname;
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.hostname);
   const pending = inFlight.get(key);
   if (pending) return pending;
   const lookup = runSshConfigLookup(remote)
-    .then(({ hostname, failed }) => {
-      for (const [entryKey, entry] of cache) {
-        if (entry.expiresAt <= Date.now()) cache.delete(entryKey);
-      }
-      if (cache.size >= CACHE_CAPACITY) {
-        const oldest = cache.keys().next().value;
-        if (oldest !== undefined) cache.delete(oldest);
-      }
-      cache.set(key, { hostname, expiresAt: Date.now() + (failed ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
-      return hostname;
+    .then((result) => {
+      storeLookup(key, result);
+      return result.hostname;
     })
     .finally(() => {
       inFlight.delete(key);
@@ -179,6 +226,71 @@ export async function resolveGithubSshAliasUrl(remoteUrl: string | null | undefi
   const hostname = await resolveSshHostname(remote);
   if (!hostname || !isGithubRemoteHost(hostname)) return null;
   return parseGithubRemoteUrl(remote.withGithubHost) ? remote.withGithubHost : null;
+}
+
+/**
+ * The synchronous form of the alias lookup, for code that reads an origin on
+ * a synchronous path (recent projects, the project registry, account scope
+ * keys). An expired entry is still used while a background lookup refreshes
+ * it, so only the first read of an alias host waits for ssh.
+ */
+function resolveSshHostnameSync(remote: SshRemote): SshConfigLookup {
+  const key = cacheKey(remote);
+  const cached = cache.get(key);
+  if (cached) {
+    if (cached.expiresAt <= Date.now() && !inFlight.has(key)) void resolveSshHostname(remote);
+    return { hostname: cached.hostname, failed: cached.failed };
+  }
+  const result = runSshConfigLookupSync(remote);
+  storeLookup(key, result);
+  return result;
+}
+
+export type CanonicalGitOrigin = {
+  /** The origin with an alias host replaced by `github.com`, else the input. */
+  url: string | null;
+  /** True when the ssh lookup failed, so `url` may still be an unresolved alias. */
+  lookupFailed: boolean;
+};
+
+/** {@link canonicalGitOriginUrl}, and whether the ssh lookup failed. */
+export function resolveCanonicalGitOrigin(remoteUrl: string | null | undefined): CanonicalGitOrigin {
+  const value = typeof remoteUrl === "string" ? remoteUrl.trim() : "";
+  if (!value) return { url: null, lookupFailed: false };
+  if (parseGithubRemoteUrl(value)) return { url: value, lookupFailed: false };
+  const remote = parseSshRemote(value);
+  if (!remote || !SAFE_SSH_TOKEN.test(remote.host) || isGithubRemoteHost(remote.host)) {
+    return { url: value, lookupFailed: false };
+  }
+  const { hostname, failed } = resolveSshHostnameSync(remote);
+  if (hostname && isGithubRemoteHost(hostname) && parseGithubRemoteUrl(remote.withGithubHost)) {
+    return { url: remote.withGithubHost, lookupFailed: false };
+  }
+  return { url: value, lookupFailed: failed };
+}
+
+/**
+ * The origin URL that names the repository, for identity and display: an SSH
+ * alias of GitHub becomes its `github.com` form, and every other value comes
+ * back unchanged. Two checkouts of one GitHub repository then get the same
+ * repository key (`normalizeGitRemoteIdentity`) whether origin goes through
+ * `github.com-work` or `https://github.com`.
+ *
+ * Run it on the machine that owns the checkout, where the alias is defined.
+ * Do not give the result to git as a remote: git on this machine needs the
+ * alias to pick the right SSH key.
+ */
+export function canonicalGitOriginUrl(remoteUrl: string | null | undefined): string | null {
+  return resolveCanonicalGitOrigin(remoteUrl).url;
+}
+
+/**
+ * `normalizeGitRemoteIdentity` of the canonical origin. Main-process and brain
+ * code that compares repositories uses this; renderer code gets origins that
+ * the owning machine already made canonical.
+ */
+export function gitRemoteIdentity(remoteUrl: string | null | undefined): string | null {
+  return normalizeGitRemoteIdentity(canonicalGitOriginUrl(remoteUrl));
 }
 
 /** `parseGithubRemoteUrl`, plus SSH aliases that resolve to GitHub. */

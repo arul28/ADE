@@ -21,6 +21,7 @@
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
+import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { RuntimeRpcClient } from "../../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
 import { PairedRuntimeCompatibilityError } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import { getOrCreateLocalAccountMachineIdentity } from "../../../../desktop/src/main/services/account/localMachineIdentity";
@@ -151,7 +152,8 @@ export function readGitOriginUrl(root: string): string | null {
   });
   if (result.status !== 0) return null;
   const value = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return value || null;
+  // The identity form: an SSH alias of GitHub becomes `github.com`.
+  return canonicalGitOriginUrl(value || null);
 }
 
 export function coerceProjects(value: unknown): RemoteProjectRecord[] {

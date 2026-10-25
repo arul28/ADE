@@ -1235,6 +1235,7 @@ import {
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
+import { gitRemoteIdentity, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
@@ -50393,7 +50394,7 @@ export function createAgentChatService(args: {
     if (
       current.branchRef !== args.capsule.source.branchRef
       || current.headSha !== args.capsule.source.headSha
-      || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(args.capsule.source.originUrl)
+      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(args.capsule.source.originUrl)
     ) {
       throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
@@ -51169,7 +51170,7 @@ export function createAgentChatService(args: {
       projectRoot,
       "The destination project does not have an origin remote.",
     );
-    if (normalizeGitRemoteIdentity(origin) !== normalizeGitRemoteIdentity(capsule.source.originUrl)) {
+    if (gitRemoteIdentity(origin) !== gitRemoteIdentity(capsule.source.originUrl)) {
       throw new Error("The destination project points at a different Git repository than the source handoff.");
     }
     const branchRef = await requireGitBranch(runGit, capsule.source.branchRef, projectRoot);
@@ -56442,7 +56443,9 @@ export function createAgentChatService(args: {
       });
       if (result.exitCode !== 0) return null;
       const url = result.stdout.trim();
-      return url.length > 0 ? url : null;
+      if (!url.length) return null;
+      // The cloud clones by the github.com URL; an SSH alias only exists here.
+      return (await resolveGithubSshAliasUrl(url)) ?? url;
     } catch {
       return null;
     }

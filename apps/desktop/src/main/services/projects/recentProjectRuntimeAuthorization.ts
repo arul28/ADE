@@ -1,5 +1,5 @@
 import path from "node:path";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { gitRemoteIdentity } from "../github/githubSshAlias";
 import type { RecentProjectSummary } from "../../../shared/types";
 
 function runtimeRootKey(rootPath: string): string {
@@ -18,8 +18,8 @@ export function authorizeRecentProjectRuntimeRoot(args: {
     entry.exists &&
     runtimeRootKey(entry.rootPath) === requestedKey
   );
-  const requestedIdentity = normalizeGitRemoteIdentity(recent?.gitOriginUrl);
-  const activeIdentity = normalizeGitRemoteIdentity(args.activeGitOriginUrl);
+  const requestedIdentity = gitRemoteIdentity(recent?.gitOriginUrl);
+  const activeIdentity = gitRemoteIdentity(args.activeGitOriginUrl);
   return recent && requestedIdentity && requestedIdentity === activeIdentity
     ? recent.rootPath
     : null;

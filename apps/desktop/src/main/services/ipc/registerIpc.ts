@@ -12516,6 +12516,7 @@ export function registerIpc({
     accountBridge,
     getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
     accountVaultBridge,
+    accountSettingsBridge: accountSettingsSyncService,
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,
   });
