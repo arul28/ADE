@@ -277,19 +277,6 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
           key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
-      - name: "TEMP diagnostic: pool test A/B on the CA read"
-        if: matrix.shard == 4
-        continue-on-error: true
-        run: |
-          cd apps/desktop
-          run() { echo "=== $1"; npx vitest run src/main/services/localRuntime/localRuntimeConnectionPool.test.ts 2>&1 | grep -E "Tests  |localRuntimeConnectionPool.test.ts  \(" || true; }
-          run "A1 as-is (warms caches)"
-          sed -i 's/void trustSystemCertificates(networkWarningLogger);/\/\/ diag: CA read off/' ../ade-cli/src/cli.ts
-          grep -c "diag: CA read off" ../ade-cli/src/cli.ts
-          run "B without the CA read"
-          git checkout -- ../ade-cli/src/cli.ts
-          run "A2 as-is"
-          exit 0
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
