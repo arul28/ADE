@@ -69,6 +69,13 @@ final class VirtualDisplayHost {
     private var placementTopology: [DisplayTopologyEntry]?
     private var placementAttempts = 0
     private var placementFailureLogged = false
+    /// Reconnecting a cut-off real display moves the user's own screen, so it
+    /// gets the same three tries, counted per set of real displays rather than
+    /// per arrangement: the move itself changes the arrangement, and a window
+    /// server that keeps undoing it must not be fought forever.
+    private var reconnectDisplaySet: [CGDirectDisplayID]?
+    private var reconnectAttempts = 0
+    private var reconnectFailureLogged = false
 
     /// Why the private API could not be used, once something has tried.
     private(set) var unavailableReason: String?
@@ -173,6 +180,12 @@ final class VirtualDisplayHost {
     /// is scoped to this login session; it never changes the saved arrangement.
     /// A stubborn window server gets three attempts per stable display topology,
     /// then the pointer fence remains the safety net until a display changes.
+    ///
+    /// A real display that is reachable only through a lane display (an AirPlay
+    /// or new monitor macOS put beside one) is first moved flush against the
+    /// user's other screens, in the same session-only configuration. Moving only
+    /// the lane displays away would leave it floating, and macOS closes the gap
+    /// by pulling a lane display back next to it.
     func repositionVirtualDisplays() {
         lock.lock()
         defer { lock.unlock() }
@@ -202,9 +215,8 @@ final class VirtualDisplayHost {
             placementFailureLogged = false
         }
 
-        let realFrames = active
-            .filter { CGDisplayVendorNumber($0.id) != VirtualDisplayIdentity.vendorID }
-            .map(\.frame)
+        let realDisplays = active.filter { CGDisplayVendorNumber($0.id) != VirtualDisplayIdentity.vendorID }
+        let (realFrames, realMoves) = reconnectedRealDisplays(realDisplays)
         let managedIds = Set(managed.map(\.displayId))
         let otherLaneFrames = active
             .filter {
@@ -226,7 +238,7 @@ final class VirtualDisplayHost {
         }
 
         let targets = Array(zip(managed, planned))
-        guard targets.contains(where: { $0.0.placement.origin != $0.1.origin }) else { return }
+        guard !realMoves.isEmpty || targets.contains(where: { $0.0.placement.origin != $0.1.origin }) else { return }
         guard placementAttempts < Self.maximumPlacementAttempts else {
             if !placementFailureLogged {
                 placementFailureLogged = true
@@ -241,6 +253,20 @@ final class VirtualDisplayHost {
         guard begin == .success, let configuration else {
             log("could not begin a session-only display placement (CGError \(begin.rawValue))")
             return
+        }
+
+        for move in realMoves {
+            let status = CGConfigureDisplayOrigin(
+                configuration,
+                move.displayId,
+                Int32(move.origin.x),
+                Int32(move.origin.y)
+            )
+            guard status == .success else {
+                CGCancelDisplayConfiguration(configuration)
+                log("macOS refused to move display \(move.displayId) next to the user's other screens (CGError \(status.rawValue))")
+                return
+            }
         }
 
         for (handle, target) in targets {
@@ -268,13 +294,52 @@ final class VirtualDisplayHost {
             return actual.origin == target.origin
                 && actual.width == target.width
                 && actual.height == target.height
-        }
+        } && realMoves.allSatisfy { CGDisplayBounds($0.displayId).origin == $0.origin }
         if !didKeepPlan {
             log("macOS rearranged a lane display after placement attempt \(placementAttempts)/\(Self.maximumPlacementAttempts)")
         } else {
             placementAttempts = 0
             placementFailureLogged = false
         }
+    }
+
+    /// The real display frames to plan against, and the real displays to move
+    /// so none of them is reachable only through a lane display. Called with
+    /// `lock` held.
+    private func reconnectedRealDisplays(
+        _ realDisplays: [(id: CGDirectDisplayID, frame: CGRect)]
+    ) -> (frames: [CGRect], moves: [(displayId: CGDirectDisplayID, origin: CGPoint)]) {
+        let frames = realDisplays.map(\.frame)
+        let mainIndex = realDisplays.firstIndex { CGDisplayIsMain($0.id) != 0 } ?? 0
+        let cutOff = Geometry.cutOffRealDisplays(realDisplayFrames: frames, mainIndex: mainIndex)
+        let displaySet = realDisplays.map(\.id).sorted()
+        if displaySet != reconnectDisplaySet {
+            reconnectDisplaySet = displaySet
+            reconnectAttempts = 0
+            reconnectFailureLogged = false
+        }
+        guard !cutOff.isEmpty else { return (frames, []) }
+
+        let names = cutOff.map { "display \(realDisplays[$0].id)" }.joined(separator: ", ")
+        guard reconnectAttempts < Self.maximumPlacementAttempts,
+              let reconnected = Geometry.reconnectedRealDisplayFrames(
+                  realDisplayFrames: frames,
+                  mainIndex: mainIndex,
+                  requiresIntegralOrigins: true
+              )
+        else {
+            if !reconnectFailureLogged {
+                reconnectFailureLogged = true
+                log("\(names) can be reached only through a lane display and could not be moved beside the user's other screens; the pointer fence lets the pointer cross that lane display")
+            }
+            return (frames, [])
+        }
+        reconnectAttempts += 1
+        let moves = zip(realDisplays, reconnected)
+            .filter { $0.0.frame.origin != $0.1.origin }
+            .map { (displayId: $0.0.id, origin: $0.1.origin) }
+        log("\(names) could be reached only through a lane display; moving it beside the user's other screens for this session (attempt \(reconnectAttempts)/\(Self.maximumPlacementAttempts))")
+        return (reconnected, moves)
     }
 
     private static func activeDisplays() -> [(id: CGDirectDisplayID, frame: CGRect)] {

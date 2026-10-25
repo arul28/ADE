@@ -106,6 +106,7 @@ final class PointerFence {
         }
         guard let laneDisplayId = displays.first(where: isADEDisplay),
               shouldRedirect(laneIdForDisplay(laneDisplayId)),
+              !isOnlyRouteToARealDisplay(laneDisplayId),
               let destination = nearestRealPoint(to: point)
         else {
             return Unmanaged.passUnretained(event)
@@ -120,6 +121,23 @@ final class PointerFence {
             logFailure("pointer fence could not return the cursor to a real display (CGError \(warp.rawValue))")
         }
         return Unmanaged.passUnretained(event)
+    }
+
+    /// True when this lane display touches a real display the person cannot
+    /// reach any other way. Fencing it would trap the pointer on their other
+    /// screens (an AirPlay display macOS put beside a lane display), so the
+    /// pointer may cross it until the display host moves that screen back.
+    private func isOnlyRouteToARealDisplay(_ laneDisplayId: CGDirectDisplayID) -> Bool {
+        let real = activeDisplays().filter { !isADEDisplay($0.id) }
+        let mainIndex = real.firstIndex { CGDisplayIsMain($0.id) != 0 } ?? 0
+        let frames = real.map(\.frame)
+        let laneFrame = CGDisplayBounds(laneDisplayId)
+        let bridges = Geometry.cutOffRealDisplays(realDisplayFrames: frames, mainIndex: mainIndex)
+            .contains { Geometry.pointerCanCross(laneFrame, frames[$0]) }
+        if bridges {
+            logFailure("lane display \(laneDisplayId) is the only way to reach one of the user's screens; letting the pointer cross it")
+        }
+        return bridges
     }
 
     private func nearestRealPoint(to point: CGPoint) -> CGPoint? {

@@ -48,6 +48,22 @@ display; a lane's own lease or gesture is never interrupted. On a single
 the lane display without the fence and stop just inside the corner with it.
 The offscreen-region fallback has no virtual display to fence.
 
+**A real display must never sit behind a lane display.** When a monitor or
+an AirPlay screen (extended) connects while a lane display is up, macOS can
+put it beside the lane display, or restore an arrangement it remembered with
+one. That screen then shares an edge only with the lane display, so the fence
+keeps the person from ever reaching it. Measured on macOS 27 with a second
+display added: moving only the lane display away left the new screen floating,
+and macOS pulled a lane display back beside it. So the placement pass first
+finds every real display the main display cannot reach through real displays
+alone (`Geometry.cutOffRealDisplays`; only a shared edge counts, not a corner)
+and moves it flush against them (`Geometry.reconnectedRealDisplayFrames`). It
+goes on the side it was already on, overlapping at least half the shorter edge.
+That happens in the same session-only configuration that re-places the lane
+chain, and it is tried three times per set of real displays. If a screen still
+cannot be reached, the fence lets the pointer cross a lane display that touches
+it rather than trap the person.
+
 Four rules make the isolation hold:
 
 - **Capture is window-scoped or display-scoped, never screen-scoped.** ADE

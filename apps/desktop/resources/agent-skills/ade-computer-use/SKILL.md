@@ -5,27 +5,54 @@ description: Use this skill for any computer use — driving an app, a screen, a
 
 # ADE computer use
 
-This is the one entry point for computer use in ADE. Pick the surface first,
-then follow that surface's loop.
+This is the one entry point for computer use in ADE. Decide whether you need a
+screen at all, then pick the surface, then follow that surface's loop.
+
+## Do you need a screen?
+
+Go down this list and stop at the first step that answers the question:
+
+1. **No screen.** A CLI, an API, a test, a log or the file the app writes.
+   Most "does it work" questions end here.
+2. **A surface that never opens a screen.** A web page or localhost →
+   `ade browser`. An Electron app → `ade app-control`. An iOS or SwiftUI app
+   → `ade apple`. They run in the background and need nothing from the user.
+3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows),
+   only for what steps 1 and 2 cannot reach:
+   - a native or custom-drawn Mac app: the Mac app you are building, a DAW
+     (FL Studio, Ableton, Logic), a game, a canvas or an OpenGL/Unity build;
+   - real Mac window behaviour: Open and Save panels, the menu bar, dragging
+     between windows or onto the Dock;
+   - Safari or WebKit, or an extension in a real browser, when the user
+     names it;
+   - an Electron app that will not start with a debug port, so App Control
+     cannot attach;
+   - proof or a recording of one of the above.
+
+A lane screen costs the user something. It adds a display to their Mac, so
+macOS rearranges their screens while it is up. A permission or sign-in prompt
+can open on it, where the user cannot see it. So use it only for step 3, and
+stop it when you are done (see **Rules that will bite you**).
 
 ## Pick the surface
 
 | What you need to drive | Surface | Skill |
 |---|---|---|
 | An iOS or SwiftUI app | `ade apple` | **ade-apple** |
-| Any macOS app — native, Electron, or custom-drawn (DAWs such as FL Studio or Ableton, games, canvases) — or anything that must not touch the user's own screen | `ade mac-desktop` (the lane's private display) | this skill, below |
-| Any Windows app (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
-| An Electron app whose DOM you need — labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
+| An Electron app — your dev build, or an installed one such as Slack — or anything whose DOM you need: labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
+| A native or custom-drawn macOS app (your own Mac app, a DAW such as FL Studio or Ableton, a game, a canvas), real Mac window behaviour, or Safari when the user names it — step 3 above | `ade mac-desktop` (the lane's private display) | this skill, below |
+| A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
 
-Pick App Control for an Electron app whose DOM you need: it acts through the
-DOM, so labels, selectors, test ids and hover work, and it records and proves
-the app's own window. That covers your dev build (`ade app-control launch`)
-and an installed app such as Slack or a packaged build of the app you work on:
-start it with a debug port, then attach (`ade mac-desktop open "<App>" --
---remote-debugging-port=9333`, then `ade app-control connect --cdp-port 9333`).
-Otherwise Mac Desktop drives an Electron window by point, like any other app.
+Pick App Control for an Electron app: it acts through the DOM, so labels,
+selectors, test ids and hover work, and it records and proves the app's own
+window without a lane screen. That covers your dev build (`ade app-control
+launch`) and an installed app such as Slack or a packaged build of the app you
+work on: start it with a debug port, then attach (`ade mac-desktop open
+"<App>" -- --remote-debugging-port=9333`, then `ade app-control connect
+--cdp-port 9333`). Only when the app refuses a debug port does Mac Desktop
+drive an Electron window by point, like any other app.
 
 ADE's browser is the default for web work. Attach to the user's own browser
 only when they ask for it, never on your own, and tell them which machine and
@@ -379,14 +406,25 @@ ade mac-desktop drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
   Save anything that matters before you stop. Windows you claimed go back to
   the user's screen; they are never quit. An app the user took with `release`
   is theirs and is not quit.
-- **Leave the screen and its apps running when you finish.** Do not `stop`
-  on your own: the user may want to look at the result. When the user asks
-  you to close, clean up or shut down what you opened, run `ade mac-desktop
-  quit --text` (every app the lane opened, including apps you released to
-  the user; `quit <app>` for one), then `ade mac-desktop stop --text`, and
-  report what quit. `stop` alone does not quit a released app. When the user
-  wants to keep using an app, `release` it (see above): its windows move to
-  the user's screen.
+- **Stop the screen when you finish.** While it is up it is a real display
+  on the user's Mac: their screens stay rearranged around it and its apps
+  keep running. Once the result is confirmed and any proof is filed, save or
+  close your documents, then `ade mac-desktop stop --text`. Leave it
+  running only when the user asked to look at the result or to keep working
+  in it, and then say in your reply that the lane screen is still up. When
+  the user wants to keep using an app, `release` it (see above): its windows
+  move to the user's screen. When the user asks you to close, clean up or
+  shut down what you opened, run `ade mac-desktop quit --text` (every app the
+  lane opened, including apps you released to the user; `quit <app>` for
+  one), then `ade mac-desktop stop --text`, and report what quit. `stop`
+  alone does not quit a released app.
+- **A prompt only the user can answer stops you.** A macOS permission prompt
+  (Accessibility, Screen Recording, microphone, camera, files), a password or
+  a sign-in can open on the lane screen, where the user cannot see it. Do not
+  try to answer it yourself. Show the screen (`ade mac-desktop show --text`),
+  then ask with `ade chat ask "<which app is asking for what, and that it is
+  waiting on the lane screen>"`. Before you open an app for the first time,
+  say if it is likely to ask.
 - **Do not leave an app waiting on unsaved work.** An app with an unsaved
   document shows a save dialog on the lane screen when it quits, and the user
   cannot see that dialog. Close your own document window without saving

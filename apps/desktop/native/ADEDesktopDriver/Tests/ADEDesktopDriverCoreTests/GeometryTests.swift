@@ -94,6 +94,82 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(planned?.first?.origin, CGPoint(x: 5120, y: 1440))
     }
 
+    /// The AirPlay trap, measured on macOS 27 with a second display added while
+    /// a lane display was up: macOS left the new screen sharing an edge only
+    /// with the lane display, so the fenced pointer could never reach it. After
+    /// the repair every real screen shares an edge with the main one, and the
+    /// lane chain planned against the repaired layout touches real screens at
+    /// corners only.
+    func testCutOffRealDisplaysAreMovedBesideTheMainDisplaysGroup() {
+        let main = CGRect(x: 0, y: 0, width: 5120, height: 1440)
+        let cases: [(name: String, real: [CGRect], cutOff: [Int], expected: [CGRect])] = [
+            (
+                "nothing cut off stays put",
+                [main, CGRect(x: -2560, y: 0, width: 2560, height: 1440)],
+                [],
+                [main, CGRect(x: -2560, y: 0, width: 2560, height: 1440)]
+            ),
+            (
+                "a TV beside a lane display slides flush to the main display, half an edge overlapping",
+                [main, CGRect(x: 7680, y: 1440, width: 2560, height: 1440)],
+                [1],
+                [main, CGRect(x: 5120, y: 720, width: 2560, height: 1440)]
+            ),
+            (
+                "a corner-only contact is still cut off",
+                [main, CGRect(x: 5120, y: 1440, width: 1920, height: 1080)],
+                [1],
+                [main, CGRect(x: 5120, y: 900, width: 1920, height: 1080)]
+            ),
+            (
+                "a cut-off pair keeps its own arrangement and moves as one",
+                [
+                    main,
+                    CGRect(x: -4000, y: 3000, width: 1920, height: 1080),
+                    CGRect(x: -2080, y: 3000, width: 1920, height: 1080),
+                ],
+                [1, 2],
+                [
+                    main,
+                    CGRect(x: -3840, y: 900, width: 1920, height: 1080),
+                    CGRect(x: -1920, y: 900, width: 1920, height: 1080),
+                ]
+            ),
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                Geometry.cutOffRealDisplays(realDisplayFrames: testCase.real, mainIndex: 0),
+                testCase.cutOff,
+                testCase.name
+            )
+            let repaired = Geometry.reconnectedRealDisplayFrames(
+                realDisplayFrames: testCase.real,
+                mainIndex: 0,
+                requiresIntegralOrigins: true
+            )
+            XCTAssertEqual(repaired, testCase.expected, testCase.name)
+            XCTAssertEqual(
+                Geometry.cutOffRealDisplays(realDisplayFrames: repaired ?? [], mainIndex: 0),
+                [],
+                testCase.name
+            )
+            let lane = DisplayPlacement(origin: .zero, width: 2560, height: 1440, scale: 1)
+            let planned = Geometry.cornerChainPlacements(
+                realDisplayFrames: repaired ?? [],
+                laneDisplayTemplates: [lane],
+                requiresIntegralOrigins: true
+            )
+            XCTAssertNotNil(planned, testCase.name)
+            for display in repaired ?? [] {
+                XCTAssertFalse(
+                    Geometry.pointerCanCross(planned?.first?.frame ?? .null, display),
+                    "\(testCase.name): a lane display must not share an edge with a real one"
+                )
+            }
+        }
+    }
+
     /// Cocoa origin is the primary's bottom-left; Quartz / CGEvent origin is
     /// the primary's top-left. A pointer 100pt up from the bottom of a
     /// 1080-tall primary is y=980 in Quartz.
