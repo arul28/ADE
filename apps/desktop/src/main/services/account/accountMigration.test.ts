@@ -439,8 +439,17 @@ describe("runAccountMigration", () => {
       [`${legacy}|ctx.fact`, { scope: legacy, key: "ctx.fact", value: "old fact" }],
       [`${legacy}|cto.homeMachine`, { scope: legacy, key: "cto.homeMachine", value: "old-home" }],
       [`${current}|cto.homeMachine`, { scope: current, key: "cto.homeMachine", value: "new-home" }],
+      [`${legacy}|mcp.off`, { scope: legacy, key: "mcp.off", value: ["old-server"] }],
     ]);
-    const vaultSet = vi.fn(async (scope: string, kind: string, key: string, value: string) => {
+    // Deleted under the new key on another machine: the copy must not revive it.
+    const deletedSettingKeys = new Map([[current, ["mcp.off"]]]);
+    const vaultSet = vi.fn(async (
+      scope: string,
+      kind: string,
+      key: string,
+      value: string,
+      _options?: { expectedAccountUserId?: string },
+    ) => {
       putItem({ scope, kind, key, value, updatedAt: "3" });
       return { ok: true as const, value: null };
     });
@@ -461,6 +470,7 @@ describe("runAccountMigration", () => {
           value: vaultRows.get(`${scope}|${kind}|${key}`)?.value ?? null,
         })),
         set: vaultSet,
+        sync: vi.fn(async () => ({ ok: true as const, value: "ready" as const })),
       },
       accountSettingsBridge: {
         list: vi.fn(async (scope: string) => ({
@@ -468,6 +478,8 @@ describe("runAccountMigration", () => {
           value: [...settingRows.values()].filter((row) => row.scope === scope),
         })),
         set: settingsSet,
+        deletedKeys: vi.fn(async (scope: string) => ({ ok: true as const, value: deletedSettingKeys.get(scope) ?? [] })),
+        syncStatus: vi.fn(async () => ({ ok: true as const, value: "ready" as const })),
       },
       getContexts: () => [{ project: { rootPath: projectRoot } }],
       getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
@@ -484,6 +496,7 @@ describe("runAccountMigration", () => {
     expect(vaultRows.get(`${legacy}|project_secret|ONLY_OLD`)?.value).toBe("old-value");
     expect(settingRows.get(`${current}|ctx.fact`)?.value).toBe("old fact");
     expect(settingRows.get(`${current}|cto.homeMachine`)?.value).toBe("new-home");
+    expect(settingRows.has(`${current}|mcp.off`)).toBe(false);
     expect(vaultSet.mock.calls.map((call) => call[4])).toEqual([{ expectedAccountUserId: "user-a" }]);
 
     // The receipt makes it once per project: a second run copies nothing.

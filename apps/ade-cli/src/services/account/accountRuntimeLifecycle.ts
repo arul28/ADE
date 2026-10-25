@@ -229,6 +229,18 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
             ? { ok: true, value: null }
             : { ok: false, rejected: true, message: HEADLESS_ACCOUNT_SETTINGS_REJECTED_MESSAGE };
         },
+        async deletedKeys(scope) {
+          const store = accountSettingsStore;
+          return store
+            ? { ok: true, value: store.deletedKeys(scope) }
+            : { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+        },
+        async syncStatus() {
+          const store = accountSettingsStore;
+          return store
+            ? { ok: true, value: await store.sync() }
+            : { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+        },
       },
       getContexts: options.getContexts,
       getLogger: () => options.logger,

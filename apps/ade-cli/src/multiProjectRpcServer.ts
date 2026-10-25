@@ -136,7 +136,7 @@ import {
   omitRemoteCaller,
   readMachineCallScope,
 } from "./services/account/agentRemoteRpc";
-import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
+import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 
 type HandlerEntry = {
@@ -1094,7 +1094,8 @@ async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
 ): Promise<ProjectRecord> {
-  const identity = gitRemoteIdentity(originUrl);
+  // The origin comes from another machine: never start ssh for its host.
+  const identity = peerGitRemoteIdentity(originUrl);
   const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(identity) : null;
   if (!identity || !match) {
     throw new JsonRpcError(

@@ -180,15 +180,23 @@ function coerceRecord(
       Number.isFinite(record.lastOpenedAt)
         ? record.lastOpenedAt
         : now,
-    // Records written before ADE resolved SSH aliases hold the alias form;
-    // reading gives every record the identity form.
     gitOriginUrl:
       typeof record.gitOriginUrl === "string" && record.gitOriginUrl.trim()
-        ? canonicalGitOriginUrl(record.gitOriginUrl)
+        ? record.gitOriginUrl.trim()
         : null,
     catalogVisibility: registration.catalogVisibility,
     registrationSource: registration.registrationSource,
   };
+}
+
+/**
+ * A record with its origin in identity form. Records written before ADE
+ * resolved SSH aliases hold the alias form. This runs on reads that callers
+ * see, never inside the registry lock: the ssh lookup can take a moment.
+ */
+function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
+  const gitOriginUrl = canonicalGitOriginUrl(record.gitOriginUrl);
+  return gitOriginUrl === record.gitOriginUrl ? record : { ...record, gitOriginUrl };
 }
 
 export class ProjectRegistry {
@@ -219,7 +227,7 @@ export class ProjectRegistry {
   }
 
   list(): ProjectRecord[] {
-    return this.read().projects;
+    return this.read().projects.map(withCanonicalOrigin);
   }
 
   listRecent(): ProjectRecord[] {
@@ -272,7 +280,7 @@ export class ProjectRegistry {
     this.recordDatabaseIfPresent(projectId, normalized);
     // Outside the lock: it starts git, which can take seconds.
     const gitOriginUrl = known?.gitOriginUrl ?? readGitOriginUrl(normalized);
-    return this.mutate("add", { projectId, rootPath: normalized }, (file) => {
+    return withCanonicalOrigin(this.mutate("add", { projectId, rootPath: normalized }, (file) => {
       const now = Date.now();
       const existingIndex = file.projects.findIndex(matches);
       const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
@@ -296,7 +304,7 @@ export class ProjectRegistry {
         file.projects.push(next);
       }
       return { file, result: next };
-    });
+    }));
   }
 
   setCatalogVisibilityByRootPath(
@@ -311,9 +319,9 @@ export class ProjectRegistry {
       current.catalogVisibility === catalogVisibility &&
       current.registrationSource === registrationSource
     ) {
-      return current;
+      return withCanonicalOrigin(current);
     }
-    return this.mutate("set_visibility", { rootPath: normalized, catalogVisibility }, (file) => {
+    const updated = this.mutate("set_visibility", { rootPath: normalized, catalogVisibility }, (file) => {
       const index = file.projects.findIndex((record) => record.rootPath === normalized);
       if (index < 0) return { file: null, result: null };
       const next: ProjectRecord = {
@@ -324,6 +332,7 @@ export class ProjectRegistry {
       file.projects[index] = next;
       return { file, result: next };
     });
+    return updated ? withCanonicalOrigin(updated) : null;
   }
 
   remove(projectId: ProjectId): boolean {
@@ -345,7 +354,7 @@ export class ProjectRegistry {
       return { file, result: touched };
     });
     this.recordDatabaseIfPresent(projectId, next.rootPath);
-    return next;
+    return withCanonicalOrigin(next);
   }
 
   /**
@@ -446,7 +455,7 @@ export class ProjectRegistry {
       delete aliases[newId];
       return true;
     });
-    return next;
+    return withCanonicalOrigin(next);
   }
 
   /** The current id of a project that was moved, given an id it had before. */

@@ -86,6 +86,15 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
       return await bridge.list(scope);
     },
 
+    /** Keys in one scope that some machine deleted (`list` hides them). */
+    async deletedKeys(scope: string): Promise<AccountSettingsResult<string[]>> {
+      return await bridge.call(
+        "deletedKeys",
+        [scope],
+        (raw) => (Array.isArray(raw) ? raw.filter((key): key is string => typeof key === "string") : []),
+      );
+    },
+
     async get(scope: string, key: string): Promise<AccountSettingsResult<unknown>> {
       return await bridge.call("get", [scope, key], (raw) => raw);
     },
@@ -124,6 +133,15 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
     /** Flush this machine's queue and take what changed. */
     async sync(): Promise<AccountSettingsResult<null>> {
       return await bridge.call("sync", [], () => null);
+    },
+
+    /** `sync`, with the store's answer: `ready`, `unavailable` or `failed`. */
+    async syncStatus(): Promise<AccountSettingsResult<"ready" | "unavailable" | "failed" | null>> {
+      return await bridge.call(
+        "sync",
+        [],
+        (raw) => (raw === "ready" || raw === "unavailable" || raw === "failed" ? raw : null),
+      );
     },
   };
 }

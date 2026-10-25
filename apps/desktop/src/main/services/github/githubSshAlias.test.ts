@@ -11,6 +11,7 @@ const sshState = vi.hoisted(() => ({
   ]),
   calls: [] as string[][],
 }));
+const execFileFailure = vi.hoisted(() => ({ hosts: new Set<string>(), calls: 0 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -26,10 +27,20 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (host.startsWith("broken")) return { status: 255, stdout: "", stderr: "bad config", signal: null, error: undefined };
       return { status: 0, stdout: `user git\nhostname ${sshState.hostnames.get(host) ?? host}\n`, stderr: "", signal: null, error: undefined };
     }) as typeof actual.spawnSync,
+    execFile: ((command: string, args: string[], _options: unknown, callback: (error: unknown, stdout: string) => void) => {
+      if (command !== "ssh") throw new Error(`unexpected command ${command}`);
+      const host = args[args.length - 1]!;
+      if (execFileFailure.hosts.has(host)) {
+        execFileFailure.calls += 1;
+        callback(Object.assign(new Error("ssh exited 255"), { code: 255 }), "");
+        return;
+      }
+      callback(null, `hostname ${sshState.hostnames.get(host) ?? host}\n`);
+    }) as unknown as typeof actual.execFile,
   };
 });
 
-import { gitRemoteIdentity, resolveCanonicalGitOrigin } from "./githubSshAlias";
+import { gitRemoteIdentity, peerGitRemoteIdentity, resolveCanonicalGitOrigin } from "./githubSshAlias";
 
 beforeEach(() => {
   sshState.calls.length = 0;
@@ -39,6 +50,9 @@ describe("resolveCanonicalGitOrigin", () => {
   it.each([
     ["an scp alias of github.com", "git@github.com-work:Acme/Shop.git", "git@github.com:Acme/Shop.git"],
     ["an ssh:// alias of ssh.github.com on port 443", "ssh://git@gh443:443/Acme/Shop.git", "ssh://git@github.com/Acme/Shop.git"],
+    ["an scp alias with a leading slash", "git@github.com-work:/Acme/Shop.git", "git@github.com:Acme/Shop.git"],
+    ["GitHub's port-443 host itself", "ssh://git@ssh.github.com:443/Acme/Shop.git", "ssh://git@github.com/Acme/Shop.git"],
+    ["a known public forge", "git@bitbucket.org:Acme/Shop.git", "git@bitbucket.org:Acme/Shop.git"],
     ["an alias of another forge", "git@gitlab-alias:Acme/Shop.git", "git@gitlab-alias:Acme/Shop.git"],
     ["an alias of a look-alike host", "git@evil-alias:Acme/Shop.git", "git@evil-alias:Acme/Shop.git"],
     ["a plain GitHub URL", "https://github.com/Acme/Shop.git", "https://github.com/Acme/Shop.git"],
@@ -50,7 +64,7 @@ describe("resolveCanonicalGitOrigin", () => {
       expect(args[0]).toBe("-G");
       expect(args[args.length - 1]).not.toMatch(/^-/);
     }
-    if (/^(https:|C:)|-oProxy/.test(input)) expect(sshState.calls).toEqual([]);
+    if (/^(https:|C:)|-oProxy|ssh\.github|bitbucket/.test(input)) expect(sshState.calls).toEqual([]);
   });
 
   it("gives an alias checkout and an https checkout one repository identity, and asks ssh once per host", () => {
@@ -59,16 +73,36 @@ describe("resolveCanonicalGitOrigin", () => {
     const before = sshState.calls.length;
     gitRemoteIdentity("git@github.com-work:Acme/Other.git");
     expect(sshState.calls.length).toBe(before);
+    // An origin from another machine never starts ssh: a host this machine
+    // resolved still matches, an unknown one stays as sent.
+    expect(peerGitRemoteIdentity("git@github.com-work:Acme/Shop.git")).toBe("github.com/acme/shop");
+    expect(peerGitRemoteIdentity("git@peer-only-alias:Acme/Shop.git")).toBe("peer-only-alias/acme/shop");
+    expect(sshState.calls.length).toBe(before);
   });
 
-  it("reports a failed lookup as retryable, and missing ssh as a final answer", () => {
+  it("reports a failed lookup and missing ssh as retryable, and keeps a good answer through a failed refresh", async () => {
     expect(resolveCanonicalGitOrigin("git@broken-host:Acme/Shop.git")).toEqual({
       url: "git@broken-host:Acme/Shop.git",
       lookupFailed: true,
     });
     expect(resolveCanonicalGitOrigin("git@missing-ssh:Acme/Shop.git")).toEqual({
       url: "git@missing-ssh:Acme/Shop.git",
-      lookupFailed: false,
+      lookupFailed: true,
     });
+
+    vi.useFakeTimers();
+    try {
+      sshState.hostnames.set("flaky-alias", "github.com");
+      expect(resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git").url).toBe("git@github.com:Acme/Shop.git");
+      // The answer expires and the background refresh fails.
+      sshState.hostnames.set("flaky-alias", "");
+      vi.advanceTimersByTime(61_000);
+      execFileFailure.hosts.add("flaky-alias");
+      resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git");
+      await vi.waitFor(() => expect(execFileFailure.calls).toBe(1));
+      expect(resolveCanonicalGitOrigin("git@flaky-alias:Acme/Shop.git").url).toBe("git@github.com:Acme/Shop.git");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

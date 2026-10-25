@@ -98,11 +98,15 @@ export function createAccountMigrationStartRetry(options: AccountMigrationStartR
 export type AccountMigrationSettingsBridge = {
   list(scope: string): Promise<AccountStoreResult<ReadonlyArray<{ scope: string; key: string; value: unknown }>>>;
   set(scope: string, key: string, value: unknown, options?: AccountStoreWriteOptions): Promise<AccountStoreResult<null>>;
+  /** Keys some machine deleted; `list` hides them. */
+  deletedKeys(scope: string): Promise<AccountStoreResult<string[]>>;
+  /** Pulls the account's rows; the value is the store's sync status. */
+  syncStatus(): Promise<AccountStoreResult<"ready" | "unavailable" | "failed" | null>>;
 };
 
 export type AccountMigrationRunnerOptions = {
   accountBridge: Pick<AccountBridge, "status">;
-  accountVaultBridge: Pick<AccountVaultBridge, "list" | "get" | "set">;
+  accountVaultBridge: Pick<AccountVaultBridge, "list" | "get" | "set"> & Partial<Pick<AccountVaultBridge, "sync">>;
   /** The account settings store, for rows filed under a repository's old alias key. */
   accountSettingsBridge?: AccountMigrationSettingsBridge | null;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
@@ -314,6 +318,17 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     const scope = accountRepoScopeKey(canonical.url);
     if (!legacyScope || !scope || legacyScope === scope) return { moved: 0, skipped: 0 };
 
+    // Compare against the account's current rows, not a stale local copy: a
+    // row another machine wrote under the new key since the last pull wins.
+    const settings = options.accountSettingsBridge;
+    if (!settings) return { moved: 0, skipped: 0, complete: false };
+    const vaultSync = await options.accountVaultBridge.sync?.();
+    if (!vaultSync?.ok || vaultSync.value !== "ready") return { moved: 0, skipped: 0, complete: false };
+    const settingsSync = await settings.syncStatus();
+    if (!settingsSync.ok || settingsSync.value !== "ready" || !isCurrent()) {
+      return { moved: 0, skipped: 0, complete: false };
+    }
+
     let moved = 0;
     let skipped = 0;
     const legacyItems = await listVaultItems(legacyScope);
@@ -339,12 +354,17 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
       moved += 1;
     }
 
-    const settings = options.accountSettingsBridge;
-    if (!settings) return { moved, skipped };
     const legacyRows = await settings.list(legacyScope);
     const currentRows = await settings.list(scope);
-    if (!legacyRows.ok || !currentRows.ok || !isCurrent()) return { moved, skipped, complete: false };
-    const presentKeys = new Set(currentRows.value.filter((row) => row.scope === scope).map((row) => row.key));
+    const deletedKeys = await settings.deletedKeys(scope);
+    if (!legacyRows.ok || !currentRows.ok || !deletedKeys.ok || !isCurrent()) {
+      return { moved, skipped, complete: false };
+    }
+    // A key deleted under the new key stays deleted.
+    const presentKeys = new Set([
+      ...currentRows.value.filter((row) => row.scope === scope).map((row) => row.key),
+      ...deletedKeys.value,
+    ]);
     for (const row of legacyRows.value) {
       if (row.scope !== legacyScope) continue;
       if (presentKeys.has(row.key)) {

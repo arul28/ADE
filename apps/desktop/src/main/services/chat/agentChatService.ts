@@ -1235,7 +1235,7 @@ import {
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
-import { gitRemoteIdentity, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { gitRemoteIdentity, isSameGitRepository, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
@@ -51170,7 +51170,7 @@ export function createAgentChatService(args: {
       projectRoot,
       "The destination project does not have an origin remote.",
     );
-    if (gitRemoteIdentity(origin) !== gitRemoteIdentity(capsule.source.originUrl)) {
+    if (!isSameGitRepository(origin, capsule.source.originUrl)) {
       throw new Error("The destination project points at a different Git repository than the source handoff.");
     }
     const branchRef = await requireGitBranch(runGit, capsule.source.branchRef, projectRoot);

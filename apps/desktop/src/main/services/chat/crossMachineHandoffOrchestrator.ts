@@ -43,7 +43,7 @@ import {
   pickCrossMachineTargetConfig,
   withoutCrossMachinePermissionFields,
 } from "../../../shared/crossMachineHandoff";
-import { gitRemoteIdentity } from "../github/githubSshAlias";
+import { gitRemoteIdentity, peerGitRemoteIdentity } from "../github/githubSshAlias";
 import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
@@ -585,7 +585,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     // match whatever shape the transport reports.
     hasRepository: machine.projects && originUrl
       ? machine.projects.some((project) =>
-        gitRemoteIdentity(project.origin) === gitRemoteIdentity(originUrl))
+        peerGitRemoteIdentity(project.origin) === gitRemoteIdentity(originUrl))
       : null,
   });
 
