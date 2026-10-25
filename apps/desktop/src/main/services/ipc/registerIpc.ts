@@ -112,7 +112,7 @@ import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
-import { readClipboardImage, writeClipboardImage } from "../shared/electronClipboard";
+import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
@@ -4075,11 +4075,11 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
-    return !(await readClipboardImage()).isEmpty();
+    return !(await readClipboardImage(await readClipboardItem())).isEmpty();
   });
 
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
-    const image = await readClipboardImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4134,7 +4134,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
-    const image = await readClipboardImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4171,7 +4171,7 @@ export function registerIpc({
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
     }
-    await writeClipboardImage(image);
+    await writeClipboardFlavors({ image });
   });
 
   ipcMain.handle(

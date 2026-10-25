@@ -50531,7 +50531,7 @@ export function createAgentChatService(args: {
         env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
-        blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
+        blockingErrors.push(`The destination cannot read origin: ${redactGitOutput(remote.stderr.trim()) || "check Git credentials and network access."}`);
       } else {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
         if (!remoteBranchHeadSha) {
@@ -50792,7 +50792,7 @@ export function createAgentChatService(args: {
     });
     if (status.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${status.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${redactGitOutput(status.stderr.trim()) || "unknown Git error"}`,
       );
     }
     if (status.stdout.trim()) {
@@ -50823,7 +50823,7 @@ export function createAgentChatService(args: {
     }
     if (ancestor.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${ancestor.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${redactGitOutput(ancestor.stderr.trim()) || "unknown Git error"}`,
       );
     }
 
@@ -50833,7 +50833,7 @@ export function createAgentChatService(args: {
     });
     if (merge.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${merge.stderr.trim() || "git merge --ff-only failed"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${redactGitOutput(merge.stderr.trim()) || "git merge --ff-only failed"}`,
       );
     }
     const head = await requireGitOutput(
@@ -57310,7 +57310,7 @@ export function createAgentChatService(args: {
         agentId,
         laneId,
         branchName,
-        error: fetch.stderr.trim() || "unknown Git error",
+        error: redactGitOutput(fetch.stderr.trim()) || "unknown Git error",
       });
     } else {
       logger.info("agent_chat.cursor_cloud_branch_fetched", {

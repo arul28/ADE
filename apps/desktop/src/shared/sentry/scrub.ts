@@ -46,7 +46,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
 ];
 
 /** Query parameters whose value is a credential. */
-const SECRET_QUERY_PARAM = /([?&](?:token|access_token|refresh_token|id_token|code|state|key|api_key|apikey|secret|signature|sig|password|auth)=)[^&#\s]*/gi;
+const SECRET_QUERY_PARAM = /([?&](?:token|access_token|refresh_token|id_token|code|state|key|api_key|apikey|secret|client_secret|signature|sig|password|auth)=)[^&#\s]*/gi;
 
 /**
  * Object keys whose string value is dropped wholesale, at any depth. Counts

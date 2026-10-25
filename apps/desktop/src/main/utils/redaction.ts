@@ -14,7 +14,9 @@ function redactText(text: string): string {
     /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
     "<redacted-token>"
   );
-  return output;
+  // The shapes error reports remove too, so one pasted key cannot survive
+  // here and be caught there.
+  return redactProcessOutput(output);
 }
 
 export function redactSecrets(text: string): string {
@@ -45,7 +47,6 @@ export function redactSecretsDeep<T>(value: T, maxDepth = 8): T {
 
   return walk(value, 0) as T;
 }
-
 
 /**
  * A child process's output (an agent's stderr, a git error) with its secrets

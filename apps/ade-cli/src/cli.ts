@@ -36629,7 +36629,7 @@ async function runParsedCli(
       initBrainSentry({ mode: "serve" });
       // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
       // Node's bundled set; read the OS store off the loop and add it.
-      void trustSystemCertificates();
+      void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:
@@ -36744,6 +36744,18 @@ const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
   pi: () => import("../../desktop/src/main/services/chat/piSdkWorker"),
 };
 
+/**
+ * A network setup failure (an unusable proxy setting, an unreadable OS trust
+ * store) goes to stderr, where the brain's other startup notes go; stdout
+ * stays the command's output.
+ */
+const networkWarningLogger = {
+  info: () => {},
+  warn: (event: string, meta?: Record<string, unknown>) => {
+    process.stderr.write(`ADE: ${event} ${JSON.stringify(meta ?? {})}\n`);
+  },
+};
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -36772,7 +36784,12 @@ async function main(): Promise<void> {
     }
     // A proxy named in the environment applies to every command's outbound
     // fetch (updates, sign-in, the brain's API calls); loopback stays direct.
-    configureOutboundProxyFromEnv(process.env);
+    // Behind a proxy the OS's CAs (a TLS-inspecting proxy's root) are trusted
+    // before the command runs. Without one, only the long-lived brain pays
+    // the ~140 ms store read (below), not every short `ade` call.
+    if (configureOutboundProxyFromEnv(process.env, networkWarningLogger)) {
+      await trustSystemCertificates(networkWarningLogger);
+    }
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

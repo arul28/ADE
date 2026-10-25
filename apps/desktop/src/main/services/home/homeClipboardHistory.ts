@@ -40,9 +40,8 @@ export type HomeWidgetsClipboard = {
   writeText: (text: string) => Promise<void>;
   /** A raw platform format's bytes; empty when it is absent. */
   readBuffer: (format: string) => Promise<Buffer>;
-  /** Whether a raw platform format is on the clipboard at all, even with no data. */
-  has?: (format: string) => Promise<boolean>;
-  availableFormats?: () => Promise<string[]>;
+  /** Every flavor on the clipboard: MIME types, and raw platform formats under their own names. */
+  availableFormats: () => Promise<string[]>;
   /** Null when the clipboard has no image (or it is empty). */
   readImage?: () => Promise<HomeClipboardImageRead | null>;
   writeImage?: (png: Buffer) => Promise<boolean>;
@@ -63,9 +62,8 @@ const CLIPBOARD_THUMB_PX = 320;
 /** How long added copies wait before the kept history is written (a burst of copies is one write). */
 const CLIPBOARD_WRITE_DEBOUNCE_MS = 1_500;
 /**
- * An image with no PNG copy beside it (Print Screen) can only be compared by
- * reading it (~7 ms for 1440p): re-read 3 s after a change, backing off to
- * every 12 s while it stays the same.
+ * An image can only be compared by reading it (~7 ms for 1440p): re-read 3 s
+ * after a change, backing off to every 12 s while it stays the same.
  */
 const CLIPBOARD_IMAGE_REREAD_MS = 3_000;
 const CLIPBOARD_IMAGE_REREAD_MAX_MS = 12_000;
@@ -85,20 +83,18 @@ const CONCEALED_MARKER_FORMATS: Partial<Record<NodeJS.Platform, string[]>> = {
 /** Windows' `CanIncludeInClipboardHistory` is a DWORD: present and 0 means "keep out"; 1 means allowed. */
 const WINDOWS_HISTORY_DWORD_FORMAT = "CanIncludeInClipboardHistory";
 
-/** True when a password manager marked what is on the clipboard as not to be recorded. */
-export async function isConcealedClipboard(clipboard: HomeWidgetsClipboard, platform: NodeJS.Platform): Promise<boolean> {
-  for (const format of CONCEALED_MARKER_FORMATS[platform] ?? []) {
-    try {
-      if (clipboard.has) {
-        if (await clipboard.has(format)) return true;
-      } else if ((await clipboard.readBuffer(format))?.length > 0) {
-        return true;
-      }
-    } catch {
-      // A format the platform cannot name is simply absent.
-    }
-  }
-  if (platform === "win32") {
+/**
+ * True when a password manager marked what is on the clipboard as not to be
+ * recorded. `formats` is the flavor list read with the content, so the marker
+ * and the copy it guards come from the same look at the clipboard.
+ */
+export async function isConcealedClipboard(
+  clipboard: HomeWidgetsClipboard,
+  formats: readonly string[],
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  if ((CONCEALED_MARKER_FORMATS[platform] ?? []).some((format) => formats.includes(format))) return true;
+  if (platform === "win32" && formats.includes(WINDOWS_HISTORY_DWORD_FORMAT)) {
     try {
       const buffer = await clipboard.readBuffer(WINDOWS_HISTORY_DWORD_FORMAT);
       if (buffer && buffer.length >= 4 && buffer.readUInt32LE(0) === 0) return true;
@@ -129,17 +125,17 @@ export function createClipboardHistory(deps: {
   /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
   let lastSeen: string | null = null;
   let lastFormats = "";
-  /** When an image with no PNG copy was last read, and how long until the next look. */
+  /** When the picture was last read, and how long until the next look. */
   let lastImageReadAt = 0;
   let imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
   /** Full PNGs of image entries, by hash. A kept history reads the rest from disk on copy. */
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInterval = CLIPBOARD_POLL_MS;
-  /** A poll still awaiting the clipboard; the next tick skips rather than overlapping it. */
-  let polling = false;
   /** Bumped on every start and stop, so a poll that outlives its watch drops what it read. */
   let watchGeneration = 0;
+  /** The watch whose poll is still awaiting the clipboard; its next tick skips rather than overlapping it. */
+  let pollingGeneration: number | null = null;
   let writeTimer: NodeJS.Timeout | null = null;
   /** Disk work runs one at a time, in order, so a removal never races an older write. */
   let diskQueue: Promise<void> = Promise.resolve();
@@ -221,7 +217,6 @@ export function createClipboardHistory(deps: {
     }
   };
 
-  const isConcealed = () => isConcealedClipboard(deps.clipboard, platform);
 
   /**
    * Puts `entry` first and drops what is over the caps: 50 entries, and at
@@ -293,25 +288,25 @@ export function createClipboardHistory(deps: {
   };
 
   const poll = async () => {
-    if (polling) return;
-    polling = true;
     const generation = watchGeneration;
+    if (pollingGeneration === generation) return;
+    pollingGeneration = generation;
     try {
       await pollOnce(generation);
+    } catch (error) {
+      deps.logger?.warn("home.clipboard.poll_failed", { error: error instanceof Error ? error.message : String(error) });
     } finally {
-      polling = false;
+      if (pollingGeneration === generation) pollingGeneration = null;
     }
   };
 
+  /** One look at the clipboard. `lastSeen` moves only while `generation` is still the live watch. */
   const pollOnce = async (generation: number) => {
     const started = performance.now();
     let text: string;
     let formats: string[];
     try {
-      [text, formats] = await Promise.all([
-        deps.clipboard.readText().then((value) => value ?? ""),
-        deps.clipboard.availableFormats?.() ?? Promise.resolve([]),
-      ]);
+      [text, formats] = await Promise.all([deps.clipboard.readText(), deps.clipboard.availableFormats()]);
     } catch {
       return;
     }
@@ -332,10 +327,13 @@ export function createClipboardHistory(deps: {
     if (!imageOnly) {
       const seen = text.trim() ? `t:${text}` : "";
       if (seen === lastSeen) return;
-      lastSeen = seen;
-      if (!seen || skipFirst) return;
-      const concealed = await isConcealed();
+      if (!seen || skipFirst) {
+        lastSeen = seen;
+        return;
+      }
+      const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
       if (generation !== watchGeneration) return;
+      lastSeen = seen;
       recordText(text, concealed);
       return;
     }
@@ -360,10 +358,13 @@ export function createClipboardHistory(deps: {
       return;
     }
     imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
-    lastSeen = seen;
-    if (skipFirst) return;
-    const concealed = await isConcealed();
+    if (skipFirst) {
+      lastSeen = seen;
+      return;
+    }
+    const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
     if (generation !== watchGeneration) return;
+    lastSeen = seen;
     if (concealed) {
       skippedSecrets += 1;
       announce();

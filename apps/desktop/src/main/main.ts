@@ -662,8 +662,8 @@ function fixElectronShellPath(): void {
 fixElectronShellPath();
 // Main's own fetch/https: a proxy the environment names, and the OS's trusted
 // CAs (read off the main thread). Electron's net.fetch already follows the OS.
-configureOutboundProxyFromEnv(process.env);
-void trustSystemCertificates();
+configureOutboundProxyFromEnv(process.env, getMachineMainLogger());
+void trustSystemCertificates(getMachineMainLogger());
 
 let adeCliAutoInstallScheduled = false;
 

@@ -1,23 +1,22 @@
 import http from "node:http";
 import tls from "node:tls";
 import { Worker } from "node:worker_threads";
+import type { Logger } from "../logging/logger";
 
 /**
  * Outbound HTTPS from ADE's own Node code (the desktop main process and the
- * brain) on company networks: a proxy named in the environment, and a company
- * root CA the OS trusts. Node's `fetch` and `https` honour neither by default.
- * Electron's `net.fetch` already follows the OS for both; this covers the
- * global `fetch`, `http`/`https` and WebSocket calls.
+ * `ade` CLI, the brain included) on company networks: a proxy named in the
+ * environment, and a company root CA the OS trusts. Node's `fetch` and
+ * `https` honour neither by default. Electron's `net.fetch` already follows
+ * the OS for both; this covers the global `fetch`, `http`/`https` and
+ * WebSocket calls.
  *
  * Child processes are left alone: they inherit `HTTPS_PROXY` and friends as
  * they always did, and nothing here adds an environment variable they would
  * pick up.
  */
 
-type Logger = {
-  info: (event: string, data?: Record<string, unknown>) => void;
-  warn: (event: string, data?: Record<string, unknown>) => void;
-};
+type NetworkLogger = Pick<Logger, "info" | "warn">;
 
 const PROXY_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] as const;
 
@@ -32,14 +31,23 @@ const LOOPBACK_NO_PROXY = ["localhost", "127.0.0.1", "::1", "[::1]"];
 type ProxyCapableHttp = typeof http & {
   setGlobalProxyFromEnv?: (proxyEnv: NodeJS.ProcessEnv) => () => void;
 };
-type CaCapableTls = typeof tls & {
-  getCACertificates?: (type: "default" | "system" | "bundled" | "extra") => string[];
-  setDefaultCACertificates?: (certificates: string[]) => void;
+type SystemCaApi = {
+  get: (type: "default" | "system") => string[];
+  set: (certificates: string[]) => void;
 };
-const caTls = tls as CaCapableTls;
+
+function systemCaApi(): SystemCaApi | null {
+  const api = tls as typeof tls & {
+    getCACertificates?: SystemCaApi["get"];
+    setDefaultCACertificates?: SystemCaApi["set"];
+  };
+  const { getCACertificates, setDefaultCACertificates } = api;
+  if (typeof getCACertificates !== "function" || typeof setDefaultCACertificates !== "function") return null;
+  return { get: getCACertificates.bind(tls), set: setDefaultCACertificates.bind(tls) };
+}
 
 /** `NO_PROXY` as the user set it, plus loopback, without duplicates. */
-export function outboundNoProxy(env: NodeJS.ProcessEnv): string {
+function outboundNoProxy(env: NodeJS.ProcessEnv): string {
   const entries = `${env.NO_PROXY ?? ""},${env.no_proxy ?? ""}`
     .split(",")
     .map((entry) => entry.trim())
@@ -52,8 +60,9 @@ export function outboundNoProxy(env: NodeJS.ProcessEnv): string {
  * Routes this process's `fetch`, `http` and `https` through the proxy the
  * environment names. A no-op without a proxy variable, and on a Node without
  * `http.setGlobalProxyFromEnv` (before 24.5; the bundled runtime has it).
+ * Returns whether a proxy is now in effect.
  */
-export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv = process.env, logger?: Logger): boolean {
+export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv, logger?: NetworkLogger): boolean {
   const proxyEnv: NodeJS.ProcessEnv = {};
   for (const key of PROXY_KEYS) {
     const value = env[key]?.trim();
@@ -79,6 +88,21 @@ export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv = process.e
   }
 }
 
+/** One agent for every direct peer socket; it carries no proxy. */
+let directPeerAgent: http.Agent | null = null;
+
+/**
+ * Options for a WebSocket to another ADE machine. Direct sync is plain
+ * `ws://` to a LAN or tailnet address, which a company proxy cannot reach and
+ * `NO_PROXY` cannot list (it has no address ranges), so those connect
+ * directly. The relay (`wss://`, on the internet) keeps the proxy.
+ */
+export function peerSocketOptions(url: string): { agent?: http.Agent } {
+  if (!url.startsWith("ws://")) return {};
+  directPeerAgent ??= new http.Agent();
+  return { agent: directPeerAgent };
+}
+
 /** Reads the OS trust store off the calling thread: it takes ~140 ms on macOS. */
 const SYSTEM_CA_WORKER_SOURCE = String.raw`
   const { parentPort } = require("node:worker_threads");
@@ -95,31 +119,33 @@ let systemTrust: Promise<number> | null = null;
 /**
  * Adds the certificates the OS trusts (a company root CA, a TLS-inspecting
  * proxy's CA) to what this process's TLS accepts, keeping the bundled set.
- * Resolves with how many were added; safe to call more than once. A Node
- * without the API, or a store that cannot be read, leaves TLS as it was.
+ * Resolves with how many were added; later calls share the first one's
+ * result. A Node without the API, or a store that cannot be read, leaves TLS
+ * as it was.
  */
-export function trustSystemCertificates(logger?: Logger): Promise<number> {
-  systemTrust ??= readSystemCertificatesOffThread()
-    .then((system) => {
-      if (system.length === 0) return 0;
-      const current = caTls.getCACertificates!("default");
-      const known = new Set(current);
-      const added = system.filter((certificate) => !known.has(certificate));
-      if (added.length > 0) caTls.setDefaultCACertificates!([...current, ...added]);
-      logger?.info("network.system_ca_trusted", { added: added.length });
-      return added.length;
-    })
-    .catch((error: unknown) => {
-      logger?.warn("network.system_ca_failed", { error: error instanceof Error ? error.message : String(error) });
-      return 0;
-    });
+export function trustSystemCertificates(logger?: NetworkLogger): Promise<number> {
+  systemTrust ??= addSystemCertificates(logger);
   return systemTrust;
 }
 
-function readSystemCertificatesOffThread(): Promise<string[]> {
-  if (typeof caTls.getCACertificates !== "function" || typeof caTls.setDefaultCACertificates !== "function") {
-    return Promise.resolve([]);
+async function addSystemCertificates(logger?: NetworkLogger): Promise<number> {
+  const api = systemCaApi();
+  if (!api) return 0;
+  try {
+    const system = await readSystemCertificatesOffThread();
+    const current = api.get("default");
+    const known = new Set(current);
+    const added = system.filter((certificate) => !known.has(certificate));
+    if (added.length > 0) api.set([...current, ...added]);
+    logger?.info("network.system_ca_trusted", { added: added.length });
+    return added.length;
+  } catch (error) {
+    logger?.warn("network.system_ca_failed", { error: error instanceof Error ? error.message : String(error) });
+    return 0;
   }
+}
+
+function readSystemCertificatesOffThread(): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(SYSTEM_CA_WORKER_SOURCE, { eval: true });
     worker.unref();

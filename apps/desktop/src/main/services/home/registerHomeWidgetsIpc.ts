@@ -13,7 +13,7 @@ import {
 import { macAppIconDataUrl } from "../apps/macAppIconFile";
 import { createBrowserMediaSessions } from "./browserMediaSessions";
 import { createNowPlayingService, type NowPlayingService } from "./nowPlayingService";
-import { osClipboardType, readClipboardFormat, readClipboardImage, readClipboardTypes, writeClipboardImage } from "../shared/electronClipboard";
+import { readClipboardFormat, readClipboardFormatNames, readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 
 let nowPlaying: NowPlayingService | null = null;
 
@@ -70,10 +70,9 @@ export function registerHomeWidgetsIpc(args: {
       readText: () => clipboard.readText(),
       writeText: (text) => clipboard.writeText(text),
       readBuffer: (format) => readClipboardFormat(format),
-      has: (format) => clipboard.has(osClipboardType(format)),
-      availableFormats: () => readClipboardTypes(),
+      availableFormats: () => readClipboardFormatNames(),
       readImage: async () => {
-        const image = await readClipboardImage();
+        const image = await readClipboardImage(await readClipboardItem());
         if (image.isEmpty()) return null;
         const { width, height } = image.getSize();
         if (width <= 0 || height <= 0) return null;
@@ -96,7 +95,7 @@ export function registerHomeWidgetsIpc(args: {
       writeImage: async (png) => {
         const image = nativeImage.createFromBuffer(png);
         if (image.isEmpty()) return false;
-        await writeClipboardImage(image);
+        await writeClipboardFlavors({ image });
         return true;
       },
     },
@@ -247,7 +246,7 @@ export function registerHomeWidgetsIpc(args: {
     if (!bytes) return { ok: false, error: "Not a PNG image." };
     const image = nativeImage.createFromBuffer(bytes);
     if (image.isEmpty()) return { ok: false, error: "The image could not be read." };
-    await writeClipboardImage(image);
+    await writeClipboardFlavors({ image });
     return { ok: true };
   });
   ipcMain.handle(HOME_WIDGETS_IPC.shareSaveImage, async (event, input: { pngDataUrl?: string; fileName?: string }): Promise<HomeShareResult> => {

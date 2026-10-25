@@ -189,10 +189,7 @@ const STDERR_TAIL_LIMIT = 4_000;
  * its environment or config, API keys included.
  */
 export function redactAcpDiagnosticText(text: string): string {
-  return redactProcessOutput(text.replace(
-    /([?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&\s"']+/gi,
-    "$1<redacted>",
-  ));
+  return redactProcessOutput(text);
 }
 
 /** Split a byte stream into complete lines. Holds the partial tail. */

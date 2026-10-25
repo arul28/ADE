@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { clipboard, ClipboardItem, nativeImage } from "electron";
+import { clipboard, nativeImage } from "electron";
 import os from "node:os";
 import type {
   BuiltInBrowserClipboardImage,
@@ -12,7 +12,7 @@ import {
   builtInBrowserUploadRoots,
   resolveReadableBrowserFiles,
 } from "./builtInBrowserCapabilities";
-import { clipboardPngBlob, readClipboardHtml, readClipboardImage, readClipboardItem } from "../shared/electronClipboard";
+import { readClipboardHtml, readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 
 /** How much clipboard text one read may return. */
 const MAX_CLIPBOARD_READ_CHARS = 64_000;
@@ -103,12 +103,8 @@ export async function writeClipboardContents(args: {
   if (!text && !html && !image) {
     throw new Error("browser clipboard write needs --value, --html or --image.");
   }
-  // One write: one `ClipboardItem` carries every flavor at once, so an image and
-  // its alt text do not overwrite each other.
-  await clipboard.write([new ClipboardItem({
-    ...(text ? { "text/plain": text } : {}),
-    ...(html ? { "text/html": html } : {}),
-    ...(image ? { "image/png": clipboardPngBlob(image) } : {}),
-  })]);
+  // One write carries every flavor at once, so an image and its alt text do
+  // not overwrite each other.
+  await writeClipboardFlavors({ text, html, image });
   return { written: true };
 }

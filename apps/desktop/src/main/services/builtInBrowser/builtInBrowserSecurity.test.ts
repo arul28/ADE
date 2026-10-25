@@ -399,7 +399,7 @@ function createAuthenticationHarness() {
 }
 
 function authDetails(): AuthenticationResponseDetails {
-  return { url: "https://example.com/private" };
+  return { url: "https://example.com/private", pid: 1, isRequestForNavigation: false, firstAuthAttempt: true };
 }
 
 function authInfo(): AuthInfo {

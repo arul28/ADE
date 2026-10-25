@@ -21,9 +21,9 @@ function fakeClipboard(): FakeClipboard {
     text: "",
     markers: new Set<string>(),
     dword: null,
-    readText: () => clip.text,
-    writeText: (text) => { clip.text = text; },
-    readBuffer: (format) => {
+    readText: async () => clip.text,
+    writeText: async (text) => { clip.text = text; },
+    readBuffer: async (format) => {
       if (format === "CanIncludeInClipboardHistory" && clip.dword != null) {
         const buffer = Buffer.alloc(4);
         buffer.writeUInt32LE(clip.dword, 0);
@@ -31,8 +31,11 @@ function fakeClipboard(): FakeClipboard {
       }
       return Buffer.alloc(0);
     },
-    has: (format) => clip.markers.has(format),
-    availableFormats: () => ["text/plain"],
+    availableFormats: async () => [
+      "text/plain",
+      ...clip.markers,
+      ...(clip.dword != null ? ["CanIncludeInClipboardHistory"] : []),
+    ],
   };
   return clip;
 }
