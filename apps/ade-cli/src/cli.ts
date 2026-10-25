@@ -36632,7 +36632,7 @@ async function runParsedCli(
       // The brain's log says once whether the environment's proxy is in use.
       if (outboundProxyConfigured) process.stderr.write("ADE: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n");
       if (outboundProxyUnsupported) {
-        process.stderr.write(`ADE: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.5 or newer can); outbound requests go direct.\n`);
+        process.stderr.write(`ADE: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.14 or newer can); outbound requests go direct.\n`);
       }
       void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);

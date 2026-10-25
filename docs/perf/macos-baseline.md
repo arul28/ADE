@@ -291,6 +291,20 @@ sign-in screen, `footprint` after 60 s.
 | App renderer footprint, idle (wallpaper differed between the runs) | `footprint` | 436 MB | 467–473 MB | the Processes table |
 | Clipboard history poll read (text + flavor list; async on 44) | one-off Electron loop, 200 reads | 0.042 ms | 0.056 ms | — |
 
+#### Brain on Node 22.22 → 24.22
+
+Same branch, machine and date. A headless brain (`serve --no-sync`) on a
+throwaway `ADE_HOME` and scratch project, tool downloads off, idle for 30 s
+after its socket appears; two runs each. Node 24's V8 sizes the young
+generation by machine memory, so the release runtime is built with Node 22's
+16 MB cap (`execArgv` in `build-static.mjs`).
+
+| Metric | Bench | Node 22.22.2 (`cli.cjs`) | Node 24.22.1 (`cli.cjs`, no cap) | Node 24.22.1 release runtime, capped | Ceiling |
+|---|---|---|---|---|---|
+| Spawn to socket listening | one-off loop | 2,595–2,645 ms | 2,484–2,528 ms | 2,502–2,511 ms | — |
+| Footprint, idle 30 s | `footprint` | 226 MB | 279 MB | 224–225 MB (264 MB uncapped) | the Processes table |
+| CPU time, first 30 s | `ps` | 0.97–1.01 s | 0.70–0.71 s | 0.74–0.80 s | — |
+
 ### Open items (measured, over budget or unbudgeted)
 
 - **Files tab switch:** 0–295 ms. The profile shows the kept-alive Work tab

@@ -29,7 +29,7 @@ const PROXY_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] as
 const LOOPBACK_NO_PROXY = ["localhost", "127.0.0.1", "::1", "[::1]"];
 
 /**
- * Both APIs are Node 24 (the system CA read is also in 22.19+). ADE's Electron
+ * The proxy API is Node 24.14+, the system CA read 24 and 22.19+. ADE's Electron
  * and its bundled runtime ship Node 24; the `ade` CLI on an older Node keeps
  * working without them, as it did before.
  */
@@ -50,7 +50,7 @@ function outboundNoProxy(env: NodeJS.ProcessEnv): string {
 /**
  * Routes this process's `fetch`, `http` and `https` through the proxy the
  * environment names. A no-op without a proxy variable, and on a Node without
- * `http.setGlobalProxyFromEnv` (before 24.5), which logs a warning instead.
+ * `http.setGlobalProxyFromEnv` (before 24.14), which logs a warning instead.
  * Returns whether a proxy is now in effect.
  */
 export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv, logger?: NetworkLogger): boolean {
