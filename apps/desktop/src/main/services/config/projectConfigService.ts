@@ -1299,11 +1299,13 @@ function coerceLaneCleanupConfig(value: unknown): LaneCleanupConfig | undefined 
   const reclaimArchivedAfterHours =
     readNonNegativeInteger(value.reclaimArchivedAfterHours)
     ?? readNonNegativeInteger(value.autoDeleteArchivedAfterHours);
+  const cleanBuildOutputAfterDays = readNonNegativeInteger(value.cleanBuildOutputAfterDays);
   const out: LaneCleanupConfig = {};
   if (maxActiveLanes != null) out.maxActiveLanes = maxActiveLanes;
   if (cleanupIntervalHours != null) out.cleanupIntervalHours = cleanupIntervalHours;
   if (autoArchiveAfterHours != null) out.autoArchiveAfterHours = autoArchiveAfterHours;
   if (reclaimArchivedAfterHours != null) out.reclaimArchivedAfterHours = reclaimArchivedAfterHours;
+  if (cleanBuildOutputAfterDays != null) out.cleanBuildOutputAfterDays = cleanBuildOutputAfterDays;
   return Object.keys(out).length ? out : undefined;
 }
 

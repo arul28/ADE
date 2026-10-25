@@ -325,7 +325,11 @@ function createMockStorageSnapshot(now: string) {
     item("lanes_worktrees:auth", "auth-refactor", `${root}/.ade/worktrees/auth-refactor`, 2.4 * GB, "protected", { laneStatus: "active", laneId: "lane-auth" }),
     item("lanes_worktrees:billing", "billing-page", `${root}/.ade/worktrees/billing-page`, 1.7 * GB, "protected", { laneStatus: "active", laneId: "lane-billing" }),
     item("lanes_worktrees:onboard", "onboarding-copy", `${root}/.ade/worktrees/onboarding-copy`, 1.1 * GB, "review_first", { laneStatus: "archived", laneId: "lane-onboard" }),
-    item("lanes_worktrees:search", "search-index", `${root}/.ade/worktrees/search-index`, 860 * MB, "protected", { laneStatus: "active", laneId: "lane-search" }),
+    item("lanes_worktrees:search", "search-index", `${root}/.ade/worktrees/search-index`, 860 * MB, "protected", {
+      laneStatus: "active",
+      laneId: "lane-search",
+      buildOutputRemoved: { at: daysAgo(3), bytes: 1.3 * GB, folders: ["node_modules", "apps/web/.next"] },
+    }),
     item("lanes_worktrees:old", "spike-graphql", `${root}/.ade/worktrees/spike-graphql`, 420 * MB, "review_first", { laneStatus: "orphaned" }),
   ];
   const categories = [
@@ -428,9 +432,18 @@ function createMockStorageSnapshot(now: string) {
       lastScanAt: daysAgo(0.1),
       nextScanAt: daysAgo(-0.9),
       scanInProgress: false,
-      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0 },
+      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0, cleanBuildOutputAfterDays: 7 },
       archivedAutomatically: 1,
       reviewReadyCount: 0,
+      buildOutput: {
+        lastCheckAt: daysAgo(0.2),
+        totalFreedBytes: 4.1 * GB,
+        since: daysAgo(12),
+        lanes: [
+          { laneId: "lane-search", laneName: "search-index", removedAt: daysAgo(3), bytes: 1.3 * GB, folders: ["node_modules", "apps/web/.next"], failures: [] },
+          { laneId: "lane-onboard", laneName: "onboarding-copy", removedAt: daysAgo(9), bytes: 2.8 * GB, folders: ["node_modules", "dist"], failures: [{ folder: "target", reason: "A program is using files in it." }] },
+        ],
+      },
     },
   };
 }

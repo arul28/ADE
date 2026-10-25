@@ -1,6 +1,10 @@
 import React from "react";
 import { CaretDown } from "@phosphor-icons/react";
-import type { MaintenanceRunReport } from "../../../../shared/types/storage";
+import {
+  DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS,
+  type LaneBuildOutputSummary,
+  type MaintenanceRunReport,
+} from "../../../../shared/types/storage";
 import type { LaneCleanupConfig } from "../../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber } from "../primitives";
 import { showToast } from "../../app/toast/toastStore";
@@ -9,6 +13,7 @@ import {
   cleanupPartsLine,
   cleanupRunParts,
   formatBytes,
+  formatMeasuredBytes,
   formatRunClock,
   journalEntries,
   maintenanceActionLines,
@@ -189,7 +194,104 @@ function ArchivePolicy({
 }
 
 /**
- * The cleanup history (`show="history"`, under Space) or the archive-idle-lanes
+ * The idle-lane build output rule, and what it removed: each lane's latest
+ * cleanup, newest first, with the folders that went and any that could not.
+ * On by default; the value comes from local.yaml, then the project's shared
+ * settings, then the default, like the archive rules.
+ */
+function BuildOutputPolicy({
+  value,
+  effectiveValue,
+  summary,
+  busy,
+  onChange,
+}: {
+  value: LaneCleanupConfig;
+  effectiveValue: LaneCleanupConfig;
+  summary: LaneBuildOutputSummary | null;
+  busy: boolean;
+  onChange: (value: LaneCleanupConfig) => void;
+}) {
+  const local = value.cleanBuildOutputAfterDays;
+  const days = local ?? effectiveValue.cleanBuildOutputAfterDays ?? DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS;
+  const lanes = summary?.lanes ?? [];
+  const freed = summary && (summary.totalFreedBytes > 0 || summary.totalPartial)
+    ? `Freed ${formatMeasuredBytes(summary.totalFreedBytes, summary.totalPartial)}${summary.since ? ` since ${new Date(summary.since).toLocaleDateString()}` : ""}`
+    : "Nothing removed yet";
+  const status = days <= 0
+    ? "Off. ADE keeps build output in idle lanes."
+    : `On. ${freed}${summary?.lastCheckAt ? `; last check ${relativeWhen(summary.lastCheckAt)}` : ""}.`;
+  const label = "Remove after";
+  return (
+    <ModernSection
+      group="Cleanups"
+      anchor="lane-build-output"
+      title="Clean build output from idle lanes"
+      hint={status}
+      actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
+    >
+      <ModernRows>
+        <ModernRow
+          title={label}
+          hint="Days a lane sits idle first. A reinstall or build brings the folders back."
+          control={(
+            <>
+              {local != null ? (
+                <button
+                  type="button"
+                  className="ade-modern-btn"
+                  data-variant="link"
+                  style={{ fontSize: 11.5 }}
+                  onClick={() => onChange({ ...value, cleanBuildOutputAfterDays: undefined })}
+                >
+                  Reset
+                </button>
+              ) : null}
+              <SettingsNumber
+                ariaLabel={label}
+                value={days}
+                min={0}
+                suffix="days"
+                sentinelLabel="Off"
+                sentinelValue={0}
+                onChange={(next) => onChange({ ...value, cleanBuildOutputAfterDays: Math.max(0, Math.floor(next)) })}
+              />
+            </>
+          )}
+        />
+      </ModernRows>
+      {lanes.length > 0 ? (
+        <ul className="ade-modern-rows ade-health-runlist">
+          {lanes.map((lane) => (
+            <li key={`${lane.laneId}:${lane.removedAt}`} className="ade-health-run">
+              <div className="ade-health-run-main">
+                <span className="ade-health-run-when">{lane.laneName}</span>
+                <span className="ade-modern-muted">{relativeWhen(lane.removedAt)}</span>
+                <span className="ade-health-run-total kit-num">
+                  {lane.bytes > 0 || lane.partial ? formatMeasuredBytes(lane.bytes, lane.partial) : "Nothing freed"}
+                </span>
+              </div>
+              <div className="ade-health-run-sub">
+                {lane.folders.length > 0 ? <span>{lane.folders.join(", ")}</span> : null}
+                {lane.failures.map((failure) => (
+                  <span key={failure.folder} style={{ color: "var(--kit-warn)" }}>
+                    {failure.folder} stayed: {failure.reason}
+                  </span>
+                ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="ade-modern-muted">
+        Only folders git ignores and tracks nothing in, like node_modules, dist, .next and Cargo target. Lanes with a chat, terminal or program running are skipped.
+      </p>
+    </ModernSection>
+  );
+}
+
+/**
+ * The cleanup history (`show="history"`, under Space) or the lane cleanup
  * rules (`show="rules"`, under Rules).
  */
 export function HealthCleanups({ data, show }: { data: HealthData; show: "history" | "rules" }) {
@@ -235,12 +337,21 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
   return show === "history" ? (
     <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />
   ) : (
-    <ArchivePolicy
-      value={data.storage.policy}
-      effectiveValue={data.storage.effectivePolicy}
-      lastScanAt={data.storage.snapshot?.lifecycle?.lastScanAt ?? null}
-      busy={busy}
-      onChange={commit}
-    />
+    <>
+      <ArchivePolicy
+        value={data.storage.policy}
+        effectiveValue={data.storage.effectivePolicy}
+        lastScanAt={data.storage.snapshot?.lifecycle?.lastScanAt ?? null}
+        busy={busy}
+        onChange={commit}
+      />
+      <BuildOutputPolicy
+        value={data.storage.policy}
+        effectiveValue={data.storage.effectivePolicy}
+        summary={data.storage.snapshot?.lifecycle?.buildOutput ?? null}
+        busy={busy}
+        onChange={commit}
+      />
+    </>
   );
 }

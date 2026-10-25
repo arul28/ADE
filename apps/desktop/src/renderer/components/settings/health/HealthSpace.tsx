@@ -467,6 +467,20 @@ function ActionButton({ label, icon, onClick }: { label: string; icon: React.Rea
   );
 }
 
+/** "Build output removed 3d ago (1.2 GB): node_modules. Reinstall to rebuild." while those folders are still gone. */
+function buildOutputNote(item: StorageItem): string | null {
+  const removed = item.buildOutputRemoved;
+  if (!removed || removed.folders.length === 0) return null;
+  const size = removed.bytes > 0 || removed.partial ? ` (${formatMeasuredBytes(removed.bytes, removed.partial)})` : "";
+  return `Build output removed ${relativeWhen(removed.at)}${size}: ${removed.folders.join(", ")}. Reinstall or build to bring it back.`;
+}
+
+function withBuildOutputNote(line: string | undefined, item: StorageItem): string | undefined {
+  const note = buildOutputNote(item);
+  if (!note) return line;
+  return line ? `${line}. ${note}` : note;
+}
+
 function LaneDetails({
   category,
   laneIdByKey,
@@ -498,7 +512,7 @@ function LaneDetails({
             size={reclaimed ? "Folder removed" : formatMeasuredBytes(item.bytes, item.partial)}
             detail={reclaimed
               ? "The lane, branch and chats are kept. Restoring it recreates the folder."
-              : archivedAt ? `Archived ${relativeWhen(archivedAt)}` : item.detail}
+              : withBuildOutputNote(archivedAt ? `Archived ${relativeWhen(archivedAt)}` : item.detail, item)}
             action={laneId ? (
               reclaimed
                 ? <ActionButton label="Restore lane" icon={<ArrowClockwise size={13} />} onClick={() => onRestore(laneId)} />
@@ -531,7 +545,14 @@ function LaneDetails({
         );
       })}
       {active.map((item) => (
-        <ItemRow key={item.id} label={item.label} path={item.path} size={formatMeasuredBytes(item.bytes, item.partial)} detail="In use, kept" muted />
+        <ItemRow
+          key={item.id}
+          label={item.label}
+          path={item.path}
+          size={formatMeasuredBytes(item.bytes, item.partial)}
+          detail={buildOutputNote(item) ?? "In use, kept"}
+          muted
+        />
       ))}
       {hidden > 0 ? <div className="ade-modern-muted">And {hidden} smaller {hidden === 1 ? "folder" : "folders"}, counted in the total.</div> : null}
       {category.items.length === 0 ? <div className="ade-modern-muted">No lane folders.</div> : null}
