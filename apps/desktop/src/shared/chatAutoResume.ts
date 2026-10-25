@@ -180,6 +180,20 @@ export function autoResumeScheduledMessage(fireAtMs: number): string {
 
 export const AUTO_RESUME_ARMED_NOTICE_DETAIL =
   'ADE sends "continue" when the usage limit lifts.';
+export const AUTO_RESUME_EARLY_NOTICE_MESSAGE = "Usage is back early";
+export const AUTO_RESUME_EARLY_NOTICE_DETAIL =
+  'Usage shows room again, so ADE sends "continue" now instead of waiting for the reset.';
+export const AUTO_RESUME_RETRY_NOTICE_DETAIL =
+  "The provider refused the resume at its reset time, so ADE tries once more.";
+
+/**
+ * A resume sent right at the reset can be refused with that same reset time.
+ * ADE then tries once more after this margin; a second refusal stops.
+ */
+export const AUTO_RESUME_SAME_RESET_RETRY_MS = 120_000;
+
+/** How soon an early resume fires once usage shows the allowance is back. */
+export const AUTO_RESUME_EARLY_FIRE_DELAY_MS = 5_000;
 export const AUTO_RESUME_FIRED_NOTICE_MESSAGE = "Resumed after usage limit";
 export const AUTO_RESUME_PAUSED_NOTICE_MESSAGE = "Paused after 2 tries";
 export const AUTO_RESUME_PAUSED_NOTICE_DETAIL =

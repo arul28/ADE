@@ -48,6 +48,8 @@ type SideChatManaged = {
   deleted: boolean;
   closed: boolean;
   recentConversationEntries: Array<{ role: "user" | "assistant"; text: string; turnId?: string }>;
+  /** PDFs and images the Claude history carries; a fork carries them too. */
+  claudeRetainedMedia?: { pages: number; bytes: number };
 };
 
 type SideChatLineage = { sideChatParentSessionId?: string; sideChatSessionId?: string };
@@ -268,6 +270,8 @@ export function createSideChatService<
         // into the main chat's thread.
         createdRuntime.forkFromSdkSessionId = sourceSdkSessionId;
         createdRuntime.forkResumeSessionAt = resumeAt;
+        // The fork starts with the main chat's history, documents included.
+        if (parent.claudeRetainedMedia) created.claudeRetainedMedia = { ...parent.claudeRetainedMedia };
         deps.persistChatState(created);
       };
     }

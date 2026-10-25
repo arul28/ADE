@@ -70,6 +70,12 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
+import { claudeFastModeFallback } from "./claudeFastModeNotice";
+import {
+  emptyClaudeRetainedMedia,
+  parseClaudeRetainedMedia,
+  type ClaudeRetainedMedia,
+} from "./claudeInlineDocument";
 import {
   formatAttachedImageLegend,
   labelAttachments,
@@ -2194,6 +2200,8 @@ type PersistedChatState = {
    * state left by the old assistant-prose scan.
    */
   usageLimitResume?: AgentChatUsageLimitResume | null;
+  /** PDF pages and media bytes ADE inlined into the current Claude session. */
+  claudeRetainedMedia?: ClaudeRetainedMedia;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -3065,6 +3073,12 @@ type ClaudeRuntime = {
    * until a Stop or teardown drops the call.
    */
   detachedToolCalls: Map<string, { toolName: string; turnId?: string }>;
+  /**
+   * The main thread's Bash calls that have started and not returned, by
+   * tool_use_id. An inline steer moves these to the background first, because
+   * Claude Code reads a steer only after a foreground Bash call returns.
+   */
+  foregroundBashToolUseIds: Set<string>;
   /**
    * Stash for Task-tool inputs captured at the assistant tool_use boundary,
    * keyed by the Task tool_use_id. Lets the `system:task_*` system-message
@@ -5426,6 +5440,19 @@ type ManagedChatSession = {
   /** Host-computed usage-limit resume state. Null when no limit is live. */
   usageLimitResume?: AgentChatUsageLimitResume | null;
   /**
+   * In-memory only: which "Fast served at standard speed" notice this chat
+   * last showed, so a reason that keeps coming back is said once. Cleared when
+   * Fast is served again or the user turns it off.
+   */
+  claudeFastModeNoticeKey?: string | null;
+  /**
+   * PDF pages and base64 media bytes ADE inlined into this chat's current
+   * Claude session (see `claudeInlineDocument.ts`). Cleared when the session's
+   * history is gone: a completed compaction or a fresh session. Persisted, so
+   * a resumed session keeps counting what it already carries.
+   */
+  claudeRetainedMedia?: ClaudeRetainedMedia;
+  /**
    * In-memory only: this chat's Claude session UUID hit a hard plan/session
    * quota. ADE restart clears it. The next send reaps (already done) and
    * resumes the same UUID; a successful turn dismisses the quota card.
@@ -5741,6 +5768,8 @@ const CURSOR_SDK_SILENT_RUN_MESSAGE =
   "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
+/** How long an inline steer waits for Claude Code to background a Bash call. */
+const CLAUDE_BACKGROUND_TASKS_TIMEOUT_MS = 5_000;
 const CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 
 // Codex and Claude defaults can move at runtime (model-manifest.json), so they
@@ -12449,6 +12478,7 @@ export function createAgentChatService(args: {
    */
   const forgetProviderThreadPointer = (managed: ManagedChatSession): void => {
     delete managed.session.threadId;
+    delete managed.claudeRetainedMedia;
     managed.claudeBackgroundResumeSessionId = null;
     // A live Claude runtime holds its own copy, read right after the launch
     // env resolves the account: left set, the launch that fell back still
@@ -12470,6 +12500,7 @@ export function createAgentChatService(args: {
       delete next.providerSessionId;
       delete next.claudeBackgroundResumeSessionId;
       delete next.claudeBackgroundJobShort;
+      delete next.claudeRetainedMedia;
       fs.mkdirSync(path.dirname(managed.metadataPath), { recursive: true });
       writeJsonWithPrevious(managed.metadataPath, next, {
         validate: isPersistedChatStateShape,
@@ -14419,7 +14450,7 @@ export function createAgentChatService(args: {
         updateChatSession: (updateArgs) => updateSessionAndRememberDefaults({ ...updateArgs, runtimeActor: { kind: "cto" } }),
         sendChatMessage: sendMessage,
         interruptChat: async (args) => {
-          await interrupt(args);
+          await stopRequested(args);
         },
         sessionService,
         ensureCtoSession: async ({ laneId: requestedLaneId, modelId, reasoningEffort, reuseExisting }) =>
@@ -14581,6 +14612,7 @@ export function createAgentChatService(args: {
       interrupt?: ClaudeQuery["interrupt"];
       interruptWithOptions?: (options: { cancelQueued: boolean }) => Promise<SDKControlInterruptResponse>;
       stopTask?: ClaudeQuery["stopTask"];
+      backgroundTasks?: ClaudeQuery["backgroundTasks"];
       cancelAsyncMessage?: (uuid: string) => Promise<boolean>;
   } => {
     const rawQuery = sessionQuery as (ClaudeQuery & {
@@ -14622,6 +14654,9 @@ export function createAgentChatService(args: {
         : undefined,
       stopTask: typeof sessionQuery?.stopTask === "function"
         ? sessionQuery.stopTask.bind(sessionQuery)
+        : undefined,
+      backgroundTasks: typeof sessionQuery?.backgroundTasks === "function"
+        ? sessionQuery.backgroundTasks.bind(sessionQuery)
         : undefined,
       cancelAsyncMessage: typeof (sessionQuery as ClaudeQuery & { cancelAsyncMessage?: unknown } | null | undefined)?.cancelAsyncMessage === "function"
         ? (sessionQuery as ClaudeQuery & { cancelAsyncMessage: (uuid: string) => Promise<boolean> }).cancelAsyncMessage.bind(sessionQuery)
@@ -19634,6 +19669,7 @@ export function createAgentChatService(args: {
       ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
       ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
       ...(managed.usageLimitResume ? { usageLimitResume: managed.usageLimitResume } : {}),
+      ...(managed.claudeRetainedMedia ? { claudeRetainedMedia: managed.claudeRetainedMedia } : {}),
       ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
@@ -20084,6 +20120,7 @@ export function createAgentChatService(args: {
         ? record.usageLimitParkedUntil.trim()
         : undefined;
       const usageLimitResume = parseUsageLimitResume(record.usageLimitResume);
+      const claudeRetainedMedia = parseClaudeRetainedMedia(record.claudeRetainedMedia);
       const hasCodexServiceTier = Object.prototype.hasOwnProperty.call(record, "codexServiceTier");
       const codexServiceTier = hasCodexServiceTier ? normalizeCodexServiceTier(record.codexServiceTier) : undefined;
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
@@ -20382,6 +20419,7 @@ export function createAgentChatService(args: {
         ...(autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
         ...(usageLimitParkedUntil ? { usageLimitParkedUntil } : {}),
         ...(usageLimitResume ? { usageLimitResume } : {}),
+        ...(claudeRetainedMedia ? { claudeRetainedMedia } : {}),
         ...(hasCodexServiceTier ? { codexServiceTier } : {}),
         ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
@@ -24261,11 +24299,33 @@ export function createAgentChatService(args: {
     emitClaudeContextUsageState(managed, runtime, "measured", "live", turnId);
   };
 
+  /**
+   * Record what a delivered message added to the Claude session. Only a
+   * message that inlined something moves the budget, so text-only sends never
+   * write the chat file for it.
+   */
+  const keepClaudeRetainedMedia = (managed: ManagedChatSession, next: ClaudeRetainedMedia): void => {
+    const previous = managed.claudeRetainedMedia;
+    if (previous ? previous.pages === next.pages && previous.bytes === next.bytes : next.pages === 0 && next.bytes === 0) {
+      return;
+    }
+    managed.claudeRetainedMedia = next;
+    persistChatState(managed);
+  };
+
+  /** The Claude session's history is gone, and the PDFs and images with it. */
+  const forgetClaudeRetainedMedia = (managed: ManagedChatSession): void => {
+    if (!managed.claudeRetainedMedia) return;
+    delete managed.claudeRetainedMedia;
+    persistChatState(managed);
+  };
+
   const observeClaudeCompaction = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     options: { completed: boolean; postTokens?: number | null },
   ): void => {
+    if (options.completed) forgetClaudeRetainedMedia(managed);
     const guardrail = runtime.contextGuardrail;
     guardrail.usageRevision += 1;
     const internalTrigger = guardrail.pendingInternalCompactionTrigger;
@@ -25499,6 +25559,7 @@ export function createAgentChatService(args: {
     newConversationId: string,
   ): Promise<void> => {
     await adoptClaudeProviderSessionId(managed, runtime, newConversationId);
+    forgetClaudeRetainedMedia(managed);
     managed.autoTitleSeed = null;
     managed.autoTitleStage = "none";
     managed.runtimeTitleAdopted = false;
@@ -28077,6 +28138,7 @@ export function createAgentChatService(args: {
       claudeRateLimitWarningEmitted: false,
       ...(persisted?.usageLimitParkedUntil ? { usageLimitParkedUntil: persisted.usageLimitParkedUntil } : {}),
       ...(persisted?.usageLimitResume ? { usageLimitResume: persisted.usageLimitResume } : {}),
+      ...(persisted?.claudeRetainedMedia ? { claudeRetainedMedia: { ...persisted.claudeRetainedMedia } } : {}),
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       answeredPlanApprovalItemIds: new Set<string>(persisted?.answeredPlanApprovalItemIds ?? []),
@@ -29456,6 +29518,105 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
   };
 
+  /**
+   * Keep `foregroundBashToolUseIds` in step with the stream: a main-thread
+   * Bash tool_use opens one, its tool_result closes it, and a turn result
+   * closes them all. Subagent frames carry a `parent_tool_use_id` and are left
+   * out; a subagent's own Bash is the subagent's business.
+   */
+  const trackClaudeForegroundBash = (runtime: ClaudeRuntime, msg: SDKMessage): void => {
+    const record = msg as unknown as Record<string, unknown>;
+    if (record.type === "result") {
+      runtime.foregroundBashToolUseIds.clear();
+      return;
+    }
+    if (record.type !== "assistant" && record.type !== "user") return;
+    if (compactString(record.parent_tool_use_id) != null) return;
+    const content = asRecord(record.message)?.content;
+    if (!Array.isArray(content)) return;
+    for (const entry of content) {
+      const block = asRecord(entry);
+      if (!block) continue;
+      if (record.type === "assistant" && block.type === "tool_use" && block.name === "Bash") {
+        const id = compactString(block.id);
+        if (id) runtime.foregroundBashToolUseIds.add(id);
+      } else if (record.type === "user" && block.type === "tool_result") {
+        const id = compactString(block.tool_use_id);
+        if (id) runtime.foregroundBashToolUseIds.delete(id);
+      }
+    }
+  };
+
+  /**
+   * Move the main thread's running Bash calls to the background so an inline
+   * steer is read now, not when the command exits. This is Claude Code's own
+   * Ctrl+B: each call returns "running in the background" at once, the command
+   * keeps running as a background task (Stop still stops it), and its output
+   * comes back as a task notification. Best effort and bounded: a failure, an
+   * unanswered request, or a call that already returned leaves the steer to
+   * wait as it always did.
+   */
+  const backgroundClaudeForegroundBash = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): Promise<void> => {
+    if (!runtime.foregroundBashToolUseIds.size || !runtime.activeTurnId) return;
+    const control = getClaudeQueryControl(runtime.query);
+    if (typeof control.backgroundTasks !== "function") return;
+    const toolUseIds = [...runtime.foregroundBashToolUseIds];
+    await Promise.all(toolUseIds.map(async (toolUseId) => {
+      try {
+        const moved = await awaitClaudeControlCall(
+          `Moving Claude Bash call '${toolUseId}' to the background`,
+          CLAUDE_BACKGROUND_TASKS_TIMEOUT_MS,
+          () => control.backgroundTasks!(toolUseId),
+        );
+        logger.info("agent_chat.claude_steer_backgrounded_bash", {
+          sessionId: managed.session.id,
+          toolUseId,
+          moved,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.claude_steer_background_bash_failed", {
+          sessionId: managed.session.id,
+          toolUseId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }));
+  };
+
+  /**
+   * Say once when Claude Code answered a Fast request at standard speed (no
+   * credits, turned off by the org, a non-Anthropic provider, or a rate-limit
+   * cooldown). A new reason is said again; Fast served, or turned off by the
+   * user, resets it so the next refusal is news.
+   */
+  const noteClaudeFastModeResult = (
+    managed: ManagedChatSession,
+    result: Record<string, unknown>,
+    turnId?: string,
+  ): void => {
+    if (!sessionEffectiveFastMode(managed.session)) {
+      managed.claudeFastModeNoticeKey = null;
+      return;
+    }
+    const outcome = claudeFastModeFallback(result);
+    if (outcome === null) return;
+    if (outcome === "served") {
+      managed.claudeFastModeNoticeKey = null;
+      return;
+    }
+    if (managed.claudeFastModeNoticeKey === outcome.key) return;
+    managed.claudeFastModeNoticeKey = outcome.key;
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: outcome.message,
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
   const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
     if (msg.type !== "assistant" && msg.type !== "stream_event" && msg.type !== "tool_progress") {
       return false;
@@ -30156,6 +30317,7 @@ export function createAgentChatService(args: {
     if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
       adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
     }
+    trackClaudeForegroundBash(runtime, msg);
 
     if (record.type === "conversation_reset") {
       const newConversationId = compactString(record.new_conversation_id);
@@ -30688,6 +30850,7 @@ export function createAgentChatService(args: {
       state.modelProvider = metadata.modelProvider;
       state.apiErrorStatus = metadata.apiErrorStatus;
       state.fastModeDisabledReason = metadata.fastModeDisabledReason;
+      noteClaudeFastModeResult(managed, resultMsg, turnId ?? undefined);
       if (metadata.userMessageUuid) state.userMessageUuid = metadata.userMessageUuid;
       state.requestSentWallMs = metadata.requestSentWallMs;
       if (metadata.queuedTurnCount != null) state.queuedTurnCount = metadata.queuedTurnCount;
@@ -31358,12 +31521,14 @@ export function createAgentChatService(args: {
 
       // Build the message after permission-mode recovery, because rebuilding a
       // fresh Claude SDK session clears runtime.sdkSessionId.
+      const retainedMedia = { ...(managed.claudeRetainedMedia ?? emptyClaudeRetainedMedia()) };
       const messageToSend = await buildClaudeV2MessageAsync(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
         getDirtyFileTextForPath,
         logger,
+        retainedMedia,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId as NonNullable<SDKUserMessage["uuid"]>;
       messageToSend.timestamp = new Date().toISOString();
@@ -31375,6 +31540,7 @@ export function createAgentChatService(args: {
       }
       pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
       settleClaudeInitialInputDispatch(runtime);
+      keepClaudeRetainedMedia(managed, retainedMedia);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
@@ -31565,6 +31731,7 @@ export function createAgentChatService(args: {
         if (messageSessionId.length > 0 && runtime.sdkSessionId !== messageSessionId) {
           adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
         }
+        trackClaudeForegroundBash(runtime, msg);
 
         if ((msg as any).type === "conversation_reset") {
           const newConversationId = compactString((msg as any).new_conversation_id);
@@ -33106,6 +33273,7 @@ export function createAgentChatService(args: {
           resultModelProvider = metadata.modelProvider;
           resultApiErrorStatus = metadata.apiErrorStatus;
           resultFastModeDisabledReason = metadata.fastModeDisabledReason;
+          noteClaudeFastModeResult(managed, resultMsg as Record<string, unknown>, turnId);
           if (metadata.userMessageUuid) resultUserMessageUuid = metadata.userMessageUuid;
           resultRequestSentWallMs = metadata.requestSentWallMs;
           if (metadata.queuedTurnCount != null) resultQueuedTurnCount = metadata.queuedTurnCount;
@@ -45446,6 +45614,7 @@ export function createAgentChatService(args: {
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
     runtime.scheduledWorkLastEvents.clear();
+    runtime.foregroundBashToolUseIds.clear();
     // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
@@ -45476,6 +45645,7 @@ export function createAgentChatService(args: {
       runtime.sdkSessionId = null;
       runtime.forkFromSdkSessionId = null;
       runtime.forkResumeSessionAt = null;
+      forgetClaudeRetainedMedia(managed);
       // The hydrate-time fallback must not resurrect an older thread either.
       if (!managed.claudeBackgroundJobShort) managed.claudeBackgroundResumeSessionId = null;
       managed.runtimeInvalidated = true;
@@ -46682,6 +46852,7 @@ export function createAgentChatService(args: {
       activeSubagents: new Map(),
       emittedSubagentStartIds: new Set(),
       detachedToolCalls: new Map(),
+      foregroundBashToolUseIds: new Set(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
       subagentSpawnNameById: new Map(),
@@ -60639,12 +60810,14 @@ export function createAgentChatService(args: {
     const dispatchUuid = steer.uuid;
     const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
     const promptText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
+    const retainedMedia = { ...(managed.claudeRetainedMedia ?? emptyClaudeRetainedMedia()) };
     const sdkMsg = await buildClaudeV2MessageAsync(promptText, steer.resolvedAttachments, {
       baseDir: managed.laneWorktreePath,
       sessionId: runtime.sdkSessionId ?? null,
       forceUserMessage: true,
       getDirtyFileTextForPath,
       logger,
+      retainedMedia,
     }) as unknown as SDKUserMessage;
 
     // Match Claude Code's own command queue. "next" is consumed between tool
@@ -60661,12 +60834,24 @@ export function createAgentChatService(args: {
     sdkMsg.shouldQuery = true;
     sdkMsg.uuid = dispatchUuid as NonNullable<SDKUserMessage["uuid"]>;
 
+    // A person's inline steer is read only once a running Bash call returns,
+    // so that call goes to the background first. A person's interrupt already
+    // moves it aside (see above). Automatic deliveries (relays, wakes, child
+    // reports) keep waiting for the command, as they always have.
+    if (mode === "inline" && steer.sentByUser === true) {
+      await backgroundClaudeForegroundBash(managed, runtime);
+    }
+    if (!runtime.inputPump) {
+      throw new Error("Claude's live input stream closed before the steer could be dispatched.");
+    }
+
     rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, dispatchUuid, {
       preview: claudeQueuedMessagePreview(steer.displayText ?? steer.text),
       steerId: steer.steerId,
       steer: { ...steer },
     });
     pushClaudeMessage(managed, runtime, runtime.inputPump, sdkMsg);
+    keepClaudeRetainedMedia(managed, retainedMedia);
     onAccepted?.();
 
     emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
@@ -62892,6 +63077,47 @@ export function createAgentChatService(args: {
     args: AgentChatInterruptArgs,
     internalOptions: { requireClaudeProviderInterrupt?: boolean; keepProviderQueue?: boolean } = {},
   ): Promise<AgentChatInterruptResult> => interruptTree(args, internalOptions, new Set());
+
+  /**
+   * A fresh usage reading. A chat waiting out a usage limit resumes early when
+   * the reading shows every window of its own account below 100% again (a
+   * reset credit, or the provider refreshing sooner than it said). The
+   * coordinator reads the reading's time against the failure, so data older
+   * than the limit never counts, and gives each limit one early try.
+   */
+  const noteUsageSnapshot = (
+    snapshot: Pick<UsageSnapshot, "windows" | "accounts" | "providerStatus">,
+  ): void => {
+    for (const managed of managedSessions.values()) {
+      if (managed.deleted || managed.usageLimitResume?.state !== "armed") continue;
+      const provider = managed.session.provider;
+      if (provider !== "claude" && provider !== "codex") continue;
+      const status = snapshot.providerStatus?.[provider];
+      if (status && status.state !== "ok") continue;
+      const readingAtMs = Date.parse(status?.updatedAt ?? status?.lastSuccessAt ?? "");
+      if (!Number.isFinite(readingAtMs)) continue;
+      const instanceId = managed.session.instanceId?.trim() || defaultProviderInstanceId(provider);
+      const account = (snapshot.accounts ?? []).find((entry) =>
+        entry.provider === provider
+        && (entry.instanceId === instanceId || entry.id === `${provider}:${instanceId}`));
+      if (!account) continue;
+      const windows = (snapshot.windows ?? []).filter((window) =>
+        window.provider === provider && window.accountId === account.id);
+      if (!windows.length || windows.some((window) => !(window.percentUsed < 100))) continue;
+      void autoResume.resumeEarly(managed.session.id, readingAtMs);
+    }
+  };
+
+  /**
+   * A Stop someone asked for: a person, the CLI, or the CTO. Stop means stop,
+   * so a resume armed for a usage limit is cancelled too, before the turn is,
+   * so a resume that comes due during the stop cannot start a new turn. ADE's
+   * own stops (turn recovery, a headless limit) call `interrupt` and keep it.
+   */
+  const stopRequested = async (args: AgentChatInterruptArgs): Promise<AgentChatInterruptResult> => {
+    void autoResume.cancelForSession(args.sessionId, "stopped");
+    return interrupt(args);
+  };
 
   /** `interrupt`, carrying the chats already stopped so a cycle cannot loop. */
   const interruptTree = async (
@@ -74090,8 +74316,9 @@ export function createAgentChatService(args: {
     moveSteer,
     dispatchSteer,
     cancelDispatchedSteer,
-    interrupt,
-    interruptWithQueueMode: interrupt,
+    interrupt: stopRequested,
+    interruptWithQueueMode: stopRequested,
+    noteUsageSnapshot,
     stopTask,
     messageSubagent,
     controlSubagent,
