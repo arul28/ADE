@@ -18,6 +18,10 @@ final class PointerFence {
     private var runLoopSource: CFRunLoopSource?
     private var lastRealDisplayId: CGDirectDisplayID?
     private var lastFailureLogAt = Date.distantPast
+    /// Lane displays the pointer may cross because a real display is cut off
+    /// behind them. Read on every fenced event, so it is computed on display
+    /// changes (`refreshRoutes`), never per event.
+    private var routeDisplayIds: Set<CGDirectDisplayID> = []
 
     init(
         shouldRedirect: @escaping (String?) -> Bool,
@@ -62,6 +66,7 @@ final class PointerFence {
         eventTap = tap
         runLoopSource = source
         lastRealDisplayId = realDisplay(at: CGEvent(source: nil)?.location ?? .zero)?.first
+        refreshRoutes()
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
     }
@@ -106,7 +111,7 @@ final class PointerFence {
         }
         guard let laneDisplayId = displays.first(where: isADEDisplay),
               shouldRedirect(laneIdForDisplay(laneDisplayId)),
-              !isOnlyRouteToARealDisplay(laneDisplayId),
+              !routeDisplayIds.contains(laneDisplayId),
               let destination = nearestRealPoint(to: point)
         else {
             return Unmanaged.passUnretained(event)
@@ -123,21 +128,17 @@ final class PointerFence {
         return Unmanaged.passUnretained(event)
     }
 
-    /// True when this lane display touches a real display the person cannot
-    /// reach any other way. Fencing it would trap the pointer on their other
-    /// screens (an AirPlay display macOS put beside a lane display), so the
-    /// pointer may cross it until the display host moves that screen back.
-    private func isOnlyRouteToARealDisplay(_ laneDisplayId: CGDirectDisplayID) -> Bool {
-        let real = activeDisplays().filter { !isADEDisplay($0.id) }
-        let mainIndex = real.firstIndex { CGDisplayIsMain($0.id) != 0 } ?? 0
-        let frames = real.map(\.frame)
-        let laneFrame = CGDisplayBounds(laneDisplayId)
-        let bridges = Geometry.cutOffRealDisplays(realDisplayFrames: frames, mainIndex: mainIndex)
-            .contains { Geometry.pointerCanCross(laneFrame, frames[$0]) }
-        if bridges {
-            logFailure("lane display \(laneDisplayId) is the only way to reach one of the user's screens; letting the pointer cross it")
+    /// Recomputes which lane displays stand between the person and one of
+    /// their screens. While any do, the fence lets the pointer cross them
+    /// rather than trap it; the placement pass moves that screen back, which
+    /// empties the set. Main queue, like the tap.
+    func refreshRoutes() {
+        let route = DisplayLayout.current().laneDisplaysOnRouteToCutOffRealDisplays()
+        if route != routeDisplayIds, !route.isEmpty {
+            let names = route.sorted().map(String.init).joined(separator: ", ")
+            log("lane display \(names) is the only way to reach one of the user's screens; the pointer may cross it")
         }
-        return bridges
+        routeDisplayIds = route
     }
 
     private func nearestRealPoint(to point: CGPoint) -> CGPoint? {
@@ -190,7 +191,7 @@ final class PointerFence {
     }
 
     private func isADEDisplay(_ displayId: CGDirectDisplayID) -> Bool {
-        CGDisplayVendorNumber(displayId) == VirtualDisplayIdentity.vendorID
+        VirtualDisplayIdentity.isADEDisplay(displayId)
     }
 
     private func squaredDistance(_ first: CGPoint, _ second: CGPoint) -> CGFloat {

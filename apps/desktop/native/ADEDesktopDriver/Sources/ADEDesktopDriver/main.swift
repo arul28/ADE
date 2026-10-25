@@ -50,7 +50,7 @@ final class DriverRuntime: NSObject {
     private lazy var capture = CaptureEngine(log: log, emit: emit)
     lazy var realInput = RealInput(leases: leases, log: log)
     lazy var backgroundInput = BackgroundInput(log: log)
-    private lazy var pointerFence = PointerFence(
+    lazy var pointerFence = PointerFence(
         shouldRedirect: { [weak self] laneId in
             guard let self else { return false }
             // Another ADE helper owns its own lease state and fence. Do not

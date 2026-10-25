@@ -97,27 +97,37 @@ final class GeometryTests: XCTestCase {
     /// The AirPlay trap, measured on macOS 27 with a second display added while
     /// a lane display was up: macOS left the new screen sharing an edge only
     /// with the lane display, so the fenced pointer could never reach it. After
-    /// the repair every real screen shares an edge with the main one, and the
-    /// lane chain planned against the repaired layout touches real screens at
-    /// corners only.
+    /// the repair every real screen shares an edge with the main one, never
+    /// lands on another helper's lane display, and the lane chain planned
+    /// against the repaired layout touches real screens at corners only.
     func testCutOffRealDisplaysAreMovedBesideTheMainDisplaysGroup() {
         let main = CGRect(x: 0, y: 0, width: 5120, height: 1440)
-        let cases: [(name: String, real: [CGRect], cutOff: [Int], expected: [CGRect])] = [
+        let cases: [(name: String, real: [CGRect], obstacles: [CGRect], cutOff: [Int], expected: [CGRect])] = [
             (
                 "nothing cut off stays put",
                 [main, CGRect(x: -2560, y: 0, width: 2560, height: 1440)],
+                [],
                 [],
                 [main, CGRect(x: -2560, y: 0, width: 2560, height: 1440)]
             ),
             (
                 "a TV beside a lane display slides flush to the main display, half an edge overlapping",
                 [main, CGRect(x: 7680, y: 1440, width: 2560, height: 1440)],
+                [],
                 [1],
                 [main, CGRect(x: 5120, y: 720, width: 2560, height: 1440)]
             ),
             (
+                "another helper's lane display on that side sends it to the next side",
+                [main, CGRect(x: 7680, y: 1440, width: 2560, height: 1440)],
+                [CGRect(x: 5120, y: 0, width: 2560, height: 1440)],
+                [1],
+                [main, CGRect(x: -2560, y: 720, width: 2560, height: 1440)]
+            ),
+            (
                 "a corner-only contact is still cut off",
                 [main, CGRect(x: 5120, y: 1440, width: 1920, height: 1080)],
+                [],
                 [1],
                 [main, CGRect(x: 5120, y: 900, width: 1920, height: 1080)]
             ),
@@ -128,6 +138,7 @@ final class GeometryTests: XCTestCase {
                     CGRect(x: -4000, y: 3000, width: 1920, height: 1080),
                     CGRect(x: -2080, y: 3000, width: 1920, height: 1080),
                 ],
+                [],
                 [1, 2],
                 [
                     main,
@@ -143,31 +154,63 @@ final class GeometryTests: XCTestCase {
                 testCase.cutOff,
                 testCase.name
             )
-            let repaired = Geometry.reconnectedRealDisplayFrames(
+            guard let repaired = Geometry.reconnectedRealDisplayFrames(
                 realDisplayFrames: testCase.real,
                 mainIndex: 0,
-                requiresIntegralOrigins: true
-            )
+                obstacleDisplayFrames: testCase.obstacles
+            ) else {
+                XCTFail("\(testCase.name): no repair")
+                continue
+            }
             XCTAssertEqual(repaired, testCase.expected, testCase.name)
-            XCTAssertEqual(
-                Geometry.cutOffRealDisplays(realDisplayFrames: repaired ?? [], mainIndex: 0),
-                [],
-                testCase.name
-            )
+            XCTAssertEqual(Geometry.cutOffRealDisplays(realDisplayFrames: repaired, mainIndex: 0), [], testCase.name)
             let lane = DisplayPlacement(origin: .zero, width: 2560, height: 1440, scale: 1)
-            let planned = Geometry.cornerChainPlacements(
-                realDisplayFrames: repaired ?? [],
+            guard let planned = Geometry.cornerChainPlacements(
+                realDisplayFrames: repaired,
                 laneDisplayTemplates: [lane],
+                obstacleDisplayFrames: testCase.obstacles,
                 requiresIntegralOrigins: true
-            )
-            XCTAssertNotNil(planned, testCase.name)
-            for display in repaired ?? [] {
+            ) else {
+                XCTFail("\(testCase.name): no lane placement")
+                continue
+            }
+            for display in repaired {
                 XCTAssertFalse(
-                    Geometry.pointerCanCross(planned?.first?.frame ?? .null, display),
+                    Geometry.pointerCanCross(planned[0].frame, display),
                     "\(testCase.name): a lane display must not share an edge with a real one"
                 )
             }
         }
+    }
+
+    /// The fence's fallback while a screen is still cut off: every lane display
+    /// between the person and that screen is crossable, through a chain of
+    /// lane displays that share edges; a lane display elsewhere stays fenced.
+    func testLaneDisplaysOnTheRouteToACutOffScreenAreCrossable() {
+        let main = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let tv = CGRect(x: 6400, y: 0, width: 1920, height: 1080)
+        let lanes = [
+            CGRect(x: 1920, y: 0, width: 2560, height: 1440),
+            CGRect(x: 4480, y: 0, width: 1920, height: 1080),
+            CGRect(x: -2560, y: 1080, width: 2560, height: 1440),
+        ]
+        XCTAssertEqual(
+            Geometry.laneDisplaysOnRouteToCutOffRealDisplays(
+                realDisplayFrames: [main, tv],
+                mainIndex: 0,
+                laneDisplayFrames: lanes
+            ),
+            [0, 1]
+        )
+        XCTAssertEqual(
+            Geometry.laneDisplaysOnRouteToCutOffRealDisplays(
+                realDisplayFrames: [main, CGRect(x: 1920, y: 0, width: 1920, height: 1080)],
+                mainIndex: 0,
+                laneDisplayFrames: lanes
+            ),
+            [],
+            "nothing is crossable while every screen is reachable"
+        )
     }
 
     /// Cocoa origin is the primary's bottom-left; Quartz / CGEvent origin is

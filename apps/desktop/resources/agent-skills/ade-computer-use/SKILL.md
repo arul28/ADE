@@ -16,7 +16,8 @@ Go down this list and stop at the first step that answers the question:
    Most "does it work" questions end here.
 2. **A surface that never opens a screen.** A web page or localhost →
    `ade browser`. An Electron app → `ade app-control`. An iOS or SwiftUI app
-   → `ade apple`. They run in the background and need nothing from the user.
+   → `ade apple`. They run in the background and never touch the user's
+   screen, pointer or focus.
 3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows),
    only for what steps 1 and 2 cannot reach:
    - a native or custom-drawn Mac app: the Mac app you are building, a DAW
@@ -42,17 +43,15 @@ stop it when you are done (see **Rules that will bite you**).
 | An Electron app — your dev build, or an installed one such as Slack — or anything whose DOM you need: labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
-| A native or custom-drawn macOS app (your own Mac app, a DAW such as FL Studio or Ableton, a game, a canvas), real Mac window behaviour, or Safari when the user names it — step 3 above | `ade mac-desktop` (the lane's private display) | this skill, below |
+| Step 3 above, on a Mac | `ade mac-desktop` (the lane's private display) | this skill, below |
 | A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
 
-Pick App Control for an Electron app: it acts through the DOM, so labels,
-selectors, test ids and hover work, and it records and proves the app's own
-window without a lane screen. That covers your dev build (`ade app-control
-launch`) and an installed app such as Slack or a packaged build of the app you
-work on: start it with a debug port, then attach (`ade mac-desktop open
-"<App>" -- --remote-debugging-port=9333`, then `ade app-control connect
---cdp-port 9333`). Only when the app refuses a debug port does Mac Desktop
-drive an Electron window by point, like any other app.
+App Control acts through an Electron app's DOM, so labels, selectors, test ids
+and hover work, and it records and proves the app's own window without a lane
+screen. An installed app (Slack, a packaged build of the app you work on)
+launches the same way as your dev build, with its binary and
+`$ADE_APP_CONTROL_DEBUG_FLAGS` (see **ade-app-control**). Only when the app
+refuses a debug port does Mac Desktop drive an Electron window by point.
 
 ADE's browser is the default for web work. Attach to the user's own browser
 only when they ask for it, never on your own, and tell them which machine and
@@ -145,13 +144,15 @@ ade app-control show --floating --text
 # Mac Desktop
 
 Each lane owns a private macOS screen. `ade mac-desktop ...` creates it, parks
-apps on it, and drives them through the Accessibility API. The user's real
-display and real pointer are never touched, so you never have to ask before
-clicking — with one exception, the input lease below.
+apps on it, and drives them through the Accessibility API. While you use a lane
+screen, nothing captures the user's real display, and their pointer moves only
+under a lease, so you never have to ask before clicking — with one exception,
+the input lease below. While
+a lane screen is up, macOS may rearrange the user's screens around it for this
+session.
 
-For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser**
-skill) by default. Open Safari or another browser here only when the user names
-that app or asks for the Mac Desktop.
+For web tasks, use `ade browser` (step 2 above). Open Safari or another browser
+here only when the user names that app or asks for the Mac Desktop.
 
 macOS runtime hosts only. `ade mac-desktop status --text` answers everywhere;
 every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
@@ -408,10 +409,16 @@ ade mac-desktop drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
   is theirs and is not quit.
 - **Stop the screen when you finish.** While it is up it is a real display
   on the user's Mac: their screens stay rearranged around it and its apps
-  keep running. Once the result is confirmed and any proof is filed, save or
-  close your documents, then `ade mac-desktop stop --text`. Leave it
-  running only when the user asked to look at the result or to keep working
-  in it, and then say in your reply that the lane screen is still up. When
+  keep running. Once the result is confirmed and any proof is filed, close
+  your own windows (the unsaved-work rule below says how), then `ade
+  mac-desktop stop --text`. Every chat in a lane shares its one screen, and
+  `stop` quits every app the lane opened and drops a recording in progress.
+  So first check `ade mac-desktop status --text` and `ade mac-desktop windows
+  --text`. Leave it running when a window you did not open or claim is there,
+  or status shows a recording you did not start, a lease held by another chat,
+  or a running stream (someone is watching).
+  Leave it running too when the user asked to look at the result or to keep
+  working in it. Whenever you leave it up, say so in your reply. When
   the user wants to keep using an app, `release` it (see above): its windows
   move to the user's screen. When the user asks you to close, clean up or
   shut down what you opened, run `ade mac-desktop quit --text` (every app the
