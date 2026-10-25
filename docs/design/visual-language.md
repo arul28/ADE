@@ -101,12 +101,12 @@ Code: `apps/desktop/src/renderer/scene/`, styles in `styles/scene.css`.
   `gradient` (the theme's animated mesh), `image` (one picture) or `shuffle` (a
   picture from the library, changed on launch, wake, hourly or daily). The
   desktop default is `shuffle` with no texture and a 30% veil; the hosted web
-  client defaults to `plain`, chosen at read time and never persisted. A saved
-  preference that is still an earlier untouched default (the first shuffle at a
-  12% veil, or the `plain` that replaced it) reads as today's default; a pick
-  (`choiceMade`) or a tuned look stands. Bumping `SCENE_DEFAULTS_REVISION` in
-  `scenePreferences.ts` puts every user back on the default once; use it only
-  for a deliberate product reset.
+  client defaults to `plain`, chosen at read time and never persisted.
+  Bumping `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts` puts every user
+  back on the default once, whatever they had picked; use it only for a
+  deliberate product reset. Revision 2 (the sharp, per-screen pictures) is
+  one: every desktop user starts on the shuffle of the pictures that fit
+  their screen, and their choices stand from there.
 - **Fine textures need a 2x screen.** The Halftone texture (0.75px dots on a
   3px grid) draws only at `min-resolution: 2dppx`. Below that a dot cannot be
   drawn: it snaps to a hard 1px grid at 1x and to moiré bands at 125% and 150%,
