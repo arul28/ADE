@@ -36630,7 +36630,7 @@ async function runParsedCli(
       // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
       // Node's bundled set; read the OS store off the loop and add it.
       // The brain's log says once whether the environment's proxy is in use.
-      if (outboundProxyConfigured) process.stderr.write("ADE: network.proxy_configured (HTTPS_PROXY/HTTP_PROXY; loopback direct)\n");
+      if (outboundProxyConfigured) process.stderr.write("ADE: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n");
       void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
       return {
@@ -36749,7 +36749,8 @@ const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
 /**
  * A network setup failure (an unusable proxy setting, an unreadable OS trust
  * store) goes to stderr, where the brain's other startup notes go; stdout
- * stays the command's output.
+ * stays the command's output. Success is quiet here, so short commands print
+ * nothing; the brain notes the proxy once itself.
  */
 let outboundProxyConfigured = false;
 const networkWarningLogger = {

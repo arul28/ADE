@@ -91,7 +91,7 @@ const electronExecutable = electronRelativePath ? path.join(electronDist, electr
 if (!electronExecutable || !fs.existsSync(electronExecutable)) {
   const repair = fs.existsSync(electronDir)
     ? ensureElectronStatus != null && ensureElectronStatus !== 0
-      ? `the download failed (ensure-electron: ${ensureElectronStatus}); check the network or proxy, then run \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
+      ? `retry the download (ensure-electron exited ${ensureElectronStatus}; check the network or proxy) by running \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
       : `run \`node scripts/ensure-electron.cjs\` in apps/desktop`
     : "run `npm install` again in apps/desktop";
   const missing = !fs.existsSync(electronPath)

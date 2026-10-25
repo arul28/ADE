@@ -86,9 +86,9 @@ const WINDOWS_HISTORY_DWORD_FORMAT = "CanIncludeInClipboardHistory";
 
 /**
  * True when a password manager marked what is on the clipboard as not to be
- * recorded. `formats` is the flavor list the same poll read, so no second
- * look at the clipboard decides it (Electron reads each flavor separately, so
- * the text itself is still a read of its own).
+ * recorded. `formats` is the flavor list the same poll read. On Windows the
+ * `CanIncludeInClipboardHistory` value is read when the copy is checked, so a
+ * password manager that replaces the clipboard in between reads as allowed.
  */
 export async function isConcealedClipboard(
   clipboard: HomeWidgetsClipboard,
@@ -115,10 +115,13 @@ type ClipboardWatch = {
   formats: string;
   /** A poll is still awaiting the clipboard; the next tick skips rather than overlapping it. */
   polling: boolean;
+  /** When the picture was last read, and how long until the next look. */
+  imageReadAt: number;
+  imageRereadWait: number;
 };
 
 function newClipboardWatch(): ClipboardWatch {
-  return { lastSeen: null, formats: "", polling: false };
+  return { lastSeen: null, formats: "", polling: false, imageReadAt: 0, imageRereadWait: CLIPBOARD_IMAGE_REREAD_MS };
 }
 
 export function createClipboardHistory(deps: {
@@ -143,9 +146,6 @@ export function createClipboardHistory(deps: {
    * that outlives its watch sees it is no longer `watch` and drops what it read.
    */
   let watch: ClipboardWatch = newClipboardWatch();
-  /** When the picture was last read, and how long until the next look. */
-  let lastImageReadAt = 0;
-  let imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
   /** Full PNGs of image entries, by hash. A kept history reads the rest from disk on copy. */
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
@@ -352,7 +352,7 @@ export function createClipboardHistory(deps: {
     }
 
     // An image: re-read the picture now and then, at once when the formats changed.
-    if (!first && !formatsChanged && mine.lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
+    if (!first && !formatsChanged && mine.lastSeen?.startsWith("i:") && Date.now() - mine.imageReadAt < mine.imageRereadWait) return;
     let read: HomeClipboardImageRead | null = null;
     try {
       read = (await deps.clipboard.readImage?.()) ?? null;
@@ -360,17 +360,17 @@ export function createClipboardHistory(deps: {
       read = null;
     }
     if (mine !== watch) return;
-    lastImageReadAt = Date.now();
+    mine.imageReadAt = Date.now();
     if (!read) {
       mine.lastSeen = "";
       return;
     }
     const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
     if (seen === mine.lastSeen) {
-      imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
+      mine.imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, mine.imageRereadWait * 2);
       return;
     }
-    imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
+    mine.imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
     if (skipFirst) {
       mine.lastSeen = seen;
       return;

@@ -672,7 +672,8 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
  * for its owner is a {@link GitUntrustedFolderError}; a machine that cannot
  * run git (no developer tools, the Xcode license, no git installed at all) is
  * marked an expected `environment` failure. `message` replaces the text shown
- * when the caller words it itself.
+ * when the caller words it itself; it is not scrubbed, so pass git output in
+ * it through `redactGitOutput` (the default already does).
  */
 export function gitCommandError(raw: string, message: string = formatGitExecutionError(raw)): Error {
   const ownership = describeGitOwnershipProblem(raw);
