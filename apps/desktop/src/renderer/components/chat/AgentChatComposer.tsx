@@ -3439,20 +3439,6 @@ function AgentChatComposerImpl({
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
   const chatRuntimePin = useChatRuntimeScope().pin;
-  // Which chat (or the draft) had its model picked by hand: Jev's hint then
-  // keeps that model and suggests only an effort. A model the draft opened
-  // with (a saved default) was not picked here, so it still gets model hints.
-  const [modelPickedByHandFor, setModelPickedByHandFor] = useState<string | null>(null);
-  const handPickKey = sessionId ?? "draft";
-  // Every new chat is "draft": arriving at one starts it unpicked.
-  useEffect(() => {
-    if (handPickKey === "draft") setModelPickedByHandFor((current) => (current === "draft" ? null : current));
-  }, [handPickKey]);
-  const handleModelPickerChange = useCallback((nextModelId: string, options?: ModelPickerSelection) => {
-    // The fast-mode switch reports the same model; that is not a model pick.
-    if (nextModelId !== modelId) setModelPickedByHandFor(handPickKey);
-    onModelChange(nextModelId, options);
-  }, [handPickKey, modelId, onModelChange]);
   // Bumped per effort picked by hand; the hint chip stands down for that prompt.
   const [effortPickedByHand, setEffortPickedByHand] = useState(0);
   const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
@@ -7275,7 +7261,6 @@ function AgentChatComposerImpl({
     allowedModelIds: constrainModelSelection ? availableModelIds ?? null : null,
     pin: modelRuntimePin,
     ownerBinding: composerMachineBinding,
-    modelChosen: modelPickedByHandFor === handPickKey || chatHasMessages,
     // The hint reads Smart decisions and the project's settings, which a
     // personal chat has none of (and with no project open, nothing to ask).
     hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset) || !projectChatPane,
@@ -8391,7 +8376,7 @@ function AgentChatComposerImpl({
                 <ModelPicker
                   value={modelId}
                   emptyLabel={modelEmptyLabel}
-                  onChange={handleModelPickerChange}
+                  onChange={onModelChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
                   activePresetId={activeHarnessPresetId}
                   openRequestKey={modelPickerOpenRequestKey}
