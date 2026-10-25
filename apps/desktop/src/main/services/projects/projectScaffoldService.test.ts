@@ -382,11 +382,11 @@ describe("cloneRepository", () => {
 
     const error = await service
       .cloneRepository({ url: `https://github.com/octocat/Hello-World.git?access_token=${token}`, parentDir })
-      .catch((caught: unknown) => caught as Error);
+      .then(() => null, (caught: unknown) => caught as Error);
     expect(error).toBeInstanceOf(Error);
-    expect(error.message).not.toContain(token);
-    expect(error.message).toContain("unable to access 'https://github.com/octocat/Hello-World.git'");
-    expect(error.message).toContain("Could not resolve host: github.com");
+    expect(error?.message).not.toContain(token);
+    expect(error?.message).toContain("unable to access 'https://github.com/octocat/Hello-World.git'");
+    expect(error?.message).toContain("Could not resolve host: github.com");
   });
 
   it("injects the available GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {

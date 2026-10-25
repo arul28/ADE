@@ -626,7 +626,7 @@ describe("looksSensitiveValue", () => {
   // Low-entropy bodies built at runtime: a real-looking key literal would trip
   // the repo's gitleaks scan. Real Anthropic and OpenAI keys carry `-` and `_`.
   it.each([
-    ["a plain sk- key", "sk-abc123def456ghi7"],
+    ["a plain sk- key", `sk-${"z".repeat(16)}`],
     ["an Anthropic key", `sk-ant-api03-${"z".repeat(20)}_${"z".repeat(12)}-AA`],
     ["an OpenAI project key", `sk-proj-${"z".repeat(12)}_${"z".repeat(20)}`],
   ])("detects %s", (_label, key) => {
