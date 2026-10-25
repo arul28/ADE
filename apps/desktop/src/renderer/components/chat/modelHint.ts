@@ -311,10 +311,10 @@ function cheaperChoice(
 /**
  * Jev's pick as a hint, or null. Shown only when the pick is clearly off from
  * the current one: another model, or an effort `EFFORT_LEVELS_TO_SPEAK` or
- * more levels away. The habit question never moves to a weaker model: it
- * sees names, not difficulty, so it would send real work to a small model
- * the user once used. Only `cheaperChoice`, for a clearly small request,
- * suggests a weaker model. A stronger one is never suggested for a request
+ * more levels away. The habit question only suggests a model the catalogue
+ * rates stronger: it sees names, not difficulty, so it would send real work
+ * to a small model the user once used. Only `cheaperChoice`, for a clearly
+ * small request, suggests a weaker model. A stronger one is never suggested for a request
  * Jev puts at the lowest effort.
  */
 export function hintFromAnswer(args: {
@@ -373,8 +373,9 @@ export function hintFromAnswer(args: {
   // Another model needs Jev sure of the model; the effort shown is its best level.
   if (picked.modelConfidence < MIN_CONFIDENCE) return null;
   const target = args.catalog.models.find((model) => model.modelId === choice.modelId);
-  // Habit alone never moves down: a weaker model needs `cheaperChoice` above.
-  if (strength(target) < strength(current)) return null;
+  // Habit alone only moves up, to a model the catalogue rates stronger: with a
+  // score missing, Haiku could pass for Opus. A weaker model needs `cheaperChoice`.
+  if (strength(current) < 0 || strength(target) <= strength(current)) return null;
   // A stronger model at the lowest effort is habit, not need: the request is
   // small enough for the model already picked.
   if (effortRank(choice.effort) <= effortRank("low")) return null;

@@ -977,9 +977,9 @@ chat pane mount, which happens either way.
   Jev answers what this user would want. The chip shows only when the pick
   is clearly off: another model Jev is at least 0.7 sure of, or an effort
   Jev puts at least 0.7 probability on being two or more levels away. This
-  question never suggests a weaker model: it sees model names, not how hard
-  the request is, so it would send real work to a small model the user once
-  used. No model is moved up for a request Jev puts at the lowest effort. Asked only what
+  question only suggests a model the catalogue rates stronger (both
+  intelligence scores known): it sees model names, not how hard the request
+  is, so it would send real work to a small model the user once used. No model is moved up for a request Jev puts at the lowest effort. Asked only what
   the user would pick, Jev copies them (five "say hello" chats on Opus give
   Opus again), so a third question, `cheapest`, asks for the cheapest model
   that does the request well, with each model's intelligence index and
