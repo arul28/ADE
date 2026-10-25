@@ -177,6 +177,16 @@ export function createDevServerWatcher(args: {
       .sort((left, right) => right.root.length - left.root.length);
 
     const listeningPorts = new Set(result.sockets.map((socket) => socket.port));
+    // The chats each port's listeners name in their environment; null when any
+    // listener on it names none (or its environment could not be read).
+    const portChats = new Map<number, Set<string> | null>();
+    for (const socket of result.sockets) {
+      const chat = result.locations.get(socket.pid)?.chatSessionId ?? null;
+      const seen = portChats.get(socket.port);
+      if (seen === null) continue;
+      if (!chat) portChats.set(socket.port, null);
+      else portChats.set(socket.port, (seen ?? new Set<string>()).add(chat));
+    }
     const found = new Map<string, { laneId: string; port: number; chatSessionId: string | null }>();
     for (const socket of result.sockets) {
       if (excludePids.has(socket.pid)) continue;
@@ -231,8 +241,15 @@ export function createDevServerWatcher(args: {
     // record newer than the snapshot (another project's watcher may have taken
     // it) is not judged by it.
     for (const record of known) {
-      if (listeningPorts.has(record.port)) continue;
       if (Date.parse(record.detectedAt) >= result.takenAt) continue;
+      if (listeningPorts.has(record.port)) {
+        // The chat's server stopped and another chat's server now answers on
+        // the same port: the record no longer describes anything this chat
+        // started, so its row stops showing it.
+        const chats = portChats.get(record.port);
+        const owner = record.source.sessionId;
+        if (!owner || !chats || chats.has(owner)) continue;
+      }
       args.registry.forget(record.source.laneId, record.port);
     }
   };

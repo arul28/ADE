@@ -93,10 +93,10 @@ export function TerminalWatchRow({
       data-terminal-watch={watch.watchId}
       title={`Wakes this chat when "${watch.terminalTitle}" prints new output`}
     >
-      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5">
+      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5">
         <Eye aria-hidden size={11} weight="bold" className="shrink-0 text-cyan-300/55" />
-        <span className="min-w-0 truncate font-mono text-[11.5px] leading-5 text-fg/70">{watch.terminalTitle}</span>
-        <span className="shrink-0 font-sans text-[10.5px] tabular-nums text-fg/40">{parts.join(" · ")}</span>
+        <span className="min-w-0 truncate text-[12px] leading-5 text-fg/75">{watch.terminalTitle}</span>
+        <span className="col-start-2 min-w-0 truncate font-sans text-[10.5px] leading-4 tabular-nums text-fg/40">{parts.join(" · ")}</span>
       </div>
       {onStop ? (
         <button
