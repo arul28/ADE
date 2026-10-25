@@ -181,7 +181,10 @@ import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
-import { createProjectHealthService } from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
+import {
+  createProjectHealthService,
+  createProjectHealthTurnStateReader,
+} from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -5649,6 +5652,7 @@ app.whenReady().then(async () => {
       db,
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
+      readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,
