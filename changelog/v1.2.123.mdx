@@ -1,0 +1,24 @@
+---
+title: "v1.2.123"
+description: "Release notes for ADE v1.2.123 - October 25, 2026"
+---
+
+ADE 1.2.123 keeps each chat's model in the composer, removes the Fast button from the prompt box until you turn Fast mode on, and sends fewer false error reports.
+
+## Improved
+
+- The prompt box no longer shows a Fast button when Fast mode is off for the account. A FAST chip in the model picker opens a short dialog that takes you to Settings › Chat › "Allow Fast mode" (#1896).
+- The model hint no longer suggests a weaker model from your past picks alone. Only a clearly small request can get a cheaper-model suggestion (#1895).
+- Expected errors (no git repository, a refused path, a network drop) stay in local logs and no longer create error reports (#1894).
+
+## Fixed
+
+- A chat that already ran never shows "Select model". The composer reads the model from the chat summary, then from the transcript. A chat's model no longer changes by itself when you send (#1894).
+- A window recovers when the brain no longer knows its project id, without a restart (#1894).
+- Long chats on Windows no longer run the window out of memory (#1894).
+- The Issues pane "Browse Jira" crash, a clear error for `chat.updateSession` with no arguments, and a new `ade chat update` command (#1894).
+- The web app reloads once when a deploy removes a script it needs (#1894).
+
+## iOS
+
+- A sign-in that the machine refuses with a clear next step no longer creates an error report (#1894). This is in a new TestFlight build.

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.123] - 2026-10-25
+
+### Desktop and web
+
+- A chat that already ran always shows its model; windows recover a lost project id; Windows out-of-memory fix; fewer false error reports (#1894).
+- The model hint no longer suggests weaker models from habit alone (#1895).
+- No Fast button in the prompt box until Fast mode is on; FAST chips open a Settings dialog (#1896).
+
+### iOS
+
+- Explained sign-in refusals no longer create error reports (#1894), in a new TestFlight build.
+
 ## [1.2.122] - 2026-10-24
 
 ### Desktop and web
@@ -2738,7 +2750,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.122...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.123...HEAD
+[1.2.123]: https://github.com/arul28/ADE/compare/v1.2.122...v1.2.123
 [1.2.122]: https://github.com/arul28/ADE/compare/v1.2.121...v1.2.122
 [1.2.121]: https://github.com/arul28/ADE/compare/v1.2.120...v1.2.121
 [1.2.120]: https://github.com/arul28/ADE/compare/v1.2.119...v1.2.120
