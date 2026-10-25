@@ -518,7 +518,7 @@ export function scheduledNextFireLabel(
       : null;
   if (nextFireAt == null || !Number.isFinite(nextFireAt)) return null;
 
-  const clock = new Intl.DateTimeFormat("en-US", {
+  const clock = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(nextFireAt));

@@ -5,6 +5,7 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { Z_LAYERS } from "../ui/zLayers";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type PickerOption = {
   id: string;
@@ -95,6 +96,7 @@ export function PickerMenu({
           setHighlight(0);
         }}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
           if (event.key === "ArrowDown") {
             event.preventDefault();
             setHighlight((current) => {

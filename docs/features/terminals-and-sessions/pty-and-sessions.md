@@ -336,7 +336,8 @@ Injection is idempotent — an existing `--plugin-dir <root>` or
 line that fails to parse is returned unchanged.
 
 The launch env is built layer by layer: `process.env`, the lane
-runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
+runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, run
+through `stripHostRuntimeEnv` (`services/shared/hostRuntimeEnv.ts`), then
 `withAdeTerminalContextEnv` (project / lane / chat ids), then
 `withInteractiveTerminalColorEnv`. The color helper sets a sensible
 `TERM` (`xterm-256color`) and `COLORTERM` (`truecolor`) when missing
@@ -345,6 +346,17 @@ caller or the lane env explicitly set `NO_COLOR`, the helper is called
 with `preserveNoColor: true` and leaves it alone. Without this, a
 user-global `NO_COLOR=1` would silently break Claude / Codex /
 OpenCode rendering inside Work tabs.
+
+`stripHostRuntimeEnv` drops the host's own keys (`ELECTRON_RUN_AS_NODE`,
+its role and lifecycle keys, its compile cache) and the terminal
+multiplexer session it was started from (`TMUX`, `TMUX_PANE`, `STY`,
+`ZELLIJ`, `ZELLIJ_SESSION_NAME`, `ZELLIJ_PANE_ID`, and `WINDOW` while
+`STY` is set), but only where the value is still the host's: a lane or
+caller that sets one of them on purpose keeps it. Without it, a brain
+started from a tmux pane hands that pane to every terminal, so
+`tmux split-window` or a clipboard helper that checks `$TMUX` acts on
+the user's unrelated session. Agent processes and editors opened from
+ADE (`editors/editorProcessEnv.ts`) go through the same strip.
 
 ### Data, preview, and runtime state
 

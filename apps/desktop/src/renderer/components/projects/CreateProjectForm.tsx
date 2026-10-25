@@ -24,6 +24,7 @@ import {
   primaryButton,
   fgTint,
 } from "../lanes/laneDesignTokens";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type CreateProjectFormProps = {
   onCancel: () => void;
@@ -249,6 +250,7 @@ export function CreateProjectForm({
           placeholder="my-new-project"
           onChange={(event) => setName(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && canSubmit) {
               event.preventDefault();
               void handleSubmit();

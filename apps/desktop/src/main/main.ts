@@ -1,5 +1,5 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
@@ -125,10 +125,18 @@ import {
   persistableRemoteProjectIconDataUrl,
   persistableRemoteProjectBinding,
   readGlobalState,
+  readGlobalStateForUpdate,
+  type GlobalState,
   type RecentProject,
   upsertRecentProject,
   writeGlobalState,
 } from "./services/state/globalState";
+import {
+  fitMainWindowBounds,
+  parseMainWindowState,
+  trackMainWindowState,
+  type MainWindowState,
+} from "./services/state/mainWindowState";
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
@@ -914,6 +922,13 @@ async function createWindow(args: {
    * and must not steal the pointer from the window that owns the drag.
    */
   bounds?: { x: number; y: number; width: number; height: number };
+  /**
+   * Where the last window sat. Used only without `bounds`, and only when that
+   * spot is still on a connected display.
+   */
+  restoreState?: MainWindowState | null;
+  /** Receives this window's position and size as they change. */
+  onWindowStateChange?: (state: MainWindowState) => void;
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory. In dev (`npm run dev` sets
   // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
@@ -956,9 +971,19 @@ async function createWindow(args: {
    */
   const MIN_WINDOW_WIDTH = 1026;
 
+  const restoreState = args.bounds ? null : args.restoreState ?? null;
+  const restoredBounds = restoreState
+    ? fitMainWindowBounds(
+        restoreState.bounds,
+        screen.getAllDisplays().map((display) => display.workArea),
+        MIN_WINDOW_WIDTH,
+      )
+    : null;
+
   const win = new BrowserWindow({
-    ...(args.bounds ?? defaultWindowBounds),
+    ...(args.bounds ?? restoredBounds ?? defaultWindowBounds),
     ...(args.bounds ? { show: false } : {}),
+    ...(restoredBounds && restoreState?.fullScreen ? { fullscreen: true } : {}),
     minWidth: MIN_WINDOW_WIDTH,
     icon,
     ...windowChromeOptions(process.platform),
@@ -981,6 +1006,8 @@ async function createWindow(args: {
     },
   });
 
+  if (restoredBounds && restoreState?.maximized && !restoreState.fullScreen) win.maximize();
+  if (args.onWindowStateChange) trackMainWindowState(win, args.onWindowStateChange);
   args.onCreated?.(win);
   if (args.bounds) win.showInactive();
   installEditableContextMenu(win);
@@ -1751,6 +1778,22 @@ app.whenReady().then(async () => {
     parseSavedRemoteProjectBinding(
       readGlobalState(globalStatePath).lastRemoteProjectBinding,
     );
+  const readSavedMainWindowState = (): MainWindowState | null =>
+    parseMainWindowState(readGlobalState(globalStatePath).mainWindow);
+  const saveMainWindowState = (mainWindow: MainWindowState): void => {
+    let current: GlobalState;
+    try {
+      current = readGlobalStateForUpdate(globalStatePath);
+    } catch (error) {
+      // An unreadable or corrupt file: skip the geometry rather than replace
+      // the whole file (recents, update and browser settings) with it.
+      logMachineEvent("warn", "desktop.main_window_state_save_skipped", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    writeGlobalState(globalStatePath, { ...current, mainWindow });
+  };
   const readLocalRecentProjects = (): RecentProject[] =>
     (readGlobalState(globalStatePath).recentProjects ?? [])
       .filter((entry) => !entry.remote);
@@ -2146,6 +2189,23 @@ app.whenReady().then(async () => {
     hasRenderer: (windowId) => windowProjectRoots.has(windowId),
     hasCommandSubscriber: (windowId) => windowCommandSubscribers.has(windowId),
   });
+  /**
+   * Ctrl/Cmd + mouse wheel zooms the app like the View menu does. Chromium
+   * reports the gesture as `zoom-changed` on the window's own page and leaves
+   * the zoom to us; a page that handles the wheel itself (a viewer's pan and
+   * zoom, the built-in browser's webview) never raises it here. One step per
+   * 100 ms, so a trackpad's burst of wheel events is not a dozen steps.
+   */
+  const WHEEL_ZOOM_STEP_MS = 100;
+  const attachWheelZoom = (win: BrowserWindow): void => {
+    let lastStepAt = 0;
+    win.webContents.on("zoom-changed", (_event, direction) => {
+      const now = performance.now();
+      if (now - lastStepAt < WHEEL_ZOOM_STEP_MS) return;
+      lastStepAt = now;
+      appCommandSender({ kind: "zoom", command: direction }, win);
+    });
+  };
   ipcMain.on(IPC.appCommandsReady, (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
@@ -9085,8 +9145,14 @@ app.whenReady().then(async () => {
     const win = await createWindow({
       logger: getActiveContext().logger,
       bounds: args.bounds,
+      // A second window opens at the default spot, not on top of the first.
+      restoreState: openWindows.length === 0 ? readSavedMainWindowState() : null,
+      // A tab dragged out into its own window is not where ADE lives; only a
+      // window opened the ordinary way records its place.
+      onWindowStateChange: args.bounds ? undefined : saveMainWindowState,
       onRendererRecovery: reportRendererRecovery,
       onCreated: (createdWindow) => {
+        attachWheelZoom(createdWindow);
         registerWindowSession(createdWindow, null, restoredRemoteBinding);
         args.onWindow?.(createdWindow);
       },
@@ -9501,6 +9567,19 @@ app.whenReady().then(async () => {
             click: (_item, browserWindow) =>
               sendZoomCommand("out", browserWindow),
           },
+          // The numeric keypad's +, - and 0 are separate keys to the
+          // accelerator matcher; hidden twins give them the same zoom.
+          ...([
+            ["CmdOrCtrl+numadd", "in", "Zoom In"],
+            ["CmdOrCtrl+numsub", "out", "Zoom Out"],
+            ["CmdOrCtrl+num0", "reset", "Actual Size"],
+          ] as const).map(([accelerator, command, label]): Electron.MenuItemConstructorOptions => ({
+            label,
+            accelerator,
+            visible: false,
+            acceleratorWorksWhenHidden: true,
+            click: (_item, browserWindow) => sendZoomCommand(command, browserWindow),
+          })),
           { type: "separator" },
           { role: "togglefullscreen" },
         ],
@@ -10126,8 +10205,11 @@ app.whenReady().then(async () => {
     : restoredActiveRoot;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
+    restoreState: readSavedMainWindowState(),
+    onWindowStateChange: saveMainWindowState,
     onRendererRecovery: reportRendererRecovery,
     onCreated: (createdWindow) => {
+      attachWheelZoom(createdWindow);
       registerWindowSession(
         createdWindow,
         initialWindowProjectRoot,

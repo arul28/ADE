@@ -11,6 +11,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 export type PaletteKind = "commit" | "thread" | "file" | "check";
 
@@ -161,6 +162,7 @@ export const PrCommandPalettes = memo(function PrCommandPalettes({
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (isImeComposing(event)) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();
         setSelectedIdx((prev) => (filtered.length === 0 ? 0 : (prev + 1) % filtered.length));

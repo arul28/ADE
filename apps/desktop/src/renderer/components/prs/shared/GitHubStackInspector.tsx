@@ -17,6 +17,7 @@ import { confirmDialog } from "../../ui/dialog/confirm";
 import { Banner } from "../../ui/notice";
 import { prRouteCoordinatesMatch } from "../prsRouteState";
 import "./GitHubStackInspector.css";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 const EXPANDED_KEY = "ade:prs:stackStrip:expanded:v1";
 
@@ -447,6 +448,7 @@ export function GitHubStackInspector({
               value={pullInput}
               onChange={(event) => setPullInput(event.target.value)}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key === "Enter") void addPullRequests();
               }}
               placeholder="PR numbers, e.g. 971, 972"

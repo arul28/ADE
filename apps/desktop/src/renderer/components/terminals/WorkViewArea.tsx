@@ -65,6 +65,7 @@ import type {
 } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { isImeComposing } from "../../lib/imeComposition";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -592,7 +593,7 @@ function WorkCliContinuationComposer({
             if (commandMenuTrigger && handleCommandMenuKeyDown(event, commandMenuRef, () => setCommandMenuTrigger(null))) {
               return;
             }
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (event.key === "Enter" && !event.shiftKey && !isImeComposing(event)) {
               event.preventDefault();
               void submit();
             }

@@ -17,6 +17,7 @@ import "./IntegrationsSettings.css";
 import { LinearAgentSection } from "./LinearAgentSection";
 import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { isImeComposing } from "../../lib/imeComposition";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -569,6 +570,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}
                   onKeyDown={(e) => {
+                    if (isImeComposing(e)) return;
                     if (e.key === "Enter" && !validating && !oauthStarting && !oauthSessionId && tokenInput.trim()) {
                       e.preventDefault();
                       void handleValidate();

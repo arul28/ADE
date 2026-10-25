@@ -3,6 +3,7 @@ import { PencilSimple } from "@phosphor-icons/react";
 import type { CodexThreadGoal } from "../../../../shared/types";
 import { CodexLogo } from "../../terminals/ToolLogos";
 import { Banner, NoticeBadge, type NoticeAction, type NoticeTone } from "../../ui/notice";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 type CodexGoalBannerProps = {
   goal: CodexThreadGoal;
@@ -112,6 +113,7 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
         submitEdit();
       }}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           submitEdit();

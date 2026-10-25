@@ -24,6 +24,7 @@ import { buildHomeHeadline, type HomeHeadline } from "./homeHeadline";
 import { HOME_LAYOUT_KEYBINDING, useHomeLayoutStore } from "./homeLayout";
 import { LazyHomeWidget } from "./homeWidgetRegistry";
 import { startOfLocalWeek, useLocalDayStart } from "./widgets/widgetHooks";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * The home page's widget wiring, apart from its recents list: the reads the
@@ -186,7 +187,7 @@ function useLayoutChord(): void {
   );
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || !eventMatchesBinding(event, layoutBinding)) return;
+      if (event.defaultPrevented || isImeComposing(event) || !eventMatchesBinding(event, layoutBinding)) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest?.("input, textarea, select, [contenteditable='true']")) return;
       event.preventDefault();

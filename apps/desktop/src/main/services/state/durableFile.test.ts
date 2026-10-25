@@ -152,6 +152,22 @@ describe("durableFile", () => {
 
     // Windows has no POSIX mode bits to assert on; the mode is still passed and
     // is simply ignored by the filesystem there.
+    // A replace is a new file renamed over the old one; without a requested
+    // mode it must keep the old one's bits, not fall back to the default.
+    it.skipIf(process.platform === "win32").each([0o755, 0o600, 0o640])(
+      "keeps an existing file's mode %o when the caller asks for none",
+      (mode) => {
+        fs.writeFileSync(filePath, "before");
+        fs.chmodSync(filePath, mode);
+
+        writeFileAtomic(filePath, "after");
+
+        expect(fs.readFileSync(filePath, "utf8")).toBe("after");
+        expect(fs.statSync(filePath).mode & 0o777).toBe(mode);
+        expect(tempLeftovers()).toEqual([]);
+      },
+    );
+
     it.skipIf(process.platform === "win32")("creates the temp file with the requested mode so a secret is never briefly readable", () => {
       writeFileAtomic(filePath, "secret", { fsync: true, mode: 0o600 });
       expect(fs.readFileSync(filePath, "utf8")).toBe("secret");

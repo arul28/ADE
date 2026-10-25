@@ -18,6 +18,7 @@ import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import { QuestionOptionPreview } from "./questionOptionPreview";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * The ask-question surface, anchored in the composer.
@@ -715,6 +716,7 @@ export function AskQuestionComposer({
               })}
               onChange={(event) => setNotes((prev) => ({ ...prev, [question.id]: event.target.value }))}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 if (isLast ? canSend : canProceed) advance();
@@ -752,6 +754,7 @@ export function AskQuestionComposer({
                 node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
               }}
               onKeyDown={(event) => {
+                if (isImeComposing(event)) return;
                 if (event.key !== "Enter" || event.shiftKey) return;
                 event.preventDefault();
                 if (isLast ? canSend : canProceed) advance();

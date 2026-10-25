@@ -560,7 +560,7 @@ function formatScheduleClock(value: string | null | undefined): string | null {
   if (!value) return null;
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return null;
-  return new Intl.DateTimeFormat("en-US", {
+  return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(timestamp));

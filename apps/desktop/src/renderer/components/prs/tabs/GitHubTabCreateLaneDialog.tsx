@@ -19,6 +19,7 @@ import {
 import { Dialog } from "../../ui/dialog";
 import { branchNameFromRef } from "./githubPrBranch";
 import { prRouteCoordinatesEqual, prRouteCoordinatesKey } from "../prsRouteState";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 type CreateLaneFromPrBranchApi = {
   preflightCreateLaneFromPrBranch: (
@@ -288,6 +289,7 @@ export function CreateLaneFromPrBranchDialog({
             placeholder="New lane"
             onChange={(event) => setLaneName(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === "Enter") {
                 event.preventDefault();
                 handleSubmit();

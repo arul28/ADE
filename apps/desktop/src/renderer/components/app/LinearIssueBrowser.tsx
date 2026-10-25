@@ -52,6 +52,7 @@ import {
   type BrowserIssue,
   type LinearIssueEdit,
 } from "./linearIssueBrowserModel";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export { linearBrowserIssueToLaneIssue } from "./linearIssueBrowserModel";
 export type { BrowserIssue } from "./linearIssueBrowserModel";
@@ -1526,6 +1527,7 @@ export function LinearIssueBrowser({
                 value={filters.query}
                 onChange={(event) => updateFilters({ query: event.target.value })}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
                   // Hand the keyboard back to the list (j/k, Enter, x).
                   if (event.key === "ArrowDown" || event.key === "Enter") {
                     event.preventDefault();

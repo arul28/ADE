@@ -42,6 +42,7 @@ import { PrShippedSummary } from "./PrShippedSummary";
 import { MERGE_METHODS, mergeMethodShortLabel, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /* ══════════════════ The dock ══════════════════ */
 
@@ -861,7 +862,7 @@ function InlineInput({ value, onChange, onSubmit, placeholder }: { value: string
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      onKeyDown={(event) => { if (event.key === "Enter") onSubmit(); }}
+      onKeyDown={(event) => { if (event.key === "Enter" && !isImeComposing(event)) onSubmit(); }}
       className="h-7 w-full rounded-md px-2 text-[11px] outline-none"
       style={{ fontFamily: MONO_FONT, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
     />

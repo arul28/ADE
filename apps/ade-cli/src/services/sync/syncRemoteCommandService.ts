@@ -1742,6 +1742,8 @@ function mergeProjectConfigCandidateForRemote(
   return {
     shared: restoreProjectConfigCredentials(candidate.shared, onDisk.shared),
     local: restoreProjectConfigCredentials(candidate.local, onDisk.local),
+    // The disk check runs against the real file, so it holds for a redacted read.
+    ...(typeof candidate.baseLocalHash === "string" ? { baseLocalHash: candidate.baseLocalHash } : {}),
   };
 }
 

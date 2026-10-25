@@ -51,6 +51,7 @@ import { LinearMark } from "../../lanes/linearBrand";
 import { inputCls, labelCls, selectCls } from "../designTokens";
 import { choiceCls, eyebrowCls, panelCls, tagCls, toneTextCls } from "../webhookSurface";
 import { WebhookDeliveries } from "./WebhookDeliveries";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 const EXPLAINER_DISMISSED_KEY = "ade.automations.webhookExplainer.dismissed";
 
@@ -845,6 +846,7 @@ function SecretInput({
           spellCheck={false}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && value.trim()) onSave();
           }}
         />

@@ -18,6 +18,7 @@ import {
   useSavedFlash,
 } from "./primitives";
 import "./machineSettings.css";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -79,61 +80,59 @@ export function LaneBehaviorSection() {
     minBehind?: number;
   }) => {
     try {
-      const snapshot = await window.ade.projectConfig.get(pin);
-      const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
-      const nextAutoRebase = next.autoRebase ?? autoRebase;
-      const nextSource = next.baseSource ?? newLaneBaseSource;
+      await saveProjectLocalConfig((snapshot) => {
+        const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
+        const nextAutoRebase = next.autoRebase ?? autoRebase;
+        const nextSource = next.baseSource ?? newLaneBaseSource;
 
-      const nextGit: Record<string, unknown> = {
-        ...currentGit,
-        autoRebaseOnHeadChange: nextAutoRebase,
-      };
+        const nextGit: Record<string, unknown> = {
+          ...currentGit,
+          autoRebaseOnHeadChange: nextAutoRebase,
+        };
 
-      const sharedGit = isRecord(snapshot.shared.git) ? snapshot.shared.git : {};
+        const sharedGit = isRecord(snapshot.shared.git) ? snapshot.shared.git : {};
 
-      /**
-       * Write a local override only while the value differs from what the
-       * shared config would give us, and drop it the moment it matches again.
-       *
-       * `effective` already has local merged in, so the comparison has to be
-       * against `shared` — comparing to effective would always look equal and
-       * never write anything. And since every control now saves on change,
-       * writing all fields unconditionally would pin settings the user never
-       * touched: harmless-looking until the team changes the shared config and
-       * the stale local pin silently shadows it.
-       */
-      const pinIfDiverged = <T,>(key: string, nextValue: T, inherited: T): void => {
-        if (nextValue === inherited) delete nextGit[key];
-        else nextGit[key] = nextValue;
-      };
+        /**
+         * Write a local override only while the value differs from what the
+         * shared config would give us, and drop it the moment it matches again.
+         *
+         * `effective` already has local merged in, so the comparison has to be
+         * against `shared` — comparing to effective would always look equal and
+         * never write anything. And since every control now saves on change,
+         * writing all fields unconditionally would pin settings the user never
+         * touched: harmless-looking until the team changes the shared config and
+         * the stale local pin silently shadows it.
+         */
+        const pinIfDiverged = <T,>(key: string, nextValue: T, inherited: T): void => {
+          if (nextValue === inherited) delete nextGit[key];
+          else nextGit[key] = nextValue;
+        };
 
-      const sharedSource = sharedGit.newLaneBaseSource;
-      pinIfDiverged<NewLaneBaseSource>(
-        "newLaneBaseSource",
-        nextSource,
-        sharedSource === "local" || sharedSource === "remote" ? sharedSource : DEFAULT_NEW_LANE_BASE_SOURCE,
-      );
+        const sharedSource = sharedGit.newLaneBaseSource;
+        pinIfDiverged<NewLaneBaseSource>(
+          "newLaneBaseSource",
+          nextSource,
+          sharedSource === "local" || sharedSource === "remote" ? sharedSource : DEFAULT_NEW_LANE_BASE_SOURCE,
+        );
 
-      const sharedSuggestions = sharedGit.rebaseSuggestions;
-      pinIfDiverged<RebaseSuggestionDisplay>(
-        "rebaseSuggestions",
-        next.suggestions ?? rebaseSuggestions,
-        sharedSuggestions === "off" || sharedSuggestions === "badge" || sharedSuggestions === "banner"
-          ? sharedSuggestions
-          : DEFAULT_REBASE_SUGGESTIONS,
-      );
+        const sharedSuggestions = sharedGit.rebaseSuggestions;
+        pinIfDiverged<RebaseSuggestionDisplay>(
+          "rebaseSuggestions",
+          next.suggestions ?? rebaseSuggestions,
+          sharedSuggestions === "off" || sharedSuggestions === "badge" || sharedSuggestions === "banner"
+            ? sharedSuggestions
+            : DEFAULT_REBASE_SUGGESTIONS,
+        );
 
-      pinIfDiverged<number>(
-        "rebaseSuggestionMinBehind",
-        next.minBehind ?? minBehind,
-        typeof sharedGit.rebaseSuggestionMinBehind === "number"
-          ? sharedGit.rebaseSuggestionMinBehind
-          : DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
-      );
+        pinIfDiverged<number>(
+          "rebaseSuggestionMinBehind",
+          next.minBehind ?? minBehind,
+          typeof sharedGit.rebaseSuggestionMinBehind === "number"
+            ? sharedGit.rebaseSuggestionMinBehind
+            : DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+        );
 
-      await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: { ...snapshot.local, git: nextGit },
+        return { ...snapshot.local, git: nextGit };
       }, pin);
       if (!mounted.current) return;
       flash();

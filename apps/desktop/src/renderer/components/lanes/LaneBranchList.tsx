@@ -10,6 +10,7 @@ import {
   matchesQuery,
   parseSearchQuery,
 } from "./branchPickerSearch";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * The one picker list in the new-lane dialog: a search field, then a
@@ -109,7 +110,7 @@ export function LaneBranchList({
             onKeyDown={(event) => {
               // Only a plain Enter picks the top row: not one that confirms an
               // IME candidate, and not ⌘/Ctrl+Enter.
-              if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.nativeEvent.isComposing) return;
+              if (event.key !== "Enter" || event.metaKey || event.ctrlKey || isImeComposing(event)) return;
               if (visible[0]) {
                 event.preventDefault();
                 onSelect(visible[0].ref);

@@ -4,6 +4,7 @@ import type { AutomationTrigger } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { labelCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * One login, however it was typed: the runtime matcher ignores case, a leading
@@ -352,6 +353,7 @@ function LabelPicker({
             if (available.includes(input.trim())) commit(input);
           }}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && input.trim()) {
               event.preventDefault();
               commit(input);
@@ -449,6 +451,7 @@ function AuthorPicker({
             if (available.includes(normalized)) commit(input);
           }}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && input.trim()) {
               event.preventDefault();
               commit(input);

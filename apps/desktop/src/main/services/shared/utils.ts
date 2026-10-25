@@ -13,6 +13,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
+import { writeFileAtomic } from "../state/durableFile";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -969,23 +970,10 @@ export function toOptionalString(value: unknown): string | null {
  */
 export function writeTextAtomic(filePath: string, text: string, options?: { mode?: number }): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, options?.mode != null ? { encoding: "utf8", mode: options.mode } : "utf8");
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (error) {
-    try {
-      fs.copyFileSync(tmp, filePath);
-      fs.unlinkSync(tmp);
-    } catch {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // ignore cleanup errors
-      }
-      throw error;
-    }
-  }
+  // One atomic writer: it keeps an existing file's permission bits, uses a
+  // temp name the abandoned-temp sweep recognises, and never copies over the
+  // target after a disk-full or I/O failure.
+  writeFileAtomic(filePath, text, options);
 }
 
 /** Return file size or 0 if the file doesn't exist. */

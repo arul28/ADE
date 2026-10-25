@@ -10,6 +10,7 @@
 import type { MutableRefObject } from "react";
 import { CaretDown, CaretUp, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { isImeComposing } from "../../lib/imeComposition";
 
 type FindFieldProps = {
   inputRef: MutableRefObject<HTMLInputElement | null>;
@@ -59,7 +60,7 @@ export function FindField({
           onClose();
         }}
         onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          if (event.key !== "Enter" || isImeComposing(event)) return;
           event.preventDefault();
           onStep(event.shiftKey ? -1 : 1);
         }}

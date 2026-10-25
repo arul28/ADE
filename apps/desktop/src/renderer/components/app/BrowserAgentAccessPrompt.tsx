@@ -21,6 +21,7 @@ import {
   shortAgentId,
   useBrowserAgentAccess,
 } from "../chat/browser/browserAgentAccess";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /** Keys pressed this soon after the prompt appears were meant for something else. */
 const KEY_ARM_DELAY_MS = 600;
@@ -86,7 +87,7 @@ function BrowserAgentAccessPromptDialog({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Enter" || event.isComposing || event.repeat) return;
+      if (event.key !== "Enter" || isImeComposing(event) || event.repeat) return;
       const target = event.target instanceof Element ? event.target : null;
       if (!target?.closest(`[data-testid="${PROMPT_TEST_ID}"]`)) return;
       // A focused button answers for itself (Tab then Enter).

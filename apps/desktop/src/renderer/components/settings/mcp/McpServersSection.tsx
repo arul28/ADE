@@ -23,6 +23,7 @@ import { McpSecretWarnings, mcpServerHoldsPlainSecret } from "./McpSecretWarning
 import { McpServerDialog } from "./McpServerDialog";
 import { missingMcpSecrets, useMcpRegistry, type McpRegistryApi, type McpRegistryLevel } from "./useMcpRegistry";
 import "./mcpServers.css";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
  * Settings › MCP servers.
@@ -555,6 +556,7 @@ function MissingSecret({
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === "Enter") submit();
             }}
           />

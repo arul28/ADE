@@ -31,6 +31,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { useLaneEmojiSuggestion } from "./useLaneEmojiSuggestion";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 type CreateSetupPhase =
   | "creating"
@@ -586,18 +587,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         const pin = targetPinRef.current;
         while (createBaseSourceSavePendingRef.current) {
           const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
-          const snapshot = await window.ade.projectConfig.get(pin);
-          const currentGit = snapshot.local.git ?? {};
-          await window.ade.projectConfig.save({
-            shared: snapshot.shared,
-            local: {
-              ...snapshot.local,
-              git: {
-                ...currentGit,
-                newLaneBaseSource: source,
-              },
+          await saveProjectLocalConfig((snapshot) => ({
+            ...snapshot.local,
+            git: {
+              ...(snapshot.local.git ?? {}),
+              newLaneBaseSource: source,
             },
-          }, pin);
+          }), pin);
           if (createBaseSourceSavePendingRef.current === source) {
             createBaseSourceSavePendingRef.current = null;
           }
