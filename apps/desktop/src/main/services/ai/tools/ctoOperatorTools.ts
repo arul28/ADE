@@ -8,6 +8,7 @@ import {
   asRemoteLanes,
   CREATE_REMOTE_LANE_BUDGET_MS,
   createCtoCrossMachineToolKit,
+  readOrReport,
   REMOTE_LANE_CREATE_TIMEOUT_MS,
   SPAWN_REMOTE_CHAT_BUDGET_MS,
   spawnWarnings,
@@ -1037,7 +1038,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             requestedPermissionMode: permissionMode,
             session,
             // Only a named lane can already hold work; a fresh lane is empty.
-            laneChats: laneId?.trim() ? await deps.listChats(session.laneId).catch(() => []) : [],
+            laneChats: laneId?.trim() ? await readOrReport(() => deps.listChats(session.laneId), []) : [],
             newSessionId: session.id,
           })),
         };

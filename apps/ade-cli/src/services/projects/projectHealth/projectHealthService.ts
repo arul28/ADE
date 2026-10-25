@@ -514,7 +514,12 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
            and name in ('terminal_sessions__crsql_clock', 'terminal_sessions__crsql_pks')`,
       );
       if (tables.length < 2) return none;
-    } catch {
+    } catch (error) {
+      // A database that cannot answer sqlite_master is a real fault, and the
+      // report silently reads every row as this machine's without the clock.
+      deps.logger.warn("project_health.owner_site_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return none;
     }
     return {

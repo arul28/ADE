@@ -3693,8 +3693,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
     // Why a lane device ADE powered off is off, from the list read above: a
     // pane that polls the status must not pay a second `simctl list` for it.
+    // A notice that cannot be built must not fail the status read; it is
+    // logged so the failing read is not invisible.
     const powerOffNotices = isDarwin
-      ? await devicePowerOffNotices(runtime.key, devices).catch(() => [] as string[])
+      ? await devicePowerOffNotices(runtime.key, devices).catch((error: unknown) => {
+        args.logger.warn("apple.device_power_off_notices_failed", {
+          laneId: runtime.key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [] as string[];
+      })
       : [];
     return {
       platform: process.platform,

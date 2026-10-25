@@ -16728,7 +16728,13 @@ export function createAgentChatService(args: {
     let updatedAt: string | null = null;
     try {
       updatedAt = ctoMemoryService.threadStateUpdatedAt();
-    } catch {
+    } catch (error) {
+      // The memory store is unreadable. The age trigger is the only thing
+      // lost (the turn count still runs it), so the turn goes on; say so.
+      logger.warn("agent_chat.cto_thread_state_age_unreadable", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return false;
     }
     const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;

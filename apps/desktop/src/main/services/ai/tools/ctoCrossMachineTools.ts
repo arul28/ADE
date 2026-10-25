@@ -10,6 +10,7 @@
 import { z } from "zod";
 import type { AgentChatSession, AgentChatSessionSummary, LaneSummary } from "../../../../shared/types";
 import { isSecretBearingAdeAction } from "../../adeActions/actionPolicy";
+import { captureError } from "../../../../shared/sentry/capture";
 import { getErrorMessage } from "../../shared/utils";
 import {
   clampActionListForModel,
@@ -123,6 +124,22 @@ export function spawnWarnings(args: {
 /** Spreads `{ warnings }` into a tool result only when there are some. */
 export function withSpawnWarnings(warnings: string[]): { warnings?: string[] } {
   return warnings.length ? { warnings } : {};
+}
+
+/**
+ * A read the caller can live without, reported instead of thrown: the spawn is
+ * already made and this read only supplies a warning, so a failure must not
+ * fail the tool, and must not be invisible either.
+ */
+export function readOrReport<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+  return read().catch((error: unknown) => {
+    captureError(error, {
+      tags: { area: "cto.spawn_lane_chats" },
+      fingerprint: ["cto", "spawn_lane_chats_unreadable"],
+      handled: true,
+    });
+    return fallback;
+  });
 }
 
 export type CtoCrossMachineToolDeps = {
@@ -271,11 +288,11 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
     // message, so the new chat is not yet "working" itself; a failed read only
     // loses the warning.
     if (args.laneId?.trim()) {
-      const laneChats = asRemoteChats(await runRemote(target, {
+      const laneChats = asRemoteChats(await readOrReport(() => runRemote(target, {
         domain: "chat",
         action: "listSessions",
         args: { laneId: remoteLaneId, includeIdentity: false, includeAutomation: false, includeArchived: false },
-      }).catch(() => []));
+      }), []));
       warnings.push(...spawnWarnings({ session: {}, laneChats, newSessionId: remoteSessionId }));
     }
     warnings.push(...spawnWarnings({ requestedPermissionMode: args.permissionMode ?? null, session: created }));

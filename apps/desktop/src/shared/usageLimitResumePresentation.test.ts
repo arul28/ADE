@@ -204,6 +204,10 @@ describe("isUsageLimitFailureText", () => {
     expect(isUsageLimitFailureText("usage_limit exceeded")).toBe(true);
     expect(isUsageLimitFailureText("quota exceeded for this org")).toBe(true);
     expect(isUsageLimitFailureText("Quota exhausted")).toBe(true);
+    // The provider's own terminal wording, which a scheduled row used to show
+    // as its result under "completed".
+    expect(isUsageLimitFailureText("You've hit your session limit")).toBe(true);
+    expect(isUsageLimitFailureText("You've hit your weekly limit · resets Monday")).toBe(true);
   });
 
   it("takes a 429 only when a rate/usage/limit/quota word stands with it", () => {
