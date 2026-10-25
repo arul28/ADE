@@ -5,6 +5,7 @@ import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { parseNameStatusRecords, runGit } from "../git/git";
 import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
@@ -326,7 +327,8 @@ async function resolveBranchCompareBase(
     const upstreamRef = upstream.exitCode === 0 ? upstream.stdout.trim() : "";
     if (upstreamRef && !upstreamRef.startsWith("-")) compare = upstreamRef;
     else if (await resolves(`origin/${base}`)) compare = `origin/${base}`;
-    else throw new Error(`${base} has no remote copy, so this lane has no branch changes to compare.`);
+    // A local-only base (never pushed): the user's repo state, told to them.
+    else throw new AdeExpectedError(`${base} has no remote copy, so this lane has no branch changes to compare.`, "user");
   } else if (await resolves(base)) {
     compare = base;
   } else if (await resolves(`origin/${base}`)) {

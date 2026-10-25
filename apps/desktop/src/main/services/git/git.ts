@@ -677,13 +677,40 @@ export function gitCommandError(raw: string, message: string = formatGitExecutio
   const ownership = describeGitOwnershipProblem(raw);
   if (ownership) return new GitUntrustedFolderError(ownership);
   const error = new Error(message);
+  // A file only the user can delete; the message names it.
+  if (windowsReservedFileInGitError(raw)) return markExpected(error, "user");
   const noGit = GIT_TOOLCHAIN_MISSING.test(raw) || raw.startsWith(GIT_EXECUTABLE_NOT_FOUND);
   return noGit ? markExpected(error, "environment") : error;
+}
+
+const GIT_UNINDEXABLE_FILE = /unable to index file '([^'\n]+)'/;
+/** Device names Windows reserves, with or without an extension (`NUL`, `nul.txt`, `COM1`). */
+const WINDOWS_RESERVED_FILE_NAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+
+/**
+ * The file in a failed `git add` whose name Windows reserves for a device. No
+ * Windows program can open it, so git cannot add it, nor any folder that holds
+ * it. It is nearly always made by mistake: `2>NUL` or `> NUL` run in a
+ * Unix-style shell (Git Bash, an agent's shell) writes a file of that name
+ * instead of discarding the output.
+ */
+function windowsReservedFileInGitError(raw: string): string | null {
+  const file = GIT_UNINDEXABLE_FILE.exec(raw)?.[1];
+  if (!file) return null;
+  const name = file.split(/[\\/]/).pop() ?? "";
+  return WINDOWS_RESERVED_FILE_NAME.test(name) ? file : null;
 }
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
   if (ownership) return gitOwnershipMessage(ownership);
+  const reservedFile = windowsReservedFileInGitError(raw);
+  if (reservedFile) {
+    const name = (reservedFile.split(/[\\/]/).pop() ?? "").split(".")[0].toUpperCase();
+    return `Git can't add "${reservedFile}". Windows reserves the name ${name} for a device, so no program can open that file. `
+      + `A command such as "2>NUL" in a Unix-style shell usually makes it by mistake. `
+      + `Delete the file, then try again. In Git Bash, from the project folder, run: rm "${reservedFile}"`;
+  }
   if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }
