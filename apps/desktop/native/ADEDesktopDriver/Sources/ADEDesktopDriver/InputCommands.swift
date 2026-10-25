@@ -597,7 +597,7 @@ extension DriverRuntime {
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [lane] }
         return [lane] + ids.prefix(Int(count))
-            .filter { CGDisplayVendorNumber($0) == VirtualDisplayIdentity.vendorID }
+            .filter { VirtualDisplayIdentity.isADEDisplay($0) }
             .map { CGDisplayBounds($0) }
     }
 

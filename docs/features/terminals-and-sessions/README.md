@@ -2485,9 +2485,9 @@ not affect canonical session state; iOS stores them for sync compatibility.
    - `backfillResumeTargetFromTranscriptBestEffort` tries to recover a
      Claude/Codex session UUID from transcript output or from Claude/Codex
      local JSONL storage.
-   - `summarizeSessionBestEffort` generates an optional end-of-session
-     summary and, when `refreshOnComplete` is enabled, regenerates the
-     title from the transcript tail.
+   - `summarizeSessionBestEffort` writes the deterministic end-of-session
+     summary and, when an AI provider is available (not guest mode),
+     regenerates the title from the transcript tail.
    - `sessionDeltaService` can compute file-level git deltas using
      `headShaStart`/`headShaEnd`.
    No tracked CLI PTY is auto-disposed just because a TUI returns to a

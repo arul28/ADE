@@ -38,6 +38,7 @@ import {
 } from "../../../shared/automationWebhooks";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
+import { INGRESS_EVENT_RETENTION_MS } from "../state/dbMaintenanceApi";
 import { ACCOUNT_RELAY_TOKEN_HEADER, DEFAULT_GITHUB_RELAY_API_BASE_URL } from "../github/githubRelayConfig";
 import { resolvePlaceholders, type TriggerContext } from "./automationService";
 import { createWebhookRelayDrain } from "./webhookRelayDrain";
@@ -56,6 +57,8 @@ const RATE_LIMIT_PER_MINUTE = 60;
 /** Header values never kept in the delivery log. */
 const HIDDEN_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", ACCOUNT_RELAY_TOKEN_HEADER]);
 /** Sender-supplied ids, in preference order, that make a redelivery recognisable. */
+/** A delivery ADE answered whose run has not started: what a restart replays. */
+const PENDING_DELIVERY_SQL = "outcome = 'ran' and ingress_event_id is null";
 const SENDER_DELIVERY_ID_HEADERS = ["x-github-delivery", "svix-id", "webhook-id", "linear-delivery", "x-request-id", "request-id"];
 
 export type WebhookIncomingRequest = {
@@ -94,7 +97,7 @@ type DeliveryRow = {
   id: string;
   hook_id: string;
   rule_id: string | null;
-  via: string;
+  via: AutomationWebhookDeliveryVia;
   method: string;
   received_at: string;
   outcome: string;
@@ -136,7 +139,11 @@ export type CustomWebhookServiceDeps = {
     summary: string;
     eventName: string | null;
     webhook: { method: string; headers: Record<string, string>; query: Record<string, string>; body: unknown };
+    /** Run the event even when it was accepted before, as long as its run never started. */
+    resume?: boolean;
   }) => Promise<AutomationIngressEventRecord | null>;
+  /** Event keys of webhook deliveries this machine accepted whose runs never started. */
+  listUnstartedEventKeys?: () => string[];
   onDeliveriesChanged?: (hookId: string) => void;
   fetchImpl?: typeof fetch;
 };
@@ -397,16 +404,24 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
         row.content_type, row.body_text, row.body_truncated ? 1 : 0, row.prompt_text,
       ],
     );
+    // A delivery still waiting for its run to start is kept past the cap: it
+    // is what a restart replays (`resumeInterruptedDeliveries`), and a burst
+    // behind a long run would otherwise evict exactly the oldest, pending one.
+    // Only within the ingress retention window, after which nothing replays it.
     deps.db.run(
       `delete from automation_webhook_deliveries
         where project_id = ? and hook_id = ?
+          and not (${PENDING_DELIVERY_SQL} and received_at >= ?)
           and id not in (
             select id from automation_webhook_deliveries
              where project_id = ? and hook_id = ?
              order by received_at desc, rowid desc
              limit ${DELIVERIES_KEPT_PER_HOOK}
           )`,
-      [deps.projectId, row.hook_id, deps.projectId, row.hook_id],
+      [
+        deps.projectId, row.hook_id, new Date(Date.now() - INGRESS_EVENT_RETENTION_MS).toISOString(),
+        deps.projectId, row.hook_id,
+      ],
     );
     deps.onDeliveriesChanged?.(row.hook_id);
   };
@@ -437,7 +452,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     id: row.id,
     hookId: row.hook_id,
     ruleId: row.rule_id,
-    via: row.via as AutomationWebhookDeliveryVia,
+    via: row.via,
     method: row.method,
     receivedAt: row.received_at,
     outcome: row.outcome as AutomationWebhookDeliveryOutcome,
@@ -514,6 +529,14 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return out;
   };
 
+  /**
+   * The log keeps a parsed body as JSON (`bodyForLog`), whatever it arrived
+   * as, so a logged body re-parses as JSON-or-text. Reading it with the
+   * sender's form content type would turn the JSON into one bogus form field.
+   */
+  const parseStoredOrSentBody = (rawBody: Buffer, contentType: string | null, stored: boolean): unknown =>
+    parseWebhookBody(rawBody, stored ? null : contentType);
+
   const bodyForLog = (rawBody: Buffer, parsed: unknown): { text: string; truncated: boolean } => {
     let text: string;
     if (parsed && typeof parsed === "object") {
@@ -563,12 +586,55 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     return entry && entry.expiresAt > Date.now() ? entry : null;
   };
 
+  const dispatchSummary = (config: AutomationWebhookTriggerConfig, eventLabel: string | null): string => {
+    const preset = webhookPresetDef(config.preset);
+    return `${config.preset && config.preset !== "generic" ? preset.label : "Webhook"}${eventLabel ? `: ${eventLabel}` : ""}`;
+  };
+
+  /** Write a dispatched delivery's real outcome once its run has started or failed to. */
+  const settleDispatch = (
+    deliveryId: string,
+    hookId: string,
+    dispatched: Promise<AutomationIngressEventRecord | null>,
+  ): void => {
+    void dispatched.then((ingress) => {
+      if (!ingress) return;
+      // Only a dispatched run stays `ran` and keeps its duplicate key. An
+      // ignored or failed one started nothing, so the sender's redelivery must
+      // be allowed to try again rather than read as a duplicate.
+      const outcome: AutomationWebhookDeliveryOutcome = ingress.status === "failed"
+        ? "error"
+        : ingress.status === "ignored" ? "filtered" : "ran";
+      const detail = outcome === "error"
+        ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}`
+        : outcome === "filtered"
+          ? "No run started: the automation's other conditions (active hours, event or branch) did not match."
+          : null;
+      deps.db.run(
+        `update automation_webhook_deliveries
+            set ingress_event_id = ?, outcome = ?, detail = ?, dedupe_key = case when ? = 'ran' then dedupe_key else null end
+          where project_id = ? and id = ?`,
+        [ingress.id, outcome, detail, outcome, deps.projectId, deliveryId],
+      );
+      deps.onDeliveriesChanged?.(hookId);
+    }).catch((error: unknown) => {
+      deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
+      deps.db.run(
+        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
+        [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
+      );
+      deps.onDeliveriesChanged?.(hookId);
+    });
+  };
+
   const receive = async (
     request: WebhookIncomingRequest,
     options: {
       /** A replay: the signature was settled when the request first arrived, and this is its state then. */
       replayedSignature?: AutomationWebhookDeliverySummary["signature"];
       skipDedupe?: boolean;
+      /** `rawBody` is a logged body (`bodyForLog`), not the bytes the sender sent. */
+      storedBody?: boolean;
     } = {},
   ): Promise<WebhookReceiveResult> => {
     const hookId = request.hookId.trim().toLowerCase();
@@ -613,7 +679,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       return { status: 413, outcome: "too_large", deliveryId };
     }
 
-    const parsedBody = parseWebhookBody(request.rawBody, contentType);
+    const parsedBody = parseStoredOrSentBody(request.rawBody, contentType, options.storedBody === true);
     const view: WebhookRequestView = { body: parsedBody, headers: request.headers, query: request.query };
     const eventLabel = webhookEventLabel(view, match?.config.preset);
     const logged = bodyForLog(request.rawBody, parsedBody);
@@ -708,45 +774,84 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       event_key: eventKey,
       prompt_text: prompt,
     });
-    const preset = webhookPresetDef(config.preset);
     // Reply first: the run can take minutes and senders time out in seconds.
-    void deps.dispatch({
+    // The ingress row is written before `dispatch` first yields, so once this
+    // returns the delivery survives a restart (see `resumeInterruptedDeliveries`).
+    // `resume`: a resend of an event that was accepted but never started (its
+    // row went `error` after a restart) must run, not read as a duplicate of
+    // it. The ingress claim still lets only one dispatch start a run.
+    settleDispatch(deliveryId, hookId, deps.dispatch({
       hookId,
       via: request.via,
       eventKey,
       automationId: rule.id,
-      summary: `${config.preset && config.preset !== "generic" ? preset.label : "Webhook"}${eventLabel ? `: ${eventLabel}` : ""}`,
+      summary: dispatchSummary(config, eventLabel),
       eventName: eventLabel,
       webhook: { method: base.method, headers: request.headers, query: request.query, body: parsedBody },
-    }).then((ingress) => {
-      if (!ingress) return;
-      // Only a dispatched run stays `ran` and keeps its duplicate key. An
-      // ignored or failed one started nothing, so the sender's redelivery must
-      // be allowed to try again rather than read as a duplicate.
-      const outcome: AutomationWebhookDeliveryOutcome = ingress.status === "failed"
-        ? "error"
-        : ingress.status === "ignored" ? "filtered" : "ran";
-      const detail = outcome === "error"
-        ? `The run could not start: ${ingress.errorMessage ?? "unknown error"}`
-        : outcome === "filtered"
-          ? "No run started: the automation's other conditions (active hours, event or branch) did not match."
-          : null;
-      deps.db.run(
-        `update automation_webhook_deliveries
-            set ingress_event_id = ?, outcome = ?, detail = ?, dedupe_key = case when ? = 'ran' then dedupe_key else null end
-          where project_id = ? and id = ?`,
-        [ingress.id, outcome, detail, outcome, deps.projectId, deliveryId],
-      );
-      deps.onDeliveriesChanged?.(hookId);
-    }).catch((error: unknown) => {
-      deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
-      deps.db.run(
-        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
-        [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
-      );
-      deps.onDeliveriesChanged?.(hookId);
-    });
+      resume: true,
+    }));
     return { status: 202, outcome: "ran", deliveryId };
+  };
+
+  /**
+   * Start the deliveries this machine answered (and the relay forgot) whose
+   * runs never started because ADE stopped first: a crash, an update, a
+   * restart while they waited behind a long run. Each runs once: its ingress
+   * row is claimed when a run starts, so one that did start is not picked up.
+   * Runs once per service, at start.
+   */
+  let resumedInterrupted = false;
+  const resumeInterruptedDeliveries = (): void => {
+    if (resumedInterrupted || !deps.listUnstartedEventKeys) return;
+    const eventKeys = deps.listUnstartedEventKeys();
+    const rowsByKey = new Map<string, DeliveryRow>();
+    if (eventKeys.length) {
+      for (const row of deps.db.all<DeliveryRow>(
+        `select * from automation_webhook_deliveries
+          where project_id = ? and ${PENDING_DELIVERY_SQL}
+            and event_key in (${eventKeys.map(() => "?").join(", ")})
+          order by received_at asc`,
+        [deps.projectId, ...eventKeys],
+      )) {
+        if (row.event_key && !rowsByKey.has(row.event_key)) rowsByKey.set(row.event_key, row);
+      }
+    }
+    // Set only once the reads worked, so a locked database on this start
+    // leaves the replay for the next one. A second pass is safe either way:
+    // the ingress claim lets only one dispatch of an event start a run.
+    resumedInterrupted = true;
+    for (const row of rowsByKey.values()) {
+      const match = findRuleForHook(row.hook_id);
+      if (row.body_truncated === 1 || !match || row.rule_id !== match.rule.id || !row.event_key) {
+        // Its body was not kept whole, or its automation is gone or changed.
+        // Say so, and free the sender's id so a resend is not a duplicate.
+        deps.db.run(
+          "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
+          [
+            row.body_truncated === 1
+              ? "ADE restarted before this ran, and the body was too large to keep, so it cannot run now. Have the service send it again."
+              : "ADE restarted before this ran, and the automation it was for has since changed or been removed.",
+            deps.projectId,
+            row.id,
+          ],
+        );
+        deps.onDeliveriesChanged?.(row.hook_id);
+        continue;
+      }
+      const headers = parseJsonRecord(row.headers_json);
+      const body = parseStoredOrSentBody(Buffer.from(row.body_text ?? "", "utf8"), row.content_type, true);
+      deps.logger.info("automations.webhook_delivery_resumed", { hookId: row.hook_id, deliveryId: row.id });
+      settleDispatch(row.id, row.hook_id, deps.dispatch({
+        hookId: row.hook_id,
+        via: row.via,
+        eventKey: row.event_key,
+        automationId: match.rule.id,
+        summary: dispatchSummary(match.config, row.event_label),
+        eventName: row.event_label,
+        webhook: { method: row.method, headers, query: parseJsonRecord(row.query_json), body },
+        resume: true,
+      }));
+    }
   };
 
   /** Run a logged delivery again with the automation as it is now. */
@@ -762,8 +867,9 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       throw new Error("That request failed the signature check, so ADE will not run it. Fix the signing secret, then have the service send it again.");
     }
     const body = row.body_text ?? "";
-    // The stored body is pretty-printed JSON or the original text; either
-    // re-parses to the same value, so placeholders and filters read the same.
+    // The stored body is pretty-printed JSON or the original text; read as
+    // JSON-or-text (`storedBody`) either re-parses to the same value, so
+    // placeholders and filters read the same.
     const result = await receive({
       hookId: row.hook_id,
       method: row.method,
@@ -776,6 +882,7 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       // the original signature could not match it again anyway.
       replayedSignature: row.signature === "verified" || row.signature === "unchecked" ? row.signature : "not_required",
       skipDedupe: true,
+      storedBody: true,
     });
     if (!result.deliveryId) return null;
     const replayed = loadDeliveryRow(result.deliveryId);
@@ -854,6 +961,11 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
     retireEndpoint,
     retireForDeletedRule,
     start() {
+      try {
+        resumeInterruptedDeliveries();
+      } catch (error) {
+        deps.logger.warn("automations.webhook_resume_failed", { error: errorMessage(error) });
+      }
       if (!relayDrain.start()) return;
       void retireOrphans()
         // Registration is idempotent; refreshing it on start heals a relay

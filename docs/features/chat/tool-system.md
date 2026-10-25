@@ -401,8 +401,11 @@ See [Mac Desktop](../mac-desktop/README.md).
 - **Ask-user input schema.** Claude SDK `AskUserQuestion` inputs are
   coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
   elicitations arrive through the `codex app-server` JSON-RPC stream
-  and are normalized inline in the Codex adapter -- do not assume a
-  common shape across providers.
+  and are normalized inline in the Codex adapter; Claude MCP
+  elicitations arrive through the SDK's `onElicitation` callback
+  (`buildClaudeElicitationHandler`). Both reuse
+  `codexMcpElicitation.ts` for the questions and answer coercion, but
+  do not assume a common request shape across providers.
 
 ## Related docs
 

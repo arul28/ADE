@@ -2925,8 +2925,16 @@ Form-mode JSON Schema properties become paged questions (enum/oneOf,
 boolean, freeform primitive, and multiselect array); answers are coerced back
 to the schema before ADE replies. Approval/URL mode shows **Allow once** and
 **Deny**, an **Open authorization** action only for safe web URLs, and
-**Always allow** only when `_meta.persist` includes `always`. Provider
-full-auto mode does not auto-answer these app/connector consent requests.
+**Always allow** only when `_meta.persist` includes `always`. Claude chats
+raise the same card for an MCP server's elicitation (`onElicitation`); it
+offers no **Always allow**, because the Agent SDK has no persistent consent
+for elicitations, so every request is answered on its own. In a Claude
+full-auto chat or an automation run ADE answers the card itself (a form with
+no fields is accepted, a form takes its schema defaults when every required
+field has one, anything else is declined) and shows the receipt with a
+notice; an unanswered Claude card cancels itself after 5 minutes.
+Codex full-auto mode does not auto-answer these app/connector consent
+requests.
 `serverRequest/resolved` emits the usual resolution event so a request
 completed outside the card cannot leave the composer locked.
 
