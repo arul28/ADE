@@ -168,7 +168,7 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { branchNameFromHeadRef, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, GIT_TREE_WRITE_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -4756,11 +4756,15 @@ export function createPrService({
       ? parseRemoteBranchSha(lsRemote.stdout, args.headBranch)
       : null;
 
+    // When git could not reach the remote, its error is the answer, not
+    // "branch not found".
+    let remoteFailure = lsRemote.exitCode === 0 ? "" : lsRemote.stderr.trim();
     if (!remoteSha) {
-      await runGit(["fetch", "--prune", "origin"], {
+      const fetched = await runGit(["fetch", "--prune", "origin"], {
         cwd: projectRoot,
-        timeoutMs: 5 * 60_000,
-      }).catch(() => null);
+        timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
+      });
+      if (fetched.exitCode !== 0) remoteFailure = fetched.stderr.trim() || remoteFailure;
       const cached = await runGit(["rev-parse", "--verify", `refs/remotes/${remoteRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
@@ -4771,7 +4775,9 @@ export function createPrService({
     if (!remoteSha) {
       return createLaneFromPrBranchBlock(
         "remote_branch_missing",
-        `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
+        remoteFailure
+          ? `ADE could not read '${remoteRef}' from the remote. ${formatGitExecutionError(remoteFailure)}`
+          : `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
       );
     }
 
@@ -9528,7 +9534,7 @@ export function createPrService({
     try {
       await runGitOrThrow(["worktree", "add", "--detach", sequentialWorktreePath, sequentialStartSha], {
         cwd: projectRoot,
-        timeoutMs: 60_000,
+        timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
       });
 
       for (const laneId of sourceLaneIds) {

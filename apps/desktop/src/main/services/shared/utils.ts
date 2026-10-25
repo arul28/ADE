@@ -389,6 +389,39 @@ export function parseDiffNameOnly(stdout: string): string[] {
   return stdout.split("\0").filter((name) => name.length > 0);
 }
 
+/** Distinct paths from `git diff --name-only -z`, sorted for display. */
+export function parseDiffNameOnlySorted(stdout: string): string[] {
+  return Array.from(new Set(parseDiffNameOnly(stdout))).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The records of `git diff --numstat -z`, with the counts as git printed them
+ * (`-` for a binary file). A record is `adds\tdels\tpath\0`, except a rename or
+ * copy, which writes `adds\tdels\t\0source\0destination\0`; the empty path is
+ * the signal that two more fields follow, and the destination is the path.
+ */
+export function parseNumstatRecordsZ(stdout: string): Array<{ addRaw: string; delRaw: string; path: string }> {
+  const tokens = stdout.split("\0");
+  const records: Array<{ addRaw: string; delRaw: string; path: string }> = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    const firstTab = token.indexOf("\t");
+    if (firstTab < 0) continue;
+    const secondTab = token.indexOf("\t", firstTab + 1);
+    if (secondTab < 0) continue;
+    let filePath = token.slice(secondTab + 1);
+    if (!filePath) {
+      const source = tokens[index + 1] ?? "";
+      const destination = tokens[index + 2] ?? "";
+      index += 2;
+      filePath = destination || source;
+    }
+    if (!filePath) continue;
+    records.push({ addRaw: token.slice(0, firstTab), delRaw: token.slice(firstTab + 1, secondTab), path: filePath });
+  }
+  return records;
+}
+
 // ── Safe JSON parsing ───────────────────────────────────────────────
 
 export function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {

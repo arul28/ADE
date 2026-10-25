@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionDeltaSummary } from "../../../shared/types";
-import { safeJsonParse } from "./utils";
+import { parseNumstatRecordsZ, safeJsonParse } from "./utils";
 
 // ── Row types ────────────────────────────────────────────────────────────────
 
@@ -72,34 +72,18 @@ export function safeSegment(raw: string): string {
   return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
 }
 
-/**
- * Totals and paths from `git diff --numstat -z`. A rename's record has an empty
- * path and is followed by its old and new paths; the new path counts.
- */
+/** Totals and paths from `git diff --numstat -z`. */
 export function parseNumStat(stdout: string): ParsedNumStat {
   const files = new Set<string>();
   let insertions = 0;
   let deletions = 0;
-
-  const records = stdout.split("\0");
-  for (let index = 0; index < records.length; index += 1) {
-    const parts = (records[index] ?? "").split("\t");
-    if (parts.length < 3) continue;
-    const ins = parts[0]?.trim() ?? "0";
-    const del = parts[1] ?? "0";
-    let filePath = parts.slice(2).join("\t");
-    if (!filePath) {
-      filePath = records[index + 2] ?? "";
-      index += 2;
-    }
-    if (filePath.length) files.add(filePath);
-
-    const insNum = ins === "-" ? 0 : Number(ins);
-    const delNum = del === "-" ? 0 : Number(del);
+  for (const { addRaw, delRaw, path: filePath } of parseNumstatRecordsZ(stdout)) {
+    files.add(filePath);
+    const insNum = addRaw === "-" ? 0 : Number(addRaw);
+    const delNum = delRaw === "-" ? 0 : Number(delRaw);
     if (Number.isFinite(insNum)) insertions += insNum;
     if (Number.isFinite(delNum)) deletions += delNum;
   }
-
   return { insertions, deletions, files };
 }
 

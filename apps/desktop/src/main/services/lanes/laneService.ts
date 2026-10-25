@@ -6,7 +6,17 @@ import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
-import { branchNameFromHeadRef, getHeadSha, gitCommandError, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
+import {
+  branchNameFromHeadRef,
+  getHeadSha,
+  GIT_REMOTE_FETCH_TIMEOUT_MS,
+  GIT_TREE_WRITE_TIMEOUT_MS,
+  parseGitCheckoutProgressLine,
+  runGit,
+  runGitOrThrow,
+  type GitCheckoutProgress,
+} from "../git/git";
+import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -570,6 +580,7 @@ function stablePathThroughExistingAncestor(targetPath: string): string {
 }
 
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
+const CHECKOUT_TIMEOUT_MESSAGE = `Git did not finish the checkout within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped it. The lane folder may hold files from both branches. Open a terminal in the lane and run \`git status\` before you continue.`;
 
 async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean> {
   if (!worktreePath) return false;
@@ -590,80 +601,6 @@ async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean>
     // their existing path without weakening production validation.
     return /^Unexpected git call:/i.test(message);
   }
-}
-
-/**
- * True when removing the worktree would lose work: an uncommitted or untracked
- * file, a submodule with changes, or a submodule commit that no remote has.
- * `--ignore-submodules=none` keeps a user's `diff.ignoreSubmodules` from hiding
- * a changed submodule. Git keeps a worktree's submodule repositories inside the
- * worktree's own git dir, so removing the worktree removes their commits too.
- */
-async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000): Promise<boolean> {
-  const result = await runGit(["status", "--porcelain=v1", "--ignore-submodules=none"], { cwd: worktreePath, timeoutMs });
-  if (result.exitCode !== 0) {
-    throw new Error("ADE could not verify whether the lane has uncommitted files.");
-  }
-  if (result.stdout.trim().length > 0) return true;
-  return await hasUnpushedSubmoduleCommits(worktreePath, timeoutMs);
-}
-
-const SUBMODULE_INSPECT_MAX_DEPTH = 4;
-
-/**
- * Bounds for git commands that write a whole tree. A checkout or `worktree add`
- * killed partway leaves files from both branches and an index that matches
- * neither, so the bound only has to catch a git that never returns. A large
- * repo, Git LFS or a slow disk can take minutes.
- */
-const GIT_TREE_WRITE_TIMEOUT_MS = 15 * 60_000;
-/** A fetch from a busy or distant remote can take minutes on a large repo. */
-const GIT_FETCH_TIMEOUT_MS = 5 * 60_000;
-
-/** Runs a checkout in an existing lane folder, with a message that says what a stopped one leaves. */
-async function runLaneCheckout(args: string[], worktreePath: string): Promise<void> {
-  const res = await runGit(args, { cwd: worktreePath, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
-  if (res.timedOut) {
-    throw new Error(
-      "Git did not finish the checkout within 15 minutes, so ADE stopped it. The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.",
-    );
-  }
-  if (res.exitCode !== 0) {
-    throw gitCommandError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`);
-  }
-}
-
-/**
- * True when an initialized submodule under `repoPath` (at any depth) has a
- * commit on HEAD or a local branch that no remote-tracking ref holds. A
- * submodule ADE cannot inspect counts as unpushed, so the delete stops.
- */
-async function hasUnpushedSubmoduleCommits(repoPath: string, timeoutMs: number, depth = 0): Promise<boolean> {
-  if (depth >= SUBMODULE_INSPECT_MAX_DEPTH) return false;
-  if (!fs.existsSync(path.join(repoPath, ".gitmodules"))) return false;
-  const listed = await runGit(
-    ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
-    { cwd: repoPath, timeoutMs },
-  );
-  // Exit 1 means no submodule path is configured.
-  if (listed.exitCode === 1) return false;
-  if (listed.exitCode !== 0) return true;
-  for (const record of listed.stdout.split("\0")) {
-    const newline = record.indexOf("\n");
-    const relPath = newline >= 0 ? record.slice(newline + 1) : "";
-    if (!relPath) continue;
-    const submodulePath = path.resolve(repoPath, relPath);
-    if (!isWithinDir(repoPath, submodulePath)) continue;
-    // An uninitialized submodule has no `.git` and holds no work.
-    if (!fs.existsSync(path.join(submodulePath, ".git"))) continue;
-    const unpushed = await runGit(
-      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
-      { cwd: submodulePath, timeoutMs },
-    );
-    if (unpushed.exitCode !== 0 || unpushed.stdout.trim().length > 0) return true;
-    if (await hasUnpushedSubmoduleCommits(submodulePath, timeoutMs, depth + 1)) return true;
-  }
-  return false;
 }
 
 async function isSymbolicLinkPath(targetPath: string): Promise<boolean> {
@@ -1477,7 +1414,7 @@ async function resolveImportBranchTarget(args: {
   // Refresh cached remote refs, but still allow import when the fetch fails and refs are already present locally.
   await runGit(["fetch", "--prune", "--all"], {
     cwd: args.projectRoot,
-    timeoutMs: GIT_FETCH_TIMEOUT_MS,
+    timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
   }).catch(() => {});
 
   const directCandidates = new Set<string>();
@@ -6261,7 +6198,7 @@ export function createLaneService({
         // If we are branching directly from the current primary checkout, ensure
         // it is in sync with remote before using it as the base.
         if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: GIT_FETCH_TIMEOUT_MS });
+          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS });
           const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
           if (upstreamRes.exitCode === 0) {
             const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
@@ -6966,7 +6903,11 @@ export function createLaneService({
         if (startPointRes.exitCode !== 0 || !startPointRes.stdout.trim()) {
           throw new Error(`Start point '${startPoint}' was not found.`);
         }
-        await runLaneCheckout(["checkout", "-b", targetBranchRef, startPoint], row.worktree_path);
+        await runGitOrThrow(["checkout", "-b", targetBranchRef, startPoint], {
+          cwd: row.worktree_path,
+          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+        });
         targetProfileRow = null;
         pendingProfileUpsert = {
           branchRef: targetBranchRef,
@@ -6999,7 +6940,11 @@ export function createLaneService({
         const checkoutCmd = remoteRef
           ? ["checkout", "--track", "--ignore-other-worktrees", remoteRef]
           : ["checkout", "--ignore-other-worktrees", targetBranchRef];
-        await runLaneCheckout(checkoutCmd, row.worktree_path);
+        await runGitOrThrow(checkoutCmd, {
+          cwd: row.worktree_path,
+          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+        });
 
         const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
         pendingProfileUpsert = {
@@ -7038,7 +6983,11 @@ export function createLaneService({
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
         if (previousBranchRef && previousBranchRef !== targetBranchRef) {
           try {
-            await runLaneCheckout(["checkout", "--ignore-other-worktrees", previousBranchRef], row.worktree_path);
+            await runGitOrThrow(["checkout", "--ignore-other-worktrees", previousBranchRef], {
+          cwd: row.worktree_path,
+          timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+          timeoutMessage: CHECKOUT_TIMEOUT_MESSAGE,
+        });
           } catch (rollbackErr) {
             logger.warn("laneService.switchBranch_git_rollback_failed", {
               laneId: row.id,
@@ -8555,13 +8504,18 @@ export function createLaneService({
             ) {
               throw new Error("The lane worktree changed while ADE was preparing cleanup.");
             }
-            const dirtyBeforeRemove = await readWorktreeDirty(normalizedWorktree);
-            if (dirtyBeforeRemove && args.forceDirty !== true) {
-              throw new Error("This lane gained uncommitted files during cleanup. Confirm that those changes may be lost.");
+            const unsavedWork = await describeUnsavedWorktreeWork(normalizedWorktree);
+            if (unsavedWork && args.forceDirty !== true) {
+              logger.info("lane.reclaim.unsaved_work", { laneId: args.laneId, reason: unsavedWork });
+              throw new Error(
+                unsavedWork === UNCOMMITTED_CHANGES_REASON
+                  ? "This lane gained uncommitted files during cleanup. Confirm that those changes may be lost."
+                  : `${unsavedWork} Confirm that this work may be lost.`,
+              );
             }
             const remove = await runGit(
               ["worktree", "remove", "--force", normalizedWorktree],
-              { cwd: projectRoot, timeoutMs: 120_000 },
+              { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },
             );
             if (remove.exitCode !== 0 || fs.existsSync(normalizedWorktree)) {
               let residualStat: fs.Stats | null = null;
@@ -8792,7 +8746,7 @@ export function createLaneService({
           commitLaneRestoreState(laneId, targetPath);
         } catch (error) {
           await runGitWorktreeMutation(async () => {
-            await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 120_000 });
+            await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
             await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
@@ -9019,11 +8973,12 @@ export function createLaneService({
             if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
               return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
             }
-            const dirty = await readWorktreeDirty(row.worktree_path);
-            if (dirty && !force) {
-              throw new Error("Lane has uncommitted changes. Enable force delete after confirming warnings.");
+            const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
+            if (unsavedWork && !force) {
+              logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork });
+              throw new Error(`${unsavedWork} Enable force delete after confirming warnings.`);
             }
-            return { detail: dirty ? "dirty (force enabled)" : "clean" };
+            return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
           });
         }
 
@@ -9273,10 +9228,10 @@ export function createLaneService({
               };
               const renamedAside = await renameAsideWorktree();
               if (renamedAside) return renamedAside;
-              // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
-              // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
-              // state that blocks future deletes.
-              const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
+              // A large worktree (node_modules, say) can take minutes to walk, and a
+              // timeout mid-remove leaves a half-deleted worktree that blocks
+              // future deletes.
+              const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
               if (removeRes.exitCode === 0) {
                 if (!fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);
@@ -9302,7 +9257,7 @@ export function createLaneService({
               if (!force && /containing submodules/i.test(original)) {
                 const forcedRes = await runGit(
                   ["worktree", "remove", "--force", row.worktree_path],
-                  { cwd: projectRoot, timeoutMs: 120_000 },
+                  { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },
                 );
                 if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);

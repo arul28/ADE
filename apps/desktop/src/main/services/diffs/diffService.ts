@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
-import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
+import { parseNumstatRecordsZ, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
@@ -43,27 +43,7 @@ function stripGitStatusPath(raw: string): string {
 }
 
 function parseNumstatZ(stdout: string): Array<{ addRaw: string; delRaw: string; filePath: string }> {
-  const entries: Array<{ addRaw: string; delRaw: string; filePath: string }> = [];
-  const records = stdout.split("\0");
-
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i] ?? "";
-    if (!record) continue;
-
-    const [addRaw, delRaw, ...pathParts] = record.split("\t");
-    if (addRaw == null || delRaw == null || pathParts.length === 0) continue;
-
-    let filePath = pathParts.join("\t");
-    if (!filePath) {
-      filePath = records[i + 2] ?? "";
-      i += 2;
-    }
-    if (!filePath) continue;
-
-    entries.push({ addRaw, delRaw, filePath });
-  }
-
-  return entries;
+  return parseNumstatRecordsZ(stdout).map(({ addRaw, delRaw, path: filePath }) => ({ addRaw, delRaw, filePath }));
 }
 
 function parsePorcelainStatusZ(stdout: string): DiffChanges {

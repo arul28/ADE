@@ -1,7 +1,7 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
-import { detectConflictKind, parseNameOnly } from "./gitConflictState";
+import { branchNameFromHeadRef, getHeadSha, GIT_REMOTE_FETCH_TIMEOUT_MS, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { detectConflictKind } from "./gitConflictState";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -45,7 +45,7 @@ import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import { isRecord, parseDiffNameOnly, safeJsonParse } from "../shared/utils";
+import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
 type LaneInfo = {
@@ -514,7 +514,7 @@ export function createGitOperationsService({
       throw new AdeExpectedError("Lane has uncommitted changes. Commit or stash before sync.", "user");
     }
 
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);
@@ -526,7 +526,7 @@ export function createGitOperationsService({
         timeoutMs: 10_000
       });
       if (unmergedRes.exitCode !== 0) return false;
-      return parseNameOnly(unmergedRes.stdout).length > 0;
+      return parseDiffNameOnlySorted(unmergedRes.stdout).length > 0;
     };
 
     if (mode === "rebase") {
@@ -1524,7 +1524,7 @@ export function createGitOperationsService({
           cwd: lane.worktreePath,
           timeoutMs: 10_000
         });
-        const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
+        const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
         const inProgress = kind != null;
 
         return {

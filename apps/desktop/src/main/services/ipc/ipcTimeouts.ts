@@ -59,6 +59,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     createChild: IPC.lanesCreateChild,
     createFromUnstaged: IPC.lanesCreateFromUnstaged,
     importBranch: IPC.lanesImportBranch,
+    switchBranch: IPC.lanesSwitchBranch,
+    unarchive: IPC.lanesUnarchive,
+    archiveAndReclaim: IPC.lanesArchiveAndReclaim,
     archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
     initEnv: IPC.lanesInitEnv,
@@ -100,6 +103,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   // whichever runtime answers it.
   pr: {
     land: IPC.prsLand,
+    createLaneFromPrBranch: IPC.prsCreateLaneFromPrBranch,
   },
   // A remote runtime runs the same ledger worker as a local one, so the Usage
   // page's Refresh needs the same budget whichever runtime answers it.
@@ -211,13 +215,28 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeEnsurePortForward:
     case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
-    case IPC.lanesCreate:
-    case IPC.lanesCreateChild:
-    case IPC.lanesCreateFromUnstaged:
-    case IPC.lanesImportBranch:
     case IPC.lanesArchive:
-    case IPC.lanesDelete:
       return 4 * 60_000;
+    // Checkout, `worktree add` and `worktree remove`; see
+    // LANE_GIT_WRITE_ACTION_TIMEOUT_MS.
+    case IPC.lanesCreate:
+      return localRuntimeActionIpcTimeoutMs("lane", "create");
+    case IPC.lanesCreateChild:
+      return localRuntimeActionIpcTimeoutMs("lane", "createChild");
+    case IPC.lanesCreateFromUnstaged:
+      return localRuntimeActionIpcTimeoutMs("lane", "createFromUnstaged");
+    case IPC.lanesImportBranch:
+      return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
+    case IPC.lanesSwitchBranch:
+      return localRuntimeActionIpcTimeoutMs("lane", "switchBranch");
+    case IPC.lanesUnarchive:
+      return localRuntimeActionIpcTimeoutMs("lane", "unarchive");
+    case IPC.lanesArchiveAndReclaim:
+      return localRuntimeActionIpcTimeoutMs("lane", "archiveAndReclaim");
+    case IPC.lanesDelete:
+      return localRuntimeActionIpcTimeoutMs("lane", "delete");
+    case IPC.prsCreateLaneFromPrBranch:
+      return localRuntimeActionIpcTimeoutMs("pr", "createLaneFromPrBranch");
     // A lane template's installs and setup script; see LANE_ENV_SETUP_TIMEOUT_MS.
     case IPC.lanesInitEnv:
     case IPC.lanesApplyTemplate:
@@ -361,7 +380,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // Direct-channel twins of actions the local runtime map already gives a
     // longer budget; without these the same work timed out at 30s whenever a
     // project was not runtime-backed.
-    case IPC.lanesUnarchive:
     case IPC.agentChatSuggestLaneName:
     case IPC.agentChatGenerateAutoLaneIdentity:
       return 150_000;

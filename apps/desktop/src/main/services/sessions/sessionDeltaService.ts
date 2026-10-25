@@ -9,7 +9,6 @@ import {
 } from "../shared/packLegacyUtils";
 import type { createSessionService } from "./sessionService";
 import { runGit } from "../git/git";
-import { parseDiffNameOnly } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { SessionDeltaSummary } from "../../../shared/types";
@@ -114,18 +113,9 @@ export function createSessionDeltaService(args: {
     const numStatRes = diffArgs
       ? await runGit(["diff", "--numstat", "-z", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
       : { stdout: "", exitCode: 0 };
-    const nameRes = diffArgs
-      ? await runGit(["diff", "--name-only", "-z", ...diffArgs], { cwd: lane.worktreePath, timeoutMs: 20_000 })
-      : { stdout: "", exitCode: 0 };
 
     const parsedStat = parseNumStat(numStatRes.stdout);
     const touched = new Set<string>([...parsedStat.files]);
-
-    if (nameRes.exitCode === 0) {
-      for (const name of parseDiffNameOnly(nameRes.stdout)) {
-        touched.add(name);
-      }
-    }
 
     if (!useCommitRange && !completedWithoutCommitDelta) {
       const statusRes = await runGit(["status", "--porcelain=v1", "-z"], { cwd: lane.worktreePath, timeoutMs: 8_000 });

@@ -22,7 +22,11 @@ import {
 } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
 import { userProcessEnv } from "../../shared/hostRuntimeEnv";
-import { GIT_READ_ENV } from "../../git/gitReadEnv";
+import { GIT_CONFIG_OVERRIDE_ARGS, GIT_NO_PROMPT_ENV, GIT_READ_ENV } from "../../git/gitReadEnv";
+
+/** The env and leading options ADE's own git runner uses, for the tools that spawn git directly. */
+const toolGitEnv = (): NodeJS.ProcessEnv => ({ ...process.env, ...GIT_READ_ENV, ...GIT_NO_PROMPT_ENV });
+const toolGitArgs = (args: string[]): string[] => [...GIT_CONFIG_OVERRIDE_ARGS, ...args];
 
 const execFileAsync = promisify(execFile);
 
@@ -2452,15 +2456,15 @@ function createGitStatusTool(cwd: string) {
     inputSchema: z.object({}),
     execute: async () => {
       try {
-        const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "-u"], {
+        const { stdout } = await execFileAsync("git", toolGitArgs(["status", "--porcelain=v1", "-u"]), {
           cwd,
           timeout: 15_000,
-          env: { ...process.env, ...GIT_READ_ENV },
+          env: toolGitEnv(),
         });
         const { stdout: branch } = await execFileAsync(
           "git",
-          ["rev-parse", "--symbolic-full-name", "HEAD"],
-          { cwd, timeout: 5_000 }
+          toolGitArgs(["rev-parse", "--symbolic-full-name", "HEAD"]),
+          { cwd, timeout: 5_000, env: toolGitEnv() }
         );
         return { branch: branch.trim().replace(/^refs\/heads\//, ""), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
@@ -2489,11 +2493,11 @@ function createGitDiffTool(cwd: string) {
           args.push("--");
           args.push(filePath);
         }
-        const { stdout } = await execFileAsync("git", args, {
+        const { stdout } = await execFileAsync("git", toolGitArgs(args), {
           cwd,
           timeout: 30_000,
           maxBuffer: 5 * 1024 * 1024,
-          env: { ...process.env, ...GIT_READ_ENV },
+          env: toolGitEnv(),
         });
         const truncated = stdout.length > 200_000;
         return { diff: stdout.slice(0, 200_000), truncated };
@@ -2521,7 +2525,7 @@ function createGitLogTool(cwd: string) {
           args.push("--format=%H %an %ad %s", "--date=short");
         }
         if (ref) args.push(ref);
-        const { stdout } = await execFileAsync("git", args, { cwd, timeout: 15_000 });
+        const { stdout } = await execFileAsync("git", toolGitArgs(args), { cwd, timeout: 15_000, env: toolGitEnv() });
         return { log: stdout.trim() };
       } catch (err) {
         return { log: "", error: `git log failed: ${getErrorMessage(err)}` };

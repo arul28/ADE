@@ -89,7 +89,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { safeSegment } from "../shared/packLegacyUtils";
-import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -359,7 +359,7 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
   insertions: number;
   deletions: number;
 }> {
-  const res = await runGit(["diff", "--numstat", `${mergeBase}..${headSha}`], {
+  const res = await runGit(["diff", "--numstat", "-z", `${mergeBase}..${headSha}`], {
     cwd,
     timeoutMs: 15_000
   });
@@ -374,13 +374,9 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
   const files = new Set<string>();
   let insertions = 0;
   let deletions = 0;
-  for (const rawLine of res.stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const [insRaw, delRaw, file] = line.split(/\t/);
-    if (!file) continue;
+  for (const { addRaw, delRaw, path: file } of parseNumstatRecordsZ(res.stdout)) {
     files.add(file);
-    const ins = Number(insRaw);
+    const ins = Number(addRaw);
     const del = Number(delRaw);
     if (Number.isFinite(ins)) insertions += ins;
     if (Number.isFinite(del)) deletions += del;
@@ -1168,7 +1164,7 @@ export function createConflictService({
     const kind: GitConflictState["kind"] = hasRebase ? "rebase" : hasMerge ? "merge" : null;
 
     const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
-    const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
+    const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
 
     let mergeHeadSha: string | null = null;
     if (kind === "merge" && gitDir.length) {

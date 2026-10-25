@@ -1,6 +1,7 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -270,18 +271,25 @@ export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
-  // Lane deletion can legitimately include a 60s worktree removal followed by
-  // a 45s remote-branch deletion. The old 30s client budget reported failure
-  // while the daemon kept mutating state to a successful completion.
-  ["lane.delete", 4 * 60_000],
+  // Lane actions that run a checkout, `worktree add` or `worktree remove`; see
+  // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. A shorter budget reported failure while
+  // the daemon kept writing the tree to a successful completion.
+  ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createChild", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createFromUnstaged", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.unarchive", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.archiveAndReclaim", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["pr.createLaneFromPrBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   // Cancelling a new-lane launch waits out an in-flight checkout, then fully
   // deletes the chat and the lane (worktree + local and remote branch).
-  ["chat.cancelLaunch", 5 * 60_000],
+  ["chat.cancelLaunch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000],
   ["lane.archive", 120_000],
   // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
   // merged PR. The 30s default reported a failure while the merge went on.
   ["pr.land", 120_000],
-  ["lane.unarchive", 120_000],
   // See LANE_ENV_SETUP_TIMEOUT_MS.
   ["lane.initEnv", LANE_ENV_SETUP_TIMEOUT_MS],
   ["lane.applyTemplate", LANE_ENV_SETUP_TIMEOUT_MS],

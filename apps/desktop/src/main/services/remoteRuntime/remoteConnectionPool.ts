@@ -40,6 +40,7 @@ import {
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
@@ -204,6 +205,18 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A lane template's installs on the other machine; see LANE_ENV_SETUP_TIMEOUT_MS.
   ["lane.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Checkout, `worktree add` and `worktree remove` on the other machine; see
+  // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. The renderer's budget for these sits
+  // above it (localRuntimeActionIpcTimeoutMs).
+  ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createChild", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createFromUnstaged", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.unarchive", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.archiveAndReclaim", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["pr.createLaneFromPrBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.applyTemplate", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],

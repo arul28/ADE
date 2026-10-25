@@ -3,12 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { StringDecoder } from "node:string_decoder";
 import type { ConflictFileType } from "../../../shared/types";
 import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { markExpected } from "../../../shared/expectedError";
 import { quoteShellArg } from "../../../shared/shell";
 import { GIT_TOOLCHAIN_MISSING, XCODE_LICENSE_NOT_AGREED } from "../../../shared/xcodeToolchain";
-import { GIT_READ_ENV } from "./gitReadEnv";
+import { GIT_CONFIG_OVERRIDE_ARGS, GIT_NO_PROMPT_ENV, GIT_READ_ENV } from "./gitReadEnv";
+
+export { GIT_REMOTE_FETCH_TIMEOUT_MS, GIT_TREE_WRITE_TIMEOUT_MS } from "./gitTimeouts";
 import { terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { pathKey } from "../shared/pathCompare";
@@ -151,6 +154,8 @@ export type GitRunOptions = {
   signal?: AbortSignal;
   /** Written to git's stdin, which is then closed (e.g. `check-ignore --stdin`). */
   stdin?: string;
+  /** What `runGitOrThrow` says when the timeout stops git, instead of git's output. */
+  timeoutMessage?: string;
 };
 
 export type GitRunResult = {
@@ -248,26 +253,32 @@ async function shouldRetryAfterIndexLock(result: GitRunResult): Promise<boolean>
   return await recoverStaleIndexLock(lockPath);
 }
 
+/**
+ * `decoder` carries a character whose bytes a pipe read split in two into the
+ * next chunk. `-z` output holds raw UTF-8 paths, so decoding each chunk alone
+ * would turn such a path into one with U+FFFD in it.
+ */
 function appendChunkWithCap(args: {
   current: string;
   chunk: Buffer;
   currentBytes: number;
   maxBytes: number;
+  decoder: StringDecoder;
 }): { text: string; bytes: number; truncated: boolean } {
-  const { current, chunk, currentBytes, maxBytes } = args;
+  const { current, chunk, currentBytes, maxBytes, decoder } = args;
   if (maxBytes <= 0 || currentBytes >= maxBytes) {
     return { text: current, bytes: currentBytes, truncated: true };
   }
   const remaining = maxBytes - currentBytes;
   if (chunk.length <= remaining) {
     return {
-      text: current + chunk.toString("utf8"),
+      text: current + decoder.write(chunk),
       bytes: currentBytes + chunk.length,
       truncated: false
     };
   }
   return {
-    text: current + chunk.subarray(0, remaining).toString("utf8"),
+    text: current + decoder.write(chunk.subarray(0, remaining)),
     bytes: maxBytes,
     truncated: true
   };
@@ -286,32 +297,6 @@ type GitChild = {
   on(event: "close", listener: (code: number | null) => void): unknown;
   once(event: "spawn", listener: () => void): unknown;
 };
-
-/**
- * Git options ADE puts before every command so a personal git config cannot
- * change what ADE reads. `status.showUntrackedFiles=no` hides new files from
- * `git status` and from `git worktree remove`'s own dirty check, so a lane that
- * holds only new files reads clean and its delete erases them. `normal` is
- * git's default; a caller's explicit `--untracked-files` still wins.
- */
-const GIT_CONFIG_OVERRIDE_ARGS = [
-  "-c", "status.showUntrackedFiles=normal",
-  // Patch readers here expect `a/` and `b/` path prefixes, and `git apply`
-  // strips exactly one, so a personal no-prefix setting breaks both.
-  "-c", "diff.noprefix=false",
-  "-c", "diff.mnemonicPrefix=false",
-  "-c", "diff.srcPrefix=a/",
-  "-c", "diff.dstPrefix=b/",
-] as const;
-
-/**
- * Git must never wait on a terminal prompt: ADE has no terminal to show it, so
- * a missing sign-in (a fetch, a push, or a Git LFS download during checkout)
- * would hang until the timeout. With this set, git fails at once and says
- * why. Git Credential Manager's own sign-in window still opens, because the
- * user can answer it. A caller's env still wins.
- */
-const GIT_NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: "0" } as const;
 
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
@@ -407,6 +392,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
 
     const onTimeout = setTimeout(() => terminateAndWait("timeout"), timeoutMs);
 
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout.on("data", (d: Buffer | string) => {
       if (stdoutTruncated) return;
       const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
@@ -414,7 +401,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
         current: stdout,
         chunk,
         currentBytes: stdoutBytes,
-        maxBytes: maxOutputBytes
+        maxBytes: maxOutputBytes,
+        decoder: stdoutDecoder,
       });
       stdout = next.text;
       stdoutBytes = next.bytes;
@@ -443,7 +431,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
         current: stderr,
         chunk,
         currentBytes: stderrBytes,
-        maxBytes: maxOutputBytes
+        maxBytes: maxOutputBytes,
+        decoder: stderrDecoder,
       });
       stderr = next.text;
       stderrBytes = next.bytes;
@@ -699,6 +688,7 @@ export function resetGitCommonDirCacheForTests(): void {
 
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
   const res = await runGit(args, opts);
+  if (res.timedOut && opts.timeoutMessage) throw new Error(opts.timeoutMessage);
   if (res.exitCode !== 0) {
     throw gitCommandError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`);
   }
@@ -749,7 +739,7 @@ const GIT_REMOTE_SIGN_IN_FAILED =
   /terminal prompts disabled|could not read (?:username|password)|authentication failed for|permission denied \(publickey|host key verification failed/i;
 
 const GIT_REMOTE_SIGN_IN_HINT =
-  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal. For SSH, add your key to ssh-agent and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
+  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. Sign in on the computer this lane is on. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal there. For SSH, add your key to ssh-agent there and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
