@@ -195,6 +195,7 @@ describe("customWebhookService", () => {
     dispatch?: CustomWebhookServiceDeps["dispatch"];
     fetchImpl?: typeof fetch;
     accountToken?: string | null;
+    listUnstartedEventKeys?: () => string[];
   } = {}): { service: CustomWebhookService; dispatch: ReturnType<typeof vi.fn> } {
     const dispatch = options.dispatch ?? vi.fn(async () => null);
     const service = createCustomWebhookService({
@@ -208,6 +209,7 @@ describe("customWebhookService", () => {
       getGatewayPublicUrl: () => null,
       dispatch,
       fetchImpl: options.fetchImpl,
+      ...(options.listUnstartedEventKeys ? { listUnstartedEventKeys: options.listUnstartedEventKeys } : {}),
     });
     activeService = service;
     return { service, dispatch: dispatch as ReturnType<typeof vi.fn> };
@@ -668,6 +670,62 @@ describe("customWebhookService", () => {
     expect(relay.ackBodies).toHaveLength(1);
     expect(relay.ackBodies[0]?.eventIds).toEqual(["evt-ok-1"]);
     expect(service.listDeliveries({ hookId: HOOK_BAD })).toHaveLength(0);
+  });
+
+  it("start(): replays a delivery accepted before a restart once, even after 50 newer deliveries", async () => {
+    const rules = [makeRule({ hookId: HOOK_ID })];
+    // The first delivery's run never starts (queued behind a long run when
+    // ADE stops); every later one starts and links its ingress row.
+    let calls = 0;
+    const firstDispatch = vi.fn(() => {
+      calls += 1;
+      return calls === 1
+        ? new Promise<never>(() => {})
+        : Promise.resolve({ id: `ing-${calls}`, status: "dispatched" } as never);
+    });
+    const { service: before } = setupService({ rules, dispatch: firstDispatch });
+    seedHook(HOOK_ID, HOOK_TOKEN, null);
+    const deliver = (deliveryId: string, action: string) => before.receive({
+      hookId: HOOK_ID,
+      token: HOOK_TOKEN,
+      method: "POST",
+      headers: { "content-type": "application/json", "x-github-delivery": deliveryId },
+      query: {},
+      rawBody: Buffer.from(JSON.stringify({ action }), "utf8"),
+      via: "local",
+    });
+    const pending = await deliver("gh-pending", "opened");
+    for (let i = 0; i < 50; i += 1) await deliver(`gh-${i}`, "edited");
+    const linkedCount = () => db.get<{ n: number }>(
+      "select count(*) as n from automation_webhook_deliveries where ingress_event_id is not null",
+    )?.n;
+    await vi.waitFor(() => expect(linkedCount()).toBe(50));
+    const pendingRow = db.get<{ event_key: string; outcome: string }>(
+      "select event_key, outcome from automation_webhook_deliveries where id = ?",
+      [pending.deliveryId!],
+    );
+    expect(pendingRow?.outcome, "the pending delivery outlives the 50-row cap").toBe("ran");
+    before.stop();
+
+    // Restart: the automation service reports the event as never started.
+    const { service: after, dispatch } = setupService({
+      rules,
+      dispatch: vi.fn(async () => ({ id: "ing-resumed", status: "dispatched" }) as never),
+      listUnstartedEventKeys: () => [pendingRow!.event_key],
+    });
+    after.start();
+    after.start();
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls[0]![0]).toMatchObject({
+      eventKey: pendingRow!.event_key,
+      resume: true,
+      webhook: { body: { action: "opened" } },
+    });
+    await vi.waitFor(() => expect(db.get<{ ingress_event_id: string | null }>(
+      "select ingress_event_id from automation_webhook_deliveries where id = ?",
+      [pending.deliveryId!],
+    )?.ingress_event_id).toBe("ing-resumed"));
   });
 
   it("receive(): a run the automation ignored is logged as filtered and its redelivery runs", async () => {
