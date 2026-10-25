@@ -63090,8 +63090,11 @@ export function createAgentChatService(args: {
   ): void => {
     for (const managed of managedSessions.values()) {
       if (managed.deleted || managed.usageLimitResume?.state !== "armed") continue;
-      const provider = managed.session.provider;
-      if (provider !== "claude" && provider !== "codex") continue;
+      const sessionProvider = managed.session.provider;
+      const provider: "claude" | "codex" | null = sessionProvider === "claude"
+        ? "claude"
+        : sessionProvider === "codex" ? "codex" : null;
+      if (!provider) continue;
       const status = snapshot.providerStatus?.[provider];
       if (status && status.state !== "ok") continue;
       const readingAtMs = Date.parse(status?.updatedAt ?? status?.lastSuccessAt ?? "");

@@ -596,6 +596,16 @@ export type AgentChatSpawnDispatchMetadata = {
 export type AgentChatAgentRelayMetadata = {
   /** Trusted caller session, derived from its bound identity. */
   fromSessionId: string;
+  /** The sending chat's title when it was sent, for the folded row. Absent on older messages. */
+  fromTitle?: string;
+};
+
+/** Marks a prompt an automation run sent. Host-stamped; never accepted from a caller. */
+export type AgentChatAutomationRunMetadata = {
+  automationId: string;
+  runId?: string;
+  /** The automation's name when it ran. */
+  name: string;
 };
 
 export type AgentChatHostContinuationMetadata = {
@@ -1348,6 +1358,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   boardMove?: AgentChatBoardMoveMetadata;
   /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
   prWatchWake?: AgentChatPrWatchWakeMetadata;
+  /** Marks a prompt an automation run sent. Renders folded, like a relay. */
+  automationRun?: AgentChatAutomationRunMetadata;
 };
 
 export type AgentChatPrWatchWakeMetadata = {

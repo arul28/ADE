@@ -88,6 +88,7 @@ export function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null 
     || metadata.agentRelay
     || metadata.hostContinuation
     || metadata.usageLimitResume
+    || metadata.automationRun
   );
 }
 

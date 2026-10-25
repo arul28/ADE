@@ -3680,6 +3680,7 @@ export function createAutomationService({
           sessionId: session.id,
           text: promptText,
           displayText: action.sessionTitle?.trim() || promptText,
+          metadata: { automationRun: { automationId: rule.id, runId, name: rule.name } },
           reasoningEffort,
           ...agentTurnLimits(action),
         });
@@ -4220,6 +4221,7 @@ export function createAutomationService({
           text: prompt,
           // What the chat shows as the incoming message: which automation, and what set it off.
           displayText: `${args.rule.name}${args.trigger.summary?.trim() ? ` · ${args.trigger.summary.trim()}` : ""}`,
+          metadata: { automationRun: { automationId: args.rule.id, runId: run.id, name: args.rule.name } },
           reasoningEffort,
           ...agentTurnLimits(args.rule.execution?.session),
         }));
@@ -4301,6 +4303,7 @@ export function createAutomationService({
         sessionId: session.id,
         text: prompt,
         displayText: args.rule.prompt?.trim() || args.rule.name,
+        metadata: { automationRun: { automationId: args.rule.id, runId: run.id, name: args.rule.name } },
         reasoningEffort,
         ...agentTurnLimits(args.rule.execution?.session),
       });

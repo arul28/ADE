@@ -93,6 +93,9 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   // rule (or an agent) forge "the user moved this card", which the renderer
   // renders as a user act and which clears the attention markers.
   "boardMove",
+  // Stamped by the automation service on the prompts its runs send. A forged
+  // one would fold a person's message out of sight.
+  "automationRun",
   ...NON_DIRECTIVE_METADATA_KEYS,
   // Host-only dispatch markers are host-authored provenance too, and they are
   // the load-bearing kind: each one exempts its message from the auto-resume
