@@ -15,8 +15,8 @@ Go down this list and stop at the first step that answers the question:
 1. **No screen.** A CLI, an API, a test, a log or the file the app writes.
    Most "does it work" questions end here.
 2. **A surface that never opens a screen.** A web page or localhost →
-   `ade browser`. An Electron app → `ade app-control`. An iOS or SwiftUI app
-   → `ade apple`. They run in the background and never touch the user's
+   `ade browser`. An Electron app → `ade app-control`. An iOS app or an iOS
+   SwiftUI view → `ade apple`. They run in the background and never touch the user's
    screen, pointer or focus.
 3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows),
    only for what steps 1 and 2 cannot reach:
@@ -39,7 +39,7 @@ stop it when you are done (see **Rules that will bite you**).
 
 | What you need to drive | Surface | Skill |
 |---|---|---|
-| An iOS or SwiftUI app | `ade apple` | **ade-apple** |
+| An iOS app or an iOS SwiftUI view (a native macOS app, SwiftUI or not, is step 3) | `ade apple` | **ade-apple** |
 | An Electron app — your dev build, or an installed one such as Slack — or anything whose DOM you need: labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
