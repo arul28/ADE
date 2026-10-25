@@ -4684,6 +4684,13 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  // A stop is only worth anything now, so neither is queued.
+  register("lanes.cancelDelete", { viewerAllowed: true }, async (payload) =>
+    args.laneService.cancelDelete(requireString(payload.laneId, "lanes.cancelDelete requires laneId.")));
+  register("lanes.cancelGitWrite", { viewerAllowed: true }, async (payload) =>
+    args.laneService.cancelGitWrite({
+      operationId: requireString(payload.operationId, "lanes.cancelGitWrite requires operationId."),
+    }));
   register("lanes.deleteLeftoverWorktree", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.deleteLeftoverWorktree(
       requireString(payload.laneId, "lanes.deleteLeftoverWorktree requires laneId."),

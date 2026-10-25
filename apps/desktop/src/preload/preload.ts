@@ -6848,8 +6848,9 @@ const adeBridge = {
     },
     previewBranchSwitch: async (
       args: LaneBranchSwitchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneBranchSwitchPreview> =>
-      callProjectRuntimeActionOr("lane", "previewBranchSwitch", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "previewBranchSwitch", { args }, () =>
         ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
       ),
     switchBranch: async (

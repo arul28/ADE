@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, Check, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
-import type { LaneBranchActiveWorkItem, LaneSummary } from "../../../../shared/types";
+import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
@@ -55,10 +55,13 @@ export function LaneBranchSwitcher({
   lane,
   primaryLane,
   active,
+  pin = null,
 }: {
   lane: LaneSummary;
   primaryLane: LaneSummary | null;
   active: boolean;
+  /** The lane's machine when it is not the tab's. Lists, switches and stops go there. */
+  pin?: OpenProjectBinding | null;
 }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [open, setOpen] = useState(false);
@@ -75,6 +78,9 @@ export function LaneBranchSwitcher({
   /** The checkout in flight, so Stop can cancel it; null once stop is asked. */
   const [switchOperationId, setSwitchOperationId] = useState<string | null>(null);
   const inFlightSwitchRef = useRef<string | null>(null);
+  // Read through a ref so a rebuilt pin with the same key changes nothing.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -96,12 +102,12 @@ export function LaneBranchSwitcher({
     if (!active || !open) return;
     let cancelled = false;
     setBranchesLoading(true);
-    window.ade.git.listBranches({ laneId: lane.id })
+    window.ade.git.listBranches({ laneId: lane.id }, pinRef.current)
       .then((result) => { if (!cancelled) setBranches(result); })
       .catch(() => { if (!cancelled) setBranches([]); })
       .finally(() => { if (!cancelled) setBranchesLoading(false); });
     return () => { cancelled = true; };
-  }, [active, open, lane.id]);
+  }, [active, open, lane.id, pin?.key]);
 
   // Someone switched branches outside ADE: bring the lane list up to date.
   useEffect(() => {
@@ -181,7 +187,7 @@ export function LaneBranchSwitcher({
           mode,
           startPoint: request.startPoint,
           baseRef: request.baseRef,
-        });
+        }, pinRef.current);
         if (preview.duplicateLaneId) {
           throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
         }
@@ -205,13 +211,13 @@ export function LaneBranchSwitcher({
           baseRef: request.baseRef,
           acknowledgeActiveWork: request.acknowledgeActiveWork,
           operationId,
-        });
+        }, pinRef.current);
       } finally {
         inFlightSwitchRef.current = null;
         setSwitchOperationId(null);
       }
       await refreshLanes();
-      setBranches(await window.ade.git.listBranches({ laneId: lane.id }));
+      setBranches(await window.ade.git.listBranches({ laneId: lane.id }, pinRef.current));
       setPendingSwitch(null);
       setNewBranchName("");
       succeeded = true;
@@ -226,7 +232,7 @@ export function LaneBranchSwitcher({
 
   const stopSwitch = useCallback((operationId: string) => {
     setSwitchOperationId(null);
-    void window.ade.lanes.cancelGitWrite({ operationId })
+    void window.ade.lanes.cancelGitWrite({ operationId }, pinRef.current)
       .then((result) => {
         // Git had not started: offer Stop again while the switch lasts.
         if (!result?.cancelled && inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);

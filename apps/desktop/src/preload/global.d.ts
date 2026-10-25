@@ -2199,6 +2199,7 @@ declare global {
         importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneBranchSwitchPreview>;
         switchBranch: (
           args: LaneBranchSwitchArgs,

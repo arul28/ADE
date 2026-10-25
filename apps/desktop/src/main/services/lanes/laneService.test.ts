@@ -7440,6 +7440,8 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // `worktree add -b` made the lane branch, so cleanup finds it.
+      if (worktreeAdded && args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };

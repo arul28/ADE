@@ -369,12 +369,13 @@ describe("runGit cancellation", () => {
         idleTimeoutMs: 300,
       })).rejects.toMatchObject({ name: "GitTimeoutError", stalled: true });
 
-      // Slow but talking: runs about twice the limit, and each line resets it.
-      fs.writeFileSync(hook, "#!/bin/sh\nfor i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
+      // Slow but talking: runs well past the limit, a line every 150 ms, a
+      // tenth of the limit, so a loaded machine does not read as a stall.
+      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 16); do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
       const busy = await runGit(["worktree", "add", "-b", "busy", path.join(worktrees, "busy"), "main"], {
         cwd: repo,
         timeoutMs: 30_000,
-        idleTimeoutMs: 800,
+        idleTimeoutMs: 1_500,
       });
       expect(busy.exitCode).toBe(0);
       expect(busy.timedOut).toBeUndefined();

@@ -4331,12 +4331,20 @@ export function createLaneService({
     try {
       const onCheckoutProgress = runtimeOptions.onCheckoutProgress;
       let gitStarted = false;
+      // `worktree add -b` refuses a branch that exists, so one found here (or
+      // a check that fails) is never this call's to delete, whatever stops git.
+      const branchPreexisted = (await runGit(
+        ["show-ref", "--verify", "--quiet", `refs/heads/${branchRef}`],
+        { cwd: projectRoot, timeoutMs: 8_000 },
+      )).exitCode !== 1;
       try {
         // Cancelled before git ran (e.g. while waiting on the worktree mutex):
         // nothing was created, so there is nothing to clean up, and the
         // cleanup below must not delete a branch this call never made.
         const createSignal = runtimeOptions.signal;
         await runGitWorktreeMutation(() => {
+          // Also checked here: a call nested in another mutation skips the queue.
+          if (createSignal?.aborted) throw new AdeExpectedError(LANE_CREATE_CANCEL_MESSAGE, "user");
           gitStarted = true;
           return runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
             cwd: projectRoot,
@@ -4355,13 +4363,14 @@ export function createLaneService({
               : {}),
           });
         }, createSignal ? { signal: createSignal, message: LANE_CREATE_CANCEL_MESSAGE } : undefined);
+        endLaneGitWriteStopWindow(createSignal);
       } catch (addError) {
         // A cancelled or stopped checkout leaves a half-written worktree
         // registered (and still locked "initializing" by the killed git) plus
         // a fresh branch. Nothing else owns them yet, so remove both. Only
         // then: a plain `worktree add -b` failure (e.g. the branch already
         // exists) must not delete a branch this call never created.
-        if (gitStarted && (runtimeOptions.signal?.aborted || addError instanceof GitTimeoutError)) {
+        if (gitStarted && !branchPreexisted && (runtimeOptions.signal?.aborted || addError instanceof GitTimeoutError)) {
           await cleanupCreatedWorktreeLaneAfterCreateFailure({ laneId, branchRef, worktreePath, cause: addError });
         }
         throw addError;
@@ -4742,33 +4751,48 @@ export function createLaneService({
    * `cancelGitWrite` aborts them; a delete registers under its lane id for
    * `cancelDelete`. The prefixes keep a caller's id from naming a delete.
    */
-  const laneGitWriteControllers = new Map<string, AbortController>();
+  type LaneGitWrite = { controller: AbortController; stoppable: boolean };
+  const laneGitWrites = new Map<string, LaneGitWrite>();
+  /**
+   * `stoppable` is true only while something listens for the abort: a git
+   * process, or a wait in the worktree queue. A stop outside that window would
+   * be ignored, so `abortLaneGitWrite` refuses it rather than report a stop
+   * that never happened.
+   */
   const beginLaneGitWrite = (
     operationId: string | null | undefined,
     outerSignal?: AbortSignal,
     key: string | null = operationId?.trim() ? `op:${operationId.trim()}` : null,
-  ): { signal: AbortSignal; end: () => void } => {
-    if (key && laneGitWriteControllers.has(key)) {
+  ): { signal: AbortSignal; setStoppable: (stoppable: boolean) => void; end: () => void } => {
+    if (key && laneGitWrites.has(key)) {
       throw new Error(`Operation '${operationId ?? key}' is already running.`);
     }
-    const controller = new AbortController();
-    const forwardAbort = () => controller.abort();
-    if (outerSignal?.aborted) controller.abort();
+    const entry: LaneGitWrite = { controller: new AbortController(), stoppable: key?.startsWith("op:") ?? false };
+    const forwardAbort = () => entry.controller.abort();
+    if (outerSignal?.aborted) entry.controller.abort();
     else outerSignal?.addEventListener("abort", forwardAbort, { once: true });
-    if (key) laneGitWriteControllers.set(key, controller);
+    if (key) laneGitWrites.set(key, entry);
     return {
-      signal: controller.signal,
+      signal: entry.controller.signal,
+      setStoppable: (stoppable) => { entry.stoppable = stoppable; },
       end: () => {
         outerSignal?.removeEventListener("abort", forwardAbort);
-        if (key && laneGitWriteControllers.get(key) === controller) laneGitWriteControllers.delete(key);
+        if (key && laneGitWrites.get(key) === entry) laneGitWrites.delete(key);
       },
     };
   };
   const abortLaneGitWrite = (key: string): boolean => {
-    const controller = laneGitWriteControllers.get(key);
-    if (!controller || controller.signal.aborted) return false;
-    controller.abort();
+    const entry = laneGitWrites.get(key);
+    if (!entry || !entry.stoppable || entry.controller.signal.aborted) return false;
+    entry.controller.abort();
     return true;
+  };
+  /** Closes the stop window of the create that owns `signal` once its checkout is done. */
+  const endLaneGitWriteStopWindow = (signal: AbortSignal | undefined): void => {
+    if (!signal) return;
+    for (const entry of laneGitWrites.values()) {
+      if (entry.controller.signal === signal) entry.stoppable = false;
+    }
   };
 
   /**
@@ -5203,6 +5227,12 @@ export function createLaneService({
 
     if (!args.branchRef) return cleanupErrors;
     try {
+      // Stopped before `worktree add -b` made it: already clean.
+      const exists = await runGit(
+        ["show-ref", "--verify", "--quiet", `refs/heads/${args.branchRef}`],
+        { cwd: projectRoot, timeoutMs: 8_000 },
+      );
+      if (exists.exitCode === 1) return cleanupErrors;
       const result = await runGit(
         ["branch", "-D", args.branchRef],
         { cwd: projectRoot, timeoutMs: 30_000 },
@@ -6687,6 +6717,8 @@ export function createLaneService({
         try {
           // Cancelled while queued: git never ran, so there is no folder to clear.
           await runGitWorktreeMutation(() => {
+            // Also checked here: a call nested in another mutation skips the queue.
+            if (gitWrite.signal.aborted) throw new AdeExpectedError(LANE_CREATE_CANCEL_MESSAGE, "user");
             gitStarted = true;
             return runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
               cwd: projectRoot,
@@ -7037,6 +7069,7 @@ export function createLaneService({
             signal: gitWrite.signal,
             cancelMessage: CHECKOUT_CANCEL_MESSAGE,
           });
+          gitWrite.setStoppable(false);
           targetProfileRow = null;
           pendingProfileUpsert = {
             branchRef: targetBranchRef,
@@ -7077,6 +7110,7 @@ export function createLaneService({
             signal: gitWrite.signal,
             cancelMessage: CHECKOUT_CANCEL_MESSAGE,
           });
+          gitWrite.setStoppable(false);
 
           const existingProfile = targetProfileRow ? toLaneBranchProfile(targetProfileRow) : null;
           pendingProfileUpsert = {
@@ -8876,7 +8910,19 @@ export function createLaneService({
           const addArgs = localBranch.exitCode === 0
             ? ["worktree", "add", targetPath, branchName]
             : ["worktree", "add", "-b", branchName, targetPath, `origin/${branchName}`];
-          await runGitOrThrow(addArgs, { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
+          try {
+            await runGitOrThrow(addArgs, { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
+          } catch (addError) {
+            // The folder was absent before `add`. A stopped add leaves it half
+            // written, and the next restore would take it as the lane's.
+            if (addError instanceof GitTimeoutError) {
+              const cleanupErrors = await removeUnownedWorktreeAndBranch({ worktreePath: targetPath, branchRef: null });
+              if (cleanupErrors.length > 0) {
+                logger.warn("laneService.unarchive.stopped_add_cleanup_failed", { laneId, targetPath, cleanupErrors });
+              }
+            }
+            throw addError;
+          }
         });
         try {
           commitLaneRestoreState(laneId, targetPath);
@@ -9104,6 +9150,14 @@ export function createLaneService({
       const throwIfDeleteStopped = (): void => {
         if (deleteGitWrite.signal.aborted) throw new AdeExpectedError(LANE_DELETE_CANCEL_MESSAGE, "user");
       };
+      // Open only while the queue wait or a `worktree remove` listens for
+      // the stop. The UI reads the broadcast copy, so publish each change.
+      const setDeleteStoppable = (stoppable: boolean): void => {
+        deleteGitWrite.setStoppable(stoppable);
+        if (progress.cancellable === stoppable) return;
+        progress.cancellable = stoppable;
+        broadcastDeleteEvent(progress);
+      };
 
       try {
         const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
@@ -9208,8 +9262,8 @@ export function createLaneService({
 
         if (hasWorktree) {
           // The one slow step with no progress to watch, so the user can stop
-          // it. It also waits here behind other lane git writes.
-          progress.cancellable = true;
+          // it (see setDeleteStoppable). It also waits here behind other lane
+          // git writes.
           await runStep("git_worktree_remove", async () => {
             const targetPath = normAbs(row.worktree_path);
             // Rails that must hold for ANY worktree path, not just the ones ADE
@@ -9260,7 +9314,9 @@ export function createLaneService({
                 }
               }
             }
+            setDeleteStoppable(true);
             return runGitWorktreeMutation(async () => {
+              setDeleteStoppable(false);
               const removeArgs = ["worktree", "remove"];
               if (force) removeArgs.push("--force");
               removeArgs.push(row.worktree_path);
@@ -9378,12 +9434,14 @@ export function createLaneService({
               // timeout mid-remove leaves a half-deleted worktree that blocks
               // future deletes.
               // English messages, so the submodule refusal below matches on any locale.
+              setDeleteStoppable(true);
               const removeRes = await runGit(removeArgs, {
                 cwd: projectRoot,
                 timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
                 env: { LC_ALL: "C" },
                 signal: deleteGitWrite.signal,
               });
+              setDeleteStoppable(false);
               // Stopped: leave the rest of the folder for the next delete
               // rather than falling through to the manual cleanup below.
               if (removeRes.cancelled) throwIfDeleteStopped();
@@ -9417,10 +9475,12 @@ export function createLaneService({
                   logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork, stage: "submodule_retry" });
                   throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
                 }
+                setDeleteStoppable(true);
                 const forcedRes = await runGit(
                   ["worktree", "remove", "--force", row.worktree_path],
                   { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS, signal: deleteGitWrite.signal },
                 );
+                setDeleteStoppable(false);
                 if (forcedRes.cancelled) throwIfDeleteStopped();
                 if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
                   residualWorktreeCleanup.deleteRow(row.worktree_path);
@@ -9460,7 +9520,7 @@ export function createLaneService({
               );
             }, { signal: deleteGitWrite.signal, message: LANE_DELETE_CANCEL_MESSAGE });
           });
-          progress.cancellable = false;
+          setDeleteStoppable(false);
         }
 
         if (deleteBranch && row.branch_ref) {
@@ -9606,7 +9666,7 @@ export function createLaneService({
       if (!progress || progress.overallStatus !== "running") {
         return { cancelled: false, reason: "No delete is running for this lane." };
       }
-      if (!progress.cancellable || !abortLaneGitWrite(`delete:${laneId}`)) {
+      if (!abortLaneGitWrite(`delete:${laneId}`)) {
         return { cancelled: false, reason: "This delete can no longer be stopped." };
       }
       logger.info("lane.delete.cancel_requested", { laneId });
