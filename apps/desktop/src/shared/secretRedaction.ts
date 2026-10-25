@@ -13,24 +13,16 @@
  * pattern and leaks its prefix.
  */
 
+import { SECRET_TOKEN_PATTERNS } from "./secretTokenShapes";
+
 const PRIVATE_KEY_BLOCK = /-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\n]*PRIVATE KEY-----|$)/g;
 
 /** Provider and service keys recognised by their prefix, masked wherever they appear. */
 const TOKEN_PATTERNS: readonly RegExp[] = [
   // `sk-ant-` is masked even with nothing after it: a key cut off early would
   // otherwise still show its provider prefix.
-  /\bsk-ant-[A-Za-z0-9_-]*|\bsk-[A-Za-z0-9_-]{12,}/g,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
-  /\bAIza[0-9A-Za-z_-]{35}/g,
-  /\bglpat-[A-Za-z0-9_-]{20,}/g,
-  /\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
-  /\blin_api_[A-Za-z0-9]{20,}/g,
-  /\bnpm_[A-Za-z0-9]{30,}/g,
-  /\bhf_[A-Za-z0-9]{30,}/g,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /\bsk-ant-[A-Za-z0-9_-]*/g,
+  ...SECRET_TOKEN_PATTERNS,
 ];
 
 /**
