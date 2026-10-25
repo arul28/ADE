@@ -46,6 +46,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import { isRecord, safeJsonParse } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 type LaneInfo = {
   baseRef: string;
@@ -510,7 +511,7 @@ export function createGitOperationsService({
   const maybeFetchAndSync = async (lane: LaneInfo, mode: GitSyncMode, baseRef: string): Promise<void> => {
     const dirty = await isWorktreeDirty(lane.worktreePath);
     if (dirty) {
-      throw new Error("Lane has uncommitted changes. Commit or stash before sync.");
+      throw new AdeExpectedError("Lane has uncommitted changes. Commit or stash before sync.", "user");
     }
 
     await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });

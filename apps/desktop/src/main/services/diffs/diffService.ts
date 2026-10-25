@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { parseNameStatusRecords, runGit } from "../git/git";
+import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
 import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
@@ -326,7 +327,8 @@ async function resolveBranchCompareBase(
     const upstreamRef = upstream.exitCode === 0 ? upstream.stdout.trim() : "";
     if (upstreamRef && !upstreamRef.startsWith("-")) compare = upstreamRef;
     else if (await resolves(`origin/${base}`)) compare = `origin/${base}`;
-    else throw new Error(`${base} has no remote copy, so this lane has no branch changes to compare.`);
+    // A local-only base (never pushed): the user's repo state, told to them.
+    else throw new AdeExpectedError(`${base} has no remote copy, so this lane has no branch changes to compare.`, "user");
   } else if (await resolves(base)) {
     compare = base;
   } else if (await resolves(`origin/${base}`)) {
@@ -386,7 +388,7 @@ async function withWorkingTreeIndex<T>(
       if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
     }
     const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
-    if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "git add failed");
+    if (add.exitCode !== 0) throw gitCommandError(add.stderr.trim() || "git add failed");
     return await fn(env);
   } finally {
     try {
