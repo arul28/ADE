@@ -30,6 +30,7 @@ type SqlValue = string | number | null | Uint8Array;
 
 type AdeDb = {
   run: (sql: string, params?: SqlValue[]) => void;
+  runChanged: (sql: string, params?: SqlValue[]) => number;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
   all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T[];
 };
@@ -853,12 +854,16 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
   raw.run("create table kv(key text primary key, value text not null)");
 
   const run = (sql: string, params: SqlValue[] = []) => raw.run(sql, params);
+  const runChanged = (sql: string, params: SqlValue[] = []): number => {
+    raw.run(sql, params);
+    return raw.getRowsModified();
+  };
   const all = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] =>
     mapExecRows(raw.exec(sql, params)) as T[];
   const get = <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []): T | null =>
     all<T>(sql, params)[0] ?? null;
 
-  return { raw, db: { run, all, get } };
+  return { raw, db: { run, runChanged, all, get } };
 }
 
 function createLogger() {
@@ -1591,6 +1596,73 @@ describe("automationService integration", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       fs.rmSync(suppliedLaneRoot, { recursive: true, force: true });
       fs.rmSync(actionLaneRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes an ingress event whose run never started exactly once, and never a legacy or started one", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-ingress-resume-"));
+    const rule = {
+      id: "resume-rule",
+      name: "Resume rule",
+      trigger: { type: "github.issue_opened" as const },
+      triggers: [{ type: "github.issue_opened" as const }],
+      execution: { kind: "built-in" as const, builtIn: { actions: [{ type: "run-command" as const, command: "pwd", timeoutMs: 10_000 }] } },
+      actions: [{ type: "run-command" as const, command: "pwd", timeoutMs: 10_000 }],
+      enabled: true,
+    };
+    const insertAcceptedEvent = (id: string, eventKey: string) => raw.run(
+      `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, received_at)
+       values (?, ?, 'local-webhook', ?, '["resume-rule"]', 'github.issue_opened', 'dispatched', ?)`,
+      [id, projectId, eventKey, new Date().toISOString()],
+    );
+    // Written by an ADE without run claims: it ran or was dropped long ago.
+    insertAcceptedEvent("ing-legacy", "key-legacy");
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId,
+      projectRoot,
+      laneService: {
+        list: async () => [{ id: "lane-primary", laneType: "primary" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+      } as any,
+      projectConfigService: {
+        get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }),
+      } as any,
+    });
+    const runsFor = (ingressId: string) =>
+      mapExecRows(raw.exec("select id from automation_runs where ingress_event_id = ?", [ingressId])).length;
+    const dispatch = (eventKey: string, resume?: boolean) => service.dispatchIngressTrigger({
+      source: "local-webhook",
+      eventKey,
+      triggerType: "github.issue_opened",
+      automationId: "resume-rule",
+      ...(resume ? { resume: true } : {}),
+    } as any);
+
+    try {
+      // The state a restart leaves behind: accepted, answered, never started.
+      insertAcceptedEvent("ing-pending", "key-pending");
+      expect(service.listUnstartedIngressEventKeys(["local-webhook"])).toEqual(["key-pending"]);
+
+      // An ordinary redelivery is still a duplicate; a resume (the restart
+      // replay racing a still-queued original) starts exactly one run.
+      await dispatch("key-pending");
+      expect(runsFor("ing-pending")).toBe(0);
+      await Promise.all([dispatch("key-pending", true), dispatch("key-pending", true)]);
+      expect(runsFor("ing-pending")).toBe(1);
+
+      // Once a run started, nothing resumes it again.
+      await dispatch("key-pending", true);
+      expect(runsFor("ing-pending")).toBe(1);
+      expect(service.listUnstartedIngressEventKeys(["local-webhook"])).toEqual([]);
+      await dispatch("key-legacy", true);
+      expect(runsFor("ing-legacy")).toBe(0);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 

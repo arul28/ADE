@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   codexApprovalAutoAccepts,
-  codexApprovalDeniesByPolicy,
+  permissionPolicyDeniesByFallback,
   codexApprovalPathStaysWithinRoot,
   codexCommandApprovalStaysWithinRoot,
   codexPermissionsStayWithinRoot,
@@ -72,11 +72,11 @@ describe("codexApprovalAutoAccepts", () => {
   });
 });
 
-describe("codexApprovalDeniesByPolicy", () => {
+describe("permissionPolicyDeniesByFallback", () => {
   it("is true only for a deny fallback", () => {
-    expect(codexApprovalDeniesByPolicy({ permissionPolicy: { fallback: "deny" } })).toBe(true);
-    expect(codexApprovalDeniesByPolicy({ permissionPolicy: { fallback: "ask" } })).toBe(false);
-    expect(codexApprovalDeniesByPolicy({})).toBe(false);
+    expect(permissionPolicyDeniesByFallback({ permissionPolicy: { fallback: "deny" } })).toBe(true);
+    expect(permissionPolicyDeniesByFallback({ permissionPolicy: { fallback: "ask" } })).toBe(false);
+    expect(permissionPolicyDeniesByFallback({})).toBe(false);
   });
 });
 
