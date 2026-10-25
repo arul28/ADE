@@ -36631,6 +36631,9 @@ async function runParsedCli(
       // Node's bundled set; read the OS store off the loop and add it.
       // The brain's log says once whether the environment's proxy is in use.
       if (outboundProxyConfigured) process.stderr.write("ADE: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n");
+      if (outboundProxyUnsupported) {
+        process.stderr.write(`ADE: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.5 or newer can); outbound requests go direct.\n`);
+      }
       void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
       return {
@@ -36750,12 +36753,18 @@ const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
  * A network setup failure (an unusable proxy setting, an unreadable OS trust
  * store) goes to stderr, where the brain's other startup notes go; stdout
  * stays the command's output. Success is quiet here, so short commands print
- * nothing; the brain notes the proxy once itself.
+ * nothing; the brain notes the proxy once itself. So does a Node too old to
+ * use the proxy: every command then runs as it always did, going direct.
  */
 let outboundProxyConfigured = false;
+let outboundProxyUnsupported = false;
 const networkWarningLogger = {
   info: () => {},
   warn: (event: string, meta?: Record<string, unknown>) => {
+    if (event === "network.proxy_unsupported") {
+      outboundProxyUnsupported = true;
+      return;
+    }
     process.stderr.write(`ADE: ${event} ${JSON.stringify(meta ?? {})}\n`);
   },
 };

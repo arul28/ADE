@@ -282,9 +282,13 @@ Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-Use Node 22.23.3 for repository development. `npm run build:static` in
-`apps/ade-cli` requires Node 22.19.0 or newer because the headless runtime runs
-Pi's SDK worker on its own Node. Set `ADE_STATIC_NODE_BINARY` to use another
+Use Node 24 (the version in `.nvmrc`) for repository development. CI and the
+release builds use it too, and `npm run build:static` in `apps/ade-cli` embeds
+the Node it runs on in the headless runtime, so a release brain gets Node 24's
+proxy and system-certificate support. The build refuses a Node older than
+22.19.0 because the runtime runs Pi's SDK worker on its own Node. The `ade`
+CLI still runs on Node 22.13 or newer: on a Node before 24.5 it ignores
+`HTTPS_PROXY` (with a warning) and otherwise works as before. Set `ADE_STATIC_NODE_BINARY` to use another
 Node binary for that build.
 
 ### On Windows

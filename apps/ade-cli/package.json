@@ -59,7 +59,7 @@
     "@muse-code/sdk": "1.4.7",
     "@opencode/client": "2.0.29",
     "@sentry/node": "11.7.0",
-    "@types/node": "^20.11.30",
+    "@types/node": "^24.19.2",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",
     "@types/ws": "^8.18.1",

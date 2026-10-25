@@ -28,23 +28,13 @@ const PROXY_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] as
  */
 const LOOPBACK_NO_PROXY = ["localhost", "127.0.0.1", "::1", "[::1]"];
 
-/** Node 24 APIs the repo's Node 20 typings do not name yet. */
-type ProxyCapableHttp = typeof http & {
-  setGlobalProxyFromEnv?: (proxyEnv: NodeJS.ProcessEnv) => () => void;
-};
-type SystemCaApi = {
-  get: (type: "default" | "system") => string[];
-  set: (certificates: string[]) => void;
-};
-
-function systemCaApi(): SystemCaApi | null {
-  const api = tls as typeof tls & {
-    getCACertificates?: SystemCaApi["get"];
-    setDefaultCACertificates?: SystemCaApi["set"];
-  };
-  const { getCACertificates, setDefaultCACertificates } = api;
-  if (typeof getCACertificates !== "function" || typeof setDefaultCACertificates !== "function") return null;
-  return { get: getCACertificates.bind(tls), set: setDefaultCACertificates.bind(tls) };
+/**
+ * Both APIs are Node 24 (the system CA read is also in 22.19+). ADE's Electron
+ * and its bundled runtime ship Node 24; the `ade` CLI on an older Node keeps
+ * working without them, as it did before.
+ */
+function systemCaApiAvailable(): boolean {
+  return typeof tls.getCACertificates === "function" && typeof tls.setDefaultCACertificates === "function";
 }
 
 /** `NO_PROXY` as the user set it, plus loopback, without duplicates. */
@@ -60,7 +50,7 @@ function outboundNoProxy(env: NodeJS.ProcessEnv): string {
 /**
  * Routes this process's `fetch`, `http` and `https` through the proxy the
  * environment names. A no-op without a proxy variable, and on a Node without
- * `http.setGlobalProxyFromEnv` (before 24.5; the bundled runtime has it).
+ * `http.setGlobalProxyFromEnv` (before 24.5), which logs a warning instead.
  * Returns whether a proxy is now in effect.
  */
 export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv, logger?: NetworkLogger): boolean {
@@ -70,14 +60,13 @@ export function configureOutboundProxyFromEnv(env: NodeJS.ProcessEnv, logger?: N
     if (value) proxyEnv[key] = value;
   }
   if (Object.keys(proxyEnv).length === 0) return false;
-  const setGlobalProxyFromEnv = (http as ProxyCapableHttp).setGlobalProxyFromEnv;
-  if (typeof setGlobalProxyFromEnv !== "function") {
+  if (typeof http.setGlobalProxyFromEnv !== "function") {
     logger?.warn("network.proxy_unsupported", { node: process.versions.node });
     return false;
   }
   try {
     const noProxy = outboundNoProxy(env);
-    setGlobalProxyFromEnv({ ...proxyEnv, NO_PROXY: noProxy, no_proxy: noProxy });
+    http.setGlobalProxyFromEnv({ ...proxyEnv, NO_PROXY: noProxy, no_proxy: noProxy });
     logger?.info("network.proxy_configured", {
       https: Boolean(proxyEnv.HTTPS_PROXY ?? proxyEnv.https_proxy),
       http: Boolean(proxyEnv.HTTP_PROXY ?? proxyEnv.http_proxy),
@@ -115,14 +104,13 @@ export function trustSystemCertificates(logger?: NetworkLogger): Promise<number>
 }
 
 async function addSystemCertificates(logger?: NetworkLogger): Promise<number> {
-  const api = systemCaApi();
-  if (!api) return 0;
+  if (!systemCaApiAvailable()) return 0;
   try {
     const system = await readSystemCertificatesOffThread();
-    const current = api.get("default");
+    const current = tls.getCACertificates("default");
     const known = new Set(current);
     const added = system.filter((certificate) => !known.has(certificate));
-    if (added.length > 0) api.set([...current, ...added]);
+    if (added.length > 0) tls.setDefaultCACertificates([...current, ...added]);
     logger?.info("network.system_ca_trusted", { added: added.length });
     return added.length;
   } catch (error) {
