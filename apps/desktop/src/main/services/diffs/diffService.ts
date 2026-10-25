@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
-import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
+import { parseNumstatRecordsZ, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
@@ -40,30 +40,6 @@ function stripGitStatusPath(raw: string): string {
   const idx = raw.indexOf("->");
   if (idx >= 0) return raw.slice(idx + 2).trim();
   return raw.trim();
-}
-
-function parseNumstatZ(stdout: string): Array<{ addRaw: string; delRaw: string; filePath: string }> {
-  const entries: Array<{ addRaw: string; delRaw: string; filePath: string }> = [];
-  const records = stdout.split("\0");
-
-  for (let i = 0; i < records.length; i++) {
-    const record = records[i] ?? "";
-    if (!record) continue;
-
-    const [addRaw, delRaw, ...pathParts] = record.split("\t");
-    if (addRaw == null || delRaw == null || pathParts.length === 0) continue;
-
-    let filePath = pathParts.join("\t");
-    if (!filePath) {
-      filePath = records[i + 2] ?? "";
-      i += 2;
-    }
-    if (!filePath) continue;
-
-    entries.push({ addRaw, delRaw, filePath });
-  }
-
-  return entries;
 }
 
 function parsePorcelainStatusZ(stdout: string): DiffChanges {
@@ -109,7 +85,7 @@ function parsePorcelainStatusZ(stdout: string): DiffChanges {
 
 function applyNumstat(changes: FileChange[], stdout: string): void {
   const byPath = new Map(changes.map((change) => [change.path, change]));
-  for (const { addRaw, delRaw, filePath } of parseNumstatZ(stdout)) {
+  for (const { addRaw, delRaw, path: filePath } of parseNumstatRecordsZ(stdout)) {
     const change = byPath.get(filePath);
     if (!change) continue;
     const additions = Number.parseInt(addRaw, 10);
@@ -631,7 +607,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
             ? parseNameStatusRecords(names.stdout).find((record) => record.path === gitPath)?.oldPath ?? null
             : null;
           return runGit(
-            ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", ...(oldPath ? [oldPath] : []), gitPath],
+            ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", mergeBase, "--", ...(oldPath ? [oldPath] : []), gitPath],
             { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
           );
         }, realIndexPath);
@@ -646,20 +622,20 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       }
 
       if (mode === "staged") {
-        args = ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];
+        args = ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", "--", gitPath];
       } else if (mode === "commit") {
         const ref = readCommitCompareRef(compareRef);
         const target = compareTo ?? "worktree";
         if (target === "parent") {
           const parentRef = await getCommitParentRef(worktreePath, ref);
           args = parentRef
-            ? ["diff", "--no-ext-diff", "--find-renames", "--patch", parentRef, ref, "--", gitPath]
-            : ["show", "--format=", "--no-ext-diff", "--find-renames", "--patch", ref, "--", gitPath];
+            ? ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", parentRef, ref, "--", gitPath]
+            : ["show", "--format=", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", ref, "--", gitPath];
         } else {
-          args = ["diff", "--no-ext-diff", "--find-renames", "--patch", ref, "--", gitPath];
+          args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", ref, "--", gitPath];
         }
       } else {
-        args = ["diff", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];
+        args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", "--", gitPath];
       }
 
       const res = await runGit(args, {

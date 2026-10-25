@@ -168,7 +168,7 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -4756,11 +4756,18 @@ export function createPrService({
       ? parseRemoteBranchSha(lsRemote.stdout, args.headBranch)
       : null;
 
+    // When git could not reach the remote at all, its error is the answer,
+    // not "branch not found". A remote that answered without the branch
+    // settles it, whatever a later fetch says.
+    let remoteFailure = "";
     if (!remoteSha) {
-      await runGit(["fetch", "--prune", "origin"], {
+      const fetched = await runGit(["fetch", "--prune", "origin"], {
         cwd: projectRoot,
-        timeoutMs: 60_000,
-      }).catch(() => null);
+        timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
+      });
+      if (lsRemote.exitCode !== 0 && fetched.exitCode !== 0) {
+        remoteFailure = fetched.stderr.trim() || lsRemote.stderr.trim();
+      }
       const cached = await runGit(["rev-parse", "--verify", `refs/remotes/${remoteRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
@@ -4771,7 +4778,9 @@ export function createPrService({
     if (!remoteSha) {
       return createLaneFromPrBranchBlock(
         "remote_branch_missing",
-        `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
+        remoteFailure
+          ? `ADE could not read '${remoteRef}' from the remote. ${formatGitExecutionError(remoteFailure)}`
+          : `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
       );
     }
 
@@ -7388,8 +7397,8 @@ export function createPrService({
    * is actually on before using the record.
    */
   const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
-    const head = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
-    const checkedOut = head.exitCode === 0 ? head.stdout.trim() : "";
+    const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+    const checkedOut = head.exitCode === 0 ? branchNameFromHeadRef(head.stdout) : "";
     if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;
     laneService.updateBranchRef(lane.id, checkedOut);
     return { ...lane, branchRef: checkedOut };
@@ -9421,8 +9430,8 @@ export function createPrService({
               let theirsExcerpt: string | null = null;
               try {
                 const [diffA, diffB] = await Promise.all([
-                  runGit(["diff", `${baseSha}..${laneA.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
-                  runGit(["diff", `${baseSha}..${laneB.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+                  runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneA.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                  runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneB.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
                 ]);
                 if (diffA.exitCode === 0 && diffA.stdout.trim()) oursExcerpt = diffA.stdout.slice(0, 500);
                 if (diffB.exitCode === 0 && diffB.stdout.trim()) theirsExcerpt = diffB.stdout.slice(0, 500);
@@ -9499,8 +9508,8 @@ export function createPrService({
             let theirsExcerpt: string | null = null;
             try {
               const [diffI, diffS] = await Promise.all([
-                runGit(["diff", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
-                runGit(["diff", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+                runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
               ]);
               if (diffI.exitCode === 0 && diffI.stdout.trim()) oursExcerpt = diffI.stdout.slice(0, 500);
               if (diffS.exitCode === 0 && diffS.stdout.trim()) theirsExcerpt = diffS.stdout.slice(0, 500);

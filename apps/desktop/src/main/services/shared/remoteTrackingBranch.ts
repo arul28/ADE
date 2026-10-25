@@ -1,4 +1,4 @@
-import { runGit, runGitOrThrow } from "../git/git";
+import { GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitOrThrow } from "../git/git";
 import { normalizeBranchName } from "./utils";
 
 export async function fetchRemoteTrackingBranch(args: {
@@ -10,13 +10,13 @@ export async function fetchRemoteTrackingBranch(args: {
   try {
     await runGitOrThrow(
       ["fetch", "--prune", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
-      { cwd: args.projectRoot, timeoutMs: 120_000 },
+      { cwd: args.projectRoot, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS },
     );
     return true;
   } catch {
     await runGit(["fetch", "--prune", "origin"], {
       cwd: args.projectRoot,
-      timeoutMs: 120_000,
+      timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
     });
     return false;
   }

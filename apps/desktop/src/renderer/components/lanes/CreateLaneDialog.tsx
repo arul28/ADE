@@ -113,6 +113,7 @@ export function CreateLaneDialog({
   lanes,
   onSubmit,
   busy,
+  onCancelBusy,
   error,
   envInitProgress,
   laneCreated,
@@ -165,6 +166,8 @@ export function CreateLaneDialog({
   lanes: LaneSummary[];
   onSubmit: () => void;
   busy?: boolean;
+  /** Set while busy work can be stopped; the Cancel button then stops it instead of staying disabled. */
+  onCancelBusy?: () => void;
   error?: string | null;
   envInitProgress?: LaneEnvInitProgress | null;
   /** When true, the lane has already been created and the CTA only retries env setup. */
@@ -429,7 +432,12 @@ export function CreateLaneDialog({
               <span className="cl-foot-hint"><kbd>{isMacPlatform() ? "⌘" : modifierKeyLabel}</kbd><kbd>↵</kbd>&nbsp;to create</span>
             )}
             <div className="cl-foot-actions">
-              <button type="button" className="kit-btn kit-btn-ghost" disabled={busy} onClick={() => onOpenChange(false)}>
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                disabled={busy && !onCancelBusy}
+                onClick={busy && onCancelBusy ? onCancelBusy : () => onOpenChange(false)}
+              >
                 Cancel
               </button>
               <button

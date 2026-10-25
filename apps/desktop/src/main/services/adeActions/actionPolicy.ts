@@ -405,6 +405,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "attachGitHubIssueToSession",
     "attachJiraIssueToSession",
     "cancelDelete",
+    "cancelGitWrite",
     "create",
     "createChild",
     "createFromUnstaged",

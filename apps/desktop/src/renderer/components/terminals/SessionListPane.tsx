@@ -545,6 +545,7 @@ function StickyGroupHeader({
   variant = "default",
   tone = "default",
   busyLabel = null,
+  onStopBusy = null,
   heading = false,
   dimmed = false,
   quietCounts = null,
@@ -598,6 +599,8 @@ function StickyGroupHeader({
   tone?: GroupShelfTone;
   /** Disables the lane group and overlays lifecycle progress. */
   busyLabel?: string | null;
+  /** Set while the busy work can still stop; adds a Stop button to the overlay. */
+  onStopBusy?: (() => void) | null;
   /** Quiet-lane mode plus inline `☾n ○n` counts replacing the total pill. */
   quietCounts?: { snoozed: number; settled: number } | null;
   /**
@@ -867,6 +870,20 @@ function StickyGroupHeader({
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/75 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
                 <CircleNotch size={12} className="animate-spin" />
                 {busyLabel}
+                {onStopBusy ? (
+                  <button
+                    type="button"
+                    className="pointer-events-auto rounded px-1.5 py-0.5 text-fg/85 hover:bg-fg/[0.08]"
+                    title="Stop the delete. The lane stays, and part of its folder may already be gone."
+                    data-testid="work-lane-stop-delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onStopBusy();
+                    }}
+                  >
+                    Stop
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -3175,6 +3192,20 @@ export const SessionListPane = React.memo(function SessionListPane({
   const hasForeignSessions = visibleForeignRows.length > 0;
 
 
+  // Sent to the lane's own machine, which refuses once the folder is gone.
+  const stopLaneDelete = (laneId: string, laneName: string, pin: OpenProjectBinding | null) => {
+    const showRefusal = (message: string) => showToast({
+      title: `Could not stop deleting ${laneName}`,
+      message,
+      tone: "error",
+    });
+    void window.ade.lanes.cancelDelete({ laneId }, pin)
+      .then((result) => {
+        if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
+      })
+      .catch((error: unknown) => showRefusal(error instanceof Error ? error.message : String(error)));
+  };
+
   const renderLaneGroup = (lane: LaneSummary) => {
     const list = sessionsGroupedByLane?.get(lane.id) ?? [];
     const laneHandoffJobs = handoffJobsByLaneId.get(lane.id) ?? [];
@@ -3273,6 +3304,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           </>
         ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, null) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
@@ -3428,6 +3460,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         collapsed={collapsed}
         headerless={headerless}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        // That machine's delete has no progress feed here, so Stop is always
+        // offered and the machine says whether it still can.
+        onStopBusy={deleteProgress && row.binding
+          ? () => stopLaneDelete(row.lane.id, row.lane.name, row.binding)
+          : null}
         accentColor={row.lane.color ?? null}
         prBadge={primaryPr ? (
           <LanePrBadge

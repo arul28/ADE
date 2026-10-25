@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { parseGitCheckoutProgressLine } from "../git/git";
 import { createLaneService, removeWorktreeDirectoryWithRecovery } from "./laneService";
+import type { LaneDeleteProgress } from "../../../shared/types";
 
 // Real git, no mocks: these options exist for the chat-launch service, and the
 // behaviour they promise (a reserved id, live checkout %, a clean abort) is
@@ -19,7 +20,7 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
-async function setup(options: { fileCount?: number; fileBytes?: number } = {}) {
+async function setup(options: { fileCount?: number; fileBytes?: number; onDeleteEvent?: (event: { progress: LaneDeleteProgress }) => void } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-create-opts-")));
   roots.push(root);
   const repo = path.join(root, "repo");
@@ -47,6 +48,7 @@ async function setup(options: { fileCount?: number; fileBytes?: number } = {}) {
     projectId: "proj-1",
     defaultBaseRef: "main",
     worktreesDir: path.join(root, "worktrees"),
+    ...(options.onDeleteEvent ? { onDeleteEvent: options.onDeleteEvent } : {}),
   } as never);
   return { db, repo, root, service };
 }
@@ -217,4 +219,97 @@ describe("laneService.create runtime options", () => {
       other.mockRestore();
     }
   });
+});
+
+// The lane git writes a person can stop (the Cancel and Stop buttons). A
+// post-checkout hook that hangs stands in for a stuck checkout; its output goes
+// nowhere, so stopping git closes git's pipes at once.
+describe("stopping lane git writes", () => {
+  function hangCheckouts(repo: string): void {
+    fs.writeFileSync(
+      path.join(repo, ".git", "hooks", "post-checkout"),
+      "#!/bin/sh\nexec sleep 5 >/dev/null 2>&1 </dev/null\n",
+      { mode: 0o755 },
+    );
+  }
+
+  /** A create whose checkout hangs; resolves `started` once git prints progress. */
+  function startHungCreate(service: Awaited<ReturnType<typeof setup>>["service"], name: string, operationId: string) {
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const result = service.create(
+      { name, branchName: `ade/${operationId}`, baseBranch: "main", operationId },
+      { onCheckoutProgress: () => markStarted() },
+    );
+    let settled = false;
+    void result.then(() => { settled = true; }, () => { settled = true; });
+    return { result, started, isSettled: () => settled };
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "cancelGitWrite stops a create by its operation id, and one queued behind it leaves the queue at once",
+    async () => {
+      const { db, repo, root, service } = await setup();
+      try {
+        hangCheckouts(repo);
+        const first = startHungCreate(service, "first", "op-first");
+        await first.started;
+        const queued = service.create({ name: "queued", branchName: "ade/op-queued", baseBranch: "main", operationId: "op-queued" });
+
+        expect(service.cancelGitWrite({ operationId: "op-queued" })).toEqual({ cancelled: true });
+        await expect(queued).rejects.toThrow("Lane creation was cancelled.");
+        // The queued create did not wait for the checkout ahead of it.
+        expect(first.isSettled()).toBe(false);
+
+        expect(service.cancelGitWrite({ operationId: "op-first" })).toEqual({ cancelled: true });
+        await expect(first.result).rejects.toThrow("Lane creation was cancelled.");
+        expect(service.cancelGitWrite({ operationId: "op-first" })).toEqual({ cancelled: false });
+
+        expect(git(repo, "branch", "--list", "ade/op-*").trim()).toBe("");
+        expect(git(repo, "worktree", "list").trim().split("\n")).toHaveLength(1);
+        const leftovers = fs.existsSync(path.join(root, "worktrees")) ? fs.readdirSync(path.join(root, "worktrees")) : [];
+        expect(leftovers).toEqual([]);
+        expect(db.all("select id from lanes where lane_type = 'worktree'")).toEqual([]);
+      } finally {
+        db.close();
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "cancelDelete stops a delete waiting to remove the lane folder; the lane stays and a later delete finishes",
+    async () => {
+      let markRemovable: () => void = () => {};
+      const removable = new Promise<void>((resolve) => { markRemovable = resolve; });
+      const { db, repo, service } = await setup({
+        onDeleteEvent: ({ progress }) => { if (progress.cancellable) markRemovable(); },
+      });
+      try {
+        const victim = await service.create({ name: "victim", branchName: "ade/victim", baseBranch: "main" });
+        expect(service.cancelDelete(victim.id)).toMatchObject({ cancelled: false });
+
+        hangCheckouts(repo);
+        const blocker = startHungCreate(service, "blocker", "op-blocker");
+        await blocker.started;
+        const deleting = service.delete({ laneId: victim.id, force: true });
+        await removable;
+
+        expect(service.cancelDelete(victim.id)).toEqual({ cancelled: true });
+        await expect(deleting).rejects.toThrow(/You stopped the delete/);
+        expect(service.listDeleteProgress().find((progress) => progress.laneId === victim.id)?.overallStatus).toBe("cancelled");
+        expect(db.get("select id from lanes where id = ?", [victim.id])).toBeTruthy();
+        expect(fs.existsSync(path.join(victim.worktreePath, "file-0.txt"))).toBe(true);
+
+        service.cancelGitWrite({ operationId: "op-blocker" });
+        await expect(blocker.result).rejects.toThrow("Lane creation was cancelled.");
+        await service.delete({ laneId: victim.id, force: true });
+        expect(fs.existsSync(victim.worktreePath)).toBe(false);
+        expect(db.get("select id from lanes where id = ?", [victim.id])).toBeFalsy();
+      } finally {
+        db.close();
+      }
+    },
+    30_000,
+  );
 });

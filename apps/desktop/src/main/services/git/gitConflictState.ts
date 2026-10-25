@@ -15,15 +15,3 @@ export function detectConflictKind(gitDir: string): GitConflictState["kind"] {
   }
   return null;
 }
-
-export function parseNameOnly(stdout: string): string[] {
-  return Array.from(
-    new Set(
-      stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-}
-

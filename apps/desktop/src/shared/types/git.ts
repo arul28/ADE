@@ -335,6 +335,11 @@ export type GitCheckoutBranchArgs = {
   startPoint?: string;
   baseRef?: string;
   acknowledgeActiveWork?: boolean;
+  /**
+   * A caller-chosen id (a UUID) for this run. Passing it to
+   * `lanes.cancelGitWrite` stops the git checkout while it runs.
+   */
+  operationId?: string;
 };
 
 export type GitHubRepoRef = {
