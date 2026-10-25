@@ -259,6 +259,8 @@ const REQUESTED_CAPABILITIES: CapabilityName[] = [
 ];
 
 const STDERR_TAIL_LIMIT = 40;
+/** The longest unfinished stderr line kept for whole-line redaction. */
+const STDERR_LINE_LIMIT = 16_000;
 /** MSP SS2.1.2: the host drains after stdin EOF; past this, the rest is a crash. */
 const CLOSE_GRACE_MS = 5_000;
 const KILL_GRACE_MS = 2_000;
@@ -292,9 +294,23 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
   const stderr: string[] = [];
   /** The line still being written: a secret split across two chunks is redacted whole. */
   let stderrPartial = "";
+  let droppingStderrLine = false;
   const pushStderr = (chunk: string) => {
-    const lines = `${stderrPartial}${chunk}`.split(/\r?\n/);
+    let text = chunk;
+    if (droppingStderrLine) {
+      const newline = text.indexOf("\n");
+      if (newline < 0) return;
+      text = text.slice(newline + 1);
+      droppingStderrLine = false;
+    }
+    const lines = `${stderrPartial}${text}`.split(/\r?\n/);
     stderrPartial = lines.pop() ?? "";
+    // A line this long (a progress bar redrawn with `\r`) is dropped through
+    // its next newline rather than kept or cut: a fragment could hold half a secret.
+    if (stderrPartial.length > STDERR_LINE_LIMIT) {
+      stderrPartial = "";
+      droppingStderrLine = true;
+    }
     for (const line of lines) {
       if (!line.trim()) continue;
       // The tail reaches the chat's error notice, so its secrets go first.
@@ -468,12 +484,13 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
     if (deathReported) return;
     deathReported = true;
     alive = false;
-    const kind = closing ? "clean" : classifyExitKind(stderr, exit.code);
+    const tail = stderrTail();
+    const kind = closing ? "clean" : classifyExitKind(tail, exit.code);
     const payload: MuseHostExit = {
       kind,
       code: exit.code,
       signal: exit.signal ?? null,
-      stderrTail: stderrTail(),
+      stderrTail: tail,
     };
     options.logger?.info("agent_chat.muse_host_exit", {
       kind,

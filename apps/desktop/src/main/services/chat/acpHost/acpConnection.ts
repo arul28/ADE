@@ -181,6 +181,14 @@ type ReverseRequestRegistration = {
 };
 
 const STDERR_TAIL_LIMIT = 4_000;
+/**
+ * The longest unfinished stderr line kept for whole-line redaction. A longer
+ * one (a progress bar redrawn with `\r`) is dropped through its next newline:
+ * a fragment cut from it could hold half a secret.
+ */
+const STDERR_LINE_LIMIT = 16_000;
+/** How long an exited agent's stderr may stay open before its exit is reported anyway. */
+const STDERR_CLOSE_GRACE_MS = 500;
 
 /**
  * OAuth query values and secrets never reach a log line or an error message.
@@ -455,9 +463,10 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   /**
    * Stderr is redacted a whole line at a time: a secret split across two
    * chunks (`?state` then `=value`) is matched only once both halves arrive.
-   * The unfinished last line joins the tail when the process ends.
+   * The unfinished last line joins the tail once stderr closes.
    */
   let stderrPartial = "";
+  let droppingStderrLine = false;
   const appendStderr = (text: string) => {
     const safe = redactAcpDiagnosticText(text);
     stderrTail = `${stderrTail}${safe}`.slice(-STDERR_TAIL_LIMIT);
@@ -469,11 +478,23 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     stderrPartial = "";
   };
   child.stderr?.on("data", (chunk: Buffer | string) => {
-    const text = `${stderrPartial}${typeof chunk === "string" ? chunk : chunk.toString("utf8")}`;
+    let text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    if (diagnosticLineHandlers.size) readStderrLine(chunk);
+    if (droppingStderrLine) {
+      const newline = text.indexOf("\n");
+      if (newline < 0) return;
+      text = text.slice(newline + 1);
+      droppingStderrLine = false;
+    }
+    text = `${stderrPartial}${text}`;
     const end = text.lastIndexOf("\n") + 1;
     stderrPartial = text.slice(end);
     if (end > 0) appendStderr(text.slice(0, end));
-    if (diagnosticLineHandlers.size) readStderrLine(chunk);
+    if (stderrPartial.length > STDERR_LINE_LIMIT) {
+      logEvent("warn", "agent_chat.acp_stderr_line_dropped", { length: stderrPartial.length });
+      stderrPartial = "";
+      droppingStderrLine = true;
+    }
   });
   child.on("error", (error) => {
     logEvent("error", "agent_chat.acp_process_error", { error: error.message });
@@ -482,8 +503,24 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   });
   child.on("exit", (code, signal) => {
     logEvent("info", "agent_chat.acp_process_exit", { code, signal });
-    flushStderrPartial();
-    settleExit({ code, signal, stderrTail });
+    // Stderr can still deliver after `exit`; its last line is redacted and
+    // reported once the stream closes. A grandchild holding it open does not
+    // hold up the exit for long.
+    const settle = () => {
+      flushStderrPartial();
+      settleExit({ code, signal, stderrTail });
+    };
+    const stderr = child.stderr;
+    if (!stderr || stderr.destroyed || stderr.readableEnded) {
+      settle();
+      return;
+    }
+    const grace = setTimeout(settle, STDERR_CLOSE_GRACE_MS);
+    grace.unref?.();
+    stderr.once("close", () => {
+      clearTimeout(grace);
+      settle();
+    });
   });
 
   const connection: AcpConnection = {
