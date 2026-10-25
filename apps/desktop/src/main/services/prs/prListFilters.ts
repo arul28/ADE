@@ -175,7 +175,7 @@ export function describeAssigneeFailure(error: unknown): string {
   const status = httpStatusOf(error);
   const kind = githubAuthFailureKindOf(error);
   if (kind === "rate_limited") return "GitHub is rate limiting this account. Try again in a few minutes.";
-  if (status === 403 || kind === "permission") {
+  if (status === 403 || kind === "permission_denied") {
     return "This GitHub account cannot assign people here. Assigning needs triage access to the repository.";
   }
   if (status === 404) return "GitHub could not find this pull request, or this account cannot see it.";

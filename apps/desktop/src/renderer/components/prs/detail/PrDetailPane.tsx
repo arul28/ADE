@@ -1,4 +1,6 @@
 import React from "react";
+import type { PrAssigneeChange } from "../shared/PrFloatingDock";
+import type { GitHubFilterOptionsLoader } from "../shared/GitHubPrFilters";
 import {
   XCircle,
   CircleNotch,
@@ -21,6 +23,7 @@ import type {
   PrCheckLogExcerpt,
   PrRerunChecksTarget,
   ReviewerRequest,
+  SetPrAssigneesResult,
 } from "../../../../shared/types";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
@@ -1340,6 +1343,28 @@ export function PrDetailPane({
     await loadDetail({ forceLive: true });
   });
 
+  // Assignees: sent to the PR's machine (`onPin`), like every PR mutation. The
+  // editor hides on an older host without the action, and when the snapshot
+  // says there is no write-capable GitHub account (`writeViewerLogin: null`).
+  const canEditAssignees = typeof window.ade.prs.setAssignees === "function" && writeViewerLogin !== null;
+  const handleSetAssignees = React.useCallback(async (change: PrAssigneeChange): Promise<SetPrAssigneesResult> => {
+    const setAssignees = window.ade.prs.setAssignees;
+    if (!setAssignees) throw new Error("This machine's ADE cannot assign people yet.");
+    const result = await setAssignees({ prId: pr.id, add: change.add, remove: change.remove }, ...onPin);
+    void loadDetail({ forceLive: true }).catch(() => undefined);
+    return result;
+  }, [loadDetail, onPin, pr.id]);
+  const searchAssignableUsers = React.useMemo((): GitHubFilterOptionsLoader | null => {
+    const list = window.ade.prs.listGitHubFilterOptions;
+    if (typeof list !== "function") return null;
+    return async (_kind, query) => (await list({
+      kind: "assignee",
+      query,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
+    }, ...onPin)).options;
+  }, [onPin, pr.repoName, pr.repoOwner]);
+
   const handleRequestReviewers = (request: ReviewerRequest) => runAction(async () => {
     await window.ade.prs.requestReviewers({
       prId: pr.id,
@@ -1620,6 +1645,8 @@ export function PrDetailPane({
             updateBranchNotice={updateBranchNotice}
             onRequestReviewers={handleRequestReviewers}
             onSetLabels={handleSetLabels}
+            onSetAssignees={canEditAssignees ? handleSetAssignees : undefined}
+            searchAssignableUsers={searchAssignableUsers}
             onDeleteBranch={handleDeleteBranch}
             deleteBranchBusy={actionBusy}
             onReopen={handleReopenPr}

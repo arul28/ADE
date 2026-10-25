@@ -24,8 +24,10 @@ import type {
   PrDetail,
   PrReview,
   PrStatus,
+  PrUser,
   PrWithConflicts,
   ReviewerRequest,
+  SetPrAssigneesResult,
 } from "../../../../shared/types/prs";
 import {
   latestReviewOpinionByLogin,
@@ -992,7 +994,6 @@ export function PrAssigneesCard({
 
   const change = (next: PrUser[], delta: PrAssigneeChange) => {
     if (!onSetAssignees) return;
-    const rollbackTo = optimistic ?? confirmed;
     setOptimistic(next);
     pendingRef.current += 1;
     const run = chainRef.current.catch(() => undefined).then(() => onSetAssignees(delta));
@@ -1000,8 +1001,9 @@ export function PrAssigneesCard({
     run
       .then((result) => {
         setConfirmed(result.assignees);
+        // The last change in flight settles to GitHub's answer; earlier ones
+        // leave the optimistic list, which already holds the later clicks.
         if (pendingRef.current === 1) setOptimistic(null);
-        else setOptimistic((current) => current);
         if (result.notAssigned.length > 0) {
           showToast({
             tone: "warning",
@@ -1011,8 +1013,8 @@ export function PrAssigneesCard({
         }
       })
       .catch((error: unknown) => {
-        setOptimistic(pendingRef.current === 1 ? null : rollbackTo);
-        if (pendingRef.current === 1) setConfirmed(rollbackTo);
+        // Roll back to what GitHub last confirmed once nothing else is out.
+        if (pendingRef.current === 1) setOptimistic(null);
         showToast({
           tone: "error",
           title: "Assignees not changed",

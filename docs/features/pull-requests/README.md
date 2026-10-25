@@ -540,6 +540,32 @@ Caching layers:
 
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
+
+**Label / author / assignee filters search GitHub.** The list chrome's
+**Filter** control (`shared/GitHubPrFilters.tsx`) has Label, Author and
+Assignee pickers; each lists what the loaded rows show first, then what
+`pr.listGithubFilterOptions` returns (GraphQL `labels(query:)`,
+`mentionableUsers` for authors because fork contributors are not assignable,
+`assignableUsers` for assignees; 5-minute cache, single-flight, asked only
+while a picker is open, 250 ms after typing stops). `label:"a b" author:x
+assignee:@me no:assignee` typed in the search box become chips once the token
+is finished (`shared/githubPrSearch.ts` parses and builds the `q`). While any
+filter is on, the list is `pr.searchGithubPrs` (`prListFilters.ts`): GraphQL
+`search(type: ISSUE)` scoped to this repo and the tab's state, 50 per page with
+**Load more**, rows built by the snapshot's own row builder so lane context
+still shows; 60 s cache in the service and the renderer, 300 ms debounce, stale
+answers dropped. GraphQL rather than REST `/search/issues` because the REST hit
+has no head/base branch and spends the 30/min search bucket. Until GitHub
+answers, or when it is rate limited, failing, or the host is an older ADE, the
+list narrows the loaded rows by label and author and says so in one quiet line
+(loaded rows carry no assignees). Clearing the filters returns to the snapshot
+list with no request. Filters persist in the tab's in-memory warm cache, not
+the URL. The Assignees card assigns and unassigns through `pr.setAssignees`
+(issue `/assignees` POST/DELETE, write credential, serialized per PR, works for
+a synthetic `gh:` id), optimistic with rollback and a toast; it is read-only
+when `writeViewerLogin` is `null` or the host lacks the action. GitHub answers
+201 and silently drops a person it cannot assign, so the result names them in
+`notAssigned`.
 History-enabled snapshots also carry `repoPullRequestsMayHaveMore` and the
 applied `pageLimit`. The mobile caller opts into
 `history.repoPullRequestCounts`: one GraphQL query fetches exact Open / Merged /
@@ -1044,6 +1070,24 @@ history — it records a `pull_request_chat_sessions` edge for each agent sessio
 (up to three, never a plain shell) that was open in the lane when the PR was
 created. That edge is what settles the chat that opened a PR with `gh pr
 create` once the PR merges.
+
+That guess is now the fallback. A chat's own shell commands are read as they
+settle (`main/services/prs/prShellLinkWatcher.ts`, pure parsing in
+`shared/ghPrShellCommands.ts`): Codex reports a shell run as one `command`
+event, Claude and ACP harnesses as a `tool_call` plus its `tool_result`. When
+the command ran `gh pr create` and printed a PR URL on a line of its own, or
+ran `gh pr merge` on a PR, `prService.linkShellPrAction` links that PR to that
+exact chat. The parser reads nothing it cannot be sure of: a `gh pr create`
+inside quotes, a heredoc body or a comment is not a command; a PR the command
+names itself is not the new PR; more PR URLs than create commands is no answer
+(`gh pr create && gh pr list`). Then GitHub must confirm the PR is in this
+project's repository, comes from that repository (not a fork) and has the chat
+lane's current branch as its head. An unlink from that chat, or an unmap from
+that lane, is never overruled. When no lane holds the PR yet it is linked to
+the chat's lane through `linkToLane`, exactly like the branch auto-map (so the
+ADE footer is added to the description the same way). A `gh pr merge` from the
+chat links the merged PR to it, so the `linked` scope settles that chat even in
+a lane where another PR is still open, instead of `ambiguous` settling nothing.
 
 Declared sessions are resolved **by id** (`sessionService.get`), not found
 inside a paged lane listing: the PR named them, so a long-lived lane whose
@@ -2179,8 +2223,17 @@ are how a chat asks to be woken when its PR changes. Source:
   people and agent reviewers (deploy, CI, and dependency bots are ignored); a
   review bot's edit of its old comment, which is how such a bot reports a new
   review of a push (a person's edit does not wake the agent); the
-  branch starting to conflict; the PR merging or closing. A new head resets the
-  check state. The first pass reports the PR's current state, so arming Watch
+  branch starting to conflict; the PR merging or closing. A head that no CI
+  check reported on for 10 minutes (`PR_WATCH_NO_CHECKS_GRACE_MS`; a docs-only
+  push whose workflows skip it), told once per head and never as a pass —
+  review bots and deploy previews do not count as CI, and a head where CI
+  already reported never reads as "no CI" later. GitHub's merge queue dropping
+  the PR without merging it (`prService.getMergeQueueRemoval`, the newest
+  `RemovedFromMergeQueueEvent`), told once with GitHub's reason; a removal from
+  before the watch began, one GitHub followed with a re-enqueue, and the
+  `merged` removal the queue writes when it lands the PR are not news. Hosts
+  without the merge-queue schema are asked once and then skipped. A new head
+  resets the check state. The first pass reports the PR's current state, so arming Watch
   on a red PR tells the agent what is red right away.
 - **What never wakes it.** Comments ADE posted (`addComment`,
   `replyToReviewThread`, `postReviewComment`, `submitReview` record their ids
