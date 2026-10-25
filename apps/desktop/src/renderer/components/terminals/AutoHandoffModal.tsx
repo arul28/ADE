@@ -21,6 +21,7 @@ import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import { LaneCombobox, type LaneComboboxLane } from "./LaneCombobox";
 import { automationRulesReadable, listAutomationRules, saveAutoHandoffRules } from "./sessionLifecycleActions";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * "Auto handoff" — the chat-menu front door to the automation platform.
@@ -394,7 +395,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
   const submitRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
       // A textarea owns Enter (the prompt is multi-line), and so does any
       // control that already answers it — buttons, links, selects, pickers.
       const tag = (event.target as HTMLElement | null)?.tagName?.toLowerCase();

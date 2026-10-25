@@ -4,13 +4,9 @@ import {
   type ProjectConfigFile,
   type ProjectConfigSnapshot,
 } from "../../shared/types";
+import { parseCodedErrorMessage } from "../../shared/codedError";
 
 const MAX_ATTEMPTS = 3;
-
-function changedOnDisk(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return message.includes(PROJECT_CONFIG_CHANGED_ON_DISK);
-}
 
 /**
  * Read `.ade/local.yaml`, apply `edit`, and save the result. The save names the
@@ -27,14 +23,19 @@ export async function saveProjectLocalConfig(
 ): Promise<ProjectConfigSnapshot> {
   for (let attempt = 1; ; attempt += 1) {
     const snapshot = await window.ade.projectConfig.get(pin);
+    // A snapshot without a hash (an older host) saves as is, as before.
+    const baseLocalHash = typeof snapshot.trust?.localHash === "string" ? snapshot.trust.localHash : undefined;
     try {
       return await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: edit(snapshot),
-        baseLocalHash: snapshot.trust.localHash,
+        ...(baseLocalHash !== undefined ? { baseLocalHash } : {}),
       }, pin);
     } catch (error) {
-      if (attempt >= MAX_ATTEMPTS || !changedOnDisk(error)) throw error;
+      const parsed = parseCodedErrorMessage(error);
+      if (parsed.code !== PROJECT_CONFIG_CHANGED_ON_DISK) throw error;
+      // Out of retries: say it plainly, without the IPC wrapper and code.
+      if (attempt >= MAX_ATTEMPTS) throw new Error(parsed.message);
     }
   }
 }

@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from "chokidar";
 import type { Logger } from "../logging/logger";
-import type { AdeProjectEvent } from "../../../shared/types";
+import type { AdeProjectEvent, AdeProjectSnapshot } from "../../../shared/types";
 import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import { nowIso } from "../shared/utils";
 
@@ -14,7 +14,7 @@ type ConfigReloadServiceArgs = {
     get: () => unknown;
   };
   adeProjectService: {
-    getSnapshot: () => import("../../../shared/types").AdeProjectSnapshot;
+    getSnapshot: () => AdeProjectSnapshot;
   };
   automationService?: {
     reloadFromConfig?: () => void;
@@ -79,7 +79,7 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
     // A half-written or malformed local.yaml makes the snapshot read throw.
     // Inside this timer that would escape as an uncaught error and skip the
     // other changed paths; the next write reloads it.
-    let snapshot: ReturnType<typeof args.adeProjectService.getSnapshot>;
+    let snapshot: AdeProjectSnapshot;
     try {
       snapshot = args.adeProjectService.getSnapshot();
     } catch (error) {

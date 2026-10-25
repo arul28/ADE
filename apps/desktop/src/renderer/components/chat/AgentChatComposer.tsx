@@ -6378,8 +6378,8 @@ function AgentChatComposerImpl({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     // While an IME composes, Enter confirms a candidate, arrows move through
     // candidates and Escape cancels: none of them is a send, a menu pick or a
-    // draft clear.
-    if (isImeComposing(event) || imeComposingRef.current) return;
+    // draft clear. Cmd/Ctrl shortcuts (drafts, stop the turn) still work.
+    if (isImeComposing(event) && !event.metaKey && !event.ctrlKey) return;
     if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
     const isPlainHistoryArrow =
@@ -6548,6 +6548,8 @@ function AgentChatComposerImpl({
     }
 
     if (event.key !== "Enter" || event.shiftKey) return;
+    // Enter that confirms an IME candidate is part of typing, not a send.
+    if (imeComposingRef.current) return;
     const commandEnter = commandModified;
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
@@ -6637,7 +6639,7 @@ function AgentChatComposerImpl({
    */
   const answerEditorKeyDown = (answer: { placeholder: string; onSubmitAnswer: () => void }) => (
     (event: React.KeyboardEvent<HTMLElement>) => {
-      if (isImeComposing(event) || imeComposingRef.current) return;
+      if (isImeComposing(event)) return;
       if (event.key === "Escape") {
         // Closes the open menu and nothing else. With no menu open the event is
         // left to bubble to the card, which declines.
@@ -6649,6 +6651,8 @@ function AgentChatComposerImpl({
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) {
+        // Enter that confirms an IME candidate is part of typing, not a submit.
+        if (imeComposingRef.current) return;
         if (commandMenuTrigger) {
           if (commandMenuRef.current?.selectCurrent()) {
             event.preventDefault();

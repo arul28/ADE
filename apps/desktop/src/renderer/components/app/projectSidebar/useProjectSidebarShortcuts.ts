@@ -9,6 +9,7 @@ import {
   projectSidebarTabTarget,
   visibleProjectSidebarTabs,
 } from "./projectSidebarTabs";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
  * True when the keystroke belongs to something that must keep it.
@@ -59,7 +60,7 @@ export function useProjectSidebarShortcuts(args: {
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return;
+      if (event.defaultPrevented || isImeComposing(event)) return;
       if (keystrokeIsClaimed(event.target)) return;
       if (eventMatchesBinding(event, bindings.toggle)) {
         if (sidebarLocked) return;

@@ -84,6 +84,7 @@ import {
 } from "./projectConfigCarryOver";
 import { initializeOrRepairAdeProject } from "../projects/adeProjectService";
 import { writeFileAtomic as durableWriteFileAtomic } from "../state/durableFile";
+import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 
@@ -3073,11 +3074,13 @@ function readLocalHashFromDisk(filePath: string): string {
 }
 
 function changedOnDiskError(): Error {
-  const err = new Error(
-    `${PROJECT_CONFIG_CHANGED_ON_DISK}: .ade/local.yaml changed on disk since these settings were read. Reload and try again.`,
+  return codedError(
+    encodeCodedErrorMessage(
+      PROJECT_CONFIG_CHANGED_ON_DISK,
+      ".ade/local.yaml changed on disk since these settings were read. Reload and try again.",
+    ),
+    PROJECT_CONFIG_CHANGED_ON_DISK,
   );
-  (err as Error & { code?: string }).code = PROJECT_CONFIG_CHANGED_ON_DISK;
-  return err;
 }
 
 function invalidConfigError(validation: ProjectConfigValidationResult): Error {

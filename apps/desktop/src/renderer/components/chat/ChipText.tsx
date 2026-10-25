@@ -434,8 +434,7 @@ export function ChipText({
     [attachments, text],
   );
 
-  // No chips: keep the exact original node so nothing about plain messages
-  // changes — spacing, selection, and copy stay byte-for-byte what they were.
+  // No chips: one text node, not a span per part.
   // Hebrew or Arabic reads right to left: `dir="auto"` isolates the message and
   // `unicode-bidi: plaintext` lets each line take its own direction, so an
   // English line in a Hebrew message still starts on the left.

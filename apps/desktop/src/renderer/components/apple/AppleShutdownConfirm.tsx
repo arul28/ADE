@@ -2,6 +2,7 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { Dialog } from "../ui/dialog";
 import { laneDeviceBooted } from "./appleDeviceState";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * "Shut down {device}?" — the one question closing the Apple Development TAB
@@ -131,7 +132,7 @@ function AppleShutdownConfirmDialog({ request }: { request: AppleShutdownConfirm
         cancel();
         return;
       }
-      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
       // A focused button answers Enter itself; this is for the rest of the box.
       if ((event.target as HTMLElement | null)?.tagName?.toLowerCase() === "button") return;
       event.preventDefault();

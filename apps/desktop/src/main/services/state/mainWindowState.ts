@@ -55,7 +55,7 @@ function overlapArea(a: Rectangle, b: Rectangle): number {
 export function fitMainWindowBounds(
   saved: Rectangle,
   workAreas: readonly Rectangle[],
-  minSize: { width: number; height: number } = { width: 0, height: 0 },
+  minWidth: number,
 ): Rectangle | null {
   let best: Rectangle | null = null;
   let bestArea = 0;
@@ -67,8 +67,8 @@ export function fitMainWindowBounds(
     }
   }
   if (!best) return null;
-  const width = Math.min(Math.max(saved.width, minSize.width), best.width);
-  const height = Math.min(Math.max(saved.height, minSize.height), best.height);
+  const width = Math.min(Math.max(saved.width, minWidth), best.width);
+  const height = Math.min(saved.height, best.height);
   const x = Math.min(Math.max(saved.x, best.x), best.x + best.width - width);
   const y = Math.min(Math.max(saved.y, best.y), best.y + best.height - height);
   return { x, y, width, height };

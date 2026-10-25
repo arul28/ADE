@@ -264,6 +264,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       }
       return (
         <pre
+          dir="ltr"
           className="mb-3 overflow-auto rounded-sm p-3 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-5 last:mb-0"
           style={{
             background: "var(--chat-block-bg)",

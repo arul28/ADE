@@ -332,8 +332,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         dir="auto"
         className={
           neu
-            ? "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-(color:--chat-ink)/82 last:border-r-0"
-            : "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
+            ? "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-(color:--chat-ink)/82 last:border-e-0"
+            : "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-fg/76 last:border-e-0"
         }
         {...props}
       >

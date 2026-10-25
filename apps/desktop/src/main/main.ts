@@ -124,6 +124,8 @@ import {
   persistableRemoteProjectIconDataUrl,
   persistableRemoteProjectBinding,
   readGlobalState,
+  readGlobalStateForUpdate,
+  type GlobalState,
   type RecentProject,
   upsertRecentProject,
   writeGlobalState,
@@ -969,7 +971,7 @@ async function createWindow(args: {
     ? fitMainWindowBounds(
         restoreState.bounds,
         screen.getAllDisplays().map((display) => display.workArea),
-        { width: MIN_WINDOW_WIDTH, height: 0 },
+        MIN_WINDOW_WIDTH,
       )
     : null;
 
@@ -1774,7 +1776,17 @@ app.whenReady().then(async () => {
   const readSavedMainWindowState = (): MainWindowState | null =>
     parseMainWindowState(readGlobalState(globalStatePath).mainWindow);
   const saveMainWindowState = (mainWindow: MainWindowState): void => {
-    const current = readGlobalState(globalStatePath);
+    let current: GlobalState;
+    try {
+      current = readGlobalStateForUpdate(globalStatePath);
+    } catch (error) {
+      // An unreadable or corrupt file: skip the geometry rather than replace
+      // the whole file (recents, update and browser settings) with it.
+      logMachineEvent("warn", "desktop.main_window_state_save_skipped", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     writeGlobalState(globalStatePath, { ...current, mainWindow });
   };
   const readLocalRecentProjects = (): RecentProject[] =>
@@ -2186,7 +2198,7 @@ app.whenReady().then(async () => {
       const now = performance.now();
       if (now - lastStepAt < WHEEL_ZOOM_STEP_MS) return;
       lastStepAt = now;
-      appCommandSender({ kind: "zoom", command: direction === "in" ? "in" : "out" }, win);
+      appCommandSender({ kind: "zoom", command: direction }, win);
     });
   };
   ipcMain.on(IPC.appCommandsReady, (event) => {
@@ -9130,7 +9142,9 @@ app.whenReady().then(async () => {
       bounds: args.bounds,
       // A second window opens at the default spot, not on top of the first.
       restoreState: openWindows.length === 0 ? readSavedMainWindowState() : null,
-      onWindowStateChange: saveMainWindowState,
+      // A tab dragged out into its own window is not where ADE lives; only a
+      // window opened the ordinary way records its place.
+      onWindowStateChange: args.bounds ? undefined : saveMainWindowState,
       onRendererRecovery: reportRendererRecovery,
       onCreated: (createdWindow) => {
         attachWheelZoom(createdWindow);
@@ -9551,11 +9565,11 @@ app.whenReady().then(async () => {
           // The numeric keypad's +, - and 0 are separate keys to the
           // accelerator matcher; hidden twins give them the same zoom.
           ...([
-            ["CmdOrCtrl+numadd", "in"],
-            ["CmdOrCtrl+numsub", "out"],
-            ["CmdOrCtrl+num0", "reset"],
-          ] as const).map(([accelerator, command]): Electron.MenuItemConstructorOptions => ({
-            label: command === "in" ? "Zoom In" : command === "out" ? "Zoom Out" : "Actual Size",
+            ["CmdOrCtrl+numadd", "in", "Zoom In"],
+            ["CmdOrCtrl+numsub", "out", "Zoom Out"],
+            ["CmdOrCtrl+num0", "reset", "Actual Size"],
+          ] as const).map(([accelerator, command, label]): Electron.MenuItemConstructorOptions => ({
+            label,
             accelerator,
             visible: false,
             acceleratorWorksWhenHidden: true,

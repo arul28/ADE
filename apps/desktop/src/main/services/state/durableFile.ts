@@ -24,7 +24,8 @@ export type AtomicWriteOptions = {
 export function existingFileMode(filePath: string): number | undefined {
   if (process.platform === "win32") return undefined;
   try {
-    return fs.statSync(filePath).mode & 0o777;
+    const stat = fs.statSync(filePath, { throwIfNoEntry: false });
+    return stat ? stat.mode & 0o777 : undefined;
   } catch {
     return undefined;
   }
@@ -187,8 +188,15 @@ export function writeFileAtomic(
       ? fs.openSync(tempPath, "wx", mode)
       : fs.openSync(tempPath, "wx");
     // The open's mode passes through the umask; a kept mode must come out
-    // exactly as it was.
-    if (opts.mode == null && mode != null) fs.fchmodSync(fd, mode);
+    // exactly as it was. A filesystem without POSIX bits keeps its default
+    // rather than losing the write.
+    if (opts.mode == null && mode != null) {
+      try {
+        fs.fchmodSync(fd, mode);
+      } catch {
+        // Best effort, like the copy fallback's chmod.
+      }
+    }
     fs.writeFileSync(fd, data);
     if (opts.fsync) bestEffortFsync(fd);
     fs.closeSync(fd);

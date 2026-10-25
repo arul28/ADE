@@ -2316,15 +2316,15 @@ export type ProjectConfigCandidate = {
   local: ProjectConfigFile;
   /**
    * `trust.localHash` of the snapshot `local` was edited from. When set, the
-   * save is refused with `ADE_CONFIG_CHANGED_ON_DISK` if `.ade/local.yaml`
+   * save is refused with `project_config_changed_on_disk` if `.ade/local.yaml`
    * changed since that read (an editor or an agent wrote it), instead of
    * writing the stale copy over the change. Left out, the save writes as is.
    */
   baseLocalHash?: string | null;
 };
 
-/** Code (and message prefix) of a save refused because local.yaml changed under it. */
-export const PROJECT_CONFIG_CHANGED_ON_DISK = "ADE_CONFIG_CHANGED_ON_DISK";
+/** Code of a save refused because local.yaml changed under it (see `codedError`). */
+export const PROJECT_CONFIG_CHANGED_ON_DISK = "project_config_changed_on_disk";
 
 export type EffectiveProjectConfig = {
   version: number;
