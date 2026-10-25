@@ -51,6 +51,7 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import { IPC } from "../../../shared/ipc";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -1356,7 +1357,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    });
+    }, { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
@@ -1393,7 +1394,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    });
+    }, { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
     expect(client.close).not.toHaveBeenCalled();
     expect(ssh.end).not.toHaveBeenCalled();
   });

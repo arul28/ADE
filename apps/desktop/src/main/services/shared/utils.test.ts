@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  parseNumstatRecordsZ,
   isRecord,
   asString,
   asNumber,
@@ -197,16 +198,26 @@ describe("spawnAsync", () => {
 });
 
 describe("parseDiffNameOnly", () => {
-  it("parses newline-separated file names", () => {
-    expect(parseDiffNameOnly("a.ts\nb.ts\nc.ts\n")).toEqual(["a.ts", "b.ts", "c.ts"]);
+  // `-z` output: names come back raw, with no C-quoting to undo.
+  it.each([
+    ["several names", "a.ts\0b.ts\0c.ts\0", ["a.ts", "b.ts", "c.ts"]],
+    ["spaces, quotes and non-ASCII kept as they are", ' a b.ts \0caf\u00e9 "q".txt\0', [" a b.ts ", 'caf\u00e9 "q".txt']],
+    ["empty records skipped", "a.ts\0\0b.ts\0", ["a.ts", "b.ts"]],
+    ["empty input", "", []],
+  ])("%s", (_label, stdout, expected) => {
+    expect(parseDiffNameOnly(stdout)).toEqual(expected);
   });
+});
 
-  it("filters out empty lines and trims whitespace", () => {
-    expect(parseDiffNameOnly("  a.ts  \n\n  b.ts  \n\n")).toEqual(["a.ts", "b.ts"]);
-  });
-
-  it("returns empty for empty input", () => {
-    expect(parseDiffNameOnly("")).toEqual([]);
+describe("parseNumstatRecordsZ", () => {
+  it("reads plain, binary and renamed records, with the destination as a rename's path", () => {
+    const stdout = "3\t1\tsrc/a.ts\0-\t-\timg.png\0" + "0\t0\t\0old name.txt\0new\tname.txt\0" + "2\t0\tlast.ts\0";
+    expect(parseNumstatRecordsZ(stdout)).toEqual([
+      { addRaw: "3", delRaw: "1", path: "src/a.ts" },
+      { addRaw: "-", delRaw: "-", path: "img.png" },
+      { addRaw: "0", delRaw: "0", path: "new\tname.txt" },
+      { addRaw: "2", delRaw: "0", path: "last.ts" },
+    ]);
   });
 });
 

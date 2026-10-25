@@ -8507,10 +8507,11 @@ export function createLaneService({
             const unsavedWork = await describeUnsavedWorktreeWork(normalizedWorktree);
             if (unsavedWork && args.forceDirty !== true) {
               logger.info("lane.reclaim.unsaved_work", { laneId: args.laneId, reason: unsavedWork });
-              throw new Error(
+              throw new AdeExpectedError(
                 unsavedWork === UNCOMMITTED_CHANGES_REASON
                   ? "This lane gained uncommitted files during cleanup. Confirm that those changes may be lost."
                   : `${unsavedWork} Confirm that this work may be lost.`,
+                "user",
               );
             }
             const remove = await runGit(
@@ -8976,7 +8977,8 @@ export function createLaneService({
             const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
             if (unsavedWork && !force) {
               logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork });
-              throw new Error(`${unsavedWork} Enable force delete after confirming warnings.`);
+              // An answer for the user, not a defect: keep it out of Sentry issues.
+              throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
             }
             return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
           });

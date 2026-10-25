@@ -197,7 +197,16 @@ Shared code:
 
 Shared git engine (every lane service reaches git through these):
 
-- `src/main/services/git/git.ts` — `runGit` is the single spawn point. It holds
+- `src/main/services/git/git.ts` — `runGit` is the spawn point for ADE's own
+  git. Before every command it adds the `-c` overrides in `gitReadEnv.ts`, so a
+  personal `status.showUntrackedFiles=no` or `diff.noprefix` cannot change
+  what ADE reads, and it sets `GIT_TERMINAL_PROMPT=0`, so a missing sign-in
+  fails at once with a hint instead of waiting for the timeout. The AI git
+  tools spawn git themselves with the same overrides. Tree writes (checkout,
+  `worktree add` / `remove`) allow 15 minutes and fetches 5
+  (`gitTimeouts.ts`); the lane actions that run them, and every caller above
+  them, wait longer (`LANE_GIT_WRITE_ACTION_TIMEOUT_MS`). Path lists are read
+  with `-z`, and branch names from the full `refs/heads/` ref. It holds
   the process-wide 12-slot git concurrency semaphore (mutating commands bypass
   it), invalidates the repo cache after any ref-affecting command, and exposes
   `runGitRepoCached` for repo-wide reads plus `gitCommonDirFor` /
