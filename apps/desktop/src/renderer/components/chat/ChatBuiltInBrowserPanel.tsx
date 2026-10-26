@@ -112,6 +112,9 @@ import { BrowserStage, type BrowserLaunchpadGroup } from "./browser/BrowserStage
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
 import { orderBrowserTabsByLane } from "./browser/browserTabGroups";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
+import { BrowserCertificateBanner } from "./browser/BrowserCertificateBanner";
+import { useBrowserSettings } from "./browser/browserSettings";
+import { resolveBrowserSearchTemplate } from "../../../shared/types/builtInBrowser";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   MENU_ITEM_CLASS,
@@ -781,6 +784,35 @@ export function ChatBuiltInBrowserPanel({
     applyStatus(nextStatus);
   }, [applyStatus, browserScope]);
 
+  /*
+    Trusting a local certificate. The browser is this desktop's, so there is
+    no pin: the approval is for the profile the tab runs in, here. Keyed by
+    fingerprint so a failure on one certificate never sticks to the next.
+  */
+  const certificateProblem = activeTab?.loadError?.certificate ?? null;
+  const [certificateTrustState, setCertificateTrustState] = useState<{
+    fingerprint: string;
+    busy: boolean;
+    error: string | null;
+  } | null>(null);
+  const certificateTrustForProblem = certificateProblem && certificateTrustState?.fingerprint === certificateProblem.fingerprint
+    ? certificateTrustState
+    : null;
+  const handleTrustCertificate = useCallback(() => {
+    const tabId = activeTab?.id ?? null;
+    if (!tabId || !certificateProblem) return;
+    const fingerprint = certificateProblem.fingerprint;
+    setCertificateTrustState({ fingerprint, busy: true, error: null });
+    void (async () => {
+      const api = requireBrowserApi();
+      if (!api.trustCertificate) throw new Error("This ADE build cannot trust certificates yet.");
+      applyStatus(await api.trustCertificate({ ...browserScopeRef.current, tabId, fingerprint }));
+      setCertificateTrustState(null);
+    })().catch((error: unknown) => {
+      setCertificateTrustState({ fingerprint, busy: false, error: errorMessage(error) });
+    });
+  }, [activeTab?.id, applyStatus, certificateProblem]);
+
   const attachBrowserContextItem = useCallback(async (
     item: BuiltInBrowserContextItem,
     options: { force?: boolean; auto?: boolean; label?: string } = {},
@@ -1173,9 +1205,14 @@ export function ChatBuiltInBrowserPanel({
    * new one", which is the opposite of what closing a tab means anywhere else.
    */
 
+  // The address bar's search engine, from Settings. A Custom URL that cannot
+  // be used falls back to the default here, and Settings says so.
+  const browserSettingsSnapshot = useBrowserSettings();
+  const searchTemplate = resolveBrowserSearchTemplate(browserSettingsSnapshot).template;
+
   const navigateToUrl = useCallback(
     (raw: string) => {
-      const normalized = normalizeUrlForNavigation(raw);
+      const normalized = normalizeUrlForNavigation(raw, searchTemplate);
       if (!normalized.ok) {
         setMessage({ tone: "error", text: normalized.reason });
         return;
@@ -1214,7 +1251,7 @@ export function ChatBuiltInBrowserPanel({
         await refreshStatus();
       });
     },
-    [activeGroupLaneId, prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, withBrowserScope],
+    [activeGroupLaneId, prepareRemoteNavigation, refreshStatus, rememberTabTunnel, restoreLiveBrowserView, runBusy, searchTemplate, withBrowserScope],
   );
 
   const handleNavigate = useCallback(
@@ -2975,6 +3012,16 @@ export function ChatBuiltInBrowserPanel({
           onHandBack={handleHandBack}
           onKeepControl={handleKeepHandoffControl}
         />
+
+        {certificateProblem ? (
+          <BrowserCertificateBanner
+            problem={certificateProblem}
+            isolatedProfile={activeTab?.isolatedProfile ?? null}
+            busy={Boolean(certificateTrustForProblem?.busy)}
+            error={certificateTrustForProblem?.error ?? null}
+            onTrust={handleTrustCertificate}
+          />
+        ) : null}
 
         {message ? (
           <div

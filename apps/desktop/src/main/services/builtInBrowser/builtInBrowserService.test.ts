@@ -1304,6 +1304,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       code: -102,
       description: "ERR_CONNECTION_REFUSED",
       url: "http://127.0.0.1:47899/",
+      certificate: null,
     });
 
     // A subframe failing, or a load the page itself aborted (-3), is not the page failing.

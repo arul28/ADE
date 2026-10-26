@@ -1282,7 +1282,8 @@ private func workBoardMoveEvent(
   )
 }
 
-/// A PR Watch / Ship wake, which arrives as a `user_message` ADE wrote.
+/// A PR Watch / Ship wake (or a terminal watch wake), which arrives as a
+/// `user_message` ADE wrote.
 ///
 /// Like a board move it must not render as a user bubble: the user did not
 /// type it. It becomes the ADE card the host attached (`metadata.prWatchWake.card`),
@@ -1296,7 +1297,7 @@ private func workPrWatchWakeEvent(
   turnId: String?
 ) -> WorkChatEvent? {
   guard let metadata = eventDict["metadata"] as? [String: Any],
-        let wake = metadata["prWatchWake"] as? [String: Any],
+        let wake = (metadata["prWatchWake"] as? [String: Any]) ?? (metadata["terminalWatchWake"] as? [String: Any]),
         let cardDict = wake["card"] as? [String: Any]
   else { return nil }
   var card = workAdeCardModel(

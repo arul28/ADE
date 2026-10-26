@@ -1373,6 +1373,14 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   prWatchWake?: AgentChatPrWatchWakeMetadata;
   /** Marks a prompt an automation run sent. Renders folded, like a relay. */
   automationRun?: AgentChatAutomationRunMetadata;
+  /** Marks a terminal watch wake. Renders as its card, never as a user bubble. */
+  terminalWatchWake?: AgentChatTerminalWatchWakeMetadata;
+};
+
+export type AgentChatTerminalWatchWakeMetadata = {
+  watchId: string;
+  terminalId: string;
+  card: AdeCardPayload;
 };
 
 export type AgentChatPrWatchWakeMetadata = {

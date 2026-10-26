@@ -78,6 +78,7 @@ const NON_DIRECTIVE_METADATA_KEYS = [
   // the automation service; a forged one would fold a person's message out of
   // sight, so it is stripped from callers with the rest.
   "automationRun",
+  "terminalWatchWake",
 ] as const;
 
 /**
@@ -135,6 +136,8 @@ const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
   "prWatchWake",
   // An automation run's prompt.
   "automationRun",
+  // A terminal watch relaying new output: the watch wrote it, not the user.
+  "terminalWatchWake",
 ] as const;
 
 /**

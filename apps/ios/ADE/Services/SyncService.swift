@@ -11545,6 +11545,7 @@ final class SyncService: ObservableObject {
     "hostContinuation",
     "boardMove",
     "prWatchWake",
+    "terminalWatchWake",
   ]
 
   /// Whether a raw `chat_event` payload carries a message the host delivered on

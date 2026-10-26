@@ -69,6 +69,68 @@ export function stripHostRuntimeEnv<T extends NodeJS.ProcessEnv | Record<string,
   return env;
 }
 
+/**
+ * Per-session pointers a terminal emulator puts in its own shells. A host
+ * started from iTerm, Windows Terminal, kitty or WezTerm carries them, and an
+ * ADE terminal would then claim to be that window: iTerm's shell integration
+ * keys on `LC_TERMINAL`, and CLIs that detect their terminal read these when
+ * `TERM_PROGRAM` says nothing. Only session pointers; config stays.
+ */
+const OUTER_TERMINAL_SESSION_ENV_KEYS = [
+  "LC_TERMINAL",
+  "LC_TERMINAL_VERSION",
+  "ITERM_SESSION_ID",
+  "TERM_SESSION_ID",
+  "WT_SESSION",
+  "WT_PROFILE_ID",
+  "KITTY_WINDOW_ID",
+  "WEZTERM_PANE",
+] as const;
+
+/** What an ADE terminal tells the programs in it it is. */
+export const ADE_TERM_PROGRAM = "ADE";
+
+/**
+ * Name ADE as the terminal of a PTY it renders: `TERM_PROGRAM=ADE` and
+ * `TERM_PROGRAM_VERSION=<ADE version>`, replacing whatever terminal the host
+ * was started from. Unknown names are the norm for this variable (tmux sets
+ * its own inside a pane, and wins there), and the agent CLIs treat a name
+ * they do not know as a plain xterm-compatible terminal.
+ *
+ * `keepTermProgram` keeps both variables as they are, for a caller or lane
+ * environment that set `TERM_PROGRAM` on purpose. Mutates and returns `env`;
+ * apply after `stripHostRuntimeEnv`.
+ */
+export function withAdeTerminalIdentityEnv<T extends NodeJS.ProcessEnv | Record<string, string>>(
+  env: T,
+  args: { version?: string | null; keepTermProgram?: boolean },
+  hostEnv: NodeJS.ProcessEnv = process.env,
+): T {
+  for (const key of OUTER_TERMINAL_SESSION_ENV_KEYS) {
+    const hostValue = hostEnv[key];
+    if (hostValue !== undefined && env[key] === hostValue) {
+      delete (env as Record<string, unknown>)[key];
+    }
+  }
+  const target = env as Record<string, string | undefined>;
+  if (args.keepTermProgram) {
+    // The caller named another program; the host terminal's version is not its.
+    if (
+      target.TERM_PROGRAM !== hostEnv.TERM_PROGRAM
+      && hostEnv.TERM_PROGRAM_VERSION !== undefined
+      && target.TERM_PROGRAM_VERSION === hostEnv.TERM_PROGRAM_VERSION
+    ) {
+      delete target.TERM_PROGRAM_VERSION;
+    }
+    return env;
+  }
+  target.TERM_PROGRAM = ADE_TERM_PROGRAM;
+  const version = args.version?.trim();
+  if (version) target.TERM_PROGRAM_VERSION = version;
+  else delete target.TERM_PROGRAM_VERSION;
+  return env;
+}
+
 /** A copy of `base` without the host-only keys this process carries. */
 export function userProcessEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return stripHostRuntimeEnv({ ...base });
