@@ -22,8 +22,8 @@ final class HubProjectPresentationTests: XCTestCase {
     // MARK: - Counts reach the card
 
     /// The card counts its own rows by board column, not the roster's
-    /// `attentionCount` / `runningCount`: a failure needs you, and a running chat
-    /// whose lane PR waits on CI is Waiting, not working.
+    /// `attentionCount` / `runningCount`: a failure needs you, and a live turn is
+    /// Working even when its lane PR waits on CI.
     func testProjectPresentationCountsRowsByBoardColumn() {
         var ciChat = chat(id: "c-ci", status: .running, awaitingInput: false)
         ciChat.laneId = "lane-ci"
@@ -48,14 +48,13 @@ final class HubProjectPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.attentionCount, 2)
-        XCTAssertEqual(presentation.runningCount, 2)
-        XCTAssertEqual(presentation.statusLine, "2 need you · 2 working")
+        XCTAssertEqual(presentation.runningCount, 3)
+        XCTAssertEqual(presentation.statusLine, "2 need you · 3 working")
         XCTAssertEqual(
             presentation.stateCounts,
             [
                 HubStateCount(column: .needsYou, count: 2),
-                HubStateCount(column: .working, count: 2),
-                HubStateCount(column: .waiting, count: 1),
+                HubStateCount(column: .working, count: 3),
             ]
         )
     }
@@ -148,10 +147,10 @@ final class HubProjectPresentationTests: XCTestCase {
                  lane: nil, column: .needsYou, failed: true, label: "Failed"),
             Case(name: "running is Working", chat: chat(id: "e", status: .running, awaitingInput: false),
                  lane: lane(prWaitingReason: nil), column: .working, failed: false, label: "Working"),
-            Case(name: "running on a lane whose PR runs CI waits", chat: chat(id: "f", status: .running, awaitingInput: false),
-                 lane: ciLane, column: .waiting, failed: false, label: "CI running"),
-            Case(name: "running on a lane with a review requested waits", chat: chat(id: "g", status: .running, awaitingInput: false),
-                 lane: reviewLane, column: .waiting, failed: false, label: "Review requested"),
+            Case(name: "running on a lane whose PR runs CI is Working", chat: chat(id: "f", status: .running, awaitingInput: false),
+                 lane: ciLane, column: .working, failed: false, label: "Working"),
+            Case(name: "running on a lane with a review requested is Working", chat: chat(id: "g", status: .running, awaitingInput: false),
+                 lane: reviewLane, column: .working, failed: false, label: "Working"),
             Case(name: "a snoozed running chat waits",
                  chat: with(chat(id: "h", status: .running, awaitingInput: false)) { $0.snoozedUntil = snoozedUntil },
                  lane: nil, column: .waiting, failed: false, label: "Snoozed"),

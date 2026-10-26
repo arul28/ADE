@@ -780,6 +780,105 @@ describe("createAgentChatService", () => {
         expect(summary?.usageLimitParkedUntil).toBe(summary?.usageLimitResume?.fireAt);
       });
 
+      it("Continue on another account keeps this chat and carries its thread over", async () => {
+        const adeHome = process.env.ADE_HOME!;
+        const homeConfig = path.join(adeHome, "provider-homes", "claude", "home");
+        const otherConfig = path.join(adeHome, "provider-homes", "claude", "other");
+        fs.mkdirSync(homeConfig, { recursive: true });
+        fs.mkdirSync(otherConfig, { recursive: true });
+        // Two signed-in logins, with the base one the chat starts on. Written as
+        // the registry file so the test never touches a real provider login.
+        fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
+          version: 1,
+          instances: [
+            {
+              id: "home", provider: "claude", label: "Home", configHome: homeConfig,
+              account: { email: "home@example.com" }, createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            {
+              id: "other", provider: "claude", label: "Other", configHome: otherConfig,
+              account: { email: "other@example.com" }, createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+          defaults: { claude: "home" },
+          settings: {},
+          presetBindings: [],
+        }), "utf8");
+
+        const resetsAt = Math.floor((Date.now() + 3_600_000) / 1000);
+        const threadId = "sdk-session-continue";
+        const send = vi.fn().mockResolvedValue(undefined);
+        const close = vi.fn();
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 2) {
+            yield {
+              type: "rate_limit_event",
+              session_id: threadId,
+              rate_limit_info: { status: "rejected", utilization: 1, resetsAt },
+            };
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: threadId,
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: threadId,
+        } as any);
+
+        const now = Date.now();
+        const { service } = createService({
+          getAccountUsage: () => ({
+            resolveBalancedInstance: () => null,
+            getUsageSnapshot: () => ({
+              windows: [
+                {
+                  provider: "claude", windowType: "five_hour", accountId: "claude:other",
+                  percentUsed: 1, resetsAt: new Date(now + 3_600_000).toISOString(), resetsInMs: 3_600_000,
+                },
+                {
+                  provider: "claude", windowType: "weekly", accountId: "claude:other",
+                  percentUsed: 2, resetsAt: new Date(now + 86_400_000).toISOString(), resetsInMs: 86_400_000,
+                },
+              ],
+              accounts: [{
+                id: "claude:other", provider: "claude", email: "other@example.com", instanceId: "other",
+              }],
+              pacing: {},
+              costs: [],
+            }),
+            getAccountBalanceLoad: () => ({}),
+          }),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "hit the limit",
+          timeoutMs: 15_000,
+        });
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume?.alternateAccount)
+          .toEqual({ instanceId: "other", label: "other@example.com" });
+
+        // The thread the move has to carry lives in the current login's home.
+        const threadFile = path.join(homeConfig, "projects", "-test-lane", `${threadId}.jsonl`);
+        fs.mkdirSync(path.dirname(threadFile), { recursive: true });
+        fs.writeFileSync(threadFile, "{}\n", "utf8");
+
+        const result = await service.continueUsageLimitOnAlternate({ sessionId: session.id });
+
+        // The same chat now runs on the other login. Starting a second chat and
+        // leaving this one on the limited account is the behavior this pins out.
+        expect(result).toEqual({ ok: true, sessionId: session.id });
+        expect((await service.getSessionSummary(session.id))?.instanceId).toBe("other");
+        expect(fs.existsSync(path.join(otherConfig, "projects", "-test-lane", `${threadId}.jsonl`))).toBe(true);
+      });
+
       it("assistant prose quoting a session limit does not trip the quota path", async () => {
         const events: AgentChatEventEnvelope[] = [];
         const close = vi.fn();
