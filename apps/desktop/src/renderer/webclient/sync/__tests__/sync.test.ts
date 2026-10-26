@@ -1325,7 +1325,7 @@ describe("browser sync connection and client", () => {
     script.sockets[0]?.close(4501, "host offline");
 
     await expect(outcome).resolves.toMatchObject({
-      message: expect.stringContaining("Can't reach this computer"),
+      message: expect.stringContaining("Studio Mac"),
     });
     expect(script.sockets[0]?.sent).toEqual([]);
     expect(connection.getStatus().state).toBe("reconnecting");
@@ -1589,7 +1589,7 @@ describe("browser sync connection and client", () => {
     });
     expect(connection.getStatus()).toMatchObject({
       state: "reconnecting",
-      error: "Connection became unresponsive. Reconnecting.",
+      error: expect.stringContaining("Studio Mac stopped responding"),
     });
     expect(script.sockets).toHaveLength(1);
     connection.dispose();
@@ -2260,7 +2260,8 @@ describe("browser sync connection and client", () => {
   });
 
   it.each([
-    { code: 4501, expected: "Can't reach this computer. Retrying…" },
+    // Host offline: the message names the machine that is off the relay.
+    { code: 4501, expected: expect.stringContaining("Studio Mac") },
     { code: 4507, expected: "Your computer couldn't accept the connection. Retrying…" },
     { code: 4503, expected: "Too many active connections to this computer" },
     { code: 4502, expected: "Connection lost. Reconnecting." },

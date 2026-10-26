@@ -4967,6 +4967,7 @@ describe("account Attention contract", () => {
           platform: "macOS",
           appForeground: true,
           ambientSurfaceVisible: true,
+          userActive: true,
           visibleItemIds: ["agent-1", "", "agent-2"],
           observedAt,
           untrusted: "x".repeat(300_000),
@@ -4983,6 +4984,8 @@ describe("account Attention contract", () => {
         deviceId: "desktop-1",
         platform: "macOS",
         appForeground: true,
+        ambientSurfaceVisible: true,
+        userActive: true,
         observedAt,
         visibleItemIds: ["agent-1", "agent-2"],
       });

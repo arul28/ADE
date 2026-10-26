@@ -850,8 +850,8 @@ describe("AttentionAccountCoordinator", () => {
 
       // A network failure is not an IPC failure, and a burst behind it does
       // not reach the relay at all.
-      await expect(coordinator.reportPresence(presence)).resolves.toBeUndefined();
-      await expect(coordinator.reportPresence(presence)).resolves.toBeUndefined();
+      await expect(coordinator.reportPresence(presence)).resolves.toEqual({ userActive: null });
+      await expect(coordinator.reportPresence(presence)).resolves.toEqual({ userActive: null });
       // Unknown, not defaults: defaults would overwrite the user's choices.
       await expect(coordinator.getPreferences({ accountOwnerId: "owner-a" })).resolves.toBeNull();
       expect(reportAttentionPresence).toHaveBeenCalledTimes(1);

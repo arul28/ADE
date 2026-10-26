@@ -1411,6 +1411,14 @@ surface:
   a recent freeze. Each part gets a state and a fix. It is always this physical
   computer (like `getLocalStatus`), never the window's bound machine; the web
   client has no such check and shows nothing.
+- **On <machine>** is the same check asked of a connected remote machine,
+  from inside its Test panel (`HostReachabilitySection`, IPC
+  `ade.remoteRuntime.checkReachability`). The desktop sends
+  `sync.checkReachability` over that machine's own connection
+  (`callMachineMethod`, 30 s, no retry) and rewrites "this computer" to the
+  machine's name (`describeReportForMachine`). A machine that is not
+  connected has no section; one running an older ADE answers "can't check
+  itself" with the fix to update it.
 
 **A frozen host says so.** While a machine is frozen, its clients cannot tell
 that from a dropped network. The brain loop watchdog now reports every stall

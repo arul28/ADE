@@ -715,6 +715,15 @@ scanned and again right before removal, while the lane's worktree lease is held:
   it is a real folder on the lane's own device, and it is the same inode
   that was scanned. A link (an older lane's `node_modules` pointing into the
   main checkout) is skipped: never deleted through, never unlinked.
+- No disk is mounted anywhere inside it (`/sbin/mount` on macOS,
+  `/proc/self/mountinfo` on Linux, which also lists same-device bind mounts
+  the device check cannot see). Windows mounts a volume into a folder as a
+  reparse point, which Node removes as a link.
+
+Measuring a folder can take minutes, so right before each removal the sweep
+reads process working folders and mount points again (either read failing
+skips the lane), and then, with nothing awaited between it and the removal,
+the lane's live work.
 
 Removal uses unpatched `fs.rm` (never follows links) with up to three whole
 passes a second apart for busy or permission errors, making read-only entries
@@ -730,6 +739,16 @@ the Rules card, and a lane's storage row says "Build output removed 3d ago:
 node_modules. Reinstall or build to bring it back." while those folders are
 missing (up to 30 days). Older brains send neither field and the card shows
 just the setting.
+
+The lane's overview says the same in an info banner
+(`LaneBuildOutputNotice.tsx`, storage action `laneBuildOutputRemoved`, read
+from the lane's own machine through its pin): "Build output was removed 9d
+ago to free 1.3 GB", then the folders (three, then "and N more") and
+"Reinstall or build before you run it." It reads only the lane's latest
+cleanup run, and only folders that are still missing, so a reinstall or build
+done anywhere (a terminal, another app) clears it: the banner re-reads when the
+window regains focus or becomes visible, and once a minute while it shows.
+Dismiss hides that cleanup for the app session; a later cleanup shows again.
 
 Proof/attachment cleanup accepts only the `.ade/artifacts` or
 `.ade/attachments` roots (or descendants) after the same symlink/path

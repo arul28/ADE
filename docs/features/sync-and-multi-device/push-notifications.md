@@ -677,7 +677,9 @@ relay's presence window is 45 s. The clock counts as known only after it has
 been seen to move: some Linux/Wayland sessions report 0 forever, and taking
 that at face value would keep the phone quiet for good. The web client, older
 desktops and phones send no `userActive` and keep the timed hold. Older relays
-drop the field and keep the timed hold too.
+drop the field and keep the timed hold too. The relay stores a report's
+`observedAt` no later than its own clock, so a desktop whose clock runs ahead
+cannot keep a stale "in use" report fresh, and the phone quiet, for hours.
 
 Two gates run before any preference is consulted, because they are about
 whether the item deserves an interruption at all:
