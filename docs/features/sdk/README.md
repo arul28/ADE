@@ -141,7 +141,10 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `personalChats.call` | Allowlisted actions: create, send, steer, interrupt, models, … |
 | `personalChats.subscribeEvents` / `unsubscribeEvents` | Push `runtime/event` notifications (`scope: "personal"`). Advertised as `capabilities.personalChats.pushEvents`. |
 | `personalChats.streamEvents` | Cursor drain. Fallback when the runtime omits `pushEvents`. |
-| `runtime/info` | Capabilities, including `personalChats.mcpServers`. |
+| `providerAccounts.call` | Machine-local account CRUD and login flow; uses the provider-instance store and login runner. |
+| `credentials.call` | Machine-local multi-key CRUD and verification; returns summaries, never key values. |
+| `presets.call` | Account-scoped harness preset CRUD through the account settings store. |
+| `runtime/info` | Capabilities, including personal actions, provider capabilities, accounts, credentials and presets. |
 
 `ade/initialize` returns `runtimeInfo.version`. The SDK compares it with `SUPPORTED_RUNTIME_RANGE`; outside the range it logs once and degrades by feature detection, or throws `runtime_incompatible` under `requireCompatibleRuntime: true`. The verdict is `doctor().runtime.compatibility`.
 
@@ -633,13 +636,19 @@ spawns. Before it existed, an embedder's setup screen could only derive that
 answer from the model catalog, where "not installed", "signed out", and "the
 first catalog poll has not finished" all look identical.
 
+Each record also includes `capabilities` (permission modes, reasoning efforts,
+Fast mode, account and sign-in support, API keys, presets, and MCP level) and
+`isolation`. `isolation: "isolated"` means an embedded runtime reads and
+launches against its own provider home; `"shared"` means it uses the normal
+machine login or that provider has no isolated config-home override.
+
 Params: `{ refresh?: boolean }`. Result:
 
 ```ts
 {
   checkedAt: string;                 // ISO, when this report was assembled
   providers: Record<string, {
-    provider: string;                // "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi"
+    provider: string;                // "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "muse"
     displayName: string;
     installed: boolean;              // ADE's pinned copy is on disk (never a PATH CLI)
     binaryPath: string | null;       // what the runtime would spawn or load
@@ -653,14 +662,39 @@ Params: `{ refresh?: boolean }`. Result:
     stale: boolean;                  // served from cache rather than probed by this call
     checkedAt: string;
     detail: string | null;
+    capabilities: {
+      permissionModes: AgentChatPermissionMode[];
+      reasoningEfforts: string[];
+      fastMode: boolean;
+      multipleAccounts: boolean;
+      signIn: "cli-login" | "device-code" | "api-key" | "none";
+      apiKeys: boolean;
+      presets: boolean;
+      mcp: "full" | "partial" | "none";
+    };
+    isolation: "isolated" | "shared";
   }>;
 }
 ```
 
-Feature-detect it on `ade/initialize`:
-`capabilities.providers = { status: true, cacheTtlMs: 60000 }`. An older
+Feature-detect it on `ade/initialize` and `runtime/info`:
+`capabilities.providers = { status: true, capabilities: true, cacheTtlMs: 60000 }`;
+`providerAccounts`, `credentials`, and `presets` each advertise their `actions`
+array. An older
 runtime omits the key, which is the SDK's cue to keep deriving status from the
 model catalog and to report `source: "derived"`.
+
+Account, key, and preset calls are CTO-only on chat/full runtimes. The embedded
+profile permits its sole host client to call them. The key passed to
+`credentials.call { action: "store" }` is stored with the runtime credential
+store and is never returned by any action. The embedded credential backend
+uses macOS Keychain and Windows DPAPI; on Linux it uses the private runtime
+credential files.
+
+Set `ADE_EMBEDDED_PROVIDER_LOGINS=isolated` for an embedded runtime to put
+provider config homes under `<ADE_HOME>/provider-homes/<provider>/default`.
+The override wins over inherited shell config-home variables. Unset or another
+value keeps the machine login behavior.
 
 ### What "probed" means
 

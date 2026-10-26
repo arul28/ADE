@@ -243,8 +243,8 @@ export type MachinePowerTransitionOutcome = {
  */
 export type ProviderStatusService = {
   status(args?: { refresh?: boolean }): Promise<ProviderStatusReport>;
-  /** Advertised on `ade/initialize` so an SDK can feature-detect before calling. */
-  capabilities(): { status: true; cacheTtlMs: number };
+  /** Advertised on initialize and runtime/info so clients can feature-detect. */
+  capabilities(): { status: true; capabilities: true; cacheTtlMs: number };
 };
 
 /**
@@ -261,6 +261,10 @@ export type ProviderStatusService = {
  */
 export { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 
+const PROVIDER_ACCOUNT_ACTIONS = ["list", "create", "remove", "signOut", "rename", "setDefault", "refresh", "loginStart", "loginStatus", "loginSubmitCode", "loginCancel"] as const;
+const CREDENTIAL_ACTIONS = ["list", "store", "remove", "verify"] as const;
+const PRESET_ACTIONS = ["list", "create", "update", "remove"] as const;
+
 /**
  * The real detector, loaded on first call.
  *
@@ -269,14 +273,21 @@ export { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai
  * module is a JSON-RPC error on one method rather than a runtime that will not
  * boot.
  */
-export function createProviderStatusService(): ProviderStatusService {
+export function createProviderStatusService(options: {
+  runtimeProfile?: "full" | "chat" | "embedded";
+  adeHome?: string;
+} = {}): ProviderStatusService {
   return {
-    capabilities: () => ({ status: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS }),
+    capabilities: () => ({ status: true, capabilities: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS }),
     async status(args) {
       const { probeProviderStatuses } = await import(
         "../../desktop/src/main/services/ai/providerStatusProbe"
       );
-      return await probeProviderStatuses({ refresh: args?.refresh === true });
+      return await probeProviderStatuses({
+        refresh: args?.refresh === true,
+        runtimeProfile: options.runtimeProfile,
+        adeHome: options.adeHome,
+      });
     },
   };
 }
@@ -311,7 +322,9 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  /** Profile of the outer runtime, used to trust the sole embedded host. */
+  runtimeProfile?: "full" | "chat" | "embedded";
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -481,6 +494,9 @@ const RUNTIME_METHODS = new Set([
   "notify.send",
   "providers.status",
   "personalChats.call",
+  "providerAccounts.call",
+  "credentials.call",
+  "presets.call",
   "personalChats.streamEvents",
   "personalChats.subscribeEvents",
   "personalChats.unsubscribeEvents",
@@ -1168,6 +1184,13 @@ export function createMultiProjectRpcRequestHandler(
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const providerStatus = options.providerStatus ?? createProviderStatusService();
+  const sdkCapabilities = () => ({
+    personalChats: personalChatScope.capabilities(),
+    providers: providerStatus.capabilities(),
+    providerAccounts: { actions: [...PROVIDER_ACCOUNT_ACTIONS] },
+    credentials: { actions: [...CREDENTIAL_ACTIONS] },
+    presets: { actions: [...PRESET_ACTIONS] },
+  });
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   /**
    * Project handlers for callers on another machine, keyed by project and the
@@ -2089,11 +2112,7 @@ export function createMultiProjectRpcRequestHandler(
             listMyGitHubRepos: true,
             setIcon: true,
           },
-          personalChats: personalChatScope.capabilities(),
-          // An older runtime omits this key entirely, which is the SDK's cue to
-          // fall back to deriving provider status from the model catalog and
-          // to say `source: "derived"` instead of claiming a probe.
-          providers: providerStatus.capabilities(),
+          ...sdkCapabilities(),
           account: true,
         },
       };
@@ -2150,6 +2169,7 @@ export function createMultiProjectRpcRequestHandler(
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,
+        capabilities: sdkCapabilities(),
       };
     }
 
@@ -2733,6 +2753,35 @@ export function createMultiProjectRpcRequestHandler(
     // already infer from whether that chat starts.
     if (method === "providers.status") {
       return await providerStatus.status({ refresh: params.refresh === true });
+    }
+
+    if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!action) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires action.`);
+      }
+      if (options.runtimeProfile !== "embedded" && !callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          `Action 'provider_instances.${action}' requires elevated role.`,
+        );
+      }
+      if (method === "providerAccounts.call") {
+        if (typeof personalChatScope.providerAccountsCall !== "function") {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Provider account management is unavailable.");
+        }
+        return await personalChatScope.providerAccountsCall(action, params.args);
+      }
+      if (method === "credentials.call") {
+        if (typeof personalChatScope.credentialsCall !== "function") {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Credential management is unavailable.");
+        }
+        return await personalChatScope.credentialsCall(action, params.args);
+      }
+      if (typeof personalChatScope.presetsCall !== "function") {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Harness preset management is unavailable.");
+      }
+      return await personalChatScope.presetsCall(action, params.args);
     }
 
     if (method === "personalChats.call") {

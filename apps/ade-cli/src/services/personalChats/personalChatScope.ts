@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
   AgentChatCreateArgs,
   AgentChatPersonalProfile,
@@ -25,6 +26,8 @@ import {
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import { isProviderInstanceProvider } from "../../../../desktop/src/shared/types/providerInstances";
 import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
 import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -37,6 +40,16 @@ import {
   maxBase64EncodedLength,
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
+import { ACCOUNT_SCOPE_ALL } from "../../../../desktop/src/shared/accountSettingsScope";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../../desktop/src/shared/types/chat";
+import {
+  HARNESS_PRESETS_SETTING_KEY,
+  HARNESS_PRESETS_SYNC_MAX_CHARS,
+  normalizeHarnessPreset,
+  normalizeHarnessPresetList,
+  validateHarnessPreset,
+  type HarnessPreset,
+} from "../../../../desktop/src/shared/harnessPresets";
 
 /**
  * An embedder's message args, with every marker only ADE may author removed.
@@ -210,6 +223,7 @@ const DRAFT_SLASH_COMMANDS_TTL_MS = 15_000;
 
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
+  private providerInstancesServicePromise: Promise<Record<string, (args?: unknown) => unknown>> | null = null;
   private readonly personalTerminalSessions = new Map<string, string>();
   /**
    * A new draft's `/` menu, by provider and profile. Every draft pane asks on
@@ -231,6 +245,137 @@ export class PersonalChatScope {
       mcpToolFilters: true,
       deferredMcpUpdates: true,
     };
+  }
+
+  async providerAccountsCall(actionValue: unknown, argsValue: unknown): Promise<unknown> {
+    const action = requiredString(actionValue, "action");
+    const allowed = ["list", "create", "remove", "signOut", "rename", "setDefault", "refresh", "loginStart", "loginStatus", "loginSubmitCode", "loginCancel"];
+    if (!allowed.includes(action)) throw new Error(`Unsupported provider account action: ${action}.`);
+    const runtime = await this.getRuntime();
+    if (!this.providerInstancesServicePromise) {
+      this.providerInstancesServicePromise = import("../../../../desktop/src/main/services/adeActions/registry")
+        .then(({ buildProviderInstancesDomainService }) =>
+          buildProviderInstancesDomainService(runtime) as Record<string, (args?: unknown) => unknown>);
+    }
+    let service: Record<string, (args?: unknown) => unknown>;
+    try {
+      service = await this.providerInstancesServicePromise;
+    } catch (error) {
+      this.providerInstancesServicePromise = null;
+      throw error;
+    }
+    const handler = service[action];
+    if (typeof handler !== "function") throw new Error(`Provider account action '${action}' is unavailable.`);
+    return await handler(asObject(argsValue));
+  }
+
+  async credentialsCall(actionValue: unknown, argsValue: unknown): Promise<unknown> {
+    const action = requiredString(actionValue, "action");
+    if (!["list", "store", "remove", "verify"].includes(action)) {
+      throw new Error(`Unsupported credential action: ${action}.`);
+    }
+    const args = asObject(argsValue);
+    const runtime = await this.getRuntime();
+    const credentialStore = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
+    if (action === "list") {
+      const provider = typeof args.provider === "string" && args.provider.trim() ? args.provider.trim() : undefined;
+      return { credentials: credentialStore.listApiCredentials(provider) };
+    }
+    const provider = requiredString(args.provider, "provider");
+    if (action === "store") {
+      if (typeof args.key !== "string" || !args.key.trim()) throw new Error("key is required.");
+      const credentialId = credentialStore.storeApiCredential({
+        provider,
+        key: args.key,
+        label: requiredString(args.label, "label"),
+        ...(typeof args.credentialId === "string" ? { credentialId: args.credentialId } : {}),
+        ...(typeof args.envVar === "string" ? { envVar: args.envVar } : {}),
+        ...(typeof args.baseUrl === "string" ? { baseUrl: args.baseUrl } : {}),
+        ...(args.protocol === "openai-compatible" || args.protocol === "openai-responses" || args.protocol === "anthropic"
+          ? { protocol: args.protocol }
+          : {}),
+        ...(Array.isArray(args.models) && args.models.every((entry) => typeof entry === "string")
+          ? { models: args.models as string[] }
+          : {}),
+        ...(typeof args.deviceOnly === "boolean" ? { deviceOnly: args.deviceOnly } : {}),
+      });
+      const credential = credentialStore.getApiCredentialSummary(provider, credentialId);
+      if (!credential) throw new Error("The credential was stored but its summary could not be read.");
+      return { credential };
+    }
+    if (action === "remove") {
+      const credentialId = typeof args.credentialId === "string" ? args.credentialId.trim() : "default";
+      const existing = credentialStore.getApiCredentialSummary(provider, credentialId);
+      credentialStore.removeApiCredential(provider, credentialId);
+      return {
+        credentialId,
+        removed: existing?.source === "store" && credentialStore.getApiCredentialSummary(provider, credentialId) === null,
+      };
+    }
+    if (!runtime.aiIntegrationService) throw new Error("API key verification is unavailable.");
+    return await runtime.aiIntegrationService.verifyApiKeyConnection(provider);
+  }
+
+  async presetsCall(actionValue: unknown, argsValue: unknown): Promise<unknown> {
+    const action = requiredString(actionValue, "action");
+    if (!["list", "create", "update", "remove"].includes(action)) {
+      throw new Error(`Unsupported harness preset action: ${action}.`);
+    }
+    const args = asObject(argsValue);
+    const runtime = await this.getRuntime();
+    const settings = runtime.accountSettingsStore;
+    if (!settings) throw new Error("Harness preset storage is unavailable in this runtime.");
+    const readPresets = (): HarnessPreset[] => {
+      const stored = settings.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY);
+      if (stored === undefined) return [];
+      if (!Array.isArray(stored)) throw new Error("Harness presets could not be loaded; the stored value is unreadable.");
+      const presets = normalizeHarnessPresetList(stored);
+      if (presets.length !== stored.length) {
+        throw new Error("Harness presets could not be loaded; update ADE to read every saved preset.");
+      }
+      return presets;
+    };
+    const writePresets = (presets: HarnessPreset[]): void => {
+      if (JSON.stringify(presets).length > HARNESS_PRESETS_SYNC_MAX_CHARS) {
+        throw new Error("Harness presets exceed the account storage limit.");
+      }
+      if (!settings.set(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY, presets)) {
+        throw new Error("Harness presets could not be saved.");
+      }
+    };
+    const presets = readPresets();
+    if (action === "list") return { presets };
+    if (action === "remove") {
+      const id = requiredString(args.id ?? args.presetId, "id");
+      const next = presets.filter((preset) => preset.id !== id);
+      const removed = next.length !== presets.length;
+      if (removed) writePresets(next);
+      return { removed };
+    }
+    const now = new Date().toISOString();
+    if (action === "create") {
+      const draft = asObject(args.preset ?? args);
+      const errors = validateHarnessPreset(draft);
+      if (Object.keys(errors).length) throw new Error(`Invalid harness preset: ${JSON.stringify(errors)}`);
+      const preset = normalizeHarnessPreset({ ...draft, id: randomUUID(), createdAt: now, updatedAt: now });
+      if (!preset) throw new Error("Invalid harness preset.");
+      writePresets([...presets, preset]);
+      return { preset };
+    }
+    const update = asObject(args.preset ?? args);
+    const id = requiredString(update.id ?? args.id ?? args.presetId, "id");
+    const index = presets.findIndex((preset) => preset.id === id);
+    if (index < 0) throw new Error(`Harness preset '${id}' was not found.`);
+    const current = presets[index]!;
+    const draft = { ...current, ...update, id, createdAt: current.createdAt, updatedAt: now };
+    const errors = validateHarnessPreset(draft);
+    if (Object.keys(errors).length) throw new Error(`Invalid harness preset: ${JSON.stringify(errors)}`);
+    const preset = normalizeHarnessPreset(draft);
+    if (!preset) throw new Error("Invalid harness preset.");
+    const next = [...presets];
+    next[index] = preset;
+    writePresets(next);
+    return { preset };
   }
 
   /**
@@ -348,6 +493,44 @@ export class PersonalChatScope {
       case "create": {
         const provider = requiredString(args.provider, "provider") as AgentChatCreateArgs["provider"];
         const model = requiredString(args.model, "model");
+        if (args.instanceId !== undefined && args.instanceId !== null) {
+          const instanceId = requiredString(args.instanceId, "instanceId");
+          if (!isProviderInstanceProvider(provider)) {
+            throw new Error(`Provider '${provider}' does not support account instances.`);
+          }
+          const instance = getMachineProviderInstanceStore().get(instanceId);
+          if (!instance || instance.provider !== provider) {
+            throw new Error(`Provider account '${instanceId}' was not found for '${provider}'.`);
+          }
+        }
+        if (args.credentialId !== undefined && args.credentialId !== null) {
+          const credentialId = requiredString(args.credentialId, "credentialId");
+          const { getApiCredentialSummary } = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
+          if (!getApiCredentialSummary(provider, credentialId)) {
+            throw new Error(`Credential '${credentialId}' was not found for '${provider}'.`);
+          }
+        }
+        if (args.presetId !== undefined && args.presetId !== null) {
+          const presetId = requiredString(args.presetId, "presetId");
+          const storedPresets = runtime.accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY);
+          const snapshot = normalizeHarnessPreset(args.presetSnapshot);
+          const stored = Array.isArray(storedPresets) && normalizeHarnessPresetList(storedPresets).some((preset) => preset.id === presetId);
+          if (!stored && snapshot?.id !== presetId) {
+            throw new Error(`Harness preset '${presetId}' was not found.`);
+          }
+        }
+        if (args.reasoningEffort !== undefined && args.reasoningEffort !== null) {
+          requiredString(args.reasoningEffort, "reasoningEffort");
+        }
+        if (args.fastMode !== undefined && typeof args.fastMode !== "boolean") {
+          throw new Error("fastMode must be a boolean.");
+        }
+        if (args.permissionMode !== undefined && args.permissionMode !== null) {
+          const permissionMode = requiredString(args.permissionMode, "permissionMode");
+          if (!(AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(permissionMode)) {
+            throw new Error(`Unsupported permissionMode '${permissionMode}'.`);
+          }
+        }
         const laneId = await this.getInternalLaneId(runtime);
         const kickoffText = typeof args.kickoffText === "string" ? args.kickoffText.trim() : "";
         // `requestedCwd` is validated here, at the boundary an external
@@ -420,6 +603,11 @@ export class PersonalChatScope {
           laneId,
           provider,
           model,
+          ...(args.instanceId != null ? { instanceId: args.instanceId as string } : {}),
+          ...(args.credentialId != null ? { credentialId: args.credentialId as string } : {}),
+          ...(args.presetId != null ? { presetId: args.presetId as string } : {}),
+          ...(args.reasoningEffort != null ? { reasoningEffort: args.reasoningEffort as string } : {}),
+          ...(args.fastMode !== undefined ? { fastMode: args.fastMode as boolean } : {}),
           surface: "personal",
           personalProfile,
           // The assistant runs as a full chat (tool gate, approval cards, the
@@ -562,6 +750,15 @@ export class PersonalChatScope {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
         result = await service.continueUsageLimitOnAlternate({ sessionId });
+        break;
+      }
+      case "switchAccount": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.switchAccount({
+          sessionId,
+          instanceId: requiredString(args.instanceId, "instanceId"),
+        });
         break;
       }
       case "updateSession": {
