@@ -315,8 +315,10 @@ new panel that opens on the user's screen is moved onto the lane's display; if
 ADE cannot move it, `observe` ends with a `Warning:` line naming the window.
 Then do not act on it: ask the user to close it or drag it onto the lane's
 screen. A macOS Open/Save panel of a sandboxed app is drawn by the system, not
-the app; ADE lists it when it sits on the lane's display but cannot claim or
-move it.
+the app. ADE ties it to the lane app it serves and moves it onto the lane's
+display the same way; you cannot claim it. If it stays on the user's screen,
+`observe` warns, and the way out is to cancel it, keep the app's window on the
+lane's display, and open it again: it then opens over that window.
 
 `open` answers before the app has a window (`watching: yes`, no windows yet).
 Wait for it before you observe — `ade mac-desktop wait --label "<window title>"

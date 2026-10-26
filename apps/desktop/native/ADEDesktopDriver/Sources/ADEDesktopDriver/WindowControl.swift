@@ -72,6 +72,9 @@ struct OffLaneWindow {
     var appName: String
     var title: String?
     var reason: String
+    /// Set for an Open/Save panel: the app the panel service draws it for.
+    /// `pid` is then the service's (see `OpenSavePanels.swift`).
+    var panelClientPid: pid_t? = nil
 
     func warning(windowId: CGWindowID) -> String {
         let name = title.map { "\(appName) (\"\($0)\")" } ?? appName
@@ -165,6 +168,11 @@ final class WindowControl {
     /// user's screen, by window id. Read by `observe` as a warning, and
     /// dropped as soon as the window ends or reaches the lane's display.
     var offLaneWindows: [CGWindowID: OffLaneWindow] = [:]
+    /// Moves tried per Open/Save panel window. See `sweepOpenSavePanels`.
+    var panelMoveAttempts: [CGWindowID: Int] = [:]
+    /// pid → the app it draws Open/Save panels for, or nil when it is not a
+    /// panel service. Cleared of pids that left the window server.
+    var panelServiceClients: [pid_t: pid_t?] = [:]
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
     /// laneId → which of the lane's displays `placements` describes. See
@@ -719,13 +727,14 @@ final class WindowControl {
             throw refusal
         }
         // macOS draws a sandboxed app's Open and Save panels in its own
-        // service process and places them over the app's window itself. A
-        // move through Accessibility is undone or ignored, and taking the
-        // service would make every app's next panel the lane's.
+        // service process. A hold on the service would make the app's next
+        // panel the lane's too, so a panel is never parked: the watcher moves
+        // a lane app's panel onto the lane's screen without a hold
+        // (`sweepOpenSavePanels`), and reports it when macOS refuses.
         if WindowLayerPolicy.isOpenSavePanelService(bundleId: window.bundleId) {
             throw DriverError(
                 code: DriverErrorCode.invalidArgument,
-                message: "Window \(windowId) is a macOS Open/Save panel, drawn by the system for another app, and ADE cannot move it. Cancel it, put the app's window on the lane's display, and open the panel again: it opens over that window."
+                message: "Window \(windowId) is a macOS Open/Save panel, drawn by the system for another app, and ADE does not take it. A lane app's panel is moved to the lane's screen by itself when macOS allows it. If it stays where it is, cancel it, put the app's window on the lane's display, and open the panel again: it opens over that window."
             )
         }
         let hold: WindowOwnership

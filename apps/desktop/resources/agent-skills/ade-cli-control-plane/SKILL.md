@@ -237,6 +237,9 @@ a chat you do not own:
   user can answer this`. That chat is waiting, not stuck: do not start a
   second chat for the same work or on the same lane. Tell the person, then
   carry on with other work.
+- A peer (`--type peer`) never wakes you. If you wait on one, `ade chat wait`
+  stops with `waiting_on_user` (exit 1) when it waits on such a card, and an
+  `--async` wait wakes you once to say so and stays armed.
 - **Long or multi-line text goes through a file or stdin, not an argument.**
   `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
   <session> --text-file -` read stdin (or a path instead of `-`). The file is

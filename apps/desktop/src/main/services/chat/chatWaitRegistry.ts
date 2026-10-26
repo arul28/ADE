@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  chatWaitsOnUser,
   chatWaitTargetMatches,
   type ArmChatWaitArgs,
   type ChatWaiter,
@@ -51,6 +52,12 @@ export type ChatWaitRegistryDeps = {
   assertDeliverableHere: (sessionId: string) => void;
   /** Resolves once the chat service can read summaries (startup finished). */
   whenReady: () => Promise<void>;
+  /**
+   * Whether the chat service already tells `callerSessionId` itself when
+   * `targetSessionId` waits on the user (its own subagent), so a waiter does
+   * not say it a second time.
+   */
+  callerToldOfUserWait?: (targetSessionId: string, callerSessionId: string) => boolean;
 };
 
 export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
@@ -118,19 +125,71 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
     });
   };
 
-  /** Whether a target is at the state. A read that throws is "not yet", never a match. */
-  const targetMatches = async (target: string, waiter: ChatWaiter): Promise<boolean> => {
+  /**
+   * Whether a target is at the state, and the card id when it waits on the
+   * user instead. A read that throws is "not yet", never a match.
+   */
+  const readTarget = async (
+    target: string,
+    waiter: ChatWaiter,
+  ): Promise<{ matches: boolean; userWaitItemId: string | null }> => {
     try {
       const summary = await deps.readSummary(target);
-      if (summary) return chatWaitTargetMatches(summary, waiter.waitFor);
+      if (summary) {
+        const matches = chatWaitTargetMatches(summary, waiter.waitFor);
+        const userWaitItemId = !matches && chatWaitsOnUser(summary, waiter.waitFor)
+          ? (typeof summary.pendingInputItemId === "string" ? summary.pendingInputItemId : "")
+          : null;
+        return { matches, userWaitItemId };
+      }
       // No summary for a chat that still exists is a read not ready yet. A
       // deleted one is as finished as it will ever be — idle or terminal —
       // but never "active" or "awaiting input".
-      if (deps.sessionExists(target)) return false;
-      return waiter.waitFor === "idle" || waiter.waitFor === "terminal";
+      if (deps.sessionExists(target)) return { matches: false, userWaitItemId: null };
+      return { matches: waiter.waitFor === "idle" || waiter.waitFor === "terminal", userWaitItemId: null };
     } catch {
-      return false;
+      return { matches: false, userWaitItemId: null };
     }
+  };
+
+  /**
+   * A target of a waiter that wakes its caller waits on the user: tell the
+   * caller once per card, and keep the waiter armed. Without this a
+   * coordinator slept on a peer until the wait's own deadline, a day later,
+   * and a peer never wakes its parent itself.
+   */
+  const noteUserWaits = async (waiter: ChatWaiter, userWaits: Array<{ target: string; itemId: string }>): Promise<void> => {
+    const callerSessionId = waiter.callerSessionId;
+    if (waiter.action.kind !== "wake" || !callerSessionId) return;
+    const noticed = new Set(waiter.userWaitsNoticed ?? []);
+    const fresh = userWaits.filter(({ target, itemId }) => !noticed.has(`${target}:${itemId}`));
+    if (fresh.length === 0) return;
+    for (const { target, itemId } of fresh) noticed.add(`${target}:${itemId}`);
+    // Recorded before delivery, as a fire is: a failed message is not retried
+    // every check.
+    waiter.userWaitsNoticed = [...noticed].slice(-64);
+    persist();
+    const untold = fresh.filter(({ target }) => !deps.callerToldOfUserWait?.(target, callerSessionId));
+    if (untold.length === 0) return;
+    const lines = await Promise.all(untold.map(({ target }) => deps.describeTarget(target)));
+    await deps.messageSession({
+      sessionId: callerSessionId,
+      kind: "wake",
+      text: [
+        `${untold.length === 1 ? "A chat" : "Chats"} you are waiting on (for "${waiter.waitFor}") now ${untold.length === 1 ? "waits" : "wait"} on the user:`,
+        ...lines,
+        "",
+        "Only the user can answer that card; an agent cannot. Your wait stays armed and fires when it is answered and the chat moves on.",
+        "Do not start another chat for the same work. Tell the user if it is urgent.",
+      ].join("\n"),
+      // ADE wrote this, not the user: it must not clear the chat's "Needs you".
+      metadata: { hostContinuation: { reason: "chat_wait" } },
+    }).catch((error: unknown) => {
+      logger.warn("agent_chat.wait_user_notice_failed", {
+        waiterId: waiter.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const checkOnce = async (): Promise<void> => {
@@ -141,10 +200,19 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       const deliverTo = waiter.action.kind === "send" ? waiter.action.sessionId : waiter.callerSessionId;
       if (deliverTo && deps.getMovedAwayTarget?.(deliverTo)) continue;
       if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
-      const results = await Promise.all(waiter.targetSessionIds.map((target) => targetMatches(target, waiter)));
-      const matched = waiter.mode === "all" ? results.every(Boolean) : results.some(Boolean);
+      const results = await Promise.all(waiter.targetSessionIds.map((target) => readTarget(target, waiter)));
+      const matched = waiter.mode === "all"
+        ? results.every((result) => result.matches)
+        : results.some((result) => result.matches);
       if (matched) due.push({ waiter, outcome: "matched" });
       else if (Date.parse(waiter.expiresAt) <= nowMs) due.push({ waiter, outcome: "expired" });
+      else {
+        const userWaits = waiter.targetSessionIds.flatMap((target, index) => {
+          const itemId = results[index]?.userWaitItemId;
+          return itemId == null ? [] : [{ target, itemId }];
+        });
+        if (userWaits.length) await noteUserWaits(waiter, userWaits);
+      }
     }
     // A wait cancelled while the targets were read does not fire.
     const live = new Set(waiters.map((waiter) => waiter.id));
@@ -228,6 +296,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         const summary = await deps.readSummary(id);
         if (!summary) return { matched: false, missing: true, summary: null };
         if (chatWaitTargetMatches(summary, target)) return { matched: true, summary };
+        if (chatWaitsOnUser(summary, target)) return { matched: false, waitingOnUser: true, summary };
         const remaining = deadline - Date.now();
         if (remaining <= 0) return { matched: false, summary };
         await new Promise<void>((resolve) => {

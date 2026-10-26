@@ -797,9 +797,12 @@ Work chats
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
-                                                    Wait for idle, active, awaiting-input, or terminal
+                                                    Wait for idle, active, awaiting-input, or terminal.
+                                                    Stops early with waiting_on_user when only the user
+                                                    can answer the chat's card
     $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
-                                                    Return now; ADE wakes this chat when all (or any) of them get there
+                                                    Return now; ADE wakes this chat when all (or any) of them get there,
+                                                    and once when one of them waits on the user
     $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
     $ ade chat waits [<session>]                    Waits this chat armed or is a target of
     $ ade chat wait --cancel <waitId>               Cancel an armed wait

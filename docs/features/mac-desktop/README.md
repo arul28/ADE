@@ -1096,9 +1096,21 @@ person's keys would; `park` leaves a panel that already opened on the lane
 display where its app put it.
 
 A panel the system draws for another app (`com.apple.appkit.xpc.openAndSavePanelService`)
-cannot be moved through Accessibility, and taking that process would give one
-lane every app's next panel. `claim`/`park` refuse it with that reason, and a
-lane listing shows it only while it sits on the lane's display.
+belongs to that service process, one instance per client app. Taking it would
+give the lane the app's every later panel, so `claim`/`park` refuse it, and a
+lane listing shows it only while it sits on the lane's display. The watcher
+handles it instead (`OpenSavePanels.swift`): the service's responsible process
+(`responsibility_get_pid_responsible_for_pid`, resolved with `dlsym`) is the
+app it serves, so each sweep ties an on-screen panel to a watched lane app. A
+panel off every lane display is moved onto its app's lane display by
+Accessibility on the service process, keeping its size, without a hold, at
+most twice (`maxPanelMoveAttempts`). If it is still off the lane display after
+that, it gets the same off-lane note and `observe` warning as a window, naming
+"<app>'s Open/Save panel" and the way out (cancel it, keep the app's window on
+the lane's display, open it again). The note and the move count go when the
+panel closes or reaches a lane display. One on-screen window-server read per
+sweep finds the panels; each process's bundle id and responsible process are
+read once and remembered by pid.
 
 The 1 s watcher sweep moves a new panel of a lane app onto the lane display the
 same way it moves a window. When it cannot — the window never answers
