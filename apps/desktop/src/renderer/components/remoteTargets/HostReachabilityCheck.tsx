@@ -1,25 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { outlineButton } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
-import type {
-  HostReachabilityCheck as Check,
-  HostReachabilityReport,
-} from "../../../shared/connectionDiagnosis";
+import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
+import { DiagnosisList, DiagnosisRow, DiagnosisSectionHead, type DiagnosisState } from "./DiagnosisRows";
 import { helperTextStyle } from "./remoteTargetListStyles";
 
-const STATE_COLOR: Record<Check["state"], string> = {
-  ok: COLORS.success,
-  warning: COLORS.warning,
-  failed: COLORS.danger,
-  off: COLORS.textMuted,
-};
-
-const TONE_COLOR: Record<HostReachabilityReport["tone"], string> = {
-  success: COLORS.success,
-  warning: COLORS.warning,
-  danger: COLORS.danger,
-  info: COLORS.textSecondary,
+const TONE_STATE: Record<HostReachabilityReport["tone"], DiagnosisState> = {
+  success: "ok",
+  warning: "warning",
+  danger: "failed",
+  info: "off",
 };
 
 /**
@@ -30,13 +21,17 @@ const TONE_COLOR: Record<HostReachabilityReport["tone"], string> = {
  *
  * Without `check` it asks the computer you are sitting at; a connected remote
  * machine passes its own call. The web client has neither and renders nothing.
+ * With `heading`, it is a section of a larger panel: the heading carries the
+ * button and the panel's own verdict stands in for the report's title.
  */
 export function HostReachabilityCheck({
   check = window.ade?.sync?.checkLocalReachability,
   prompt = "Can your other devices reach this computer?",
+  heading,
 }: {
   check?: (() => Promise<HostReachabilityReport>) | undefined;
   prompt?: string;
+  heading?: string;
 } = {}) {
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<HostReachabilityReport | null>(null);
@@ -65,73 +60,73 @@ export function HostReachabilityCheck({
 
   if (typeof check !== "function") return null;
 
+  const button = (
+    <button
+      type="button"
+      disabled={running}
+      onClick={() => void run()}
+      style={outlineButton({
+        height: 24,
+        padding: "0 10px",
+        fontSize: 11,
+        flexShrink: 0,
+        gap: 6,
+        opacity: running ? 0.6 : 1,
+        cursor: running ? "default" : "pointer",
+      })}
+    >
+      {running ? <CircleNotch size={12} weight="bold" className="animate-spin" /> : null}
+      {running ? "Checking…" : report ? "Check again" : "Check"}
+    </button>
+  );
+
   return (
-    <div data-host-reachability style={{ display: "grid", gap: 8, minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>
-          {report
-            ? <span style={{ color: TONE_COLOR[report.tone] }}>{report.title}</span>
-            : prompt}
-        </span>
-        <button
-          type="button"
-          disabled={running}
-          onClick={() => void run()}
-          style={outlineButton({
-            height: 24,
-            padding: "0 10px",
-            fontSize: 11,
-            flexShrink: 0,
-            gap: 6,
-            opacity: running ? 0.6 : 1,
-            cursor: running ? "default" : "pointer",
-          })}
-        >
-          {running ? <CircleNotch size={12} weight="bold" className="animate-spin" /> : null}
-          {running ? "Checking…" : report ? "Check again" : "Check"}
-        </button>
-      </div>
+    <div data-host-reachability style={{ display: "grid", gap: 10, minWidth: 0 }}>
+      {heading ? (
+        <DiagnosisSectionHead label={heading} action={button} />
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>{report ? null : prompt}</span>
+          {report ? null : button}
+        </div>
+      )}
+
+      {heading && !report && !error ? (
+        <span style={helperTextStyle}>{prompt}</span>
+      ) : null}
 
       {error ? (
-        <div role="status" style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div>
+        <div role="status" style={{ ...helperTextStyle, color: "var(--kit-crit)" }}>{error}</div>
+      ) : null}
+
+      {report && !heading ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "var(--color-fg)" }}>
+            {report.title}
+          </span>
+          {button}
+        </div>
       ) : null}
 
       {report ? (
-        <div role="list" aria-label="Reachability checks" style={{ display: "grid", gap: 6 }}>
+        <DiagnosisList label="Reachability checks">
           {report.checks.map((item) => (
-            <div
+            <DiagnosisRow
               key={item.id}
-              role="listitem"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "7px minmax(0,1fr)",
-                columnGap: 8,
-                alignItems: "baseline",
-                fontFamily: SANS_FONT,
-                fontSize: 11.5,
-                lineHeight: 1.45,
-              }}
-            >
-              <span
-                aria-hidden
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: 999,
-                  background: STATE_COLOR[item.state],
-                  transform: "translateY(-1px)",
-                }}
-              />
-              <span style={{ minWidth: 0 }}>
-                <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{item.label}</span>
-                <span style={{ color: COLORS.textSecondary }}> · {item.detail}</span>
-                {item.fix && item.state !== "ok" ? (
-                  <span style={{ display: "block", color: COLORS.textMuted }}>{item.fix}</span>
-                ) : null}
-              </span>
-            </div>
+              state={item.state}
+              label={item.label}
+              detail={item.detail}
+              fix={item.fix}
+              tooltip={item.fix ? `${item.detail}\n${item.fix}` : item.detail}
+            />
           ))}
-        </div>
+        </DiagnosisList>
+      ) : null}
+
+      {report && heading && report.tone !== "success" ? (
+        <span style={{ ...helperTextStyle, color: TONE_STATE[report.tone] === "failed" ? "var(--kit-crit)" : "var(--kit-text-2)" }}>
+          {report.title}
+        </span>
       ) : null}
     </div>
   );

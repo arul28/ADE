@@ -199,7 +199,7 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
   if (!health.listenerBound) {
     return {
       id: "listener",
-      label: "ADE on this computer",
+      label: "ADE",
       state: "failed",
       detail: "ADE is not accepting connections on this computer.",
       fix: "Restart ADE on this computer.",
@@ -208,7 +208,7 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
   if (!health.loopbackAdeValidated) {
     return {
       id: "listener",
-      label: "ADE on this computer",
+      label: "ADE",
       state: "failed",
       detail: health.port != null
         ? `Something other than ADE answered on port ${health.port}.`
@@ -218,7 +218,7 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
   }
   return {
     id: "listener",
-    label: "ADE on this computer",
+    label: "ADE",
     state: "ok",
     detail: health.port != null
       ? `Accepting connections on port ${health.port}.`

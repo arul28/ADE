@@ -6055,7 +6055,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           tone: "success" as const,
           title: "Your other devices can reach Studio Mac.",
           checks: [
-            { id: "listener" as const, label: "ADE on Studio Mac", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
             { id: "relay" as const, label: "Relay", state: "ok" as const, detail: "Connected, and a test connection through it came back." },
             { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach Studio Mac." },
           ],
@@ -6382,7 +6382,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           tone: "warning" as const,
           title: "Devices on your network or tailnet can reach this computer. Others can't.",
           checks: [
-            { id: "listener" as const, label: "ADE on this computer", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
             {
               id: "relay" as const,
               label: "Relay",

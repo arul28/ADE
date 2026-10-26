@@ -8,6 +8,9 @@ import { formatMeasuredBytes } from "../../settings/storage/storageView";
 
 type Removed = NonNullable<StorageItem["buildOutputRemoved"]>;
 
+/** While the notice shows: how often to look for the folders coming back. */
+const RECHECK_MS = 60_000;
+
 /** Dismissed for this app session, per cleanup, so a later cleanup shows again. */
 const dismissed = new Set<string>();
 
@@ -36,17 +39,38 @@ export function LaneBuildOutputNotice({
 
   useEffect(() => {
     setRemoved(null);
-    const read = window.ade?.storage?.laneBuildOutputRemoved;
-    if (!active || typeof read !== "function") return;
+    if (!active || typeof window.ade?.storage?.laneBuildOutputRemoved !== "function") return;
     let cancelled = false;
-    read(laneId, pin)
-      .then((next) => {
-        if (!cancelled) setRemoved(next ?? null);
-      })
-      // An older machine without the read, or a lane it no longer has: no notice.
-      .catch(() => {});
+    let showing = false;
+    const refresh = () => {
+      const read = window.ade?.storage?.laneBuildOutputRemoved;
+      if (typeof read !== "function") return;
+      read(laneId, pin)
+        .then((next) => {
+          if (cancelled) return;
+          showing = Boolean(next && next.folders.length > 0);
+          setRemoved(next ?? null);
+        })
+        // An older machine without the read, or a lane it no longer has: no notice.
+        .catch(() => {});
+    };
+    refresh();
+    // A reinstall or build in a terminal or another app brings the folders
+    // back; re-check when the window comes back and, only while the notice
+    // shows, once a minute, so it goes away without reopening the lane.
+    const onFocus = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    const timer = window.setInterval(() => {
+      if (showing && document.visibilityState === "visible") refresh();
+    }, RECHECK_MS);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.clearInterval(timer);
     };
     // `pin` is read through its key: a rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
