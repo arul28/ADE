@@ -1305,6 +1305,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "local_worktree_residual_cleanups",
   "local_lane_storage_state",
   "local_storage_lifecycle_runs",
+  "local_lane_build_output_cleanups",
   // Host-local settle concurrency token. Never replicated: it is meaningless
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
@@ -4633,6 +4634,25 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       updated_at text not null
     )
   `);
+  // When the idle-lane build output cleanup last looked at this project's lanes.
+  safeAddColumn(db, "alter table local_storage_lifecycle_runs add column build_output_checked_at text");
+  // Machine-local record of build output (node_modules, dist, ...) removed
+  // from idle lane folders: what went, when, how much it freed, and why a
+  // folder could not be removed. Paths and results describe this checkout only.
+  db.run(`
+    create table if not exists local_lane_build_output_cleanups (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      run_id text not null,
+      folder text not null,
+      bytes integer not null default 0,
+      partial integer not null default 0,
+      error text,
+      removed_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_local_lane_build_output_cleanups_project on local_lane_build_output_cleanups(project_id, removed_at desc)");
 
   // Host-local concurrency token for the session settle lifecycle. Every
   // mutation of the settle tuple (`settled_at` / `settle_override` /

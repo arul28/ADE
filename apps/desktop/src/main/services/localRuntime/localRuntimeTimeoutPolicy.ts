@@ -2,6 +2,13 @@ import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoCo
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
+import {
+  ARCHIVE_DELETE_TIMEOUT_MS,
+  ARCHIVE_RESTORE_TIMEOUT_MS,
+  CHAT_CANCEL_LAUNCH_TIMEOUT_MS,
+  LANE_ENV_SETUP_TIMEOUT_MS,
+} from "../lanes/laneActionTimeouts";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -270,27 +277,18 @@ export const REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS = REMOTE_MACHINE_UPDATE_TIMEOU
 export const WINDOWS_DESKTOP_TYPE_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS + 15_000;
 export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_TIMEOUT_MS + 15_000;
 
-/**
- * A lane's environment setup runs the template's installs and setup script one
- * after another, each allowed `LANE_ENV_COMMAND_TIMEOUT_MS` (20 min). On the
- * 30s default the caller reported a failure while a long install kept running
- * to success. 45 min covers a template with a slow install and a setup script;
- * the remote transport expires just before it, so its reason reaches the user.
- */
-export const LANE_ENV_SETUP_TIMEOUT_MS = 45 * 60_000;
-export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT_MS - 30_000;
-
-/**
- * Archive batches: one lane at its full git bound (LANE_GIT_WRITE_ACTION_TIMEOUT_MS)
- * plus the time the batch's other items had before this change.
- */
-export const ARCHIVE_RESTORE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000;
-export const ARCHIVE_DELETE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000;
-/** Cancelling a new-lane launch waits out an in-flight checkout, then deletes the lane. */
-export const CHAT_CANCEL_LAUNCH_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000;
+// In a leaf module, so the hosted web client reads the same bounds.
+export {
+  ARCHIVE_DELETE_TIMEOUT_MS,
+  ARCHIVE_RESTORE_TIMEOUT_MS,
+  CHAT_CANCEL_LAUNCH_TIMEOUT_MS,
+  LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
+  LANE_ENV_SETUP_TIMEOUT_MS,
+} from "../lanes/laneActionTimeouts";
 
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
+  ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
   // Lane actions that run a checkout, `worktree add` or `worktree remove`; see
   // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. A shorter budget reported failure while

@@ -14,6 +14,11 @@ import {
   validatePersonalAttachmentRoots,
   validatePersonalHostCwd,
 } from "../../../../desktop/src/main/services/chat/personalHostPaths";
+import {
+  getApiCredentialKey,
+  getApiCredentialSummary,
+  initApiKeyStore,
+} from "../../../../desktop/src/main/services/ai/apiKeyStore";
 
 describe("PersonalChatScope", () => {
   let adeHome: string;
@@ -234,6 +239,33 @@ describe("PersonalChatScope", () => {
     expect(runtimeArgs?.projectRoot).not.toBe(runtimeArgs?.primaryWorktreePath);
     expect(runtimeArgs.runtimeProfile).toBe("chat");
     expect(runtimeArgs.publishPushEvents).toBe(false);
+  });
+
+  it("keeps a host credential out of the session record and resolves it under its API vendor", async () => {
+    const { service, createRuntime } = fixture();
+    const credentialId = `sdk-host-${process.pid}-${Date.now()}`;
+    const credentialSecret = `host-secret-${credentialId}`;
+    initApiKeyStore(adeHome);
+    const scope = new PersonalChatScope({ createRuntime, runtimeProfile: "embedded" });
+
+    try {
+      const response = await scope.call("create", {
+        provider: "codex",
+        model: "gpt-5",
+        credentialId,
+        credentialSecret,
+      });
+      const sessionArgs = service.createSession.mock.calls[0]?.[0];
+
+      expect(sessionArgs).toMatchObject({ provider: "codex", credentialId });
+      expect(sessionArgs).not.toHaveProperty("credentialSecret");
+      expect(JSON.stringify(response)).not.toContain(credentialSecret);
+      expect(getApiCredentialKey("openai", credentialId)).toBe(credentialSecret);
+      expect(getApiCredentialSummary("openai", credentialId)).toMatchObject({ source: "host" });
+      expect(getApiCredentialSummary("codex", credentialId)).toBeNull();
+    } finally {
+      await scope.dispose();
+    }
   });
 
   it("validates a host cwd, creates it, and forwards it to the chat service", async () => {

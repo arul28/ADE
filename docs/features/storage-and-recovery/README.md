@@ -88,10 +88,12 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/storage/storageErrnoClassifier.ts` | The one place that decides whether a platform error means "this computer cannot read its own bytes". `classifyStorageFault(error, { path })` returns a `StorageFault` (`{ code: "storage_read_failed", errno, path, provider, message }`) or `null`, and `STORAGE_FAULT_ERRNO_CODES` names the seven codes it acts on (`EDEADLK`, `EIO`, `ENXIO`, `ENODEV`, `ESTALE`, `EHOSTDOWN`, `EREMOTEIO`). An errno alone is not enough: the error must also carry filesystem evidence — a caller-supplied path, a path on the error, or a `syscall` — so a socket-layer `EHOSTDOWN` or `ESTALE` is never read as a disk fault. An errno libuv could not name (`UNKNOWN_SYSTEM_ERRNO_PATTERN`, on the code or the text) qualifies on its own, as does a Windows `UNKNOWN` inside a detected cloud-provider folder, which is where `ERROR_CLOUD_FILE_*` and `ERROR_FILE_OFFLINE` land. The classifier was extracted out of `kvDb.ts` so the database open and the sync host would stop keeping two copies of the same errno list; those two are its only production callers. |
 | `apps/ade-cli/src/services/diagnostics/storageEnvironmentProbe.ts` | `collectStorageEnvironment(roots)` — the "where do ADE's directories actually live, and are their bytes on this disk" probe behind the report's **Storage environment** section. It uses `node:fs` alone and needs no brain, because the machine it explains is often the one where the brain will not start. `classifyStorageLocation` labels each root `icloud` / `dropbox` / `google-drive` / `onedrive` / `cloud-storage` / `external-volume` / `network-volume` / `local`; a bounded breadth-first walk (`STORAGE_SAMPLE_MAX_FILES` 200, `STORAGE_SAMPLE_MAX_DIRECTORIES` 40, `STORAGE_SAMPLE_TIME_BUDGET_MS` 750, symlinks never followed) counts dataless placeholders through `isDatalessFileStats`. `detectLaunchdManaged` and `readMaterializeDatalessFilesKey` report whether launchd started this process and whether the installed launch agent carries the materialization key. The privacy contract is structural: it emits enums and counts, never a path, directory, or file name. |
 | `apps/desktop/src/main/services/processes/processStartTime.ts` | `readProcessStartTimeMs(pid, platform)` — one `/bin/ps -o lstart= -p <pid>` under `LC_ALL=C` (an unpinned locale prints dates `Date.parse` rejects), bounded at 2 s, `null` on Windows or any failure. It is the shared answer to "is this still the process that wrote the thing I am about to act on", used by the external watchdog's identity check, by the connection pool's stale-runtime record, and by the machine-wide sync host lease so a recycled pid cannot be killed or reported as the old brain. Because it answers `null` on Windows, `syncHostSingleton.ts` pairs it with a PowerShell `StartTime` read there rather than falling back to a Node-bootstrap timestamp the reader would then reject — see [sync and multi-device](../sync-and-multi-device/README.md#source-file-map). |
-| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
+| `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes a lane's own files in the background. The **storage doctor** compresses history, maintains the database and removes build output from idle lanes (`laneBuildOutput.ts`); other filesystem candidates such as staging, backups and DerivedData remain review-first. Folder sizes use `diskUsage.ts`. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
 | `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
+| `apps/desktop/src/main/services/storage/laneBuildOutput.ts` | Build output in idle lanes: the explicit folder list (`BUILD_OUTPUT_FOLDER_RULES`), the depth bound, the lane and folder checks, the removal (bounded whole-pass retries, read-only entries made writable), the `local_lane_build_output_cleanups` record and the summary Settings shows. See "Build output in idle lanes". |
+| `apps/desktop/src/main/services/storage/diskUsage.ts` | One definition of "how much disk a folder takes", shared by the storage snapshot walk, the lane reclaim estimate (`laneService.managedTreeBytes`) and the build-output cleanup: allocated blocks (`st_blocks * 512`, the file length on Windows), a hard-linked file counted once and only when all its links are inside the measured folder, pnpm's `node_modules/.pnpm` left out when `.modules.yaml`'s `storeDir` is on the same volume (clones and hard links share the store's blocks), links never followed, unpatched `fs` so a lane's `.asar` files are files. |
 | `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. |
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
 | `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
@@ -660,7 +662,9 @@ Project → Storage & cleanup → Rules owns the four project cleanup rules:
 - maximum active lanes;
 - archive inactive lanes after a configured age;
 - run the safety scan at a configured interval;
-- flag archived worktrees for reclaim review after a configured age.
+- flag archived worktrees for reclaim review after a configured age;
+- remove build output from lanes idle a configured number of days (on by
+  default at 7; see "Build output in idle lanes").
 
 The backend, not the renderer, enforces these settings. The daemon checks once
 per minute whether the configured interval has elapsed; `0` disables scheduled
@@ -669,6 +673,84 @@ managed lane with no running chat, PTY, watcher, protected edit operation, or
 linked pull-request group. Blocked lanes remain active. The retention rule
 never deletes files: it marks the archived lane `ready_for_review` so a person
 can inspect the estimate and explicitly confirm Archive & Reclaim.
+
+### Build output in idle lanes
+
+`laneCleanup.cleanBuildOutputAfterDays` (Rules → "Clean build output from
+idle lanes"; absent = 7, 0 = off) removes rebuildable build output from lane
+folders nobody has used for that many days. The lane, its branch, its files
+and its chats stay; a reinstall or build brings the folders back. It is a
+storage-doctor step (`fs.lane_build_output`), so it runs 10 minutes after the
+brain starts, then daily, whether or not the archive rules are on. Automatic
+runs are paced to one per 20 hours across restarts
+(`local_storage_lifecycle_runs.build_output_checked_at`); a manual "Clean up
+safely" runs it now, under the same rules.
+
+Folders (`BUILD_OUTPUT_FOLDER_RULES`): `node_modules`, `dist`, `build`,
+`.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.parcel-cache`, `.angular`,
+`.dart_tool`, `.gradle`, `DerivedData`, `target` only beside a `Cargo.toml` or
+`pom.xml`, and any folder with a valid `CACHEDIR.TAG`. Left out on purpose:
+`out` and `.cache` (often hold hand-made data), `vendor` and `Pods` (often
+committed), virtualenvs. At most 4 path segments deep (`packages/@scope/pkg/node_modules`),
+never under `.git` or `.ade`, and an outer build folder covers the ones inside it.
+
+A folder is removed only when all of these hold, checked when lanes are
+scanned and again right before removal, while the lane's worktree lease is held:
+
+- The lane is a `worktree` lane, not edit-protected, whose folder is a direct
+  child of `.ade/worktrees`, has no link on its path, has a `.git` pointer
+  file, and is the folder `git rev-parse --show-toplevel` names (same device
+  and inode). Never the primary checkout, never an attached folder.
+- Nothing runs in it: no open chat, live terminal, or file watcher
+  (`laneService.getLiveWorkCounts`, re-read before every folder), no lease
+  held by another operation, and no process on this computer working inside
+  it (`lsof -d cwd` on macOS, `/proc/*/cwd` on Linux, re-checked under the
+  lease). Windows has no cheap equivalent; a program holding a file there
+  makes that folder's removal fail with a reason instead.
+- It is idle: no chat, terminal or operation row, archive, `HEAD` or reflog
+  write, or uncommitted change (first 200 paths of `git status`) inside the
+  window; the folder and everything directly in it have mtime and ctime
+  older than the window.
+- Git ignores it (`git check-ignore`), tracks nothing in it (`git ls-files`),
+  it is a real folder on the lane's own device, and it is the same inode
+  that was scanned. A link (an older lane's `node_modules` pointing into the
+  main checkout) is skipped: never deleted through, never unlinked.
+- No disk is mounted anywhere inside it (`/sbin/mount` on macOS,
+  `/proc/self/mountinfo` on Linux, which also lists same-device bind mounts
+  the device check cannot see). Windows mounts a volume into a folder as a
+  reparse point, which Node removes as a link.
+
+Measuring a folder can take minutes, so right before each removal the sweep
+reads process working folders and mount points again (either read failing
+skips the lane), checks the folder's path for links and its inode once more,
+and then, with nothing awaited between it and the removal, the lane's live
+work. Live work is unknown, so the lane is kept, until both the chat and the
+terminal services are wired.
+
+Removal uses unpatched `fs.rm` (never follows links) with up to three whole
+passes a second apart for busy or permission errors, making read-only entries
+writable between passes. Node's own `maxRetries` is avoided: it retries at
+every level of the tree, which turned one locked file into minutes. A folder
+that cannot go keeps a plain reason, the bytes that did go are still counted,
+and the sweep moves on. A run starts no new work after 15 minutes.
+
+Each folder is recorded in the local-only `local_lane_build_output_cleanups`
+table (folder, bytes, error, time; 90 days or 1,000 rows). The snapshot's
+`lifecycle.buildOutput` carries the total and each lane's latest cleanup for
+the Rules card, and a lane's storage row says "Build output removed 3d ago:
+node_modules. Reinstall or build to bring it back." while those folders are
+missing (up to 30 days). Older brains send neither field and the card shows
+just the setting.
+
+The lane's overview says the same in an info banner
+(`LaneBuildOutputNotice.tsx`, storage action `laneBuildOutputRemoved`, read
+from the lane's own machine through its pin): "Build output was removed 9d
+ago to free 1.3 GB", then the folders (three, then "and N more") and
+"Reinstall or build before you run it." It reads only the lane's latest
+cleanup run, and only folders that are still missing, so a reinstall or build
+done anywhere (a terminal, another app) clears it: the banner re-reads when the
+window regains focus or becomes visible, and once a minute while it shows.
+Dismiss hides that cleanup for the app session; a later cleanup shows again.
 
 Proof/attachment cleanup accepts only the `.ade/artifacts` or
 `.ade/attachments` roots (or descendants) after the same symlink/path
@@ -730,18 +812,20 @@ fallback instance never schedules maintenance and only acts if
 
 Each run is a fixed sequence of independently try/caught steps, so one failing
 step never aborts the run. Filesystem removal stays outside the automatic
-sweep: generic files remain preview-confirmed, and archived lane worktrees must
-go through the lane-aware typed-confirmation path.
+sweep, with one exception (build output in idle lanes, below): generic files
+remain preview-confirmed, and archived lane worktrees must go through the
+lane-aware typed-confirmation path.
 
 1. Run the lane lifecycle safety scan.
 2. Remove legacy chat transcript copies proven redundant (`fs.transcript_duplicates`).
 3. Compress inactive chat/terminal history (`fs.transcripts`).
-4. Record filesystem review candidates without deleting them.
-5. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
+4. Remove build output from idle lanes (`fs.lane_build_output`; see "Build output in idle lanes").
+5. Record filesystem review candidates without deleting them.
+6. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
    `pull_request_snapshots`, `ai_usage_log`, and the
    retained event logs; compact cr-sqlite sync bookkeeping; and vacuum when the
    freelist is fragmented.
-6. Compact the search index (`cache.search_index`) through the search service,
+7. Compact the search index (`cache.search_index`) through the search service,
    which holds the file open. An index more than 25% free pages and at least
    16 MB free is rebuilt once with `VACUUM`, which also turns on incremental
    auto-vacuum. After that each run frees pages in bounded chunks. New indexes
@@ -782,7 +866,7 @@ rest still go. A chat is listed only when its row is gone, the lane named in its
 `session_init` header no longer exists, and all its files have been idle for
 7 days. An empty lane table lists nothing.
 
-Step 5's hooks are awaited individually, so a hook may be `async` — the two
+Step 6's hooks are awaited individually, so a hook may be `async` — the two
 newest ones are, because they delete in paced batches. Each is invoked through
 method-level optional chaining (`maintenance?.pruneEventLogs?.bind(…)`), not
 just object-level: the handle is consumed optionally so the doctor can degrade

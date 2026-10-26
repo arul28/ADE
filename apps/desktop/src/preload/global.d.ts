@@ -413,6 +413,8 @@ import type {
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
@@ -1380,6 +1382,10 @@ declare global {
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
         deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
+        laneBuildOutputRemoved?: (
+          laneId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types/storage").StorageItem["buildOutputRemoved"] | null>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
@@ -1544,6 +1550,7 @@ declare global {
         ) => Promise<RemoteRuntimePairWithMachineResult>;
         getLocalPairingInfo: () => Promise<RemoteRuntimeLocalPairingInfo>;
         runDoctor: (id: string) => Promise<RemoteRuntimeDoctorResult>;
+        checkReachability?: (id: string) => Promise<import("../shared/connectionDiagnosis").HostReachabilityReport>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;
@@ -1887,6 +1894,12 @@ declare global {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         /** Always reads this physical machine's local ADE brain, even in a remote-bound window. */
         getLocalStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
+        /**
+         * "Can my other devices reach this computer?", answered by this
+         * computer's own brain. Always this physical machine; absent on the
+         * web client.
+         */
+        checkLocalReachability?: () => Promise<import("../shared/connectionDiagnosis").HostReachabilityReport>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {
@@ -2066,9 +2079,10 @@ declare global {
           seenAt?: string;
           dismissedAt?: string | null;
         }) => Promise<import("../shared/types").AttentionAcknowledgmentOutcome>;
+        /** Older hosts and the web client resolve `void`: activity unknown. */
         reportPresence: (
           presence: import("../shared/types").AttentionPresence,
-        ) => Promise<void>;
+        ) => Promise<import("../shared/types").AttentionPresenceReceipt | void>;
         /** `null` = the account service is unreachable right now; keep the current preferences. */
         getPreferences: (accountOwnerId: string) => Promise<
           import("../shared/types").AttentionPreferences | null
@@ -2801,6 +2815,10 @@ declare global {
           args: AgentChatContextUsageArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContextUsage | null>;
+        getClaudeUsage: (
+          args: AgentChatClaudeUsageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ClaudeUsageReport>;
         rewindFiles: (
           args: AgentChatRewindFilesArgs,
           pin?: OpenProjectBinding | null,

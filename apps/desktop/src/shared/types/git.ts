@@ -502,6 +502,24 @@ export type GitHubStatus = {
   // Single source of truth for "GitHub reads are usable here". Write surfaces
   // additionally require writeAuthSource !== "none".
   connected: boolean;
+  /**
+   * Whether `git push` to this project's GitHub origin can sign in. A separate
+   * leg from `writeAuthSource`: the API credential ladder does not reach git,
+   * which uses this machine's own git credential first and ADE's GitHub
+   * credential as a fallback. Absent from older runtimes, and null when ADE has
+   * not checked (no GitHub origin, an SSH origin, or the check could not run).
+   */
+  gitTransport?: GitHubGitTransportStatus | null;
+};
+
+export type GitHubGitTransportStatus = {
+  /** `auth_failed`: git could not sign in with any credential ADE has. */
+  state: "ok" | "auth_failed";
+  /** Who signed git in on the last success: this machine's own git credential, or ADE's. */
+  via: "system" | "ade" | null;
+  /** True when ADE had a GitHub credential and tried it after git's own failed. */
+  adeCredentialTried: boolean;
+  checkedAt: string;
 };
 
 /**

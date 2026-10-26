@@ -16,6 +16,7 @@ import {
   formatConversationTranscript,
   formatLaneThreadsForPrompt,
   formatLaneWorkVersusRemote,
+  parseGeneratedSessionMetadata,
   runSessionMetadataGeneration,
   sessionMetadataPromptNeeds,
   SESSION_METADATA_TRANSCRIPT_CHAR_LIMIT,
@@ -24,6 +25,7 @@ import {
   type SessionMetadataPromptRunner,
 } from "./sessionNaming";
 import type { Logger } from "../logging/logger";
+import { buildCodexSamplePrompt, type CodexSampleOutcome } from "./codexThreadSample";
 import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
 
 export type SessionMetadataManagedSession = {
@@ -71,6 +73,13 @@ export type SessionMetadataRegeneratorDependencies<ManagedSession extends Sessio
     worktreePath: string;
     baseRef: string;
   }) => Promise<SessionMetadataLaneWorkSnapshot | null>;
+  /**
+   * Asks the chat's own thread (Codex `thread/sample`), which already holds
+   * the whole conversation. Used only when `runPrompt` produced no names: it
+   * costs far more than the helper. Never rejects. `helperError` is the
+   * helper's last failure, so a rate limit there skips the sample too.
+   */
+  sampleThread?: (managed: ManagedSession, prompt: string, helperError: string | null) => Promise<CodexSampleOutcome>;
   /** Gets the session so the call can run as the chat's own provider account. */
   runPrompt: (
     args: Parameters<SessionMetadataPromptRunner>[0],
@@ -200,23 +209,26 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         attemptCount: 0,
         lastFailure: null,
       };
+      const promptFacts = {
+        provider: managed.session.provider,
+        chatModel: managed.session.modelId ?? managed.session.model,
+        currentLaneName: snapshot.laneName,
+        currentChatTitle: snapshot.title,
+        currentStatusLine: snapshot.statusLine,
+        worktreeName,
+        requestedFields: fields,
+        goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
+        summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
+        originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
+        laneThreads: laneThreads || null,
+        laneWorkVersusRemote: laneWorkVersusRemote || null,
+      };
       if (candidateModelIds.length) {
         const prompt = buildSessionMetadataPrompt({
-          provider: managed.session.provider,
-          chatModel: managed.session.modelId ?? managed.session.model,
-          currentLaneName: snapshot.laneName,
-          currentChatTitle: snapshot.title,
-          currentStatusLine: snapshot.statusLine,
-          worktreeName,
-          requestedFields: fields,
-          goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
-          summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
+          ...promptFacts,
           latestOutputPreview,
-          originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
           threadTranscript: threadTranscript || null,
           latestAssistantParagraphs: statusSource,
-          laneThreads: laneThreads || null,
-          laneWorkVersusRemote: laneWorkVersusRemote || null,
         });
         generated = await runSessionMetadataGeneration({
           candidateModelIds,
@@ -238,6 +250,36 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
             });
           },
         });
+      }
+      // Only when no helper model produced names: ask the chat's own thread. It
+      // runs on the chat's model with its whole context, far dearer than the
+      // helper, so it is the fallback.
+      if (!generated.result && dependencies.sampleThread && !managed.deleted
+        && managed.sessionMetadataGenerationVersion === generationVersion) {
+        // The thread is the transcript and the latest output, so neither is
+        // sent; the lane's other threads and git work still are (cut to fit).
+        const sample = await dependencies.sampleThread(managed, buildCodexSamplePrompt(
+          buildSessionMetadataSystemPrompt(fields),
+          [
+            "The conversation above is this thread's full transcript, and your latest reply is its latest assistant output.",
+            buildSessionMetadataPrompt({ ...promptFacts, latestOutputPreview: null, threadTranscript: null, latestAssistantParagraphs: null }),
+          ].join("\n\n"),
+        ), generated.lastFailure?.error ?? null);
+        const result = sample.kind === "answered"
+          ? parseGeneratedSessionMetadata({
+            raw: sample.text,
+            normalizeTitle: dependencies.normalizeTitle,
+            normalizeStatusLine: dependencies.normalizeStatusLine,
+          })
+          : null;
+        if (result) {
+          generated = {
+            result,
+            selectedModelId: managed.session.modelId ?? managed.session.model ?? null,
+            attemptCount: generated.attemptCount + 1,
+            lastFailure: null,
+          };
+        }
       }
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;

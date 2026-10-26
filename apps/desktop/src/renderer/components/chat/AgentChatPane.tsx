@@ -14,7 +14,7 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -200,6 +200,7 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { ClaudeUsageSheet } from "./usage/ClaudeUsageSheet";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
@@ -297,7 +298,7 @@ import { attachedShellNestParentId } from "../../../shared/sessionSpawnNesting";
 import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
-import { takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
+import { requestChatActionsPane, takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { SideChatHeaderButton } from "./SideChatBadge";
 import {
@@ -4508,6 +4509,8 @@ export function AgentChatPane({
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [importBrowserOpen, setImportBrowserOpen] = useState(false);
+  /** `/usage` in a Claude chat opens this sheet instead of sending. */
+  const [claudeUsageSheetOpen, setClaudeUsageSheetOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   // Seeded warm: on a remount into a project whose model catalog was already
   // fetched there is nothing left to wait for, and re-gating would stall the
@@ -5079,6 +5082,13 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // Codex Daybreak: the selected chat's stored choice, or the draft's own
+  // until it launches. Switching chats (or to a draft) re-reads it.
+  const [codexDaybreak, setCodexDaybreak] = useState(false);
+  const selectedSessionCodexDaybreak = selectedSession?.codexDaybreak === true;
+  useEffect(() => {
+    setCodexDaybreak(selectedSessionCodexDaybreak);
+  }, [selectedSessionId, selectedSessionCodexDaybreak]);
   // The account's Fast permission for this composer. A chat on any machine
   // carries its owning brain's answer (`fastModeAllowed`); a draft uses this
   // window's copy, which is the same account row. Absent means an older host
@@ -6907,6 +6917,8 @@ export function AgentChatPane({
     if (!selectedSession && draftLaunchTarget) return draftLaunchTarget.harness;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey, draftLaunchTarget]);
+  /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
+  const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
     provider: selectedSession?.provider ?? sessionProvider,
     events: selectedEventsForDisplay,
@@ -7333,9 +7345,22 @@ export function AgentChatPane({
   const spawnLineage = useMemo(() => {
     const parentId = selectedSession?.orchestrationParentSessionId?.trim();
     if (!parentId || parentId === selectedSession?.sessionId) return null;
-    const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
+    // The pane's list holds this lane's chats; the Work list's titles cover a
+    // parent it has not loaded.
+    const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim()
+      || sessionTitleById?.get(parentId)?.trim()
+      || null;
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
-  }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
+  }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions, sessionTitleById]);
+  // A spawned chat's actions pane leads with its parent's roster (this chat
+  // and its siblings), the pane you clicked it in. The parent's own events
+  // add its runtime subagents when this pane still holds them; the spawned
+  // chats come from the session list either way.
+  const spawnParentEvents = spawnLineage ? eventsBySession[spawnLineage.parentId] ?? null : null;
+  const spawnParentSnapshots = useMemo(
+    () => (spawnParentEvents ? deriveChatSubagentSnapshotsIncremental(null, spawnParentEvents).snapshots : []),
+    [spawnParentEvents],
+  );
 
   // Spawned chats of this chat that are working now: the Stop menu offers to
   // stop them too.
@@ -11522,6 +11547,7 @@ export function AgentChatPane({
       reasoningEffort: launchReasoningEffort,
       fastMode: launchFastMode,
       ...(launchFastTier ? { fastTier: launchFastTier } : {}),
+      ...(provider === "codex" && codexDaybreak ? { codexDaybreak: true } : {}),
       // The saved preset (or the stored key) the picker named. Sent as an id:
       // the runtime that owns the lane is the one that can read this
       // machine's preset list and key store, so nothing resolved travels.
@@ -11542,7 +11568,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -14520,6 +14546,21 @@ export function AgentChatPane({
     }
     void copyPromptForLaunch(text);
     if (
+      text === "/usage"
+      && selectedSessionId
+      && claudeUsageAvailable
+      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      // Claude Code's usage report as a sheet; nothing reaches the transcript.
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setClaudeUsageSheetOpen(true);
+      return;
+    }
+    if (
       text === "/context"
       && selectedSessionId
       && sessionProvider === "claude"
@@ -15006,6 +15047,7 @@ export function AgentChatPane({
     countSentMessages,
     openSideChatFromComposer,
     isPersonalPane, attachments,
+    claudeUsageAvailable,
     ambientTurnContext,
     buildNativeControlPayload,
     busy,
@@ -15518,6 +15560,44 @@ export function AgentChatPane({
     sessionMutationKind,
     setFastModeState,
   ]);
+
+  /** Per chat: the latest toggle, its write chain, and the value its machine last confirmed. */
+  const codexDaybreakUpdatesRef = useRef(new Map<string, { latest: number; chain: Promise<unknown>; confirmed: boolean }>());
+  const handleCodexDaybreakChange = useCallback((enabled: boolean) => {
+    setCodexDaybreak(enabled);
+    const targetSessionId = selectedSessionId;
+    if (!targetSessionId) return;
+    const updates = codexDaybreakUpdatesRef.current;
+    const entry = updates.get(targetSessionId)
+      ?? { latest: 0, chain: Promise.resolve(), confirmed: selectedSessionCodexDaybreak };
+    const updateId = entry.latest + 1;
+    patchSessionSummary(targetSessionId, { codexDaybreak: enabled });
+    // In order, like Fast: two quick toggles land as the last one. The chat's
+    // own machine stores it, through the pin every chat update uses.
+    const chain = entry.chain
+      .catch(() => {})
+      .then(() => agentChatApiRef.current.updateSession({
+        sessionId: targetSessionId,
+        codexDaybreak: enabled,
+      }, chatRuntimePinRef.current))
+      .then((updatedSession) => {
+        const current = updates.get(targetSessionId);
+        if (!current) return;
+        current.confirmed = updatedSession.codexDaybreak === true;
+        if (current.latest !== updateId) return;
+        patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+        if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+      })
+      .catch((err) => {
+        const current = updates.get(targetSessionId);
+        if (current && current.latest === updateId) {
+          patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+          if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+        }
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    updates.set(targetSessionId, { latest: updateId, chain, confirmed: entry.confirmed });
+  }, [patchSessionSummary, selectedSessionCodexDaybreak, selectedSessionId]);
 
   const handleFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
     const previousFastMode = fastMode;
@@ -16841,10 +16921,43 @@ export function AgentChatPane({
       onSwitched={() => void refreshSessions({ force: true }).catch(() => {})}
     />
   ) : null;
+  // Back from a spawned chat to the chat that started it. An open actions pane
+  // stays open there, the way it does when a runtime subagent's view closes.
+  const backToSpawnParent = spawnLineage
+    ? () => {
+      if (chatActionsOpen) requestChatActionsPane(spawnLineage.parentId);
+      navigateToSpawnedChat(spawnLineage.parentId, null, chatRuntimePin);
+    }
+    : null;
+  const spawnParentRosterContent = spawnLineage && backToSpawnParent ? (
+    <div data-testid="chat-actions-parent-roster">
+      <button
+        type="button"
+        onClick={backToSpawnParent}
+        className="flex w-full min-w-0 items-center gap-1.5 px-4 pb-1 pt-3 text-left font-sans text-[11px] font-medium text-fg/55 transition-colors hover:text-fg/85"
+        title={spawnLineage.parentTitle ? `Back to "${spawnLineage.parentTitle}"` : "Back to the parent chat"}
+      >
+        <ArrowLeft size={12} weight="bold" aria-hidden className="shrink-0" />
+        <span className="min-w-0 truncate">{spawnLineage.parentTitle ?? "Parent chat"}</span>
+      </button>
+      <ChatSubagentsPanel
+        sessionId={spawnLineage.parentId}
+        snapshots={spawnParentSnapshots}
+        events={spawnParentEvents ?? EMPTY_CHAT_EVENTS}
+        variant="pane"
+        childChatStatuses={knownChatStatusesById}
+        resolveSpawnedChatTitle={resolveSpawnedChatTitle}
+        selectedChildSessionId={selectedSessionId}
+        onClearSelectedSubagent={backToSpawnParent}
+        shellsPin={chatRuntimePin}
+      />
+    </div>
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       footer={chatAccountNote}
       sections={[
+        spawnParentRosterContent && { key: "parent", content: spawnParentRosterContent },
         { key: "agents", content: agentsTabContent },
         (proofArtifactCount > 0 || (proofShowRequested && renderedComputerUseSnapshot)) && { key: "proof", content: proofTabContent },
         selectedMission && missionHasContent(selectedMission) && {
@@ -16960,22 +17073,6 @@ export function AgentChatPane({
   );
   const chatHeaderTrailingActions = (
     <>
-      {spawnLineage ? (
-        <button
-          type="button"
-          onClick={() => navigateToSpawnedChat(spawnLineage.parentId, null)}
-          className={cn(
-            "inline-flex max-w-[220px] items-center gap-1.5 px-0.5 py-0.5 font-sans text-[10px] font-medium underline-offset-2 transition-colors hover:underline",
-            spawnLineage.spawnKind === "peer"
-              ? "text-slate-300/70 hover:text-slate-100/90"
-              : "text-violet-200/75 hover:text-violet-100",
-          )}
-          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "Go to parent thread"}
-        >
-          <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
-          <span className="ade-header-collapsible-label min-w-0 truncate">Go to parent thread</span>
-        </button>
-      ) : null}
       {chatTerminalVisible && selectedSessionId ? (
         <ClaudeLoginPromptButton
           visible={showClaudeLoginPrompt}
@@ -17177,12 +17274,36 @@ export function AgentChatPane({
       ) : null}
     </>
   );
+  // One way back from any subagent on screen: a runtime subagent's view
+  // closes back to this chat; a spawned chat goes to the chat that started it.
+  const headerBack = subagentView
+    ? { label: "Back to main thread", title: "Back to this chat's main thread", onBack: () => setSubagentView(null) }
+    : backToSpawnParent && spawnLineage
+      ? {
+        label: `Back to ${spawnLineage.parentTitle ?? "parent chat"}`,
+        title: spawnLineage.parentTitle ? `Back to "${spawnLineage.parentTitle}"` : "Back to the parent chat",
+        onBack: backToSpawnParent,
+      }
+      : null;
+  const headerBackAction = headerBack ? (
+    <button
+      type="button"
+      data-testid="chat-header-back"
+      onClick={headerBack.onBack}
+      className="inline-flex min-w-0 max-w-[260px] items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 font-sans text-[11px] font-medium text-fg/75 transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.06] hover:text-fg"
+      title={headerBack.title}
+    >
+      <ArrowLeft size={12} weight="bold" aria-hidden className="shrink-0" />
+      <span className="min-w-0 truncate">{headerBack.label}</span>
+    </button>
+  ) : null;
   const shellHeader = (
     <div className={CHAT_SHELL_HEADER_CLASS}>
       <CenteredWorkSurfaceHeader
         title={resolvedTitle}
         laneId={laneId}
         prBadgeOnly
+        leadingAction={headerBackAction}
         titleAccessory={<>
         {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
@@ -17678,6 +17799,8 @@ export function AgentChatPane({
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}
+            codexDaybreak={codexDaybreak}
+            {...(subagentComposerModel ? {} : { onCodexDaybreakChange: handleCodexDaybreakChange })}
             fastTier={subagentComposerModel ? null : fastTier}
             // What Codex last reported for this chat's Fast. Codex is the only
             // provider that answers with a service tier, so it is absent
@@ -19073,6 +19196,16 @@ export function AgentChatPane({
             setHandoffNote("");
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
+        />
+      ) : null}
+      {selectedSessionId && claudeUsageAvailable ? (
+        <ClaudeUsageSheet
+          open={claudeUsageSheetOpen}
+          onOpenChange={setClaudeUsageSheetOpen}
+          sessionId={selectedSessionId}
+          pin={chatRuntimePin}
+          turnActive={turnActive}
+          onApplyEffort={handleReasoningEffortChange}
         />
       ) : null}
       {claudeSignInTarget ? (

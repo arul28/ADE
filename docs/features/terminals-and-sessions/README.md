@@ -3161,9 +3161,14 @@ chat settles, so a failure stays in view. A chatless shell's crash has no chat t
 settle, so it stays until a relaunch reuses the shell.
 
 Deletion, not archive, because hidden rows still fill every `session.list` page:
-another machine reads only the newest 60 of them, and a pile of archived App
-Control shells once pushed a live chat out of its Work list. That read now also
-passes `includeArchived: false`, so archived rows cannot use up the page either.
+a pile of archived App Control shells once pushed a live chat out of another
+machine's Work list. That read passes `includeArchived: false`, so archived rows
+cannot use up the page. It also passes `settledLimit: 40` (with `limit: 200`):
+every unsettled row comes back first and at most 40 settled ones fill what is
+left. A newest-first page of 60 once dropped a coordinator chat behind about
+100 newer settled agent chats on the same machine, so it blinked in and out of
+the other machine's sidebar as lanes came and went. An older brain ignores
+`settledLimit` and returns the plain newest 200.
 
 **Relaunch reuses the shell.** When the same chat (or, chatless, no chat)
 launches again on the lane, App Control waits up to 5 seconds for the old app's

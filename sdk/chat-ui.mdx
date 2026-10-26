@@ -137,16 +137,31 @@ The card is keyboard reachable and never takes focus from the composer.
 
 Pass `approvals.render` to replace the card entirely; it receives the request and a `respond(decision)` callback.
 
-Two cases render read-only rather than offering buttons:
-
-- **A `requestKind` of `question`, `structured_question`, `plan_approval` or `model_selection`.** These want prose or a choice this surface cannot carry, and Allow would send an answer that means nothing to the model.
-- **A thread with no `approve`.** An older SDK, a proxy, or a fake. The card says the host cannot answer approvals instead of throwing.
+An approval is read-only when the thread does not expose `approve`; the card explains that the host cannot answer it instead of showing buttons that throw. Questions, structured questions and plan approvals use a separate input card and `thread.respond(requestId, response)`, where `response` has the runtime's `answers`, `decision` and `responseText` fields. It stays read-only when the client has no `respond` method. Model-selection requests remain read-only here.
 
 After a reload, `<AdeChat>` calls `thread.pendingApprovals()` once on open and restores a card for every outstanding request the transcript no longer carries. A restored card sorts into the transcript at the instant it was read, not at the end, so it sits where the conversation actually is.
 
 A restored card is **live by construction**. It came from the engine's authoritative "still blocked right now" list, read after the history window, so nothing in that history can expire it — an ending recorded before the request was even restored says only that some earlier turn finished. Only an explicit `pending_input_resolved` settles it. Drawing a genuinely blocked request as expired is a hang: the buttons go read-only while the runtime still waits for the answer.
 
 A turn ends a card when `done` arrives, or a `status` of `completed`, `failed` or `interrupted`. An `error` never does. An error does not end a turn on either layer — OpenCode emits one per failing tool and keeps streaming, and Codex emits one to decline a single request — so treating it as an ending would expire a live card and leave the provider blocked.
+
+## Questions and plan review
+
+Question cards render each question, its choices and any allowed freeform answer. Multi-select questions return a `string[]`; answers are keyed by question id. Secret questions use a password field. Submitting keeps the card in place, and a failed response leaves it available to retry. Plan review sends `decision: "accept"` to approve or `decision: "decline"` to keep planning; it does not infer decisions from option labels. Unstructured freeform responses use `responseText`.
+
+```ts
+await thread.respond(requestId, { answers: { project_scope: ["UI", "tests"], timeline: "One week" } });
+```
+
+## Queued messages and usage limits
+
+When a thread exposes `queue.list()`, `<AdeChat>` shows its queued messages with the operations the client supports: edit, reorder, cancel, send now and cancel a dispatched send. Failed reads or actions show an error with a retry where the operation can be repeated. Clients without a queue stay usable and do not show an empty placeholder.
+
+Usage-limit events are scoped by `threadKey`; `<AdeChat>` ignores events for another thread. When the thread has resume controls, the notice offers **Resume now** and **Continue on** the alternate account it reports. Failed actions remain visible on the notice.
+
+## Accounts components
+
+The standalone account components render non-secret account summaries and usage only. `<SignInCard>` supports browser links, device codes and pasted codes from an optional `SignInHandle`; `<ApiKeyForm>` clears the entered key after save and never prints it in an error. Account and credential operations are optional. A missing operation hides its control, and account-list load failures show a retry instead of a false empty state.
 
 ## Composer rail and attachments
 
@@ -296,6 +311,12 @@ Every piece is importable without `<AdeChat>`:
 | `<ModelPicker>` | Grouped catalog; disabled when the provider is not authenticated. Shows a reasoning-effort control when you pass `onReasoningEffortChange` and the model lists `reasoningEfforts`. The host applies the effort (for example with `thread.update`). |
 | `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. With `onlyNeedsAttention={false}`, also a one-line "Ready" card for each signed-in provider. |
 | `<ApprovalCard>` | One inline approval, with Allow once / Always allow / Reject. |
+| `<PendingInputCard>` | A question, structured question or plan review with `thread.respond`. |
+| `<QueueStrip>` | A thread's queued messages and supported queue actions. |
+| `<UsageLimitNotice>` | Resume and alternate-account controls for a usage limit. |
+| `<AccountList>` / `<AccountSwitcher>` | Account summaries and a per-thread account switcher. |
+| `<SignInCard>` / `<ApiKeyForm>` | Browser/device sign-in and API-key entry. |
+| `<UsageMeter>` | A non-secret usage summary and progress bar. |
 
 Composer rule: submitting during a running turn dispatches `onSteer`, never a second `onSend`. A failed send restores the draft.
 

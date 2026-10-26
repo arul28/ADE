@@ -878,10 +878,13 @@ export function createSessionService({
     updatedAt: row.updatedAt,
   });
 
-  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived }: ListSessionsArgs = {}) => {
+  const list =({ laneId, status, limit, toolTypes, chatSessionId, includeArchived, settledLimit }: ListSessionsArgs = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
     const effectiveLimit = limit === null ? null : typeof limit === "number" ? limit : 200;
+    const effectiveSettledLimit = typeof settledLimit === "number" && Number.isFinite(settledLimit) && settledLimit >= 0
+      ? Math.trunc(settledLimit)
+      : null;
 
     if (laneId) {
       where.push("s.lane_id = ?");
@@ -900,15 +903,16 @@ export function createSessionService({
     }
     if (includeArchived === false) where.push("s.archived_at is null");
     const normalizedToolTypes = normalizeToolTypes(toolTypes);
-    const fetchRows = (
-      extraWhere: string[] = [],
-      extraParams: (string | number | null)[] = [],
+    const queryRows = (
+      extraWhere: string[],
+      extraParams: (string | number | null)[],
+      rowLimit: number | null,
     ): SessionRow[] => {
       const queryWhere = [...where, ...extraWhere];
       const queryParams: (string | number | null)[] = [...params, ...extraParams];
       const whereSql = queryWhere.length ? `where ${queryWhere.join(" and ")}` : "";
-      const limitSql = effectiveLimit === null ? "" : "limit ?";
-      if (effectiveLimit !== null) queryParams.push(effectiveLimit);
+      const limitSql = rowLimit === null ? "" : "limit ?";
+      if (rowLimit !== null) queryParams.push(rowLimit);
 
       return db.all<SessionRow>(
         `
@@ -921,6 +925,39 @@ export function createSessionService({
         `,
         queryParams
       );
+    };
+    // The live-first page: every unsettled row (up to `limit`), then only the
+    // newest settled ones in the room left. A plain newest-first page let a
+    // pile of settled chats push an older chat that is still working off
+    // another machine's Work list.
+    const settledRoomFor = (settledLimit: number, unsettledCount: number): number => effectiveLimit === null
+      ? settledLimit
+      : Math.min(settledLimit, Math.max(0, effectiveLimit - unsettledCount));
+    const fetchRows = (
+      extraWhere: string[] = [],
+      extraParams: (string | number | null)[] = [],
+    ): SessionRow[] => {
+      if (effectiveSettledLimit === null) return queryRows(extraWhere, extraParams, effectiveLimit);
+      const unsettled = queryRows([...extraWhere, "s.settled_at is null"], extraParams, effectiveLimit);
+      const settledRoom = settledRoomFor(effectiveSettledLimit, unsettled.length);
+      if (settledRoom === 0) return unsettled;
+      const settled = queryRows([...extraWhere, "s.settled_at is not null"], extraParams, settledRoom);
+      return [...unsettled, ...settled]
+        .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+    };
+
+    // The tool-type reads merge several pages, so the page rule applies again
+    // to the merged, newest-first rows.
+    const limitMergedRows = (rows: SessionRow[]): SessionRow[] => {
+      if (effectiveSettledLimit === null) {
+        return effectiveLimit === null ? rows : rows.slice(0, effectiveLimit);
+      }
+      const unsettled = rows.filter((row) => !row.settledAt);
+      const keptUnsettled = effectiveLimit === null ? unsettled : unsettled.slice(0, effectiveLimit);
+      const settled = rows.filter((row) => row.settledAt)
+        .slice(0, settledRoomFor(effectiveSettledLimit, keptUnsettled.length));
+      const keptIds = new Set([...keptUnsettled, ...settled].map((row) => row.id));
+      return rows.filter((row) => keptIds.has(row.id));
     };
 
     if (normalizedToolTypes.length > 0) {
@@ -977,8 +1014,7 @@ export function createSessionService({
 
       const rows = Array.from(rowsById.values())
         .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
-      const limitedRows = effectiveLimit === null ? rows : rows.slice(0, effectiveLimit);
-      return limitedRows.map(mapRow) as TerminalSessionSummary[];
+      return limitMergedRows(rows).map(mapRow) as TerminalSessionSummary[];
     }
 
     const rows = fetchRows();

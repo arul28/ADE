@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
 import { clipHead, clipTail } from "../shared/utils";
+import { buildCodexSamplePrompt, type CodexSampleOutcome } from "./codexThreadSample";
 
 /**
  * ADE's own "next prompt" suggestion, for providers that do not send one.
@@ -13,6 +14,11 @@ import { clipHead, clipTail } from "../shared/utils";
  * call after a completed turn, whose answer goes out as the same live-only
  * `prompt_suggestion` event, so every client shows both the same way. Which
  * model runs it is the chat service's choice (`runPrompt`).
+ *
+ * When the helper cannot answer, a Codex chat asks its own thread instead
+ * (`sampleThread`, Codex's `thread/sample`). That runs on the chat's own
+ * model with its whole context, which costs far more than the helper, so it
+ * is only the fallback.
  */
 
 /** A suggestion is a convenience: past this, the user is already typing. */
@@ -147,6 +153,18 @@ export type NextPromptSuggestionDeps = {
     jsonSchema: unknown;
     timeoutMs: number;
   }) => Promise<{ structuredOutput?: unknown; text?: string | null } | null>;
+  /**
+   * Asks the chat's own thread (Codex `thread/sample`), only when the helper
+   * (`runPrompt`) threw or had no model to run on. Never rejects.
+   * `helperError` is the helper's failure, so a rate limit there skips it.
+   */
+  sampleThread?: (args: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    timeoutMs: number;
+    helperError: string | null;
+  }) => Promise<CodexSampleOutcome>;
   /** Live-only: a suggestion is never written to the transcript. */
   emitSuggestion: (sessionId: string, suggestion: string, turnId: string) => void;
   /** True while an approval card or question waits: the next message is its answer. */
@@ -169,6 +187,9 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
     const { sessionId } = facts;
     const startedAt = Date.now();
     let suggestion = "";
+    // "helper" once the helper answers, even "no clear next step": no second call.
+    let source: "thread" | "helper" | "none" = "none";
+    let helperError: string | null = null;
     let cwd: string | null = null;
     try {
       // A fresh scratch directory: the helper must load no repo, no
@@ -182,14 +203,14 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
         jsonSchema: PROMPT_SUGGESTION_JSON_SCHEMA,
         timeoutMs: SUGGESTION_TIMEOUT_MS,
       });
-      if (result) suggestion = parsePromptSuggestion(result.structuredOutput, result.text);
+      if (result) {
+        source = "helper";
+        suggestion = parsePromptSuggestion(result.structuredOutput, result.text);
+      }
     } catch (error) {
       // Fail quiet: no suggestion is the same as an empty one.
-      logger.warn("agent_chat.prompt_suggestion_failed", {
-        sessionId,
-        turnId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      helperError = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.prompt_suggestion_failed", { sessionId, turnId, error: helperError });
     } finally {
       if (cwd) {
         try {
@@ -203,6 +224,22 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
         }
       }
     }
+    // Only when the helper could not answer: ask the chat's own thread. It
+    // knows more but costs far more (the chat's model and its whole context),
+    // so it is the fallback, never the first try.
+    if (source !== "helper" && deps.sampleThread && pendingTurnBySession.get(sessionId) === turnId) {
+      const sample = await deps.sampleThread({
+        sessionId,
+        turnId,
+        prompt: buildCodexSamplePrompt(PROMPT_SUGGESTION_SYSTEM_PROMPT),
+        timeoutMs: SUGGESTION_TIMEOUT_MS,
+        helperError,
+      });
+      if (sample.kind === "answered") {
+        source = "thread";
+        suggestion = parsePromptSuggestion(null, sample.text);
+      }
+    }
     // Shown only if nothing happened since the turn ended: no user message or
     // new turn (either clears the pending entry), same live chat, no card.
     const stillOpen = pendingTurnBySession.get(sessionId) === turnId
@@ -214,6 +251,7 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
       turnId,
       offered: Boolean(suggestion) && stillOpen,
       empty: !suggestion,
+      source,
       stillOpen,
       durationMs: Date.now() - startedAt,
     });

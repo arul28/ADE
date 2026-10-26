@@ -1475,6 +1475,7 @@ describe("SessionListPane", () => {
         // would duplicate the editor picker the lane menu already renders.
         null,
         "worktree",
+        null, // not filed under Waiting
       );
     });
 
@@ -1509,6 +1510,7 @@ describe("SessionListPane", () => {
         }),
         null,
         "worktree",
+        null, // not filed under Waiting
       );
     });
 
@@ -2400,6 +2402,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       expect.objectContaining({ laneId: "lane-solo", laneName: "Solo lane" }),
       null,
       "worktree",
+      null, // not filed under Waiting
     );
 
     // And the handle really opens the shared lane menu, rather than a stub.
@@ -2433,6 +2436,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       expect.anything(),
       "worktree",
+      null, // not filed under Waiting
     );
   });
 

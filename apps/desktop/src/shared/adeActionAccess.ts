@@ -166,7 +166,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getAvailableModels", "getLaunchDefaults", "getClaudeSessionInfo",
       "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
-      "getContextUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
+      "getContextUsage", "getClaudeUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
       "getCodexRealtimeState", "getCodexGoal", "listClaudeOutputStyles",
       "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "listPendingInputs", "getSlashCommands",
       "getTurnFileDiff", "getParallelLaunchState", "waitFor", "listWaits", "getLaunch",
@@ -199,6 +199,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
+      "clearAsk",
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
@@ -322,7 +323,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   account_settings: {
     read: [
-      "list", "get",
+      "list", "deletedKeys", "get",
     ],
     write: [
       "set", "remove", "sync",
@@ -424,7 +425,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   storage: {
     read: [
-      "cleanupPreview", "deletedLaneChatsSummary", "getSnapshot",
+      "cleanupPreview", "deletedLaneChatsSummary", "getSnapshot", "laneBuildOutputRemoved",
     ],
     write: [
       "cleanup", "compressNow", "runMaintenanceNow",

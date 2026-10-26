@@ -477,9 +477,43 @@ function ensureLegacyCredentialSummary(scope: ApiKeyScopeState, storageKey: stri
   writeApiCredentialIndex(scope, scope.summaries ?? []);
 }
 
+/**
+ * Keys an SDK host supplies from its own vault (`resolveSecret`), by storage
+ * key. Held in this process's memory only: never written to the encrypted
+ * store, the OS credential store or the account vault, and gone when the
+ * runtime exits (the SDK pushes them again on every open and resume). A host
+ * key outranks a stored one with the same id, since the host vault is the
+ * source of truth for it.
+ */
+const hostCredentials = new Map<string, { key: string; summary: ApiCredentialSummary }>();
+
+/** Make a host-supplied key available to launches in this process, by provider and credential id. */
+export function setHostApiCredential(provider: string, credentialId: string, key: string): void {
+  const normalizedProvider = normalizeProvider(provider);
+  const normalizedCredentialId = normalizeCredentialId(credentialId);
+  const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
+  if (!storageKey || !key.trim()) {
+    throw new Error("A host credential needs a provider, a credential id and a key.");
+  }
+  const now = new Date().toISOString();
+  hostCredentials.set(storageKey, {
+    key,
+    summary: {
+      provider: normalizedProvider,
+      credentialId: normalizedCredentialId,
+      label: hostCredentials.get(storageKey)?.summary.label ?? normalizedCredentialId,
+      source: "host",
+      createdAt: hostCredentials.get(storageKey)?.summary.createdAt ?? now,
+      updatedAt: now,
+    },
+  });
+}
+
 function storedCredentialSummaries(scope: ApiKeyScopeState, provider?: string): ApiCredentialSummary[] {
   const normalizedProvider = provider === undefined ? undefined : normalizeProvider(provider);
-  const summaries = [...(scope.summaries ?? [])];
+  const hosted = scope === projectScope ? [...hostCredentials.values()].map((entry) => entry.summary) : [];
+  const hostedKeys = new Set(hosted.map(summaryStorageKey));
+  const summaries = [...hosted, ...(scope.summaries ?? []).filter((summary) => !hostedKeys.has(summaryStorageKey(summary)))];
   const knownKeys = new Set(summaries.map(summaryStorageKey));
   for (const candidate of Object.keys(ENV_KEY_PROVIDERS)) {
     const summary = environmentCredentialSummary(candidate);
@@ -1307,6 +1341,10 @@ function getApiCredentialKeyIn(
   const normalizedCredentialId = normalizeCredentialId(credentialId);
   const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
   if (!storageKey) return null;
+  if (scope === projectScope) {
+    const hosted = hostCredentials.get(storageKey);
+    if (hosted) return hosted.key;
+  }
   ensureStore(scope);
   purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);

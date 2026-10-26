@@ -4,6 +4,7 @@
 // dead weight in every desktop bundle.
 
 import path from "node:path";
+import { statSync } from "node:fs";
 
 function targetParts(target) {
   const [platform, arch] = target.split("-");
@@ -19,9 +20,9 @@ function targetParts(target) {
 // to deliver bytes the brain then ignores in favour of the pinned cache copy.
 //
 // Only the NATIVE PLATFORM SIBLINGS are listed here. The JS entry points --
-// @anthropic-ai/claude-agent-sdk (ADE calls query() on it in-process),
-// @openai/codex and @opencode/cli -- must keep shipping, so
-// this is an exact-name set rather than a prefix match: a prefix test on
+// @anthropic-ai/claude-agent-sdk (ADE calls query() on it in-process) and
+// @openai/codex -- must keep shipping, so this is an exact-name set rather
+// than a prefix match: a prefix test on
 // "@anthropic-ai/claude-agent-sdk" would swallow the SDK itself.
 //
 // Exported because the packaged DESKTOP app has to exclude exactly the same
@@ -66,6 +67,43 @@ export const RUNTIME_FETCHED_TOOL_PACKAGES = new Set([
   "@github/copilot-sdk-win32-x64",
 ]);
 
+// The Droid adapter is part of the SEA bundle (see `noExternal` in
+// apps/ade-cli/tsup.config.ts). Keep the package's license notices in the
+// archive, but do not copy its second 17 MB implementation tree beside the
+// executable.
+export const RUNTIME_INLINED_PACKAGES = new Set(["@factory/droid-sdk"]);
+
+export const RUNTIME_INLINED_PACKAGE_NOTICE_PATHS = new Map([
+  ["@factory/droid-sdk", "third-party-notices/@factory/droid-sdk/LICENSE"],
+]);
+
+const PACKAGE_NOTICE_NAME = /^(?:licen[cs]e|notice|copying|third[._-]?party)(?:[._-].*)?$/i;
+const STRIPPED_PACKAGE_DIR = /^(?:\.cache|docs?|examples?|tests?|__tests__|__examples__)$/i;
+
+export function isPackageNoticeFile(relativePath) {
+  return PACKAGE_NOTICE_NAME.test(path.posix.basename(relativePath));
+}
+
+function isDirectory(entry) {
+  try {
+    return statSync(entry).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function shouldStripPackageFile(relative, entry) {
+  const basename = path.posix.basename(relative);
+  if (/\.d\.(?:ts|cts|mts)$/i.test(basename)) return true;
+  if (/^(?:readme|changelog)(?:[._-].*)?$/i.test(basename)) return true;
+
+  const segments = relative.split("/");
+  if (!segments.some((segment) => STRIPPED_PACKAGE_DIR.test(segment))) return false;
+  // Keep walking excluded documentation/test directories so a nested LICENSE
+  // or NOTICE survives. Only their ordinary files are discarded.
+  return !isDirectory(entry);
+}
+
 export function nodePtyPrebuildTarget(target) {
   const { platform, arch } = targetParts(target);
   if (platform === "darwin") return `darwin-${arch}`;
@@ -91,7 +129,23 @@ export function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
   const relative = path.relative(sourceRoot, entry).split(path.sep).join("/");
   if (!relative || relative.startsWith("..")) return true;
 
+  // Third-party license and notice files remain even when they live in a docs
+  // or test directory. The embedded runtime's platform packages are published
+  // as npm archives, so these files travel with the code they describe.
+  if (isPackageNoticeFile(relative)) return true;
+
+  if (shouldStripPackageFile(relative, entry)) return false;
+
   if (packageName === "node-pty") {
+    if (target.startsWith("win32-") && relative.toLowerCase().endsWith(".pdb")) {
+      return false;
+    }
+    if (
+      target === "win32-x64"
+      && /^third_party\/conpty\/[^/]+\/win10-arm64(?:\/|$)/i.test(relative)
+    ) {
+      return false;
+    }
     if (relative.startsWith("prebuilds/")) {
       // The fs.cp filter receives the target directory entry itself
       // (e.g. "prebuilds/darwin-arm64") with no trailing slash. Returning
@@ -106,7 +160,11 @@ export function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
     }
   }
 
-  if (packageName === "@opencode/cli" && relative === "bin/opencode.exe" && !target.startsWith("win32-")) {
+  // OpenCode itself is fetched at its pinned version into ADE's tools cache.
+  // The parent package's postinstall-copied binary is only a fallback for
+  // source checkouts; neither the Windows executable nor a POSIX binary may
+  // be duplicated into any runtime archive.
+  if (packageName === "@opencode/cli" && /^bin\/opencode(?:\.exe)?$/i.test(relative)) {
     return false;
   }
 

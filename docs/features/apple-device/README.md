@@ -947,7 +947,13 @@ returns those. It also lifts the transport's point size to the top as
 `drag` and `swipe` take; both are null while no stream runs, so `stream-start`
 first. A snapshot taken while a stream runs scales its elements from that point
 size (both axes must agree), which is how the Duo's inner panel reads @3x
-instead of the @2x the element-frame guess picked.
+instead of the @2x the element-frame guess picked. With no stream it reads the
+device type's own scale: `simctl list devicetypes -j` names the profile bundle,
+and its `Contents/Resources/capabilities.plist` lists each display's `scale`
+(`deviceTypeScreenScale`; the iPhone Duo's two integrated panels are both @3x).
+A screenshot is in the device's native pixels, so that scale holds; it is read
+once per device. The element-frame guess is left for a profile that names no
+scale, or whose screens disagree.
 
 A viewer that is not visible stops its stream. A stall of ~3s shows
 Reconnect. First frame timeout is 5s.

@@ -172,6 +172,13 @@ them with `ade chat list` (archived ones need `--include-archived`), and read th
 to `--mode chat` for a subagent that must report back**: a chat child reports
 after every turn it finishes.
 
+**Which lane a child goes in.** An ADE child chat is a subagent that can run
+another provider, so it works where a native subagent would: in your lane,
+under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
+set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
+Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
+asks.
+
 To wait on a terminal (a dev server, a long build, a log), watch it instead of
 polling `ade terminal read`: `ade terminal watch <terminal-id> [--match error |
 --match "ready|listening"] [--lifetime 30m]`, then end your turn. ADE wakes
@@ -252,6 +259,12 @@ a chat you do not own:
   user can answer this`. That chat is waiting, not stuck: do not start a
   second chat for the same work or on the same lane. Tell the person, then
   carry on with other work.
+- A peer (`--type peer`) never wakes you. If you wait on one, `ade chat wait`
+  stops with `waiting_on_user` (exit 1) when it waits on such a card, and an
+  `--async` wait wakes you once to say so and stays armed.
+- `ade chat send <B> --after <A>` also tells you once when A waits on such a
+  card: the queued prompt has not been sent yet. It goes when the person
+  answers and A moves on.
 - **Long or multi-line text goes through a file or stdin, not an argument.**
   `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
   <session> --text-file -` read stdin (or a path instead of `-`). The file is
@@ -274,6 +287,13 @@ a chat you do not own:
   you need manual control, `ade chat interrupt <session>` first, then
   `ade chat send ...` with the new instruction. Do not send a second normal turn
   into an active chat and hope the provider interprets it as steering.
+- When the user asks you to restart or refresh your session (to pick up new
+  skills, plugins, MCP servers or project instructions), run
+  `ade chat restart`. It restarts your own chat after this turn ends; the
+  conversation is kept. Finish your reply in the same turn: the next message
+  starts the fresh process. Background jobs you started (`run_in_background`,
+  background subagents) stop with the old process, so wait for them or tell
+  the user first. Only restart when the user asks.
 
 ### Checking whether delegated / backgrounded work finished
 
@@ -368,6 +388,16 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+- **Take the hand down when you moved on without an answer.**
+  `ade chat ask --clear` drops the marker this chat raised (alias
+  `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
+  being the thing you are waiting on: a coordinator or peer sent new
+  instructions, or you decided and kept working. Otherwise the row keeps saying
+  **Needs you** for the rest of the run, and the person reads a live "blocked on
+  you" badge about a decision that was already made. It clears only an
+  agent-raised ask — never one the user raised, never a provider question card.
+  A message from another agent is not a user answer, so it does not clear the
+  hand on its own.
 - **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
   asked to hear about**, and only then: "tell me when the deploy is done",
   "ping me if the tests fail". Never on your own initiative; ADE already alerts

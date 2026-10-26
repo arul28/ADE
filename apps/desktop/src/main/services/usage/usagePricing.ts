@@ -114,7 +114,7 @@ const BUILTIN_PRICING_ALIASES: Record<string, string> = {
   "fable-5.0": "claude-fable-5-1",
   astra: "gpt-6-astra",
   sol: "gpt-6-sol",
-  terra: "gpt-5.6-terra",
+  terra: "gpt-6.1-terra",
   luna: "gpt-6-luna",
   "anthropic--claude-4.6-opus": "claude-opus-4-6",
   "anthropic--claude-4.6-sonnet": "claude-sonnet-4-6",

@@ -20,6 +20,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { extractError } from "../../lib/format";
 import { joinParentAndName } from "../../lib/pathUtils";
 import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
+import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import type {
   CloneProjectInput,
   CloneProjectResult,
@@ -76,32 +77,20 @@ type Tab = "url" | "my-repos";
 
 const SLUG_PATTERN = /([^/:]+?)(?:\.git)?$/;
 
-// Mirrors the backend `parseGitHubRepoFromRemoteUrl` accepted shapes so the
-// UI surfaces a friendly hint before the IPC call would reject with
-// `invalid_github_url`.
+// `user@host:owner/repo` or `ssh://user@host/owner/repo` through an ssh
+// config alias (`git@github.com-work:…`). Only the machine that clones can read its ssh config, so the form lets the
+// shape through and the clone call decides whether the alias points at GitHub.
+const SSH_ALIAS_REPO_PATTERNS = [
+  /^[^@\s/:]+@[A-Za-z0-9][A-Za-z0-9._-]*:[^/\s]+\/[^/\s]+$/,
+  /^ssh:\/\/(?:[^@\s/]+@)?[A-Za-z0-9][A-Za-z0-9._-]*(?::\d+)?\/[^/\s]+\/[^/\s]+$/i,
+];
+
+// The URL shapes the clone call accepts, so the UI shows a hint before the
+// call would reject with `invalid_github_url`.
 function isGitHubRepoUrl(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return false;
-  const sshScp = trimmed.match(/^git@github\.com:(.+)$/i);
-  if (sshScp) {
-    const slug = sshScp[1]!.replace(/\.git$/i, "").trim();
-    const [owner, name] = slug.split("/");
-    return Boolean(owner && name);
-  }
-  if (/^(https?|ssh):\/\//i.test(trimmed)) {
-    try {
-      const url = new URL(trimmed);
-      if (!/github\.com$/i.test(url.hostname)) return false;
-      const parts = url.pathname
-        .replace(/^\/+/, "")
-        .replace(/\.git$/i, "")
-        .split("/");
-      return Boolean(parts[0]?.trim() && parts[1]?.trim());
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  return parseGithubRemoteUrl(trimmed) !== null || SSH_ALIAS_REPO_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 const inputStyle: CSSProperties = {

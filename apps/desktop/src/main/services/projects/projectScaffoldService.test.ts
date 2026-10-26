@@ -307,7 +307,8 @@ describe("cloneRepository", () => {
     expect(result.rootPath).toBe(path.join(parentDir, "Hello-World"));
     const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
     const args = cloneCall?.[0] as string[];
-    expect(args.slice(-2)).toEqual([
+    expect(args.slice(-3)).toEqual([
+      "--",
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);
@@ -412,6 +413,7 @@ describe("cloneRepository", () => {
       "clone",
       "-c",
       `http.https://github.com/.extraheader=AUTHORIZATION: basic ${expectedBasic}`,
+      "--",
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);
@@ -440,6 +442,7 @@ describe("cloneRepository", () => {
       "clone",
       "-c",
       "http.https://github.com/.extraheader=AUTHORIZATION: basic one-shot",
+      "--",
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);
@@ -466,6 +469,7 @@ describe("cloneRepository", () => {
     const args = cloneCall?.[0] as string[];
     expect(args).toEqual([
       "clone",
+      "--",
       "https://github.com/octocat/Hello-World",
       path.join(parentDir, "Hello-World"),
     ]);

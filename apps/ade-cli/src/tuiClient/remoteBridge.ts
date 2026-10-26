@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { localIpcListenOptions } from "../services/runtime/localIpcListenOptions";
 import { RemoteTargetRegistry } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../desktop/src/shared/rpcLiveness";
 import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
@@ -110,12 +111,17 @@ export function spawnRemoteRpcProcess(attempt: RemoteRpcAttempt): ChildProcessWi
   });
 }
 
+/** A request that got no reply in time; any other rejection is a reply. */
+class RemoteRpcRequestTimeoutError extends Error {}
+
 export class ProcessJsonRpcClient {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<string, PendingRequest>();
   private readonly stderrTail = new ByteRingBuffer(MAX_STDERR_TAIL_BYTES);
   private closed = false;
+  private lastInboundAt: number | null = null;
+  private probing = false;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on("data", (chunk: Buffer | string) => this.handleData(chunk));
@@ -129,6 +135,10 @@ export class ProcessJsonRpcClient {
   }
 
   request<T = unknown>(method: string, params?: unknown): Promise<T> {
+    return this.send<T>(method, params, REMOTE_RPC_REQUEST_TIMEOUT_MS);
+  }
+
+  private send<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Remote ADE RPC connection is closed."));
     const id = this.nextId++;
     const payload = {
@@ -140,12 +150,14 @@ export class ProcessJsonRpcClient {
     return new Promise<T>((resolve, reject) => {
       const pendingKey = String(id);
       const timer = setTimeout(() => {
-        if (!this.pending.has(pendingKey)) return;
-        this.handleClosed(
-          new Error(`Remote ADE RPC timed out waiting for method ${method} (${REMOTE_RPC_REQUEST_TIMEOUT_MS}ms).`),
-        );
-        this.child.kill();
-      }, REMOTE_RPC_REQUEST_TIMEOUT_MS);
+        const pending = this.pending.get(pendingKey);
+        if (!pending) return;
+        // Only this request gives up. Closing here failed every other request
+        // on the connection whenever the remote machine was merely busy.
+        this.pending.delete(pendingKey);
+        pending.reject(new RemoteRpcRequestTimeoutError(`Remote ADE RPC timed out waiting for method ${method} (${timeoutMs}ms).`));
+        this.closeIfUnresponsive();
+      }, timeoutMs);
       timer.unref?.();
       this.pending.set(pendingKey, {
         method,
@@ -161,6 +173,31 @@ export class ProcessJsonRpcClient {
         reject(error);
       });
     });
+  }
+
+  /**
+   * After a request timed out: the connection is kept while the remote end
+   * still sends anything, or answers a `ping`. A machine that went away does
+   * neither, and then the connection closes.
+   */
+  private closeIfUnresponsive(): void {
+    if (this.closed || this.probing) return;
+    if (hasRecentTraffic(this.lastInboundAt)) return;
+    this.probing = true;
+    void this.send("ping", undefined, RPC_LIVENESS_PROBE_TIMEOUT_MS).then(
+      () => {
+        this.probing = false;
+      },
+      (error: unknown) => {
+        this.probing = false;
+        // An error reply (an older runtime without `ping`) is still a reply.
+        if (this.closed || !(error instanceof RemoteRpcRequestTimeoutError)) return;
+        this.handleClosed(
+          new Error(`Remote ADE RPC stopped answering (no reply to ping in ${RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`),
+        );
+        this.child.kill();
+      },
+    );
   }
 
   close(): void {
@@ -187,6 +224,7 @@ export class ProcessJsonRpcClient {
 
   private handleData(chunk: Buffer | string): void {
     if (this.closed) return;
+    this.lastInboundAt = Date.now();
     this.buffer = Buffer.concat([
       this.buffer,
       Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"),

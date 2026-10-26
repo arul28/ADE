@@ -2,6 +2,7 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import type { CodexAccessProgram } from "./codexDaybreak";
 import bundledModelManifestJson from "./model-manifest.json";
 import { compareTextInsensitive } from "./formatting";
 import {
@@ -90,6 +91,8 @@ export type ModelDescriptor = {
   /** Provider-reported multiplier used for request-cost display when available. */
   billingMultiplier?: number;
   serviceTiers?: string[];
+  /** Codex runtime catalog only: access programs this account may ask for (`shared/codexDaybreak.ts`). */
+  cyberAccessPrograms?: CodexAccessProgram[];
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -107,6 +110,8 @@ export type ModelDescriptor = {
   cacheReadPricePer1M?: number;
   /** Curated cost tier for UI display. */
   costTier?: "low" | "medium" | "high" | "very_high";
+  /** Cursor: every catalog variant of this model only runs in max mode. */
+  cursorMaxModeOnly?: boolean;
   /** ADE-owned safety/tooling profile for local and experimental models. */
   harnessProfile?: LocalModelHarnessProfile;
   /** Source of runtime-discovered descriptors for debugging and UI hints. */
@@ -677,7 +682,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultReasoningEffort: "low",
     serviceTiers: ["fast"],
     color: "#10A37F",
@@ -688,6 +693,28 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 10,
     outputPricePer1M: 50,
     costTier: "very_high",
+  },
+  {
+    id: "openai/gpt-6.1-terra",
+    shortId: "gpt-6.1-terra",
+    aliases: ["terra", "gpt-6.1-terra"],
+    displayName: "GPT-6.1 Terra",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#22B88A",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6.1-terra",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 1,
+    outputPricePer1M: 5,
+    costTier: "low",
   },
   {
     id: "openai/gpt-6-sol",
@@ -758,7 +785,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   {
     id: "openai/gpt-5.6-terra",
     shortId: "gpt-5.6-terra",
-    aliases: ["terra", "gpt-5.6-terra"],
+    aliases: ["gpt-5.6-terra"],
     displayName: "GPT-5.6 Terra",
     family: "openai",
     authTypes: ["cli-subscription"],
@@ -773,9 +800,11 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "gpt-5.6-terra",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 2.5,
-    outputPricePer1M: 15,
+    inputPricePer1M: 2,
+    outputPricePer1M: 12,
     costTier: "medium",
+    // Replaced by GPT-6.1 Terra; kept so saved chats still resolve.
+    deprecated: true,
   },
   {
     id: "openai/gpt-5.6-luna",
@@ -2769,6 +2798,7 @@ export function createDynamicCursorCliModelDescriptor(
     capabilities?: Partial<ModelCapabilities>;
     cursorAvailability?: CursorModelAvailability;
     cursorCliVariants?: CursorCliModelVariant[];
+    cursorMaxModeOnly?: boolean;
   },
 ): ModelDescriptor {
   const id = `cursor/${providerModelId}`;
@@ -2797,6 +2827,7 @@ export function createDynamicCursorCliModelDescriptor(
     ...(options?.aliases?.length ? { aliases: [...options.aliases] } : {}),
     ...(options?.cursorAvailability ? { cursorAvailability: { ...options.cursorAvailability } } : {}),
     ...(options?.cursorCliVariants?.length ? { cursorCliVariants: options.cursorCliVariants.map((variant) => ({ ...variant })) } : {}),
+    ...(options?.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
     isCliWrapped: false,
   };
 }
@@ -3530,8 +3561,6 @@ function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | un
 }
 
 function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
-  const astra = models.find((model) => /gpt-6-astra$/i.test(model.providerModelId));
-  if (astra) return astra;
   const sol = models
     .filter((model) => /gpt-\d+(?:\.\d+)*-sol$/i.test(model.providerModelId))
     .sort((left, right) => compareVersionSegmentsDesc(

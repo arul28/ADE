@@ -30,13 +30,15 @@ import { APPROVAL_DECISIONS, type ApprovalDecision } from "../approvals.js";
 import { AdeError, errorMessage } from "../errors.js";
 import type { AdeChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
 import { ADE_CLIENT_EVENTS } from "../clientEvents.js";
-import type { AdeThread, HistoryPageOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
+import type { AdeThread, HistoryPageOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
+import { createSignInRegistry } from "../signInRegistry.js";
 import type { AgentChatEventEnvelope, ThreadSummary, Unsubscribe } from "../types.js";
 import {
   ADE_DEFAULT_CHANNEL_PREFIX,
   ADE_IPC_THREAD_KEY_METHODS,
   eventChannel,
   invokeChannel,
+  serializeAdeError,
   type AdeIpcErrorPayload,
   type AdeIpcMethod,
   type AdeIpcEventPayload,
@@ -85,6 +87,16 @@ export type RegisterAdeIpcOptions = {
    * runs on every keyed call, so keep an async gate cheap.
    */
   allowThreadKey?: (key: string) => boolean | Promise<boolean>;
+  /**
+   * Enable account, credential and preset management from renderers. Without
+   * this explicit host gate, every such call is refused. A callback can make
+   * the decision per renderer and method.
+   */
+  allowAccountManagement?: boolean | ((
+    event: IpcMainInvokeEventLike,
+    method: string,
+    args: unknown[],
+  ) => boolean | Promise<boolean>);
   /**
    * The host decides how a thread is opened. Recommended for every host.
    *
@@ -253,12 +265,7 @@ export function adeErrorCodeOf(error: unknown): string | null {
 }
 
 function serializeError(error: unknown): AdeIpcErrorPayload {
-  return {
-    __adeError: true,
-    name: "AdeError",
-    code: adeErrorCodeOf(error) ?? "rpc_error",
-    message: errorMessage(error),
-  };
+  return serializeAdeError(error);
 }
 
 function unauthorized(method: string): AdeError {
@@ -270,6 +277,13 @@ function requireString(value: unknown, label: string): string {
     throw new AdeError("invalid_option", `${label} must be a non-empty string.`);
   }
   return value;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AdeError("invalid_option", `${label} must be an object.`);
+  }
+  return value as Record<string, unknown>;
 }
 
 const DECISIONS: ReadonlySet<string> = new Set<string>(APPROVAL_DECISIONS);
@@ -383,6 +397,8 @@ export function registerAdeIpc(
   const log = opts.logger ?? (() => {});
   const { allowThreadKey } = opts;
   const renderers = new Map<number, RendererEntry>();
+  // Sign-ins a renderer started, by webContents id. Released with the renderer.
+  const signIns = createSignInRegistry<number, AdeIpcErrorPayload>(serializeError);
   let disposed = false;
 
   function push(webContents: WebContentsLike, payload: AdeIpcEventPayload): void {
@@ -402,6 +418,7 @@ export function registerAdeIpc(
     entry.disposed = true;
     renderers.delete(id);
     for (const subscriptionId of [...entry.subscriptions.keys()]) releaseSubscription(entry, subscriptionId);
+    signIns.releaseOwner(id);
     entry.threads.clear();
     entry.opening.clear();
     entry.rendererOptions.clear();
@@ -732,6 +749,7 @@ export function registerAdeIpc(
   > = {
     "providers.status": () => currentClient().providers.status(),
     "providers.refresh": () => currentClient().providers.refresh(),
+    "providers.capabilities": (_entry, args) => currentClient().providers.capabilities(requireString(args[0], "provider")),
     "providers.subscribe": (entry) => {
       const subscriptionId = nextSubscriptionId("providers");
       attachProvidersSubscription(entry, currentClient(), subscriptionId);
@@ -851,9 +869,63 @@ export function registerAdeIpc(
     },
     "thread.interrupt": async (entry, args) => {
       const key = requireString(args[0], "thread key");
-      await requireThread(entry, key).interrupt();
+      const raw = args[1] && typeof args[1] === "object" ? args[1] as Record<string, unknown> : null;
+      const options = raw ? {
+        ...(raw.queue === "keep" || raw.queue === "drop" ? { queue: raw.queue } : {}),
+        ...(typeof raw.mode === "string" ? { mode: raw.mode } : {}),
+      } as Parameters<AdeThread["interrupt"]>[0] : undefined;
+      await requireThread(entry, key).interrupt(options);
       return null;
     },
+    "thread.respond": async (entry, args) => {
+      const key = requireString(args[0], "thread key");
+      const requestId = requireString(args[1], "request id");
+      const response = requireRecord(args[2], "response") as ThreadRespondOptions;
+      await requireThread(entry, key).respond(requestId, response);
+      return null;
+    },
+    "thread.queue.list": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).queue.list(),
+    "thread.queue.cancel": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).queue.cancel(requireString(args[1], "queue id"));
+      return null;
+    },
+    "thread.queue.edit": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).queue.edit(requireString(args[1], "queue id"), typeof args[2] === "string" ? args[2] : "");
+      return null;
+    },
+    "thread.queue.move": async (entry, args) => {
+      const index = Number.isInteger(args[2]) ? args[2] as number : -1;
+      await requireThread(entry, requireString(args[0], "thread key")).queue.move(requireString(args[1], "queue id"), index);
+      return null;
+    },
+    "thread.queue.dispatch": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).queue.dispatch(requireString(args[1], "queue id"));
+      return null;
+    },
+    "thread.queue.cancelDispatched": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).queue.cancelDispatched(requireString(args[1], "queue id"));
+      return null;
+    },
+    "thread.queue.restore": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).queue.restore();
+      return null;
+    },
+    "thread.stopTask": async (entry, args) => {
+      await requireThread(entry, requireString(args[0], "thread key")).stopTask(requireString(args[1], "task id"));
+      return null;
+    },
+    "thread.slashCommands": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).slashCommands(),
+    "thread.recover": (entry, args) => {
+      const options = args[1] && typeof args[1] === "object" ? args[1] as Parameters<AdeThread["recover"]>[0] : {};
+      return requireThread(entry, requireString(args[0], "thread key")).recover(options);
+    },
+    "thread.resolveUnprocessed": (entry, args) => {
+      const raw = args[1] && typeof args[1] === "object" ? args[1] as Parameters<AdeThread["resolveUnprocessed"]>[0] : { steerId: "", action: "dismiss" as const };
+      return requireThread(entry, requireString(args[0], "thread key")).resolveUnprocessed(raw);
+    },
+    "thread.usageLimit.resumeNow": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).usageLimit.resumeNow(),
+    "thread.usageLimit.continueOnAlternate": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).usageLimit.continueOnAlternate(),
+    "thread.switchAccount": (entry, args) => requireThread(entry, requireString(args[0], "thread key")).switchAccount(requireString(args[1], "account id")),
     "thread.history": (entry, args) => {
       const key = requireString(args[0], "thread key");
       const options = (args[1] ?? undefined) as { limit?: number } | undefined;
@@ -895,6 +967,34 @@ export function registerAdeIpc(
       releaseSubscription(entry, requireString(args[0], "subscriptionId"));
       return null;
     },
+    "accounts.list": (_entry, args) => currentClient().accounts.list(typeof args[0] === "string" ? args[0] : undefined),
+    "accounts.add": (_entry, args) => currentClient().accounts.add(requireString(args[0], "provider"), args[1] && typeof args[1] === "object" ? args[1] as { label?: string } : undefined),
+    "accounts.remove": (_entry, args) => currentClient().accounts.remove(requireString(args[0], "account id")),
+    "accounts.rename": (_entry, args) => currentClient().accounts.rename(requireString(args[0], "account id"), requireString(args[1], "label")),
+    "accounts.setDefault": (_entry, args) => currentClient().accounts.setDefault(requireString(args[0], "account id")),
+    "accounts.signOut": (_entry, args) => currentClient().accounts.signOut(requireString(args[0], "account id")),
+    "accounts.refresh": () => currentClient().accounts.refresh(),
+    "accounts.signIn": async (entry, args) => {
+      const handle = await currentClient().accounts.signIn(requireString(args[0], "account id"), args[1] && typeof args[1] === "object" ? args[1] as { deviceAuth?: boolean } : undefined);
+      return await signIns.start(entry.webContents.id, handle);
+    },
+    "accounts.signInStatus": (entry, args) => signIns.status(entry.webContents.id, requireString(args[0], "login id")),
+    "accounts.signInSubmitCode": async (entry, args) => {
+      await signIns.submitCode(entry.webContents.id, requireString(args[0], "login id"), requireString(args[1], "sign-in code"));
+      return null;
+    },
+    "accounts.signInCancel": async (entry, args) => {
+      await signIns.cancel(entry.webContents.id, requireString(args[0], "login id"));
+      return null;
+    },
+    "credentials.list": (_entry, args) => currentClient().credentials.list(typeof args[0] === "string" ? args[0] : undefined),
+    "credentials.add": (_entry, args) => currentClient().credentials.add(requireRecord(args[0], "credential") as { provider: string; key: string; label: string }),
+    "credentials.remove": (_entry, args) => currentClient().credentials.remove(requireString(args[0], "credential id"), typeof args[1] === "string" ? args[1] : undefined),
+    "credentials.verify": (_entry, args) => currentClient().credentials.verify(requireString(args[0], "provider")),
+    "presets.list": () => currentClient().presets.list(),
+    "presets.add": (_entry, args) => currentClient().presets.add(requireRecord(args[0], "preset")),
+    "presets.update": (_entry, args) => currentClient().presets.update(requireString(args[0], "preset id"), requireRecord(args[1], "preset patch")),
+    "presets.remove": (_entry, args) => currentClient().presets.remove(requireString(args[0], "preset id")),
   };
 
   async function dispatch(
@@ -916,6 +1016,11 @@ export function registerAdeIpc(
       const known = method as AdeIpcMethod;
       if (opts.authorize && !(await opts.authorize(event, method, args))) {
         throw unauthorized(method);
+      }
+      if (known.startsWith("accounts.") || known.startsWith("credentials.") || known.startsWith("presets.")) {
+        const gate = opts.allowAccountManagement;
+        const allowed = typeof gate === "function" ? await gate(event, method, args) : gate === true;
+        if (!allowed) throw unauthorized(method);
       }
       if (allowThreadKey && ADE_IPC_THREAD_KEY_METHODS.has(known)) {
         const key = typeof args[0] === "string" ? args[0] : "";

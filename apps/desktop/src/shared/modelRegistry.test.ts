@@ -496,10 +496,10 @@ describe("modelRegistry", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
       "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
+      "openai/gpt-6.1-terra",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
       "openai/gpt-5.6-sol",
-      "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
       "openai/gpt-5.5",
     ]);
@@ -507,15 +507,15 @@ describe("modelRegistry", () => {
     // API-key OpenAI models are now discovered dynamically through OpenCode,
     // so the static registry yields no hits for api-key auth alone.
     expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6-astra");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6.1-sol");
   });
 
-  it("exposes GPT-6 Astra as the Codex flagship with the API effort ladder", () => {
+  it("exposes GPT-6 Astra with the API effort ladder", () => {
     expect(getModelById("openai/gpt-6-astra")).toMatchObject({
       displayName: "GPT-6 Astra",
       providerModelId: "gpt-6-astra",
       contextWindow: 1_050_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
       defaultReasoningEffort: "low",
       serviceTiers: ["fast"],
     });
@@ -555,7 +555,7 @@ describe("modelRegistry", () => {
     // The bare family names follow the newest generation (model-manifest.json).
     expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
     expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
-    expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-5.6-terra");
+    expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-6.1-terra");
     expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
     expect(resolveModelAlias("gpt-5.6-luna")?.id).toBe("openai/gpt-5.6-luna");
   });

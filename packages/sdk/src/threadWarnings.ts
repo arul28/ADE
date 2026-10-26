@@ -183,6 +183,12 @@ export type ThreadResumeMismatchInput = {
     instructions?: AgentChatInstructions | undefined;
     settingSources?: string | undefined;
     permissions?: unknown;
+    permissionMode?: string | undefined;
+    reasoningEffort?: string | undefined;
+    fastMode?: boolean | undefined;
+    account?: string | undefined;
+    credential?: string | undefined;
+    preset?: string | undefined;
     mcpServers?: Record<string, unknown> | undefined;
     loadUserMcpServers?: boolean | undefined;
   };
@@ -195,6 +201,12 @@ export type ThreadResumeMismatchInput = {
     permissionPolicy?: ThreadPermissionPolicy | undefined;
     /** The stored preset, on a record that has one (0.3+) and no policy. */
     permissionPreset?: string | undefined;
+    permissionMode?: string | undefined;
+    reasoningEffort?: string | undefined;
+    fastMode?: boolean | undefined;
+    instanceId?: string | undefined;
+    credentialId?: string | undefined;
+    presetId?: string | undefined;
     mcpServers?: Record<string, unknown> | undefined;
     loadUserMcpServers?: boolean | undefined;
   };
@@ -256,6 +268,24 @@ export function threadResumeMismatchWarnings(input: ThreadResumeMismatchInput): 
     !sameJson(supplied.permissions, stored.permissionPolicy ?? stored.permissionPreset)
   ) {
     lines.push(ignored("permissions", stored.permissionPolicy ? "the stored policy" : "the stored preset"));
+  }
+  if (supplied.permissionMode !== undefined && supplied.permissionMode !== stored.permissionMode) {
+    lines.push(ignored("permissionMode", stored.permissionMode ?? "the provider default"));
+  }
+  if (supplied.reasoningEffort !== undefined && supplied.reasoningEffort !== stored.reasoningEffort) {
+    lines.push(ignored("reasoningEffort", stored.reasoningEffort ?? "the model default"));
+  }
+  if (supplied.fastMode !== undefined && supplied.fastMode !== stored.fastMode) {
+    lines.push(ignored("fastMode", String(stored.fastMode ?? false)));
+  }
+  if (supplied.account !== undefined && supplied.account !== stored.instanceId) {
+    lines.push(ignored("account", stored.instanceId ?? "the provider default"));
+  }
+  if (supplied.credential !== undefined && supplied.credential !== stored.credentialId) {
+    lines.push(ignored("credential", stored.credentialId ?? "the provider default"));
+  }
+  if (supplied.preset !== undefined && supplied.preset !== stored.presetId) {
+    lines.push(ignored("preset", stored.presetId ?? "none"));
   }
   // The tool surface, for the same reason as the four above and with a sharper
   // consequence: an embedder that reopens with a new server map and

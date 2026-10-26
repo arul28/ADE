@@ -170,6 +170,53 @@ private func syncTrimmedMachineName(_ value: String?) -> String? {
   return trimmed
 }
 
+/// A freeze the machine reported when the phone reached it again: "Studio
+/// froze for 12s. Its CPU is overloaded (load 21 on 8 cores)." Mirrors the
+/// desktop's `describeHostStall` (shared/connectionDiagnosis.ts).
+struct SyncHostStallNotice: Equatable {
+  let title: String
+  let detail: String
+  let endedAt: Date
+
+  /// Older than this, a freeze no longer explains anything on screen.
+  static let window: TimeInterval = 10 * 60
+
+  func isCurrent(now: Date = Date()) -> Bool {
+    now.timeIntervalSince(endedAt) <= Self.window
+  }
+
+  var message: String { "\(title). \(detail)" }
+}
+
+func parseSyncHostStallNotice(_ hostHealth: Any?, machineName: String?, now: Date) -> SyncHostStallNotice? {
+  guard let health = hostHealth as? [String: Any],
+        let stall = health["lastStall"] as? [String: Any],
+        let durationMs = (stall["durationMs"] as? NSNumber)?.doubleValue, durationMs > 0,
+        let agoMs = (stall["agoMs"] as? NSNumber)?.doubleValue, agoMs >= 0 else {
+    return nil
+  }
+  let machine = syncTrimmedMachineName(machineName) ?? "That computer"
+  let seconds = max(1, Int((durationMs / 1000).rounded()))
+  let duration = seconds < 90 ? "\(seconds)s" : "\(Int((Double(seconds) / 60).rounded())) min"
+  let endedAt = now.addingTimeInterval(-agoMs / 1000)
+  if (stall["restarted"] as? Bool) == true {
+    return SyncHostStallNotice(
+      title: "\(machine) froze",
+      detail: "ADE there stopped responding for \(duration) and restarted itself.",
+      endedAt: endedAt
+    )
+  }
+  let load = (stall["loadAverage1m"] as? NSNumber)?.doubleValue
+  let cores = (stall["cpuCount"] as? NSNumber)?.intValue
+  let detail: String
+  if let load, let cores, cores > 0, load > Double(cores) {
+    detail = "Its CPU is overloaded (load \(Int(load.rounded())) on \(cores) cores)."
+  } else {
+    detail = "ADE on \(machine) was too busy to answer."
+  }
+  return SyncHostStallNotice(title: "\(machine) froze for \(duration)", detail: detail, endedAt: endedAt)
+}
+
 struct SettingsConnectionHeader: View {
   let snapshot: SettingsConnectionSnapshot
   let onDisconnect: () -> Void
@@ -288,6 +335,13 @@ struct SettingsConnectionHeader: View {
 
       if let compatibilityMessage {
         ADESettingsNotice(message: compatibilityMessage, tone: .warn)
+      }
+
+      if health.transport.isConnected,
+         outcome == .standard,
+         let stall = snapshot.hostStallNotice,
+         stall.isCurrent() {
+        ADESettingsNotice(message: stall.message, tone: .warn)
       }
     }
     .adeKitCard()

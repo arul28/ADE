@@ -19,12 +19,15 @@ import {
   runGitOrThrow,
   type GitCheckoutProgress,
 } from "../git/git";
+import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
+import { runGitPushOrThrow } from "../git/gitPushFailure";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -53,6 +56,7 @@ import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
+import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
 import type {
   ArchiveAndReclaimLaneArgs,
@@ -338,7 +342,8 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-const WORKTREE_REMOVE_ATTEMPTS = 20;
+/** Each attempt's child already retries a held file for ~11 s (see removeTreeOffProcess). */
+const WORKTREE_REMOVE_ATTEMPTS = 3;
 const WORKTREE_REMOVE_RETRY_MS = 250;
 
 function isRetryableRemoveError(error: unknown): boolean {
@@ -350,14 +355,18 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Remove a worktree directory, recovering from read-only files and — on
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
- * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
- * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
- * Electron a plain `fs` rm fails on every `.asar` file in the tree.
+ * bounded schedule instead of failing the cleanup outright. Exported only for
+ * the Windows lock-retry regression test.
+ *
+ * Every attempt runs in a separate process (see removeTreeOffProcess): a lane
+ * folder can hold hundreds of thousands of files, and a removal that stopped
+ * at one held file can leave most of them, so even a retry here would stall
+ * every other file operation in this process.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+      await removeTreeOffProcess(targetPath);
       return;
     } catch (error) {
       if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
@@ -431,31 +440,12 @@ async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
   return fs.existsSync(path.resolve(checkoutPath, gitdir));
 }
 
+/**
+ * Bytes a reclaim would free: blocks on disk, each hard-linked file once and
+ * pnpm store clones left out, without following links (`diskUsage`).
+ */
 async function managedTreeBytes(targetPath: string): Promise<number> {
-  let total = 0;
-  const pending = [targetPath];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.lstat(current);
-    } catch {
-      continue;
-    }
-    if (stat.isSymbolicLink()) continue;
-    if (!stat.isDirectory()) {
-      total += Math.max(0, stat.size);
-      continue;
-    }
-    let names: string[];
-    try {
-      names = await fs.promises.readdir(current);
-    } catch {
-      continue;
-    }
-    for (const name of names) pending.push(path.join(current, name));
-  }
-  return total;
+  return (await measureTree(targetPath)).bytes;
 }
 
 async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
@@ -1433,7 +1423,7 @@ async function resolveImportBranchTarget(args: {
   const rawRef = args.rawRef.trim();
 
   // Refresh cached remote refs, but still allow import when the fetch fails and refs are already present locally.
-  await runGit(["fetch", "--prune", "--all"], {
+  await runGitWithGithubAuthFallback(["fetch", "--prune", "--all"], {
     cwd: args.projectRoot,
     timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
   }).catch(() => {});
@@ -2870,7 +2860,7 @@ export function createLaneService({
         timeoutMs: 8_000,
       }).then((res) => res.exitCode === 0);
       if (remoteTrackingExists) return true;
-      return runGit(["ls-remote", "--heads", "origin", ref], {
+      return runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", ref], {
         cwd: projectRoot,
         timeoutMs: 15_000,
       }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
@@ -4473,7 +4463,10 @@ export function createLaneService({
     // best-effort upstream setup.
     if (!isAutoLaneTemporaryBranch(branchRef)) {
       try {
-        await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        await runGitWithGithubAuthFallback(["push", "-u", "origin", branchRef], {
+          cwd: worktreePath,
+          timeoutMs: 60_000,
+        });
       } catch {
         // Non-fatal: lane works locally even without remote tracking
       }
@@ -5419,7 +5412,8 @@ export function createLaneService({
       projectRoot,
       store: db,
       run: runAppleCommand,
-      removeDirectory: (directory: string) => fs.promises.rm(directory, { recursive: true, force: true }),
+      // DerivedData runs to gigabytes; see removeTreeOffProcess.
+      removeDirectory: removeTreeOffProcess,
       removeRecordings: options.removeRecordings,
       derivedDataDirectories: options.worktreePath && !pathsEqual(path.resolve(options.worktreePath), path.resolve(projectRoot))
         ? [appleLaneDerivedDataPath(options.worktreePath)]
@@ -6311,7 +6305,7 @@ export function createLaneService({
           // If we are branching directly from the current primary checkout, ensure
           // it is in sync with remote before using it as the base.
           if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-            await runGitOrThrow(["fetch", "--prune"], {
+            await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
               cwd: parent.worktree_path,
               timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
               signal: gitWrite.signal,
@@ -6800,7 +6794,10 @@ export function createLaneService({
           try {
             const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
             if (upstreamCheck.exitCode !== 0) {
-              await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+              await runGitWithGithubAuthFallback(["push", "-u", "origin", branchRef], {
+                cwd: worktreePath,
+                timeoutMs: 60_000,
+              });
             }
           } catch {
             // Non-fatal: lane works locally even without remote tracking
@@ -6889,7 +6886,7 @@ export function createLaneService({
             );
           } catch (cleanupError) {
             try {
-              nonAsarFs.rmSync(worktreePath, { recursive: true, force: true });
+              await removeWorktreeDirectoryWithRecovery(worktreePath);
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
                 await runGitWorktreeMutation(() =>
@@ -7868,7 +7865,11 @@ export function createLaneService({
         const lane = getLaneRow(laneId);
         if (!lane) continue;
 
-        await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        await runGitPushOrThrow(["push", "--force-with-lease"], {
+          cwd: lane.worktree_path,
+          timeoutMs: 120_000,
+          branch: lane.branch_ref,
+        });
         laneItem.pushed = true;
         run.pushedLaneIds.push(laneId);
         emitRunLog({
@@ -8214,7 +8215,7 @@ export function createLaneService({
       });
       const hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
       if (hasOrigin) {
-        const remoteTemp = await runGit(
+        const remoteTemp = await runGitWithGithubAuthFallback(
           ["ls-remote", "--exit-code", "--heads", "origin", temporaryBranch],
           { cwd: lane.worktree_path, timeoutMs: 12_000 },
         );
@@ -8295,7 +8296,7 @@ export function createLaneService({
           timeoutMs: 8_000,
         });
         const remote = hasOrigin
-          ? await runGit(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
+          ? await runGitWithGithubAuthFallback(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
             cwd: projectRoot,
             timeoutMs: 12_000,
           })
@@ -8929,7 +8930,7 @@ export function createLaneService({
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
-            await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+            await removeWorktreeDirectoryWithRecovery(targetPath);
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
           throw error;
@@ -9544,7 +9545,7 @@ export function createLaneService({
             if (remoteCheck.exitCode !== 0) {
               throw new Error(`Remote '${remote}' is not configured for this repository`);
             }
-            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
+            const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
               cwd: projectRoot,
               timeoutMs: 30_000,
             });
@@ -9555,7 +9556,7 @@ export function createLaneService({
             if (remoteRefCheck.stdout.trim().length === 0) {
               return { detail: `${remote}/${branchName} not found` };
             }
-            await runGitOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+            await runGitWithGithubAuthFallbackOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
             return { detail: `${remote}/${branchName}` };
           }, { fatal: requireRemoteBranchDelete });
         }
@@ -9708,7 +9709,7 @@ export function createLaneService({
           unpushedCommitCount = Number.parseInt(unpushed.stdout.trim(), 10) || 0;
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
-        const remoteCheck = await runGit(
+        const remoteCheck = await runGitWithGithubAuthFallback(
           ["ls-remote", "--heads", "origin", riskBranchName],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );
@@ -9728,6 +9729,21 @@ export function createLaneService({
         activePtyCount,
         activeWatcherCount,
         envInitialized: false
+      };
+    },
+
+    /**
+     * What runs in the lane on this machine right now: open chats, live
+     * terminals (dev servers run in one) and file watchers. Cheap: no git, no
+     * disk. Null until the chat and terminal services are wired, so a caller
+     * deciding whether the lane is idle cannot mistake "not known yet" for 0.
+     */
+    getLiveWorkCounts(laneId: string): { activeChatCount: number; activePtyCount: number; activeWatcherCount: number } | null {
+      if (!teardownDeps?.ptyService || !teardownDeps.agentChatService) return null;
+      return {
+        activeChatCount: teardownDeps.agentChatService.countActiveForLane(laneId),
+        activePtyCount: teardownDeps.ptyService.countActiveForLane(laneId),
+        activeWatcherCount: teardownDeps.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0,
       };
     },
 

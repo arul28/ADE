@@ -75,7 +75,7 @@ import {
   createBrainProjectActionsSyncHandler,
   recoveryAnalyticsSurface,
 } from "./brainProjectActionsSyncHandler";
-import { runSyncFileServiceRequest } from "./syncFileRequests";
+import { createSyncArtifactReads, runSyncFileServiceRequest } from "./syncFileRequests";
 import {
   generateMachinePairingPin,
   resetBrainMachineSyncStoresForTests,
@@ -6535,6 +6535,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        // Closing a browser tab changes the desktop: the owner's phone only.
+        "workTools.closeBrowserTab",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
@@ -6584,6 +6586,7 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        "workTools.closeBrowserTab",
         "chat.mcpAppRequest",
       ]);
 
@@ -10911,6 +10914,42 @@ describe("sync host reliability guards", () => {
       args: { workspaceId: "workspace-1" },
     }, { isMobile: true })).rejects.toThrow(/Unsupported file action: watchChanges/);
     expect(localFileService.listWorkspaces).toHaveBeenCalledTimes(1);
+
+    // Given a project's proof reads (the brain serving a phone the proof of a
+    // chat in a project it does not host), the same request is answered by id,
+    // inside that project's `.ade/artifacts` and nowhere else.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    try {
+      const artifactsDir = path.join(projectRoot, ".ade", "artifacts");
+      fs.mkdirSync(path.join(artifactsDir, "computer-use"), { recursive: true });
+      fs.writeFileSync(path.join(artifactsDir, "computer-use", "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      fs.writeFileSync(path.join(projectRoot, "secret.txt"), "not proof");
+      const artifacts = createSyncArtifactReads({
+        projectRoot,
+        artifactsDir,
+        findArtifactUri: (artifactId) => artifactId === "proof-1"
+          ? "ade-artifact://project/.ade/artifacts/computer-use/shot.png"
+          : null,
+      });
+      await expect(runSyncFileServiceRequest(localFileService as never, {
+        action: "readArtifact",
+        args: { artifactId: "proof-1" },
+      }, { isMobile: true, artifacts })).resolves.toMatchObject({
+        mimeType: "image/png",
+        isBinary: true,
+        content: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"),
+      });
+      await expect(runSyncFileServiceRequest(localFileService as never, {
+        action: "readArtifactRange",
+        args: { artifactId: "proof-1", offset: 1, length: 2 },
+      }, { isMobile: true, artifacts })).resolves.toMatchObject({ totalSize: 4, rangeStart: 1 });
+      await expect(runSyncFileServiceRequest(localFileService as never, {
+        action: "readArtifact",
+        args: { uri: ".ade/artifacts/../secret.txt" },
+      }, { isMobile: true, artifacts })).rejects.toThrow(/must resolve within \.ade\/artifacts/);
+    } finally {
+      cleanup();
+    }
   });
 
   it("serves artifacts stored under the ade-artifact scheme the broker writes", async () => {

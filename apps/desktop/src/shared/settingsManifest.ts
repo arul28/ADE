@@ -659,9 +659,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "chat.prompt-suggestions",
     label: "Next prompt suggestions",
-    keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer"],
+    keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer", "codex"],
     tab: "chat",
-    anchor: "prompt-suggestions",
+    anchor: "prompt-suggestions-codex",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
@@ -1182,6 +1182,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention", "lane storage rules"],
     tab: "storage",
     anchor: "lane-storage-rules",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Cleanups",
+  },
+  {
+    id: "storage.lane-build-output",
+    label: "Clean build output from idle lanes",
+    keywords: ["node_modules", "dist", "build", "target", ".next", "build output", "idle", "disk space", "free space", "cleanup", "reinstall"],
+    tab: "storage",
+    anchor: "lane-build-output",
     scope: "machine-repo",
     web: "hidden",
     group: "Cleanups",

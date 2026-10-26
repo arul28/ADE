@@ -151,7 +151,14 @@ import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
-import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
+import {
+  appleDeviceDataRoot,
+  appleInstalledSimulatorsFrom,
+  deviceTypeBundlePath,
+  deviceTypeScreenScale,
+  parseAppleInstalledRuntimes,
+  parseSimctlDevices,
+} from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
@@ -1774,13 +1781,19 @@ function scaleAccessibilityElementsToScreenshot(
   elements: IosScreenElement[],
   shot: IosSimulatorScreenshot,
   pointSize: { width: number; height: number } | null = null,
+  deviceScale: number | null = null,
 ): { elements: IosScreenElement[]; screen: IosInspectableScreen | null } {
   const width = shot.width ?? 0;
   const height = shot.height ?? 0;
   if (!elements.length || width <= 0 || height <= 0) {
     return { elements, screen: null };
   }
-  const scale = measuredScreenshotScale(shot, pointSize) ?? inferAccessibilityScale(elements, shot);
+  // The stream's point size first, then the device type's own scale (a
+  // screenshot is in the device's native pixels), and the guess from the
+  // element frames only when neither is known.
+  const scale = measuredScreenshotScale(shot, pointSize)
+    ?? deviceScale
+    ?? inferAccessibilityScale(elements, shot);
   if (!scale || !Number.isFinite(scale) || scale <= 0) {
     return { elements, screen: null };
   }
@@ -2764,6 +2777,40 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       simctlMissingAt = Date.now();
       return [];
     }
+  };
+
+  /**
+   * The device's own pixels per point, from its device type's profile. A
+   * device never changes type, so each udid is read once. Null when anything
+   * on the way is missing; the snapshot then falls back to its guess.
+   */
+  const deviceScreenScales = new Map<string, Promise<number | null>>();
+  const deviceScreenScale = (deviceUdid: string): Promise<number | null> => {
+    const known = deviceScreenScales.get(deviceUdid);
+    if (known) return known;
+    const read = (async (): Promise<number | null> => {
+      // Only the profile's own answer is remembered. A device or profile not
+      // found yet (a list read while simctl was busy, a device type still
+      // installing) is asked again by the next snapshot.
+      const device = (await listInstalledSimulators()).find((entry) => entry.udid === deviceUdid);
+      if (!device?.deviceTypeIdentifier) throw new Error("device type not listed");
+      const { stdout: types } = await run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 });
+      const bundlePath = deviceTypeBundlePath(types, device.deviceTypeIdentifier);
+      if (!bundlePath) throw new Error(`no profile for ${device.deviceTypeIdentifier}`);
+      const capabilitiesPath = path.join(bundlePath, "Contents", "Resources", "capabilities.plist");
+      const { stdout } = await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", capabilitiesPath], { timeoutMs: 10_000 });
+      return deviceTypeScreenScale(JSON.parse(stdout) as unknown);
+    })().catch((error: unknown) => {
+      // Not remembered: the next snapshot asks again.
+      deviceScreenScales.delete(deviceUdid);
+      args.logger.debug("apple.device_scale_unread", {
+        deviceUdid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    deviceScreenScales.set(deviceUdid, read);
+    return read;
   };
 
   const laneDevices = createLaneDeviceRegistry({
@@ -5126,8 +5173,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * `select` all keep working across the engine swap.
    *
    * The frames are in DEVICE POINTS, as they were from idb. Everything
-   * downstream (`scaleAccessibilityElementsToScreenshot`) already infers the
-   * scale from the screenshot, so nothing here converts.
+   * downstream (`scaleAccessibilityElementsToScreenshot`) finds the scale, so
+   * nothing here converts.
    */
   const readAccessibilityElements = async (deviceUdid: string): Promise<IosScreenElement[]> => {
     const payload = await helper().send({ type: "ax-describe", udid: deviceUdid });
@@ -5194,14 +5241,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       const rawAccessibilityElements = await readAccessibilityElements(shot.deviceUdid);
       // The live stream knows the point size of the screen on show; with no
-      // stream the scale is still read off the element frames.
+      // stream the device type's profile gives the scale.
       const transport = shot.deviceUdid ? runtimeStreamingUdid(shot.deviceUdid)?.streamStatus.transport ?? null : null;
+      const pointSize = transport?.pointWidth && transport.pointHeight
+        ? { width: transport.pointWidth, height: transport.pointHeight }
+        : null;
       const scaledAccessibility = scaleAccessibilityElementsToScreenshot(
         rawAccessibilityElements,
         shot,
-        transport?.pointWidth && transport.pointHeight
-          ? { width: transport.pointWidth, height: transport.pointHeight }
-          : null,
+        pointSize,
+        pointSize || !shot.deviceUdid ? null : await deviceScreenScale(shot.deviceUdid),
       );
       accessibilityElements = scaledAccessibility.elements;
       accessibilityScreen = scaledAccessibility.screen;

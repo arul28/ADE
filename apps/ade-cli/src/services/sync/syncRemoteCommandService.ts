@@ -86,6 +86,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
   AgentChatDroidPermissionMode,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
@@ -277,6 +278,7 @@ import type {
   UpdateBranchArgs,
   UpdateLaneAppearanceArgs,
   UpdatePrBodyArgs,
+  UpdatePrCommentArgs,
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
@@ -432,6 +434,7 @@ import type { ProxyService } from "../proxy/proxyService";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
+import { readAgentSkill } from "../skills/agentSkillCatalogService";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -580,6 +583,9 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
   }
 }
 
+/** The one browser call the sync surface makes: close a tab, as a person would. */
+export type SyncBrowserTabCloser = { closeTab(input: { tabId: string }): Promise<unknown> };
+
 type SyncRemoteCommandServiceArgs = {
   /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
@@ -645,6 +651,12 @@ type SyncRemoteCommandServiceArgs = {
    * controllers feature-detect its absence rather than seeing it fail.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /**
+   * The desktop browser over its bridge, for the one browser action a phone
+   * may take: closing a tab (`workTools.closeBrowserTab`). Null on a runtime
+   * with no browser surface.
+   */
+  builtInBrowserService?: SyncBrowserTabCloser | null;
   /**
    * The proof store the hosted web client's citations read. Absent on a runtime
    * that never built one, in which case `computerUse.*` is not registered and the
@@ -1193,6 +1205,13 @@ function parseRemoteBranchDriftResolution(
 
 function parseAgentChatContextUsageArgs(value: Record<string, unknown>): AgentChatContextUsageArgs {
   return parseSessionIdArgs(value, "chat.getContextUsage");
+}
+
+function parseAgentChatClaudeUsageArgs(value: Record<string, unknown>): AgentChatClaudeUsageArgs {
+  return {
+    ...parseSessionIdArgs(value, "chat.getClaudeUsage"),
+    ...(value.skipBehaviors === true ? { skipBehaviors: true } : {}),
+  };
 }
 
 function parseAgentChatRewindFilesArgs(value: Record<string, unknown>): AgentChatRewindFilesArgs {
@@ -4051,6 +4070,18 @@ function parseUpdatePrBodyArgs(value: Record<string, unknown>): UpdatePrBodyArgs
   };
 }
 
+function parseUpdatePrCommentArgs(value: Record<string, unknown>): UpdatePrCommentArgs {
+  const body = typeof value.body === "string" ? value.body.trim() : "";
+  if (!body) throw new Error("prs.updateComment requires a non-empty body.");
+  const source = value.source === "review" ? "review" : "issue";
+  return {
+    prId: requirePrId(value, "prs.updateComment"),
+    commentId: requireString(value.commentId, "prs.updateComment requires commentId."),
+    body,
+    source,
+  };
+}
+
 function parseSetPrLabelsArgs(value: Record<string, unknown>): SetPrLabelsArgs {
   return {
     prId: requirePrId(value, "prs.setLabels"),
@@ -5194,6 +5225,16 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
 }
 
+/** Cap on a skill's instructions sent to a phone. Real skills are a few KB. */
+const SKILL_INSTRUCTIONS_MAX_BYTES = 128 * 1024;
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return value;
+  // Decoding a cut that lands inside a character yields U+FFFD; drop it.
+  return buffer.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD$/, "");
+}
+
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   /**
    * Chunked staging for file-shaped attachments (documents, videos). One
@@ -5252,6 +5293,31 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       params: payload.params,
       userActivated: payload.userActivated === true,
     });
+  });
+  // A skill chip's instructions: the SKILL.md this chat's lane would load,
+  // found the way `ade skill show` finds it (the lane worktree's skill folders,
+  // then the user's, then ADE's own). Read-only; the body is capped so a huge
+  // file cannot balloon one reply.
+  register("chat.getSkillInstructions", { viewerAllowed: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "chat.getSkillInstructions requires sessionId.");
+    const name = requireString(payload.name, "chat.getSkillInstructions requires name.").replace(/^[/$]+/, "");
+    if (!name) throw new Error("chat.getSkillInstructions requires name.");
+    const session = args.sessionService.get(sessionId);
+    if (!session) throw new Error("This chat is not on this machine.");
+    const cwd = resolveLaneWorktreePathForSync(args, session.laneId);
+    if (!cwd) throw new Error("This chat's lane has no worktree on this machine.");
+    const skill = readAgentSkill(name, { cwd, includeUser: true });
+    if (!skill) return { status: "not_found" as const, name };
+    const truncated = Buffer.byteLength(skill.body, "utf8") > SKILL_INSTRUCTIONS_MAX_BYTES;
+    return {
+      status: "ready" as const,
+      name: skill.entry.name,
+      description: skill.entry.description,
+      source: skill.entry.source,
+      path: skill.entry.path,
+      body: truncated ? truncateUtf8(skill.body, SKILL_INSTRUCTIONS_MAX_BYTES) : skill.body,
+      truncated,
+    };
   });
   // Bound the registry sent to a phone: a project can discover hundreds of
   // skill/command files, and the composer only ever renders a prefix list.
@@ -5404,6 +5470,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
+    ));
+  register("chat.getClaudeUsage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getClaudeUsage(
+      parseAgentChatClaudeUsageArgs(payload),
     ));
   register("chat.rewindFiles", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").rewindFiles(
@@ -5785,6 +5855,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .restartSession({
         sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
         ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+        ...(payload.afterTurn === true ? { afterTurn: true } : {}),
       });
     return { ...result, ok: true };
   });
@@ -6134,13 +6205,19 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
 }
 
 /**
- * Read-only mirror of the desktop's Work tools pane for iOS and hosted web.
+ * Mirror of the desktop's Work tools pane for iOS and hosted web.
  *
- * Project-scoped, because a lane only exists inside a project. Viewer-allowed,
- * because everything here is strictly observational — there is deliberately no
- * remote command that changes the active tool or drives a browser tab.
- * `setActiveTool` is a desktop-only publish and lives on the `work_tools` ADE
- * action domain instead, where only the local runtime channel can reach it.
+ * Project-scoped, because a lane only exists inside a project. The reads are
+ * viewer-allowed and strictly observational: no remote command changes the
+ * active tool or drives a page. `setActiveTool` is a desktop-only publish and
+ * lives on the `work_tools` ADE action domain instead, where only the local
+ * runtime channel can reach it.
+ *
+ * The one write is closing a tab, the way the person at the desktop would with
+ * the tab's ×. It is controller-only (the owner's own phone, not a read-only
+ * viewer) and never queued: a close replayed later could hit a tab the user
+ * has since gone back to. The tab must be one this lane's pane shows, so a
+ * phone cannot close another lane's tab by guessing its id.
  */
 function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const workToolsStateService = args.workToolsStateService;
@@ -6153,6 +6230,27 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     workToolsStateService.readObservationPreview({
       path: requireString(payload.path, "workTools.readObservationPreview requires path."),
     }));
+  register(
+    "workTools.closeBrowserTab",
+    { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    async (payload) => {
+      const laneId = requireString(payload.laneId, "workTools.closeBrowserTab requires laneId.");
+      const tabId = requireString(payload.tabId, "workTools.closeBrowserTab requires tabId.");
+      const browser = args.builtInBrowserService;
+      if (!browser) throw new Error("The browser isn't available on this machine.");
+      const state = await workToolsStateService.getLaneState({ laneId });
+      if (!state.browser) {
+        throw new Error("ADE Desktop isn't showing this project's browser right now, so the tab can't be closed from here.");
+      }
+      // Already gone (closed on the desktop, or a second tap): the phone wanted
+      // it closed and it is, so this is not an error.
+      if (!state.browser.tabs.some((tab) => tab.id === tabId)) return { ok: true, alreadyClosed: true };
+      // No lane or chat on purpose: this is the person closing it, not an agent,
+      // so the agent lease and consent gates do not apply.
+      await browser.closeTab({ tabId });
+      return { ok: true, alreadyClosed: false };
+    },
+  );
 }
 
 /**
@@ -8081,6 +8179,10 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.updateTitle(parseUpdatePrTitleArgs(payload));
     return { ok: true };
   });
+  // The host checks the comment belongs to this PR and was written by the
+  // signed-in account before it PATCHes (`updateGithubCommentByCoords`).
+  register("prs.updateComment", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.updateComment(parseUpdatePrCommentArgs(payload)));
   register("prs.updateBody", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.updateBody(parseUpdatePrBodyArgs(payload));
     return { ok: true };

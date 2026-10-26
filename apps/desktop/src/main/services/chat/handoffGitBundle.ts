@@ -7,6 +7,7 @@ import type {
   AgentChatCrossMachineHandoffCapsule,
 } from "../../../shared/types/chat";
 import { runGit, runGitOrThrow } from "../git/git";
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES } from "./crossMachineForkTransport";
 
 /**
@@ -17,30 +18,6 @@ import { CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES } from "./crossMachineForkTrans
  * it did not create (except a clean ADE lane the caller hands it), and undoes
  * every step it took when a later one fails.
  */
-
-/**
- * Git environment for a headless fetch from GitHub with this machine's own
- * token: prompts off, and the token as an extraheader through Git's config
- * environment, so it stays out of command arguments, remote URLs and anything
- * persisted. extraheader is multi-valued: the empty entry first resets any
- * header a clone left in .git/config, so GitHub never sees two Authorization
- * headers ("Duplicate header"). Without a token, a credential helper may still
- * authorize Git, and a missing one fails clearly instead of hanging.
- */
-export function githubExtraHeaderGitEnv(token: string | null | undefined): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" };
-  const trimmed = token?.trim();
-  if (!trimmed) return env;
-  const basic = Buffer.from(`x-access-token:${trimmed}`, "utf8").toString("base64");
-  return {
-    ...env,
-    GIT_CONFIG_COUNT: "2",
-    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_0: "",
-    GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${basic}`,
-  };
-}
 
 /** Raw bundle cap. Past this the branch should simply be pushed. */
 export const HANDOFF_GIT_BUNDLE_MAX_BYTES = 50 * 1024 * 1024;
@@ -417,7 +394,7 @@ export async function applyHandoffGitBundle(args: {
 
     // The bundle builds on commits origin has; fetch them when missing here.
     if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
-      await runGit(["fetch", "--quiet", "origin"], {
+      await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin"], {
         cwd: projectRoot,
         timeoutMs: GIT_TIMEOUT_MS,
         ...(args.fetchEnv ? { env: args.fetchEnv } : {}),

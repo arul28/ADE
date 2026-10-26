@@ -723,6 +723,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archiveSession",
     "cancelDispatchedSteer",
     "cancelSteer",
+    // `ade chat ask --clear`: the agent takes back the hand it raised. Fenced
+    // to `agent_explicit` in the service, and scoped to the caller's own chat
+    // by the RPC server's chat guard, so it cannot drop a person's hand.
+    "clearAsk",
     "createSession",
     "deleteSession",
     "dispatchSteer",
@@ -736,6 +740,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getChatEventHistory",
     "getChatEventHistoryPage",
     "getContextUsage",
+    "getClaudeUsage",
     "getImageDataUrl",
     "getMainTranscript",
     "getSubagentTranscript",
@@ -1025,7 +1030,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"
   // cannot share a permission.
-  account_settings: ["list", "get", "set", "remove", "sync"],
+  account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
   // for the same reason `project_secret.exportEnv` is.
@@ -1166,7 +1171,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
-  storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "runMaintenanceNow"],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "laneBuildOutputRemoved", "runMaintenanceNow"],
   project_health: ["fix", "getReport"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],

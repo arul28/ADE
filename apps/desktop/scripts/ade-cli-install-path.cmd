@@ -41,6 +41,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
+call :write_git_bash_shim
+
 if not "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
   call :ensure_user_path "%TARGET_DIR%"
   rem %ERRORLEVEL% would expand when this block is parsed, before the call.
@@ -54,6 +56,21 @@ if "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
   echo Added %TARGET_DIR% to the user PATH if it was missing.
   echo Open a new terminal, then run: ade doctor
 )
+exit /b 0
+
+:write_git_bash_shim
+setlocal DisableDelayedExpansion
+rem Git Bash looks up a bare `ade` and never tries `ade.cmd`, and the .cmd
+rem would run through cmd.exe, which ends an argument at its first line break.
+rem So an extensionless sh command sits next to the .cmd (as npm does) and
+rem runs the packaged POSIX wrapper, bin\ade, with "$@" whole. PowerShell
+rem writes it: a sh script needs LF line ends, and echo writes CRLF. Paths
+rem travel through the environment so quotes and spaces stay data. Best
+rem effort: cmd.exe and PowerShell users have the .cmd either way.
+for %%I in ("%ADE_BIN%") do set "ADE_GIT_BASH_SOURCE=%%~dpIade"
+for %%I in ("%TARGET_PATH%") do set "ADE_GIT_BASH_TARGET=%%~dpnI"
+if not exist "%ADE_GIT_BASH_SOURCE%" exit /b 0
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$q=[string][char]39; $s=$env:ADE_GIT_BASH_SOURCE.Replace([string][char]92, '/').Replace($q, $q + [char]92 + $q + $q); [IO.File]::WriteAllText($env:ADE_GIT_BASH_TARGET, '#!/bin/sh' + [char]10 + 'exec ' + $q + $s + $q + ' ' + [char]34 + '$@' + [char]34 + [char]10)" >nul 2>nul
 exit /b 0
 
 :ensure_user_path

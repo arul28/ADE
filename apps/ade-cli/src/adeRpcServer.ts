@@ -3621,6 +3621,7 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // Switching accounts changes which login pays for a chat's next turn.
   "switchAccount",
   "requestSessionAttention",
+  "clearAsk",
   "setSessionActivity",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a

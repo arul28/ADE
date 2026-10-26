@@ -1511,6 +1511,29 @@ export type SyncHelloOkPayload = {
    * Socket-up (`hello_ok`) is not the same as a usable project host.
    */
   projectHost?: SyncHostReadinessSnapshot | null;
+  /**
+   * The host's own health, as it knows it. Absent on older hosts. A client
+   * that reconnects after the host froze reads why here: from the outside a
+   * frozen host and a dropped network both look like silence.
+   */
+  hostHealth?: SyncHostHealth;
+};
+
+/** A freeze the host recovered from: its event loop stopped turning. */
+export type SyncHostStall = {
+  durationMs: number;
+  /** How long ago it ended, by the host's clock, so clients need no clock sync. */
+  agoMs: number;
+  /** One-minute load average when it ended. Absent on Windows. */
+  loadAverage1m?: number;
+  cpuCount?: number;
+  /** The host's watchdog restarted ADE there to end it. */
+  restarted?: boolean;
+};
+
+export type SyncHostHealth = {
+  /** The latest freeze of 5 s or more in the last 5 minutes. */
+  lastStall?: SyncHostStall | null;
 };
 
 type SyncHelloErrorHost = {
@@ -2617,6 +2640,7 @@ export type SyncRemoteCommandAction =
   | "work.sendToSession"
   | "work.stopRuntime"
   | "chat.getSlashCommands"
+  | "chat.getSkillInstructions"
   | "chat.listMentionSuggestions"
   | "chat.resolveSmartLinkPreview"
   | "chat.resolveSmartLinkImage"
@@ -2649,6 +2673,7 @@ export type SyncRemoteCommandAction =
   | "chat.retryCrossMachineBatchMove"
   | "chat.resolveCrossMachineBatchMoveApproval"
   | "chat.getContextUsage"
+  | "chat.getClaudeUsage"
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
   | "chat.saveTempAttachment"
@@ -2949,6 +2974,7 @@ export type SyncRemoteCommandAction =
   | "prs.replyToReviewThread"
   | "prs.setReviewThreadResolved"
   | "prs.reactToComment"
+  | "prs.updateComment"
   | "prs.simulateIntegration"
   | "prs.commitIntegration"
   | "prs.listIntegrationWorkflows"
@@ -2977,6 +3003,7 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  | "workTools.closeBrowserTab"
   // Proof records for the hosted web client's citations and scene stills. Read-only;
   // the desktop reads the same list through its own IPC.
   | "computerUse.listArtifacts"

@@ -151,3 +151,18 @@ export function startParentDeathWatchdog(
     clearInterval(timer);
   };
 }
+
+/** The env var an SDK host puts its per-spawn secret in. */
+export const EMBEDDED_HOST_TOKEN_ENV = "ADE_EMBEDDED_HOST_TOKEN";
+
+/**
+ * Reads and REMOVES the SDK host's per-spawn secret from `env`, so nothing this
+ * runtime spawns inherits it. Null outside the embedded profile (the variable is
+ * still removed) and for a value too short to be a real secret.
+ */
+export function takeEmbeddedHostToken(env: NodeJS.ProcessEnv, embedded: boolean): string | null {
+  const raw = env[EMBEDDED_HOST_TOKEN_ENV];
+  delete env[EMBEDDED_HOST_TOKEN_ENV];
+  const token = typeof raw === "string" ? raw.trim() : "";
+  return embedded && token.length >= 32 ? token : null;
+}

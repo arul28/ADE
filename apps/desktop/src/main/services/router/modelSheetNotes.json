@@ -1,5 +1,5 @@
 {
-  "$comment": "Plain-English notes per model registry family, for the model sheet (modelSheet.ts). Written 2026-10-20 from the registry snapshot of that day; each claim's benchmark is in `basis`. Families: every family runnable on the owner's machine plus the 40 current families with the highest Intelligence Index. Scores refresh with each snapshot; these words do not, so re-check them when a family's numbers move.",
+  "$comment": "Plain-English notes per model registry family, for the model sheet (modelSheet.ts). Written 2026-10-20 from the registry snapshot of that day (gpt-6-1-terra added 2026-10-26 from launch-day Artificial Analysis and OpenAI figures); each claim's benchmark is in `basis`. Families: every family runnable on the owner's machine plus the 40 current families with the highest Intelligence Index. Scores refresh with each snapshot; these words do not, so re-check them when a family's numbers move.",
   "families": {
     "claude-opus-5-5": {
       "summary": "The strongest all-round model you can run: top-tier at hard coding, debugging, refactors and research, at a premium price.",
@@ -710,8 +710,45 @@
         "Codex Coding Agent Index 0.55 (max)"
       ]
     },
+    "gpt-6-1-terra": {
+      "summary": "The cheap, fast Terra rebuilt on GPT-6.1: GPT-6.1 Sol-level scores at about a third of GPT-5.6 Terra's cost, usable for agentic coding at high effort.",
+      "strengths": [
+        "Low price for its quality",
+        "Much better terminal coding than GPT-5.6 Terra",
+        "Guesses far less often when it does not know"
+      ],
+      "weaknesses": [
+        "Below GPT-6.1 Sol and Astra at their top efforts",
+        "Launch-day benchmark numbers, not yet re-measured"
+      ],
+      "bestFor": [
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench 4.0 50.3% at max effort, more than double GPT-5.6 Terra"
+        },
+        {
+          "kind": "feature",
+          "why": "Intelligence Index 48 at max for $0.40 per index task"
+        },
+        {
+          "kind": "research",
+          "why": "AA-Omniscience hallucination rate 38%, down from 88%"
+        }
+      ],
+      "avoidFor": [],
+      "notes": [
+        "Use high or max effort for coding; medium effort scores much lower on Terminal-Bench (35.8%).",
+        "Replaces GPT-5.6 Terra."
+      ],
+      "basis": [
+        "Artificial Analysis Intelligence Index 48 (max), +6 over GPT-5.6 Terra",
+        "Terminal-Bench 4.0 50.3% (max), 35.8% (medium)",
+        "AA-Omniscience hallucination rate 0.38",
+        "$0.40 per index task (max); $1/$5 per million tokens"
+      ]
+    },
     "gpt-5-6-terra": {
-      "summary": "A fast, cheap OpenAI model for questions and research; not for agentic coding.",
+      "summary": "The July Terra, replaced by GPT-6.1 Terra: fast and cheap for questions and research; not for agentic coding.",
       "strengths": [
         "Fast first token",
         "Research",
@@ -719,7 +756,8 @@
       ],
       "weaknesses": [
         "Agentic coding and debugging",
-        "Makes up facts often"
+        "Makes up facts often",
+        "Superseded by GPT-6.1 Terra"
       ],
       "bestFor": [
         {

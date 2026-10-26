@@ -42,6 +42,7 @@ import {
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
+import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
 import { showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
@@ -53,6 +54,7 @@ import type {
   PtyResumeSessionResult,
   TerminalResumeLaunchConfig,
   TerminalSessionSummary,
+  WorkBoardWaitingReason,
 } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -115,9 +117,9 @@ import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
-import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
   cancelCrossMachineOptimisticChatSession,
+  requestCrossMachineLanesForMachine,
   seedCrossMachineOptimisticChatSession,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
@@ -482,9 +484,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         laneActions?: SessionContextMenuLaneActions | null;
         openIn?: SessionContextMenuOpenIn | null;
         laneType?: LaneSummary["laneType"] | null;
+        waitingReason?: WorkBoardWaitingReason | null;
       } = {},
     ) => {
-      const { binding, machineName, laneActions, openIn, laneType } = extras;
+      const { binding, machineName, laneActions, openIn, laneType, waitingReason } = extras;
       setBulkMenu(null);
       setContextMenu({
         session,
@@ -495,6 +498,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
         ...(laneType ? { laneType } : {}),
+        ...(waitingReason ? { waitingReason } : {}),
       });
     },
   );
@@ -510,6 +514,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       laneActions?: SessionContextMenuLaneActions | null,
       openIn?: SessionContextMenuOpenIn | null,
       laneType?: LaneSummary["laneType"] | null,
+      waitingReason?: WorkBoardWaitingReason | null,
     ) => {
       // Right-clicking a row inside a multi-selection acts on the selection, the
       // way Finder does; a row outside it keeps its own single-row menu.
@@ -524,6 +529,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
         ...(laneType ? { laneType } : {}),
+        ...(waitingReason ? { waitingReason } : {}),
       });
     },
   );
@@ -780,26 +786,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
     [resolveSessionRuntimePin, work],
   );
-
-  const handleSettleSession = useCallback((
-    session: TerminalSessionSummary,
-    runtimePin?: OpenProjectBinding | null,
-  ) => {
-    setSessionActionError(null);
-    void (async () => {
-      try {
-        const dismissPendingInput = sessionNeedsYou(canonicalInputFromSummary(session));
-        const opts = dismissPendingInput ? { dismissPendingInput: true } : undefined;
-        const pin = runtimePin ?? resolveSessionRuntimePin(session);
-        await (pin
-          ? window.ade.sessions.settle(session.id, opts, pin)
-          : window.ade.sessions.settle(session.id, opts));
-      } catch (err) {
-        setSessionActionError(formatSessionActionError(err, "Settle"));
-        window.setTimeout(() => setSessionActionError(null), 6000);
-      }
-    })();
-  }, [resolveSessionRuntimePin]);
 
   const handleStopAndDeleteSession = useCallback(
     (
@@ -2186,7 +2172,25 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => copyToClipboard(id, "session ID")}
-        onSettle={handleSettleSession}
+        onChangeStatus={(session, target, runtimePin) => {
+          // A row on another machine is re-read after the move and after an
+          // undo, as a board drag does, so the card does not sit stale.
+          const refreshForeign = runtimePin
+            ? () => requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin))
+            : undefined;
+          moveSessionOnBoard({
+            session,
+            to: target,
+            binding: runtimePin ?? null,
+            onMoved: refreshForeign,
+            onUndoSettled: refreshForeign,
+          });
+        }}
+        // The row's own reason first: the board's union covers rows on other
+        // machines, which this page's local map does not.
+        statusWaitingReason={contextMenu
+          ? contextMenu.waitingReason ?? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null
+          : null}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
           void (async () => {

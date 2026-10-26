@@ -19,7 +19,7 @@ export type AccountMigrationSources = Partial<Record<MigrationSource, AccountMig
 
 export type AccountMigrationArgs = {
   receiptDir: string;
-  /** Scope only the project-secret source; account-wide sources stay shared. */
+  /** Scopes the project sources (secrets, alias keys); account-wide sources stay shared. */
   projectRoot?: string | null;
   sources: AccountMigrationSources;
   /** Return false when the account owner changed during this run. */

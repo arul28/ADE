@@ -1,4 +1,5 @@
-import { GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitOrThrow } from "../git/git";
+import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
+import { GIT_REMOTE_FETCH_TIMEOUT_MS } from "../git/git";
 import { normalizeBranchName } from "./utils";
 
 export async function fetchRemoteTrackingBranch(args: {
@@ -8,13 +9,13 @@ export async function fetchRemoteTrackingBranch(args: {
   const branch = normalizeBranchName(String(args.targetBranch ?? "").trim());
   if (!branch) return false;
   try {
-    await runGitOrThrow(
+    await runGitWithGithubAuthFallbackOrThrow(
       ["fetch", "--prune", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
       { cwd: args.projectRoot, timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS },
     );
     return true;
   } catch {
-    await runGit(["fetch", "--prune", "origin"], {
+    await runGitWithGithubAuthFallback(["fetch", "--prune", "origin"], {
       cwd: args.projectRoot,
       timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
     });

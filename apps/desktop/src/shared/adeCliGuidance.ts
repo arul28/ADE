@@ -172,7 +172,7 @@ export function buildAdeSessionActivityGuidance(args: {
     // OpenCode shell (one shared server) has no ADE_CHAT_SCOPE to route by.
     ...(personal
       ? [
-        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`.`,
+        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`. If you asked and then kept working anyway, take the hand down with \`${cliCommand} chat ask --clear${scopeFlag} --session ${safeSessionId}\`.`,
       ]
       : []),
     `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,

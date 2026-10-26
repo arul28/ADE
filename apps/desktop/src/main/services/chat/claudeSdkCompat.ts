@@ -76,3 +76,17 @@ export function normalizeClaudeSdkSessionMessageModel(value: unknown): string | 
     ?? stringOrNull(nestedMessage?.model)
     ?? stringOrNull(nestedApiMessage?.model);
 }
+
+/**
+ * Send a control request the SDK types but gives no method for (`get_usage`,
+ * `mcp_call` as of 0.3.310) over `request`, the channel its typed methods
+ * use. Recheck on an SDK bump: null means this build has no such channel, and
+ * the caller says what is unavailable.
+ */
+export function sendClaudeControlRequest(
+  query: unknown,
+  request: Record<string, unknown>,
+): Promise<{ response?: unknown }> | null {
+  const control = query as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> } | null;
+  return typeof control?.request === "function" ? control.request(request) : null;
+}

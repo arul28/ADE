@@ -46,6 +46,7 @@ function writeFakeArtifacts(dir, target) {
       path.join(staging, "tuiClient", "cli.mjs"),
       "export async function runAdeCodeCli() { return 0; }\n",
     );
+    writeArchiveMetadata(staging, target, ["better-sqlite3"]);
     // `execFileSync`, not `spawnSync`: a missing or failing `tar` must throw
     // here. Discarding the result left an absent archive and failed the test
     // later with an unrelated message.
@@ -55,6 +56,21 @@ function writeFakeArtifacts(dir, target) {
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/**
+ * The two files every real native archive carries since the embedded profile:
+ * `manifest.json` (written by package-native-deps.mjs) and the license notice
+ * for the Droid SDK, which is bundled into the executable instead of copied.
+ */
+function writeArchiveMetadata(staging, target, packages) {
+  const noticeDir = path.join(staging, "third-party-notices", "@factory", "droid-sdk");
+  fs.mkdirSync(noticeDir, { recursive: true });
+  fs.writeFileSync(path.join(noticeDir, "LICENSE"), "Droid SDK license\n");
+  fs.writeFileSync(
+    path.join(staging, "manifest.json"),
+    `${JSON.stringify({ target, createdAt: "2026-01-01T00:00:00.000Z", packages, inlinedPackages: ["@factory/droid-sdk"] }, null, 2)}\n`,
+  );
 }
 
 function withTempDirs(body) {

@@ -72,6 +72,7 @@ import {
   type ProviderFamily,
   type FastTier,
 } from "../../../shared/modelRegistry";
+import { codexDaybreakProgram } from "../../../shared/codexDaybreak";
 import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
   composerTriggerForSelection,
@@ -2343,6 +2344,8 @@ function AgentChatComposerImpl({
   effectiveReasoningEffort,
   fastMode = false,
   fastTier = null,
+  codexDaybreak = false,
+  onCodexDaybreakChange,
   /** False locks Fast for this account: no Fast selection; a try calls `onFastModeLocked`. */
   fastModeAllowed = true,
   onFastModeLocked,
@@ -2657,6 +2660,10 @@ function AgentChatComposerImpl({
   onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
+  /** Codex Daybreak for this chat (or draft): see `shared/codexDaybreak.ts`. */
+  codexDaybreak?: boolean;
+  /** Absent hides the Daybreak switch. */
+  onCodexDaybreakChange?: (enabled: boolean) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
   onDraftChange: (value: string, editIntent?: ComposerDraftEditIntent) => void;
   /** Persisted display labels keyed by their canonical mention token. */
@@ -5860,6 +5867,18 @@ function AgentChatComposerImpl({
     ? resolveOpenCodeFastEffortSelection(fastModeDescriptor, { fastMode: true, reasoningEffort: fastModeEffort })
       .fastUnavailableReason ?? null
     : null;
+  // Only a Codex catalog lists access programs, and only for the signed-in
+  // account, so the switch appears where Daybreak can apply. Once on, it stays
+  // visible on any Codex model so it can always be turned off again.
+  const daybreakOffered = !parallelChatMode && Boolean(onCodexDaybreakChange)
+    && (codexDaybreakProgram(fastModeDescriptor?.cyberAccessPrograms) != null
+      || (codexDaybreak === true && fastModeDescriptor?.family === "openai" && sessionProvider === "codex"));
+  const daybreakControl = useMemo(
+    () => (daybreakOffered && onCodexDaybreakChange
+      ? { active: codexDaybreak === true, onChange: onCodexDaybreakChange }
+      : null),
+    [codexDaybreak, daybreakOffered, onCodexDaybreakChange],
+  );
 
   /* The preset this chat runs on, resolved from the account-scoped list.
 
@@ -7297,6 +7316,7 @@ function AgentChatComposerImpl({
       const hasPrompt = draft.trim().length > 0;
       const hasAttachments = attachments.length > 0 || contextAttachmentCount > 0;
       if (!hasPrompt && !hasAttachments) return;
+      closeCommandMenu();
       onSubmit();
       return;
     }
@@ -7341,8 +7361,12 @@ function AgentChatComposerImpl({
       return;
     }
     if (!linkedCloudReply) recordModelHintSendRef.current();
+    // A send clears the draft from outside the textarea, which never re-runs
+    // the trigger check: close an open `/` menu here, or it stays up over an
+    // empty composer (Send clicked with the menu open, `/usage`, `/context`).
+    closeCommandMenu();
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -8432,6 +8456,7 @@ function AgentChatComposerImpl({
                   catalogScopeKey={modelCatalogScopeKey}
                   catalogRevision={runtimeCatalogTick}
                   ultrathink={ultrathinkControl}
+                  daybreak={daybreakControl}
                   copilotAutoTier={copilotAutoTier}
                   copilotAutoTierPending={copilotAutoTierPending}
                   {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
@@ -27,6 +27,9 @@ import {
   formatGithubShortTime,
   githubCredentialPresentation,
   describeGithubOutage,
+  describeGitTransportFailure,
+  gitTransportPushesWithLabel,
+  GH_AUTH_LOGIN_COMMAND,
   type GithubAccountAuthState,
 } from "../../lib/githubIntegrationStatus";
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
@@ -53,7 +56,6 @@ import { Banner } from "../ui/notice";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
-const GH_AUTH_LOGIN_COMMAND = "gh auth login -h github.com -s repo -s workflow";
 const GH_AUTH_REFRESH_COMMAND = "gh auth refresh -h github.com -s repo -s workflow";
 const GH_AUTH_LOGIN_WITH_GIST_COMMAND = "gh auth login -h github.com -s repo -s workflow -s gist";
 const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo -s workflow -s gist";
@@ -204,6 +206,36 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     };
   }, [pin]);
 
+  // A credential can change while this page stays open (gh logs out, a token
+  // is saved elsewhere), so read the status again when ADE comes back to the
+  // front and when any surface reports a change. The reads are cached in the
+  // main process for 30 seconds, so this costs little.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      window.ade.github
+        .getStatus(undefined, pinRef.current)
+        .then((status) => {
+          if (!cancelled) setGithubStatus(status);
+        })
+        .catch(() => {});
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+    window.addEventListener("focus", reload);
+    document.addEventListener("visibilitychange", onVisibility);
+    const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", reload);
+      document.removeEventListener("visibilitychange", onVisibility);
+      offStatus();
+    };
+  }, [pin?.key]);
+
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
     if (!token) {
@@ -311,6 +343,11 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   } else if (outage) {
     statusTone = "neutral";
     statusLabel = outage.statusLabel;
+  } else if (isConnected && describeGitTransportFailure(githubStatus)) {
+    // Pull requests load, but nothing can be pushed: green "Connected" would
+    // be the half-truth this card used to tell.
+    statusTone = "warn";
+    statusLabel = "Connected · can't push";
   } else if (isConnected && credentialFallback) {
     statusTone = "warn";
     statusLabel = "Connected · fallback";
@@ -360,9 +397,17 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const readsWith = outage && !activeReadCredential ? "Unknown" : readsWithLabel;
   // While GitHub is down ADE can't resolve which credential would win, so it
   // reports the honest "Unknown" rather than the false-negative "Not connected".
+  // Name the writer only when its credential is really there: a gh login that
+  // lost its token must not read as "GitHub CLI".
+  const writeCredentialState = credentialStates.find((credential) => credential.source === effectiveWriteAuthSource) ?? null;
+  const writeCredentialMissing = writeCredentialState != null && !writeCredentialState.available;
   const writesWith = outage && effectiveWriteAuthSource === "none"
     ? "Unknown"
-    : credentialSourceLabel(effectiveWriteAuthSource);
+    : writeCredentialMissing
+      ? `${credentialSourceLabel(effectiveWriteAuthSource)} · not signed in`
+      : credentialSourceLabel(effectiveWriteAuthSource);
+  const pushesWith = gitTransportPushesWithLabel(githubStatus, credentialSourceLabel(effectiveWriteAuthSource));
+  const gitTransportFailure = outage ? null : describeGitTransportFailure(githubStatus);
 
   return (
     <div className="ade-int-page">
@@ -414,8 +459,14 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             </div>
             <div className="ade-int-fact">
               <span className="ade-int-fact-label">Writes with</span>
-              <span className="ade-int-fact-value">{writesWith}</span>
+              <span className="ade-int-fact-value" data-tone={writeCredentialMissing ? "warn" : undefined}>{writesWith}</span>
             </div>
+            {pushesWith ? (
+              <div className="ade-int-fact" title="Git signs in on its own for push, pull and fetch. When this computer has no git sign-in, ADE lends git its GitHub credential.">
+                <span className="ade-int-fact-label">Pushes with</span>
+                <span className="ade-int-fact-value" data-tone={gitTransportFailure ? "warn" : undefined}>{pushesWith}</span>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -465,6 +516,23 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                   Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
                 </span>
               ),
+            }}
+          />
+        ) : null}
+
+        {gitTransportFailure && !shouldShowGhAuthInstructions ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-git-transport",
+              tone: "warning",
+              icon: <TerminalWindow size={15} weight="duotone" />,
+              title: gitTransportFailure.title,
+              detail: gitTransportFailure.settingsDetail,
+              extra: gitTransportFailure.signInFixes
+                ? <code className="ade-int-command">{GH_AUTH_LOGIN_COMMAND}</code>
+                : undefined,
+              actions: [{ label: "Check again", variant: "primary", onClick: handleRefreshStatus, busy: githubBusy }],
             }}
           />
         ) : null}

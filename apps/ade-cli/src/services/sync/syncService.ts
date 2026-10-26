@@ -66,7 +66,7 @@ import {
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
 } from "./syncHostService";
-import { runSyncFileServiceRequest } from "./syncFileRequests";
+import { createSyncArtifactReads, runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
@@ -79,7 +79,7 @@ import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
-import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncBrowserTabCloser, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
@@ -184,6 +184,8 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** The desktop browser bridge, for `workTools.closeBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabCloser | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
   /** Webhook automations for remote surfaces (read-only). */
@@ -617,6 +619,11 @@ function createInactiveTailnetDiscoveryStatus(
 
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
+  const artifactReads = createSyncArtifactReads({
+    projectRoot: args.projectRoot,
+    artifactsDir: layout.artifactsDir,
+    findArtifactUri: (artifactId) => args.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0]?.uri ?? null,
+  });
   const pairingStateDir = args.phonePairingStateDir ?? layout.secretsDir;
   const draftPath = path.join(pairingStateDir, DRAFT_FILE);
   const tokenPath = path.join(pairingStateDir, TOKEN_FILE);
@@ -985,6 +992,11 @@ export function createSyncService(args: SyncServiceArgs) {
     getJiraService: args.getJiraService,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
+    builtInBrowserService: args.builtInBrowserService ?? null,
+    // `computerUse.listArtifacts` registers only with a broker. Without it no
+    // host answered it, so phones and the web client could not list the proof
+    // of a chat in a project the phone had not opened.
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,
     appControlSyncStream,
@@ -1203,6 +1215,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // without `workTools.*`, which is a mobile capability disappearing with no
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
+      builtInBrowserService: args.builtInBrowserService ?? null,
       macDesktopService,
       getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,
@@ -2321,7 +2334,9 @@ export function createSyncService(args: SyncServiceArgs) {
 
     /** A `file_request` routed here from the brain's sync host. */
     async executeRemoteFileRequest(payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown> {
-      return await runSyncFileServiceRequest(args.fileService, payload, context);
+      // Proof reads included: a phone shows the proof of a chat in this
+      // project while another project hosts sync.
+      return await runSyncFileServiceRequest(args.fileService, payload, { ...context, artifacts: artifactReads });
     },
 
     getDeviceRegistryService() {

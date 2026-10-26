@@ -82,6 +82,41 @@ function readMcpServers(category: Record<string, unknown>): ClaudeContextMcpServ
   });
 }
 
+/** Sum per-server token rows, largest first. */
+function sumByServer(rows: Array<{ serverName: string; tokens: number }>): ClaudeContextMcpServerUsage[] {
+  const totals = new Map<string, number>();
+  for (const row of rows) totals.set(row.serverName, (totals.get(row.serverName) ?? 0) + row.tokens);
+  return [...totals.entries()]
+    .filter(([, tokens]) => tokens > 0)
+    .map(([name, tokens]) => ({ name, tokens }))
+    .sort((a, b) => b.tokens - a.tokens);
+}
+
+function readServerRows(raw: unknown, keep: (record: Record<string, unknown>) => boolean = () => true): Array<{ serverName: string; tokens: number }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const serverName = typeof record.serverName === "string" ? record.serverName.trim() : "";
+    if (!serverName || !keep(record)) return [];
+    return [{ serverName, tokens: nonNegativeInt(record.tokens) }];
+  });
+}
+
+/**
+ * The `getContextUsage()` reply lists MCP tokens beside the rows, not on them:
+ * `mcpTools` per tool (`isLoaded: false` is a deferred schema) and, from
+ * Claude Code 2.1.304, `mcpInstructions` per server. A row is matched on its
+ * stable `id`, never its English name; an older CLI without ids gets no
+ * breakdown.
+ */
+function mcpServersForRow(id: unknown, usage: { mcpTools?: unknown; mcpInstructions?: unknown }): ClaudeContextMcpServerUsage[] {
+  if (id === "mcp_tools") return sumByServer(readServerRows(usage.mcpTools, (tool) => tool.isLoaded !== false));
+  if (id === "mcp_tools_deferred") return sumByServer(readServerRows(usage.mcpTools, (tool) => tool.isLoaded === false));
+  if (id === "mcp_instructions") return sumByServer(readServerRows(usage.mcpInstructions));
+  return [];
+}
+
 export function normalizeClaudeContextUsage(usage: {
   categories?: unknown;
   totalTokens?: unknown;
@@ -89,6 +124,8 @@ export function normalizeClaudeContextUsage(usage: {
   rawMaxTokens?: unknown;
   percentage?: unknown;
   model?: unknown;
+  mcpTools?: unknown;
+  mcpInstructions?: unknown;
 } | null | undefined): ClaudeContextUsage {
   const totalTokens = nonNegativeInt(usage?.totalTokens);
   const maxTokens = nonNegativeInt(usage?.maxTokens);
@@ -101,7 +138,8 @@ export function normalizeClaudeContextUsage(usage: {
     const tokens = nonNegativeInt(category.tokens);
     if (!name.length && tokens === 0) return [];
     const kind = classifyClaudeContextCategory(category);
-    const mcpServers = readMcpServers(category);
+    const ownServers = readMcpServers(category);
+    const mcpServers = ownServers.length ? ownServers : mcpServersForRow(category.id, usage ?? {});
     return [{
       name: name || "Other",
       tokens,

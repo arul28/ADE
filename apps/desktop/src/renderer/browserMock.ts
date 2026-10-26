@@ -337,7 +337,11 @@ function createMockStorageSnapshot(now: string) {
     item("lanes_worktrees:auth", "auth-refactor", `${root}/.ade/worktrees/auth-refactor`, 2.4 * GB, "protected", { laneStatus: "active", laneId: "lane-auth" }),
     item("lanes_worktrees:billing", "billing-page", `${root}/.ade/worktrees/billing-page`, 1.7 * GB, "protected", { laneStatus: "active", laneId: "lane-billing" }),
     item("lanes_worktrees:onboard", "onboarding-copy", `${root}/.ade/worktrees/onboarding-copy`, 1.1 * GB, "review_first", { laneStatus: "archived", laneId: "lane-onboard" }),
-    item("lanes_worktrees:search", "search-index", `${root}/.ade/worktrees/search-index`, 860 * MB, "protected", { laneStatus: "active", laneId: "lane-search" }),
+    item("lanes_worktrees:search", "search-index", `${root}/.ade/worktrees/search-index`, 860 * MB, "protected", {
+      laneStatus: "active",
+      laneId: "lane-search",
+      buildOutputRemoved: { at: daysAgo(3), bytes: 1.3 * GB, folders: ["node_modules", "apps/web/.next"] },
+    }),
     item("lanes_worktrees:old", "spike-graphql", `${root}/.ade/worktrees/spike-graphql`, 420 * MB, "review_first", { laneStatus: "orphaned" }),
   ];
   const categories = [
@@ -440,9 +444,18 @@ function createMockStorageSnapshot(now: string) {
       lastScanAt: daysAgo(0.1),
       nextScanAt: daysAgo(-0.9),
       scanInProgress: false,
-      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0 },
+      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0, cleanBuildOutputAfterDays: 7 },
       archivedAutomatically: 1,
       reviewReadyCount: 0,
+      buildOutput: {
+        lastCheckAt: daysAgo(0.2),
+        totalFreedBytes: 4.1 * GB,
+        since: daysAgo(12),
+        lanes: [
+          { laneId: "lane-search", laneName: "search-index", removedAt: daysAgo(3), bytes: 1.3 * GB, folders: ["node_modules", "apps/web/.next"], failures: [] },
+          { laneId: "lane-onboard", laneName: "onboarding-copy", removedAt: daysAgo(9), bytes: 2.8 * GB, folders: ["node_modules", "dist"], failures: [{ folder: "target", reason: "A program is using files in it." }] },
+        ],
+      },
     },
   };
 }
@@ -5946,6 +5959,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
+      laneBuildOutputRemoved: async () => ({ at: new Date(Date.now() - 9 * 86_400_000).toISOString(), bytes: 1.3 * 1024 ** 3, folders: ["node_modules", "apps/web/.next"] }),
       deletedLaneChatsSummary: resolved({ chatCount: 813, bytes: 528 * 1024 * 1024, directory: `${MOCK_PROJECT.rootPath}/.ade/transcripts/chat` }),
       runMaintenanceNow: resolved({
         startedAt: now,
@@ -6046,6 +6060,39 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStateEvent: noop,
     },
     remoteRuntime: {
+      checkReachability: async (_id: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return {
+          checkedAt: new Date().toISOString(),
+          tone: "success" as const,
+          title: "Your other devices can reach Studio Mac.",
+          checks: [
+            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "relay" as const, label: "Relay", state: "ok" as const, detail: "Connected, and a test connection through it came back." },
+            { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach Studio Mac." },
+          ],
+        };
+      },
+      runDoctor: async (id: string) => (id === "mock-windows"
+        ? {
+            checks: [
+              { route: "lan", endpoint: "192.168.1.40:8787", ok: false, error: "Failed to connect to sync endpoint: connect ETIMEDOUT 192.168.1.40:8787", failure: "timeout" },
+              { route: "relay", endpoint: "relay.ade-app.dev", ok: false, error: "Sync endpoint closed before the connection opened.", failure: "host_offline" },
+            ],
+            diagnosis: {
+              tone: "danger",
+              title: "windows isn't connected to ADE's relay.",
+              fix: "Make sure windows is awake, online, and ADE is open there. If it is, open Connections on windows and press Check to see what's blocking it.",
+            },
+          }
+        : {
+            checks: [
+              { route: "lan", endpoint: "192.168.1.24:8787", ok: false, error: "Failed to connect to sync endpoint: connect EHOSTUNREACH 192.168.1.24:8787", failure: "unreachable" },
+              { route: "tailnet", endpoint: "100.64.0.2:8787", ok: true, latencyMs: 41 },
+            ],
+            diagnosis: { tone: "success", title: "Studio Mac is reachable through Tailscale." },
+            hostStall: { durationMs: 12_400, endedAt: Date.now() - 2 * 60_000, loadAverage1m: 21.3, cpuCount: 8 },
+          }),
       listTargets: browserMockFlag("mockOneMachine") ? resolved([]) : resolved([{
         id: "mock-remote",
         name: "Studio Mac",
@@ -6092,6 +6139,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now(),
           connectedAt: Date.now(),
+          // The Studio froze just before this reconnect (from its hello).
+          hostStall: { durationMs: 12_400, endedAt: Date.now() - 2 * 60_000, loadAverage1m: 21.3, cpuCount: 8 },
         }, {
           target: {
             id: "mock-windows",
@@ -6338,6 +6387,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     sync: {
       getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       getLocalStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      checkLocalReachability: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return {
+          checkedAt: new Date().toISOString(),
+          tone: "warning" as const,
+          title: "Devices on your network or tailnet can reach this computer. Others can't.",
+          checks: [
+            { id: "listener" as const, label: "ADE", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            {
+              id: "relay" as const,
+              label: "Relay",
+              state: "failed" as const,
+              detail: "This computer is not connected to ADE's relay.",
+              fix: "This computer sends its traffic through the Tailscale exit node \"mullvad-se\". Turn the exit node off, or allow ADE's relay through it.",
+            },
+            { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach this computer." },
+            
+          ],
+        };
+      },
       refreshDiscovery: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       listDevices: resolved([]),
       updateLocalDevice: resolvedArg(BROWSER_MOCK_LOCAL_DEVICE),
@@ -7938,6 +8007,52 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getMainTranscript: resolvedArg(null),
       getSubagentTranscript: resolvedArg(null),
       getContextUsage: resolvedArg(null),
+      getClaudeUsage: async (args: { skipBehaviors?: boolean }) => ({
+        session: {
+          costUsd: 1.84,
+          apiDurationMs: 312_000,
+          durationMs: 2_460_000,
+          linesAdded: 412,
+          linesRemoved: 96,
+          models: [
+            { model: "claude-opus-5-5", inputTokens: 18_200, outputTokens: 41_900, cacheReadTokens: 2_310_000, cacheWriteTokens: 184_000, costUsd: 1.71 },
+            { model: "claude-haiku-5-5", inputTokens: 9_400, outputTokens: 3_100, cacheReadTokens: 120_000, cacheWriteTokens: 22_000, costUsd: 0.13 },
+          ],
+        },
+        subscriptionType: "max",
+        limitsAvailable: true,
+        limits: [
+          { key: "five_hour", label: "5-hour", usedPercent: 38, resetsAt: new Date(Date.now() + 2.4 * 3_600_000).toISOString() },
+          { key: "seven_day", label: "Weekly", usedPercent: 83, resetsAt: new Date(Date.now() + 3.2 * 86_400_000).toISOString() },
+          { key: "model:Fable", label: "Weekly · Fable", usedPercent: 97, resetsAt: new Date(Date.now() + 3.2 * 86_400_000).toISOString() },
+        ],
+        extraUsage: { enabled: true, monthlyLimit: 50, usedCredits: 12.5, usedPercent: 25, currency: "USD" },
+        behaviors: args?.skipBehaviors ? null : {
+          day: null,
+          week: {
+            requestCount: 4_812,
+            sessionCount: 63,
+            behaviors: [
+              { key: "subagent_heavy", pct: 41, count: 1_920 },
+              { key: "long_context", pct: 28, count: 860 },
+              { key: "max_effort", pct: 19, count: 640 },
+              { key: "cache_miss", pct: 9, count: 410 },
+            ],
+            recommendations: [
+              { key: "subagent_heavy", pct: 41, title: "Brief subagents more tightly", detail: "41% of requests ran in subagents" },
+              { key: "max_effort", pct: 19, title: "Use high effort for routine turns", detail: "/effort high" },
+              { key: "mcp_server", pct: 8, title: "Turn off the figma MCP server when idle", detail: "its tools load on every turn" },
+            ],
+            fix: { keys: ["max_effort", "mcp_server"], messages: ["/effort high", "Turn off the figma MCP server for this session and tell me when it's done."] },
+            sources: {
+              agents: [{ name: "code-reviewer", pct: 22 }, { name: "Explore", pct: 14 }],
+              skills: [{ name: "dataviz", pct: 6 }],
+              plugins: [],
+              mcpServers: [{ name: "figma", pct: 8 }, { name: "linear", pct: 3 }],
+            },
+          },
+        },
+      }),
       rewindFiles: resolvedArg({
         canRewind: false,
         filesChanged: [],

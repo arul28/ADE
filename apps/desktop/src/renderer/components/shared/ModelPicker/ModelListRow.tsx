@@ -124,6 +124,7 @@ export const ModelListRow = memo(function ModelListRow({
     && model.supportedContextTiers?.includes("long_context") === true;
   const details = modelDetailLine(model, { omitProvider: omitProviderInDetail, omitContext: showCopilotContextChip });
   const localBadge = isLocalModel(model);
+  const maxModeBadge = model.cursorMaxModeOnly === true;
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode
@@ -303,7 +304,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of
@@ -354,6 +355,14 @@ export const ModelListRow = memo(function ModelListRow({
                 >
                   <Lightning size={8} weight="fill" />
                   <span>Local</span>
+                </span>
+              ) : null}
+              {maxModeBadge ? (
+                <span
+                  className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-amber-300/85"
+                  title="Only runs in Cursor's Max mode, which bills at higher rates"
+                >
+                  Max
                 </span>
               ) : null}
             </span>

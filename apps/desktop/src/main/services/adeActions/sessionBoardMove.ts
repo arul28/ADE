@@ -79,7 +79,7 @@ export const BOARD_MOVE_STAGE_MS = 5_000;
 export const BOARD_MOVE_DONE_TO_WORKING_TEXT =
   "You moved this chat from Done to Working. Continue the work, or ask me what you need if the next step is unclear.";
 export const BOARD_MOVE_TO_NEEDS_YOU_TEXT =
-  "The user parked this for their input. Stop, summarize where you are, and list what you need from them.";
+  "The user set this chat's status to Needs you. Ask them what they need before you continue.";
 
 /**
  * The message a move sends, or null when it sends none.

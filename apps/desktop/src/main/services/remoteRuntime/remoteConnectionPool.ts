@@ -30,6 +30,8 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
   LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -183,6 +185,7 @@ const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
  * remote runtime a reasonable response window. */
 export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
@@ -469,6 +472,7 @@ export class RemoteConnectionPool {
   >();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly relayAccountOwnerByTargetId = new Map<string, string>();
+  private readonly livenessProbes = new WeakMap<PoolEntry, Promise<boolean>>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -1371,14 +1375,29 @@ export class RemoteConnectionPool {
     const entry = await this.connectEntry(target);
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
+    const droppedElsewhere = () =>
+      (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !== disconnectGeneration;
     try {
       return await operation(entry);
     } catch (error) {
       if (!(options.isRetryableError ?? isRemoteRuntimeConnectionError)(error)) throw error;
+      // A reply that took too long is not a lost connection. The machine may
+      // just be busy (a large folder being removed held a Windows brain's
+      // file I/O for 30 s), and dropping the connection would fail every
+      // other call on it, including actions that then finished there.
       if (
-        (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !==
-        disconnectGeneration
+        !droppedElsewhere()
+        && isRuntimeTransportTimeoutError(error)
+        && await this.connectionStillAnswers(entry)
       ) {
+        throw error;
+      }
+      if (droppedElsewhere()) {
+        // Another call dropped this connection, or the person disconnected.
+        // An action that was in flight on it may or may not have run.
+        if (!options.retryOnConnectionError && isRemoteRuntimeConnectionError(error)) {
+          throw new RemoteActionOutcomeUnknownError(null);
+        }
         throw error;
       }
       this.disconnect(target.id);
@@ -1395,6 +1414,28 @@ export class RemoteConnectionPool {
       }
       throw new RemoteActionOutcomeUnknownError(true);
     }
+  }
+
+  /**
+   * Whether a connection whose reply timed out still carries traffic. Anything
+   * received in the last few seconds says so; otherwise one `ping`, shared by
+   * every call that timed out on this connection at the same time. A machine
+   * that went to sleep sends nothing and answers nothing, so it still reads as
+   * gone, one probe later.
+   */
+  private connectionStillAnswers(entry: PoolEntry): Promise<boolean> {
+    if (entry.client.isClosed()) return Promise.resolve(false);
+    if (hasRecentTraffic(entry.client.lastInboundAt())) return Promise.resolve(true);
+    const pending = this.livenessProbes.get(entry);
+    if (pending) return pending;
+    const probe = entry.client
+      .call("ping", {}, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS })
+      .then(() => true, (error: unknown) => !entry.client.isClosed() && !isRuntimeTransportTimeoutError(error))
+      .finally(() => {
+        this.livenessProbes.delete(entry);
+      });
+    this.livenessProbes.set(entry, probe);
+    return probe;
   }
 
   private attachEntryLifecycle(

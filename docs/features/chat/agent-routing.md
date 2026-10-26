@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.162.1 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.164.0 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `copilot` | ADE's pinned Copilot runtime (`copilot` tools-cache pin, version-paired with `@github/copilot-sdk`) driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
@@ -205,19 +205,19 @@ forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
 The OpenAI section follows the Codex catalog's own order on every ADE model surface:
 
-1. `openai/gpt-6.1-sol` (`gpt-6.1-sol`) — 1,050,000 context; default effort `low`; `$2/$10`. Alias `sol`. Released builds get it from the model manifest.
-2. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
-3. `openai/gpt-6-sol` (`gpt-6-sol`) — 1,050,000 context; default effort `medium`; `$2/$10`.
-4. `openai/gpt-6-luna` (`gpt-6-luna`) — 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
-5. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
-6. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+1. `openai/gpt-6.1-sol` (`gpt-6.1-sol`) — default Codex model; 1,050,000 context; default effort `low`; `$2/$10`. Alias `sol`.
+2. `openai/gpt-6-astra` (`gpt-6-astra`) — 1,050,000 context; default effort `low`.
+3. `openai/gpt-6.1-terra` (`gpt-6.1-terra`) — 1,050,000 context; default effort `low`; `$1/$5`. Alias `terra`. Released builds get it from the model manifest.
+4. `openai/gpt-6-sol` (`gpt-6-sol`) — 1,050,000 context; default effort `medium`; `$2/$10`.
+5. `openai/gpt-6-luna` (`gpt-6-luna`) — 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
+6. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
 7. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 8. `openai/gpt-5.5` (`gpt-5.5`) — legacy; still runs on a ChatGPT sign-in.
 
-Astra and both Lunas expose `low | medium | high | xhigh | max`; the Sols and
+Both Lunas expose `low | medium | high | xhigh | max`; Astra, the Sols and
 Terra expose `low | medium | high | xhigh | max | ultra`. Desktop, ADE Code,
-and iOS label those values Light, Medium, High, Extra High, Max, and (for the
-Sols/Terra) Ultra. Runtime app-server ladders retain their advertised order.
+and iOS label those values Light, Medium, High, Extra High, Max, and Ultra.
+Runtime app-server ladders retain their advertised order.
 `ultra` is the multi-agent tier and carries a usage warning.
 
 The picker shows only the Codex rows that the app server's `model/list`
@@ -226,7 +226,8 @@ so a registry row such as GPT-6.1 Sol appears on the next catalog refresh
 after the account gets access, with no ADE release. A ChatGPT sign-in can no
 longer run GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.3-Codex-Spark, or
 GPT-5.2; those rows are `deprecated` so persisted chats still resolve, but no
-picker offers them.
+picker offers them. GPT-5.6 Terra is `deprecated` the same way: Codex still
+lists it, but GPT-6.1 Terra replaced it.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle

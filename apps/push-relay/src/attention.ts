@@ -1067,12 +1067,20 @@ function stringListIncludes(value: unknown, target: string | null): boolean {
  * `attended` is "someone has ADE in front of them right now" (a foreground
  * window). While it holds, phone alerts wait out the desktop-first delay; an
  * alert still unseen afterwards goes out on the next machine heartbeat.
+ *
+ * `userActive` is "someone is using one of these computers right now": the
+ * desktop app reports the OS input clock (input in the last 2 minutes, screen
+ * not locked, machine awake). That computer shows its own system notification,
+ * so the phone stays quiet for as long as it holds, not just for the delay. A
+ * computer that reports itself idle, locked or asleep does not count as
+ * attended even with ADE in front. Older desktops and the web client send no
+ * `userActive` and keep the timed hold.
  */
 async function recentDesktopAttention(
   env: AttentionRelayEnv,
   userId: string,
   nowMs: number,
-): Promise<{ visibleItemIds: Set<string>; attended: boolean }> {
+): Promise<{ visibleItemIds: Set<string>; attended: boolean; userActive: boolean }> {
   const cutoff = new Date(nowMs - DESKTOP_PRESENCE_WINDOW_MS).toISOString();
   const rows = await env.DB.prepare(`
     select payload_json
@@ -1081,9 +1089,12 @@ async function recentDesktopAttention(
   `).bind(userId, cutoff).all<{ payload_json: string }>();
   const visibleItemIds = new Set<string>();
   let attended = false;
+  let userActive = false;
   for (const row of rows.results) {
     const presence = readPreferences(row.payload_json);
     if (presence.platform === "iOS") continue;
+    if (presence.userActive === false) continue;
+    if (presence.userActive === true) userActive = true;
     if (presence.appForeground === true) attended = true;
     if (presence.ambientSurfaceVisible !== true) continue;
     if (!Array.isArray(presence.visibleItemIds)) continue;
@@ -1091,7 +1102,7 @@ async function recentDesktopAttention(
       if (typeof itemId === "string" && itemId.trim()) visibleItemIds.add(itemId);
     }
   }
-  return { visibleItemIds, attended };
+  return { visibleItemIds, attended, userActive };
 }
 
 async function claimAttentionNotificationDelivery(
@@ -1220,15 +1231,21 @@ async function deliverAttentionNotifications(
     ) {
       continue;
     }
-    // Give the computer the first chance: while ADE is in front of the user
-    // (a foreground window), or a visible Activity surface already shows this
-    // exact item, the phone waits out the desktop-first delay. The machine
-    // heartbeat republishes every 30s; an item still unseen then escalates to
-    // the phone.
+    // Give the computer the first chance: while someone is using one of the
+    // user's computers, the phone waits until they stop (idle, locked,
+    // asleep). Otherwise, while ADE is in front of the user (a foreground
+    // window), or a visible Activity surface already shows this exact item,
+    // the phone waits out the desktop-first delay. The machine heartbeat
+    // republishes every 30s; an item still unseen then escalates to the phone.
     if (
       desktopFirstEnabled
-      && (desktop.attended || desktop.visibleItemIds.has(item.id))
-      && nowMs - Date.parse(item.updatedAt) < desktopFirstDelayMs
+      && (
+        desktop.userActive
+        || (
+          (desktop.attended || desktop.visibleItemIds.has(item.id))
+          && nowMs - Date.parse(item.updatedAt) < desktopFirstDelayMs
+        )
+      )
     ) {
       continue;
     }
@@ -3105,7 +3122,11 @@ async function handlePresence(
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid presence" }, { status: 400 });
   const deviceId = requiredString(payload.deviceId, 128);
-  const observedAt = optionalIsoDate(payload.observedAt ?? new Date().toISOString());
+  const reportedAt = optionalIsoDate(payload.observedAt ?? new Date().toISOString());
+  // A device clock running ahead would keep its report "recent", and a
+  // `userActive` hold on, until the relay's clock caught up; never later than now.
+  const nowMs = Date.now();
+  const observedAt = reportedAt && Date.parse(reportedAt) > nowMs ? new Date(nowMs).toISOString() : reportedAt;
   const visibleItemIds = Array.isArray(payload.visibleItemIds)
     ? payload.visibleItemIds.map((value) => requiredString(value)).filter(Boolean).slice(0, 64)
     : [];
@@ -3122,6 +3143,11 @@ async function handlePresence(
     deviceId,
     platform,
     appForeground: payload.appForeground === true,
+    // Read by the desktop-first hold; dropping it left the "this item is on
+    // screen" hold dead since presence was introduced.
+    ambientSurfaceVisible: payload.ambientSurfaceVisible === true,
+    // Absent from older desktops and the web client: unknown, not idle.
+    ...(typeof payload.userActive === "boolean" ? { userActive: payload.userActive } : {}),
     observedAt,
     visibleItemIds,
   };

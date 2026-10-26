@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, shell, systemPreferences, webContents } from "electron";
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
@@ -214,6 +214,8 @@ import {
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
 import { parseAttentionItem } from "../attention/attentionItemRouting";
+import { createUserActivityProbe } from "../attention/userActivityProbe";
+import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import { isTrustedAdeRendererSender } from "./trustedRendererSender";
@@ -602,6 +604,8 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatCopyTempAttachmentArgs,
@@ -1084,6 +1088,7 @@ import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport 
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
+  StorageItem,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -2103,6 +2108,18 @@ export function registerIpc({
     onAccountSnapshot: onAttentionAccountSnapshot,
     onPreferences: onAttentionPreferences,
     onSessionMuted: onAttentionSessionMuted,
+    readUserActive: () => userActivityProbe.read(),
+  });
+  // Lock and sleep tell the phone at once; otherwise the last "in use" report
+  // would keep it quiet until that report ages out.
+  const userActivityProbe = createUserActivityProbe({
+    powerMonitor,
+    onAway: () => void attentionAccountCoordinator.reportUserAway(),
+    onBack: () => void attentionAccountCoordinator.reportUserBack(),
+    onError: (what, error) => getCtx().logger.warn("attention.user_activity_probe_failed", {
+      what,
+      error: error instanceof Error ? error.message : String(error),
+    }),
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -4430,6 +4447,16 @@ export function registerIpc({
     return service.deletedLaneChatsSummary();
   });
 
+  ipcMain.handle(IPC.storageLaneBuildOutputRemoved, async (
+    _event,
+    arg: { laneId?: string },
+  ): Promise<StorageItem["buildOutputRemoved"] | null> => {
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    if (!laneId) return null;
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return await service.laneBuildOutputRemoved(laneId);
+  });
+
   ipcMain.handle(IPC.storageCleanupPreview, async (
     _event,
     targets: StorageCleanupTarget[],
@@ -4847,8 +4874,10 @@ export function registerIpc({
       const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
       if (!repoOwner || !repoName) return null;
       // One tested implementation: parses each recent project's git origin
-      // from .git/config (no git subprocess), cached by config mtime.
-      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      // from .git/config (no git subprocess), cached by config mtime. An SSH
+      // origin on a host that is not GitHub or a known forge runs `ssh -G`,
+      // once for each host; the cache answers after that.
+      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
     },
   );
 
@@ -4864,6 +4893,7 @@ export function registerIpc({
       return authorizeRecentProjectRuntimeRoot({
         requestedRootPath,
         activeGitOriginUrl: activeOrigin,
+        activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
       });
     },
@@ -6451,6 +6481,19 @@ export function registerIpc({
     const snapshot = await syncStatusReaders.readMachine(arg);
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
+  });
+
+  // This computer only, like getLocalStatus: the check is "can other devices
+  // reach the computer you are sitting at", answered by its own brain.
+  ipcMain.handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
+    if (!localRuntimeConnectionPool) {
+      throw new Error("ADE's background service isn't running on this computer. Restart ADE, then check again.");
+    }
+    return await localRuntimeConnectionPool.callSync<HostReachabilityReport>(
+      "sync.checkReachability",
+      {},
+      { timeoutMs: 30_000 },
+    );
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
@@ -9421,6 +9464,7 @@ export function registerIpc({
     return await ctx.agentChatService.restartSession({
       sessionId: record.sessionId,
       ...(record.stopFirst === true ? { stopFirst: true } : {}),
+      ...(record.afterTurn === true ? { afterTurn: true } : {}),
     });
   });
 
@@ -9856,6 +9900,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getContextUsage(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeUsage, async (_event, arg: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getClaudeUsage(arg);
   });
 
   ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
@@ -11619,7 +11668,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
     const ctx = ensureFileContext();
-    ctx.fileService.deletePath(arg);
+    await ctx.fileService.deletePath(arg);
   });
 
   ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
@@ -11809,13 +11858,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
-    const ctx = ensureGitContext();
-    const laneId = typeof arg?.laneId === "string" ? arg.laneId : "";
+    const ctx = ensureGitLaneContext();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const fallback = { remoteUrl: null, branch: null } as const;
+    if (!laneId) return fallback;
+    // One owner for the read, shared with the runtime action: it strips
+    // credentials and names GitHub's host for an SSH alias of GitHub.
     try {
       return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
-      // A missing lane or a stale worktree reads as "no remote", as it always has.
-      return { remoteUrl: null, branch: null };
+      // An unknown lane, or one whose worktree is gone (an unmounted drive),
+      // reads as no remote. The lane row still knows its branch.
+      try {
+        return { remoteUrl: null, branch: ctx.laneService.getLaneBaseAndBranch(laneId).branchRef?.trim() || null };
+      } catch {
+        return fallback;
+      }
     }
   });
 
@@ -12569,6 +12627,7 @@ export function registerIpc({
     accountBridge,
     getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
     accountVaultBridge,
+    accountSettingsBridge: accountSettingsSyncService,
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,
   });

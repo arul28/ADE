@@ -32,6 +32,7 @@ export const IPC = {
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",
   storageDeletedLaneChatsSummary: "ade.storage.deletedLaneChatsSummary",
+  storageLaneBuildOutputRemoved: "ade.storage.laneBuildOutputRemoved",
   archiveList: "ade.archive.list",
   archiveSummary: "ade.archive.summary",
   archiveRestore: "ade.archive.restore",
@@ -212,6 +213,7 @@ export const IPC = {
   remoteRuntimeGetLocalPairingInfo:
     "ade.remoteRuntime.getLocalPairingInfo",
   remoteRuntimeRunDoctor: "ade.remoteRuntime.runDoctor",
+  remoteRuntimeCheckReachability: "ade.remoteRuntime.checkReachability",
   remoteRuntimeGetConnectionSnapshot: "ade.remoteRuntime.getConnectionSnapshot",
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",
@@ -488,6 +490,7 @@ export const IPC = {
   agentChatGetMainTranscript: "ade.agentChat.getMainTranscript",
   agentChatGetSubagentTranscript: "ade.agentChat.getSubagentTranscript",
   agentChatGetContextUsage: "ade.agentChat.getContextUsage",
+  agentChatGetClaudeUsage: "ade.agentChat.getClaudeUsage",
   agentChatRewindFiles: "ade.agentChat.rewindFiles",
   agentChatFileSearch: "ade.agentChat.fileSearch",
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",
@@ -1016,6 +1019,7 @@ export const IPC = {
   cloudAgentsLaunch: "ade.cloudAgents.launch",
   syncGetStatus: "ade.sync.getStatus",
   syncGetLocalStatus: "ade.sync.getLocalStatus",
+  syncCheckLocalReachability: "ade.sync.checkLocalReachability",
   syncRefreshDiscovery: "ade.sync.refreshDiscovery",
   syncListDevices: "ade.sync.listDevices",
   syncUpdateLocalDevice: "ade.sync.updateLocalDevice",

@@ -60,6 +60,7 @@ import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { requestChatActionsPane } from "./chatActionsPaneRequests";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatChildRoster } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
@@ -1141,6 +1142,7 @@ export function ChatSubagentsPanel({
   resolveSpawnedChatTitle,
   capability = null,
   selectedTaskId,
+  selectedChildSessionId = null,
   className,
   variant = "drawer",
   onClose,
@@ -1192,6 +1194,12 @@ export function ChatSubagentsPanel({
    * treated as no transcript (drawer-only). See `shared/subagentCapabilities`. */
   capability?: SubagentCapability | null;
   selectedTaskId?: string | null;
+  /**
+   * The spawned chat on screen, when this roster is its parent's: that row
+   * reads selected, and clicking it again goes back (`onClearSelectedSubagent`),
+   * the same as a drilled-in runtime subagent.
+   */
+  selectedChildSessionId?: string | null;
   className?: string;
   variant?: "drawer" | "pane";
   onClose?: () => void;
@@ -1422,9 +1430,14 @@ export function ChatSubagentsPanel({
     }
     return map;
   }, [annotatedSubagents]);
+  const selectedChildIdentity = useMemo(() => {
+    if (!selectedChildSessionId) return null;
+    const snapshot = subagents.find((candidate) => candidate.childSessionId === selectedChildSessionId);
+    return snapshot ? subagentIdentity(snapshot) : null;
+  }, [selectedChildSessionId, subagents]);
   const pinnedSubagentIds = useMemo(() => new Set(
-    [selectedTaskId, expandedTaskId].filter((id): id is string => Boolean(id)),
-  ), [expandedTaskId, selectedTaskId]);
+    [selectedTaskId, expandedTaskId, selectedChildIdentity].filter((id): id is string => Boolean(id)),
+  ), [expandedTaskId, selectedChildIdentity, selectedTaskId]);
   const hiddenDescendantIds = useMemo(() => {
     const hidden = new Set<string>();
     const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
@@ -1494,7 +1507,9 @@ export function ChatSubagentsPanel({
     showAll.subagents
       ? { visible: subagentGroups.active, hiddenCount: 0 }
       : capPaneSectionItems(subagentGroups.active, SUBAGENTS_ACTIVE_CAP, (snapshot) => (
-          snapshot.status === "failed" || pinnedSubagentIds.has(snapshot.taskId)
+          snapshot.status === "failed"
+          || pinnedSubagentIds.has(snapshot.taskId)
+          || pinnedSubagentIds.has(subagentIdentity(snapshot))
         ))
   ), [pinnedSubagentIds, showAll.subagents, subagentGroups.active]);
   const cappedBackground = useMemo(() => (
@@ -1562,6 +1577,12 @@ export function ChatSubagentsPanel({
     // Spawned ADE chats navigate directly; runtime-native subagents keep the
     // transcript takeover/details behavior below.
     if (snap.childSessionId != null) {
+      if (snap.childSessionId === selectedChildSessionId) {
+        onClearSelectedSubagent?.();
+        return;
+      }
+      // The drawer you clicked in stays open in the chat you land on.
+      requestChatActionsPane(snap.childSessionId);
       // A spawned chat runs on its parent's machine, so the jump keeps this
       // chat's pin (null = the tab's own machine).
       navigateToSpawnedChat(
@@ -1651,7 +1672,8 @@ export function ChatSubagentsPanel({
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
-      selected={selectedTaskId === snap.taskId}
+      selected={selectedTaskId === snap.taskId
+        || (selectedChildSessionId != null && snap.childSessionId === selectedChildSessionId)}
       expanded={expandedTaskId === snap.taskId}
       probing={probingTaskId === snap.taskId}
       canViewFullTranscript={canTakeover}

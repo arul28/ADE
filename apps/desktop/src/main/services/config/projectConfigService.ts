@@ -346,6 +346,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const promptSuggestionsEnabled = asBool(value.promptSuggestionsEnabled);
   if (promptSuggestionsEnabled != null) chat.promptSuggestionsEnabled = promptSuggestionsEnabled;
+  const codexPromptSuggestionsEnabled = asBool(value.codexPromptSuggestionsEnabled);
+  if (codexPromptSuggestionsEnabled != null) chat.codexPromptSuggestionsEnabled = codexPromptSuggestionsEnabled;
   const smartDecisionsEnabled = asBool(value.smartDecisionsEnabled);
   if (smartDecisionsEnabled != null) chat.smartDecisionsEnabled = smartDecisionsEnabled;
   for (const key of ["smartChatStatusEnabled", "smartSettleNudgeEnabled", "smartPaletteEnabled", "smartLaneEmojiEnabled", "smartPlainTerminalsEnabled", "jevZenCreditEnabled"] as const) {
@@ -1299,11 +1301,13 @@ function coerceLaneCleanupConfig(value: unknown): LaneCleanupConfig | undefined 
   const reclaimArchivedAfterHours =
     readNonNegativeInteger(value.reclaimArchivedAfterHours)
     ?? readNonNegativeInteger(value.autoDeleteArchivedAfterHours);
+  const cleanBuildOutputAfterDays = readNonNegativeInteger(value.cleanBuildOutputAfterDays);
   const out: LaneCleanupConfig = {};
   if (maxActiveLanes != null) out.maxActiveLanes = maxActiveLanes;
   if (cleanupIntervalHours != null) out.cleanupIntervalHours = cleanupIntervalHours;
   if (autoArchiveAfterHours != null) out.autoArchiveAfterHours = autoArchiveAfterHours;
   if (reclaimArchivedAfterHours != null) out.reclaimArchivedAfterHours = reclaimArchivedAfterHours;
+  if (cleanBuildOutputAfterDays != null) out.cleanBuildOutputAfterDays = cleanBuildOutputAfterDays;
   return Object.keys(out).length ? out : undefined;
 }
 

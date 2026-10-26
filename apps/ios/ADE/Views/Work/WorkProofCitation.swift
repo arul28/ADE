@@ -13,6 +13,9 @@ struct WorkProofCitationContext {
   var lookup: ((String) -> ComputerUseArtifactSummary?)? = nil
   let content: [String: WorkLoadedArtifactContent]
   let load: WorkArtifactLoader
+  /// Asks the chat's host about a cited id the list does not hold (filed after
+  /// the list was read, or by another chat). The chat asks once per id.
+  var resolveMissing: (@MainActor (String) async -> Void)? = nil
 }
 
 private struct WorkProofCitationEnvironmentKey: EnvironmentKey {
@@ -68,6 +71,7 @@ struct WorkProofCitationView: View {
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .task(id: artifactId) { await citations?.resolveMissing?(artifactId) }
     }
   }
 
@@ -116,12 +120,20 @@ struct WorkProofCitationView: View {
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
     case .error(let message):
-      Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textSecondary)
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ADEColor.recessedBackground.opacity(0.6), in: shape)
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Image(systemName: "exclamationmark.triangle")
+          .foregroundStyle(ADEColor.warning)
+        Text(message)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 8)
+        Button("Retry") { Task { await load(artifact, .retry) } }
+          .font(.footnote.weight(.semibold))
+          .buttonStyle(.borderless)
+      }
+      .padding(10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.recessedBackground.opacity(0.6), in: shape)
     case .none:
       ProgressView()
         .frame(maxWidth: .infinity, minHeight: compact ? 120 : 180)

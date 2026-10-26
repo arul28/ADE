@@ -33,6 +33,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatSwitchAccountArgs,
   AgentChatUpdateSessionArgs,
 } from "./chat";
 import type { RemoteRuntimeStreamEventsResult } from "./remoteRuntime";
@@ -64,6 +65,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "setScheduledWorkPaused",
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
+  "switchAccount",
   "updateSession",
   "setPinned",
   "rerunLastTurn",
@@ -87,6 +89,8 @@ export const PERSONAL_CHAT_ACTIONS = [
   "setSessionActivity",
   "setSessionStatusNote",
   "requestSessionAttention",
+  // `ade chat ask --clear`: the agent takes back the hand it raised.
+  "clearAsk",
 ] as const;
 
 export type PersonalChatAction = (typeof PERSONAL_CHAT_ACTIONS)[number];
@@ -171,6 +175,7 @@ export type PersonalChatCallArgs =
   | { action: "setScheduledWorkPaused"; args: AgentChatSetScheduledWorkPausedArgs }
   | { action: "resumeUsageLimitNow"; args: AgentChatResumeUsageLimitNowArgs }
   | { action: "continueUsageLimitOnAlternate"; args: AgentChatContinueUsageLimitOnAlternateArgs }
+  | { action: "switchAccount"; args: AgentChatSwitchAccountArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
   /** Pin or unpin a chat in the rail. `list` rows carry `pinned: true` when pinned. */
   | { action: "setPinned"; args: { sessionId: string; pinned: boolean } }
@@ -200,7 +205,8 @@ export type PersonalChatCallArgs =
   /** Activity value (`SESSION_ACTIVITY_VALUES`), or null to clear. */
   | { action: "setSessionActivity"; args: { sessionId: string; value: string | null } }
   | { action: "setSessionStatusNote"; args: { sessionId: string; note: string } }
-  | { action: "requestSessionAttention"; args: { sessionId: string; message: string } };
+  | { action: "requestSessionAttention"; args: { sessionId: string; message: string } }
+  | { action: "clearAsk"; args: { sessionId: string } };
 
 /** Result of the `pendingInputs` action: every request still awaiting an answer. */
 export type PersonalChatPendingInputsResult = {
