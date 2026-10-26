@@ -879,7 +879,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeCredentialKey(key);
-    const settled = this.readSettledCache();
+    const settled = this.readSettledCache() ?? this.readSettledUnlocked();
     if (settled) return settled[normalized] ?? null;
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
@@ -921,6 +921,48 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.lastReadState = entry.state;
     this.lastReadFailureReason = null;
     return entry.values;
+  }
+
+  /**
+   * A read with nothing to write, without the cross-process lock.
+   *
+   * The lock exists for the writes a read can owe: a re-seal to the machine
+   * key, a quarantined store merged back in, a quarantine of ciphertext that
+   * will not open. A store already sealed to the machine key with no
+   * quarantine record owes none of them, and every writer replaces the file by
+   * rename, so an unlocked read sees one whole version, as a locked read just
+   * before or after a write would. The brain used to wait on the lock while
+   * another ADE process held it (an `ade` CLI call, possibly mid keychain
+   * read), sleeping in 25 ms steps for up to 15 s on its event loop. Anything
+   * else (no file, an empty or unreadable one, an `os` binding, a quarantine,
+   * a file replaced mid-read) takes the locked path as before.
+   */
+  private readSettledUnlocked(): Record<string, string> | null {
+    try {
+      const before = readCredentialFileStatSnapshot(this.credentialsPath);
+      if (!before) return null;
+      const machineKey = readMachineKeyIfExists(this.machineKeyPath);
+      if (!machineKey) return null;
+      const raw = readJsonObject(this.credentialsPath);
+      if (raw == null || Object.keys(raw).length === 0) return null;
+      const attempt = decodeMachineSealedStore(raw, machineKey);
+      if (!attempt?.ok || attempt.sealedBinding !== "machine") return null;
+      if (readCredentialStoreQuarantine(this.credentialsPath)) return null;
+      const after = readCredentialFileStatSnapshot(this.credentialsPath);
+      if (!after || !isSameCredentialFileStat(before, after)) return null;
+      this.lastReadState = "available";
+      this.lastReadFailureReason = null;
+      this.lastReadSettled = true;
+      this.settledRead = {
+        stat: after,
+        state: "available",
+        values: attempt.values,
+        expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+      };
+      return attempt.values;
+    } catch {
+      return null;
+    }
   }
 
   private rememberSettledRead(values: Record<string, string>): void {
