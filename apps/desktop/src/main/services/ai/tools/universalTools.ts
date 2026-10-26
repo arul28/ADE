@@ -16,6 +16,7 @@ import {
   getErrorMessage,
   isEnoentError,
   isWithinDir,
+  isForeignUncPath,
   resolvePathWithinRoot,
   signalProcessGroup,
   type DirtyFileTextLookup,
@@ -921,6 +922,11 @@ function canonicalizePathForContainment(absPath: string, pathApi: SandboxPathApi
   if (pathApi === path.win32 && process.platform !== "win32") {
     return resolved;
   }
+  // A UNC path (`\\host\share`) is never opened: realpath would connect to
+  // that host over SMB, which can send this user's NTLM credentials to it.
+  if (pathApi === path.win32 && /^[\\/]{2}(?![?.][\\/])/.test(resolved)) {
+    return resolved;
+  }
   try {
     return fs.realpathSync(resolved);
   } catch (error) {
@@ -1074,6 +1080,25 @@ function looksLikePathToken(value: string, windowsMode = process.platform === "w
   );
 }
 
+/** A cmd switch: `/b`, `/s`, `/a:h`, `/?`. One segment, no further slash. */
+const CMD_SWITCH_TOKEN = /^\/[A-Za-z0-9?][A-Za-z0-9?-]{0,15}(?::[^\\/]*)?$/;
+
+/**
+ * cmd.exe and Windows programs read `/b` as a switch, not as `C:\b`. A token
+ * that names an existing drive-root path is still checked as a path, since a
+ * native program can open it that way. The caller never applies this to a
+ * redirect target (`> /b`), which is always a file.
+ */
+function isCmdSwitchToken(value: string, cwd: string, pathApi: SandboxPathApi): boolean {
+  if (!CMD_SWITCH_TOKEN.test(value)) return false;
+  if (process.platform !== "win32") return true;
+  try {
+    return !fs.existsSync(pathApi.resolve(cwd, value.split(":")[0]!));
+  } catch {
+    return false;
+  }
+}
+
 const COMMAND_SEPARATORS = new Set(["|", "||", "&&", ";", "&"]);
 
 function splitCommandSegments(tokens: string[]): string[][] {
@@ -1127,8 +1152,11 @@ function collectPathReferences(
     }
   };
 
+  let previousValue = "";
   for (const token of tokenizeCommand(command, windowsMode)) {
     const value = normalizePathToken(token);
+    const afterRedirect = /^\d?>>?$/.test(previousValue);
+    previousValue = value;
     if (!value.length) continue;
     if (value.startsWith("-")) continue;
     if (value === "|" || value === "||" || value === "&&" || value === ";" || value === "&") continue;
@@ -1142,6 +1170,8 @@ function collectPathReferences(
     ) {
       continue;
     }
+    // `> /b` writes the file C:\b; only an argument can be a switch.
+    if (windowsMode && !afterRedirect && isCmdSwitchToken(value, cwd, pathApi)) continue;
     if (looksLikePathToken(value, windowsMode)) {
       addPath(value, "unknown");
     }
@@ -1863,6 +1893,9 @@ function resolveRepoAwareRoot(
   try {
     const projectRoot = fs.realpathSync(cwd);
     const candidate = path.resolve(projectRoot, inputPath ?? ".");
+    if (isForeignUncPath(projectRoot, candidate)) {
+      return { root: null, error: `Search path must stay within the repo root: ${candidate}` };
+    }
     if (!fs.existsSync(candidate)) {
       return { root: null, error: `Directory not found: ${candidate}` };
     }

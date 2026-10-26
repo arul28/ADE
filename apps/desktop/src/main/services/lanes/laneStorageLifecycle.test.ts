@@ -13,6 +13,10 @@ vi.mock("../git/git", async (importOriginal) => ({
 }));
 
 import { runGit, runGitOrThrow } from "../git/git";
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 
 const roots: string[] = [];
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -186,7 +190,7 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(packsDir, { recursive: true });
     fs.mkdirSync(outsideLanePack, { recursive: true });
     fs.writeFileSync(path.join(outsideLanePack, "keep.txt"), "outside project");
-    fs.symlinkSync(outsidePacks, linkedLanesDir, "dir");
+    fs.symlinkSync(outsidePacks, linkedLanesDir, DIRECTORY_LINK_TYPE);
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "keep.txt"), "lane work");
     installGitStub();
@@ -213,7 +217,7 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(packsDir, { recursive: true });
     fs.mkdirSync(outsideLanePack, { recursive: true });
     fs.writeFileSync(path.join(outsideLanePack, "keep.txt"), "outside project");
-    fs.symlinkSync(outsidePacks, linkedLanesDir, "dir");
+    fs.symlinkSync(outsidePacks, linkedLanesDir, DIRECTORY_LINK_TYPE);
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "keep.txt"), "lane work");
     installGitStub();

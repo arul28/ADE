@@ -571,7 +571,8 @@ describe("isMoveProcessAlive", () => {
 });
 
 describe("relativeToRoot", () => {
-  it("matches the root's own spelling only at a folder boundary, and other casings when the disk ignores case", () => {
+  // Project move is macOS only (projectMovePreflight), and these are POSIX paths.
+  it.skipIf(process.platform === "win32")("matches the root's own spelling only at a folder boundary, and other casings when the disk ignores case", () => {
     const root = path.join(tmp, "Proj");
     fs.mkdirSync(root);
     const diskIgnoresCase = fs.existsSync(path.join(tmp, "PROJ"));

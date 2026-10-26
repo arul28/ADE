@@ -523,6 +523,20 @@ function resolveCandidatePath(
   return cursor;
 }
 
+/**
+ * On Windows, whether `candidate` is a UNC path (`\\host\share\…`) outside
+ * `root`. Such a path is refused before any filesystem call: a stat of it
+ * connects to that host over SMB, which can send this user's NTLM credentials
+ * to it. Local device paths (`\\?\`, `\\.\`) are not UNC shares.
+ */
+export function isForeignUncPath(root: string, candidate: string): boolean {
+  if (process.platform !== "win32") return false;
+  const resolved = path.win32.resolve(root, candidate);
+  if (!/^[\\/]{2}(?![?.][\\/])/.test(resolved)) return false;
+  const rel = path.win32.relative(path.win32.resolve(root).toLowerCase(), resolved.toLowerCase());
+  return rel.startsWith("..") || path.win32.isAbsolute(rel);
+}
+
 /** The message `resolvePathWithinRoot` uses for a containment failure. */
 export const PATH_ESCAPES_ROOT_MESSAGE = "Path escapes root";
 
@@ -546,6 +560,7 @@ export function resolvePathWithinRoot(
   candidate: string,
   opts: { allowMissing?: boolean } = {},
 ): string {
+  if (isForeignUncPath(root, candidate)) throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   const rootReal = realpathExisting(path.resolve(root));
   const candidateReal = resolveCandidatePath(root, candidate, opts);
   if (!isWithinDir(rootReal, candidateReal)) {
