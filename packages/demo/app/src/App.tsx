@@ -79,15 +79,20 @@ const INVOICE_ROWS = [
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [connected, setConnected] = useState(bridge.connected);
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => bridge.onConnectionChange(setConnected), []);
+  useEffect(() => bridge.onConnectionChange((next) => {
+    setConnected(next);
+    if (next) setConnectionEpoch((epoch) => epoch + 1);
+  }), []);
   useEffect(() => {
+    setError(null);
     bridge
       .config()
       .then(setConfig)
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, []);
+  }, [connectionEpoch]);
 
   // The adapter is what turns the SDK's client surface — here reached over a
   // WebSocket — into the shape `@ade-dev/chat-ui` renders. `defaults` carries the
@@ -104,7 +109,7 @@ export function App() {
         opencode: { loginCommand: "opencode auth login", installCommand: "npm i -g opencode-ai" },
       },
     });
-  }, [config]);
+  }, [config, connectionEpoch]);
 
   return (
     <div className="datadesk">
@@ -175,6 +180,7 @@ export function App() {
           {error ? <p className="datadesk-error">{error}</p> : null}
           {client && config ? (
             <AdeChat
+              key={connectionEpoch}
               client={client}
               threadKey={config.threadKey}
               {...(config.defaultModelId ? { defaultModelId: config.defaultModelId } : {})}

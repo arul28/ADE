@@ -7,11 +7,15 @@ and exposes chat as durable named threads.
 
 | Page | What it covers |
 |---|---|
-| [Threads](https://www.ade-app.dev/docs/sdk/threads) | Lifecycle, attachments, paged history, instructions, working directory, configuration layers, model switching |
+| [Threads](https://www.ade-app.dev/docs/sdk/threads) | Lifecycle, attachments, paged history, configuration and model switching |
+| [Accounts](https://www.ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, credentials, endpoint presets and usage limits |
 | [MCP servers](https://www.ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
 | [Permissions](https://www.ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
+| [Accounts](https://www.ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, stored credentials, presets and usage limits |
 | [Chat UI](https://www.ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
 | [Electron](https://www.ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
+| [WebSocket server](https://www.ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
+| [Testing](https://www.ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
 | [Bundling](https://www.ade-app.dev/docs/sdk/bundling) | Platform packages, `codesign`, entitlements, electron-builder |
 | [Runtime](https://www.ade-app.dev/docs/sdk/runtime) | The sidecar, exit events and `autoRestart`, version compatibility, and `doctor().runtime` provenance |
 | [Reference](https://www.ade-app.dev/docs/sdk/reference) | Every option, shape, and error code |
@@ -24,7 +28,7 @@ npm install @ade-dev/sdk
 Requires Node 22.13 or newer. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
-SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
+SDK 0.7 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
 lower bound did not move in 0.5 or 0.6, so a host on runtime 1.2.82 keeps
 working. On an older runtime, MCP tool filters are refused before they are
 sent (they need `capabilities.personalChats.mcpToolFilters`), and a mid-turn
@@ -46,7 +50,16 @@ const thread = await ade.threads.open("support", {
 });
 thread.on("event", (envelope) => console.log(envelope.event.type));
 await thread.send("Summarise today's incidents");
+console.log(thread.usage());
 ```
+
+`thread.usage()` reports cumulative token totals and provider-reported cost.
+Pass `budget: { maxTokens, maxCostUsd }` when creating a thread to interrupt it
+when a reported limit is reached. Budgets persist with the thread key.
+
+Use `ade.run(prompt, { provider, model, schema })` for a temporary one-shot
+thread. A schema response is parsed and checked locally, retried once when it
+does not match, then rejected with `InvalidOutputError` carrying `rawText`.
 
 Reopening `"support"` after a restart resumes the same conversation. Call
 `ade.dispose()` when the host shuts down.
@@ -57,7 +70,11 @@ The sidecar reuses the provider CLIs and logins already on the machine
 (`claude`, `codex`, `cursor`, …). ADE state under `home` is isolated; Claude /
 Codex / Cursor credentials still live in those tools' own config homes
 (`~/.claude`, `~/.codex`, `~/.cursor`). If the host user can already run that
-provider in a terminal, the sidecar can too.
+provider in a terminal, the sidecar can too. SDK 0.7 defaults to isolated
+provider logins. **BREAKING from SDK 0.6:** pass
+`useMachineLogin: true` to keep relying on the host machine's Claude or Codex
+login, or sign the user in through `ade.accounts.signIn()` (see
+[Accounts](https://www.ade-app.dev/docs/sdk/accounts)).
 
 `ade.providers.status()` reports, per provider, whether a binary was found, at
 which path and version, and whether credentials are present. Read `source`

@@ -1,3 +1,4 @@
+import { AdeError } from "./errors.js";
 import { isSupportedProvider } from "./permissions.js";
 import {
   PENDING_INPUT_KINDS,
@@ -55,11 +56,10 @@ export type ApprovalRequest = {
   /**
    * The finer-grained kind.
    *
-   * `"approval"` and `"permissions"` are answerable with `approve()`. The other
-   * kinds — `"question"`, `"structured_question"`, `"plan_approval"`,
-   * `"model_selection"` — want prose or a choice that this surface cannot
-   * carry, so render them read-only rather than offering Allow and Reject for
-   * something that wants a sentence.
+   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
+   * `respond()` for `"question"` and `"structured_question"` requests, with
+   * answers keyed by question id, and for `"plan_approval"` with an explicit
+   * decision. A runtime may leave other request kinds read-only.
    */
   requestKind?: PendingInputKind;
   /** Human-readable and provider-supplied. Safe to render. */
@@ -69,6 +69,10 @@ export type ApprovalRequest = {
   detail?: unknown;
   /** Which provider raised it. */
   provider: AdeProvider;
+  /** The original prompts for requests answered through `respond()`. */
+  questions?: PendingInputRequest["questions"];
+  /** False when the runtime cannot answer this request through the SDK. */
+  answerable?: boolean;
 };
 
 /**
@@ -155,7 +159,13 @@ export function observedApprovalFromEvent(event: {
   if (event.type !== "approval_request") return null;
   const itemId = readString(event.itemId);
   if (!itemId) return null;
-  const requestKind = readPendingInputKind(event.requestKind);
+  // Older hosts sent the kind only as `detail.request.kind` (ADE's
+  // `approvalRequestKind` reads both); without it a question is tracked as an
+  // approval the SDK would try to answer with Allow/Reject.
+  const embedded = event.detail && typeof event.detail === "object"
+    ? (event.detail as { request?: { kind?: unknown } }).request?.kind
+    : undefined;
+  const requestKind = readPendingInputKind(event.requestKind) ?? readPendingInputKind(embedded);
   return {
     itemId,
     ...(readString(event.logicalItemId) ? { logicalItemId: readString(event.logicalItemId)! } : {}),
@@ -191,6 +201,8 @@ export function approvalFromPendingInput(
   const turnId = readString(request.turnId ?? undefined) ?? observed?.turnId;
   const logicalItemId = observed?.logicalItemId;
   const detail = request.providerMetadata ?? observed?.detail;
+  const answerable = isApprovalShaped(readPendingInputKind(request.kind)) || request.kind === "question" ||
+    request.kind === "structured_question" || request.kind === "plan_approval";
   return {
     itemId,
     ...(logicalItemId ? { logicalItemId } : {}),
@@ -203,6 +215,8 @@ export function approvalFromPendingInput(
     description,
     ...(turnId ? { turnId } : {}),
     ...(detail !== undefined ? { detail } : {}),
+    ...(Array.isArray(request.questions) && request.questions.length > 0 ? { questions: request.questions } : {}),
+    answerable,
     // `isSupportedProvider` is a type guard, so `request.source` is already
     // narrowed to `AdeProvider` in this branch.
     provider: isSupportedProvider(request.source) ? request.source : threadProvider,
@@ -224,4 +238,44 @@ export function approvalFromObserved(
     ...(observed.detail !== undefined ? { detail: observed.detail } : {}),
     provider: threadProvider,
   };
+}
+
+const RESPOND_FIELDS: ReadonlySet<string> = new Set(["answers", "decision", "responseText"]);
+const RESPOND_DECISIONS: ReadonlySet<string> = new Set(["accept", "accept_for_session", "decline", "cancel"]);
+
+/**
+ * Throws `invalid_option` unless `response` is a `respond()` payload the
+ * runtime's `respondToInput` accepts: only `answers` (question id -> string or
+ * string[]), `decision`, and `responseText`.
+ */
+export function validateRespondOptions(response: unknown): void {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new AdeError("invalid_option", "respond() needs a response object.");
+  }
+  const responseRecord = response as Record<string, unknown>;
+  const unexpectedField = Object.keys(responseRecord).find((field) => !RESPOND_FIELDS.has(field));
+  if (unexpectedField) {
+    throw new AdeError("invalid_option", `respond() does not accept the "${unexpectedField}" field.`);
+  }
+  const { answers, decision, responseText } = responseRecord;
+  if (decision !== undefined && (typeof decision !== "string" || !RESPOND_DECISIONS.has(decision))) {
+    throw new AdeError(
+      "invalid_option",
+      'respond() decision must be "accept", "accept_for_session", "decline" or "cancel".',
+    );
+  }
+  if (answers !== undefined) {
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+      throw new AdeError("invalid_option", "respond() answers must be an object keyed by question id.");
+    }
+    for (const [questionId, answer] of Object.entries(answers)) {
+      if (!questionId || !(typeof answer === "string" ||
+        (Array.isArray(answer) && answer.every((value) => typeof value === "string")))) {
+        throw new AdeError("invalid_option", "respond() answers must map question ids to strings or string arrays.");
+      }
+    }
+  }
+  if (responseText !== undefined && responseText !== null && typeof responseText !== "string") {
+    throw new AdeError("invalid_option", "respond() responseText must be a string or null.");
+  }
 }

@@ -469,6 +469,7 @@ import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./service
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
+  takeEmbeddedHostToken,
   startParentDeathWatchdog,
 } from "./services/runtime/parentDeathWatchdog";
 import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
@@ -26463,6 +26464,15 @@ async function runServe(
   // is connected.
   const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
   const embedded = runtimeProfile === "embedded";
+  // The SDK host's per-spawn secret. Taken out of the environment here, before
+  // this runtime starts anything (provider CLIs, agents, the `ade` shim) that
+  // would inherit it: whoever holds it may manage the end user's accounts and
+  // keys. Only an embedded runtime honours it.
+  const embeddedHostToken = takeEmbeddedHostToken(process.env, embedded);
+  // The machine provider-instance store is shared across launch services. Give
+  // it the explicit profile from this runtime invocation so its default
+  // account uses the same isolated home as the embedded chat service.
+  process.env.ADE_RUNTIME_PROFILE = runtimeProfile ?? "full";
   // One decision, two surfaces: the sentence below and the `brain.jsonl`
   // warning after the socket is up. `describeBrainRoleCeiling` returns null
   // exactly when the ceiling is not worth naming, so the warning reads that
@@ -26652,7 +26662,10 @@ async function runServe(
   // Both profiles get it. An embedded runtime is exactly the case that needs
   // it most: the embedder's first screen asks "which CLIs do you have", and
   // without this it would have to write that detection itself.
-  const providerStatus = createProviderStatusService();
+  const providerStatus = createProviderStatusService({
+    runtimeProfile: runtimeProfile ?? "full",
+    adeHome: layout.adeDir,
+  });
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -27571,6 +27584,8 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      runtimeProfile: runtimeProfile ?? "full",
+      embeddedHostToken,
       providerStatus,
       keepAwakeService,
       productAnalyticsService: brainProductAnalytics,

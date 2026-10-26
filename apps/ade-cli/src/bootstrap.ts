@@ -339,6 +339,7 @@ import { createPrEventFanout } from "./prEventFanout";
 import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
 import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+import { shouldIsolateEmbeddedProviderLogins } from "../../desktop/src/shared/providerLoginIsolation";
 import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -2425,6 +2426,7 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         projectNotesService,
         // The MCP registry's secret values: the generic vault kind, account-wide.

@@ -316,6 +316,7 @@ jobs:
             packages/sdk/node_modules
           key: nm-sdk-v1-${{ runner.os }}-${{ hashFiles('packages/sdk/package-lock.json') }}
       - run: cd packages/sdk && npm run typecheck
+      - run: node packages/sdk/scripts/check-wire-types.mjs
       # Every published package must carry its own LICENSE, because the root
       # LICENSE does not travel in an npm tarball. --require-pack checks the
       # real tarball listing, not just the "files" field, and fails the job if

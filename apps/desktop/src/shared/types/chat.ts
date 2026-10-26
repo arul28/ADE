@@ -353,6 +353,9 @@ export type ChatSurfacePresentation = {
 
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
 export type AgentChatClaudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions";
+export const AGENT_CHAT_CLAUDE_PERMISSION_MODE_VALUES = [
+  "default", "auto", "plan", "acceptEdits", "bypassPermissions",
+] as const satisfies readonly AgentChatClaudePermissionMode[];
 export type AgentChatClaudeOutputStyleSource = "builtin" | "user" | "project" | "plugin";
 export type AgentChatClaudeOutputStyle = {
   name: string;
@@ -401,9 +404,15 @@ export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-fu
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
+export const AGENT_CHAT_OPENCODE_PERMISSION_MODE_VALUES = [
+  "plan", "edit", "full-auto", "config-toml",
+] as const satisfies readonly AgentChatOpenCodePermissionMode[];
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 /** GitHub Copilot SDK approval level. Missing values are treated as `ask`. */
 export type AgentChatCopilotPermissionMode = "plan" | "ask" | "assisted" | "auto-edit" | "full-auto";
+export const AGENT_CHAT_COPILOT_PERMISSION_MODE_VALUES = [
+  "plan", "ask", "assisted", "auto-edit", "full-auto",
+] as const satisfies readonly AgentChatCopilotPermissionMode[];
 export type AgentChatCopilotContextTier = "default" | "long_context";
 export type AgentChatCopilotAutoTier = "efficiency" | "balance" | "intelligence";
 /**

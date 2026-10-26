@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AgentChatEventEnvelope,
+  AgentChatRespondToInputArgs,
   PendingInputRequest,
   ProviderStatusRpcResult,
 } from "../src/types.js";
@@ -65,6 +66,7 @@ type Session = {
 
 export class MockRuntime {
   readonly socketPath: string;
+  private readonly tempDir: string;
   readonly calls: Array<{ method: string; params: unknown }> = [];
   readonly sessions = new Map<string, Session>();
 
@@ -124,6 +126,8 @@ export class MockRuntime {
     decision: string;
     responseText?: string;
   }> = [];
+  /** Every `respondToInput` the SDK sent, in order. */
+  readonly responses: AgentChatRespondToInputArgs[] = [];
 
   constructor(options: MockRuntimeOptions = {}) {
     this.options = {
@@ -140,13 +144,15 @@ export class MockRuntime {
       lifecycleActions: options.lifecycleActions ?? true,
       runtimeVersion: options.runtimeVersion ?? "1.2.69",
     };
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-mock-"));
-    this.socketPath = path.join(dir, "ade.sock");
+    this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-mock-"));
+    this.socketPath = process.platform === "win32"
+      ? `\\\\.\\pipe\\ade-sdk-mock-${randomUUID()}`
+      : path.join(this.tempDir, "ade.sock");
     this.catalog = defaultCatalog();
   }
 
   async start(): Promise<void> {
-    await fs.promises.rm(this.socketPath, { force: true });
+    if (process.platform !== "win32") await fs.promises.rm(this.socketPath, { force: true });
     this.server = net.createServer((socket) => {
       this.sockets.add(socket);
       socket.on("close", () => {
@@ -182,7 +188,7 @@ export class MockRuntime {
       this.server.close(() => resolve());
     });
     this.server = null;
-    await fs.promises.rm(path.dirname(this.socketPath), { recursive: true, force: true });
+    await fs.promises.rm(this.tempDir, { recursive: true, force: true });
   }
 
   /** Publishes a chat event through the buffer and any live push subscription. */
@@ -276,6 +282,7 @@ export class MockRuntime {
                 "getEventHistory",
                 "modelCatalog",
                 "approve",
+                "respondToInput",
                 ...(this.options.pendingInputs ? ["pendingInputs"] : []),
                 ...(this.options.lifecycleActions
                   ? ["updateSession", "archive", "unarchive", "delete", "getEventHistoryPage"]
@@ -512,6 +519,12 @@ export class MockRuntime {
           sessionId,
           pending.filter((request) => (request.itemId ?? request.requestId) !== itemId),
         );
+        return { ok: true };
+      }
+      case "respondToInput": {
+        const sessionId = String(args.sessionId ?? "");
+        if (!this.sessions.has(sessionId)) throw new Error("Personal chat session not found.");
+        this.responses.push(args as unknown as AgentChatRespondToInputArgs);
         return { ok: true };
       }
       case "modelCatalog":

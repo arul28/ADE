@@ -116,6 +116,7 @@ const SOURCE_BADGE_MAP: Record<ApiKeySource, { color: string; label: string }> =
   store: { color: COLORS.success, label: "Local store" },
   env: { color: COLORS.info, label: "Environment" },
   config: { color: COLORS.warning, label: "Project config" },
+  host: { color: COLORS.textMuted, label: "From the app" },
 };
 
 export function SourceBadge({ source }: { source: ApiKeySource }) {

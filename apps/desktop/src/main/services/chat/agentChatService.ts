@@ -471,6 +471,7 @@ import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claud
 import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
 import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { embeddedProviderLoginEnv } from "../../../shared/providerLoginIsolation";
 import {
   pinnedToolForProvider,
   pinnedToolNotReadyError,
@@ -769,7 +770,10 @@ import {
 } from "../../../shared/types";
 import {
   USER_NOTIFIED_NOTICE_STATUS,
+  AGENT_CHAT_CLAUDE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_OPENCODE_PERMISSION_MODE_VALUES,
+  AGENT_CHAT_COPILOT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   CHAT_STOP_REASON_BRAIN_RESTARTED,
@@ -9672,11 +9676,11 @@ const VALID_INTERACTION_MODES = new Set([
   "default",
   "plan",
 ]);
-const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "auto", "plan", "acceptEdits", "bypassPermissions"]);
+const VALID_CLAUDE_PERMISSION_MODES = new Set<string>(AGENT_CHAT_CLAUDE_PERMISSION_MODE_VALUES);
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
-const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
+const VALID_OPENCODE_PERMISSION_MODES = new Set<string>(AGENT_CHAT_OPENCODE_PERMISSION_MODE_VALUES);
 const VALID_DROID_PERMISSION_MODES = new Set<string>(AGENT_CHAT_DROID_PERMISSION_MODE_VALUES);
 /** The approval card's question: say what Copilot wants to do, not just that it wants something. */
 function copilotPermissionQuestion(kind: string, request: Record<string, unknown>, commandText: string | null): string {
@@ -9696,7 +9700,7 @@ function copilotPermissionQuestion(kind: string, request: Record<string, unknown
   }
 }
 
-const VALID_COPILOT_PERMISSION_MODES = new Set(["plan", "ask", "assisted", "auto-edit", "full-auto"]);
+const VALID_COPILOT_PERMISSION_MODES = new Set<string>(AGENT_CHAT_COPILOT_PERMISSION_MODE_VALUES);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -11339,6 +11343,8 @@ export function createAgentChatService(args: {
    * (tests, embedders) keeps them in memory only, never in someone's real home.
    */
   machineAdeHome?: string | null;
+  /** Embedded hosts can keep provider logins inside the runtime's ADE_HOME. */
+  embeddedProviderLoginsIsolated?: boolean;
   /**
    * Test/embedder override for the account's Fast-mode permission. Production
    * omits it and reads the account settings cache under `machineAdeHome`;
@@ -12214,7 +12220,9 @@ export function createAgentChatService(args: {
     const presetHome = resolveSessionLaunchPlan(managed)?.env?.[key]?.trim();
     if (presetHome) return { provider, env: { [key]: presetHome } };
     const instance = resolveSessionInstance(managed);
-    return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
+    return instance ? { provider, env: providerInstanceEnvPatch(instance, {
+      allowDefaultConfigHome: args.embeddedProviderLoginsIsolated === true,
+    }) } : undefined;
   };
 
   /**
@@ -12232,7 +12240,9 @@ export function createAgentChatService(args: {
       // As in chat creation, a pick that no longer names an account falls back
       // to the default.
       const instance = pick?.instanceId ? resolveProviderInstanceForLaunch(provider, pick.instanceId) : null;
-      return instance ? { provider, env: providerInstanceEnvPatch(instance) } : undefined;
+      return instance ? { provider, env: providerInstanceEnvPatch(instance, {
+        allowDefaultConfigHome: args.embeddedProviderLoginsIsolated === true,
+      }) } : undefined;
     } catch {
       return undefined;
     }
@@ -12484,7 +12494,9 @@ export function createAgentChatService(args: {
    * side effect.
    */
   const sessionProviderLookupEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
-    const patch = providerInstanceEnvPatch(resolveSessionInstance(managed));
+    const patch = providerInstanceEnvPatch(resolveSessionInstance(managed), {
+      allowDefaultConfigHome: args.embeddedProviderLoginsIsolated === true,
+    });
     return { ...userProcessEnv(), ...patch };
   };
 
@@ -12708,6 +12720,9 @@ export function createAgentChatService(args: {
     if (adeSkillCatalogFor(managed.session) === "assistant") {
       Object.assign(env, withoutAgentSkillsEnv(env, PERSONAL_LANE_ONLY_AGENT_SKILLS));
     }
+    if (args.embeddedProviderLoginsIsolated === true && args.machineAdeHome?.trim()) {
+      Object.assign(env, embeddedProviderLoginEnv(managed.session.provider, args.machineAdeHome) ?? {});
+    }
     const linearContext = writeSessionLinearIssueContext(managed.session.id);
     if (linearContext) {
       env.ADE_LINEAR_ISSUE_IDS = linearContext.identifiers;
@@ -12720,7 +12735,9 @@ export function createAgentChatService(args: {
     // `process.env` is never mutated: this object is the only thing that moves.
     const instance = resolveSessionInstance(managed);
     if (instance) {
-      Object.assign(env, providerInstanceEnvPatch(instance));
+      Object.assign(env, providerInstanceEnvPatch(instance, {
+        allowDefaultConfigHome: args.embeddedProviderLoginsIsolated === true,
+      }));
     }
     // A harness preset (or a bare provider-card key) lands LAST, so a preset
     // that owns its own config home outranks the account patch above. Same
