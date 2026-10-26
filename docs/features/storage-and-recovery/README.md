@@ -722,8 +722,10 @@ scanned and again right before removal, while the lane's worktree lease is held:
 
 Measuring a folder can take minutes, so right before each removal the sweep
 reads process working folders and mount points again (either read failing
-skips the lane), and then, with nothing awaited between it and the removal,
-the lane's live work.
+skips the lane), checks the folder's path for links and its inode once more,
+and then, with nothing awaited between it and the removal, the lane's live
+work. Live work is unknown, so the lane is kept, until both the chat and the
+terminal services are wired.
 
 Removal uses unpatched `fs.rm` (never follows links) with up to three whole
 passes a second apart for busy or permission errors, making read-only entries

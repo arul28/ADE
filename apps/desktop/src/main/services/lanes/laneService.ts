@@ -9732,9 +9732,9 @@ export function createLaneService({
      * deciding whether the lane is idle cannot mistake "not known yet" for 0.
      */
     getLiveWorkCounts(laneId: string): { activeChatCount: number; activePtyCount: number; activeWatcherCount: number } | null {
-      if (!teardownDeps?.ptyService) return null;
+      if (!teardownDeps?.ptyService || !teardownDeps.agentChatService) return null;
       return {
-        activeChatCount: teardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
+        activeChatCount: teardownDeps.agentChatService.countActiveForLane(laneId),
         activePtyCount: teardownDeps.ptyService.countActiveForLane(laneId),
         activeWatcherCount: teardownDeps.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0,
       };

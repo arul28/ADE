@@ -700,6 +700,10 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         if (processInside(processesNow, [worktree.root, worktree.realRoot])) return skip("a program is working in it");
         const realAbs = gitRelToAbs(worktree.realRoot, candidate.rel);
         if (mounts.some((mount) => isSameOrWithin(candidate.abs, mount) || isSameOrWithin(realAbs, mount))) continue;
+        // The path may have changed while it was measured: no link on it,
+        // and still the folder that was scanned.
+        const recheck = await inspectFolder(worktree, candidate.rel, idleSince, candidate);
+        if (!("candidate" in recheck)) continue;
         // Last, with nothing awaited between it and the removal.
         const busyNow = busyReason(lane.id);
         if (busyNow) return skip(busyNow);

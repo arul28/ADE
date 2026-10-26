@@ -3109,9 +3109,11 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.checkReachability") {
-      const syncService = await resolveRecoverySyncService(params);
+      // Status and self-probe from one host: the project that holds the
+      // machine's listener and relay, so their facts describe the same thing.
       const hostScope = await scopeRegistry.resolveActiveSyncHost();
       const hostSyncService = hostScope?.runtime.syncService ?? null;
+      const syncService = hostSyncService ?? await resolveRecoverySyncService(params);
       return await checkHostReachability({
         getStatus: async () => syncService
           ? await syncService.getStatus({ includeTransferReadiness: false })

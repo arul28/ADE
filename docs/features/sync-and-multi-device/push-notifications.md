@@ -671,9 +671,11 @@ idle minutes release it, and the next machine heartbeat sends the alert (the
 locked or asleep does not count as attended at all, even with ADE in front.
 The main process stamps the field on every report, so a window cannot claim
 "in use" (it may only say it is leaving); lock and suspend resend the last
-report as away at once, and unlock and resume refresh it. While the person is
-active the window keeps the 30 s visible cadence even when hidden, because the
-relay's presence window is 45 s. The clock counts as known only after it has
+report as away at once, and unlock and resume refresh it. While the computer
+can tell (active or idle), the window keeps the 30 s visible cadence even when
+hidden: active, because the relay's presence window is 45 s; idle, so coming
+back to the keyboard holds the phone within one beat. Away and back reports go
+out one after the other, so a quick lock and unlock cannot land "away" last. The clock counts as known only after it has
 been seen to move: some Linux/Wayland sessions report 0 forever, and taking
 that at face value would keep the phone quiet for good. The web client, older
 desktops and phones send no `userActive` and keep the timed hold. Older relays

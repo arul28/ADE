@@ -198,6 +198,7 @@ export class AttentionAccountCoordinator {
   private loggedAccountSnapshotFailure: string | null = null;
   /** The last presence a window reported, resent on lock, sleep and wake. */
   private lastPresence: Record<string, unknown> | null = null;
+  private presenceChanges: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
 
@@ -582,23 +583,37 @@ export class AttentionAccountCoordinator {
    * would otherwise keep the phone quiet on the last "in use" report until it
    * ages out of its presence window.
    */
-  async reportUserAway(): Promise<void> {
-    const last = this.lastPresence;
-    if (!last) return;
-    await this.sendPresence({
-      ...last,
-      appForeground: false,
-      userActive: false,
-      observedAt: new Date().toISOString(),
-    }).catch((error) => this.warnPresenceFailed("away", error));
+  reportUserAway(): Promise<void> {
+    return this.queuePresenceChange("away", async () => {
+      const last = this.lastPresence;
+      if (!last) return;
+      await this.sendPresence({
+        ...last,
+        appForeground: false,
+        userActive: false,
+        observedAt: new Date().toISOString(),
+      });
+    });
   }
 
   /** Unlocked or awake again: refresh the last report with the live clock. */
-  async reportUserBack(): Promise<void> {
-    const last = this.lastPresence;
-    if (!last) return;
-    await this.reportPresence({ ...last, observedAt: new Date().toISOString() })
-      .catch((error) => this.warnPresenceFailed("back", error));
+  reportUserBack(): Promise<void> {
+    return this.queuePresenceChange("back", async () => {
+      const last = this.lastPresence;
+      if (!last) return;
+      await this.reportPresence({ ...last, observedAt: new Date().toISOString() });
+    });
+  }
+
+  /**
+   * Away and back go out one after the other, in the order they happened: a
+   * quick lock and unlock must not let the "away" land last and release the
+   * phone while the person is at the computer.
+   */
+  private queuePresenceChange(change: "away" | "back", send: () => Promise<void>): Promise<void> {
+    const next = this.presenceChanges.then(send).catch((error) => this.warnPresenceFailed(change, error));
+    this.presenceChanges = next;
+    return next;
   }
 
   /** Relay outages are already logged once by `sendPresence`; anything else lands here. */

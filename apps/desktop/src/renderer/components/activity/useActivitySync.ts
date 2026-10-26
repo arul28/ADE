@@ -366,14 +366,16 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
   }, [accountLoading, accountUserId]);
 
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
-  // The person is using this computer, though maybe not ADE: a hidden window
-  // keeps the visible cadence then, so the relay's presence window (45 s)
-  // never lapses and the phone stays quiet while they work elsewhere.
-  const userActiveRef = useRef(false);
+  // This computer can tell whether the person is using it (in use or idle),
+  // though maybe not ADE: a hidden window keeps the visible cadence then. In
+  // use, the relay's presence window (45 s) never lapses and the phone stays
+  // quiet while they work elsewhere; idle, coming back to the keyboard is
+  // reported within one beat instead of two minutes.
+  const userActivityKnownRef = useRef(false);
 
   useEffect(() => {
     if (accountLoading || !accountUserId) return;
-    userActiveRef.current = false;
+    userActivityKnownRef.current = false;
     const reporter = createPresenceReporter({
       send: async () => {
         const userActive = await reportPresence(
@@ -381,9 +383,9 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
           visibleItemIdsRef.current,
           foregroundRef.current,
         );
-        userActiveRef.current = userActive === true;
+        userActivityKnownRef.current = typeof userActive === "boolean";
       },
-      isVisible: () => document.visibilityState === "visible" || userActiveRef.current,
+      isVisible: () => document.visibilityState === "visible" || userActivityKnownRef.current,
       visibleIntervalMs: PRESENCE_INTERVAL_MS,
       hiddenIntervalMs: HIDDEN_PRESENCE_INTERVAL_MS,
       maxBackoffMs: PRESENCE_FAILURE_BACKOFF_MAX_MS,
