@@ -2202,6 +2202,8 @@ type PersistedChatState = {
   usageLimitResume?: AgentChatUsageLimitResume | null;
   /** PDF pages and media bytes ADE inlined into the current Claude session. */
   claudeRetainedMedia?: ClaudeRetainedMedia;
+  /** Counts resets of that budget, so a message built across one can restore its own spend. Not persisted. */
+  claudeRetainedMediaResets?: number;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -12493,7 +12495,10 @@ export function createAgentChatService(args: {
   const forgetProviderThreadPointer = (managed: ManagedChatSession): void => {
     delete managed.session.threadId;
     // Zeroed in place: a message being built may hold this object.
-    if (managed.claudeRetainedMedia) Object.assign(managed.claudeRetainedMedia, emptyClaudeRetainedMedia());
+    if (managed.claudeRetainedMedia) {
+      Object.assign(managed.claudeRetainedMedia, emptyClaudeRetainedMedia());
+      managed.claudeRetainedMediaResets = (managed.claudeRetainedMediaResets ?? 0) + 1;
+    }
     managed.claudeBackgroundResumeSessionId = null;
     // A live Claude runtime holds its own copy, read right after the launch
     // env resolves the account: left set, the launch that fell back still
@@ -24315,29 +24320,34 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The budget a Claude message spends from: the chat's own, live, not a copy.
-   * The builder checks a PDF against it and adds it with no await in between,
-   * so two messages in flight cannot both spend the same pages. A message that
-   * then fails to send still counts, which only errs toward a later PDF going
-   * as a path.
+   * Start one Claude message's spend. `budget` is the chat's own, live, not a
+   * copy: the builder checks a PDF against it and adds it with no await in
+   * between, so two messages in flight cannot both spend the same pages. A
+   * message that then fails to send still counts, which only errs toward a
+   * later PDF going as a path. `spent` collects this message's own share.
    */
-  const claudeRetainedMediaBudget = (managed: ManagedChatSession): ClaudeRetainedMedia =>
-    (managed.claudeRetainedMedia ??= emptyClaudeRetainedMedia());
+  const startClaudeRetainedMediaSpend = (managed: ManagedChatSession) => ({
+    budget: (managed.claudeRetainedMedia ??= emptyClaudeRetainedMedia()),
+    spent: emptyClaudeRetainedMedia(),
+    resets: managed.claudeRetainedMediaResets ?? 0,
+  });
 
   /**
-   * Save the budget once a message may have moved it; text-only sends never
-   * write the chat file for it. A message with attachments always saves: a
-   * compaction during its build can zero the budget and the message refill it
-   * to the same total.
+   * Save what a sent message spent; text-only sends never write the chat file
+   * for it. A reset during the build (a compaction) zeroed what the message had
+   * already counted, yet the message lands in the new session, so its whole
+   * spend is added back. Part of it may be counted twice, which errs safe.
    */
   const keepClaudeRetainedMedia = (
     managed: ManagedChatSession,
-    before: ClaudeRetainedMedia,
-    attachments: readonly unknown[] | undefined,
+    spend: ReturnType<typeof startClaudeRetainedMediaSpend>,
   ): void => {
-    const now = managed.claudeRetainedMedia;
-    if (!now) return;
-    if (!attachments?.length && now.pages === before.pages && now.bytes === before.bytes) return;
+    if (!spend.spent.pages && !spend.spent.bytes) return;
+    if ((managed.claudeRetainedMediaResets ?? 0) !== spend.resets) {
+      const budget = (managed.claudeRetainedMedia ??= emptyClaudeRetainedMedia());
+      budget.pages += spend.spent.pages;
+      budget.bytes += spend.spent.bytes;
+    }
     persistChatState(managed);
   };
 
@@ -24349,6 +24359,7 @@ export function createAgentChatService(args: {
     const budget = managed.claudeRetainedMedia;
     if (!budget || (!budget.pages && !budget.bytes)) return;
     Object.assign(budget, emptyClaudeRetainedMedia());
+    managed.claudeRetainedMediaResets = (managed.claudeRetainedMediaResets ?? 0) + 1;
     persistChatState(managed);
   };
 
@@ -31616,15 +31627,15 @@ export function createAgentChatService(args: {
 
       // Build the message after permission-mode recovery, because rebuilding a
       // fresh Claude SDK session clears runtime.sdkSessionId.
-      const retainedMedia = claudeRetainedMediaBudget(managed);
-      const retainedBefore = { ...retainedMedia };
+      const retainedSpend = startClaudeRetainedMediaSpend(managed);
       const messageToSend = await buildClaudeV2MessageAsync(basePromptText, resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId,
         forceUserMessage: true,
         getDirtyFileTextForPath,
         logger,
-        retainedMedia,
+        retainedMedia: retainedSpend.budget,
+        retainedSpent: retainedSpend.spent,
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId as NonNullable<SDKUserMessage["uuid"]>;
       messageToSend.timestamp = new Date().toISOString();
@@ -31636,7 +31647,7 @@ export function createAgentChatService(args: {
       }
       pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
       settleClaudeInitialInputDispatch(runtime);
-      keepClaudeRetainedMedia(managed, retainedBefore, resolvedAttachments);
+      keepClaudeRetainedMedia(managed, retainedSpend);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
@@ -60924,15 +60935,15 @@ export function createAgentChatService(args: {
     const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
     const promptText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
     const stopSeq = runtime.stopSeq;
-    const retainedMedia = claudeRetainedMediaBudget(managed);
-    const retainedBefore = { ...retainedMedia };
+    const retainedSpend = startClaudeRetainedMediaSpend(managed);
     const sdkMsg = await buildClaudeV2MessageAsync(promptText, steer.resolvedAttachments, {
       baseDir: managed.laneWorktreePath,
       sessionId: runtime.sdkSessionId ?? null,
       forceUserMessage: true,
       getDirtyFileTextForPath,
       logger,
-      retainedMedia,
+      retainedMedia: retainedSpend.budget,
+      retainedSpent: retainedSpend.spent,
     }) as unknown as SDKUserMessage;
 
     // Match Claude Code's own command queue. "next" is consumed between tool
@@ -60972,7 +60983,7 @@ export function createAgentChatService(args: {
       steer: { ...steer },
     });
     pushClaudeMessage(managed, runtime, runtime.inputPump, sdkMsg);
-    keepClaudeRetainedMedia(managed, retainedBefore, steer.resolvedAttachments);
+    keepClaudeRetainedMedia(managed, retainedSpend);
     onAccepted?.();
 
     emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);

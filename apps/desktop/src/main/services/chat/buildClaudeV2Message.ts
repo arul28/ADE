@@ -125,6 +125,8 @@ type BuildClaudeV2MessageOptions = {
    * between, so concurrent builds cannot both spend the same pages.
    */
   retainedMedia?: ClaudeRetainedMedia;
+  /** Also gets what this one message adds, so the caller can restore it if the budget is reset meanwhile. */
+  retainedSpent?: ClaudeRetainedMedia;
 };
 
 /**
@@ -135,6 +137,7 @@ type BuildClaudeV2MessageOptions = {
 function readPdfDocumentBlock(
   attachment: ResolvedAgentChatFileRef,
   budget: ClaudeRetainedMedia,
+  spent: ClaudeRetainedMedia | undefined,
   baseDir: string | undefined,
   logger: BuildClaudeV2MessageOptions["logger"],
 ): Record<string, unknown> | null {
@@ -166,8 +169,10 @@ function readPdfDocumentBlock(
   if (budget.bytes + retainedBytes > CLAUDE_RETAINED_MEDIA_MAX_BYTES) {
     return skip("over_byte_budget", { retainedBytes, bytes: budget.bytes });
   }
-  budget.pages += pages;
-  budget.bytes += retainedBytes;
+  for (const total of spent ? [budget, spent] : [budget]) {
+    total.pages += pages;
+    total.bytes += retainedBytes;
+  }
   return {
     type: "document",
     source: { type: "base64", media_type: "application/pdf", data: bytes.toString("base64") },
@@ -207,7 +212,7 @@ export async function buildClaudeV2MessageAsync(
   for (const [index, attachment] of attachments.entries()) {
     if (!pdfCandidates[index] || !budget) continue;
     const token = labels[index]?.token;
-    const document = readPdfDocumentBlock(attachment, budget, options.baseDir, options.logger);
+    const document = readPdfDocumentBlock(attachment, budget, options.retainedSpent, options.baseDir, options.logger);
     // A PDF that does not fit goes as the same path hint every file gets, so
     // Claude can still read it with its own tools.
     if (!document) continue;
@@ -273,7 +278,11 @@ async function buildImageParts(
     if (fitted.kind === "omit") {
       return [...label, imageNotInlinedHintPart(attachment.path, fitted.reason)];
     }
-    if (options.retainedMedia) options.retainedMedia.bytes += retainedBytesForInline(fitted.data.length);
+    if (options.retainedMedia) {
+      const retainedBytes = retainedBytesForInline(fitted.data.length);
+      options.retainedMedia.bytes += retainedBytes;
+      if (options.retainedSpent) options.retainedSpent.bytes += retainedBytes;
+    }
     // The label goes right before the image block, so `[Image #2]` in the
     // prompt points the model at this exact image.
     return [...label, {

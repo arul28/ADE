@@ -290,6 +290,33 @@ describe("buildClaudeV2MessageAsync", () => {
   // ─────────────────────────────────────────────────────────────────────────
   // 6. Mixed image and non-image attachments
   // ─────────────────────────────────────────────────────────────────────────
+  // A PDF stays in the Claude session for good, so one that pushes it past the
+  // page budget breaks every later turn. The page tree must not be under-read,
+  // even when the file holds fewer page objects than its tree says.
+  const ONE_PAGE = "3 0 obj <</Type /Page /Parent 2 0 R>> endobj";
+  it.each([
+    { shape: "small direct count", tree: "/Count 5", extra: "", pages: 5 },
+    { shape: "count ending the dictionary", tree: "/Count 60", extra: "", pages: 60 },
+    { shape: "indirect count", tree: "/Count 5 0 R", extra: "5 0 obj 60 endobj", pages: 60 },
+    { shape: "indirect count redefined by an update", tree: "/Count 5 0 R", extra: "5 0 obj 1 endobj\n5 0 obj 60 endobj", pages: 60 },
+  ])("inlines a PDF only when its pages fit the session budget ($shape)", async ({ tree, extra, pages }) => {
+    const filePath = path.join(tmpDir, "report.pdf");
+    fs.writeFileSync(filePath, `%PDF-1.7\n2 0 obj <</Type /Pages /Kids [3 0 R] ${tree}>> endobj\n${ONE_PAGE}\n${extra}\n%%EOF`, "latin1");
+    const retainedMedia = { pages: 50, bytes: 0 };
+
+    const msg = await buildClaudeV2MessageAsync("Read this", [{ path: filePath, type: "file" }], {
+      baseDir: tmpDir,
+      forceUserMessage: true,
+      retainedMedia,
+    }) as SDKUserMessagePartial;
+
+    const content = msg.message.content as Array<{ type: string; text?: string }>;
+    const inlined = 50 + pages <= 100;
+    expect(content.some((block) => block.type === "document")).toBe(inlined);
+    expect(retainedMedia.pages).toBe(inlined ? 50 + pages : 50);
+    if (!inlined) expect(content.some((block) => block.text?.includes(filePath))).toBe(true);
+  });
+
   it("handles mixed image and non-image attachments", async () => {
     const pngPath = writeFakeImage("screenshot.png");
     const attachments: AgentChatFileRef[] = [

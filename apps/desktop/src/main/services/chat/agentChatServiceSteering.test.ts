@@ -2209,6 +2209,80 @@ describe("createAgentChatService", () => {
       await activeTurn;
     });
 
+    // A person's inline steer moves the running Bash call to the background.
+    // A Stop that lands mid-move must still end that call (it was the turn's
+    // foreground work) and must not deliver the steer as a new turn.
+    it("Stop during an inline steer's Bash move stops the moved call and drops the steer", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let resolveMove!: (moved: boolean) => void;
+      let signalMoveStarted!: () => void;
+      const moveStarted = new Promise<void>((resolve) => { signalMoveStarted = resolve; });
+      const backgroundTasks = vi.fn((_toolUseId: string) => {
+        signalMoveStarted();
+        return new Promise<boolean>((resolve) => { resolveMove = resolve; });
+      });
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let turnClosed = false;
+      let taskAnnounced = false;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bash-move", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        await moveStarted;
+        yield { type: "system", subtype: "task_started", task_id: "bg-1", tool_use_id: "bash-1", task_type: "local_bash", description: "npm test" };
+        taskAnnounced = true;
+        while (!turnClosed) await new Promise((resolve) => setTimeout(resolve, 0));
+      })());
+      const mockSession = {
+        send,
+        stream,
+        close: vi.fn(() => { turnClosed = true; }),
+        sessionId: "sdk-bash-move",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        interrupt: vi.fn().mockResolvedValue(undefined),
+        stopTask,
+        backgroundTasks,
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(mockSession as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(mockSession as any);
+
+      const { service } = createService({ onEvent: (e: AgentChatEventEnvelope) => events.push(e) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Run the tests", timeoutMs: 15_000 });
+      await vi.waitFor(() => { expect(streamCall).toBe(2); });
+
+      await service.steer({ sessionId: session.id, text: "look at this instead", sentByUser: true });
+      const queued = await waitForEvent(events, (e): e is AgentChatEventEnvelope =>
+        e.event.type === "user_message" && (e.event as any).deliveryState === "queued");
+      const dispatch = service.dispatchSteer({ sessionId: session.id, steerId: (queued.event as any).steerId, mode: "inline" });
+      const dispatchOutcome = dispatch.then(() => null, (error: Error) => error);
+
+      await moveStarted;
+      expect(backgroundTasks).toHaveBeenCalledWith("bash-1");
+      // The generator resumes only once the service has handled task_started.
+      await vi.waitFor(() => { expect(taskAnnounced).toBe(true); });
+
+      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear" });
+      resolveMove(true);
+
+      expect(stopTask).toHaveBeenCalledWith("bg-1");
+      expect((await dispatchOutcome)?.message).toMatch(/stopped before this message was sent/);
+      expect(send.mock.calls.some(([arg]) => JSON.stringify(arg ?? "").includes("look at this instead"))).toBe(false);
+      await activeTurn.catch(() => undefined);
+    });
+
     it("dispatchSteer no-ops when the steerId is not in the queue", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
