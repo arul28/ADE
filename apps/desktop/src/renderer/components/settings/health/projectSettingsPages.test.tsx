@@ -426,7 +426,7 @@ async function openView(name: string) {
 }
 
 async function openDetails() {
-  fireEvent.click(await screen.findByRole("button", { name: /details: lane folders/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Storage details" }));
 }
 
 describe("Project → Lanes, Location, and Computer → ADE service", () => {
@@ -855,7 +855,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect((dirty as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole("checkbox", { name: /main/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Select 3 stale" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select 3 safe to archive" }));
     fireEvent.click(screen.getByRole("button", { name: /^Archive 3 lanes/ }));
     const confirm = await screen.findByRole("alertdialog", { name: "Archive 3 lanes?" });
     fireEvent.click(within(confirm).getByRole("button", { name: "Archive 3 lanes" }));

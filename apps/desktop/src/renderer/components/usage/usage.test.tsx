@@ -2181,10 +2181,10 @@ describe("usage components", () => {
       // Freshness moved into the page subtitle.
       expect(await screen.findByText(/updated .* ago/i)).toBeTruthy();
 
-      // The asterisk names how many providers are estimated, and its tooltip
-      // names which one and why.
-      const footnote = screen.getByText(/if billed at full API rate/);
-      expect(footnote.textContent).toMatch(/one provider is estimated/);
+      // The asterisk says the figure is not spend and marks it estimated; its
+      // tooltip names which provider and why.
+      const footnote = screen.getByText(/API-rate equivalent, not spend/);
+      expect(footnote.textContent).toMatch(/\(est\.\)/);
       const explained = screen.getByTitle(/counted from text length/);
       expect(explained.getAttribute("title")).toMatch(/Cursor/);
 
