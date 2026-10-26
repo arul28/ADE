@@ -22651,7 +22651,13 @@ export function createAgentChatService(args: {
         message: "No other account has room for this chat.",
       };
     }
-    if (usageLimitMoveInFlight.has(normalizedSessionId) || pendingUsageLimitMoves.has(normalizedSessionId)) {
+    // The account row's switch copies the same thread; either direction has to
+    // see the other in flight or both move the chat.
+    if (
+      usageLimitMoveInFlight.has(normalizedSessionId)
+      || pendingUsageLimitMoves.has(normalizedSessionId)
+      || accountSwitchesInFlight.has(normalizedSessionId)
+    ) {
       return {
         ok: false,
         reason: "handoff_in_flight",
@@ -22663,12 +22669,15 @@ export function createAgentChatService(args: {
     const blocked = resolveHandoffBlockedReason(managed);
     if (blocked) return { ok: false, reason: "handoff_failed", message: blocked.message };
     usageLimitMoveInFlight.add(normalizedSessionId);
+    // Read before the move: a successful move starts the continuation and
+    // replaces this lookup, and the turn that hit the limit is the one already
+    // rescued.
+    const limitedTurnId = lastTurnIdBySession.get(normalizedSessionId) ?? null;
     try {
       const moved = await moveUsageLimitChatInPlace(managed, alternate);
       if (moved.ok) {
         // A provider that reports the same limit twice must not move again.
-        const movedTurnId = lastTurnIdBySession.get(normalizedSessionId) ?? null;
-        if (movedTurnId) rememberBoundedId(usageLimitMovedTurnIds, movedTurnId, 256);
+        if (limitedTurnId) rememberBoundedId(usageLimitMovedTurnIds, limitedTurnId, 256);
         return { ok: true, sessionId: normalizedSessionId };
       }
       logger.warn("agent_chat.usage_limit_move_failed", {
@@ -22679,8 +22688,7 @@ export function createAgentChatService(args: {
       });
       // A compaction-only turn carries no work to the other account, so a
       // failed move reports instead of starting a chat that could only resend it.
-      const turnId = lastTurnIdBySession.get(normalizedSessionId) ?? null;
-      if (turnId && compactOnlyTurns.has(turnId)) {
+      if (limitedTurnId && compactOnlyTurns.has(limitedTurnId)) {
         return { ok: false, reason: "handoff_failed", message: moved.message };
       }
       return await handOffUsageLimitChat(managed, alternate);
