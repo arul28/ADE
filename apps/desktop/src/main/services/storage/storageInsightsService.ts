@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import { nonAsarFs } from "../shared/nonAsarFs";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import type {
   DbBreakdownEntry,
