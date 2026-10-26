@@ -466,13 +466,35 @@ export type ProviderCapabilities = {
   mcp: "full" | "partial" | "none";
 };
 
+/**
+ * A thread's usage-limit state, as the runtime publishes it on
+ * `session_meta_updated.usageLimitResume` (a copy of
+ * `AgentChatUsageLimitResume`). The runtime republishes the whole value on
+ * every transition and sends null when the limit clears.
+ */
+export type UsageLimitResume = {
+  state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
+  provider: AdeProvider;
+  /** When the resume prompt is sent (reset + buffer). Null when unknown. */
+  fireAt: string | null;
+  /** The reset the provider published. Null when unknown. */
+  resetAt: string | null;
+  /** Turn that hit the limit. */
+  turnId: string | null;
+  updatedAt: string;
+  /** Another signed-in account with room, chosen by the runtime. */
+  alternateAccount?: { instanceId: string; label: string } | null;
+  [key: string]: unknown;
+};
+
+/** The client `usageLimit` event: one thread's limit state changed. */
 export type UsageLimitEvent = {
+  /** Thread key; empty when the session is not one this client opened by key. */
   key: string;
   sessionId: string;
   provider: AdeProvider;
-  turnId?: string;
-  message?: string;
-  [key: string]: unknown;
+  /** The current state, or null when the limit cleared. */
+  status: UsageLimitResume | null;
 };
 
 /** Result of the `pendingInputs` action. */

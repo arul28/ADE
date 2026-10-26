@@ -109,9 +109,17 @@ const client = await createAdeChat({ home, onUsageLimit: "failover" });
 client.on("usageLimit", (event) => showLimitNotice(event));
 ```
 
-`"failover"` asks the runtime to continue on another signed-in account. If no
-alternate account is available, the turn waits. `"ask"` emits `usageLimit` and
-leaves the decision to the host. Threads expose `usageLimit.resumeNow()` and
+`usageLimit` fires whenever a thread's limit state changes:
+`{ key, sessionId, provider, status }`. `status` is null when the limit
+clears; otherwise it carries `state` (`armed`, `resuming`, `paused`,
+`opted_out` or `no_reset`), `resetAt`, `fireAt` (when the runtime will resume
+on its own), and `alternateAccount` when another signed-in account still has
+room.
+
+`"failover"` continues the interrupted turn on that `alternateAccount`, once
+per limited turn. The runtime picks the account, because it has the quota
+reading. With no alternate, the thread waits for the reset. `"wait"` and
+`"ask"` only emit the event. Threads expose `usageLimit.resumeNow()` and
 `usageLimit.continueOnAlternate()` for an explicit choice.
 
 ## Electron renderers

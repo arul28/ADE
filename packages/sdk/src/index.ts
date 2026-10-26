@@ -153,6 +153,7 @@ export type {
   ProviderStatusRpcResult,
   ProviderCapabilities,
   UsageLimitEvent,
+  UsageLimitResume,
   RuntimeCompatibility,
   SyntheticRuntimeLostStatusEvent,
   ThreadCapabilities,

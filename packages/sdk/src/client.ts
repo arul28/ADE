@@ -26,6 +26,7 @@ import type {
   ProviderStatusRpcResult,
   ProviderCapabilities,
   UsageLimitEvent,
+  UsageLimitResume,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";
@@ -408,35 +409,46 @@ export async function createAdeChat(
     },
   });
 
-  const usageLimitEventsSeen = new Set<string>();
+  // The runtime announces a usage limit by republishing the whole resume
+  // state on `session_meta_updated.usageLimitResume` at every transition, and
+  // null when it clears. There is no separate limit event. The last state per
+  // session dedupes the replays a resubscribe or history read delivers, and
+  // keeps failover to one attempt per limited turn.
+  const usageLimitStates = new Map<string, string>();
+  const failoverAttempted = new Set<string>();
   const unsubscribeUsageLimits = hub.onEvent((envelope) => {
-    const event = envelope.event;
-    const isLimit = event.type === "usage_limit" ||
-      (event.type === "status" && [event.turnStatus, event.status, event.reason].includes("usage_limited"));
-    if (!isLimit) return;
-    const turnId = typeof event.turnId === "string" ? event.turnId : undefined;
-    const marker = `${envelope.sessionId}:${turnId ?? envelope.sequence ?? envelope.timestamp}:${event.type}`;
-    if (usageLimitEventsSeen.has(marker)) return;
-    usageLimitEventsSeen.add(marker);
-    if (usageLimitEventsSeen.size > 500) usageLimitEventsSeen.delete(usageLimitEventsSeen.values().next().value!);
+    const event = envelope.event as { type: string; usageLimitResume?: unknown };
+    if (event.type !== "session_meta_updated" || !("usageLimitResume" in event) || event.usageLimitResume === undefined) return;
+    const status = event.usageLimitResume && typeof event.usageLimitResume === "object"
+      ? event.usageLimitResume as UsageLimitResume
+      : null;
+    const fingerprint = status ? `${status.state}:${status.turnId ?? ""}:${status.alternateAccount?.instanceId ?? ""}` : "clear";
+    if (usageLimitStates.get(envelope.sessionId) === fingerprint) return;
+    if (!status && !usageLimitStates.has(envelope.sessionId)) return;
+    if (status) usageLimitStates.set(envelope.sessionId, fingerprint);
+    else usageLimitStates.delete(envelope.sessionId);
+    if (usageLimitStates.size > 500) usageLimitStates.delete(usageLimitStates.keys().next().value!);
     void (async () => {
       const record = (await store.all()).find((entry) => entry.sessionId === envelope.sessionId);
       const live = [...liveSessions.values()].find((thread) => thread.id === envelope.sessionId);
-      const provider = live?.model?.provider || record?.provider || (typeof event.provider === "string" ? event.provider : "claude");
+      const provider = status?.provider || live?.model?.provider || record?.provider || "claude";
       const payload: UsageLimitEvent = {
         key: record?.key ?? live?.key ?? "",
         sessionId: envelope.sessionId,
         provider,
-        ...(turnId ? { turnId } : {}),
-        ...(typeof event.message === "string" ? { message: event.message } : {}),
+        status,
       };
       emitClient("usageLimit", payload);
-      if (options.onUsageLimit !== "failover" || !runtime.actionListed("continueUsageLimitOnAlternate")) return;
+      // Failover only when the runtime names an alternate account: it already
+      // checked that account has room, which a bare signed-in count cannot.
+      if (options.onUsageLimit !== "failover" || !status?.alternateAccount) return;
+      if (status.state === "resuming" || status.state === "opted_out") return;
+      const attemptKey = `${envelope.sessionId}:${status.turnId ?? ""}`;
+      if (failoverAttempted.has(attemptKey) || !runtime.actionListed("continueUsageLimitOnAlternate")) return;
+      failoverAttempted.add(attemptKey);
+      if (failoverAttempted.size > 500) failoverAttempted.delete(failoverAttempted.values().next().value!);
       try {
-        const accounts = await accountManagement.accounts.list(provider);
-        if (accounts.filter((account) => account.signedIn).length > 1) {
-          await chats.continueUsageLimitOnAlternate({ sessionId: envelope.sessionId });
-        }
+        await chats.continueUsageLimitOnAlternate({ sessionId: envelope.sessionId });
       } catch (error) {
         recordError("usageLimit.failover", error);
       }
