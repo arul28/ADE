@@ -3,6 +3,7 @@ import {
   WORK_TOOLS_CONTROL_HINT,
   WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT,
   WORK_TOOLS_NO_DESKTOP_MESSAGE,
+  WORK_TOOLS_UNREACHABLE_MESSAGE,
   workToolsUnavailableMessage,
   type WorkToolsLaneState,
   type WorkToolsMacDesktopState,
@@ -89,6 +90,13 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
    * only thing that knows, so it reports the status up.
    */
   const [livePlaying, setLivePlaying] = useState(false);
+  /**
+   * The last read failed: the machine is unreachable or its brain is
+   * restarting. Distinct from a null state, which means no desktop is attached;
+   * telling the user to open ADE on their Mac for a dropped connection to a
+   * Linux box sends them the wrong way.
+   */
+  const [unreachable, setUnreachable] = useState(false);
   // Guards against a slow refresh landing after the pane moved to another lane.
   const requestedLaneId = useRef(laneId);
   requestedLaneId.current = laneId;
@@ -119,13 +127,15 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
       const changed = signature !== lastStateSignature.current;
       lastStateSignature.current = signature;
       setState(next);
+      setUnreachable(false);
       return changed;
     } catch {
       if (requestedLaneId.current !== laneId) return false;
-      const changed = lastStateSignature.current !== "null";
-      lastStateSignature.current = "null";
-      setState(null);
-      return changed;
+      // Keep the last state on screen and retry at the base rate instead of
+      // backing off: a failed read is one cheap call, and the pane should come
+      // back as soon as the machine does.
+      setUnreachable(true);
+      return true;
     } finally {
       if (requestedLaneId.current === laneId) setLoaded(true);
     }
@@ -135,6 +145,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     lastStateSignature.current = null;
     setLoaded(false);
     setState(null);
+    setUnreachable(false);
     setPreview(null);
     setLivePlaying(false);
     void refresh();
@@ -203,7 +214,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     return <ReadOnlyMessage message="Select a lane to see what its tools are doing." />;
   }
   if (!state) {
-    return <ReadOnlyMessage message={WORK_TOOLS_NO_DESKTOP_MESSAGE} />;
+    return <ReadOnlyMessage message={unreachable ? WORK_TOOLS_UNREACHABLE_MESSAGE : WORK_TOOLS_NO_DESKTOP_MESSAGE} />;
   }
 
   return (
@@ -226,6 +237,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
           dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
         />
       )}
+      {unreachable ? <p className="text-[11px] text-amber-300">{WORK_TOOLS_UNREACHABLE_MESSAGE}</p> : null}
       <p className="text-[11px] text-muted-fg">
         {macDesktopControlAvailable ? WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT : WORK_TOOLS_CONTROL_HINT}
       </p>

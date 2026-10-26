@@ -1000,14 +1000,18 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     <div
       data-model-picker-content="true"
       className={cn(
-        "flex w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden",
+        // Capped to the room Radix measured beside the trigger, so a short
+        // window (a laptop browser tab) shrinks the body instead of running it
+        // off the bottom of the viewport. Outside a popover the variable is
+        // unset and the viewport is the cap.
+        "flex max-h-[var(--radix-popover-content-available-height,100vh)] w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden",
         POPOVER_SURFACE_CLASS,
       )}
       onKeyDown={handleListKeyDown}
     >
       {/* The rail and the search bar share one recessed L; the list sits on a
           raised panel cut into it, so the eye lands on the models first. */}
-      <div className="flex h-[400px] min-h-0 bg-black/[0.2]">
+      <div className="flex h-[400px] min-h-[160px] shrink bg-black/[0.2]">
         <ModelPickerRail
           entries={railEntries}
           selected={selection}
