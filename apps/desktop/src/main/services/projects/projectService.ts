@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { gitCommandError, runGit } from "../git/git";
+import { branchNameFromHeadRef, gitCommandError, runGit } from "../git/git";
 import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectInfo } from "../../../shared/types";
@@ -51,9 +51,9 @@ export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {
     if (m?.[1]) return m[1];
   }
 
-  const head = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot, timeoutMs: 6_000 });
+  const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: repoRoot, timeoutMs: 6_000 });
   if (head.exitCode === 0) {
-    const name = head.stdout.trim();
+    const name = branchNameFromHeadRef(head.stdout);
     if (name && name !== "HEAD") return name;
   }
 

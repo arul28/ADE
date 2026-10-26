@@ -644,6 +644,15 @@ export type AppNavigationTarget =
       kind: "settings";
       tab?: string | null;
       anchor?: string | null;
+      /** A manifest entry id; its tab and anchor win over `tab`/`anchor`. */
+      entryId?: string | null;
+      /** The machine a Computer page opens for. Null or absent: the default. */
+      machineId?: string | null;
+    }
+  | {
+      /** A page from `shared/openPlaces.ts`. Only a chat chip click sends it. */
+      kind: "open-place";
+      place: string;
     }
   | {
       kind: "linear-issue";

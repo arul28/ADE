@@ -31,7 +31,7 @@ import { SceneAnswerContext, SceneFrame } from "./SceneFrame";
 import { TranscriptChip } from "./ChipText";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
-import { chipFromDeeplinkTarget } from "../../../shared/chips";
+import { chipFromDeeplinkTarget, isKnownDeeplinkTarget } from "../../../shared/chips";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import {
   remarkThreadEntities,
@@ -434,6 +434,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       // the same chip the composer and the sent bubble use.
       const deeplink = typeof href === "string" ? parseDeeplink(href) : null;
       if (deeplink?.ok && typeof href === "string") {
+        // A setting or page this build does not know stays the agent's words,
+        // not a chip that points nowhere.
+        if (!isKnownDeeplinkTarget(deeplink.target)) return <span>{children}</span>;
         return <TranscriptChip chip={chipFromDeeplinkTarget(href, deeplink.target)} />;
       }
       const workspacePath = resolveWorkspacePathFromHref(href);

@@ -27,6 +27,7 @@ import {
   type GitHubIssueTemplateSet,
 } from "../../../shared/githubIssueTemplates";
 import type { GitHubIssueLike } from "../../../shared/laneGitHubIssue";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 /**
  * GitHub issue operations, shared by the desktop GitHub service and its
@@ -172,8 +173,11 @@ export function createGithubIssueOps(deps: {
 
   // A read-only GraphQL query against one repository. Errors in the body are
   // GitHub's answer, not a transport failure, so they are raised as such.
+  // A repository the credential cannot see ("Could not resolve to a
+  // Repository", "Resource not accessible by personal access token") is the
+  // user's token or repo, not ADE: the user fixes it in Settings or on GitHub.
   const graphqlRepoRead = async <T>(owner: string, name: string, query: string, variables: Record<string, unknown>): Promise<T> => {
-    const { data } = await apiRequest<{ data?: T; errors?: Array<{ message?: unknown }> }>({
+    const { data } = await apiRequest<{ data?: T; errors?: Array<{ message?: unknown; type?: unknown }> }>({
       method: "POST",
       path: "/graphql",
       capability: "read",
@@ -183,7 +187,10 @@ export function createGithubIssueOps(deps: {
     const errors = Array.isArray(data?.errors)
       ? data.errors.map((entry) => (typeof entry?.message === "string" ? entry.message : "")).filter(Boolean)
       : [];
-    if (errors.length > 0) throw new Error(errors.join("; "));
+    if (errors.length > 0) {
+      const refused = data?.errors?.some((entry) => entry?.type === "NOT_FOUND" || entry?.type === "FORBIDDEN");
+      throw refused ? new AdeExpectedError(errors.join("; "), "user") : new Error(errors.join("; "));
+    }
     if (data?.data == null) throw new Error(`GitHub did not return ${owner}/${name}.`);
     return data.data;
   };

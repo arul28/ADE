@@ -45,6 +45,8 @@ export type LaneSidebarRowProps = {
   autoRebaseStatus: LaneListSnapshot["autoRebaseStatus"];
   /** Set while a delete runs; the row is inert and shows the step. */
   deleteStatusLabel: string | null;
+  /** Set while the running delete can still stop; shows a Stop button. */
+  onStopDelete?: (() => void) | null;
   creating: boolean;
   /** Stack parent shown as "↳ name" when the row is not indented under it. */
   parentHint?: string | null;
@@ -224,6 +226,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     rebaseSuggestion,
     autoRebaseStatus,
     deleteStatusLabel,
+    onStopDelete = null,
     creating,
     parentHint = null,
     needsYouReason = null,
@@ -343,7 +346,23 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
 
       <div className="flex h-4 min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-fg/70">
         {deleting ? (
-          <span className="truncate">{deleteStatusLabel}</span>
+          <>
+            <span className="truncate">{deleteStatusLabel}</span>
+            {onStopDelete ? (
+              <button
+                type="button"
+                className="ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+                title="Stop the delete. The lane stays, and part of its folder may already be gone."
+                data-testid="lane-sidebar-stop-delete"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onStopDelete();
+                }}
+              >
+                Stop
+              </button>
+            ) : null}
+          </>
         ) : creating ? (
           <span className="truncate">Setting up…</span>
         ) : (

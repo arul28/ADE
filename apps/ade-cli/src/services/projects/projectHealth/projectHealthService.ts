@@ -13,6 +13,7 @@ import type {
   ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
 import { formatBytes } from "../../../../../desktop/src/shared/formatting";
+import { isChatToolType } from "../../../../../desktop/src/shared/sessionSpawnNesting";
 import { listAppleDeviceMarkers } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import {
   applyAgentHistoryRenames,
@@ -53,7 +54,75 @@ export type ProjectHealthServiceDeps = {
   listLanes: () => Promise<LaneSummary[]>;
   /** Opens a terminal in the lane and runs the command, so the person sees it. */
   openTerminal?: (request: ProjectHealthTerminalRequest) => Promise<void>;
+  /**
+   * The chat service's own turn state for these chats. A chat row says
+   * `running` while the chat is open, whether or not a turn runs, so its
+   * owner pid says nothing about being stuck. Without this, chats are never
+   * reported stuck.
+   */
+  readChatTurnStates?: (sessionIds: string[]) => Promise<ProjectHealthChatTurnState[]>;
 };
+
+export type ProjectHealthChatTurnState = {
+  sessionId: string;
+  /** The chat service's status: `active` while a turn runs. */
+  status: string;
+  /** False when the host holds no provider runtime; absent when it cannot say. */
+  runtimeAlive?: boolean;
+  /** Another live brain holds the chat; its status here is not the truth. */
+  ownedElsewhere?: boolean;
+};
+
+/**
+ * The chat service, as `readChatTurnStates` needs it: one summary read for a
+ * named set of chats. Both hosts that build this service (the desktop brain and
+ * the CLI brain) read the same five options, so the shape lives here once.
+ */
+export type ProjectHealthChatSessionLister = {
+  listSessions(
+    laneId: string | undefined,
+    options: {
+      sessionIds: readonly string[];
+      includeArchived: boolean;
+      includeAutomation: boolean;
+      includeIdentity: boolean;
+      includeSideChats: boolean;
+    },
+  ): Promise<ReadonlyArray<{
+    sessionId: string;
+    status: string;
+    runtimeAlive?: boolean;
+    runtimeOwnedElsewhere?: unknown;
+  }>>;
+};
+
+/**
+ * `readChatTurnStates` from the chat service's own summaries.
+ *
+ * A host with no chat service still gets a reader (it answers nothing), so the
+ * dependency is always wired and the rule stays in one place: a chat is stuck
+ * only when the service says a turn runs and no runtime holds it.
+ */
+export function createProjectHealthTurnStateReader(
+  service: ProjectHealthChatSessionLister | null | undefined,
+): (sessionIds: string[]) => Promise<ProjectHealthChatTurnState[]> {
+  return async (sessionIds) => {
+    if (!service) return [];
+    const summaries = await service.listSessions(undefined, {
+      sessionIds,
+      includeArchived: false,
+      includeAutomation: true,
+      includeIdentity: true,
+      includeSideChats: true,
+    });
+    return summaries.map((summary) => ({
+      sessionId: summary.sessionId,
+      status: summary.status,
+      ...(summary.runtimeAlive !== undefined ? { runtimeAlive: summary.runtimeAlive } : {}),
+      ownedElsewhere: summary.runtimeOwnedElsewhere != null,
+    }));
+  };
+}
 
 const REPORT_CACHE_MS = 30_000;
 /** A lane with no activity for this long, and no open PR, counts as stale. */
@@ -420,10 +489,48 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   }
 
 
-  type SessionRow = { lane_id: string; status: string | null; owner_pid: number | null; title: string | null; activity: string | null };
+  type SessionRow = {
+    id: string;
+    lane_id: string;
+    tool_type: string | null;
+    status: string | null;
+    owner_pid: number | null;
+    title: string | null;
+    activity: string | null;
+    /** cr-sqlite site that last wrote `owner_pid`: 0 is this machine. Null without sync tables. */
+    owner_site: number | null;
+  };
+
+  /**
+   * Which machine last wrote each row's owner. `terminal_sessions` syncs
+   * between machines, and another machine's pid means nothing here. Its
+   * cr-sqlite clock records the writer per column (site 0 is this machine).
+   */
+  function ownerSiteSql(): { select: string; join: string } {
+    const none = { select: "null as owner_site", join: "" };
+    try {
+      const tables = deps.db.all<{ name: string }>(
+        `select name from sqlite_master where type = 'table'
+           and name in ('terminal_sessions__crsql_clock', 'terminal_sessions__crsql_pks')`,
+      );
+      if (tables.length < 2) return none;
+    } catch (error) {
+      // A database that cannot answer sqlite_master is a real fault, and the
+      // report silently reads every row as this machine's without the clock.
+      deps.logger.warn("project_health.owner_site_unavailable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return none;
+    }
+    return {
+      select: "max(clock.site_id) as owner_site",
+      join: `left join terminal_sessions__crsql_pks pks on pks.id = ts.id
+        left join terminal_sessions__crsql_clock clock on clock.key = pks.__crsql_key and clock.col_name = 'owner_pid'`,
+    };
+  }
 
   /** Every active lane with its PR, activity, git state and whether it is stale. */
-  async function laneHealth(ctx: Context): Promise<{ lanes: ProjectLaneHealth[]; stuck: string[] }> {
+  async function laneHealth(ctx: Context): Promise<{ lanes: ProjectLaneHealth[]; stuckChats: string[]; stuckTerminals: string[] }> {
     const nowMs = Date.now();
     const prs = new Map<string, { pr: NonNullable<ProjectLaneHealth["pr"]>; headSha: string | null }>();
     for (const row of deps.db.all<{ lane_id: string; number: number; state: string; url: string | null; merged_at: string | null; head_sha: string | null }>(
@@ -435,19 +542,50 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     }
     const activity = new Map<string, string | null>();
     const running = new Map<string, number>();
-    const stuck: string[] = [];
+    const stuckChats: string[] = [];
+    const stuckTerminals: string[] = [];
+    const label = (row: SessionRow) => `${row.title ?? "Untitled"} (${ctx.lanes.find((lane) => lane.id === row.lane_id)?.name ?? "lane"})`;
+    const countRunning = (row: SessionRow) => running.set(row.lane_id, (running.get(row.lane_id) ?? 0) + 1);
+    const openChats: SessionRow[] = [];
+    const ownerSite = ownerSiteSql();
     for (const row of deps.db.all<SessionRow>(
-      `select lane_id, status, owner_pid, title, max(coalesce(last_output_at, ended_at, started_at)) as activity
-         from terminal_sessions where lane_id is not null and archived_at is null group by id`,
+      `select ts.id, ts.lane_id, ts.tool_type, ts.status, ts.owner_pid, ts.title,
+              max(coalesce(ts.last_output_at, ts.ended_at, ts.started_at)) as activity, ${ownerSite.select}
+         from terminal_sessions ts ${ownerSite.join}
+         where ts.lane_id is not null and ts.archived_at is null group by ts.id`,
     )) {
       activity.set(row.lane_id, latest(activity.get(row.lane_id), row.activity));
       if (row.status !== "running") continue;
-      const pid = Number(row.owner_pid);
-      if (Number.isFinite(pid) && pid > 0 && !processAlive(pid)) {
-        stuck.push(`${row.title ?? "Untitled"} (${ctx.lanes.find((lane) => lane.id === row.lane_id)?.name ?? "lane"})`);
+      // Another machine's session: its pid and its turn are that machine's.
+      if (Number(row.owner_site) > 0) continue;
+      if (isChatToolType(row.tool_type)) {
+        openChats.push(row);
         continue;
       }
-      running.set(row.lane_id, (running.get(row.lane_id) ?? 0) + 1);
+      const pid = Number(row.owner_pid);
+      if (Number.isFinite(pid) && pid > 0 && !processAlive(pid)) {
+        stuckTerminals.push(label(row));
+        continue;
+      }
+      countRunning(row);
+    }
+    // A chat is stuck only when the chat service says a turn runs and no
+    // runtime holds it. An idle chat is just open.
+    const turnStates = new Map<string, ProjectHealthChatTurnState>();
+    if (openChats.length && deps.readChatTurnStates) {
+      try {
+        for (const state of await deps.readChatTurnStates(openChats.map((row) => row.id))) turnStates.set(state.sessionId, state);
+      } catch (error) {
+        deps.logger.warn("project_health.chat_turn_states_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    for (const row of openChats) {
+      const state = turnStates.get(row.id);
+      if (state && state.status === "active" && state.runtimeAlive === false && !state.ownedElsewhere) {
+        stuckChats.push(label(row));
+        continue;
+      }
+      countRunning(row);
     }
     const staleBefore = nowMs - STALE_AFTER_DAYS * DAY_MS;
     const lanes = await mapLimit(ctx.lanes, GIT_CONCURRENCY, async (lane): Promise<ProjectLaneHealth> => {
@@ -493,7 +631,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       if (b.laneType === "primary") return 1;
       return Date.parse(b.lastActivityAt ?? "0") - Date.parse(a.lastActivityAt ?? "0");
     });
-    return { lanes, stuck };
+    return { lanes, stuckChats, stuckTerminals };
   }
 
   async function buildReport(): Promise<ProjectHealthReport> {
@@ -553,15 +691,24 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           items: stale.map((lane) => `${lane.name}: ${why(lane)}${lane.safeToArchive ? "" : " (has unsaved work)"}`),
         }];
       })] : []),
-      ...(laneReport ? [run("stuck-sessions", "No chats stuck as running", () => {
-        if (!laneReport.stuck.length) return [];
+      ...(laneReport ? [run("stuck-sessions", "No chats or terminals stuck as running", () => {
+        const { stuckChats, stuckTerminals } = laneReport;
+        const total = stuckChats.length + stuckTerminals.length;
+        if (!total) return [];
+        const counts = [
+          ...(stuckChats.length ? [plural(stuckChats.length, "chat")] : []),
+          ...(stuckTerminals.length ? [plural(stuckTerminals.length, "terminal")] : []),
+        ].join(" and ");
         return [{
           id: "stuck-sessions",
           area: "agents",
           severity: "warning",
-          title: `${plural(laneReport.stuck.length, "chat")} still show${laneReport.stuck.length === 1 ? "s" : ""} as running`,
+          title: `${counts} still show${total === 1 ? "s" : ""} as running`,
           detail: "The process that ran them is gone, so they will never finish on their own. Open each and stop or resume it.",
-          items: laneReport.stuck,
+          items: [
+            ...stuckChats.map((item) => `Chat: ${item}`),
+            ...stuckTerminals.map((item) => `Terminal: ${item}`),
+          ],
         }];
       })] : []),
       run("git-leftovers", "No git leftovers", () => {

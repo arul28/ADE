@@ -3631,7 +3631,29 @@ card stays in the child so the person can still answer it there. Not relayed:
 approvals and permission prompts (an agent approving its child's tool call
 would grant itself access), secret questions, user-only consent cards, peers,
 and parents that are not a chat in this service (a CLI terminal, another
-project or machine). `ade chat respond` lists the chat's inputs through
+project or machine).
+
+A secret question or a user-only consent card (`isUserOnlyConsentCard`: the
+real-input lease, the shared-desktop consent, MCP app calls, project secret
+requests) is not relayed as a question, but `relayChildAwaitingUserToParent`
+tells the parent that the child waits on the user (`hostContinuation.reason:
+"subagent_awaiting_user"`), so a coordinator does not read the silence as
+"stuck" and start a second chat for the same work. Unlike a question, this
+notice also reaches a parent in another project or on another machine: it goes
+through the brain's external parent router as an `ExternalParentWake` with
+`notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a
+message, not a completion, so the parent's card for the child stays open. A
+brain older than the field reads it as a finished turn whose summary says the
+child waits. The chat summary carries `pendingInputUserOnly` and
+`chat.getTurnStatus` carries `ask.userOnly` for the same cards, which `ade chat
+status` prints as "only the user can answer this".
+
+A scheduled wake does not fire while a card is open (`shouldDefer` checks
+`hasLivePendingInput`): firing would be refused and close the row as "Not
+delivered". The real-input lease card itself is withdrawn after
+`MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s, inside the caller's 180 s budget for
+`mac_desktop.requestInputLease`), so an unanswered card cannot outlive the
+agent that asked and block the chat for hours. `ade chat respond` lists the chat's inputs through
 `chat.listPendingInputs` and answers through `chat.respondToInput`; a send to a
 chat with an open card is refused with a message that names both commands.
 

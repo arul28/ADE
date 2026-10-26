@@ -107,6 +107,7 @@ import {
   collectGithubRestPages,
 } from "./githubRestPagination";
 import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
+import { redactGitOutput } from "../../utils/redaction";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -2574,7 +2575,7 @@ export function createGithubService({
     });
     if (remoteAddRes.exitCode !== 0) {
       await cleanupLocalOrigin();
-      throw new Error(`Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`);
+      throw new Error(`Failed to add origin remote: ${redactGitOutput(remoteAddRes.stderr.trim()) || `exit ${remoteAddRes.exitCode}`}`);
     }
 
     const headRes = await runGit(["rev-parse", "--verify", "HEAD"], { cwd: projectRoot, timeoutMs: 5_000 });
@@ -2583,7 +2584,7 @@ export function createGithubService({
       const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
       if (pushRes.exitCode !== 0) {
         await cleanupLocalOrigin();
-        throw new Error(`Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`);
+        throw new Error(`Failed to push to origin: ${redactGitOutput(pushRes.stderr.trim()) || `exit ${pushRes.exitCode}`}`);
       }
       resultState = "pushed";
     } else {

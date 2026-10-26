@@ -221,6 +221,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const createEnvInitLaneIdRef = useRef<string | null>(null);
   /** Machine the created lane lives on; env setup and retries go there. */
   const createdLaneMachineRef = useRef<{ machineId: string; pin: OpenProjectBinding | null } | null>(null);
+  /** The create in flight, so Cancel can stop its git checkout on the lane's machine. */
+  const createOperationRef = useRef<{ operationId: string; pin: OpenProjectBinding | null } | null>(null);
+  const [createCancelRequested, setCreateCancelRequested] = useState(false);
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
@@ -763,6 +766,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateError(null);
     setCreateEnvInitProgress(null);
     setCreateSetupPhase("creating");
+    const operationId = crypto.randomUUID();
+    createOperationRef.current = { operationId, pin };
+    setCreateCancelRequested(false);
 
     try {
       const request = resolveCreateLaneRequest({
@@ -783,7 +789,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         : {};
       let lane: LaneSummary;
       if (request.kind === "import") {
-        lane = await window.ade.lanes.importBranch(request.args, ...pinArg(pin));
+        lane = await window.ade.lanes.importBranch({ ...request.args, operationId }, ...pinArg(pin));
       } else if (request.kind === "child") {
         const trimmedBase = createChildBaseBranch.trim();
         const parentLane = lanes.find((l) => l.id === request.args.parentLaneId);
@@ -794,12 +800,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
           return;
         }
         const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
-          ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs }
-          : { ...request.args, ...linearIssueArgs };
+          ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs, operationId }
+          : { ...request.args, ...linearIssueArgs, operationId };
         lane = await window.ade.lanes.createChild(childArgs, ...pinArg(pin));
       } else {
-        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs }, ...pinArg(pin));
+        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs, operationId }, ...pinArg(pin));
       }
+      createOperationRef.current = null;
 
       // Lane created successfully: record its id (and machine) so retries skip
       // creation and run setup on the same machine.
@@ -852,6 +859,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateSetupPhase(null);
       setCreateBusy(false);
+    } finally {
+      createOperationRef.current = null;
+      setCreateCancelRequested(false);
     }
   }, [
     behavior,
@@ -881,6 +891,19 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     selectedMachineId,
     machineTargets,
   ]);
+
+  // Stops the git checkout of the create in flight. A create that has not
+  // reached git yet, or is past it, cannot stop; the button then comes back.
+  const handleCancelCreate = useCallback(() => {
+    const operation = createOperationRef.current;
+    if (!operation) return;
+    setCreateCancelRequested(true);
+    void window.ade.lanes.cancelGitWrite({ operationId: operation.operationId }, ...pinArg(operation.pin))
+      .then((result) => {
+        if (!result?.cancelled) setCreateCancelRequested(false);
+      })
+      .catch(() => setCreateCancelRequested(false));
+  }, []);
 
   const handleDialogOpenChange = useCallback((next: boolean) => {
     // Never dismiss the dialog while a create/setup is in flight.
@@ -951,6 +974,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       onSubmit={handleCreateSubmit}
       machineRequired={!configureForChat}
       busy={createBusy}
+      onCancelBusy={createSetupPhase === "creating" && !createCancelRequested ? handleCancelCreate : undefined}
       error={createError}
       {...behaviorChrome}
       templates={templates}

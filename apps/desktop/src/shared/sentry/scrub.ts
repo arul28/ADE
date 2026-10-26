@@ -15,6 +15,8 @@
  * Pure TypeScript with no SDK import, so every process can load it.
  */
 
+import { SECRET_TOKEN_PATTERNS } from "../secretTokenShapes";
+
 const REDACTED = "[redacted]";
 const MAX_STRING_LENGTH = 4_000;
 const MAX_DEPTH = 6;
@@ -23,21 +25,9 @@ const MAX_ARRAY_ITEMS = 50;
 
 /** Secret shapes that can appear anywhere inside free text. */
 const SECRET_PATTERNS: readonly RegExp[] = [
+  // A key cut off by a length limit still goes, with everything after it.
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}/g,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bAIza[0-9A-Za-z_-]{35}\b/g,
-  /\blin_(?:api|oauth)_[A-Za-z0-9]{20,}/g,
-  /\bsntrys_[A-Za-z0-9_=-]{20,}/g,
-  /\b(?:xai-|gsk_|sk_live_|sk_test_|rk_live_)[A-Za-z0-9_-]{16,}/g,
-  // npm and Hugging Face tokens have no underscore after the prefix, unlike
-  // the many `npm_config_*` variable names.
-  /\b(?:npm|hf)_[A-Za-z0-9]{30,}\b/g,
-  /\bya29\.[A-Za-z0-9._-]{20,}/g,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  ...SECRET_TOKEN_PATTERNS,
   /\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
   // `key=value` and `"key": "value"` pairs whose key names a secret.
   /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
@@ -46,7 +36,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
 ];
 
 /** Query parameters whose value is a credential. */
-const SECRET_QUERY_PARAM = /([?&](?:token|access_token|refresh_token|id_token|code|state|key|api_key|apikey|secret|signature|sig|password|auth)=)[^&#\s]*/gi;
+const SECRET_QUERY_PARAM = /([?&](?:token|access_token|refresh_token|id_token|code|state|key|api_key|apikey|secret|client_secret|signature|sig|password|auth)=)[^&#\s]*/gi;
 
 /**
  * Object keys whose string value is dropped wholesale, at any depth. Counts

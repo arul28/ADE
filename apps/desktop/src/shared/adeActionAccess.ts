@@ -66,7 +66,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
-      "cancelDelete", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
+      "cancelDelete", "cancelGitWrite", "create", "createChild", "createFromUnstaged", "deferRebaseSuggestion",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
       "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
       "detachJiraIssueFromSession",
@@ -532,9 +532,9 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "claim", "attachToChatSession", "deviceLease", "deviceLeaseRelease", "deviceCreate", "deviceAttach", "deviceStart",
-      "deviceStop", "deviceDetach", "deviceDelete", "deviceCleanup", "runTests", "startStream",
+      "deviceStop", "deviceDetach", "devicePromote", "deviceDelete", "deviceCleanup", "runTests", "startStream",
       "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
-      "tap", "typeText", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
+      "tap", "typeText", "pressKey", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
       "inspectPoint", "findElement", "tapElement", "fillElement", "waitForElement",
       "assertVisible", "setAppearance", "setContentSize", "setAccessibilityOption",
       "setLocation", "clearLocation", "setPermission", "sendPushNotification", "setStatusBar",

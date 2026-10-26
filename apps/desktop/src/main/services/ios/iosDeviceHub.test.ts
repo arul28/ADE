@@ -2427,13 +2427,15 @@ describe("matchElements failure reasons", () => {
     if (selected === null) expect(outcome.reason).toMatch(/No element has the label/);
   });
 
-  it("names the closest near miss", () => {
+  it("names the closest near miss, with the field and the flag that finds it", () => {
     const elements = [
       elemMakeElement({ id: "accessibility:0.1", label: "Continue with Apple" }),
       elemMakeElement({ id: "accessibility:0.2", label: "Cancel" }),
     ];
     const outcome = matchElements(elements, { label: "Continue" });
-    expect(outcome.reason).toBe('No element has the label "Continue". The closest is "Continue with Apple".');
+    expect(outcome.reason).toBe(
+      'No element has the label "Continue". The closest is the label "Continue with Apple"; query it with --label "Continue with Apple".',
+    );
   });
 
   it("omits the near miss when nothing is close", () => {

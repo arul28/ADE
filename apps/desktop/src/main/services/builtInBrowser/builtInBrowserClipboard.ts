@@ -12,6 +12,7 @@ import {
   builtInBrowserUploadRoots,
   resolveReadableBrowserFiles,
 } from "./builtInBrowserCapabilities";
+import { readClipboardHtml, readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 
 /** How much clipboard text one read may return. */
 const MAX_CLIPBOARD_READ_CHARS = 64_000;
@@ -38,18 +39,20 @@ async function prune(dir: string): Promise<void> {
 export async function readClipboardContents(args: {
   observationRootPath: string | null;
 }): Promise<BuiltInBrowserClipboardReadResult> {
-  const text = clipboard.readText();
-  const html = clipboard.readHTML();
+  const item = await readClipboardItem();
+  const text = await clipboard.readText();
+  const html = await readClipboardHtml(item);
   // A copied FILE also exposes an image flavor (its icon) on both platforms.
   // Reporting that as "the clipboard image" would hand the agent a picture of a
   // file it cannot open, so the file flavors win until file support lands.
-  const formats = clipboard.availableFormats().map((format) => format.toLowerCase());
+  // Copied files are `text/uri-list`; the raw platform names stay as a backstop.
+  const formats = (item?.types ?? []).map((format) => format.toLowerCase());
   const fileFlavor = formats.some((format) => (
-    format.includes("file-url") || format.includes("filenames") || format === "filenamew"
+    format === "text/uri-list" || format.includes("file-url") || format.includes("filenames") || format.includes("filenamew")
   ));
-  // `readImage` returns an EMPTY NativeImage when there is no image, never
-  // null, so the check is `isEmpty()` rather than a truth test.
-  const image = fileFlavor ? nativeImage.createEmpty() : clipboard.readImage();
+  // An EMPTY NativeImage when there is no image, never null, so the check is
+  // `isEmpty()` rather than a truth test.
+  const image = fileFlavor ? nativeImage.createEmpty() : await readClipboardImage(item);
   let imageInfo: BuiltInBrowserClipboardImage | null = null;
   if (!image.isEmpty()) {
     const png = image.toPNG();
@@ -100,12 +103,8 @@ export async function writeClipboardContents(args: {
   if (!text && !html && !image) {
     throw new Error("browser clipboard write needs --value, --html or --image.");
   }
-  // One write: `clipboard.write` carries every flavor at once, so an image and
-  // its alt text do not overwrite each other.
-  clipboard.write({
-    ...(text ? { text } : {}),
-    ...(html ? { html } : {}),
-    ...(image ? { image } : {}),
-  });
+  // One write carries every flavor at once, so an image and its alt text do
+  // not overwrite each other.
+  await writeClipboardFlavors({ text, html, image });
   return { written: true };
 }

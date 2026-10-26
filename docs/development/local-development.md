@@ -56,6 +56,10 @@ First-time setup:
 npm run setup
 ```
 
+Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
+fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
+`npm run dev` runs, and fails with the download's exit code if it cannot.
+
 Daily desktop dev:
 
 ```bash
@@ -278,10 +282,15 @@ Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-Use Node 22.23.3 for repository development. `npm run build:static` in
-`apps/ade-cli` requires Node 22.19.0 or newer because the headless runtime runs
-Pi's SDK worker on its own Node. Set `ADE_STATIC_NODE_BINARY` to use another
-Node binary for that build.
+Use Node 24 (the version in `.nvmrc`) for repository development. CI and the
+release builds use it too. `npm run build:static` in `apps/ade-cli` embeds the
+Node it runs on in the headless runtime, so a release brain built by CI gets
+Node 24's proxy and system-certificate support; the build warns when it embeds
+a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
+than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
+`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. The `ade`
+CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
+(a brain says so once at start) and otherwise works as before.
 
 ### On Windows
 

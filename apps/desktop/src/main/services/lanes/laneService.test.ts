@@ -8,7 +8,8 @@ import type { LaneLifecycleEvent } from "../../../shared/types";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
-vi.mock("../git/git", () => ({
+vi.mock("../git/git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../git/git")>()),
   getHeadSha: vi.fn(),
   runGit: vi.fn(),
   runGitOrThrow: vi.fn(),
@@ -134,8 +135,8 @@ describe("laneService createFromUnstaged", () => {
         if (laneBranchGitStub) return laneBranchGitStub;
         const cwd = opts?.cwd ?? repoRoot;
         if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
           return cwd === missingChildPath
@@ -456,8 +457,8 @@ describe("laneService createFromUnstaged", () => {
         if (laneBranchGitStub) return laneBranchGitStub;
         const cwd = opts?.cwd ?? repoRoot;
         if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
           return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
@@ -508,8 +509,8 @@ describe("laneService createFromUnstaged", () => {
         if (laneBranchGitStub) return laneBranchGitStub;
         const cwd = opts?.cwd ?? repoRoot;
         if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
           return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
@@ -580,8 +581,8 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -794,9 +795,9 @@ describe("laneService createFromUnstaged", () => {
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
         return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
         expect(options.cwd).toBe(primaryWorktreePath);
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -920,8 +921,8 @@ describe("laneService createFromUnstaged", () => {
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
         return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -1483,8 +1484,8 @@ describe("laneService create", () => {
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
         const laneBranchGitStub = defaultLaneBranchGitStub(args);
         if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         if (args[0] === "rev-parse" && args[1] === "main") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
@@ -1847,8 +1848,8 @@ describe("laneService list repairs", () => {
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "feature-overhaul\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/feature-overhaul\n", stderr: "" };
         }
         throw new Error(`Unexpected git call: ${args.join(" ")}`);
       });
@@ -1954,8 +1955,8 @@ describe("laneService list repairs", () => {
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
         const laneBranchGitStub = defaultLaneBranchGitStub(args);
         if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         throw new Error(`Unexpected git call: ${args.join(" ")}`);
       });
@@ -2049,8 +2050,8 @@ describe("laneService list cache invalidation", () => {
         if (laneBranchGitStub) return laneBranchGitStub;
         const cwd = opts?.cwd ?? repoRoot;
         if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
         if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
           if (cwd === alphaPath && gateArmed) {
@@ -2169,8 +2170,8 @@ describe("laneService worktree reconcile", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute") {
         const topLevel = resolvedCwd(opts?.cwd);
@@ -3398,8 +3399,8 @@ describe("laneService importBranch", () => {
     const orphanPath = path.join(worktreesDir, "dashboard-f6949524");
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -6406,8 +6407,8 @@ describe("laneService - branchSwitch", () => {
         const v = custom(args, opts);
         if (v) return v;
       }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
       }
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
         return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
@@ -6825,7 +6826,7 @@ describe("laneService - branchSwitch", () => {
 
         expect(result.previousBranchRef).toBe("feature/c");
         expect(result.lane.branchRef).toBe("feature/new");
-        expect(checkoutCalls.some((cmd) => cmd[0] === "checkout" && cmd[1] === "-b" && cmd[2] === "feature/new")).toBe(true);
+        expect(checkoutCalls.some((cmd) => cmd[0] === "checkout" && cmd[cmd.indexOf("-b") + 1] === "feature/new")).toBe(true);
 
         const profile = service.listBranchProfiles("lane-c").find((p) => p.branchRef === "feature/new");
         expect(profile?.sourceBranchRef).toBe("feature/c");
@@ -7439,6 +7440,8 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      // `worktree add -b` made the lane branch, so cleanup finds it.
+      if (worktreeAdded && args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
@@ -7732,7 +7735,7 @@ describe("laneService branch drift", () => {
         return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
       }
       if (gitArgs[0] === "symbolic-ref") {
-        return { exitCode: 0, stdout: `${head}\n`, stderr: "" };
+        return { exitCode: 0, stdout: `refs/heads/${head}\n`, stderr: "" };
       }
       if (gitArgs[0] === "status" && String(gitArgs[1]).startsWith("--porcelain=v2")) {
         const body = dirty ? "1 .M N... 100644 100644 100644 aaa bbb src/app.ts\n" : "";

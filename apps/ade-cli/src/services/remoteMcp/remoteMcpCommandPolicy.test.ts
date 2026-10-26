@@ -57,6 +57,7 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["lanes", "create", "--help"], ["lanes", "create", "--help"]],
     ["read", ["chat", "wait", "x", "--for", "idle"], ["chat", "wait", "x", "--for", "idle"]],
     ["read", ["skills", "list"], ["skills", "list"]],
+    ["read", ["settings", "find", "providers"], ["settings", "find", "providers"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {
