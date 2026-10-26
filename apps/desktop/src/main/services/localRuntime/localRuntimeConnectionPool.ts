@@ -3934,8 +3934,9 @@ export class LocalRuntimeConnectionPool {
     child: ChildProcess,
     options: { preserveVersionSkew?: boolean } = {},
   ): Promise<RuntimeRpcClient> {
-    // A source CLI boots through tsx; a bundled `cli.cjs` keeps the shorter budget.
-    const startupConnectMaxMs = isSourceCliScriptPath(resolveCliScriptPath())
+    // A source CLI boots through tsx; a bundled `cli.cjs` keeps the shorter
+    // budget. Classify the child's own argv, not a second resolution.
+    const startupConnectMaxMs = (child.spawnargs ?? []).some(isSourceCliScriptPath)
       ? localRuntimeSourceCliStartupConnectMaxMs(process.platform)
       : LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS;
     const deadline = Date.now() + startupConnectMaxMs;
@@ -3962,7 +3963,7 @@ export class LocalRuntimeConnectionPool {
         // the socket is still owned by someone else, so reaching this branch
         // means the runtime that answered IS the process we just spawned. Its
         // version, build hash, and role cannot change while we poll, so retrying
-        // only burns the whole deadline - 10s here, 30s on Windows - and then
+        // only burns the whole deadline (10s, or 30s on Windows or from source) and then
         // discards the typed error, and with it the pid, runtimeVersion, and
         // runtimeBuildHash the caller needs to explain the skew or start an
         // isolated runtime. Fail fast and keep the type.
