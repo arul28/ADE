@@ -46,6 +46,7 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -225,6 +226,7 @@ function ManageLaneRenameControls({
             className="h-full min-w-0 flex-1 bg-transparent px-1 text-sm text-fg outline-none"
             onChange={(event) => setDraftName(event.target.value)}
             onKeyDown={(event) => {
+              if (isImeComposing(event)) return;
               if (event.key === "Enter") {
                 event.preventDefault();
                 void saveRename();
@@ -1220,7 +1222,7 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
         ))}
       </div>
       {progress.overallStatus === "cancelled" ? (
-        <div className="mt-2 text-[11px] text-amber-300">Delete cancelled. The lane was not removed.</div>
+        <div className="mt-2 text-[11px] text-amber-300">Delete stopped. The lane is still here; delete it again to finish.</div>
       ) : null}
       {progress.overallStatus === "completed" ? (
         <div className="mt-2 text-[11px] text-emerald-300">Delete completed. Refreshing lane list...</div>

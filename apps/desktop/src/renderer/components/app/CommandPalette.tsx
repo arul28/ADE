@@ -150,6 +150,7 @@ import {
   settingsEntryPath,
   settingsTabLabel,
 } from "../settings/settingsManifest";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type CommandPaletteIntent =
   | "default"
@@ -1902,6 +1903,7 @@ export function CommandPalette({
 
   const handleDefaultKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (isImeComposing(event)) return;
       if (event.key === "ArrowDown") {
         if (totalFlat === 0) return;
         event.preventDefault();
@@ -1924,6 +1926,7 @@ export function CommandPalette({
 
   const handleBrowseKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if (isImeComposing(event)) return;
       if (event.key === "ArrowDown") {
         if (browseRows.length === 0) return;
         event.preventDefault();

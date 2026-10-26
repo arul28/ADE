@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseNameStatusRecords, runGit } from "../git/git";
+import { parseNumstatRecordsZ } from "../shared/utils";
 
 /**
  * What a turn changed, for the "Files changed" row at the end of it.
@@ -49,34 +50,14 @@ function parseCount(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/**
- * `--numstat -z` records are `adds\tdels\tpath\0`, except renames and copies,
- * which write `adds\tdels\t\0source\0destination\0` — the empty third field is
- * the signal that two more records follow.
- */
+/** The files of `git diff --numstat -z`; binary counts (`-`) read as 0. */
 export function parseNumstatZ(stdout: string): TurnDiffFile[] {
-  const tokens = stdout.split("\0");
-  const files: TurnDiffFile[] = [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (!token) continue;
-    const firstTab = token.indexOf("\t");
-    if (firstTab < 0) continue;
-    const secondTab = token.indexOf("\t", firstTab + 1);
-    if (secondTab < 0) continue;
-    const additions = parseCount(token.slice(0, firstTab));
-    const deletions = parseCount(token.slice(firstTab + 1, secondTab));
-    let filePath = token.slice(secondTab + 1);
-    if (!filePath) {
-      const source = tokens[index + 1] ?? "";
-      const destination = tokens[index + 2] ?? "";
-      index += 2;
-      filePath = destination || source;
-    }
-    if (!filePath) continue;
-    files.push({ path: filePath, additions, deletions, status: "M" });
-  }
-  return files;
+  return parseNumstatRecordsZ(stdout).map(({ addRaw, delRaw, path: filePath }) => ({
+    path: filePath,
+    additions: parseCount(addRaw),
+    deletions: parseCount(delRaw),
+    status: "M" as const,
+  }));
 }
 
 /**

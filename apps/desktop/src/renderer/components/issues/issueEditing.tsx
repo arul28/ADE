@@ -4,6 +4,7 @@ import { isMacRuntimeTarget } from "../../lib/platform";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { IssueMarkdown } from "./issueMarkdown";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * Inline editing shared by every issue provider: the title, the description,
@@ -84,6 +85,7 @@ export function EditableIssueTitle({
         onChange={(event) => setDraft(event.target.value.replace(/\n/g, " "))}
         onBlur={() => void save()}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
           if (event.key === "Enter") {
             event.preventDefault();
             void save();

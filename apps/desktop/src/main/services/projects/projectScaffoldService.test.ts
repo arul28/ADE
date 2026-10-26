@@ -369,6 +369,27 @@ describe("cloneRepository", () => {
     ).rejects.toThrow(/repository not found/i);
   });
 
+  it("keeps a token in the clone URL's query out of the failure message", async () => {
+    // Git repeats the URL, query and all, in its error (it strips only `user:pass@`).
+    const token = "z".repeat(24);
+    runGitMock.mockResolvedValue(gitFail(
+      `Cloning into 'Hello-World'...\nfatal: unable to access 'https://github.com/octocat/Hello-World.git?access_token=${token}&private_token=${token}/': Could not resolve host: github.com`,
+    ));
+    const parentDir = makeTempDir("ade-scaffold-clone-token-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub(),
+    });
+
+    const error = await service
+      .cloneRepository({ url: `https://github.com/octocat/Hello-World.git?access_token=${token}`, parentDir })
+      .then(() => null, (caught: unknown) => caught as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).not.toContain(token);
+    expect(error?.message).toContain("unable to access 'https://github.com/octocat/Hello-World.git'");
+    expect(error?.message).toContain("Could not resolve host: github.com");
+  });
+
   it("injects the available GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-clone-auth-");

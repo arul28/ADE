@@ -77,6 +77,7 @@ import {
 } from "./AutoHandoffModal";
 import type { ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { CrossMachineMoveSubmenu } from "./CrossMachineMoveSubmenu";
+import { isImeComposing } from "../../lib/imeComposition";
 
 const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   label: string;
@@ -408,6 +409,7 @@ function SessionContextMenuPanel({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") { e.preventDefault(); commitRename(); }
           if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
         }}
@@ -573,6 +575,7 @@ function SessionContextMenuPanel({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                if (isImeComposing(e)) return;
                 if (e.key === "Enter") { e.preventDefault(); commitTag(); }
                 if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
               }}

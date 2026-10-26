@@ -4,6 +4,7 @@ import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { MONO_FONT, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ChatAttachmentTray } from "../chat/ChatAttachmentTray";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type MentionParticipant = {
   id: string;
@@ -107,6 +108,7 @@ export function MentionInput({
   }, [onChange, value]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isImeComposing(event)) return;
     if (showDropdown && filtered.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();

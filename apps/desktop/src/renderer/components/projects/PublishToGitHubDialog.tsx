@@ -33,6 +33,7 @@ import {
   primaryButton,
   fgTint,
 } from "../lanes/laneDesignTokens";
+import { isImeComposing } from "../../lib/imeComposition";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
   "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
@@ -416,6 +417,7 @@ function FormBody({
           placeholder="your-login or org"
           onChange={(event) => onOwnerChange(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && canSubmit) {
               event.preventDefault();
               onSubmit();
@@ -436,6 +438,7 @@ function FormBody({
           placeholder="my-project"
           onChange={(event) => onNameChange(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && canSubmit) {
               event.preventDefault();
               onSubmit();
@@ -617,6 +620,7 @@ function ConnectBody({
           placeholder="ghp_… or github_pat_…"
           onChange={(event) => onTokenChange(event.target.value)}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && tokenDraft.trim() && !saving) {
               event.preventDefault();
               onSaveToken();

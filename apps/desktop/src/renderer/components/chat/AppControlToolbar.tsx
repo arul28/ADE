@@ -18,6 +18,7 @@ import {
   WORK_TOOL_CHROME_ROW_HEIGHT,
 } from "../terminals/workToolChrome";
 import { AppControlMenu, AppControlMenuItem, AppControlMenuLabel } from "./AppControlMenu";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type AppControlStatusTone = "idle" | "active" | "warn" | "muted" | "error";
 
@@ -173,6 +174,7 @@ export function AppControlToolbar({
                   "disabled:cursor-not-allowed disabled:opacity-45",
                 )}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
                   if (event.key !== "Enter" || !canLaunch) return;
                   onLaunch();
                   close();
@@ -243,6 +245,7 @@ export function AppControlToolbar({
                   "disabled:cursor-not-allowed disabled:opacity-45",
                 )}
                 onKeyDown={(event) => {
+                  if (isImeComposing(event)) return;
                   if (event.key !== "Enter" || !cdpPort.trim()) return;
                   onConnect();
                   close();

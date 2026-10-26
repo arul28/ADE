@@ -48,6 +48,7 @@ import {
   type CrossMachinePreparedCapsule,
   type CrossMachineSourceInspection,
 } from "./crossMachineHandoffOrchestrator";
+import { redactGitOutput } from "../../utils/redaction";
 
 type RunGit = (args: string[], opts: GitRunOptions) => Promise<GitRunResult>;
 
@@ -617,7 +618,7 @@ export function createCrossMachineBatchSource(deps: {
       cwd: summary.worktreePath,
       timeoutMs: 30_000,
     });
-    if (remote.exitCode !== 0) throw new Error(`ADE could not read '${branchRef}' on origin. ${remote.stderr.trim()}`.trim());
+    if (remote.exitCode !== 0) throw new Error(`ADE could not read '${branchRef}' on origin. ${redactGitOutput(remote.stderr.trim())}`.trim());
     const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
     const sourceMachineKey = deps.localMachineKey();
     const gitBundle = includeChanges

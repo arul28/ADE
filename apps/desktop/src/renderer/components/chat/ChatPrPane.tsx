@@ -24,6 +24,7 @@ import { isMergeReady, PrDetails, type RelayState } from "./ChatPrDetails";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { Banner } from "../ui/notice";
 import { openLaneOnMachinePath } from "../../lib/laneNavigation";
+import { isImeComposing } from "../../lib/imeComposition";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -100,6 +101,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
           if (event.key === "Enter") {
             event.preventDefault();
             void submit();

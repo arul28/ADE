@@ -45,6 +45,16 @@ but it is always empty. `save` accepts and discards whatever is passed for it.
 longer promotes a project from the local-only ADE scaffold to the shared one,
 because there is no shared config file left to write.
 
+A save that passes `baseLocalHash` (the `trust.localHash` of the snapshot it
+was edited from) is refused with `project_config_changed_on_disk` when
+`.ade/local.yaml` no longer hashes to it, so an edit made outside ADE (an
+editor, an agent) is never written over. Renderer settings save through
+`saveProjectLocalConfig` (`renderer/lib/projectLocalConfig.ts`), which re-reads
+and re-applies its change up to three times. A save without `baseLocalHash`
+(an older client) writes as before. A `local.yaml` that does not parse is
+logged by the config reload watcher (`project.config_reload.snapshot_failed`)
+and picked up again on the next write.
+
 ## Top-level type
 
 ```ts
@@ -447,6 +457,11 @@ end-of-session summaries:
 - `summaries.enabled`
 - `summaries.modelId` (`null` clears a project override)
 - `summaries.reasoningEffort`
+
+`titles.refreshOnComplete` is parsed but is not a gate either. A chat's
+title is refined once after its first completed run, and only when ADE
+wrote that title itself; a terminal session's title is refreshed at close
+whenever an AI provider is available.
 
 `titles.modelId` / `summaries.modelId` are parsed but do not pick the
 model. Chat, lane, metadata, handoff, and continuity callers use one

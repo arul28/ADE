@@ -46,8 +46,8 @@ reopen it when you need to look again: each such save rebuilds main and
 relaunches the window, which jumps to the front over whatever the user is
 doing. Renderer-only edits hot-reload in place.
 When you finish, stop the app's process group and confirm its brain exited.
-Use Node 22 (`node -v`; an older `node` first on PATH fails the CLI build on
-`node:sqlite`). The full rules, and why each one exists:
+Use Node 24, the version in `.nvmrc` (`node -v`; an older `node` first on PATH
+fails the CLI build on `node:sqlite`). The full rules, and why each one exists:
 `docs/development/local-development.md` ("If you are an agent, start it
 detached").
 

@@ -4,6 +4,7 @@ import { Banner } from "../ui/notice";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { captureError } from "../../../shared/sentry/capture";
+import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 export function PrChatTranscriptsSection() {
   // A per-checkout switch in `.ade/local.yaml`, on the machine the page shows.
@@ -44,17 +45,13 @@ export function PrChatTranscriptsSection() {
     setConfigBusy(true);
     setActionError(null);
     try {
-      const snapshot = await window.ade.projectConfig.get(pin);
-      const next = await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: {
-          ...snapshot.local,
-          github: {
-            ...(snapshot.local.github ?? {}),
-            prTranscriptGists: { enabled },
-          },
+      const next = await saveProjectLocalConfig((snapshot) => ({
+        ...snapshot.local,
+        github: {
+          ...(snapshot.local.github ?? {}),
+          prTranscriptGists: { enabled },
         },
-      }, pin);
+      }), pin);
       setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));

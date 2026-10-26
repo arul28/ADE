@@ -311,7 +311,7 @@ The build PR should also include a focused platform pass:
   actionable relay/Tailscale guidance.
 - Add `setAppUserModelId` if packaged toast identity proves unreliable.
 
-The supported OS floor should be Windows 10/11 x64. ADE uses Electron 41,
+The supported OS floor should be Windows 10/11 x64. ADE uses Electron 44,
 while Electron 23 and newer require Windows 10 or later. See
 [Electron platform support](https://www.electronjs.org/docs/latest/breaking-changes).
 

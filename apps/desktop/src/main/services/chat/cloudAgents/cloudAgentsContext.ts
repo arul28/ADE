@@ -24,6 +24,7 @@ import type { AgentChatDevinCloudConfig } from "../../../../shared/types/chat";
 import type { CursorCloudFleetResult } from "../../../../shared/types/config";
 import type { DevinCloudDirectory } from "../devinCloudDirectory";
 import { resolveGithubSshAliasUrl } from "../../github/githubSshAlias";
+import { redactGitOutput } from "../../../utils/redaction";
 
 const ORIGIN_TTL_MS = 60_000;
 const PUSH_TIMEOUT_MS = 90_000;
@@ -176,7 +177,8 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       timeoutMs: PUSH_TIMEOUT_MS,
     }).catch((error: unknown) => ({ exitCode: 1, stdout: "", stderr: String(error) }));
     if (pushed.exitCode === 0) return true;
-    const stderr = pushed.stderr.trim().slice(-300);
+    // Redacted before the tail is cut, so a cut cannot strand a URL query.
+    const stderr = redactGitOutput(pushed.stderr.trim()).slice(-300);
     // Rejected because origin is ahead: fine when the lane holds nothing origin
     // lacks (the cloud agent pushed past it), since the VM checks out origin.
     // A lane with commits of its own would start the agent without them.

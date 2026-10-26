@@ -18,6 +18,7 @@ import type {
 } from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
+import type { MainWindowState } from "./mainWindowState";
 
 export type RecentProjectRemote = RecentProjectRemoteRef;
 
@@ -145,6 +146,8 @@ export type GlobalState = {
   };
   /** Machine-wide browser settings: tab limit, download folder, auto-grants. */
   builtInBrowserSettings?: BuiltInBrowserSettingsPersisted;
+  /** Where the last ADE window sat; read through `parseMainWindowState`. */
+  mainWindow?: MainWindowState;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

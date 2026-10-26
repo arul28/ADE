@@ -236,6 +236,7 @@ import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
 import {
   codexMcpToolApproval,
   mcpElicitationContent,
+  mcpElicitationDefaultAnswers,
   mcpElicitationQuestions,
   mcpElicitationSessionPersistScope,
 } from "./codexMcpElicitation";
@@ -512,6 +513,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
+import { redactGitOutput } from "../../utils/redaction";
 import type {
   AgentChatApprovalDecision,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -1125,7 +1127,7 @@ import {
   type BackgroundLossWake,
   type RestartCancelledWork,
 } from "../../../shared/chatAutoResume";
-import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
+import { isUsageLimitFailureText, isUsageLimitTurn, parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
@@ -1670,7 +1672,7 @@ import {
 } from "./claudeToolGate";
 import {
   codexApprovalAutoAccepts,
-  codexApprovalDeniesByPolicy,
+  permissionPolicyDeniesByFallback,
   codexApprovalPathStaysWithinRoot,
   codexCommandApprovalStaysWithinRoot,
   codexPermissionsStayWithinRoot,
@@ -5261,6 +5263,20 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  /**
+   * The one refinement of a title this process wrote from the first prompt
+   * alone, once a run shows what the chat is actually about. `armed`: that
+   * title exists and waits for a completed run. `due`: a run completed before
+   * it existed. Unset on a reloaded chat, so an old title is never rewritten.
+   */
+  autoTitleRefine?: "armed" | "due";
+  /**
+   * What a fork inherited, for its first title: the source chat's title and
+   * requests. A fork's own first message is usually a follow-up ("now do the
+   * same for mobile") that names nothing on its own. In memory only; a fork
+   * reloaded before its first title falls back to its own messages.
+   */
+  autoTitleInheritedContext?: string[];
   /** Monotonic guard for explicit metadata requests and later user edits. */
   sessionMetadataGenerationVersion: number;
   /** Revision of any persisted title write, including same-text user edits. */
@@ -5376,6 +5392,8 @@ type ManagedChatSession = {
   continuitySummaryInFlight: boolean;
   /** Completed CTO turns since the last background memory pass. */
   ctoTurnsSinceMemoryCheckpoint?: number;
+  /** When the last background memory pass started (epoch ms), for the age trigger. */
+  ctoLastMemoryCheckpointAt?: number;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -5694,7 +5712,6 @@ type ResolvedChatConfig = {
   titleGenerationEnabled: boolean;
   titleModelId: string | null;
   titleReasoningEffort: string | null;
-  titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
   summaryReasoningEffort: string | null;
@@ -7654,8 +7671,52 @@ const REJECTED_TITLES = new Set([
   "untitled", "untitled chat", "new chat", "new session",
   "chat", "session", "ai chat", "codex chat", "claude chat",
   "cursor chat", "droid chat", "opencode chat", "open code chat",
-  "cursor agent", "local agent"
+  "cursor agent", "local agent",
+  // A model that echoes the prompt's field name or a stand-in instead of
+  // writing one. They pass every shape check, so only the list catches them.
+  "title", "titles", "chat title", "session title", "thread title", "new title",
+  "short title", "concise title", "your title", "no title", "thread", "new thread",
+  "untitled thread", "untitled session", "placeholder", "none", "null", "undefined",
+  "n a", "tbd"
 ]);
+
+const FORK_TITLE_CONTEXT_MAX_CHARS = 280;
+
+/**
+ * Title-prompt lines for a fork: the source's title, its first request and the
+ * last one before the fork point. The first names the subject; the last is
+ * what the fork's own follow-up ("now do the same for mobile") refers to.
+ */
+function forkTitleContext(
+  sourceTitle: string | null | undefined,
+  envelopes: readonly AgentChatEventEnvelope[],
+): string[] | undefined {
+  const requests = envelopes.flatMap(({ event }) => {
+    if (event.type !== "user_message") return [];
+    const text = (event.displayText ?? event.text).replace(/\s+/g, " ").trim();
+    return text.length ? [text.slice(0, FORK_TITLE_CONTEXT_MAX_CHARS)] : [];
+  });
+  const first = requests[0];
+  const last = requests.length > 1 ? requests[requests.length - 1] : undefined;
+  const lines = [
+    sourceTitle?.trim() ? `Forked from chat: ${sourceTitle.trim()}` : null,
+    first ? `Earlier request: ${first}` : null,
+    last ? `Latest earlier request: ${last}` : null,
+  ].filter((line): line is string => line != null);
+  return lines.length ? lines : undefined;
+}
+
+type AutoTitleMode = "initial" | "complete" | "refine";
+
+function autoTitleInstruction(mode: AutoTitleMode, forked: boolean): string {
+  if (mode === "refine") {
+    return "Its first run has finished. Write a concise title for this coding chat that names what the run actually did, not how the request was phrased.";
+  }
+  if (mode === "complete") return "Write a final concise title for this completed coding chat.";
+  return forked
+    ? "Write a concise title for this coding chat. It was forked from an earlier chat: name the subject it inherited, plus the new direction its primary request takes."
+    : "Write a concise title for this new coding chat.";
+}
 
 const GENERIC_REMAINDER_TOKENS = new Set([
   "ok", "okay", "yes", "no", "true", "false",
@@ -10234,9 +10295,9 @@ function buildSpawnSelfReportGuidance(
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
   const selfReportCommandGuidance = [
-    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Keep report text out of the command source.",
-    "In Bash/zsh, put it in a quoted here-doc (`summary=$(cat <<'REPORT_END' ... REPORT_END)`) using an end marker absent from the report, then run `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text \"$summary\"`.",
-    "In PowerShell, pass it as a single-quoted string and double each embedded apostrophe (`'` becomes `''`), then run `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text '<escaped report>'`; `$()` and backticks stay literal inside the single quotes.",
+    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
+    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text-file $f`.",
   ].join(" ");
   if (session.spawnKind === "subagent") {
     return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
@@ -16455,7 +16516,33 @@ export function createAgentChatService(args: {
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
+  /**
+   * What a scheduled job's row says about the turn it started. A turn that
+   * ended at the usage limit did not do the job; its last text ("You've hit
+   * your session limit") read as the job's result under a "completed" row.
+   * The chat's own auto-resume continues the interrupted turn after the reset,
+   * which is what the row now says.
+   */
+  const scheduledTurnOutcome = (
+    managed: ManagedChatSession,
+    done: Extract<AgentChatEvent, { type: "done" }>,
+  ): string | undefined => {
+    const preview = managed.preview?.trim() || undefined;
+    const limited = isUsageLimitTurn(done, managed.usageLimitResume?.turnId)
+      || (done.status === "failed" && isUsageLimitFailureText(preview));
+    if (!limited) return preview;
+    return `Stopped at the usage limit before the job ran${preview ? ` (${clipText(preview, 120)})` : ""}. `
+      + "ADE continues the chat when the limit resets.";
+  };
+
   const CTO_MEMORY_CHECKPOINT_TURNS = 6;
+  /**
+   * A CTO that runs on scheduled wakes takes one turn every half hour, so six
+   * turns was three hours: long enough for the thread state to name a check
+   * that ran hours ago. A thread state older than this is refreshed on the
+   * next settled turn, whatever the count.
+   */
+  const CTO_MEMORY_CHECKPOINT_MAX_AGE_MS = 45 * 60_000;
 
   /** What the person typed, not the wrapper ADE sent: the memory pass reads this. */
   const collectCaptureEntries = (managed: ManagedChatSession): ContinuityCaptureEntry[] =>
@@ -16687,6 +16774,36 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * True when the durable thread state is older than
+   * `CTO_MEMORY_CHECKPOINT_MAX_AGE_MS` and no checkpoint started within that
+   * window either (a pass that fails keeps the old text, and must not then
+   * run again on every turn).
+   */
+  const ctoThreadStateIsStale = (managed: ManagedChatSession): boolean => {
+    if (!ctoMemoryService) return false;
+    const nowMs = Date.now();
+    if (managed.ctoLastMemoryCheckpointAt != null && nowMs - managed.ctoLastMemoryCheckpointAt < CTO_MEMORY_CHECKPOINT_MAX_AGE_MS) {
+      return false;
+    }
+    let updatedAt: string | null = null;
+    try {
+      updatedAt = ctoMemoryService.threadStateUpdatedAt();
+    } catch (error) {
+      // The memory store is unreadable. The age trigger is the only thing
+      // lost (the turn count still runs it), so the turn goes on; say so.
+      logger.warn("agent_chat.cto_thread_state_age_unreadable", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+    // Never written: the turn count decides, as before.
+    if (!Number.isFinite(epoch)) return false;
+    return nowMs - epoch >= CTO_MEMORY_CHECKPOINT_MAX_AGE_MS;
+  };
+
+  /**
    * Count a settled CTO turn toward the next memory checkpoint.
    *
    * Compaction alone is too rare to be the memory schedule: a long thread on a
@@ -16696,11 +16813,12 @@ export function createAgentChatService(args: {
    */
   const noteCtoTurnForMemoryCheckpoint = (managed: ManagedChatSession): void => {
     const count = (managed.ctoTurnsSinceMemoryCheckpoint ?? 0) + 1;
-    if (count < CTO_MEMORY_CHECKPOINT_TURNS) {
+    if (count < CTO_MEMORY_CHECKPOINT_TURNS && !ctoThreadStateIsStale(managed)) {
       managed.ctoTurnsSinceMemoryCheckpoint = count;
       return;
     }
     managed.ctoTurnsSinceMemoryCheckpoint = 0;
+    managed.ctoLastMemoryCheckpointAt = Date.now();
     void maybeRefreshIdentityContinuitySummary(managed, "checkpoint").catch((error) => {
       logger.warn("agent_chat.cto_memory_checkpoint_failed", {
         sessionId: managed.session.id,
@@ -17594,10 +17712,12 @@ export function createAgentChatService(args: {
     if (!title) return null;
 
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
-    const titleChanged = currentTitle?.trim() !== title;
-    if (titleChanged) {
-      persistSessionTitleMetadata(managed, title, false);
-    }
+    // An unchanged title changes nothing. In particular ADE pushes its own
+    // titles to Codex (`thread/name/set`), which reports them straight back:
+    // that echo is ADE's title, not the runtime's, and taking it as one would
+    // stop ADE refining a title it wrote itself.
+    if (currentTitle?.trim() === title) return null;
+    persistSessionTitleMetadata(managed, title, false);
     managed.manuallyNamed = false;
     managed.runtimeTitleAdopted = true;
     managed.autoTitleStage = "initial";
@@ -17654,20 +17774,30 @@ export function createAgentChatService(args: {
 
   const maybeAutoTitleSession = async (
     managed: ManagedChatSession,
-    args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
+    args: {
+      /**
+       * `initial`: the first title, from the first prompt. `complete`: the
+       * session ended; only rescues a still-default title. `refine`: the first
+       * run finished; may replace the title `initial` wrote.
+       */
+      mode: AutoTitleMode;
+      latestUserText?: string | null;
+      summary?: string | null;
+    }
   ): Promise<void> => {
+    const stage = args.mode === "initial" ? "initial" : "final";
     if (managed.deleted) return;
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId)) return;
     if (sessionIsManuallyNamed(managed)) return;
     if (managed.runtimeTitleAdopted) return;
     if (managed.autoTitleInFlight) return;
-    if (args.stage === "initial" && managed.autoTitleStage !== "none") return;
-    if (args.stage === "final" && managed.autoTitleStage === "final") return;
+    if (stage === "initial" && managed.autoTitleStage !== "none") return;
+    if (stage === "final" && managed.autoTitleStage === "final") return;
 
     const seed = sanitizeAutoTitle(args.latestUserText ?? managed.autoTitleSeed ?? "", 180);
     if (!seed) return;
 
-    if (args.stage === "initial" && nativeTitleWaitMs > 0) {
+    if (stage === "initial" && nativeTitleWaitMs > 0) {
       const deadline = Date.now() + nativeTitleWaitMs;
       while (Date.now() < deadline) {
         if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
@@ -17680,7 +17810,8 @@ export function createAgentChatService(args: {
     }
     if (managed.deleted || sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
     const titleAfterWait = sessionService.get(managed.session.id)?.title ?? null;
-    if (hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
+    const refiningOwnTitle = args.mode === "refine" && managed.autoTitleStage === "initial";
+    if (!refiningOwnTitle && hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
 
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
@@ -17695,6 +17826,7 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleContext = [
       `Lane: ${laneName}`,
+      ...(managed.autoTitleInheritedContext ?? []),
       `Model: ${getModelById(managed.session.modelId ?? "")?.displayName ?? managed.session.model}`,
       `Primary request: ${seed}`,
       args.summary?.trim().length
@@ -17720,9 +17852,7 @@ export function createAgentChatService(args: {
               modelId: descriptor.id,
               systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
               prompt: [
-                args.stage === "final"
-                  ? "Write a final concise title for this completed coding chat."
-                  : "Write a concise title for this new coding chat.",
+                autoTitleInstruction(args.mode, Boolean(managed.autoTitleInheritedContext?.length)),
                 titleContext.join("\n"),
               ].join("\n\n"),
               taskType: "session_title",
@@ -17737,7 +17867,7 @@ export function createAgentChatService(args: {
           onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
             logger.warn("agent_chat.auto_title_failed", {
               sessionId: managed.session.id,
-              stage: args.stage,
+              stage,
               modelId: descriptor.id,
               provider,
               providerLevelFailure,
@@ -17747,7 +17877,14 @@ export function createAgentChatService(args: {
           },
         });
       if (adopted) {
-        managed.autoTitleStage = args.stage;
+        logger.info("agent_chat.auto_title_generated", {
+          sessionId: managed.session.id,
+          mode: args.mode,
+          changed: adopted.trim() !== String(titleAfterWait ?? "").trim(),
+          attemptCount,
+        });
+        managed.autoTitleStage = stage;
+        if (stage === "initial") armAutoTitleRefine(managed);
         return;
       }
 
@@ -17766,16 +17903,40 @@ export function createAgentChatService(args: {
       if (deterministic.split(/\s+/u).filter(Boolean).length < 2) return;
       const fallbackTitle = setManagedSessionTitle(managed, deterministic);
       if (!fallbackTitle) return;
-      managed.autoTitleStage = args.stage;
+      managed.autoTitleStage = stage;
+      if (stage === "initial") armAutoTitleRefine(managed);
       logger.info("agent_chat.auto_title_deterministic_fallback", {
         sessionId: managed.session.id,
-        stage: args.stage,
+        stage,
         attemptCount,
         titleLength: fallbackTitle.length,
       });
     } finally {
       managed.autoTitleInFlight = false;
     }
+  };
+
+  /**
+   * The first-prompt title is a guess: "fix it" names nothing. Once a run has
+   * completed, ask once more with what the agent actually did. Exactly once
+   * per chat, whichever of the title and the run lands first.
+   */
+  const startAutoTitleRefine = (managed: ManagedChatSession): void => {
+    managed.autoTitleRefine = undefined;
+    // Deferred a tick: arming happens inside the initial stage, which still
+    // holds `autoTitleInFlight` until its own `finally` has run.
+    void Promise.resolve().then(() => maybeAutoTitleSession(managed, { mode: "refine" }));
+  };
+
+  function armAutoTitleRefine(managed: ManagedChatSession): void {
+    if (managed.autoTitleRefine === "due") startAutoTitleRefine(managed);
+    else managed.autoTitleRefine = "armed";
+  }
+
+  const maybeStartAutoTitleRefine = (managed: ManagedChatSession): void => {
+    if (managed.autoTitleStage === "final") return;
+    if (managed.autoTitleRefine === "armed") startAutoTitleRefine(managed);
+    else if (managed.autoTitleStage === "none") managed.autoTitleRefine = "due";
   };
 
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
@@ -18755,9 +18916,6 @@ export function createAgentChatService(args: {
     const titleReasoningEffort = typeof titleReasoningEffortRaw === "string" && titleReasoningEffortRaw.trim().length
       ? titleReasoningEffortRaw.trim()
       : null;
-    const titleRefreshOnComplete = si?.titles?.refreshOnComplete
-      ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
-      ?? true;
 
     // Session-intelligence summaries
     const summaryEnabled = si?.summaries?.enabled ?? true;
@@ -18780,7 +18938,6 @@ export function createAgentChatService(args: {
       titleGenerationEnabled,
       titleModelId,
       titleReasoningEffort,
-      titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
       summaryReasoningEffort,
@@ -23471,6 +23628,7 @@ export function createAgentChatService(args: {
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
       settleClaudeGoalOnTurnEnd(managed, event.status);
+      if (event.status === "completed") maybeStartAutoTitleRefine(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -23740,7 +23898,7 @@ export function createAgentChatService(args: {
           "record_turn_finished",
           scheduledWorkScheduler.recordTurnFinished(
             normalizedEvent.turnId,
-            managed.preview?.trim() || undefined,
+            scheduledTurnOutcome(managed, normalizedEvent),
           ),
         );
       }
@@ -26596,7 +26754,7 @@ export function createAgentChatService(args: {
       detail?: Record<string, unknown>;
     },
   ): boolean => {
-    if (!codexApprovalDeniesByPolicy(managed.session)) return false;
+    if (!permissionPolicyDeniesByFallback(managed.session)) return false;
     refuseCodexApprovalByPolicy(managed, runtime, id, response, request, ui);
     return true;
   };
@@ -27692,7 +27850,7 @@ export function createAgentChatService(args: {
     }
 
     void maybeAutoTitleSession(managed, {
-      stage: "final",
+      mode: "complete",
       summary: options?.summary ?? managed.preview,
     });
 
@@ -31817,6 +31975,13 @@ export function createAgentChatService(args: {
               turnId,
             });
             emitClaudeTranscriptRetraction(managed, retractedUuids, "model_refusal_fallback", turnId);
+            // `local` is a subagent or side question that fell back on its
+            // own; the chat stays on its model. Session scope (or none, from
+            // an older CLI) means Claude Code now runs this chat on the
+            // fallback, so the picker, the next resume and pricing follow it.
+            if (fallbackMsg.scope !== "local" && typeof fallbackMsg.fallback_model === "string") {
+              followClaudeRefusalFallbackModel(managed, fallbackMsg.fallback_model);
+            }
             continue;
           }
 
@@ -44432,13 +44597,67 @@ export function createAgentChatService(args: {
   const CLAUDE_SUPPORTED_DIALOG_KINDS = ["resume_return"] as const;
 
   /**
+   * Raise a blocking card for a Claude SDK callback and wait for its answer.
+   *
+   * It parks on `runtime.approvals` and not a private map: every turn-ending
+   * path already settles that registry, and a waiter parked anywhere else
+   * survives the death of the runtime holding it. When the SDK aborts the
+   * request first, nobody answered, so this writes the cancel receipt itself;
+   * without it the card is redrawn by the next re-derivation with no waiter.
+   */
+  const parkClaudeCard = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    pendingRequest: PendingInputRequest,
+    signal: AbortSignal,
+    ui: { kind: "tool_call"; description: string; detail?: Record<string, unknown> },
+  ): Promise<{
+    abandoned: boolean;
+    response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
+  }> => {
+    const itemId = pendingRequest.itemId ?? pendingRequest.requestId;
+    emitPendingInputRequest(managed, pendingRequest, ui);
+    let abandoned = false;
+    try {
+      runtime.pauseIdleWatchdog?.();
+      const response = await new Promise<{
+        decision?: AgentChatApprovalDecision;
+        answers?: Record<string, string | string[]>;
+        responseText?: string | null;
+      }>((resolve) => {
+        const entry = { kind: "question" as const, resolve, request: pendingRequest };
+        runtime.approvals.set(itemId, entry);
+        const onAbort = (): void => {
+          // Only when this entry is still the live one: a replaced waiter
+          // belongs to a newer card and must not be resolved by this signal.
+          if (runtime.approvals.get(itemId) !== entry) return;
+          runtime.approvals.delete(itemId);
+          abandoned = true;
+          resolve({ decision: "cancel" });
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+      if (abandoned) {
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: "cancel",
+          turnId: pendingRequest.turnId ?? null,
+          questions: pendingRequest.questions,
+        });
+      }
+      return { abandoned, response };
+    } finally {
+      runtime.approvals.delete(itemId);
+      runtime.resumeIdleWatchdog?.();
+    }
+  };
+
+  /**
    * Render Claude's `resume_return` dialog as an ordinary ADE question card.
    *
-   * Same shape as the `AskUserQuestion` interception: emit the card, park on a
-   * resolver in `runtime.approvals`, and let `respondToInput` deliver the
-   * answer. It has to be that registry and not a private map — every
-   * turn-ending path already settles `runtime.approvals`, and a waiter parked
-   * anywhere else survives the death of the runtime holding it.
+   * Same shape as the `AskUserQuestion` interception: the card parks through
+   * `parkClaudeCard`, and `respondToInput` delivers the answer.
    *
    * An unrecognized kind answers `{behavior: "cancelled"}`, which is what the
    * SDK requires of a host that was sent a kind it did not declare.
@@ -44487,48 +44706,12 @@ export function createAgentChatService(args: {
       providerMetadata: { dialogKind: "resume_return" },
       turnId: runtime.activeTurnId ?? null,
     };
-    emitPendingInputRequest(managed, pendingRequest, {
+    const { abandoned, response } = await parkClaudeCard(managed, runtime, pendingRequest, options.signal, {
       kind: "tool_call",
       description: pendingRequest.description ?? "Resume session",
       detail: { dialogKind: "resume_return" },
     });
-
-    let abandoned = false;
-    let response: {
-      decision?: AgentChatApprovalDecision;
-      answers?: Record<string, string | string[]>;
-      responseText?: string | null;
-    };
-    try {
-      runtime.pauseIdleWatchdog?.();
-      response = await new Promise<typeof response>((resolve) => {
-        const entry = { kind: "question" as const, resolve, request: pendingRequest };
-        runtime.approvals.set(itemId, entry);
-        const onAbort = (): void => {
-          // Only when this entry is still the live one: a replaced waiter
-          // belongs to a newer dialog and must not be resolved by this signal.
-          if (runtime.approvals.get(itemId) !== entry) return;
-          runtime.approvals.delete(itemId);
-          abandoned = true;
-          resolve({ decision: "cancel" });
-        };
-        if (options.signal.aborted) onAbort();
-        else options.signal.addEventListener("abort", onAbort, { once: true });
-      });
-    } finally {
-      runtime.approvals.delete(itemId);
-      runtime.resumeIdleWatchdog?.();
-    }
-
     if (abandoned) {
-      // The user never answered, so nothing wrote a receipt. Without one the
-      // card is redrawn by the next re-derivation with no waiter behind it.
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pendingRequest.turnId ?? null,
-        questions: pendingRequest.questions,
-      });
       logDialog("cancelled");
       return { behavior: "cancelled" };
     }
@@ -44550,6 +44733,166 @@ export function createAgentChatService(args: {
     }
     logDialog(choice);
     return { behavior: "completed", result: choice };
+  };
+
+  /** How long a Claude MCP prompt card waits for an answer before giving up. */
+  const CLAUDE_MCP_ELICITATION_TIMEOUT_MS = 5 * 60_000;
+
+  /**
+   * Render an MCP server's elicitation (a form it needs filled, or an
+   * authorization link) as the same card Codex and Copilot raise for theirs.
+   *
+   * Without this callback the Agent SDK declines every elicitation on the
+   * spot, so a server that asks for input looked to the user like a tool that
+   * failed for no reason. It parks through `parkClaudeCard`, like the resume
+   * dialog.
+   */
+  const buildClaudeElicitationHandler = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): NonNullable<ClaudeSDKOptions["onElicitation"]> => async (request, options) => {
+    const serverName = request.serverName?.trim() || "MCP server";
+    const mode = request.mode ?? "form";
+    const url = mode === "url" ? request.url?.trim() || null : null;
+    const message = request.message?.trim()
+      || (mode === "url" ? `Open the ${serverName} authorization link?` : `${serverName} is requesting input.`);
+    const schema = asRecord(request.requestedSchema);
+    const questions = mode === "form" ? mcpElicitationQuestions(schema) : [];
+    const logElicitation = (result: string): void => {
+      logger.info("chat.claude.mcp_elicitation", { sessionId: managed.session.id, server: serverName, mode, result });
+    };
+    const itemId = `mcp-elicitation:${serverName}:${options.requestId || randomUUID()}`;
+    const pendingRequest: PendingInputRequest = {
+      requestId: itemId,
+      itemId,
+      source: "claude",
+      kind: questions.length ? "structured_question" : "approval",
+      title: request.title?.trim() || `${request.displayName?.trim() || serverName} permission`,
+      description: message,
+      questions,
+      allowsFreeform: questions.some((question) => question.allowsFreeform === true),
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        mcpElicitation: true,
+        serverName,
+        mode,
+        persistenceSupported: false,
+        ...(url ? { url } : {}),
+      },
+      turnId: runtime.activeTurnId ?? null,
+    };
+    const ui = { kind: "tool_call" as const, description: message, detail: { serverName, mode, persistenceSupported: false } };
+    // A host policy that refuses whatever it is not told to allow has no one
+    // behind it to answer a card. The card and its receipt are still written,
+    // as for Codex: a refusal the transcript never mentions reads as the agent
+    // silently deciding not to act.
+    if (permissionPolicyDeniesByFallback(managed.session)) {
+      emitPendingInputRequest(managed, pendingRequest, ui);
+      emitPendingInputResolved(managed, { itemId, decision: "decline", turnId: pendingRequest.turnId ?? null, questions });
+      logElicitation("declined_by_policy");
+      return { action: "decline" };
+    }
+    const accept = (answers: Record<string, string | string[]> | undefined, responseText: string | null | undefined) => ({
+      action: "accept" as const,
+      content: mcpElicitationContent(schema, answers, responseText) as Record<string, string | number | boolean | string[]>,
+    });
+    const notice = (text: string): void => {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: text,
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+    };
+    // Nobody is waiting on a full-auto chat or an automation run, so the
+    // prompt is answered on the spot and the run never stalls on it: a yes/no
+    // is accepted, a form takes its own defaults, and a form that needs a
+    // value only a person has, or a sign-in link, is declined. A dry-run
+    // (plan mode) automation declines everything, since saying yes may change
+    // something. The card, its receipt and a notice record what was answered
+    // on the user's behalf.
+    const inPlan = resolveSessionClaudeInteractionMode(managed.session) === "plan";
+    const automationRun = Boolean(managed.session.automationRunId);
+    const unattended = automationRun
+      || (!inPlan && resolveSessionClaudeAccessMode(managed.session, "default") === "bypassPermissions");
+    if (unattended) {
+      emitPendingInputRequest(managed, pendingRequest, ui);
+      const answers = mode === "form" && !inPlan ? mcpElicitationDefaultAnswers(schema) : null;
+      const where = automationRun ? "this automation run" : "this full-auto chat";
+      if (!answers) {
+        emitPendingInputResolved(managed, { itemId, decision: "decline", turnId: pendingRequest.turnId ?? null, questions });
+        notice(`Declined ${serverName}'s request automatically: nobody can answer it in ${where}.`);
+        logElicitation("declined_unattended");
+        return { action: "decline" };
+      }
+      emitPendingInputResolved(managed, { itemId, decision: "accept", turnId: pendingRequest.turnId ?? null, answers, questions });
+      notice(`Answered ${serverName}'s request automatically${questions.length ? " with its defaults" : ""} in ${where}.`);
+      logElicitation("accepted_unattended");
+      return accept(answers, null);
+    }
+    // The MCP tool is stuck until the server hears back, and so is the turn.
+    // An unanswered card gives up after a while so the agent carries on
+    // without it instead of waiting on someone who stepped away.
+    const timeout = new AbortController();
+    const onSdkAbort = (): void => timeout.abort();
+    if (options.signal.aborted) timeout.abort();
+    else options.signal.addEventListener("abort", onSdkAbort, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      timeout.abort();
+    }, CLAUDE_MCP_ELICITATION_TIMEOUT_MS);
+    let parked: Awaited<ReturnType<typeof parkClaudeCard>>;
+    try {
+      parked = await parkClaudeCard(managed, runtime, pendingRequest, timeout.signal, ui);
+    } finally {
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", onSdkAbort);
+    }
+    const { abandoned, response } = parked;
+    if (abandoned) {
+      if (timedOut) notice(`${serverName}'s request got no answer in 5 minutes, so it was skipped and the agent carried on.`);
+      logElicitation(timedOut ? "timed_out" : "cancelled");
+      return { action: "cancel" };
+    }
+    if (response.decision === "cancel" || response.decision === "decline") {
+      logElicitation(response.decision);
+      return { action: response.decision };
+    }
+    logElicitation("accepted");
+    if (mode !== "form") return { action: "accept" };
+    return accept(response.answers, response.responseText);
+  };
+
+  /**
+   * Point the chat at the model Claude Code switched it to after a refusal.
+   * The live query is already on it, so nothing is sent to the CLI; this only
+   * makes ADE's record agree. A preset or credential route keeps its model:
+   * moving off it would change the endpoint, which Claude did not do.
+   */
+  const followClaudeRefusalFallbackModel = (managed: ManagedChatSession, fallbackModel: string): void => {
+    const modelId = resolveClaudeCliModelIdFromRuntimeValue(fallbackModel);
+    const skip = (reason: string): void => {
+      logger.info("agent_chat.claude_refusal_fallback_model_kept", {
+        sessionId: managed.session.id,
+        fallbackModel,
+        reason,
+      });
+    };
+    if (!modelId) return skip("unknown_model");
+    if (managed.session.modelId === modelId) return;
+    if (managed.session.presetId?.trim() || managed.session.credentialId?.trim()) return skip("launch_route");
+    const previousModelId = managed.session.modelId ?? managed.session.model;
+    managed.session.modelId = modelId;
+    managed.session.model = modelId;
+    persistChatState(managed);
+    emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated" });
+    logger.info("agent_chat.claude_refusal_fallback_model_followed", {
+      sessionId: managed.session.id,
+      fromModelId: previousModelId,
+      toModelId: modelId,
+    });
   };
 
   /** The Claude Code each runtime's latest query was built on: a refusal names the build refused. */
@@ -45010,6 +45353,7 @@ export function createAgentChatService(args: {
       if (!claudeResumeDialogPreference?.isDismissed()) {
         opts.supportedDialogKinds = [...CLAUDE_SUPPORTED_DIALOG_KINDS];
       }
+      opts.onElicitation = buildClaudeElicitationHandler(managed, runtime);
       opts.hooks = buildAdeClaudeHooks(managed, runtime);
 
       // Tool search is left to the pinned CLI's default, for every session,
@@ -47377,9 +47721,12 @@ export function createAgentChatService(args: {
    *
    * Only questions travel. Approvals and permission prompts stay the person's:
    * an agent approving its child's tool call would be granting itself access.
-   * Secret questions and user-only consent cards stay too. A peer reports to
-   * nobody, and a parent that is not a chat here (a CLI terminal, another
-   * project or machine) has no agent this service can message.
+   * Secret questions and user-only consent cards stay too, but the parent is
+   * told the child waits on the user (`relayChildAwaitingUserToParent`), so it
+   * does not read the silence as "stuck" and start a second chat for the same
+   * work. A peer reports to nobody, and a parent that is not a chat here (a CLI
+   * terminal, another project or machine) has no agent this service can
+   * message a question to.
    */
   const relayedChildQuestionKeys = new Set<string>();
   const relayChildQuestionToParent = (
@@ -47395,17 +47742,25 @@ export function createAgentChatService(args: {
     const request = detail?.request as PendingInputRequest | undefined;
     if (!request || typeof request !== "object" || !Array.isArray(request.questions)) return;
     if (request.blocking === false || !pendingInputIsAnswerable(request)) return;
-    if (request.questions.some((question) => question.isSecret)) return;
-    if (isUserOnlyConsentCard(request.providerMetadata ?? null)) return;
     const itemId = event.itemId?.trim() || pendingInputRequestItemId(request);
     const key = `${child.session.id}:${itemId}`;
     if (relayedChildQuestionKeys.has(key)) return;
-    if (!parentChatStillExists(parentSessionId)) return;
-    relayedChildQuestionKeys.add(key);
-    if (relayedChildQuestionKeys.size > 512) {
-      const [oldest] = relayedChildQuestionKeys;
-      if (oldest) relayedChildQuestionKeys.delete(oldest);
+    const rememberRelayed = (): void => {
+      relayedChildQuestionKeys.add(key);
+      if (relayedChildQuestionKeys.size > 512) {
+        const [oldest] = relayedChildQuestionKeys;
+        if (oldest) relayedChildQuestionKeys.delete(oldest);
+      }
+    };
+    if (
+      request.questions.some((question) => question.isSecret)
+      || isUserOnlyConsentCard(request.providerMetadata ?? null)
+    ) {
+      if (relayChildAwaitingUserToParent(child, parentSessionId, request, itemId)) rememberRelayed();
+      return;
     }
+    if (!parentChatStillExists(parentSessionId)) return;
+    rememberRelayed();
     const childTitle = sessionService.get(child.session.id)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const text = [
@@ -47435,6 +47790,82 @@ export function createAgentChatService(args: {
         itemId,
         error: error instanceof Error ? error.message : String(error),
       }));
+  };
+
+  /**
+   * The child waits on a card only the user can answer: a real-input lease, a
+   * consent, a secret. The parent cannot answer it, so it gets the fact, not
+   * the question: who waits, on what, and not to start a second chat for the
+   * same work. The card itself stays in the child for the user.
+   *
+   * Unlike a question, this also reaches a parent in another project or on
+   * another machine, through the brain's router (`notice: "awaiting_user"`):
+   * a coordinator there can only poll otherwise, and a poll that sees a quiet
+   * child reads it as stuck. True when the notice went out (or was queued).
+   */
+  const relayChildAwaitingUserToParent = (
+    child: ManagedChatSession,
+    parentSessionId: string,
+    request: PendingInputRequest,
+    itemId: string,
+  ): boolean => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    const what = request.questions.some((question) => question.isSecret)
+      ? "a secret only the user can enter"
+      : (request.title?.trim() || request.questions[0]?.question?.trim() || "a permission only the user can give");
+    const summary = `Waiting on the user: ${what}. It has not finished; it continues when the user answers in that chat.`;
+    const text = [
+      `Your subagent "${childTitle}" (${child.session.id}) is waiting on the user: ${what}.`,
+      "Only the user can answer this card; an agent cannot answer or decline it. The subagent stops until they do.",
+      "Do not start another chat for the same work. Tell the user if it is urgent, then carry on with other work.",
+    ].join(" ");
+    if (parentChatStillExists(parentSessionId)) {
+      void messageSession({
+        sessionId: parentSessionId,
+        kind: "wake",
+        text,
+        // ADE wrote this, not the person: it must not clear the parent's "Needs you".
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then(() => logger.info("agent_chat.subagent_awaiting_user_relayed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+        }))
+        .catch((error) => logger.warn("agent_chat.subagent_awaiting_user_relay_failed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return true;
+    }
+    const router = getExternalParentRouter();
+    if (!router) return false;
+    // Only subagents get here (`relayChildQuestionToParent` returns for peers).
+    const spawnKind = "subagent" as const;
+    const childTurnId = `awaiting-user:${itemId}`;
+    return router.route({
+      parentSessionId,
+      childSessionId: child.session.id,
+      childTitle,
+      childProvider: child.session.provider,
+      spawnKind,
+      resultStatus: "completed",
+      summary,
+      spawnCompletion: {
+        childSessionId: child.session.id,
+        childTitle,
+        spawnKind,
+        childTurnId,
+        status: "completed",
+        summary,
+      },
+      wakeText: text,
+      childProjectRoot: projectRoot,
+      notice: "awaiting_user",
+    });
   };
 
   const reportChildSpawnEnded = (
@@ -47593,6 +48024,25 @@ export function createAgentChatService(args: {
     wake: Omit<ExternalParentWake, "childProjectRoot">,
   ): Promise<ExternalWakeDeliveryResult> => {
     if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // Not a finished turn: a child elsewhere waits on its user. A message, no
+    // completion, so the parent's card for the child stays open.
+    if (wake.notice === "awaiting_user") {
+      return messageSession({
+        sessionId: wake.parentSessionId,
+        kind: "wake",
+        text: wake.wakeText,
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then((): ExternalWakeDeliveryResult => "delivered")
+        .catch((error): ExternalWakeDeliveryResult => {
+          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
+            parentSessionId: wake.parentSessionId,
+            childSessionId: wake.childSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return isMissingParentError(error, wake.parentSessionId) ? "parent_gone" : "failed";
+        });
+    }
     // The same turn already being delivered answers nothing; let the outbox
     // try again rather than wait on a callback that never comes.
     const inFlightKey = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
@@ -49306,6 +49756,10 @@ export function createAgentChatService(args: {
         },
       }));
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
+      createdManaged.autoTitleInheritedContext = forkTitleContext(
+        hasCustomChatSessionTitle(sourceSession.title, sourceProvider) ? sourceSession.title : null,
+        keptEnvelopes,
+      );
     }
 
     let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;
@@ -49788,7 +50242,7 @@ export function createAgentChatService(args: {
       timeoutMs: 30_000,
     });
     if (remote.exitCode !== 0) {
-      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${remote.stderr.trim()}`.trim());
+      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
     }
     // A never-pushed branch is fine with changes: its base commits come from
     // origin's history or the bundle.
@@ -50533,7 +50987,7 @@ export function createAgentChatService(args: {
         env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
-        blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
+        blockingErrors.push(`The destination cannot read origin: ${redactGitOutput(remote.stderr.trim()) || "check Git credentials and network access."}`);
       } else {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
         if (!remoteBranchHeadSha) {
@@ -50555,7 +51009,7 @@ export function createAgentChatService(args: {
             },
           );
           if (fetch.exitCode !== 0) {
-            blockingErrors.push(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+            blockingErrors.push(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
           } else {
             const fetchedHead = await runGit(["rev-parse", `refs/remotes/origin/${branchRef}`], {
               cwd: projectRoot,
@@ -50755,7 +51209,7 @@ export function createAgentChatService(args: {
     );
     if (fetch.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`,
       );
     }
     const fetchedHead = await requireGitOutput(
@@ -50794,7 +51248,7 @@ export function createAgentChatService(args: {
     });
     if (status.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${status.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${redactGitOutput(status.stderr.trim()) || "unknown Git error"}`,
       );
     }
     if (status.stdout.trim()) {
@@ -50825,7 +51279,7 @@ export function createAgentChatService(args: {
     }
     if (ancestor.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${ancestor.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${redactGitOutput(ancestor.stderr.trim()) || "unknown Git error"}`,
       );
     }
 
@@ -50835,7 +51289,7 @@ export function createAgentChatService(args: {
     });
     if (merge.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${merge.stderr.trim() || "git merge --ff-only failed"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${redactGitOutput(merge.stderr.trim()) || "git merge --ff-only failed"}`,
       );
     }
     const head = await requireGitOutput(
@@ -51221,7 +51675,7 @@ export function createAgentChatService(args: {
           env: await destinationGitEnv(),
         });
         if (fetch.exitCode !== 0) {
-          throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+          throw new Error(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
         }
         const fetchedHead = await requireGitOutput(
           runGit,
@@ -53270,7 +53724,7 @@ export function createAgentChatService(args: {
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
       void maybeAutoTitleSession(managed, {
-        stage: "initial",
+        mode: "initial",
         latestUserText: autoTitleSeed,
       });
     }
@@ -57314,7 +57768,7 @@ export function createAgentChatService(args: {
         agentId,
         laneId,
         branchName,
-        error: fetch.stderr.trim() || "unknown Git error",
+        error: redactGitOutput(fetch.stderr.trim()) || "unknown Git error",
       });
     } else {
       logger.info("agent_chat.cursor_cloud_branch_fetched", {
@@ -64711,6 +65165,9 @@ export function createAgentChatService(args: {
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
+      ...(pendingInputItemId && isUserOnlyPendingInput({ sessionId: row.id, itemId: pendingInputItemId })
+        ? { pendingInputUserOnly: true }
+        : {}),
       ...(hasLiveSteeringInput(liveManaged) ? { steeringInput: true } : {}),
       // Live-only, exactly like `steeringInput`: never persisted, never paired
       // with `awaitingInput` / `pendingInputItemId`.
@@ -65092,6 +65549,7 @@ export function createAgentChatService(args: {
       awaitingInput: summary.awaitingInput === true,
       pendingTitle: pending?.title ?? null,
       pendingDescription: pending?.description ?? null,
+      pendingUserOnly: summary.pendingInputUserOnly === true || isUserOnlyConsentCard(pending?.providerMetadata ?? null),
       queuedMessageCount,
       // Watch-only monitors never make a chat "waiting": nobody waits on them.
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
@@ -73140,6 +73598,9 @@ export function createAgentChatService(args: {
       // retry at the next boundary instead, regardless of which runtime or API
       // created it.
       if (liveManaged?.session.status === "active") return true;
+      // An open card refuses every new turn. Firing now would close the row as
+      // "Not delivered" and lose the wake; keep it armed until the card closes.
+      if (hasLivePendingInput(liveManaged)) return true;
       return schedule.provider === "claude"
         && liveRuntime?.query != null
         && liveRuntime.busy;

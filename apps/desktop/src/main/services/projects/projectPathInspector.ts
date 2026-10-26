@@ -10,7 +10,7 @@ import {
   findAdeManagedWorktreeRoot,
   realpathIfExists,
 } from "../../../../../ade-cli/src/services/projects/projectRoots";
-import { runGit } from "../git/git";
+import { branchNameFromHeadRef, runGit } from "../git/git";
 import { hasColumn, hasTable, openReadOnlyDatabase } from "./readOnlySqlite";
 
 type ExistingLaneRow = {
@@ -142,12 +142,12 @@ function toParentInfo(parentRoot: string, worktreeRoot: string): WorktreeParentI
 
 async function readBranchRef(worktreeRoot: string): Promise<string | null> {
   try {
-    const result = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+    const result = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], {
       cwd: worktreeRoot,
       timeoutMs: 10_000,
     });
     if (result.exitCode !== 0) return null;
-    const branchRef = result.stdout.trim();
+    const branchRef = branchNameFromHeadRef(result.stdout);
     return branchRef && branchRef !== "HEAD" ? branchRef : null;
   } catch {
     return null;

@@ -362,7 +362,7 @@ ignored) and the same `page/` as Windows:
   so Apple's Allow screen shows no ADE icon on macOS. **Never inline it as a
   data URL:** MusicKit copies that link's `href` into the authorize URL as a
   GET query, and the 41 KB URL left Apple's sign-in window blank.
-- **macOS 14 or later.** The binary targets macOS 12, ADE's own minimum, so
+- **macOS 14 or later.** The binary targets macOS 12 (ADE itself needs 13), so
   it launches everywhere ADE does; below 14 it writes
   `{"event":"hostError","code":"unsupported_os","error":"Apple Music in ADE needs macOS 14 or later."}`
   and exits 6, because there is no per-profile WebKit store to keep builds'

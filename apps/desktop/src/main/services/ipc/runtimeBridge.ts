@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
+import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -1224,9 +1225,7 @@ export function registerRuntimeBridge({
         properties: ["openFile"],
         filters: [{ name: "Images", extensions: [...PROJECT_ICON_DIALOG_EXTENSIONS] }],
       };
-      const result = win
-        ? await dialog.showOpenDialog(win, options)
-        : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       const selectedPath = result.canceled ? undefined : result.filePaths[0];
       if (!selectedPath) return null;
 

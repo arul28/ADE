@@ -1304,13 +1304,17 @@ describe("explicit provider-thread continuity recovery", () => {
   });
 });
 
-describe("Claude resume_return dialog", () => {
+describe("Claude resume_return dialog and MCP elicitations", () => {
   type ClaudeOptionsWithDialogs = {
     onUserDialog?: (
       request: { dialogKind: string; payload: Record<string, unknown>; toolUseID?: string },
       options: { signal: AbortSignal; requestId: string },
     ) => Promise<{ behavior: "completed"; result: unknown } | { behavior: "cancelled" } | null>;
     supportedDialogKinds?: string[];
+    onElicitation?: (
+      request: Record<string, unknown>,
+      options: { signal: AbortSignal; requestId: string },
+    ) => Promise<{ action: string; content?: Record<string, unknown> } | null>;
   };
 
   const capturedClaudeOptions = (): ClaudeOptionsWithDialogs | undefined =>
@@ -1474,6 +1478,79 @@ describe("Claude resume_return dialog", () => {
     // makes the CLI stop emitting the dialog.
     expect(capturedClaudeOptions()?.supportedDialogKinds).toBeUndefined();
     expect(typeof capturedClaudeOptions()?.onUserDialog).toBe("function");
+  });
+
+  // Nobody answers a full-auto chat or an automation run; a card there would
+  // stall the MCP tool, and the turn with it, for as long as the server waits.
+  it.each([
+    ["a yes/no", { message: "OK?", requestedSchema: { type: "object", properties: {} } }, { action: "accept", content: {} }],
+    [
+      "a form whose required fields have defaults",
+      {
+        message: "Size?",
+        requestedSchema: {
+          type: "object",
+          properties: { size: { type: "string", enum: ["S", "M"], default: "M" }, count: { type: "integer", default: 2 }, gift: { type: "boolean", default: true } },
+          required: ["size", "count"],
+        },
+      },
+      { action: "accept", content: { size: "M", count: 2, gift: true } },
+    ],
+    [
+      "a form that needs a value only a person has",
+      { message: "Color?", requestedSchema: { type: "object", properties: { color: { type: "string" } }, required: ["color"] } },
+      { action: "decline" },
+    ],
+    ["a sign-in link", { mode: "url", message: "Sign in", url: "https://example.com/auth" }, { action: "decline" }],
+  ])("answers %s on its own in full-auto chats and automation runs", async (_label, request, expected) => {
+    for (const sessionArgs of [{ claudePermissionMode: "bypassPermissions" }, { automationRunId: "run-1" }]) {
+      await expectUnattendedAnswer(sessionArgs, request, expected);
+    }
+  });
+
+  it("declines even a yes/no in a dry-run (plan mode) automation", async () => {
+    await expectUnattendedAnswer(
+      { automationRunId: "run-1", permissionMode: "plan" },
+      { message: "OK?", requestedSchema: { type: "object", properties: {} } },
+      { action: "decline" },
+    );
+  });
+
+  async function expectUnattendedAnswer(
+    sessionArgs: Record<string, unknown>,
+    request: Record<string, unknown>,
+    expected: unknown,
+  ): Promise<void> {
+    {
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      const events: AgentChatEventEnvelope[] = [];
+      await startClaudeChat(events, {}, sessionArgs);
+      const answered = capturedClaudeOptions()!.onElicitation!(
+        { serverName: "askme", ...request },
+        { signal: new AbortController().signal, requestId: "req-unattended" },
+      );
+      await expect(answered).resolves.toEqual(expected);
+      // The receipt and notice are what tell the user what was answered for them.
+      expect(events.some((entry) => entry.event.type === "pending_input_resolved")).toBe(true);
+      expect(events.some((entry) => entry.event.type === "system_notice" && /automatically/.test(entry.event.message))).toBe(true);
+    }
+  }
+
+  it("gives up on an unanswered elicitation card so the turn can go on", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    vi.useFakeTimers();
+    try {
+      const answered = capturedClaudeOptions()!.onElicitation!(
+        { serverName: "askme", message: "OK?", requestedSchema: { type: "object", properties: {} } },
+        { signal: new AbortController().signal, requestId: "req-timeout" },
+      );
+      expect(events.some((entry) => entry.event.type === "approval_request")).toBe(true);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await expect(answered).resolves.toEqual({ action: "cancel" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("declares no dialog kinds for a lightweight session", async () => {

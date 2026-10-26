@@ -80,12 +80,17 @@ public enum WindowHitTest {
         }
     }
 
-    /// Whether `pid` has an ordinary window on the user's own screen: off
-    /// every ADE lane display (`laneDisplays`, this lane's and the others').
-    /// With `pid` frontmost, that is the app the user is working in.
+    /// Whether `pid` has a window on the user's own screen: off every ADE
+    /// lane display (`laneDisplays`, this lane's and the others'). With `pid`
+    /// frontmost, that is the app the user is working in. A panel or alert
+    /// counts as much as a document window: one the app opened on the user's
+    /// screen takes the user's keys just the same. Nothing from the menu band
+    /// up is a window here.
     public static func hasWindowOnUserScreen(_ rows: [WindowServerRow], pid: pid_t, laneDisplays: [CGRect]) -> Bool {
         rows.contains { row in
-            row.pid == pid && row.layer == 0 && !laneDisplays.contains { $0.intersects(row.frame) }
+            row.pid == pid
+                && row.layer >= 0 && row.layer < WindowLayerPolicy.menuBand
+                && !laneDisplays.contains { $0.intersects(row.frame) }
         }
     }
 

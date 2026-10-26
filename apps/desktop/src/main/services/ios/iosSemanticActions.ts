@@ -147,6 +147,12 @@ export type ElementMatchOutcome = {
   selected: IosScreenElement | null;
   /** Why nothing matched, in words a human can act on. */
   reason: string | null;
+  /**
+   * Set when the match is not what the query literally asked for: a
+   * `--label` that no element carries, found as an accessibility identifier.
+   * The caller says so, so the agent can use the right flag next time.
+   */
+  note?: string | null;
 };
 
 /**
@@ -329,24 +335,42 @@ function closeness(candidate: string, needle: string): number {
  * A ref is a hash, so a near miss on a ref says nothing. The hint uses the
  * first human-readable field of the query instead.
  */
-function nearMiss(elements: IosScreenElement[], criteria: QueryCriterion[]): string | null {
+/** Which element field a near miss was found in, and the flag that queries it. */
+type NearMissField = "label" | "value" | "identifier" | "role";
+
+const NEAR_MISS_FLAG: Record<NearMissField, string> = {
+  label: "--label",
+  // A value has no exact flag; the substring query reads it.
+  value: "--text-match",
+  identifier: "--identifier",
+  role: "--role",
+};
+
+function nearMiss(
+  elements: IosScreenElement[],
+  criteria: QueryCriterion[],
+): { text: string; field: NearMissField } | null {
   const criterion = criteria.find((entry) => entry.field !== "ref");
   if (!criterion) return null;
 
-  let best: { text: string; score: number } | null = null;
+  let best: { text: string; field: NearMissField; score: number } | null = null;
   for (const element of elements) {
-    const candidates = criterion.field === "role"
-      ? [element.role, element.elementType]
-      : [element.label, element.value, ...identifiersOf(element)];
+    const candidates: Array<{ value: string | null | undefined; field: NearMissField }> = criterion.field === "role"
+      ? [{ value: element.role, field: "role" }, { value: element.elementType, field: "role" }]
+      : [
+        { value: element.label, field: "label" },
+        { value: element.value, field: "value" },
+        ...identifiersOf(element).map((value) => ({ value, field: "identifier" as const })),
+      ];
     for (const candidate of candidates) {
-      const text = nonEmpty(candidate);
+      const text = nonEmpty(candidate.value);
       if (!text) continue;
       const score = closeness(text, criterion.value);
       if (score < NEAR_MISS_FLOOR) continue;
-      if (!best || score > best.score) best = { text, score };
+      if (!best || score > best.score) best = { text, field: candidate.field, score };
     }
   }
-  return best ? best.text : null;
+  return best ? { text: best.text, field: best.field } : null;
 }
 
 function noMatchReason(elements: IosScreenElement[], query: IosSimulatorElementQuery, criteria: QueryCriterion[]): string {
@@ -354,7 +378,12 @@ function noMatchReason(elements: IosScreenElement[], query: IosSimulatorElementQ
     ? singleCriterionSentence(criteria[0])
     : `No element matches ${describeQuery(query)}.`;
   const closest = nearMiss(elements, criteria);
-  return closest ? `${head} The closest is ${JSON.stringify(closest)}.` : head;
+  if (!closest) return head;
+  // The field and the flag, not just the text: "BackButton" as an identifier
+  // read as a label in the snapshot, and `--label BackButton` kept failing.
+  const flag = NEAR_MISS_FLAG[closest.field];
+  return `${head} The closest is the ${closest.field} ${JSON.stringify(closest.text)}; `
+    + `query it with ${flag} ${JSON.stringify(closest.text)}.`;
 }
 
 function singleCriterionSentence(criterion: QueryCriterion): string {
@@ -414,6 +443,22 @@ export function matchElements(
     )));
     if (prefixed.length === 1) matches = prefixed;
   }
+  // Still nothing, and no element on screen carries that label at all: the
+  // caller most likely read an accessibility identifier off the snapshot
+  // ("BackButton"), so an EXACT identifier match answers, and says so.
+  let note: string | null = null;
+  const labelCriterion = criteria.find((criterion) => criterion.field === "label");
+  if (!matches.length && labelCriterion && !visible.some((element) => matchesCriterion(element, labelCriterion))) {
+    const asIdentifier: QueryCriterion = { field: "identifier", value: labelCriterion.value };
+    const byIdentifier = orderMatches(visible.filter((element) => criteria.every((criterion) => (
+      criterion === labelCriterion ? matchesCriterion(element, asIdentifier) : matchesCriterion(element, criterion)
+    ))));
+    if (byIdentifier.length) {
+      matches = byIdentifier;
+      note = `No element has the label ${JSON.stringify(labelCriterion.value)}; matched it as the accessibility `
+        + `identifier instead. Use --identifier ${JSON.stringify(labelCriterion.value)} next time.`;
+    }
+  }
 
   if (!matches.length) {
     return { matches, selected: null, reason: noMatchReason(visible, query, criteria) };
@@ -429,5 +474,5 @@ export function matchElements(
     };
   }
 
-  return { matches, selected: matches[rawIndex] ?? null, reason: null };
+  return { matches, selected: matches[rawIndex] ?? null, reason: null, ...(note ? { note } : {}) };
 }

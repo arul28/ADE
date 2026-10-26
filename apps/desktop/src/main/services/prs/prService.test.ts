@@ -18,7 +18,8 @@ const mockChildProcess = vi.hoisted(() => ({
 // vi.mock — external dependencies
 // ---------------------------------------------------------------------------
 
-vi.mock("../git/git", () => ({
+vi.mock("../git/git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../git/git")>()),
   runGit: (...args: unknown[]) => mockGit.runGit(...args),
   runGitOrThrow: (...args: unknown[]) => mockGit.runGitOrThrow(...args),
   runGitMergeTree: (...args: unknown[]) => mockGit.runGitMergeTree(...args),
@@ -329,8 +330,8 @@ interface BuildServiceOpts {
    */
   remoteTrackingRefs?: string[] | "unavailable";
   /**
-   * The branch a lane's worktree reports from `git rev-parse --abbrev-ref
-   * HEAD`. Default: the branch ADE's lane record names.
+   * The branch a lane's worktree reports from `git rev-parse
+   * --symbolic-full-name HEAD`. Default: the branch ADE's lane record names.
    */
   checkedOutBranch?: string;
 }
@@ -343,10 +344,12 @@ function buildService(opts: BuildServiceOpts = {}) {
 
   mockGit.runGit.mockImplementation(async (args: unknown[], options?: { cwd?: string }) => {
     const command = Array.isArray(args) ? args[0] : null;
-    if (command === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+    if (command === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
       const lanes: Array<{ worktreePath?: string; branchRef?: string }> = await laneService.list();
       const recorded = lanes.find((lane) => lane.worktreePath === options?.cwd)?.branchRef ?? "";
-      return { exitCode: 0, stdout: `${opts.checkedOutBranch ?? recorded.replace(/^refs\/heads\//, "")}\n`, stderr: "" };
+      const branch = opts.checkedOutBranch ?? recorded.replace(/^refs\/heads\//, "");
+      // Git prints `HEAD`, not a ref, for a detached or unborn HEAD.
+      return { exitCode: 0, stdout: branch && branch !== "HEAD" ? `refs/heads/${branch}\n` : "HEAD\n", stderr: "" };
     }
     if (command === "rev-list") {
       return { exitCode: 0, stdout: "0\t1\n", stderr: "" };

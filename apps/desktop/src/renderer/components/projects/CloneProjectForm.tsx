@@ -42,6 +42,7 @@ import {
   primaryButton,
   fgTint,
 } from "../lanes/laneDesignTokens";
+import { isImeComposing } from "../../lib/imeComposition";
 
 export type CloneProjectFormProps = {
   onCancel: () => void;
@@ -746,6 +747,7 @@ function ConnectGithubPrompt({
           placeholder="ghp_... or github_pat_..."
           style={{ ...inputStyle, fontFamily: MONO_FONT, fontSize: 12 }}
           onKeyDown={(event) => {
+            if (isImeComposing(event)) return;
             if (event.key === "Enter" && !pending) {
               event.preventDefault();
               void handleSave();

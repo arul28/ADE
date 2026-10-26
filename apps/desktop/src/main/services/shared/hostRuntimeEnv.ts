@@ -14,6 +14,8 @@
  * `NODE_COMPILE_CACHE` is the brain's own compile cache (its service definition
  * sets it). A Node program a user or an agent starts would otherwise write into
  * that cache, and Node never prunes it.
+ *
+ * `stripHostRuntimeEnv` also drops the multiplexer session keys below.
  */
 export const HOST_RUNTIME_ENV_KEYS = [
   "ELECTRON_RUN_AS_NODE",
@@ -22,6 +24,25 @@ export const HOST_RUNTIME_ENV_KEYS = [
   "ADE_RUNTIME_PARENT_PID",
   "ADE_RUNTIME_IDLE_EXIT_MS",
   "NODE_COMPILE_CACHE",
+] as const;
+
+/**
+ * The terminal multiplexer session the host was started from (tmux, GNU
+ * screen, Zellij). A brain started from a tmux pane carries that pane's
+ * `TMUX` and `TMUX_PANE`; a shell or agent ADE starts would then believe it
+ * runs inside that pane, so `tmux split-window` or a clipboard helper that
+ * checks `$TMUX` acts on the user's unrelated session instead.
+ *
+ * Only session pointers are listed. Config such as `ZELLIJ_CONFIG_DIR` or
+ * `TMUX_TMPDIR` stays.
+ */
+const MULTIPLEXER_SESSION_ENV_KEYS = [
+  "TMUX",
+  "TMUX_PANE",
+  "STY",
+  "ZELLIJ",
+  "ZELLIJ_SESSION_NAME",
+  "ZELLIJ_PANE_ID",
 ] as const;
 
 /**
@@ -34,12 +55,17 @@ export function stripHostRuntimeEnv<T extends NodeJS.ProcessEnv | Record<string,
   env: T,
   hostEnv: NodeJS.ProcessEnv = process.env,
 ): T {
-  for (const key of HOST_RUNTIME_ENV_KEYS) {
+  const stripIfHostValue = (key: string) => {
     const hostValue = hostEnv[key];
     if (hostValue !== undefined && env[key] === hostValue) {
       delete (env as Record<string, unknown>)[key];
     }
-  }
+  };
+  for (const key of HOST_RUNTIME_ENV_KEYS) stripIfHostValue(key);
+  for (const key of MULTIPLEXER_SESSION_ENV_KEYS) stripIfHostValue(key);
+  // GNU screen's window number has a generic name; it is screen's only while
+  // the host is itself inside a screen session.
+  if (hostEnv.STY !== undefined) stripIfHostValue("WINDOW");
   return env;
 }
 

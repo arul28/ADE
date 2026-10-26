@@ -12,6 +12,7 @@ import type { LaneSummary } from "../../../shared/types/lanes";
 import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { redactGitOutput } from "../../utils/redaction";
 
 export type CursorCloudIngressStatusLike = {
   state: CursorCloudFleetRelayState;
@@ -491,7 +492,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       timeoutMs: 120_000,
     });
     if (fetchResult.exitCode !== 0) {
-      throw new Error(`Fetching '${safeBranch}' failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim()}`);
+      throw new Error(`Fetching '${safeBranch}' failed: ${redactGitOutput(fetchResult.stderr.trim() || fetchResult.stdout.trim())}`);
     }
     const mergeResult = await runGit(["merge", "--no-edit", "FETCH_HEAD"], {
       cwd: lane.worktreePath,

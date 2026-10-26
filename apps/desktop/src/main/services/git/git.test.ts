@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { gitOwnershipMessage } from "../../../../../ade-cli/src/services/projects/gitOwnership";
+import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
+import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "./worktreeState";
 import {
+  branchNameFromHeadRef,
   formatGitExecutionError,
+  gitCommandError,
   gitSafeDirectorySpec,
   parseGitOwnershipError,
   getHeadSha,
@@ -219,6 +223,33 @@ describe("macOS git selection", () => {
     }
   });
 
+  // Git for Windows refuses a file named for a device (an agent's `2>NUL` in
+  // Git Bash makes one). The user must delete it, so the error names it and
+  // is an answer, not an ADE bug; elsewhere the name is ordinary.
+  it.each([
+    { platform: "win32", file: "apps/apphost/NUL", explained: true },
+    { platform: "win32", file: "apps/nul.txt", explained: true },
+    { platform: "win32", file: "COM1", explained: true },
+    { platform: "win32", file: "apps/NULL", explained: false },
+    { platform: "darwin", file: "apps/apphost/NUL", explained: false },
+  ])("explains a reserved Windows file name only where it is one: $platform $file", ({ platform, file, explained }) => {
+    const raw = `error: open("${file}"): No such file or directory\nerror: unable to index file '${file}'\nfatal: adding files failed`;
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: platform });
+    try {
+      const error = gitCommandError(raw);
+      expect(isExpectedOutcome(error)).toBe(explained);
+      if (explained) {
+        expect(error.message).toContain(`"${file}"`);
+        expect(error.message).not.toContain("fatal:");
+      } else {
+        expect(error.message).toBe(raw);
+      }
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  });
+
   it.each([
     ["C:\\Users\\arul2\\proj\\", "C:/Users/arul2/proj"],
     ["/C:/Users/arul2/proj", "C:/Users/arul2/proj"],
@@ -313,6 +344,135 @@ describe("runGit cancellation", () => {
     abort.abort();
     // A cwd that does not exist: a spawned git would fail differently.
     const result = await runGit(["status"], { cwd: path.join(os.tmpdir(), "ade-no-such-dir-for-abort-test"), signal: abort.signal });
-    expect(result).toEqual({ exitCode: 130, stdout: "", stderr: "git was cancelled" });
+    expect(result).toEqual({ exitCode: 130, stdout: "", stderr: "git was cancelled", cancelled: true });
+  });
+
+  // Hooks are shell scripts; Windows runs the same timer code.
+  it.skipIf(process.platform === "win32")("stops a git that prints nothing for idleTimeoutMs, while output keeps one running", async () => {
+    const repo = initRepo("ade-git-idle-");
+    const worktrees = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-idle-wt-"));
+    try {
+      git(repo, ["branch", "side"]);
+      const hook = path.join(repo, ".git", "hooks", "post-checkout");
+      // A silent hook stands in for a stuck checkout. Its output goes nowhere,
+      // so stopping git closes git's pipes at once.
+      fs.writeFileSync(hook, "#!/bin/sh\nexec sleep 5 >/dev/null 2>&1 </dev/null\n", { mode: 0o755 });
+      const stalled = await runGit(["worktree", "add", path.join(worktrees, "stalled"), "side"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 300,
+      });
+      expect(stalled).toMatchObject({ exitCode: 124, timedOut: true, stalled: true });
+      await expect(runGitOrThrow(["worktree", "add", "-b", "stalled-2", path.join(worktrees, "stalled-2"), "main"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 300,
+      })).rejects.toMatchObject({ name: "GitTimeoutError", stalled: true });
+
+      // Slow but talking: runs well past the limit, a line every 150 ms, a
+      // tenth of the limit, so a loaded machine does not read as a stall.
+      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 16); do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
+      const busy = await runGit(["worktree", "add", "-b", "busy", path.join(worktrees, "busy"), "main"], {
+        cwd: repo,
+        timeoutMs: 30_000,
+        idleTimeoutMs: 1_500,
+      });
+      expect(busy.exitCode).toBe(0);
+      expect(busy.timedOut).toBeUndefined();
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(worktrees, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+function initRepo(prefix: string): string {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(repo, ["init", "-q", "-b", "main"]);
+  git(repo, ["config", "user.email", "ade@test.local"]);
+  git(repo, ["config", "user.name", "ADE Test"]);
+  fs.writeFileSync(path.join(repo, "README.md"), "hi\n", "utf8");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-q", "-m", "init"]);
+  return repo;
+}
+
+// Settings people really use that change git's own output.
+function setPersonalConfig(repo: string): void {
+  git(repo, ["config", "status.showUntrackedFiles", "no"]);
+  git(repo, ["config", "diff.noprefix", "true"]);
+}
+
+describe("runGit under a personal git config", () => {
+  it("still sees new files, keeps a/ b/ patch prefixes, raw -z names, and a branch shadowed by a tag", async () => {
+    const repo = initRepo("ade-git-personal-config-");
+    setPersonalConfig(repo);
+    // Windows cannot create a file name with `"` in it.
+    const oddName = process.platform === "win32" ? "café q a.txt" : "café \"q\" a.txt";
+    fs.writeFileSync(path.join(repo, oddName), "new\n", "utf8");
+    fs.writeFileSync(path.join(repo, "README.md"), "hi\nmore\n", "utf8");
+
+    const status = await runGit(["status", "--porcelain=v1", "-z"], { cwd: repo });
+    expect(status.stdout.split("\0")).toContain(`?? ${oddName}`);
+
+    const patch = await runGit(["diff", "--no-color", "--", "README.md"], { cwd: repo });
+    expect(patch.stdout).toContain("--- a/README.md");
+    expect(patch.stdout).toContain("+++ b/README.md");
+
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-q", "-m", "names"]);
+    const names = await runGit(["show", "--pretty=format:", "--name-only", "-z", "HEAD", "--"], { cwd: repo });
+    expect(names.stdout.split("\0").filter(Boolean).sort()).toEqual(["README.md", oddName]);
+
+    git(repo, ["checkout", "-q", "-b", "release"]);
+    git(repo, ["tag", "release"]);
+    const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: repo });
+    expect(branchNameFromHeadRef(head.stdout)).toBe("release");
+  });
+});
+
+describe("describeUnsavedWorktreeWork", () => {
+  it("reports a lane that holds only a new file, even when git config hides new files", async () => {
+    const repo = initRepo("ade-git-unsaved-untracked-");
+    const lane = `${repo}-lane`;
+    git(repo, ["worktree", "add", "-q", "-b", "lane", lane]);
+    setPersonalConfig(repo);
+    expect(await describeUnsavedWorktreeWork(lane)).toBeNull();
+
+    fs.writeFileSync(path.join(lane, "notes.md"), "precious\n", "utf8");
+    expect(git(lane, ["status", "--porcelain"])).toBe("");
+    expect(await describeUnsavedWorktreeWork(lane)).toBe(UNCOMMITTED_CHANGES_REASON);
+    expect(await readWorktreeDirty(lane)).toBe(true);
+  });
+
+  it("checks every submodule for commits no remote has, past an empty uninitialized one", async () => {
+    const upstreamA = initRepo("ade-git-sub-a-");
+    const upstreamB = initRepo("ade-git-sub-b-");
+    const repo = initRepo("ade-git-unsaved-sub-");
+    git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", upstreamA, "a"]);
+    git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", upstreamB, "b"]);
+    git(repo, ["commit", "-q", "-m", "submodules"]);
+    const lane = `${repo}-lane`;
+    git(repo, ["worktree", "add", "-q", "-b", "lane", lane]);
+    // `a` stays uninitialized (an empty folder) and sorts first.
+    git(lane, ["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init", "b"]);
+    expect(await describeUnsavedWorktreeWork(lane)).toBeNull();
+
+    const sub = path.join(lane, "b");
+    git(sub, ["config", "user.email", "ade@test.local"]);
+    git(sub, ["config", "user.name", "ADE Test"]);
+    fs.writeFileSync(path.join(sub, "work.txt"), "work\n", "utf8");
+    git(sub, ["add", "."]);
+    git(sub, ["commit", "-q", "-m", "sub work"]);
+    git(lane, ["add", "b"]);
+    git(lane, ["commit", "-q", "-m", "bump b"]);
+    expect(git(lane, ["status", "--porcelain", "--ignore-submodules=none"])).toBe("");
+    expect(await describeUnsavedWorktreeWork(lane)).toBe("Submodule b has commits that no remote has.");
+    // A tag that was never pushed does not save the commit.
+    git(sub, ["tag", "local-only"]);
+    expect(await describeUnsavedWorktreeWork(lane)).toBe("Submodule b has commits that no remote has.");
+
+    git(sub, ["push", "-q", "origin", "HEAD:refs/heads/saved"]);
+    expect(await describeUnsavedWorktreeWork(lane)).toBeNull();
   });
 });

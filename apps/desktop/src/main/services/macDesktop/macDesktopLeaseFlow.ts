@@ -64,6 +64,20 @@ export const MAC_DESKTOP_ANONYMOUS_HOLDER_ID = "anonymous-agent";
 export const WINDOWS_DESKTOP_SHARED_CONSENT_WAIT_MS = 170_000;
 
 /**
+ * How long the real-input lease card waits for the user, for the same reason:
+ * the caller (`ade mac-desktop lease`) waits 180 s for `requestInputLease`.
+ * With no limit the card outlived its caller, and an open card refuses every
+ * later message and scheduled wake of the chat, so one unanswered card left a
+ * chat blocked for hours after the agent had moved on.
+ */
+export const MAC_DESKTOP_INPUT_LEASE_WAIT_MS = 170_000;
+
+/** What the caller is told when the user did not answer the lease card in time. */
+export const MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE =
+  "The user did not answer the real-input card within about 3 minutes, so ADE withdrew it. "
+  + "Carry on with accessibility actions, or ask again when the user is back.";
+
+/**
  * Asks one Allow / Don't allow question in a chat and reads the answer.
  *
  * `allow` only when the answer to the question is exactly the Allow option
@@ -246,22 +260,35 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       const reason = args.reason?.trim() || "drive this display with real pointer and keyboard input";
       const product = desktopProductName(deps.platform);
       deps.emit({ type: "lease-requested", laneId, chatSessionId, reason: args.reason?.trim() ?? null });
-      const answer = await askChatAllowDeny(deps.requestChatInput, {
-        chatSessionId,
-        title: "Real input on the lane's display",
-        body: windowsHost
-          ? `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
-          // A Mac has one pointer. The card is the user's only warning that
-          // saying yes lets the agent move it, which is what took one user's
-          // mouse three times in a row while they were working.
-          : `ADE would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
-        questionId: "mac_desktop_input_lease",
-        header: "Real input",
-        question: `Allow this chat to use real pointer and keyboard input on its ${product} display?`,
-        recommendAllow: true,
-        providerMetadata: { [MAC_DESKTOP_INPUT_LEASE_METADATA_KEY]: true, laneId },
-        eventDescription: `Allow real input on the ${product} display for ${reason}?`,
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MAC_DESKTOP_INPUT_LEASE_WAIT_MS);
+      timer.unref?.();
+      let answer: Awaited<ReturnType<typeof askChatAllowDeny>>;
+      try {
+        answer = await askChatAllowDeny(deps.requestChatInput, {
+          chatSessionId,
+          title: "Real input on the lane's display",
+          body: windowsHost
+            ? `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this PC.`
+            // A Mac has one pointer. The card is the user's only warning that
+            // saying yes lets the agent move it, which is what took one user's
+            // mouse three times in a row while they were working.
+            : `ADE would like to ${reason}. While it acts, your mouse pointer jumps onto the lane's screen for each click. Clicks, scrolls and drags inside the lane's own apps do not need this; only a hover or a drop onto another app does.`,
+          questionId: "mac_desktop_input_lease",
+          header: "Real input",
+          question: `Allow this chat to use real pointer and keyboard input on its ${product} display?`,
+          recommendAllow: true,
+          providerMetadata: { [MAC_DESKTOP_INPUT_LEASE_METADATA_KEY]: true, laneId },
+          eventDescription: `Allow real input on the ${product} display for ${reason}?`,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (controller.signal.aborted && answer.outcome !== "allow") {
+        deps.logger.info("mac_desktop.lease_prompt_withdrawn", { laneId, chatSessionId });
+        return { ...refuse(), message: MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE };
+      }
       if (answer.outcome === "unasked") {
         // The chat could be gone by the time the lease is asked for. A missing
         // chat is not an approval, and it is not a crash either: it is the same

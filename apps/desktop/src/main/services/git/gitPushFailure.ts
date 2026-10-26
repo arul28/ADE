@@ -1,3 +1,4 @@
+import { redactGitOutput } from "../../utils/redaction";
 import { formatGitExecutionError, gitCommandError, runGit, type GitRunOptions } from "./git";
 
 /**
@@ -129,13 +130,17 @@ type GitPushErrorOptions = {
 };
 
 /**
- * The error for a failed push: the classified sentence followed by git's raw
- * output, or the plain git error when the failure has no known shape.
+ * The error for a failed push: the classified sentence followed by git's
+ * redacted output, or the plain git error when the failure has no known shape.
+ * A sign-in failure keeps the plain git error, which has the full sign-in hint.
  */
 export function gitPushError(raw: string, options: GitPushErrorOptions = {}): Error {
   const detail = (raw ?? "").trim();
   const failure = classifyGitPushFailure(detail, options);
-  const body = failure ? `${failure.message}\n\n${detail}` : formatGitExecutionError(detail);
+  const body =
+    failure && failure.kind !== "auth_failed"
+      ? redactGitOutput(`${failure.message}\n\n${detail}`)
+      : formatGitExecutionError(detail);
   return gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
 }
 

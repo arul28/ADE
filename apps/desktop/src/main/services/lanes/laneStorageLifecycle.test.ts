@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createLaneService } from "./laneService";
 
-vi.mock("../git/git", () => ({
+vi.mock("../git/git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../git/git")>()),
   getHeadSha: vi.fn(),
   runGit: vi.fn(),
   runGitOrThrow: vi.fn(),

@@ -109,7 +109,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/opencode/**` | OpenCode 2.0 integration: server lifecycle, generated config, session create/resume, owned data home, inline/queue steering, and child-session permission routing. See [OpenCode integration](opencode-integration.md). |
 | `apps/desktop/src/main/services/chat/codexAppServerPool.ts` | One `codex app-server` process for many Codex chats: spawns or reuses the process for a pool key, allocates JSON-RPC ids, routes responses to the request's owner and thread lines to the chat that owns the thread (holding a new thread's first lines until its chat records the id, dropping lines of a thread whose chat left), broadcasts process-wide notifications, fans the process exit out to every chat, waits for `thread/closed` when a chat leaves, and stops the process when its last chat detaches. See [One app-server for many Codex chats](agent-routing.md#one-app-server-for-many-codex-chats). |
 | `apps/desktop/src/main/services/chat/codexEphemeralFork.ts` | Runs a local Codex fork handoff's `thread/fork` in a private, short-lived `codex app-server` with every config.toml MCP server switched off by name (`codexMcpOff.ts`; an empty `mcp_servers={}` override is merged and starts them all) and returns only after that process has exited. Codex holds a per-thread writer lock (`<CODEX_HOME>/thread-writer-locks`) in whichever app-server loaded the thread, so a fork run on the source chat's own app-server stays locked there and the forked chat's `thread/resume` is refused (`thread … already has an active writer`). Forking does not take the source thread's lock, so the source chat keeps working. The switched-off servers are not kept by the forked thread: it resumes in the chat's own app-server. |
-| `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Converts Codex app-server MCP elicitation JSON Schemas into pending-input questions and coerces accepted form answers back to boolean/number/array/object values. Parses Codex's MCP tool approval (`_meta.codex_approval_kind: "mcp_tool_call"`; tool name from `_meta.tool_name` or the message) so it is raised as an answerable `approval` and judged by the host permission policy. Persistent consent is gated by request metadata: an "allow for session" answer sends `_meta.persist: "session"` whenever Codex offers it, and `"always"` (which Codex writes to the user's `config.toml`) only when it is the one scope offered. |
+| `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Shared by Codex and Claude (`onElicitation`) elicitations. Converts MCP elicitation JSON Schemas into pending-input questions and coerces accepted form answers back to boolean/number/array/object values. Parses Codex's MCP tool approval (`_meta.codex_approval_kind: "mcp_tool_call"`; tool name from `_meta.tool_name` or the message) so it is raised as an answerable `approval` and judged by the host permission policy. Persistent consent is gated by request metadata: an "allow for session" answer sends `_meta.persist: "session"` whenever Codex offers it, and `"always"` (which Codex writes to the user's `config.toml`) only when it is the one scope offered. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Resolves and strictly verifies the OpenAI-signed standalone Computer Use client after explicit user opt-in, then supplies the canonical `computer_use` MCP config to Work chat and tracked Codex CLI launch/resume paths. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
 | `apps/desktop/src/main/services/chat/chatRuntimeOwnership.ts` | ADE-home ownership stamp and live-owner checks that let a legacy, dead-owner, or same-process stamp be adopted while refusing to let one live brain relaunch, send to, interrupt, or mutate another brain's chat runtime; `ChatRuntimeOwnedElsewhereError` is the refusal that names the owner's socket. See [One brain per chat](#one-brain-per-chat). |
@@ -3627,7 +3627,29 @@ card stays in the child so the person can still answer it there. Not relayed:
 approvals and permission prompts (an agent approving its child's tool call
 would grant itself access), secret questions, user-only consent cards, peers,
 and parents that are not a chat in this service (a CLI terminal, another
-project or machine). `ade chat respond` lists the chat's inputs through
+project or machine).
+
+A secret question or a user-only consent card (`isUserOnlyConsentCard`: the
+real-input lease, the shared-desktop consent, MCP app calls, project secret
+requests) is not relayed as a question, but `relayChildAwaitingUserToParent`
+tells the parent that the child waits on the user (`hostContinuation.reason:
+"subagent_awaiting_user"`), so a coordinator does not read the silence as
+"stuck" and start a second chat for the same work. Unlike a question, this
+notice also reaches a parent in another project or on another machine: it goes
+through the brain's external parent router as an `ExternalParentWake` with
+`notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a
+message, not a completion, so the parent's card for the child stays open. A
+brain older than the field reads it as a finished turn whose summary says the
+child waits. The chat summary carries `pendingInputUserOnly` and
+`chat.getTurnStatus` carries `ask.userOnly` for the same cards, which `ade chat
+status` prints as "only the user can answer this".
+
+A scheduled wake does not fire while a card is open (`shouldDefer` checks
+`hasLivePendingInput`): firing would be refused and close the row as "Not
+delivered". The real-input lease card itself is withdrawn after
+`MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s, inside the caller's 180 s budget for
+`mac_desktop.requestInputLease`), so an unanswered card cannot outlive the
+agent that asked and block the chat for hours. `ade chat respond` lists the chat's inputs through
 `chat.listPendingInputs` and answers through `chat.respondToInput`; a send to a
 chat with an open card is refused with a message that names both commands.
 
@@ -3936,7 +3958,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.restoreCancelledQueue` | invoke | Claude-only recovery for a recent queue-clearing Stop. Restores the original ADE-attributed queued steers when the matching recovery id is still live; returns `{ restored, restoredCount }` and never recreates expired or foreign-session entries. |
 | `ade.agentChat.recoverCodexTurn` | invoke | Execute one guarded recovery action for the currently active stalled Codex turn: `wait`, `steer`, `interrupt_retry_same_thread`, or `restart_resume_thread`. Calls are single-flight per session/turn and reject stale cards once that turn is no longer active. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
-| `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel, including Codex MCP elicitation form values and metadata-gated persistent consent (`accept_for_session` → `_meta.persist: "session"` when offered, never `"always"` unless that is the only scope). |
+| `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel, including Codex and Claude MCP elicitation form values, and for Codex metadata-gated persistent consent (`accept_for_session` → `_meta.persist: "session"` when offered, never `"always"` unless that is the only scope). |
 | `ade.agentChat.getMcpApp` | invoke | The MCP App a tool call produced (page, declared origins, tool input and result), from the machine that owns the chat. Runtime action `chat.getMcpApp`. |
 | `ade.agentChat.mcpAppRequest` | invoke | One `tools/call` or `resources/read` from an app's frame, routed to the app's own server through the chat's live session. Runtime action `chat.mcpAppRequest`, user clients only. |
 | `ade.agentChat.listMcpAppGrants`, `ade.agentChat.revokeMcpAppGrant` | invoke | The tools the user always allows for the server an app came from, and taking one back. Runtime actions `chat.listMcpAppGrants` and `chat.revokeMcpAppGrant` (user clients only). |
@@ -4046,6 +4068,68 @@ wired, only the declaration is withheld. Every dialog logs
 `chat.claude.user_dialog` with its kind and result. Dialogs are scoped to the
 same sessions as the tool gate: a lightweight or embedder-owned personal chat
 declares no kinds.
+
+### Claude MCP elicitations
+
+An MCP server can ask for input mid-tool (a form, or an authorization link).
+Without `Options.onElicitation` the Agent SDK declines every such request on
+the spot, so the tool looked like it failed for no reason. ADE passes
+`buildClaudeElicitationHandler` to the same sessions that get dialogs, and it
+raises the card Codex and Copilot already raise: `providerMetadata.mcpElicitation`,
+a `structured_question` built by `mcpElicitationQuestions` for a form (an
+`approval` when the schema has no fields), and the **Open authorization**
+button for a URL. It parks on `runtime.approvals` like `resume_return`, so
+every turn-ending path settles it; the SDK's abort signal cancels it.
+Accept answers `{action: "accept", content}` with `mcpElicitationContent`;
+Deny answers `decline`; an interrupt answers `cancel`. A host policy with
+`fallback: "deny"` declines on the spot, and still writes the card and its
+`decline` receipt, as for Codex.
+
+While a card is up, the MCP tool is stuck until the server hears back, and
+so is the turn. Nobody answers a full-auto chat (`bypassPermissions`, outside
+plan mode) or an automation run (`automationRunId`, whatever its permission
+mode), so there ADE answers itself and writes the card, its receipt and an
+info `system_notice` saying so. A form with no fields (a yes/no) is accepted.
+A form whose required fields all have a schema `default` is accepted with
+those defaults (`mcpElicitationDefaultAnswers`). A form that needs a value
+only a person has, or a URL sign-in, is declined, and so is everything in a
+dry-run (plan mode) automation. Anywhere else the card waits at most
+`CLAUDE_MCP_ELICITATION_TIMEOUT_MS` (5 minutes). Then it answers `cancel` with
+a notice, so the tool returns and the agent carries on; an answer sent after
+that is settled like any other closed card. Every
+elicitation logs
+`chat.claude.mcp_elicitation`. The card lives on the chat's own brain, so a
+remote client answers it through the chat's pinned `respondToInput` like any
+other card. It appears only when a server the chat uses actually asks, and
+only in sessions that render ADE cards: an embedded (SDK) personal chat and
+other lightweight sessions get no callback, so the SDK still declines there. There
+is no **Always allow** (the SDK has no persistent consent for elicitations);
+whether an MCP *tool* may run at all is the separate `canUseTool` approval,
+which keeps its own Always allow.
+
+### Refusal fallback follows the model
+
+When Claude Code retries a refused turn on its fallback model
+(`system/model_refusal_fallback`) with `scope: "session"` (or no scope, from
+an older CLI), it now runs the chat on that model. ADE writes the fallback's
+registry id to `session.modelId`/`model` (`followClaudeRefusalFallbackModel`)
+and emits `session_meta_updated`, so the picker, the next resume and pricing
+agree with the CLI. `scope: "local"` (a subagent or side question) changes
+nothing, and a chat on a harness preset or stored credential keeps its model.
+The fallback *prompt* dialog stays undeclared (above).
+
+### Title refinement
+
+The first title is written from the first prompt alone. After the chat's
+first completed run, ADE asks once more with the run's output
+(`autoTitleRefine`, then `maybeAutoTitleSession({ mode: "refine" })`), whichever of the title and the run lands first. It only rewrites a
+title ADE wrote itself in this process: never a manual title, a runtime's own
+title, or a reloaded chat's. A runtime that echoes ADE's own title back
+(Codex `thread/name/set`) does not count as a runtime title. A fork carries
+its source's title and first and latest requests into its first title prompt
+(`autoTitleInheritedContext`), so "now do the same for mobile" is named after
+what it inherited. Placeholder answers such as `title`, `thread` or `none` are
+rejected like the other generic titles.
 
 ## Fragile and tricky wiring
 

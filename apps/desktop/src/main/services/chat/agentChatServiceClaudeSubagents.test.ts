@@ -2,7 +2,9 @@ import {
   configureExternalChatStore,
   rememberExternalChat,
   setExternalParentRouter,
+  type ExternalParentWake,
 } from "./externalChats";
+import { MAC_DESKTOP_INPUT_LEASE_METADATA_KEY } from "../../../shared/types/macDesktop";
 import {
   AgentChatEventEnvelope,
   PendingInputRequest,
@@ -1350,6 +1352,73 @@ describe("createAgentChatService", () => {
         expect(summary?.spawnKind).toBe("subagent");
         expect(summary?.orchestrationParentSessionId).toBe("remote:device-a:parent-a");
         expect(summary?.subagentTakeoverPromptShownAt ?? null).toBeNull();
+      } finally {
+        restoreRouter();
+        configureExternalChatStore(null);
+      }
+    });
+
+    it("tells a remote parent that its subagent waits on a card only the user can answer", async () => {
+      // The owner's 2026-10-24 run: a subagent asked for real input, the card
+      // was owner-only, and the coordinator could only poll — so it read the
+      // silence as "stuck" and started a second chat on the same lane. The
+      // parent now gets one notice, through the router when it lives elsewhere.
+      configureExternalChatStore(null);
+      const routed: ExternalParentWake[] = [];
+      const restoreRouter = setExternalParentRouter({
+        route: (wake) => {
+          routed.push(wake);
+          return true;
+        },
+      });
+      try {
+        rememberExternalChat("remote:device-a:parent-a", {
+          scope: null,
+          machineKey: "machine-a",
+          machineName: "Mac mini",
+          permissionLevel: "full-auto",
+        });
+        const { service } = createService();
+        const child = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          orchestrationParentSessionId: "remote:device-a:parent-a",
+          spawnKind: "subagent",
+        });
+
+        const answer = service.requestChatInput({
+          chatSessionId: child.id,
+          title: "Real input on the lane's display",
+          body: "ADE would like to drag a file onto another app.",
+          questions: [{
+            id: "mac_desktop_input_lease",
+            header: "Real input",
+            question: "Allow this chat to use real pointer and keyboard input?",
+            options: [{ label: "Allow", value: "allow" }, { label: "Don't allow", value: "deny" }],
+          }],
+          providerMetadata: { [MAC_DESKTOP_INPUT_LEASE_METADATA_KEY]: true, laneId: "lane-1" },
+        });
+
+        await vi.waitFor(() => expect(routed).toHaveLength(1));
+        const wake = routed[0]!;
+        expect(wake.parentSessionId).toBe("remote:device-a:parent-a");
+        expect(wake.childSessionId).toBe(child.id);
+        expect(wake.notice).toBe("awaiting_user");
+        // Not a finished turn: the parent keeps its card for the child open.
+        expect(wake.spawnCompletion).toMatchObject({
+          status: "completed",
+          childTurnId: expect.stringMatching(/^awaiting-user:/),
+        });
+        expect(wake.summary).toContain("Waiting on the user");
+        expect(wake.wakeText).toContain("Do not start another chat for the same work");
+
+        // The card stays in the child for the user to answer. The notice names
+        // the item, so a parent reading it can point at the same card.
+        const itemId = wake.spawnCompletion.childTurnId!.replace(/^awaiting-user:/, "");
+        expect(itemId.length).toBeGreaterThan(0);
+        await service.respondToInput({ sessionId: child.id, itemId, decision: "decline" });
+        await expect(answer).resolves.toMatchObject({ decision: "decline" });
       } finally {
         restoreRouter();
         configureExternalChatStore(null);

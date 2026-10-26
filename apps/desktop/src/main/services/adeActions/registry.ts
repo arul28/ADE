@@ -309,6 +309,7 @@ export {
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
+  userSettingWrite,
 } from "./actionPolicy";
 export type { AdeActionRole, CtoOnlyRule } from "./actionPolicy";
 export {
