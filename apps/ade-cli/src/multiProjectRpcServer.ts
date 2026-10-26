@@ -815,8 +815,10 @@ function runProjectIconWorker(
  * with it: measured, a dev brain answering a lane list every 3 s started 24
  * such processes a minute. An answer is reused while the same signature the
  * in-process resolver trusts still holds (the folders it scans, the project's
- * `.ade/local.yaml` icon setting, the icon file itself), for at most the same
- * five minutes. The stats are async: a project on a dead network mount must
+ * `.ade/local.yaml` icon setting, the icon file itself). Past five minutes an
+ * answer whose signature still holds is served while one worker re-checks in
+ * the background, so a list never waits on a cold worker for an icon it
+ * already has. The stats are async: a project on a dead network mount must
  * not stop the event loop.
  */
 const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
@@ -829,6 +831,7 @@ const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
  * another worker.
  */
 const PROJECT_ICON_WORKER_TIMEOUT_MS = 15_000;
+const PROJECT_ICON_ANSWERS_MAX = 256;
 const projectIconAnswers = new Map<string, { signature: string; icon: ResolvedProjectIcon; expiresAtMs: number }>();
 const projectIconResolves = new Map<string, Promise<ResolvedProjectIcon | null>>();
 
@@ -863,32 +866,40 @@ async function resolveRemoteProjectIconInWorker(
 ): Promise<ResolvedProjectIcon> {
   if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
   const kept = projectIconAnswers.get(rootPath);
-  if (kept && kept.expiresAtMs > Date.now()
-    && kept.signature === await projectIconSignature(rootPath, kept.icon.sourcePath)) {
+  if (kept && kept.signature === await projectIconSignature(rootPath, kept.icon.sourcePath)) {
+    if (kept.expiresAtMs <= Date.now()) void startProjectIconResolve(rootPath, timeoutMs);
     return kept.icon;
   }
-  // Two lists at once (a desktop and a phone connecting) share one worker.
-  let resolving = projectIconResolves.get(rootPath);
-  if (!resolving) {
-    resolving = (async () => {
-      // Taken before the worker reads, so a change while it runs is not hidden.
-      const folders = await projectIconSignature(rootPath, null);
-      const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
-      if (!icon) return null;
-      projectIconAnswers.set(rootPath, {
-        signature: icon.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders,
-        icon,
-        expiresAtMs: Date.now() + PROJECT_ICON_ANSWER_TTL_MS,
-      });
-      return icon;
-    })();
-    const current = resolving;
-    projectIconResolves.set(rootPath, current);
-    void current.finally(() => {
-      if (projectIconResolves.get(rootPath) === current) projectIconResolves.delete(rootPath);
-    });
-  }
-  return (await resolving) ?? EMPTY_PROJECT_ICON;
+  return (await startProjectIconResolve(rootPath, timeoutMs)) ?? EMPTY_PROJECT_ICON;
+}
+
+/** One worker per project at a time: two lists at once (a desktop and a phone connecting) share it. */
+function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<ResolvedProjectIcon | null> {
+  const existing = projectIconResolves.get(rootPath);
+  if (existing) return existing;
+  const self: { promise: Promise<ResolvedProjectIcon | null> | null } = { promise: null };
+  const resolving = (async () => {
+    // Taken before the worker reads, so a change while it runs is not hidden.
+    const folders = await projectIconSignature(rootPath, null);
+    const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
+    if (!icon) return null;
+    const signature = icon.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
+    // A resolve that an icon write superseded keeps its answer to itself.
+    if (projectIconResolves.get(rootPath) !== self.promise) return icon;
+    projectIconAnswers.delete(rootPath);
+    projectIconAnswers.set(rootPath, { signature, icon, expiresAtMs: Date.now() + PROJECT_ICON_ANSWER_TTL_MS });
+    if (projectIconAnswers.size > PROJECT_ICON_ANSWERS_MAX) {
+      const oldest = projectIconAnswers.keys().next().value;
+      if (oldest !== undefined) projectIconAnswers.delete(oldest);
+    }
+    return icon;
+  })();
+  self.promise = resolving;
+  projectIconResolves.set(rootPath, resolving);
+  void resolving.finally(() => {
+    if (projectIconResolves.get(rootPath) === resolving) projectIconResolves.delete(rootPath);
+  });
+  return resolving;
 }
 
 async function resolveIconBeforeDeadline(

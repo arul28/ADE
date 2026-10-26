@@ -128,13 +128,18 @@ export const EVENT_LOG_RETENTION_DAYS = 30;
  *
  * ADE's SQLite driver (`node:sqlite` `DatabaseSync`) is fully synchronous, so a
  * DELETE runs to completion on the event loop with nothing else able to
- * proceed. 2,000 rows is small enough that one batch is imperceptible and
- * large enough that a realistic backlog clears in a handful of them.
+ * proceed. Synced tables run cr-sqlite triggers per row: on the owner's real
+ * project a 2,000-row batch held the loop 14-76 ms. 250 rows keeps a batch to
+ * a few milliseconds (T3 paces compaction to the same scale) while the yield
+ * between batches lets everything else run.
  */
-export const MAINTENANCE_DELETE_BATCH_ROWS = 2_000;
+export const MAINTENANCE_DELETE_BATCH_ROWS = 250;
 
-/** Batches per prune, so one call cannot run unbounded on a huge backlog. */
-export const MAINTENANCE_DELETE_MAX_BATCHES = 200;
+/**
+ * Batches per prune, so one call cannot run unbounded on a huge backlog: the
+ * same 400,000-row ceiling per sweep as before, in smaller steps.
+ */
+export const MAINTENANCE_DELETE_MAX_BATCHES = 1_600;
 
 /**
  * Delete rows matching `where` in paced batches, yielding to the event loop

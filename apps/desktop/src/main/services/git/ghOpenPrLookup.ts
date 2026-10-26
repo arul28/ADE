@@ -8,7 +8,7 @@ import {
   selectOwnRepoOpenPr,
   type GhOpenPrSummary,
 } from "./ghPrHeadRepo";
-import { runGit } from "./git";
+import { runGitRepoCached } from "./git";
 
 const GH_PR_LIST_TIMEOUT_MS = 8_000;
 /**
@@ -18,10 +18,12 @@ const GH_PR_LIST_TIMEOUT_MS = 8_000;
 const GH_PR_LIST_LIMIT = "10";
 
 async function resolveOriginOwner(worktreePath: string): Promise<string | null> {
-  const result = await runGit(["remote", "get-url", "origin"], {
-    cwd: worktreePath,
-    timeoutMs: 5_000,
-  }).catch(() => null);
+  // The repo-wide origin URL, shared with every other caller that asks it.
+  const result = await runGitRepoCached(
+    ["remote", "get-url", "origin"],
+    { cwd: worktreePath, timeoutMs: 5_000 },
+    { key: "remote-url:origin", cacheClass: "volatile" },
+  ).catch(() => null);
   if (!result || result.exitCode !== 0) return null;
   return (await resolveGithubRemoteRepo(result.stdout.trim()))?.owner ?? null;
 }
