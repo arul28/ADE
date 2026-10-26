@@ -25,6 +25,8 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ModelDescriptor,
+  PendingInputResponse,
+  SlashCommand,
   ProviderStatus,
   SendInput,
   ThreadModelSelection,
@@ -188,6 +190,14 @@ export type ThreadState = {
   canUpdate: boolean;
   /** Whether the open thread has `retry` and `editLast` (an SDK >= 0.4 thread does). */
   canRetry: boolean;
+  /** Answer pending questions and plan approvals when `thread.respond` exists. */
+  respond: (requestId: string, response: PendingInputResponse) => Promise<void>;
+  canRespond: boolean;
+  /** Slash commands; null means not yet loaded, undefined means unsupported. */
+  slashCommands: readonly SlashCommand[] | null | undefined;
+  slashCommandsLoading: boolean;
+  slashCommandsError: string | null;
+  reloadSlashCommands: () => Promise<void>;
   /**
    * The model the runtime has the thread on, as it resolved it — which can be
    * a successor of the id the host asked for. Read on open and after every
@@ -310,6 +320,9 @@ export function useAdeThread(
   const loadingOlderRef = useRef(false);
   const [status, setStatus] = useState<ThreadStatus>(IDLE_STATUS);
   const [usage, setUsage] = useState<ThreadUsage | null>(null);
+  const [slashCommands, setSlashCommands] = useState<readonly SlashCommand[] | null | undefined>(undefined);
+  const [slashCommandsLoading, setSlashCommandsLoading] = useState(false);
+  const [slashCommandsError, setSlashCommandsError] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
   /**
    * Bumped to re-run the open effect for the SAME key: after a successful
@@ -394,6 +407,9 @@ export function useAdeThread(
     restoredRef.current = { restored: [], at: null };
     setStatus(IDLE_STATUS);
     setUsage(null);
+    setSlashCommands(undefined);
+    setSlashCommandsLoading(false);
+    setSlashCommandsError(null);
     if (!enabled) return;
 
     const openOptions: ThreadOpenOptions = {};
@@ -445,6 +461,27 @@ export function useAdeThread(
         );
         disposers.push(opened.on("status", (next) => setStatus(next)));
         disposers.push(opened.on("usage", (next) => setUsage(next)));
+
+        if (typeof opened.slashCommands === "function") {
+          setSlashCommands(null);
+          setSlashCommandsLoading(true);
+          void opened.slashCommands()
+            .then((commands) => {
+              if (!cancelled && epoch === openEpochRef.current) {
+                setSlashCommands(commands ?? []);
+                setSlashCommandsError(null);
+              }
+            })
+            .catch((cause: unknown) => {
+              if (!cancelled && epoch === openEpochRef.current) {
+                setSlashCommands(null);
+                setSlashCommandsError(cause instanceof Error ? cause.message : String(cause));
+              }
+            })
+            .finally(() => {
+              if (!cancelled && epoch === openEpochRef.current) setSlashCommandsLoading(false);
+            });
+        }
 
         // The newest page when the thread pages, the whole window otherwise.
         let history: AgentChatEventEnvelope[];
@@ -622,6 +659,27 @@ export function useAdeThread(
     return await target.pendingApprovals();
   }, []);
 
+  const respond = useCallback(async (requestId: string, response: PendingInputResponse) => {
+    const target = threadRef.current;
+    if (typeof target?.respond !== "function") return;
+    await target.respond(requestId, response);
+  }, []);
+
+  const reloadSlashCommands = useCallback(async () => {
+    const target = threadRef.current;
+    if (typeof target?.slashCommands !== "function") return;
+    setSlashCommandsLoading(true);
+    setSlashCommandsError(null);
+    try {
+      setSlashCommands(await target.slashCommands());
+    } catch (cause: unknown) {
+      setSlashCommands(null);
+      setSlashCommandsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSlashCommandsLoading(false);
+    }
+  }, []);
+
   return {
     thread,
     ready: thread !== null,
@@ -638,6 +696,12 @@ export function useAdeThread(
     editLast,
     approve,
     pendingApprovals,
+    respond,
+    canRespond: typeof thread?.respond === "function",
+    slashCommands,
+    slashCommandsLoading,
+    slashCommandsError,
+    reloadSlashCommands,
     canSetModel: typeof thread?.setModel === "function",
     canApprove: typeof thread?.approve === "function",
     canUpdate: typeof thread?.update === "function",

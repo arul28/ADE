@@ -182,10 +182,19 @@ export type ApprovalDecision = "accept" | "accept_always" | "reject";
 /** An outstanding approval, as `thread.pendingApprovals()` reports one. */
 export type ApprovalRequest = {
   itemId: string;
+  /** SDK request id used by `thread.respond`; defaults to `itemId`. */
+  requestId?: string;
   logicalItemId?: string;
   kind: ApprovalKind;
   requestKind?: string;
   description: string;
+  title?: string | null;
+  source?: string;
+  questions?: PendingInputQuestion[];
+  options?: PendingInputOption[];
+  allowsFreeform?: boolean;
+  canProceedWithoutAnswer?: boolean;
+  providerMetadata?: Record<string, unknown>;
   turnId?: string;
   detail?: unknown;
   /**
@@ -194,6 +203,156 @@ export type ApprovalRequest = {
    * renders the same card either way.
    */
   provider?: ProviderId;
+};
+
+/** One option in a provider's structured question. */
+export type PendingInputOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+
+/** A question the provider is waiting for the host to answer. */
+export type PendingInputQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  options?: PendingInputOption[] | null;
+  multiSelect?: boolean;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+
+/** Decision values accepted by the runtime's respondToInput action. */
+export type PendingInputDecision = "accept" | "accept_for_session" | "decline" | "cancel";
+
+/** Answer payload for one pending question or plan request. */
+export type PendingInputResponse = {
+  answers?: Record<string, string | string[]>;
+  decision?: PendingInputDecision;
+  responseText?: string | null;
+};
+
+/** One message waiting in the SDK steer queue. */
+export type QueuedMessage = {
+  id: string;
+  text: string;
+  attachments?: ChatAttachment[];
+  createdAt?: string;
+  dispatched?: boolean;
+};
+
+/** Queue methods are optional so older SDK clients remain usable. */
+export type ThreadQueue = {
+  list?(): Promise<readonly QueuedMessage[]>;
+  cancel?(id: string): Promise<void>;
+  edit?(id: string, text: string): Promise<void>;
+  move?(id: string, index: number): Promise<void>;
+  dispatch?(id: string): Promise<void>;
+  cancelDispatched?(id: string): Promise<void>;
+  restore?(): Promise<void>;
+};
+
+/** Runtime-reported usage room for one provider account. */
+export type AccountUsage = {
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  percent?: number;
+  resetAt?: string | null;
+};
+
+/** Public account summary. Secret values are never part of this shape. */
+export type AccountInfo = {
+  id: string;
+  provider: ProviderId;
+  label: string;
+  email?: string | null;
+  plan?: string | null;
+  signedIn: boolean;
+  isDefault: boolean;
+  usage?: AccountUsage | null;
+};
+
+/** Update emitted while a provider sign-in flow is waiting for the user. */
+export type SignInUpdate = {
+  url?: string | null;
+  deviceCode?: string | null;
+  needsCode?: boolean;
+  state?: "waiting" | "complete" | "failed" | "cancelled" | (string & {});
+  message?: string | null;
+};
+
+export interface SignInHandle {
+  on(event: "update", cb: (update: SignInUpdate) => void): Unsubscribe;
+  submitCode(code: string): Promise<void>;
+  cancel(): Promise<void>;
+  done: Promise<AccountInfo>;
+}
+
+/** Non-secret credential metadata. The API key is deliberately absent. */
+export type ApiCredentialInfo = {
+  id: string;
+  provider: ProviderId;
+  label: string;
+  createdAt?: string;
+};
+
+export type ProviderCapabilities = {
+  permissionModes?: string[];
+  reasoningEfforts?: string[];
+  fastMode?: boolean;
+  multipleAccounts?: boolean;
+  signIn?: "cli-login" | "device-code" | "api-key" | "none";
+  apiKeys?: boolean;
+  presets?: boolean;
+  mcp?: "full" | "partial" | "none";
+};
+
+/** Client-level notification for one thread's usage-limit resume status. */
+export type UsageLimitEvent = {
+  threadKey: string;
+  status: UsageLimitStatus | null;
+};
+
+/** Host-agnostic subset of the runtime's live usage-limit resume status. */
+export type UsageLimitStatus = {
+  state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | "limited" | (string & {});
+  provider?: ProviderId;
+  fireAt?: string | null;
+  resetAt?: string | null;
+  turnId?: string | null;
+  alternateAccount?: { instanceId: string; label: string } | null;
+  alternateAccounts?: Array<{ id: string; label: string }>;
+};
+
+export type SlashCommand = {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+};
+
+export type AccountManagement = {
+  list?(provider?: ProviderId): Promise<readonly AccountInfo[]>;
+  add?(provider: ProviderId, options?: { label?: string }): Promise<AccountInfo>;
+  remove?(id: string): Promise<void>;
+  rename?(id: string, label: string): Promise<AccountInfo | void>;
+  setDefault?(id: string): Promise<void>;
+  signOut?(id: string): Promise<void>;
+  refresh?(): Promise<readonly AccountInfo[]>;
+  signIn?(id: string, options?: { deviceAuth?: boolean }): Promise<SignInHandle>;
+};
+
+export type CredentialManagement = {
+  list?(provider?: ProviderId): Promise<readonly ApiCredentialInfo[]>;
+  add?(input: { provider: ProviderId; key: string; label?: string }): Promise<ApiCredentialInfo>;
+  remove?(id: string): Promise<void>;
+  verify?(provider: ProviderId): Promise<unknown>;
 };
 
 export type ChatEventUserMessage = {
@@ -405,6 +564,7 @@ export type AdeChatClientEventMap = {
    * reattached. `attempt` counts from 1 per outage.
    */
   restart: { attempt: number; ok: boolean; error: string | null; final?: boolean };
+  usageLimit: UsageLimitEvent;
 };
 
 export interface AdeThread {
@@ -443,6 +603,19 @@ export interface AdeThread {
   approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
   /** Outstanding requests, so a host re-rendering after a reload restores cards. */
   pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
+  /** Answer a question or plan request. Older clients render those cards read-only. */
+  respond?(requestId: string, response: PendingInputResponse): Promise<void>;
+  /** Optional steer queue operations. */
+  queue?: ThreadQueue;
+  /** Available provider slash commands, when the runtime exposes them. */
+  slashCommands?(): Promise<readonly SlashCommand[]>;
+  /** Per-thread usage-limit controls. */
+  usageLimit?: {
+    resumeNow?(): Promise<void>;
+    continueOnAlternate?(): Promise<void>;
+  };
+  /** Switch this thread to another signed-in provider account. */
+  switchAccount?(instanceId: string): Promise<unknown>;
   history(): Promise<AgentChatEventEnvelope[]>;
   /**
    * Read one page of history, newest first by page (each page oldest-first).
@@ -502,6 +675,7 @@ export interface AdeChatClient {
      * re-probe. A host renders a "Check again" button only when it is present.
      */
     refresh?(): Promise<ProviderStatus[]>;
+    capabilities?(provider: ProviderId): Promise<ProviderCapabilities | null>;
   };
   models: {
     list(): Promise<ModelDescriptor[]>;
@@ -509,6 +683,10 @@ export interface AdeChatClient {
   threads: {
     open(key: string, opts?: ThreadOpenOptions): Promise<AdeThread>;
   };
+  /** Account management is optional and disabled for untrusted renderers by default. */
+  accounts?: AccountManagement;
+  /** Credential operations accept a key but never return one. */
+  credentials?: CredentialManagement;
   /**
    * Runtime lifecycle events.
    *
