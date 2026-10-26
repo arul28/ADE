@@ -63,6 +63,14 @@ describe("isHumanChildMessage", () => {
     })).toBe(false);
   });
 
+  it("does not count an automation's prompt", () => {
+    expect(isHumanChildMessage({
+      type: "user_message",
+      text: "Write the daily report.",
+      metadata: { automationRun: { automationId: "a", runId: "r", name: "Daily report" } },
+    })).toBe(false);
+  });
+
   it("does not count a queued copy", () => {
     expect(isHumanChildMessage({ type: "user_message", text: "…", deliveryState: "queued" })).toBe(false);
   });
@@ -290,6 +298,10 @@ describe("messageClearsAttentionMarkers", () => {
     } as never)).toBe(false);
     expect(messageClearsAttentionMarkers({
       scheduledWake: { scheduleId: "s", kind: "cron", firedAt: "now", reason: "tick" },
+    } as never)).toBe(false);
+    // Nor an automation firing its prompt.
+    expect(messageClearsAttentionMarkers({
+      automationRun: { automationId: "a", runId: "r", name: "Daily report" },
     } as never)).toBe(false);
     // Another bound agent writing to this chat is not the user answering.
     expect(messageClearsAttentionMarkers({

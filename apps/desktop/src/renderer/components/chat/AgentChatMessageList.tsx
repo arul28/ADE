@@ -40,6 +40,8 @@ import {
   GitDiff,
   Wrench,
   SteeringWheel,
+  Lightning,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -93,7 +95,12 @@ import {
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
-import { resolveUserMessageBody, userMessageHasPastedPrompt } from "./userMessageBody";
+import {
+  resolveUserMessageBody,
+  userMessageHasPastedPrompt,
+  type FoldedMessage,
+  type FoldedMessageSource,
+} from "./userMessageBody";
 import { ChatFindLayer } from "./ChatFindLayer";
 import type { ChatFindSource, ChatFindSourceSnapshot } from "./useChatFindIndex";
 import type { ChatThreadComment } from "../../../shared/threadComments";
@@ -1552,6 +1559,106 @@ function QuietNoticeRow({
   );
 }
 
+const FOLDED_MESSAGE_ICON: Record<FoldedMessageSource, typeof Robot> = {
+  agent: Robot,
+  automation: Lightning,
+  schedule: Clock,
+};
+
+const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
+  agent: "Message from another agent",
+  automation: "Automation prompt",
+  schedule: "Scheduled prompt",
+};
+
+/**
+ * A message another agent, an automation, or a scheduled wake sent. It is
+ * input to the agent, so it keeps the user side, but not a bubble: the reader
+ * did not write it, and a run of them would push their own messages out of
+ * sight. One quiet line (who sent it, its first line), and a click opens the
+ * full text with the time, Copy and, for an agent, a way to its chat.
+ */
+function FoldedMessageRow({
+  fold,
+  timestamp,
+  attachments,
+  onOpenChat,
+  onOpenWorkspacePath,
+}: {
+  fold: FoldedMessage;
+  timestamp: string | null;
+  attachments?: React.ReactNode;
+  onOpenChat?: (sessionId: string) => void;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const Icon = FOLDED_MESSAGE_ICON[fold.source];
+  const small = "text-[length:calc(var(--chat-font-size)*11.5/14)]";
+  return (
+    <div
+      className={cn(
+        "min-w-0 max-w-[82%] overflow-hidden border border-fg/[0.08] bg-fg/[0.03] transition-[border-radius,background-color]",
+        open ? "rounded-xl" : "rounded-2xl hover:border-fg/[0.12] hover:bg-fg/[0.05]",
+      )}
+      data-chat-folded-message={fold.source}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-label={`${FOLDED_MESSAGE_KIND_LABEL[fold.source]} from ${fold.sender}${open ? "" : `: ${fold.preview}`}`}
+        title={open ? undefined : fold.preview}
+        onClick={() => setOpen((value) => !value)}
+        className="group flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left font-sans focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-fg/20"
+      >
+        <Icon size={12} weight="regular" className="shrink-0 text-fg/40" aria-hidden />
+        <span data-chat-find-text="" className="flex min-w-0 items-baseline gap-2">
+          <span className={cn("max-w-[16rem] shrink-0 truncate font-medium text-fg/70", small)}>{fold.sender}</span>
+          {!open && fold.preview ? (
+            <span className={cn("min-w-0 truncate text-fg/50", small)}>{fold.preview}</span>
+          ) : null}
+        </span>
+        <CaretRight
+          size={9}
+          weight="bold"
+          className={cn(
+            "ml-auto shrink-0 text-fg/25 transition-[transform,color] group-hover:text-fg/45",
+            open && "rotate-90",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div id={panelId} className="border-t border-fg/[0.06] px-3 pb-2 pt-2">
+          {fold.markdown ? (
+            <MarkdownBlock markdown={fold.text} onOpenWorkspacePath={onOpenWorkspacePath} />
+          ) : (
+            <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.65] text-fg/80">
+              {fold.text}
+            </div>
+          )}
+          {attachments}
+          <div data-ade-find-skip="" className="mt-2 flex items-center justify-end gap-2">
+            {fold.fromSessionId && onOpenChat ? (
+              <button
+                type="button"
+                className="mr-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+                onClick={() => onOpenChat(fold.fromSessionId!)}
+              >
+                <ArrowSquareOut size={11} weight="regular" aria-hidden />
+                Open chat
+              </button>
+            ) : null}
+            {timestamp ? <RowHoverTimestamp iso={timestamp} /> : null}
+            <MessageCopyButton value={fold.text} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function QuietEntryIcon({ event }: { event: SystemNoticeEvent }) {
   const Icon = quietNoticeIcon(event);
   return <Icon size={10} weight="regular" className="shrink-0 text-fg/30" aria-hidden />;
@@ -2931,6 +3038,41 @@ function renderEvent(
     );
   }
 
+  /* ── Folded message ──
+     Another agent, an automation, or a schedule sent it: one quiet line on the
+     user side that opens to the full text (`FoldedMessageRow`). */
+  if (event.type === "user_message" && userBody?.kind === "folded") {
+    const hasAttachments = Boolean(event.attachments?.length || event.contextAttachments?.length);
+    return (
+      <div className="flex min-w-0 max-w-full w-full flex-col items-end">
+        <FoldedMessageRow
+          fold={userBody.fold}
+          timestamp={envelope.timestampSynthetic === true ? null : envelope.timestamp}
+          onOpenChat={(sessionId) => openSpawnedChat(sessionId, null)}
+          onOpenWorkspacePath={options?.onOpenWorkspacePath}
+          attachments={hasAttachments ? (
+            <div data-ade-find-skip="" className="mt-2">
+              <UserMessageIssueContext
+                attachments={event.attachments ?? []}
+                contextAttachments={event.contextAttachments ?? []}
+                jiraIssueSnapshotsById={options?.jiraIssueSnapshotsById}
+                mode={options?.surfaceMode ?? "standard"}
+                sessionId={options?.sessionId}
+                accepted={userMessageAttachmentsAccepted(event)}
+              />
+            </div>
+          ) : null}
+        />
+        <UserMessageStatusRow
+          event={event}
+          onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
+          onEditUnprocessedMessage={options?.onEditUnprocessedMessage}
+          onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
+        />
+      </div>
+    );
+  }
+
   /* ── User message ── */
   if (event.type === "user_message" && userBody) {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
@@ -3057,6 +3199,7 @@ function renderEvent(
                   </div>
                 );
               case "wake-card":
+              case "folded":
                 // Returned above (as is `board-move`), never as a bubble.
                 return null;
               default: {

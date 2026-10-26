@@ -3837,7 +3837,11 @@ function withTrustedAgentProvenance(
     // Some other bound agent — the target's own child reporting in, a sibling,
     // or the target itself. Coordination between agents does not reassign a
     // mission, so it must not take ownership away from the target's parent.
-    existingMetadata.agentRelay = { fromSessionId: callerSessionId };
+    const fromTitle = runtime.sessionService.get(callerSessionId)?.title?.trim();
+    existingMetadata.agentRelay = {
+      fromSessionId: callerSessionId,
+      ...(fromTitle ? { fromTitle } : {}),
+    };
   }
   if (!Object.keys(existingMetadata).length) {
     const { metadata: _metadata, ...withoutMetadata } = chatArgs;

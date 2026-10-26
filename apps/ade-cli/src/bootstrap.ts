@@ -3450,6 +3450,8 @@ export async function createAdeRuntime(args: {
         logger,
         onUpdate: (snapshot) => {
           pushEvent("runtime", { type: "usage", snapshot });
+          // A chat waiting out a usage limit may resume early on this reading.
+          agentChatService?.noteUsageSnapshot?.(snapshot);
           if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
           const target = completedDailyUsageAnalyticsTarget();
           if (!target || lastDailyAnalyticsDay === target.day) return;

@@ -1,5 +1,10 @@
 import {
   AUTO_RESUME_ARMED_NOTICE_DETAIL,
+  AUTO_RESUME_EARLY_FIRE_DELAY_MS,
+  AUTO_RESUME_EARLY_NOTICE_DETAIL,
+  AUTO_RESUME_EARLY_NOTICE_MESSAGE,
+  AUTO_RESUME_RETRY_NOTICE_DETAIL,
+  AUTO_RESUME_SAME_RESET_RETRY_MS,
   AUTO_RESUME_PAUSED_NOTICE_DETAIL,
   AUTO_RESUME_PAUSED_NOTICE_MESSAGE,
   AUTO_RESUME_PROMPT,
@@ -197,6 +202,14 @@ export type ChatAutoResumeCoordinator = {
   noteScheduleDismissed: (sessionId: string) => void;
   noteResumeTurnStarted: (sessionId: string) => void;
   noteTurnFinished: (sessionId: string) => void;
+  /**
+   * A usage reading taken at `readingAtMs` shows every window of the chat's
+   * account below 100%. Fires the armed resume now instead of at the reset,
+   * once per limit: the reading misses some limits (Claude's per-model weekly
+   * ones), so an early resume that fails again waits for the reset. Resolves
+   * true when it moved the row.
+   */
+  resumeEarly: (sessionId: string, readingAtMs: number) => Promise<boolean>;
   forgetSession: (sessionId: string) => void;
   forgetAll: () => void;
 };
@@ -254,6 +267,16 @@ type AutoResumeSessionState = {
   armPromise: Promise<void> | null;
   /** Account offer published with this limit. Cleared when the limit ends. */
   alternateAccount: AgentChatUsageLimitAlternateAccount | null;
+  /** When this process last saw the chat hit a limit; early resume reads after it. */
+  limitHitAtMs: number | null;
+  /** This limit already got its early resume; the next one waits for the reset. */
+  earlyResumeSpent: boolean;
+  /**
+   * The one retry a resume refused with its own (now past) reset instant gets:
+   * the reset it answered and when it fires. A second refusal of the same reset
+   * finds it and stops, so a past reset can never loop.
+   */
+  sameResetRetry: { resetAtMs: number; fireAtMs: number } | null;
 };
 
 /** Consecutive arms allowed with no intervening user message. */
@@ -295,6 +318,9 @@ export function createChatAutoResumeCoordinator(
       provider: null,
       armPromise: null,
       alternateAccount: null,
+      limitHitAtMs: null,
+      earlyResumeSpent: false,
+      sameResetRetry: null,
     };
     stateBySession.set(sessionId, created);
     return created;
@@ -455,6 +481,8 @@ export function createChatAutoResumeCoordinator(
       state.pauseNoticed = false;
       state.resumeTurnPending = false;
       state.resumeTurnHitLimit = false;
+      state.earlyResumeSpent = false;
+      state.sameResetRetry = null;
     }
     // The limit no longer governs this chat once its resume is gone. Reported
     // unconditionally: the row being cancelled may predate this process, in
@@ -600,6 +628,9 @@ export function createChatAutoResumeCoordinator(
     state.pauseNoticed = false;
     state.lastArmedFireAt = null;
     state.noticeFireAt = null;
+    state.earlyResumeSpent = false;
+    state.sameResetRetry = null;
+    state.limitHitAtMs = null;
   };
 
   /**
@@ -622,7 +653,27 @@ export function createChatAutoResumeCoordinator(
     if (tracked?.resumeTurnPending) {
       tracked.resumeTurnHitLimit = true;
     }
-    const fireAt = autoResumeFireAtMs(args.resetAtMs, Date.now());
+    const nowMs = Date.now();
+    stateForOffer.limitHitAtMs = nowMs;
+    let fireAt = autoResumeFireAtMs(args.resetAtMs, nowMs);
+    // The resume itself was refused, and with a reset that has already passed:
+    // the provider is still settling the window it said had lifted. Try once
+    // more after a margin. The same refusal again finds this retry spent and
+    // falls through to `no_reset`, and the retry is an arm like any other, so
+    // the two-arm cap still bounds it.
+    let sameResetRetry = false;
+    if (fireAt == null && tracked?.resumeTurnPending && typeof args.resetAtMs === "number" && args.resetAtMs > 0) {
+      const spent = tracked.sameResetRetry;
+      if (!spent || spent.resetAtMs !== args.resetAtMs) {
+        tracked.sameResetRetry = { resetAtMs: args.resetAtMs, fireAtMs: nowMs + AUTO_RESUME_SAME_RESET_RETRY_MS };
+        fireAt = tracked.sameResetRetry.fireAtMs;
+        sameResetRetry = true;
+      } else if (spent.fireAtMs > nowMs) {
+        // A second error event for the same refusal: the retry is still ahead.
+        fireAt = spent.fireAtMs;
+        sameResetRetry = true;
+      }
+    }
     // No reset instant (or one already in the past): nothing to arm, so the
     // manual recovery path is the only one. The limit is still live, and the
     // contract has a state for exactly that.
@@ -826,7 +877,7 @@ export function createChatAutoResumeCoordinator(
         state.noticeFireAt = fireAt;
         emitAutoResumeNotice(sessionId, {
           message: autoResumeScheduledMessage(fireAt),
-          detail: AUTO_RESUME_ARMED_NOTICE_DETAIL,
+          detail: sameResetRetry ? AUTO_RESUME_RETRY_NOTICE_DETAIL : AUTO_RESUME_ARMED_NOTICE_DETAIL,
           turnId,
         });
       } catch (error) {
@@ -925,6 +976,74 @@ export function createChatAutoResumeCoordinator(
     }
   };
 
+  const resumeEarly = async (sessionId: string, readingAtMs: number): Promise<boolean> => {
+    const state = stateBySession.get(sessionId);
+    // No record means this process never saw the limit (it was armed before a
+    // restart), so there is no failure time to read the snapshot against; the
+    // reset time still governs.
+    if (!state || state.arming || state.earlyResumeSpent || state.resumeTurnPending) return false;
+    if (state.limitHitAtMs == null || !(readingAtMs > state.limitHitAtMs)) return false;
+    const current = readResumeState?.(sessionId) ?? null;
+    if (current?.state !== "armed" || !current.fireAt) return false;
+    const armedFireAt = Date.parse(current.fireAt);
+    const fireAt = Date.now() + AUTO_RESUME_EARLY_FIRE_DELAY_MS;
+    // Already due (or nearly): moving it earlier gains nothing.
+    if (!Number.isFinite(armedFireAt) || armedFireAt <= fireAt + 60_000) return false;
+    if (!isSessionSchedulable(sessionId)) return false;
+    // Spent before the first await, so two readings arriving together move the
+    // row once. Given back when the row did not move, so a later reading can.
+    state.earlyResumeSpent = true;
+    const epoch = state.cancelEpoch;
+    let moved = false;
+    try {
+      await whenSchedulerReady();
+      const scheduler = getScheduler();
+      if (!scheduler) return false;
+      const row = findPendingRow(sessionId);
+      // Only a row that is waiting to fire. A paused row is the user's
+      // decision, and a fired one is already on its way.
+      if (!row || row.status !== "scheduled" || row.pausedFlag) return false;
+      if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== epoch) return false;
+      const schedule = await scheduler.upsert(autoResumeRowUpsert(sessionId, fireAt));
+      if (stateBySession.get(sessionId) !== state || state.cancelEpoch !== epoch) {
+        await cancelPendingRow(sessionId, "cancelled_while_resuming_early");
+        return false;
+      }
+      if (schedule.status !== "scheduled" || schedule.pausedFlag) return false;
+      moved = true;
+      logger.info("agent_chat.auto_resume_early", {
+        sessionId,
+        scheduleId: schedule.id,
+        armedFireAt: current.fireAt,
+        fireAt: new Date(fireAt).toISOString(),
+        readingAt: new Date(readingAtMs).toISOString(),
+      });
+      state.noticeFireAt = fireAt;
+      reportResumeState(sessionId, {
+        ...current,
+        fireAt: new Date(fireAt).toISOString(),
+        scheduleId: schedule.id,
+        updatedAt: new Date().toISOString(),
+      });
+      emitAutoResumeNotice(sessionId, {
+        message: AUTO_RESUME_EARLY_NOTICE_MESSAGE,
+        detail: AUTO_RESUME_EARLY_NOTICE_DETAIL,
+        ...(current.turnId ? { turnId: current.turnId } : {}),
+      });
+      return true;
+    } catch (error) {
+      logger.warn("agent_chat.auto_resume_early_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    } finally {
+      if (!moved && stateBySession.get(sessionId) === state && state.cancelEpoch === epoch) {
+        state.earlyResumeSpent = false;
+      }
+    }
+  };
+
   /**
    * Undoes the streak half of a cancel that turned out not to count. Only the
    * fields `cancelForSession` zeroes are written back, and only for a chat this
@@ -971,6 +1090,8 @@ export function createChatAutoResumeCoordinator(
     state.lastArmedFireAt = null;
     state.noticeFireAt = null;
     state.pauseNoticed = false;
+    state.earlyResumeSpent = false;
+    state.sameResetRetry = null;
   };
 
   return {
@@ -994,6 +1115,7 @@ export function createChatAutoResumeCoordinator(
     noteScheduleDismissed,
     noteResumeTurnStarted,
     noteTurnFinished,
+    resumeEarly,
     forgetSession: (sessionId: string): void => {
       stateBySession.delete(sessionId);
     },

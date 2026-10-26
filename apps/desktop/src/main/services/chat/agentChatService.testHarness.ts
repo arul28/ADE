@@ -1466,6 +1466,10 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
         await send(message);
       }
     }),
+    // Only a session that models Claude Code's Ctrl+B gets it, as with the real SDK.
+    ...(typeof session.backgroundTasks === "function"
+      ? { backgroundTasks: vi.fn((toolUseId: string) => session.backgroundTasks(toolUseId)) }
+      : {}),
   };
   return queryHandle;
 }

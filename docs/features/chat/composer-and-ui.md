@@ -1048,6 +1048,10 @@ chat pane mount, which happens either way.
   the shared `ModelPicker` rather than as a separate composer chip — every
   surface that mounts the picker gets it, and the composer toolbar keeps one
   control where it used to spend two.
+  When a Claude chat asks for Fast and Claude Code answers at standard speed
+  anyway, the transcript shows one quiet info notice saying why (from the
+  turn result's `fast_mode_disabled_reason`, or a rate-limit cooldown), once
+  per reason; the toggle keeps showing the user's choice.
   **The account gate comes first.** When the account has not allowed Fast
   (`fastModeAllowed === false`), the composer toolbar shows no Fast control:
   Fast is rarely used, so it stays out of sight. The popover's per-row Fast

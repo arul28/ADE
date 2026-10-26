@@ -3763,7 +3763,7 @@ let agentChatSideChatMetadataKey = "sideChat"
 
 let agentChatAdeAuthoredMetadataKeys = [
   "boardMove", "prWatchWake", "terminalWatchWake", "scheduledWake", "spawnCompletion",
-  "agentRelay", "hostContinuation", "usageLimitResume",
+  "agentRelay", "hostContinuation", "usageLimitResume", "automationRun",
 ]
 
 private struct AgentChatSpawnCompletionContainer: Decodable {

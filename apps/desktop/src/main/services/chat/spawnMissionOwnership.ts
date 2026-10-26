@@ -74,6 +74,10 @@ const NON_DIRECTIVE_METADATA_KEYS = [
   "agentRelay",
   "hostContinuation",
   "prWatchWake",
+  // An automation run's prompt: the rule wrote it, not a person. Stamped by
+  // the automation service; a forged one would fold a person's message out of
+  // sight, so it is stripped from callers with the rest.
+  "automationRun",
   "terminalWatchWake",
 ] as const;
 
@@ -130,6 +134,8 @@ const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
   "agentRelay",
   // PR Watch telling the agent about its PR: the watch wrote it, not the user.
   "prWatchWake",
+  // An automation run's prompt.
+  "automationRun",
   // A terminal watch relaying new output: the watch wrote it, not the user.
   "terminalWatchWake",
 ] as const;
