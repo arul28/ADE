@@ -39,6 +39,12 @@ function shellOptionLabels(shells: TerminalShellOption[]): Map<string, string> {
  * the shells; the choice sits in its ADE home), so every call carries the
  * page's pin. Automatic is the behaviour ADE always had and stays the default.
  */
+function shellHintLead(selectedPath: string | null, automaticShell: string | null): string {
+  if (selectedPath) return `New shells open ${selectedPath}.`;
+  if (automaticShell) return `Automatic opens ${automaticShell}, as ADE always has.`;
+  return "Automatic picks the shell ADE always has.";
+}
+
 export function TerminalShellSection() {
   const { pin, machineName } = useSettingsMachineScope();
   const pinKey = pin?.key ?? null;
@@ -102,11 +108,7 @@ export function TerminalShellSection() {
     : [];
   const selected = settings?.defaultShellId ?? AUTOMATIC;
   const selectedShell = settings?.shells.find((shell) => shell.id === settings.defaultShellId) ?? null;
-  const hint = selectedShell
-    ? `New shells open ${selectedShell.path}. Agent and command terminals keep Automatic.`
-    : settings?.automaticShell
-      ? `Automatic opens ${settings.automaticShell}, as ADE always has. Agent and command terminals keep Automatic.`
-      : "Automatic picks the shell ADE always has. Agent and command terminals keep Automatic.";
+  const hint = `${shellHintLead(selectedShell?.path ?? null, settings?.automaticShell ?? null)} Agent and command terminals keep Automatic.`;
 
   return (
     <ModernSection
@@ -128,11 +130,7 @@ export function TerminalShellSection() {
                 onChange={(value) => void choose(value)}
                 options={options}
               />
-            ) : loadFailed ? (
-              <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
-                Try again
-              </button>
-            ) : (
+            ) : loadFailed ? null : (
               <span className="ade-modern-muted" aria-live="polite">Loading…</span>
             )
           }
@@ -150,7 +148,15 @@ export function TerminalShellSection() {
             />
           ) : null}
           {loadFailed ? (
-            <p role="alert" className="ade-modern-error">Couldn't read the shells on {machineName}.</p>
+            <Banner
+              layout="inline"
+              model={{
+                id: "terminal-shell-load-failed",
+                tone: "error",
+                title: `Couldn't read the shells on ${machineName}`,
+                actions: [{ label: "Try again", onClick: () => setAttempt((value) => value + 1) }],
+              }}
+            />
           ) : null}
           {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
         </ModernRow>

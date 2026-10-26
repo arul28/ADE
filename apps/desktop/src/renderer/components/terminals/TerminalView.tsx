@@ -1572,7 +1572,7 @@ function handleTerminalOsc52(runtime: CachedRuntime, data: string): boolean {
   if (request.kind !== "write" || !runtimeMayWriteClipboard(runtime)) return true;
   void writeTerminalSelectionToClipboard(request.text).then((copied) => {
     if (!copied) return;
-    showToast({ id: "terminal-osc52-copy", tone: "neutral", title: "Copied from terminal", durationMs: 2_500 });
+    showToast({ id: "terminal-osc52-copy", tone: "neutral", title: "Copied from terminal" });
   });
   return true;
 }

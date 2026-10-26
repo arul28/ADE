@@ -117,7 +117,11 @@ type Watch = {
   exitCode: number | null;
 };
 
-const iso = (ms: number | null): string | null => (ms == null ? null : new Date(ms).toISOString());
+function iso(ms: number): string;
+function iso(ms: number | null): string | null;
+function iso(ms: number | null): string | null {
+  return ms == null ? null : new Date(ms).toISOString();
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -163,8 +167,8 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
     match: watch.matcher?.label ?? null,
     armedBy: watch.armedBy,
     status: watch.stoppedAtMs == null ? "active" : "stopped",
-    startedAt: iso(watch.startedAtMs)!,
-    expiresAt: iso(watch.expiresAtMs)!,
+    startedAt: iso(watch.startedAtMs),
+    expiresAt: iso(watch.expiresAtMs),
     stoppedAt: iso(watch.stoppedAtMs),
     stopReason: watch.stopReason,
     wakeCount: watch.wakeCount,

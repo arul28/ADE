@@ -989,7 +989,7 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { TerminalWatchService } from "../pty/terminalWatchService";
-import type { TerminalListWatchesArgs, TerminalUnwatchArgs, TerminalWatchArgs } from "../../../shared/terminalWatch";
+import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createSearchService } from "../search/searchService";
@@ -11388,16 +11388,14 @@ export function registerIpc({
     if (!service) throw new Error("Terminal watches are not available in this window.");
     return service;
   };
-  const terminalWatchRecord = (arg: unknown): Record<string, unknown> =>
-    arg && typeof arg === "object" && !Array.isArray(arg) ? arg as Record<string, unknown> : {};
   ipcMain.handle(IPC.terminalWatch, async (_event, arg) =>
-    await requireTerminalWatchService().watch(terminalWatchRecord(arg) as unknown as TerminalWatchArgs),
+    await requireTerminalWatchService().watch(readTerminalWatchArgs(arg)),
   );
   ipcMain.handle(IPC.terminalUnwatch, async (_event, arg) =>
-    requireTerminalWatchService().unwatch(terminalWatchRecord(arg) as TerminalUnwatchArgs),
+    requireTerminalWatchService().unwatch(readTerminalUnwatchArgs(arg)),
   );
   ipcMain.handle(IPC.terminalListWatches, async (_event, arg) =>
-    getCtx().terminalWatchService?.listWatches(terminalWatchRecord(arg) as TerminalListWatchesArgs) ?? [],
+    getCtx().terminalWatchService?.listWatches(readTerminalListWatchesArgs(arg)) ?? [],
   );
 
   const ensureDiffContext = (): AppContextWith<"diffService"> => {

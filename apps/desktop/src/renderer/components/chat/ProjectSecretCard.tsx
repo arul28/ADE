@@ -216,6 +216,12 @@ function DeliveryChoice({
   );
 }
 
+function saveLabel(responding: boolean, delivery: ProjectSecretDelivery, exists: boolean): string {
+  if (responding) return "Saving…";
+  if (delivery === "file") return "Save to file";
+  return exists ? "Replace" : "Save";
+}
+
 /**
  * The agent-raised card, in the composer's place. Enter saves, Esc declines.
  *
@@ -386,7 +392,7 @@ export function ProjectSecretRequestComposer({
               onClick={save}
               className={PRIMARY_BUTTON}
             >
-              {responding ? "Saving…" : delivery === "file" ? "Save to file" : card.exists ? "Replace" : "Save"}
+              {saveLabel(responding, delivery, card.exists)}
             </button>
           </>
         )}

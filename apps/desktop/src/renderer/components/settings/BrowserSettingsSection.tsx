@@ -20,6 +20,7 @@ import {
   SettingsToggle,
 } from "./primitives";
 import { useSettingsAction } from "./useSettingsAction";
+import { Banner } from "../ui/notice";
 import "./machineSettings.css";
 
 const SEARCH_ENGINE_OPTIONS: readonly { value: BuiltInBrowserSearchEngineId; label: string }[] = [
@@ -257,12 +258,15 @@ function BrowserTrustedCertificatesSection() {
       hint="Self-signed HTTPS certificates you trusted for a local or private address. A site whose certificate changes asks again."
     >
       {loadFailed ? (
-        <p className="ade-modern-error" role="alert">
-          Couldn't load trusted certificates.{" "}
-          <button type="button" className="ade-modern-btn" data-size="sm" onClick={load}>
-            Retry
-          </button>
-        </p>
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-certificates-load-failed",
+            tone: "error",
+            title: "Couldn't load trusted certificates",
+            actions: [{ label: "Try again", onClick: load }],
+          }}
+        />
       ) : null}
       {certificates && certificates.length > 0 ? (
         <ModernRows>

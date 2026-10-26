@@ -47,7 +47,7 @@ import {
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import type { JevDecideRequest } from "../../../shared/types/jev";
-import type { TerminalListWatchesArgs, TerminalUnwatchArgs, TerminalWatchArgs } from "../../../shared/terminalWatch";
+import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
 import type {
   AntigravitySignInCancelArgs,
   AntigravitySignInCompleteArgs,
@@ -3930,13 +3930,13 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
     // Terminal watches run where the chat runs. A runtime without one (no chat
     // service) answers plainly instead of advertising a watch nobody delivers.
     async watch(args) {
-      return await requireTerminalWatchService(runtime).watch(asActionRecord(args) as unknown as TerminalWatchArgs);
+      return await requireTerminalWatchService(runtime).watch(readTerminalWatchArgs(args));
     },
     unwatch(args) {
-      return requireTerminalWatchService(runtime).unwatch(asActionRecord(args) as TerminalUnwatchArgs);
+      return requireTerminalWatchService(runtime).unwatch(readTerminalUnwatchArgs(args));
     },
     listWatches(args) {
-      return runtime.terminalWatchService?.listWatches(asActionRecord(args) as TerminalListWatchesArgs) ?? [];
+      return runtime.terminalWatchService?.listWatches(readTerminalListWatchesArgs(args)) ?? [];
     },
   };
 }

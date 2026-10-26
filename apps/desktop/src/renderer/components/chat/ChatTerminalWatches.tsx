@@ -75,6 +75,12 @@ function remainingLabel(expiresAt: string, nowMs: number): string {
 }
 
 /** One watch: the terminal, its filter, wakes so far, and Stop. */
+function wakeStatusLabel(watch: TerminalWatchSummary): string | null {
+  if (watch.holding) return "holding for the chat";
+  if (watch.wakeCount === 0) return null;
+  return `${watch.wakeCount} wake${watch.wakeCount === 1 ? "" : "s"}`;
+}
+
 export function TerminalWatchRow({
   watch,
   onStop,
@@ -84,7 +90,7 @@ export function TerminalWatchRow({
 }) {
   const parts = [
     watch.match ? `on ${watch.match}` : "any output",
-    watch.holding ? "holding for the chat" : watch.wakeCount > 0 ? `${watch.wakeCount} wake${watch.wakeCount === 1 ? "" : "s"}` : null,
+    wakeStatusLabel(watch),
     remainingLabel(watch.expiresAt, Date.now()),
   ].filter(Boolean);
   return (

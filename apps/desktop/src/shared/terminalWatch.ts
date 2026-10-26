@@ -92,11 +92,65 @@ export type TerminalListWatchesArgs = {
   terminalId?: string | null;
 };
 
+/**
+ * Read watch arguments from an untyped caller (IPC, a runtime action). Each
+ * text field must be a string or absent; anything else is refused by name
+ * instead of failing later inside the service.
+ */
+function optionalText(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  if (value == null) return null;
+  if (typeof value !== "string") throw new Error(`Terminal watch '${key}' must be text.`);
+  return value;
+}
+
+function argsRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function readTerminalWatchArgs(value: unknown): TerminalWatchArgs {
+  const record = argsRecord(value);
+  const lifetime = record.lifetime;
+  if (lifetime != null && typeof lifetime !== "string" && typeof lifetime !== "number") {
+    throw new Error("Terminal watch 'lifetime' must be minutes or a duration such as 30m.");
+  }
+  const armedBy = record.armedBy;
+  return {
+    chatSessionId: optionalText(record, "chatSessionId") ?? "",
+    terminalId: optionalText(record, "terminalId"),
+    ptyId: optionalText(record, "ptyId"),
+    command: optionalText(record, "command"),
+    laneId: optionalText(record, "laneId"),
+    match: optionalText(record, "match"),
+    lifetime: lifetime ?? null,
+    ...(armedBy === "agent" || armedBy === "user" ? { armedBy } : {}),
+  };
+}
+
+export function readTerminalUnwatchArgs(value: unknown): TerminalUnwatchArgs {
+  const record = argsRecord(value);
+  return {
+    watchId: optionalText(record, "watchId"),
+    terminalId: optionalText(record, "terminalId"),
+    chatSessionId: optionalText(record, "chatSessionId"),
+  };
+}
+
+export function readTerminalListWatchesArgs(value: unknown): TerminalListWatchesArgs {
+  const record = argsRecord(value);
+  return {
+    chatSessionId: optionalText(record, "chatSessionId"),
+    terminalId: optionalText(record, "terminalId"),
+  };
+}
+
 export const TERMINAL_WATCH_DEFAULT_LIFETIME_MS = 2 * 60 * 60_000;
 export const TERMINAL_WATCH_MAX_LIFETIME_MS = 24 * 60 * 60_000;
 export const TERMINAL_WATCH_MIN_LIFETIME_MS = 60_000;
 /** Longest `match` pattern accepted. */
 export const TERMINAL_WATCH_MATCH_MAX_CHARS = 200;
+
+const LIFETIME_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
 
 /**
  * Parse a lifetime: a bare number is minutes; `90s`, `30m`, `2h`, `1d` carry a
@@ -114,15 +168,9 @@ export function parseTerminalWatchLifetimeMs(value: unknown): number {
       throw new Error(`Couldn't read lifetime "${String(value)}". Use minutes (90) or a unit: 30m, 2h, 1d.`);
     }
     const amount = Number(parsed[1]);
-    const unit = parsed[2] ?? "m";
-    const factor = unit.startsWith("s")
-      ? 1_000
-      : unit.startsWith("h")
-        ? 3_600_000
-        : unit.startsWith("d")
-          ? 86_400_000
-          : 60_000;
-    ms = amount * factor;
+    // The regex admits only these units, so the first letter names each one.
+    const unit = (parsed[2] ?? "m")[0] as keyof typeof LIFETIME_UNIT_MS;
+    ms = amount * LIFETIME_UNIT_MS[unit];
   }
   if (!Number.isFinite(ms) || ms <= 0) {
     throw new Error("Lifetime must be a positive duration, such as 30m or 2h.");
