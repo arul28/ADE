@@ -966,7 +966,7 @@ export async function createChatSession(args: {
           ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
           : provider === "muse"
             ? "muse-spark-1.3"
-            : "gpt-6-astra";
+            : "gpt-6.1-sol";
   const reasoningEffort = args.reasoningEffort
     ?? (provider === "codex" ? descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {

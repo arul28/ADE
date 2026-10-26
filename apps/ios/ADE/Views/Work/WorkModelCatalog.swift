@@ -436,9 +436,9 @@ private func workVisibleReasoningEfforts(
     return fallback
   }
   switch canonicalId {
-  case "openai/gpt-6.1-sol", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
+  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
-  case "openai/gpt-6-astra", "openai/gpt-6-luna", "openai/gpt-5.6-luna":
+  case "openai/gpt-6-luna", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
   default:
     return []
@@ -463,7 +463,7 @@ private func workVisibleDefaultReasoningEffort(
     return normalizedFallback
   }
   switch canonicalId {
-  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
+  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-5.6-sol": return "low"
   case "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
@@ -494,14 +494,7 @@ func workDefaultCatalogModelId(provider: String) -> String? {
   guard let group = workCuratedModelCatalogGroups().first(where: { $0.key == family }) else {
     return nil
   }
-  // Keep the curated phone fallback aligned with the desktop model manifest,
-  // whose Codex default remains Astra even though GPT-6.1 Sol now sorts first.
-  if family == "codex",
-     let defaultModel = group.providers
-      .flatMap(\.models)
-      .first(where: { $0.id == "gpt-6-astra" }) {
-    return defaultModel.id
-  }
+  // The first row is the Codex default (GPT-6.1 Sol), matching the desktop model manifest.
   return group
     .providers
     .flatMap(\.models)
@@ -604,7 +597,17 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tier: .flagship,
             tagline: "Flagship · 1.05M context",
             provider: "codex",
-            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: false),
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "gpt-6.1-terra",
+            displayName: "GPT-6.1 Terra",
+            tier: .balanced,
+            tagline: "Balanced · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
             defaultReasoningEffort: "low",
             serviceTiers: ["fast"]
           ),
@@ -636,16 +639,6 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             provider: "codex",
             reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
             defaultReasoningEffort: "low",
-            serviceTiers: ["fast"]
-          ),
-          WorkModelOption(
-            id: "gpt-5.6-terra",
-            displayName: "GPT-5.6 Terra",
-            tier: .balanced,
-            tagline: "Balanced · 372k context",
-            provider: "codex",
-            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
-            defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
@@ -1316,11 +1309,12 @@ private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
   case "openai/gpt-6.1-sol": return 0
   case "openai/gpt-6-astra": return 1
-  case "openai/gpt-6-sol": return 2
-  case "openai/gpt-6-luna": return 3
-  case "openai/gpt-5.6-sol": return 4
-  case "openai/gpt-5.6-terra": return 5
-  case "openai/gpt-5.6-luna": return 6
+  case "openai/gpt-6.1-terra": return 2
+  case "openai/gpt-6-sol": return 3
+  case "openai/gpt-6-luna": return 4
+  case "openai/gpt-5.6-sol": return 5
+  case "openai/gpt-5.6-terra": return 6
+  case "openai/gpt-5.6-luna": return 7
   default: return nil
   }
 }
@@ -1341,7 +1335,9 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
     return "openai/gpt-6-luna"
   case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "openai/gpt-5.6-sol"
-  case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
+  case "terra", "gpt-6.1-terra", "openai/gpt-6.1-terra":
+    return "openai/gpt-6.1-terra"
+  case "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "openai/gpt-5.6-terra"
   case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "openai/gpt-5.6-luna"
@@ -1372,7 +1368,9 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
     return "gpt-6-luna"
   case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "gpt-5.6-sol"
-  case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
+  case "terra", "gpt-6.1-terra", "openai/gpt-6.1-terra":
+    return "gpt-6.1-terra"
+  case "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "gpt-5.6-terra"
   case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "gpt-5.6-luna"
@@ -1481,7 +1479,9 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "GPT-6 Luna"
   case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "GPT-5.6 Sol"
-  case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
+  case "terra", "gpt-6.1-terra", "openai/gpt-6.1-terra":
+    return "GPT-6.1 Terra"
+  case "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "GPT-5.6 Terra"
   case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "GPT-5.6 Luna"
