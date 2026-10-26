@@ -21,6 +21,7 @@ import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
 import { MachineChip } from "../../shared/MachineChip";
 import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext } from "../state/prMachines";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
+import { PrLabelPill } from "./PrLabelPill";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -157,15 +158,6 @@ function adeKindBadgeStyle(style: { color: string; background: string; border: s
   };
 }
 
-/* -- Label text color from hex background (luminance-aware) -- */
-function labelTextColor(hexColor: string): string {
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substring(0, 2), 16) || 0;
-  const g = parseInt(hex.substring(2, 4), 16) || 0;
-  const b = parseInt(hex.substring(4, 6), 16) || 0;
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.5 ? "#1a1a2e" : "#f0f0f0";
-}
 
 
 /**
@@ -534,29 +526,9 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
       {/* Row 2: labels */}
       {visibleLabels.length > 0 ? (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-          {visibleLabels.map((label) => {
-            const bg = `#${label.color}`;
-            const textColor = labelTextColor(label.color);
-            return (
-              <span
-                key={label.name}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "1px 8px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  fontFamily: SANS_FONT,
-                  color: textColor,
-                  background: bg,
-                  borderRadius: 10,
-                  lineHeight: "16px",
-                }}
-              >
-                {label.name}
-              </span>
-            );
-          })}
+          {visibleLabels.map((label) => (
+            <PrLabelPill key={label.name} name={label.name} color={label.color} />
+          ))}
           {overflowCount > 0 ? (
             <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
               +{overflowCount}

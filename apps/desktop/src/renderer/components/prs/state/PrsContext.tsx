@@ -35,7 +35,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
-import { notePrChangeFiles, prChangeSplitKey } from "../shared/prChangeSplitStore";
+import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "../shared/prChangeSplitStore";
 
 type PrTab = "normal" | "integration" | "rebase";
 
@@ -914,6 +914,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     githubPollPeriodFor,
     githubPollGeneration,
   } = useGithubPollGovernor(active);
+  useEffect(() => setPrChangeSplitStandDown(isGithubPollStoodDown), [isGithubPollStoodDown]);
 
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.

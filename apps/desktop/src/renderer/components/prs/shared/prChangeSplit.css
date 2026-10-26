@@ -29,7 +29,15 @@
 }
 
 .ade-pr-change-stat[data-interactive="true"] {
-  cursor: default;
+  margin: -2px -5px;
+  padding: 2px 5px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.ade-pr-change-stat[data-interactive="true"]:hover,
+.ade-pr-change-stat[data-pinned="true"] {
+  background: var(--kit-hover);
 }
 
 .ade-pr-change-stat[data-interactive="true"]:focus-visible {
@@ -41,10 +49,10 @@
 
 .ade-pr-change-bar {
   display: inline-flex;
-  gap: 1px;
-  width: 44px;
-  height: 4px;
-  border-radius: 2px;
+  gap: 1.5px;
+  width: 52px;
+  height: 5px;
+  border-radius: 3px;
   overflow: hidden;
   background: var(--kit-track);
   flex: none;
@@ -53,6 +61,22 @@
 .ade-pr-change-bar[data-size="row"] {
   width: 28px;
   height: 3px;
+  gap: 1px;
+}
+
+.ade-pr-change-bar[data-size="card"] {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  gap: 2px;
+  margin: 8px 0 10px;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.ade-pr-change-bar[data-size="card"] > i {
+  min-width: 3px;
+  border-radius: 2px;
 }
 
 .ade-pr-change-bar > i {
@@ -80,23 +104,33 @@
 /* A hover card on the tooltip layer, placed like the app's tooltips. */
 .ade-pr-change-card {
   position: fixed;
-  width: max-content;
-  max-width: min(320px, calc(100vw - 24px));
-  padding: 8px 10px;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  padding: 10px 12px 10px;
   border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-lg, 10px);
   background: var(--color-popup-bg, #151325);
-  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, 0.65);
-  font-size: 11px;
+  box-shadow: var(--shadow-popup, 0 24px 64px -24px rgba(0, 0, 0, 0.8));
+  font-family: var(--font-sans);
+  font-size: 12px;
   line-height: 16px;
   color: var(--color-fg);
 }
 
+.ade-pr-change-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ade-pr-change-card-head > .kit-num { font-size: 11.5px; }
+
 .ade-pr-change-card-rows {
   display: grid;
-  grid-template-columns: 8px auto auto auto auto;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto auto auto;
   column-gap: 10px;
-  row-gap: 3px;
+  row-gap: 6px;
   align-items: center;
 }
 
@@ -112,13 +146,16 @@
 }
 
 .ade-pr-change-card-label { color: var(--kit-text-2); }
-.ade-pr-change-card-files { color: var(--kit-text-3); }
+.ade-pr-change-card-share { color: var(--color-fg); }
+.ade-pr-change-card-dim { color: var(--kit-text-3); }
+.ade-pr-change-card-rows [data-zero] { opacity: 0.35; }
 
 .ade-pr-change-card-foot {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--kit-rule);
   color: var(--kit-text-3);
+  font-size: 11px;
 }
 
-.ade-pr-change-card-foot .kit-num { color: var(--kit-text-2); }
+.ade-pr-change-card-foot .kit-num { color: var(--color-fg); }

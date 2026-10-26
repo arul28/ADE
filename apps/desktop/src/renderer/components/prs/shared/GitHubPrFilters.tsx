@@ -1,23 +1,11 @@
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
-import {
-  CaretLeft,
-  CaretRight,
-  Check,
-  CircleNotch,
-  FunnelSimple,
-  MagnifyingGlass,
-  Tag,
-  User,
-  UserCircle,
-  X,
-} from "@phosphor-icons/react";
+import { Check, CircleNotch, FunnelSimple, MagnifyingGlass, Prohibit, UserCircle, X } from "@phosphor-icons/react";
 
 import type {
   GitHubPrFilterKind,
   GitHubPrFilterOption,
   GitHubPrListFilters,
-  PrLabel,
 } from "../../../../shared/types";
 import {
   GITHUB_PR_FILTER_ME,
@@ -28,9 +16,11 @@ import {
 import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { cn } from "../../ui/cn";
-import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS, MENU_SURFACE_CLASS } from "../../ui/paneMenuTokens";
+import { MENU_SURFACE_CLASS } from "../../ui/paneMenuTokens";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { PrAgentAvatar } from "./PrAgentAvatar";
+import { PrLabelPill } from "./PrLabelPill";
+import "./githubPrFilters.css";
 
 /** Wait this long after the last keystroke before asking GitHub. */
 export const GITHUB_FILTER_OPTIONS_DEBOUNCE_MS = 250;
@@ -92,20 +82,48 @@ export function useGitHubFilterOptions({
 }
 
 export type GitHubPrFilterFacets = {
-  labels: PrLabel[];
-  authors: string[];
+  /** Labels on the loaded rows, most-used first, with how many rows carry each. */
+  labels: Array<{ name: string; color: string; description: string | null; count: number }>;
+  /** Authors of the loaded rows, most-active first. */
+  authors: Array<{ login: string; count: number }>;
 };
+
+type PickerSection = "fixed" | "selected" | "loaded" | "github" | "typed";
 
 type PickerRow = {
   key: string;
   value: string;
   label: string;
+  section: PickerSection;
   hint?: string | null;
   color?: string | null;
   avatarUrl?: string | null;
+  count?: number | null;
   person?: boolean;
   selected: boolean;
 };
+
+const SECTION_TITLE: Record<PickerSection, string | null> = {
+  fixed: null,
+  selected: "Selected",
+  loaded: "In this list",
+  github: "On GitHub",
+  typed: null,
+};
+
+const KIND_TITLE: Record<GitHubPrFilterKind, string> = {
+  label: "Label",
+  author: "Author",
+  assignee: "Assignee",
+};
+
+/** The tab the panel opens on: the one used last in this window. */
+let lastPickerKind: GitHubPrFilterKind = "label";
+
+/** GitHub serves every user's picture at a stable URL, so a login is enough. */
+function avatarFor(login: string, avatarUrl?: string | null): string {
+  return avatarUrl || `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=40`;
+}
 
 function matchesQuery(query: string, ...values: Array<string | null | undefined>): boolean {
   if (!query) return true;
@@ -115,7 +133,7 @@ function matchesQuery(query: string, ...values: Array<string | null | undefined>
 
 function personLabel(value: string, kind: "author" | "assignee"): string {
   if (value === GITHUB_PR_FILTER_ME) return kind === "author" ? "Me" : "Assigned to me";
-  if (value === GITHUB_PR_FILTER_NO_ASSIGNEE) return "Unassigned";
+  if (value === GITHUB_PR_FILTER_NO_ASSIGNEE) return "Nobody assigned";
   return value;
 }
 
@@ -128,13 +146,109 @@ export function describeGitHubPrFilter(kind: GitHubPrFilterKind, value: string):
   return `Assigned to ${value}`;
 }
 
+function filterCount(filters: GitHubPrListFilters, kind: GitHubPrFilterKind): number {
+  if (kind === "label") return filters.labels.length;
+  return (kind === "author" ? filters.author : filters.assignee) ? 1 : 0;
+}
+
+function buildRows({
+  kind,
+  filters,
+  facets,
+  remote,
+  query,
+  pinnedSelected,
+}: {
+  kind: GitHubPrFilterKind;
+  filters: GitHubPrListFilters;
+  facets: GitHubPrFilterFacets;
+  remote: GitHubPrFilterOption[];
+  query: string;
+  /** What was on when the tab opened: kept on top so rows do not jump as you pick. */
+  pinnedSelected: readonly string[];
+}): PickerRow[] {
+  const out: PickerRow[] = [];
+  const seen = new Set<string>();
+  const push = (row: PickerRow) => {
+    const id = row.value.toLowerCase();
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push(row);
+  };
+  if (kind === "label") {
+    const selected = new Set(filters.labels.map((label) => label.toLowerCase()));
+    const facetByName = new Map(facets.labels.map((label) => [label.name.toLowerCase(), label]));
+    const remoteByName = new Map(remote.map((option) => [option.value.toLowerCase(), option]));
+    for (const name of pinnedSelected) {
+      if (!matchesQuery(query, name)) continue;
+      const facet = facetByName.get(name.toLowerCase());
+      const option = remoteByName.get(name.toLowerCase());
+      push({
+        key: `sel:${name}`,
+        value: name,
+        label: name,
+        section: "selected",
+        color: facet?.color ?? option?.color ?? null,
+        hint: facet?.description ?? option?.description ?? null,
+        count: facet?.count ?? null,
+        selected: selected.has(name.toLowerCase()),
+      });
+    }
+    for (const label of facets.labels) {
+      if (!matchesQuery(query, label.name, label.description)) continue;
+      push({ key: `facet:${label.name}`, value: label.name, label: label.name, section: "loaded", hint: label.description, color: label.color, count: label.count, selected: selected.has(label.name.toLowerCase()) });
+    }
+    for (const option of remote) {
+      push({ key: `gh:${option.value}`, value: option.value, label: option.value, section: "github", hint: option.description, color: option.color, selected: selected.has(option.value.toLowerCase()) });
+    }
+    if (query && !seen.has(query.toLowerCase())) {
+      push({ key: `typed:${query}`, value: query, label: query, section: "typed", selected: false });
+    }
+    return out;
+  }
+  const current = kind === "author" ? filters.author : filters.assignee;
+  const isCurrent = (value: string) => current?.toLowerCase() === value.toLowerCase();
+  const fixed = kind === "author" ? [GITHUB_PR_FILTER_ME] : [GITHUB_PR_FILTER_ME, GITHUB_PR_FILTER_NO_ASSIGNEE];
+  for (const value of fixed) {
+    if (!matchesQuery(query, personLabel(value, kind))) continue;
+    push({ key: `fixed:${value}`, value, label: personLabel(value, kind), section: "fixed", selected: current === value });
+  }
+  for (const value of pinnedSelected) {
+    if (fixed.includes(value) || !matchesQuery(query, value)) continue;
+    push({ key: `sel:${value}`, value, label: value, section: "selected", person: true, selected: isCurrent(value) });
+  }
+  // Loaded rows know who authored them; they say nothing about assignees.
+  if (kind === "author") {
+    for (const author of facets.authors) {
+      if (!matchesQuery(query, author.login)) continue;
+      push({ key: `facet:${author.login}`, value: author.login, label: author.login, section: "loaded", count: author.count, person: true, selected: isCurrent(author.login) });
+    }
+  }
+  for (const option of remote) {
+    push({
+      key: `gh:${option.value}`,
+      value: option.value,
+      label: option.value,
+      section: "github",
+      hint: option.name && option.name !== option.value ? option.name : null,
+      avatarUrl: option.avatarUrl,
+      person: true,
+      selected: isCurrent(option.value),
+    });
+  }
+  const typedLogin = query ? normalizeGitHubLogin(query) : null;
+  if (typedLogin && !seen.has(typedLogin.toLowerCase())) {
+    push({ key: `typed:${typedLogin}`, value: typedLogin, label: typedLogin, section: "typed", person: true, selected: false });
+  }
+  return out;
+}
+
 function FilterPicker({
   kind,
   filters,
   facets,
   loadOptions,
   onChange,
-  onBack,
   onDone,
 }: {
   kind: GitHubPrFilterKind;
@@ -142,68 +256,31 @@ function FilterPicker({
   facets: GitHubPrFilterFacets;
   loadOptions: GitHubFilterOptionsLoader | null;
   onChange: (next: GitHubPrListFilters) => void;
-  onBack: () => void;
   onDone: () => void;
 }) {
   const [query, setQuery] = React.useState("");
+  const [active, setActive] = React.useState(0);
+  const listRef = React.useRef<HTMLDivElement | null>(null);
   const trimmed = query.trim();
   const remote = useGitHubFilterOptions({ enabled: true, kind, query: trimmed, load: loadOptions });
-
-  const rows = React.useMemo((): PickerRow[] => {
-    const out: PickerRow[] = [];
-    const seen = new Set<string>();
-    const push = (row: PickerRow) => {
-      const id = row.value.toLowerCase();
-      if (seen.has(id)) return;
-      seen.add(id);
-      out.push(row);
-    };
-    if (kind === "label") {
-      const selected = new Set(filters.labels.map((label) => label.toLowerCase()));
-      const facetColor = new Map(facets.labels.map((label) => [label.name.toLowerCase(), label]));
-      for (const name of filters.labels) {
-        push({ key: `sel:${name}`, value: name, label: name, color: facetColor.get(name.toLowerCase())?.color ?? null, selected: true });
-      }
-      for (const label of facets.labels) {
-        if (!matchesQuery(trimmed, label.name, label.description)) continue;
-        push({ key: `facet:${label.name}`, value: label.name, label: label.name, hint: label.description, color: label.color, selected: selected.has(label.name.toLowerCase()) });
-      }
-      for (const option of remote.options) {
-        push({ key: `gh:${option.value}`, value: option.value, label: option.value, hint: option.description, color: option.color, selected: selected.has(option.value.toLowerCase()) });
-      }
-      return out;
-    }
+  const [pinnedSelected] = React.useState<string[]>(() => {
+    if (kind === "label") return [...filters.labels];
     const current = kind === "author" ? filters.author : filters.assignee;
-    const fixed = kind === "author"
-      ? [GITHUB_PR_FILTER_ME]
-      : [GITHUB_PR_FILTER_ME, GITHUB_PR_FILTER_NO_ASSIGNEE];
-    for (const value of fixed) {
-      if (!matchesQuery(trimmed, personLabel(value, kind))) continue;
-      push({ key: `fixed:${value}`, value, label: personLabel(value, kind), selected: current === value });
-    }
-    if (current && !fixed.includes(current)) {
-      push({ key: `sel:${current}`, value: current, label: current, person: true, selected: true });
-    }
-    // Loaded rows know who authored them; they say nothing about assignees.
-    if (kind === "author") {
-      for (const login of facets.authors) {
-        if (!matchesQuery(trimmed, login)) continue;
-        push({ key: `facet:${login}`, value: login, label: login, person: true, selected: current?.toLowerCase() === login.toLowerCase() });
-      }
-    }
-    for (const option of remote.options) {
-      push({
-        key: `gh:${option.value}`,
-        value: option.value,
-        label: option.value,
-        hint: option.name,
-        avatarUrl: option.avatarUrl,
-        person: true,
-        selected: current?.toLowerCase() === option.value.toLowerCase(),
-      });
-    }
-    return out;
-  }, [facets.authors, facets.labels, filters.assignee, filters.author, filters.labels, kind, remote.options, trimmed]);
+    return current ? [current] : [];
+  });
+
+  const rows = React.useMemo(
+    () => buildRows({ kind, filters, facets, remote: remote.options, query: trimmed, pinnedSelected }),
+    [facets, filters, kind, pinnedSelected, remote.options, trimmed],
+  );
+
+  React.useEffect(() => setActive(0), [kind, trimmed]);
+  const activeIndex = Math.min(active, Math.max(0, rows.length - 1));
+  React.useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-row-index="${activeIndex}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
 
   const pick = (value: string) => {
     if (kind === "label") {
@@ -222,91 +299,132 @@ function FilterPicker({
     onDone();
   };
 
-  // Enter takes the first match; when nothing matched, a typed label or a
-  // valid login is used as is (a label GitHub has not been asked about yet).
-  const submit = () => {
-    const first = rows.find((row) => !row.selected) ?? rows[0];
-    if (first && (trimmed === "" || matchesQuery(trimmed, first.label, first.value))) {
-      pick(first.value);
-      return;
-    }
-    if (!trimmed) return;
-    if (kind === "label") pick(trimmed);
-    else {
-      const login = normalizeGitHubLogin(trimmed);
-      if (login) pick(login);
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event)) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (rows.length === 0) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActive((activeIndex + step + rows.length) % rows.length);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const row = rows[activeIndex];
+      if (row) pick(row.value);
     }
   };
 
-  const title = kind === "label" ? "Label" : kind === "author" ? "Author" : "Assignee";
+  const multi = kind === "label";
+  const placeholder = kind === "label" ? "Find a label" : "Find a person";
+  let lastSection: PickerSection | null = null;
   return (
-    <div data-testid={`github-pr-filter-picker-${kind}`} style={{ width: 260 }}>
-      <div className="flex items-center gap-1 px-1 pb-1">
-        <button type="button" onClick={onBack} aria-label="Back to filters" className="kit-icon-btn inline-flex items-center justify-center rounded" style={{ width: 22, height: 22, color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
-          <CaretLeft size={12} weight="bold" />
-        </button>
-        <span className="text-[11.5px] font-semibold" style={{ color: COLORS.textPrimary }}>{title}</span>
-        <span style={{ flex: 1 }} />
-        {remote.loading ? <CircleNotch size={11} className="animate-spin" aria-label="Searching GitHub" style={{ color: COLORS.textDim }} /> : null}
-      </div>
-      <div className="mx-1 mb-1 flex items-center gap-1.5 rounded-md px-2" style={{ height: 26, border: `1px solid ${fgTint(8)}`, background: COLORS.recessedBg }}>
-        <MagnifyingGlass size={11} style={{ color: COLORS.textDim, flexShrink: 0 }} />
+    <>
+      <label className="ade-prf-search">
+        <MagnifyingGlass size={12} aria-hidden />
         <input
           autoFocus
+          className="ade-prf-search-input"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !isImeComposing(event)) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          placeholder={kind === "label" ? "Find a label" : "Find a person"}
-          aria-label={`Find ${title.toLowerCase()}`}
-          className="min-w-0 flex-1 bg-transparent text-[11.5px] outline-none"
-          style={{ border: "none", color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
+          aria-label={`Find ${KIND_TITLE[kind].toLowerCase()}`}
+          aria-controls={`github-pr-filter-list-${kind}`}
+          aria-activedescendant={rows[activeIndex] ? `github-pr-filter-row-${kind}-${activeIndex}` : undefined}
+          role="combobox"
+          aria-expanded
+          spellCheck={false}
+          autoComplete="off"
         />
-      </div>
-      <div className="max-h-[min(50vh,320px)] overflow-y-auto overscroll-contain" role="listbox" aria-label={`${title} options`} aria-multiselectable={kind === "label" || undefined}>
-        {rows.map((row) => (
-          <button
-            key={row.key}
-            type="button"
-            role="option"
-            aria-selected={row.selected}
-            onClick={() => pick(row.value)}
-            className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-fg/[0.07]")}
-            style={{ background: "none", border: "none" }}
-          >
-            {kind === "label" ? (
-              <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: row.color ? `#${row.color}` : fgTint(30) }} />
-            ) : row.person ? (
-              <PrAgentAvatar login={row.value} avatarUrl={row.avatarUrl ?? null} size={16} />
-            ) : (
-              <UserCircle size={14} style={{ color: COLORS.textMuted }} />
-            )}
-            <span className="min-w-0 flex-1 truncate">{row.label}</span>
-            {row.hint ? <span className="max-w-[90px] truncate text-[10px]" style={{ color: COLORS.textDim }}>{row.hint}</span> : null}
-            {row.selected ? <Check size={11} weight="bold" style={{ color: COLORS.accent, flexShrink: 0 }} /> : null}
-          </button>
-        ))}
-        {rows.length === 0 && !remote.loading ? (
-          <div className="px-2 py-2 text-[11px]" style={{ color: COLORS.textDim }}>
-            {trimmed ? (kind === "label" ? "No label matches. Press Enter to filter by it anyway." : "Nobody matches.") : "Nothing to pick yet."}
+        {remote.loading ? <CircleNotch size={12} className="animate-spin" aria-label="Searching GitHub" /> : null}
+      </label>
+      <div
+        ref={listRef}
+        id={`github-pr-filter-list-${kind}`}
+        className="ade-prf-list"
+        role="listbox"
+        aria-label={`${KIND_TITLE[kind]} options`}
+        aria-multiselectable={multi || undefined}
+        data-testid={`github-pr-filter-picker-${kind}`}
+      >
+        {rows.map((row, index) => {
+          const title = row.section !== lastSection ? SECTION_TITLE[row.section] : null;
+          lastSection = row.section;
+          return (
+            <React.Fragment key={row.key}>
+              {title ? (
+                <div className="ade-prf-section kit-eyebrow" role="presentation">
+                  <span>{title}</span>
+                  {row.section === "github" && remote.loading ? <span>Searching…</span> : null}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                id={`github-pr-filter-row-${kind}-${index}`}
+                role="option"
+                aria-selected={row.selected}
+                data-row-index={index}
+                data-active={index === activeIndex ? "true" : undefined}
+                className="ade-prf-row"
+                tabIndex={-1}
+                onPointerMove={() => { if (index !== activeIndex) setActive(index); }}
+                onClick={() => pick(row.value)}
+              >
+                <span className="ade-prf-check" data-shape={multi ? "box" : "radio"} data-on={row.selected ? "true" : undefined} aria-hidden>
+                  {multi && row.selected ? <Check size={10} weight="bold" /> : null}
+                </span>
+                <span className="ade-prf-main">
+                  {row.section === "typed" ? (
+                    <span className="ade-prf-person">
+                      <span>
+                        {kind === "label" ? "Filter by label " : "Filter by "}
+                        <strong>{kind === "label" ? `“${row.label}”` : `@${row.label}`}</strong>
+                      </span>
+                    </span>
+                  ) : kind === "label" ? (
+                    <PrLabelPill name={row.label} color={row.color} />
+                  ) : row.person ? (
+                    <span className="ade-prf-person">
+                      <PrAgentAvatar login={row.value} avatarUrl={avatarFor(row.value, row.avatarUrl)} size={18} />
+                      <span>{row.label}</span>
+                    </span>
+                  ) : (
+                    <span className="ade-prf-person">
+                      {row.value === GITHUB_PR_FILTER_NO_ASSIGNEE
+                        ? <Prohibit size={16} aria-hidden style={{ color: "var(--kit-text-3)" }} />
+                        : <UserCircle size={18} aria-hidden style={{ color: "var(--kit-text-2)" }} />}
+                      <span>{row.label}</span>
+                    </span>
+                  )}
+                  {row.hint ? <span className="ade-prf-desc">{row.hint}</span> : null}
+                </span>
+                {row.count != null ? (
+                  <span className="kit-num ade-prf-count" title={`${row.count} loaded ${row.count === 1 ? "pull request" : "pull requests"}`}>
+                    {row.count}
+                  </span>
+                ) : <span />}
+              </button>
+            </React.Fragment>
+          );
+        })}
+        {rows.length === 0 ? (
+          <div className="ade-prf-empty">
+            {remote.loading
+              ? "Searching GitHub…"
+              : trimmed
+                ? (kind === "label" ? "No label matches." : "Nobody matches. Type a full GitHub username.")
+                : kind === "label" ? "No labels in this list yet. Type to search GitHub." : "Type to search GitHub."}
           </div>
         ) : null}
-        {remote.failed ? (
-          <div className="px-2 py-1.5 text-[10.5px]" style={{ color: COLORS.textDim }}>Could not ask GitHub; showing loaded pull requests only.</div>
-        ) : null}
+        {remote.failed ? <div className="ade-prf-note">GitHub did not answer; showing loaded pull requests only.</div> : null}
       </div>
-    </div>
+    </>
   );
 }
 
 /**
- * One "Filter" control for the GitHub tab: Label / Author / Assignee, each a
- * searchable picker that lists what the loaded rows show first and then what
- * GitHub returns. Nothing is fetched until a picker opens.
+ * One "Filter" control for the GitHub tab: a panel with Label / Author /
+ * Assignee tabs over one searchable list. Each list shows what the loaded rows
+ * carry first, then what GitHub returns. Nothing is fetched until it opens.
  */
 export function GitHubPrFilterMenu({
   filters,
@@ -323,20 +441,19 @@ export function GitHubPrFilterMenu({
   compact?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
-  const [view, setView] = React.useState<GitHubPrFilterKind | null>(null);
+  const [kind, setKind] = React.useState<GitHubPrFilterKind>(lastPickerKind);
   const active = hasGitHubPrListFilters(filters);
   const activeCount = filters.labels.length + (filters.author ? 1 : 0) + (filters.assignee ? 1 : 0);
-  const rootRows: Array<{ kind: GitHubPrFilterKind; label: string; icon: typeof Tag; value: string | null }> = [
-    { kind: "label", label: "Label", icon: Tag, value: filters.labels.length ? filters.labels.join(", ") : null },
-    { kind: "author", label: "Author", icon: User, value: filters.author ? personLabel(filters.author, "author") : null },
-    { kind: "assignee", label: "Assignee", icon: UserCircle, value: filters.assignee ? personLabel(filters.assignee, "assignee") : null },
-  ];
+  const chooseKind = (next: GitHubPrFilterKind) => {
+    lastPickerKind = next;
+    setKind(next);
+  };
   return (
     <Popover.Root
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setView(null);
+        if (next) setKind(lastPickerKind);
       }}
     >
       <Popover.Trigger asChild>
@@ -374,69 +491,65 @@ export function GitHubPrFilterMenu({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className={cn(MENU_SURFACE_CLASS, "outline-none")}
+          className={cn(MENU_SURFACE_CLASS, "ade-prf-panel outline-none")}
           style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
+          data-testid="github-pr-filter-menu"
+          aria-label="Filter pull requests"
         >
-          {view ? (
-            <FilterPicker
-              kind={view}
-              filters={filters}
-              facets={facets}
-              loadOptions={loadOptions}
-              onChange={onChange}
-              onBack={() => setView(null)}
-              onDone={() => {
-                setOpen(false);
-                setView(null);
-              }}
-            />
-          ) : (
-            <div style={{ width: 228 }} data-testid="github-pr-filter-menu">
-              <div className={MENU_LABEL_CLASS}>Filter pull requests</div>
-              {rootRows.map((row) => {
-                const Icon = row.icon;
+          <div className="ade-prf-head">
+            <div className="kit-seg" data-case="sentence" role="tablist" aria-label="Filter by">
+              {(["label", "author", "assignee"] as const).map((value) => {
+                const count = filterCount(filters, value);
                 return (
                   <button
-                    key={row.kind}
+                    key={value}
                     type="button"
-                    onClick={() => setView(row.kind)}
-                    className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-fg/[0.07]")}
-                    style={{ background: "none", border: "none" }}
+                    role="tab"
+                    aria-selected={kind === value}
+                    data-testid={`github-pr-filter-tab-${value}`}
+                    onClick={() => chooseKind(value)}
                   >
-                    <Icon size={13} style={{ color: COLORS.textMuted }} />
-                    <span className="flex-1">{row.label}</span>
-                    {row.value ? <span className="max-w-[110px] truncate text-[10.5px]" style={{ color: COLORS.accent }}>{row.value}</span> : null}
-                    <CaretRight size={10} style={{ color: COLORS.textDim }} />
+                    {KIND_TITLE[value]}
+                    {count > 0 ? <span className="ade-prf-tab-count">{count}</span> : null}
                   </button>
                 );
               })}
-              {active ? (
-                <>
-                  <div className={MENU_SEPARATOR_CLASS} />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onChange({ labels: [], author: null, assignee: null });
-                      setOpen(false);
-                    }}
-                    className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-fg/[0.07]")}
-                    style={{ background: "none", border: "none", color: COLORS.textMuted }}
-                  >
-                    <X size={12} />
-                    Clear filters
-                  </button>
-                </>
-              ) : null}
             </div>
-          )}
+          </div>
+          <FilterPicker
+            key={kind}
+            kind={kind}
+            filters={filters}
+            facets={facets}
+            loadOptions={loadOptions}
+            onChange={onChange}
+            onDone={() => setOpen(false)}
+          />
+          <div className="ade-prf-foot">
+            {active ? (
+              <>
+                <span>{activeCount === 1 ? "1 filter on" : `${activeCount} filters on`}</span>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  data-size="sm"
+                  onClick={() => onChange({ labels: [], author: null, assignee: null })}
+                >
+                  Clear all
+                </button>
+              </>
+            ) : (
+              <span><kbd>↑</kbd> <kbd>↓</kbd> to move, <kbd>↵</kbd> to pick</span>
+            )}
+          </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
 }
 
-/** The active filters as small removable pills under the list chrome. */
+/** The active filters as removable chips under the list chrome. */
 export function GitHubPrFilterChips({
   filters,
   labelColors,
@@ -447,53 +560,37 @@ export function GitHubPrFilterChips({
   onChange: (next: GitHubPrListFilters) => void;
 }) {
   if (!hasGitHubPrListFilters(filters)) return null;
-  const chips: Array<{ key: string; text: string; color: string | null; remove: () => void }> = [
-    ...filters.labels.map((label) => ({
-      key: `label:${label}`,
-      text: label,
-      color: labelColors.get(label.toLowerCase()) ?? null,
-      remove: () => onChange({ ...filters, labels: filters.labels.filter((value) => value !== label) }),
-    })),
-    ...(filters.author ? [{
-      key: "author",
-      text: describeGitHubPrFilter("author", filters.author),
-      color: null,
-      remove: () => onChange({ ...filters, author: null }),
-    }] : []),
-    ...(filters.assignee ? [{
-      key: "assignee",
-      text: describeGitHubPrFilter("assignee", filters.assignee),
-      color: null,
-      remove: () => onChange({ ...filters, assignee: null }),
-    }] : []),
-  ];
-  return (
-    <div data-testid="github-pr-filter-chips" style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 10px 0", flexShrink: 0 }}>
-      {chips.map((chip) => (
-        <span
-          key={chip.key}
-          className="kit-tag"
-          style={{ display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", textTransform: "none", letterSpacing: 0 }}
-        >
-          {chip.color ? <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: `#${chip.color}` }} /> : null}
-          <span className="truncate">{chip.text}</span>
-          <button
-            type="button"
-            onClick={chip.remove}
-            aria-label={`Remove filter ${chip.text}`}
-            style={{ display: "inline-flex", padding: 0, background: "none", border: "none", cursor: "pointer", color: "inherit", opacity: 0.6 }}
-          >
-            <X size={9} weight="bold" />
-          </button>
+  const removeButton = (text: string, remove: () => void) => (
+    <button type="button" className="ade-prf-chip-x" onClick={remove} aria-label={`Remove filter ${text}`}>
+      <X size={9} weight="bold" />
+    </button>
+  );
+  const person = (kind: "author" | "assignee", value: string) => {
+    const text = describeGitHubPrFilter(kind, value);
+    const special = value === GITHUB_PR_FILTER_ME || value === GITHUB_PR_FILTER_NO_ASSIGNEE;
+    return (
+      <span key={kind} className="ade-prf-chip" title={text}>
+        {special ? null : <PrAgentAvatar login={value} avatarUrl={avatarFor(value)} size={14} />}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+          {special ? text : <><b>{kind === "author" ? "By" : "Assigned to"}</b> {value}</>}
         </span>
+        {removeButton(text, () => onChange(kind === "author" ? { ...filters, author: null } : { ...filters, assignee: null }))}
+      </span>
+    );
+  };
+  const chipCount = filters.labels.length + (filters.author ? 1 : 0) + (filters.assignee ? 1 : 0);
+  return (
+    <div className="ade-prf-chips" data-testid="github-pr-filter-chips">
+      {filters.labels.map((label) => (
+        <PrLabelPill key={`label:${label}`} name={label} color={labelColors.get(label.toLowerCase()) ?? null} style={{ paddingRight: 4 }}>
+          {removeButton(label, () => onChange({ ...filters, labels: filters.labels.filter((value) => value !== label) }))}
+        </PrLabelPill>
       ))}
-      {chips.length > 1 ? (
-        <button
-          type="button"
-          onClick={() => onChange({ labels: [], author: null, assignee: null })}
-          style={{ background: "none", border: "none", padding: "0 2px", cursor: "pointer", fontSize: 10.5, color: COLORS.textDim, fontFamily: SANS_FONT }}
-        >
-          Clear
+      {filters.author ? person("author", filters.author) : null}
+      {filters.assignee ? person("assignee", filters.assignee) : null}
+      {chipCount > 1 ? (
+        <button type="button" className="ade-prf-chips-clear" onClick={() => onChange({ labels: [], author: null, assignee: null })}>
+          Clear all
         </button>
       ) : null}
     </div>

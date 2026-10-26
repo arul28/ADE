@@ -503,17 +503,28 @@ export function GitHubTab({
     return async (kind: GitHubPrFilterKind, query: string) => (await list({ kind, query })).options;
   }, []);
   const filterFacets = React.useMemo((): GitHubPrFilterFacets => {
-    const labels = new Map<string, GitHubPrListItem["labels"][number]>();
-    const authors = new Map<string, string>();
+    const labels = new Map<string, GitHubPrFilterFacets["labels"][number]>();
+    const authors = new Map<string, GitHubPrFilterFacets["authors"][number]>();
     for (const item of snapshot ? mergeGitHubListItems(snapshot) : []) {
       for (const label of item.labels) {
-        if (!labels.has(label.name.toLowerCase())) labels.set(label.name.toLowerCase(), label);
+        const key = label.name.toLowerCase();
+        const seen = labels.get(key);
+        if (seen) seen.count += 1;
+        else labels.set(key, { ...label, count: 1 });
       }
-      if (item.author && !authors.has(item.author.toLowerCase())) authors.set(item.author.toLowerCase(), item.author);
+      if (item.author) {
+        const key = item.author.toLowerCase();
+        const seen = authors.get(key);
+        if (seen) seen.count += 1;
+        else authors.set(key, { login: item.author, count: 1 });
+      }
     }
+    // Most-used first, the way a reviewer reaches for them.
+    const byCount = <T extends { count: number }>(name: (value: T) => string) => (a: T, b: T) =>
+      b.count - a.count || name(a).localeCompare(name(b));
     return {
-      labels: [...labels.values()].sort((a, b) => a.name.localeCompare(b.name)),
-      authors: [...authors.values()].sort((a, b) => a.localeCompare(b)),
+      labels: [...labels.values()].sort(byCount((label) => label.name)),
+      authors: [...authors.values()].sort(byCount((author) => author.login)),
     };
   }, [snapshot]);
 

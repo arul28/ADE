@@ -49,7 +49,7 @@ export function describePrChangeSplit(summary: PrChangeKindSummary): string {
   return `${fmt(summary.total.additions)} lines added, ${fmt(summary.total.deletions)} removed. ${parts.join(", ")}.`;
 }
 
-export function PrChangeSplitBar({ summary, size = "header" }: { summary: PrChangeKindSummary; size?: "header" | "row" }) {
+export function PrChangeSplitBar({ summary, size = "header" }: { summary: PrChangeKindSummary; size?: "header" | "row" | "card" }) {
   return (
     <span className="ade-pr-change-bar" data-size={size} aria-hidden>
       {PR_CHANGE_KINDS.map((kind) => {
@@ -61,10 +61,32 @@ export function PrChangeSplitBar({ summary, size = "header" }: { summary: PrChan
   );
 }
 
+function percentOf(part: number, whole: number): number {
+  if (whole <= 0) return 0;
+  const value = (part / whole) * 100;
+  // A sliver still reads as "<1%", never as 0%.
+  return value > 0 && value < 1 ? 0.5 : Math.round(value);
+}
+
+function formatPercent(value: number): string {
+  return value === 0.5 ? "<1%" : `${value}%`;
+}
+
 function PrChangeSplitCard({ summary }: { summary: PrChangeKindSummary }) {
-  const code = summary.kinds.code;
+  const totalLines = summary.total.additions + summary.total.deletions;
+  const codeLines = summary.kinds.code.additions + summary.kinds.code.deletions;
+  const codeShare = percentOf(codeLines, totalLines);
   return (
     <>
+      <div className="ade-pr-change-card-head">
+        <span className="kit-eyebrow">Lines changed</span>
+        <span className="kit-num">
+          <span className="ade-pr-change-add">+{fmt(summary.total.additions)}</span>{" "}
+          <span className="ade-pr-change-del">−{fmt(summary.total.deletions)}</span>
+          <span className="ade-pr-change-card-dim"> · {fmt(summary.total.files)} {summary.total.files === 1 ? "file" : "files"}</span>
+        </span>
+      </div>
+      <PrChangeSplitBar summary={summary} size="card" />
       <div className="ade-pr-change-card-rows">
         {PR_CHANGE_KINDS.map((kind) => {
           const tally = summary.kinds[kind];
@@ -73,32 +95,37 @@ function PrChangeSplitCard({ summary }: { summary: PrChangeKindSummary }) {
             <React.Fragment key={kind}>
               <i className="ade-pr-change-swatch" data-kind={kind} />
               <span className="ade-pr-change-card-label">{KIND_LABEL[kind]}</span>
-              <span className="kit-num ade-pr-change-card-files">
+              <span className="kit-num ade-pr-change-card-share">
+                {formatPercent(percentOf(tally.additions + tally.deletions, totalLines))}
+              </span>
+              <span className="kit-num ade-pr-change-card-dim">
                 {fmt(tally.files)} {tally.files === 1 ? "file" : "files"}
               </span>
-              <span className="kit-num ade-pr-change-add">+{fmt(tally.additions)}</span>
-              <span className="kit-num ade-pr-change-del">−{fmt(tally.deletions)}</span>
+              <span className="kit-num ade-pr-change-add" data-zero={tally.additions === 0 || undefined}>+{fmt(tally.additions)}</span>
+              <span className="kit-num ade-pr-change-del" data-zero={tally.deletions === 0 || undefined}>−{fmt(tally.deletions)}</span>
             </React.Fragment>
           );
         })}
       </div>
       <div className="ade-pr-change-card-foot">
-        Code <span className="kit-num">+{fmt(code.additions)} −{fmt(code.deletions)}</span>
-        {" of "}
-        <span className="kit-num">+{fmt(summary.total.additions)} −{fmt(summary.total.deletions)}</span>
+        {codeLines === 0
+          ? "No code changed: the rest is quick to skim."
+          : <><span className="kit-num">{formatPercent(codeShare)}</span> of the change is code; the rest is quick to skim.</>}
       </div>
     </>
   );
 }
 
 /**
- * Hover (after a short intent delay) or keyboard focus opens the card; any
- * pointer-down, key, scroll or window blur closes it. Portalled and
+ * Hover (after a short intent delay) or keyboard focus opens the card; a
+ * click pins it open until the next click, Escape, scroll or window blur.
+ * Unpinned, any pointer-down or key closes it. Portalled and
  * `pointer-events: none`, placed by the same flip-then-shift rule as the
  * app's tooltips, so it never covers the stat it describes.
  */
 function useHoverCard(onIntent?: () => void) {
   const [visible, setVisible] = useState(false);
+  const [pinned, setPinned] = useState(false);
   const [placement, setPlacement] = useState<TooltipPlacement | null>(null);
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -115,6 +142,7 @@ function useHoverCard(onIntent?: () => void) {
   const hide = useCallback(() => {
     clearTimer();
     setVisible(false);
+    setPinned(false);
     setPlacement(null);
   }, [clearTimer]);
   const showAfterDelay = useCallback(() => {
@@ -133,9 +161,28 @@ function useHoverCard(onIntent?: () => void) {
 
   useEffect(() => clearTimer, [clearTimer]);
 
+  const togglePinned = useCallback(() => {
+    if (pinned) {
+      hide();
+      return;
+    }
+    clearTimer();
+    onIntentRef.current?.();
+    setVisible(true);
+    setPinned(true);
+  }, [clearTimer, hide, pinned]);
+  const leave = useCallback(() => {
+    if (!pinned) hide();
+  }, [hide, pinned]);
+
   useEffect(() => {
     if (!visible) return undefined;
-    const dismiss = () => hide();
+    const dismiss = (event: Event) => {
+      // The trigger's own click toggles the pin.
+      if (event.type === "pointerdown" && triggerRef.current?.contains(event.target as Node)) return;
+      if (pinned && event.type === "keydown" && (event as KeyboardEvent).key !== "Escape") return;
+      hide();
+    };
     window.addEventListener("keydown", dismiss, true);
     window.addEventListener("pointerdown", dismiss, true);
     window.addEventListener("wheel", dismiss, true);
@@ -148,7 +195,7 @@ function useHoverCard(onIntent?: () => void) {
       window.removeEventListener("scroll", dismiss, true);
       window.removeEventListener("blur", dismiss);
     };
-  }, [hide, visible]);
+  }, [hide, pinned, visible]);
 
   const place = useCallback((side: TooltipSide) => {
     const trigger = triggerRef.current;
@@ -169,7 +216,7 @@ function useHoverCard(onIntent?: () => void) {
     ));
   }, []);
 
-  return { visible, placement, triggerRef, cardRef, hide, showAfterDelay, showNow, place };
+  return { visible, pinned, placement, triggerRef, cardRef, hide, leave, togglePinned, showAfterDelay, showNow, place };
 }
 
 function HoverCardPortal({
@@ -245,12 +292,21 @@ export function PrHeaderChangeStat({ summary }: { summary: PrChangeKindSummary |
         data-interactive="true"
         data-testid="pr-header-diff-stat"
         tabIndex={0}
-        role="img"
+        role="button"
         aria-label={describePrChangeSplit(summary)}
-        onPointerEnter={card.showAfterDelay}
-        onPointerLeave={card.hide}
+        aria-expanded={card.visible}
+        data-pinned={card.pinned || undefined}
+        onPointerEnter={() => { if (!card.visible) card.showAfterDelay(); }}
+        onPointerLeave={card.leave}
+        onClick={card.togglePinned}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            card.togglePinned();
+          }
+        }}
         onFocus={(event) => { if (isKeyboardFocus(event)) card.showNow(); }}
-        onBlur={card.hide}
+        onBlur={card.leave}
       >
         {stat}
         <PrChangeSplitBar summary={summary} />

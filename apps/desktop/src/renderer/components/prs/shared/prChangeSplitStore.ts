@@ -9,7 +9,8 @@ import { summarizePrChangeKinds, type PrChangeKindSummary } from "../../../../sh
  * Fed for free by the detail pane (live or cached files) and the PRs
  * provider's snapshot warm-up, so a list row can show its split without a
  * GitHub read. A row whose PR is not here reads its files only when the user
- * hovers its diff stat (`requestPrChangeSplit`), once per PR per minute.
+ * hovers its diff stat (`requestPrChangeSplit`), once per PR per minute, and
+ * not while the PRs surface's GitHub brake is on.
  *
  * GitHub's answer is the same from every machine, so the key carries no
  * machine; the pin decides only which machine is asked.
@@ -29,6 +30,20 @@ const entries = new Map<string, Entry>();
 const listeners = new Map<string, Set<() => void>>();
 const inFlight = new Set<string>();
 const lastFetchAt = new Map<string, number>();
+/** The PRs surface's poll governor: while it stands down, hover reads wait. */
+let standDown: (() => boolean) | null = null;
+
+/**
+ * Lets the PRs provider share its GitHub brake. A row's split is a detail,
+ * not something the user asked GitHub for, so it waits out a failure ladder or
+ * the quota reserve like the automatic reads do. Returns the unregister.
+ */
+export function setPrChangeSplitStandDown(check: () => boolean): () => void {
+  standDown = check;
+  return () => {
+    if (standDown === check) standDown = null;
+  };
+}
 
 export function prChangeSplitKey(coords: { repoOwner: string; repoName: string; githubPrNumber: number }): string {
   return `${coords.repoOwner.toLowerCase()}/${coords.repoName.toLowerCase()}#${coords.githubPrNumber}`;
@@ -112,6 +127,8 @@ export function usePrChangeSplit(key: string | null): PrChangeKindSummary | null
  */
 export function requestPrChangeSplit(key: string, load: () => Promise<readonly PrFile[]>): void {
   if (inFlight.has(key) || inFlight.size >= MAX_IN_FLIGHT) return;
+  // Not counted against the retry window: the next hover after the brake lifts reads.
+  if (standDown?.()) return;
   const last = lastFetchAt.get(key);
   if (last != null && Date.now() - last < FETCH_RETRY_MS) return;
   lastFetchAt.set(key, Date.now());
