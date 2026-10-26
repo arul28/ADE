@@ -459,12 +459,21 @@ export function mapCursorSdkMessageToChatEvents(
         const agentId = readString(taskValue?.agentId) ?? readString(taskArgs?.agentId);
         const resultStatus = readString(taskResult?.status);
         const failed = status === "error" || resultStatus === "error";
+        // Since SDK 1.0.38 a background subagent keeps running after the launch
+        // call returns, and Cursor sends no event when it finishes. The launch is
+        // what completed here, so the row says so instead of claiming the work
+        // is done.
+        const background = !failed && taskValue?.isBackground === true;
+        const transcriptPath = readString(taskValue?.transcriptPath);
         const summary = failed
           ? summarizeUnknown(taskResult?.error) ?? `${description} failed`
-          : readString(taskValue?.resultSuffix)
-            ?? (taskValue?.isBackground === true
-              ? "Background subagent launched; Cursor does not expose a detached child event stream."
-              : `${description} completed`);
+          : background
+            ? [
+              "Launched in the background. It keeps running in Cursor after this turn, and Cursor does not report when it finishes.",
+              readString(taskValue?.resultSuffix),
+              transcriptPath ? `Transcript: ${transcriptPath}` : null,
+            ].filter(Boolean).join("\n")
+            : readString(taskValue?.resultSuffix) ?? `${description} completed`;
 
         if (status === "running") {
           return [
@@ -498,6 +507,22 @@ export function mapCursorSdkMessageToChatEvents(
             turnId,
             status: failed ? "failed" : "completed",
           }, runtime),
+          // Background is only known from the launch result, so the started
+          // snapshot is re-sent with the flag to move the row into Background.
+          ...(background
+            ? [tagRuntime({
+              type: "subagent_started" as const,
+              taskId: callId,
+              ...(agentId ? { agentId } : {}),
+              ...(agentType ? { agentType, label: agentType } : {}),
+              ...(model ? { model } : {}),
+              parentToolUseId: callId,
+              description,
+              background: true,
+              taskType: "background" as const,
+              turnId,
+            }, runtime)]
+            : []),
           tagRuntime({
             type: "subagent_result" as const,
             taskId: callId,
@@ -508,6 +533,7 @@ export function mapCursorSdkMessageToChatEvents(
             status: failed ? "failed" : "completed",
             summary,
             finalSummary: summary,
+            ...(background ? { taskType: "background" as const } : {}),
             ...(durationMs != null ? { usage: { durationMs } } : {}),
             turnId,
           }, runtime),
