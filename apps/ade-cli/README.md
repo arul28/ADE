@@ -590,7 +590,7 @@ ade chat restore-queue personal-session-id recovery-id --personal
 ade chat note --personal --session personal-session-id "Drafting the email"   # also ask / activity <value|clear>; from inside a personal chat (ADE_CHAT_SCOPE=personal) the flags are implied
 ade chat create --personal --provider codex --model openai/gpt-5.5 --arg personalProfile=embedded   # SDK-host surface instead of the assistant default
 ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
-ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat restart [<session>] [--stop | --after-turn]         # fresh provider process, conversation kept; no session = your own chat, once this turn ends
 ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
 ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
 ade chat wait --background --job <id>                        # wake me when my background job ends
