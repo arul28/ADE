@@ -43,7 +43,8 @@ vi.mock("node:fs", async (importOriginal) => {
 const runGitMock = vi.hoisted(() => vi.fn());
 const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 
-vi.mock("../git/git", () => ({
+vi.mock("../git/git", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../git/git")>()),
   // The push goes through the GitHub sign-in fallback, which first resolves
   // the repository and its push URL. Answer those here so each test scripts
   // only the commands publishing itself runs.

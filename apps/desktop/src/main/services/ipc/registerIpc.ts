@@ -4844,8 +4844,10 @@ export function registerIpc({
       const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
       if (!repoOwner || !repoName) return null;
       // One tested implementation: parses each recent project's git origin
-      // from .git/config (no git subprocess), cached by config mtime.
-      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      // from .git/config (no git subprocess), cached by config mtime. An SSH
+      // origin on a host that is not GitHub or a known forge runs `ssh -G`,
+      // once for each host; the cache answers after that.
+      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
     },
   );
 
@@ -4861,6 +4863,7 @@ export function registerIpc({
       return authorizeRecentProjectRuntimeRoot({
         requestedRootPath,
         activeGitOriginUrl: activeOrigin,
+        activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
       });
     },
@@ -11755,13 +11758,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
-    const ctx = ensureGitContext();
-    const laneId = typeof arg?.laneId === "string" ? arg.laneId : "";
+    const ctx = ensureGitLaneContext();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const fallback = { remoteUrl: null, branch: null } as const;
+    if (!laneId) return fallback;
+    // One owner for the read, shared with the runtime action: it strips
+    // credentials and names GitHub's host for an SSH alias of GitHub.
     try {
       return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
-      // A missing lane or a stale worktree reads as "no remote", as it always has.
-      return { remoteUrl: null, branch: null };
+      // An unknown lane, or one whose worktree is gone (an unmounted drive),
+      // reads as no remote. The lane row still knows its branch.
+      try {
+        return { remoteUrl: null, branch: ctx.laneService.getLaneBaseAndBranch(laneId).branchRef?.trim() || null };
+      } catch {
+        return fallback;
+      }
     }
   });
 
@@ -12515,6 +12527,7 @@ export function registerIpc({
     accountBridge,
     getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
     accountVaultBridge,
+    accountSettingsBridge: accountSettingsSyncService,
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,
   });

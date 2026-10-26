@@ -12,6 +12,7 @@ import type {
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { redactGitOutput } from "../../utils/redaction";
 
 export type CursorCloudIngressStatusLike = {
@@ -138,7 +139,9 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
         cwd: projectRoot,
         timeoutMs: 8_000,
       });
-      const url = result.exitCode === 0 ? result.stdout.trim() : "";
+      const rawUrl = result.exitCode === 0 ? result.stdout.trim() : "";
+      // Cursor names repositories by their github.com URL, not an SSH alias.
+      const url = (await resolveGithubSshAliasUrl(rawUrl)) ?? rawUrl;
       const key = repoMatchKey(url);
       originCache = { key, at: Date.now() };
       return key;

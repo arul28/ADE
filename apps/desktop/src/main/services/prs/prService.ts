@@ -169,7 +169,8 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
-import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
+import { classifyGitPushFailure, runGitPushOrThrow } from "../git/gitPushFailure";
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -2513,12 +2514,10 @@ export function createPrService({
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
-    const pushOpts = { cwd: lane.worktreePath, timeoutMs: 60_000 };
-    if (upstreamCheck.exitCode === 0) {
-      await runGitWithGithubAuthFallbackOrThrow(["push", "--force-with-lease"], pushOpts);
-      return;
-    }
-    await runGitWithGithubAuthFallbackOrThrow(["push", "-u", "origin", headBranch], pushOpts);
+    const pushArgs = upstreamCheck.exitCode === 0
+      ? ["push", "--force-with-lease"]
+      : ["push", "-u", "origin", headBranch];
+    await runGitPushOrThrow(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: headBranch });
   };
 
   const restoreAutoRebaseChildLane = async (args: {
@@ -4482,16 +4481,13 @@ export function createPrService({
     });
     if (pushResult.exitCode === 0) return;
 
-    // formatGitExecutionError redacts, and adds the sign-in hint when git
-    // could not sign in even with ADE's credential.
-    const rawDetail = (pushResult.stderr || pushResult.stdout).trim();
-    const detail = rawDetail ? formatGitExecutionError(rawDetail) : "";
-    const detailLower = detail.toLowerCase();
-    if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
-      throw new Error(
-        `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`
-      );
+    const raw = (pushResult.stderr || pushResult.stdout).trim();
+    const failure = classifyGitPushFailure(raw, { branch: headBranch });
+    const detail = redactGitOutput(raw);
+    if (failure?.kind === "non_fast_forward") {
+      throw new Error(`${failure.message} ADE did not force-push.\n\n${detail}`);
     }
+    if (failure) throw new Error(`${redactGitOutput(failure.message)}\n\n${detail}`);
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
