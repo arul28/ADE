@@ -120,6 +120,25 @@ Submitting during a running turn is a **steer**, not a second send. `steer()` is
 
 `steer()` takes `{ attachments }` with the same rules as `send()`. It needs text, at least one attachment, or both. A steer with attachments and empty text is allowed. It resolves when the runtime accepts the steer, not when the agent reads it.
 
+### Usage and budgets
+
+```ts
+const thread = await ade.threads.open("support", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  budget: { maxTokens: 80_000, maxCostUsd: 2 },
+});
+
+thread.on("event", ({ event }) => {
+  if (event.type === "budget_exceeded") showBudgetNotice(event.usage);
+});
+console.log(thread.usage());
+```
+
+`usage()` returns cumulative `inputTokens`, `outputTokens` and `totalTokens`, plus `contextWindow` when the runtime reports it. `costUsd` is present only when a provider explicitly reports a dollar cost; ADE list-price estimates are excluded. `complete` is false if the SDK could not read the existing transcript to seed its totals. Without a budget, the snapshot then covers only events the SDK observed; with a budget, new turns are refused until the SDK can load history.
+
+The budget is stored with the thread key, so it continues across restarts and resumes. When reported cumulative tokens or provider cost reaches a limit, the SDK emits `budget_exceeded` and interrupts the active turn. If the cost limit has no provider-reported cost to compare, only the token limit can trigger. On resume, the stored budget wins over a different `budget` option.
+
 ### Retry and edit
 
 ```ts

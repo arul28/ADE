@@ -13,7 +13,13 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | Path | Role |
 |---|---|
 | `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads (open, list, delete, archive, unarchive), models (change events and default selection), providers, doctor, export, `on("exit" \| "transport" \| "restart")`, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
-| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, `refreshMcpHeaders` (also run before every send / retry / editLast), history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
+| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, `refreshMcpHeaders` (also run before every send / retry / editLast), history, `historyPage`, `usage`, persisted per-thread budgets, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
+| `packages/sdk/src/run.ts` | `client.run(prompt, options)` — temporary one-shot thread, supported JSON Schema subset validation and one repair attempt; `InvalidOutputError` preserves the raw response. |
+| `packages/sdk/src/usage.ts` | Per-thread token/cost aggregation, durable-history seeding, budget validation and crossing detection. Cost is present only when the provider reports it. |
+| `packages/sdk/src/server.ts` | `@ade-dev/sdk/server` — host-owned WebSocket bridge with authorization and thread-key gates, custom host methods, and `createAdeRemoteClient(urlOrTransport)`. |
+| `packages/sdk/src/remoteClient.ts` | Browser-safe remote proxy with RPC timeouts, reconnect-ready transport queues, push handling, and event/history deduplication. |
+| `packages/sdk/src/testing.ts` | `@ade-dev/sdk/testing` — scripted mock client with queued replies, tools, approvals, usage, errors and transcript replay. |
+| `packages/sdk/scripts/check-wire-types.mjs` | Compiler-API drift check for the SDK's curated wire subset against desktop chat and personal-chat contracts; runs in SDK CI. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
 | `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.6.0, unchanged from 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
@@ -884,13 +890,19 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 - Never add typed `--mcp-servers` / `--strict-mcp` CLI flags as a second spelling of `--arg-json`; the nested JSON is what that hatch already carries. The SDK is the intended embedder API.
 - `packages/sdk/dist` is gitignored. Anything that typechecks against `@ade-dev/sdk` from source must build it first.
 - `packages/demo` live e2e spends provider tokens. Do not add it to root `npm test`.
+- `client.run()` uses a randomly named temporary thread and deletes it in `finally`; structured output supports only the exported `JsonSchema` subset and gets one repair attempt.
+- Thread budgets persist with the thread key and win over different options on resume. Token snapshots use the latest event per turn; cost totals include only explicit provider costs. A cost limit cannot trip until a provider reports cost.
+- `thread.usage().complete` is false when the SDK could not read the existing transcript to seed its totals. With a configured budget the SDK then refuses new turns until it can reload usage history; without a budget the snapshot reports only events it observed.
+- `@ade-dev/sdk/server` does not create a listener or choose a WebSocket package. The host owns networking, authentication/TLS and authorization; apply `authorize` to every RPC and scope `allowThreadKey` for shared hosts.
+- `createAdeRemoteClient(url)` needs a global `WebSocket`; pass `{ WebSocket }` in runtimes without one, or pass a WebSocket-compatible transport directly.
+- `tsup.config.ts` leaves source maps off in package builds: the SDK with its new entries measured 3.38 MB unpacked / 889 kB packed with maps, and 1.095 MB / 290 kB without them (`npm pack --dry-run --json`, Node 22).
 
 ## Related docs
 
-- Public Mintlify: [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — twelve pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
+- Public Mintlify: [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
   - `overview`, `install`, `quickstart` — what it is and the first client.
   - `threads`, `mcp`, `permissions` — the per-thread contract and the three honesty tables.
-  - `chat-ui`, `electron` — the two host-side surfaces.
+  - `chat-ui`, `electron`, `server`, `testing` — the host-side surfaces and token-free development workflow.
   - `runtime`, `bundling` — the sidecar and shipping it inside a signed app.
   - `reference`, `license` — the full shapes, and what each artifact is licensed under.
 - [Chat](../chat/README.md#caller-injected-mcp) — engine-side injection, tristate, capability report.

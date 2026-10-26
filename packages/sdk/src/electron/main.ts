@@ -37,6 +37,7 @@ import {
   ADE_IPC_THREAD_KEY_METHODS,
   eventChannel,
   invokeChannel,
+  serializeAdeError,
   type AdeIpcErrorPayload,
   type AdeIpcMethod,
   type AdeIpcEventPayload,
@@ -253,12 +254,7 @@ export function adeErrorCodeOf(error: unknown): string | null {
 }
 
 function serializeError(error: unknown): AdeIpcErrorPayload {
-  return {
-    __adeError: true,
-    name: "AdeError",
-    code: adeErrorCodeOf(error) ?? "rpc_error",
-    message: errorMessage(error),
-  };
+  return serializeAdeError(error);
 }
 
 function unauthorized(method: string): AdeError {

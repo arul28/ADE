@@ -4,6 +4,7 @@ import { errorMessage } from "./errors.js";
 import { readStoredMcpServers, type StoredMcpServerConfig } from "./mcpHeaders.js";
 import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
 import type { AgentChatInstructions, AgentChatSettingSources } from "./types.js";
+import { validateThreadBudget, type ThreadBudget } from "./usage.js";
 
 /**
  * Durable `key -> sessionId` map at `<home>/threads.json`.
@@ -69,6 +70,8 @@ export type ThreadRecord = {
   attachmentRoots?: string[];
   settingSources?: AgentChatSettingSources;
   permissionPolicy?: ThreadPermissionPolicy;
+  /** Host-side usage budget; never sent to the runtime. */
+  budget?: ThreadBudget;
   /**
    * The permission PRESET this key was created with, when it was created with
    * a preset rather than a policy. A recreate and a restart rebind reuse it
@@ -234,6 +237,13 @@ function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean }
     const record = entry as Partial<ThreadRecord>;
     if (typeof record.sessionId !== "string" || !record.sessionId) continue;
     const storedMcp = readStoredMcpServers(record.mcpServers);
+    let budget: ThreadBudget | undefined;
+    try {
+      budget = validateThreadBudget(record.budget);
+    } catch {
+      // A bad budget in an older or hand-edited record must not block access to
+      // the durable thread. It is dropped rather than applied loosely.
+    }
     if (storedMcp?.migrated) migrated = true;
     threads[key] = {
       key,
@@ -273,6 +283,7 @@ function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean }
         : record.permissionPreset === "default" || record.permissionPreset === "always-allow"
           ? { permissionPreset: record.permissionPreset }
           : {}),
+      ...(budget ? { budget } : {}),
     };
   }
   return { file: { version: 1, threads }, migrated };

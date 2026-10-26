@@ -12,6 +12,8 @@ and exposes chat as durable named threads.
 | [Permissions](https://www.ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
 | [Chat UI](https://www.ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
 | [Electron](https://www.ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
+| [WebSocket server](https://www.ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
+| [Testing](https://www.ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
 | [Bundling](https://www.ade-app.dev/docs/sdk/bundling) | Platform packages, `codesign`, entitlements, electron-builder |
 | [Runtime](https://www.ade-app.dev/docs/sdk/runtime) | The sidecar, exit events and `autoRestart`, version compatibility, and `doctor().runtime` provenance |
 | [Reference](https://www.ade-app.dev/docs/sdk/reference) | Every option, shape, and error code |
@@ -46,7 +48,16 @@ const thread = await ade.threads.open("support", {
 });
 thread.on("event", (envelope) => console.log(envelope.event.type));
 await thread.send("Summarise today's incidents");
+console.log(thread.usage());
 ```
+
+`thread.usage()` reports cumulative token totals and provider-reported cost.
+Pass `budget: { maxTokens, maxCostUsd }` when creating a thread to interrupt it
+when a reported limit is reached. Budgets persist with the thread key.
+
+Use `ade.run(prompt, { provider, model, schema })` for a temporary one-shot
+thread. A schema response is parsed and checked locally, retried once when it
+does not match, then rejected with `InvalidOutputError` carrying `rawText`.
 
 Reopening `"support"` after a restart resumes the same conversation. Call
 `ade.dispose()` when the host shuts down.

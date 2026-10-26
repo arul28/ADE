@@ -222,6 +222,12 @@ Plan, in order of savings:
 Deferred: Cursor as an on-demand pack (36 MB) — a product trade (offline
 first use), not taken without a decision.
 
+SDK DX build measurement (Node 22, `npm pack --dry-run --json`): 1.095 MB
+unpacked / 290 kB packed with the new `server` and `testing` entries. A
+source-map-enabled measurement of this track was 3.38 MB / 889 kB, so published
+source maps are disabled to keep the package smaller. The runtime package and
+chat-ui are unchanged by this track.
+
 ---
 
 ## Release

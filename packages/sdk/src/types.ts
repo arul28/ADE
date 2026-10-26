@@ -419,6 +419,20 @@ export type KnownAgentChatEvent =
     }
   | { type: "status"; [key: string]: unknown }
   | { type: "error"; [key: string]: unknown }
+  | {
+      type: "budget_exceeded";
+      budget: { maxCostUsd?: number; maxTokens?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+        complete?: boolean;
+        contextWindow?: number;
+        costUsd?: number;
+      };
+      turnId?: string;
+      resumed?: boolean;
+    }
   | { type: "done"; [key: string]: unknown };
 
 /** Event types the SDK routes to the `usage` channel of `AdeThread.on`. */
@@ -437,6 +451,7 @@ export const STATUS_EVENT_TYPES = [
   "session_meta_updated",
   "interrupt_receipt",
   "capabilities_changed",
+  "budget_exceeded",
 ] as const;
 
 /**

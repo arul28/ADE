@@ -25,6 +25,7 @@ export const ADE_ERROR_CODES = [
   "runtime_incompatible",
   "turn_in_flight",
   "unsupported",
+  "invalid_output",
 ] as const;
 
 /**
@@ -86,7 +87,8 @@ export type AdeErrorCode =
    * changed. `retry` and `editLast` throw it for a provider other than Claude
    * or Codex, and for a runtime older than the `rerunLastTurn` action.
    */
-  | "unsupported";
+  | "unsupported"
+  | "invalid_output";
 
 /**
  * The list and the union must stay identical. Both directions are checked, so

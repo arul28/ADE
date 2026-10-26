@@ -32,11 +32,13 @@ const define = { __ADE_SDK_VERSION__: JSON.stringify(packageVersionForBuild()) }
 export default defineConfig([
   {
     define,
-    entry: ["src/index.ts", "src/electron/index.ts"],
+    entry: ["src/index.ts", "src/electron/index.ts", "src/server.ts", "src/testing.ts"],
     format: ["esm", "cjs"],
     dts: true,
     clean: true,
-    sourcemap: true,
+    // Published source maps dominate this package's unpacked size and the
+    // complete TypeScript source remains available in the repository.
+    sourcemap: false,
     target: "node22",
     platform: "node",
     // The package must stay dependency-free: nothing but node builtins may be
@@ -53,7 +55,7 @@ export default defineConfig([
     dts: true,
     // The Node pass owns `clean`. A second clean here would delete it.
     clean: false,
-    sourcemap: true,
+    sourcemap: false,
     target: "es2022",
     platform: "browser",
     noExternal: [],
@@ -69,7 +71,7 @@ export default defineConfig([
     format: ["cjs"],
     dts: false,
     clean: false,
-    sourcemap: true,
+    sourcemap: false,
     target: "es2022",
     platform: "browser",
     external: ["electron"],
@@ -87,7 +89,7 @@ export default defineConfig([
     globalName: "AdeElectron",
     dts: false,
     clean: false,
-    sourcemap: true,
+    sourcemap: false,
     target: "es2022",
     platform: "browser",
     noExternal: [],
