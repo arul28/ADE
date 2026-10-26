@@ -211,11 +211,11 @@ export function runBoardColumn(phase: AttentionPhase): WorkBoardColumn {
 
 /**
  * The Work-board column for a roster row, before the snooze overlay. A running
- * row waits instead of working while its lane's PR has CI in flight or a review
- * requested, and a resting row waits while a scheduled wake is pending — the
- * same rules `buildWorkBoardModel` applies on the board. The board's other
- * resting wait, a busy nested subagent, needs spawn links the roster does not
- * carry, so such a parent reads Done here.
+ * row is Working whatever its lane's PR is doing, and a resting row waits
+ * while a scheduled wake is pending — the same rules `buildWorkBoardModel`
+ * applies on the board. The board's other resting wait, a busy nested
+ * subagent, needs spawn links the roster does not carry, so such a parent
+ * reads Done here.
  */
 export function rosterBoardColumn(
   status: SyncRosterChatStatus,

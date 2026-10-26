@@ -448,7 +448,8 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       finalSummary: "## ADE Summary\n**ADE** is a unified workspace — see [the docs](https://ade.dev/docs).\n- Parallel `agents`",
     };
     const { container } = render(<ChatSubagentsPanel snapshots={[finished]} events={[]} variant="pane" />);
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    // Only finished rows: the section head IS the toggle ("Subagents · 1 done").
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
     const summary = container.querySelector("[data-subagent-panel-summary]");
     expect(summary?.textContent).toBe("ADE Summary: ADE is a unified workspace — see the docs. Parallel agents");
@@ -636,7 +637,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Completed \(1\)/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
 
     await waitFor(() => expect(probeSubagentTranscript).toHaveBeenCalledTimes(1));
@@ -978,7 +979,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     expect(screen.getByText("Check CI")).toBeTruthy();
     expect(screen.getByText("cron")).toBeTruthy();
-    expect(screen.getByText("*/20 * * * * · Keep the PR moving")).toBeTruthy();
+    expect(screen.getByText(/Keep the PR moving/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel Check CI" }));
     expect(onCancelScheduledWork).toHaveBeenCalledWith(item);
   });
@@ -1054,7 +1055,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByText("done")).toBeNull();
   });
 
-  it("shows a cron's last run and next fire on one timing line", () => {
+  it("shows a cron's next fire on the timing line", () => {
     const now = new Date(2026, 4, 12, 12, 0);
     vi.spyOn(Date, "now").mockReturnValue(now.getTime());
 
@@ -1076,7 +1077,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    expect(screen.getByText("last ran 9:00 AM · next in 21h · 9:00 AM")).toBeTruthy();
+    expect(screen.getByText("next in 21h · 9:00 AM")).toBeTruthy();
   });
 
   it("does not show a running status for a terminal background command", () => {
@@ -1096,7 +1097,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Completed \(1\)/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Background 1 done/ }));
     expect(screen.getByText("done")).toBeTruthy();
     expect(screen.queryByText("running")).toBeNull();
   });
@@ -1243,7 +1244,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     // Clear lives inline on the Completed row, only once the bucket is expanded.
     expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
     // Workflow parents and their agents no longer contribute to Completed.
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getAllByRole("button", { name: /Restore/ }).length).toBeGreaterThan(0);
@@ -1490,7 +1491,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
     const caret = screen.getByRole("button", { name: "Show nested agents" });
     const row = screen.getByTitle("Finished parent");
     expect(caret.tagName).toBe("BUTTON");
@@ -1580,7 +1581,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     expect(screen.queryByText("running")).toBeNull();
     // Terminal rows file under the section's Earlier group, like every other
     // settled row — the point is that nothing claims to be running any more.
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
     expect(screen.getByText("halted")).toBeTruthy();
     // ...and the row keeps its age frozen at the last thing it reported,
     // instead of a counter that had been climbing for 17 hours.
@@ -1599,7 +1600,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     );
 
     expect(screen.queryByText("running")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Background 1 done/ }));
     expect(screen.getByText("stopped")).toBeTruthy();
   });
 
@@ -1645,7 +1646,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     );
 
     expect(screen.queryByText("running")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
     expect(screen.getByText("halted")).toBeTruthy();
   });
 });

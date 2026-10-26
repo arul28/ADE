@@ -223,6 +223,6 @@ describe("SettingsPage", () => {
 
     fireEvent.change(searchBox(), { target: { value: "zzzznotasetting" } });
 
-    expect(await screen.findByText(/Nothing in Secrets matches/)).toBeTruthy();
+    expect(await screen.findByText(/No setting matches/)).toBeTruthy();
   });
 });
