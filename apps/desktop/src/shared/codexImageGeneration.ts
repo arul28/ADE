@@ -1,6 +1,17 @@
-/** Codex's inline `result` is bare base64 (no `data:` prefix), and a JPEG's starts with `/9j/`. */
-export function looksLikeInlineBase64Image(value: string): boolean {
-  return value.length >= 256 && /^[A-Za-z0-9+/=\s]+$/.test(value);
+/**
+ * Codex's inline image `result` is bare base64 (no `data:` prefix). A JPEG's
+ * starts with `/9j/`, so it must never be read as a file path. Shared by the
+ * main process (paths, durable history) and the renderer (the preview).
+ */
+export function looksLikeInlineBase64Image(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.length >= 256 && /^[A-Za-z0-9+/=\s]+$/.test(value);
+}
+
+/** A previewable data URL for an inline base64 image, or null when it is not one. */
+export function inlineBase64ImageDataUrl(value: string | null | undefined): string | null {
+  if (!value || !looksLikeInlineBase64Image(value)) return null;
+  const mime = value.startsWith("/9j/") ? "image/jpeg" : value.startsWith("UklGR") ? "image/webp" : "image/png";
+  return `data:${mime};base64,${value.replace(/\s+/g, "")}`;
 }
 
 /**

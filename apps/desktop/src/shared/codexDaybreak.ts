@@ -17,8 +17,10 @@
 // ---------------------------------------------------------------------------
 
 export type CodexDaybreakProgram = "daybreakBlue" | "daybreakRed";
+/** The access programs Codex 0.164 knows, in the app-server's camelCase names. */
+export type CodexAccessProgram = "standard" | CodexDaybreakProgram;
 
-const PROGRAM_ALIASES: Record<string, string> = {
+const PROGRAM_ALIASES: Record<string, CodexAccessProgram> = {
   standard: "standard",
   daybreakblue: "daybreakBlue",
   daybreak_blue: "daybreakBlue",
@@ -31,7 +33,7 @@ const PROGRAM_ALIASES: Record<string, string> = {
  * camelCase names. Unknown programs are dropped, as Codex itself does.
  * Undefined when the row carries no program metadata at all.
  */
-export function readCodexCyberAccessPrograms(row: unknown): string[] | undefined {
+export function readCodexCyberAccessPrograms(row: unknown): CodexAccessProgram[] | undefined {
   const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
   const programs = record?.availableAccessPrograms;
   const cyber = programs && typeof programs === "object"
@@ -47,7 +49,7 @@ export function readCodexCyberAccessPrograms(row: unknown): string[] | undefined
 }
 
 /** The Daybreak program a turn asks for, or null when the model offers none. */
-export function codexDaybreakProgram(programs: readonly string[] | null | undefined): CodexDaybreakProgram | null {
+export function codexDaybreakProgram(programs: readonly CodexAccessProgram[] | null | undefined): CodexDaybreakProgram | null {
   if (!programs?.length) return null;
   if (programs.includes("daybreakBlue")) return "daybreakBlue";
   if (programs.includes("daybreakRed")) return "daybreakRed";

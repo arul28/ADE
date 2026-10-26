@@ -76,9 +76,10 @@ export type SessionMetadataRegeneratorDependencies<ManagedSession extends Sessio
   /**
    * Asks the chat's own thread (Codex `thread/sample`), which already holds
    * the whole conversation. Used only when `runPrompt` produced no names: it
-   * costs far more than the helper.
+   * costs far more than the helper. Never rejects. `helperError` is the
+   * helper's last failure, so a rate limit there skips the sample too.
    */
-  sampleThread?: (managed: ManagedSession, prompt: string) => Promise<CodexSampleOutcome>;
+  sampleThread?: (managed: ManagedSession, prompt: string, helperError: string | null) => Promise<CodexSampleOutcome>;
   /** Gets the session so the call can run as the chat's own provider account. */
   runPrompt: (
     args: Parameters<SessionMetadataPromptRunner>[0],
@@ -263,7 +264,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
             "The conversation above is this thread's full transcript, and your latest reply is its latest assistant output.",
             buildSessionMetadataPrompt({ ...promptFacts, latestOutputPreview: null, threadTranscript: null, latestAssistantParagraphs: null }),
           ].join("\n\n"),
-        )).catch((error): CodexSampleOutcome => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error) }));
+        ), generated.lastFailure?.error ?? null);
         const result = sample.kind === "answered"
           ? parseGeneratedSessionMetadata({
             raw: sample.text,

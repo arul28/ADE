@@ -8,7 +8,7 @@ import type {
   ExternalSessionProvider,
 } from "../../../shared/types";
 import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
-import { codexImageGenerationRefFields } from "./codexImageGeneration";
+import { codexImageGenerationRefFields } from "../../../shared/codexImageGeneration";
 
 const DEFAULT_MAX_IMPORTED_EVENTS = 2000;
 export const MAX_IMPORT_TRANSCRIPT_BYTES = 32 * 1024 * 1024;

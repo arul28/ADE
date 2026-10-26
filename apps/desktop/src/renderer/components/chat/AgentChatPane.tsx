@@ -15526,25 +15526,43 @@ export function AgentChatPane({
     setFastModeState,
   ]);
 
+  /** Per chat: the latest toggle, its write chain, and the value its machine last confirmed. */
+  const codexDaybreakUpdatesRef = useRef(new Map<string, { latest: number; chain: Promise<unknown>; confirmed: boolean }>());
   const handleCodexDaybreakChange = useCallback((enabled: boolean) => {
     setCodexDaybreak(enabled);
     const targetSessionId = selectedSessionId;
     if (!targetSessionId) return;
+    const updates = codexDaybreakUpdatesRef.current;
+    const entry = updates.get(targetSessionId)
+      ?? { latest: 0, chain: Promise.resolve(), confirmed: selectedSessionCodexDaybreak };
+    const updateId = entry.latest + 1;
     patchSessionSummary(targetSessionId, { codexDaybreak: enabled });
-    // The chat's own machine stores it: the same pin every other chat update uses.
-    void agentChatApiRef.current.updateSession({
-      sessionId: targetSessionId,
-      codexDaybreak: enabled,
-    }, chatRuntimePinRef.current).then((updatedSession) => {
-      const stored = updatedSession.codexDaybreak === true;
-      patchSessionSummary(targetSessionId, { codexDaybreak: stored });
-      if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(stored);
-    }).catch((err) => {
-      patchSessionSummary(targetSessionId, { codexDaybreak: !enabled });
-      if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(!enabled);
-      setError(err instanceof Error ? err.message : String(err));
-    });
-  }, [patchSessionSummary, selectedSessionId]);
+    // In order, like Fast: two quick toggles land as the last one. The chat's
+    // own machine stores it, through the pin every chat update uses.
+    const chain = entry.chain
+      .catch(() => {})
+      .then(() => agentChatApiRef.current.updateSession({
+        sessionId: targetSessionId,
+        codexDaybreak: enabled,
+      }, chatRuntimePinRef.current))
+      .then((updatedSession) => {
+        const current = updates.get(targetSessionId);
+        if (!current) return;
+        current.confirmed = updatedSession.codexDaybreak === true;
+        if (current.latest !== updateId) return;
+        patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+        if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+      })
+      .catch((err) => {
+        const current = updates.get(targetSessionId);
+        if (current && current.latest === updateId) {
+          patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+          if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+        }
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    updates.set(targetSessionId, { latest: updateId, chain, confirmed: entry.confirmed });
+  }, [patchSessionSummary, selectedSessionCodexDaybreak, selectedSessionId]);
 
   const handleFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
     const previousFastMode = fastMode;

@@ -4851,10 +4851,12 @@ config service):
 - `ai.chat.claudePluginUiEnabled` -- draw what Claude Code mods show (status
   lines, toasts, a band above the prompt, panes) in ADE chat. Defaults to
   **false**. The mods' hooks run either way. See [Claude mod UI](#claude-mod-ui).
-- `ai.chat.promptSuggestionsEnabled` -- suggest the next prompt for providers
-  without a native suggestion (Settings › Chat › Next prompt). Defaults to
-  **false**. Per project and per machine, read on the machine that runs the
-  chat. See [Next prompt suggestions](#next-prompt-suggestions).
+- `ai.chat.codexPromptSuggestionsEnabled` -- suggest the next prompt in Codex
+  chats (Settings › Chat › Next prompt). Defaults to **true**. Per project and
+  per machine, read on the machine that runs the chat.
+- `ai.chat.promptSuggestionsEnabled` -- the same for every other provider
+  without a native suggestion. Defaults to **false**. See
+  [Next prompt suggestions](#next-prompt-suggestions).
 - `ai.chat.smartDecisionsEnabled` -- "Smart decisions (Jev)" in Settings ›
   Chat (`SmartDecisionsSection.tsx`). Jev needs no sign-in: OpenCode's free
   Jev answers first and the ADE bonus after it (see
@@ -4952,12 +4954,22 @@ in with the caret at the end; **Esc** hides it until the next turn.
 - **Claude Code** sends its own (`promptSuggestions` on the SDK query). Claude
   holds it back on a chat's first turn, in plan mode, and near plan usage
   limits. ADE never adds one for a Claude chat.
-- **Every other provider** gets one from ADE when
-  `ai.chat.promptSuggestionsEnabled` is on (`chat/nextPromptSuggestion.ts`):
-  after a completed turn with no open card, no subagent parent and no running
-  background work, one call on the model that names the chat (Luna for Codex,
-  Composer for Cursor, otherwise the chat's own model) at its lowest effort,
-  from a scratch folder, capped at 120 characters.
+- **Every other provider** gets one from ADE (`chat/nextPromptSuggestion.ts`):
+  Codex chats unless `ai.chat.codexPromptSuggestionsEnabled` is false, the
+  rest when `ai.chat.promptSuggestionsEnabled` is on. After a completed turn
+  with no open card, no subagent parent and no running background work, one
+  call on the model that names the chat (Luna for Codex, Composer for Cursor,
+  otherwise the chat's own model) at its lowest effort, from a scratch folder,
+  capped at 120 characters.
+- **Codex fallback:** when that helper call fails or has no model to run on, a
+  Codex chat on Codex 0.164+
+  asks its own thread instead (`thread/sample`, `chat/codexThreadSample.ts`).
+  The sample runs on the chat's own model with its whole context, so it costs
+  far more than the helper (measured about 16x on a short chat) and is never
+  the first try. It is skipped for Fast chats, while a turn runs, and for an
+  account Codex rate-limited recently (helper or sample), for that 429's
+  Retry-After. The same fallback names a Codex chat after its first run and
+  answers Regenerate names when the helper fails.
 - Both go out as the live-only `prompt_suggestion` event and are never saved
   to the transcript. A user message or a new turn before ADE's answer arrives
   drops it.

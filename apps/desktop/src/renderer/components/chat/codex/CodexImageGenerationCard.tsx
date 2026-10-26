@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { ArrowSquareOut, FileImage, Image as ImageIcon, XCircle } from "@phosphor-icons/react";
 import type { AgentChatEvent } from "../../../../shared/types";
+import { inlineBase64ImageDataUrl } from "../../../../shared/codexImageGeneration";
 import { ChatStatusGlyph } from "../chatStatusVisuals";
 import { cn } from "../../ui/cn";
 import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
@@ -23,14 +24,6 @@ function isHttpOrDataUrl(value: string | null | undefined): boolean {
   return /^(https?:\/\/|data:)/i.test(value);
 }
 
-// Codex's inline `result` is bare base64. A JPEG's starts with `/9j/`, so it
-// must never be mistaken for a path.
-function inlineBase64DataUrl(value: string | null): string | null {
-  if (!value || value.length < 256 || !/^[A-Za-z0-9+/=\s]+$/.test(value)) return null;
-  const mime = value.startsWith("/9j/") ? "image/jpeg" : value.startsWith("UklGR") ? "image/webp" : "image/png";
-  return `data:${mime};base64,${value.replace(/\s+/g, "")}`;
-}
-
 // Plan §B.4: "no `file://` prefix; renderer must handle this." Codex sometimes
 // emits local paths as file:// URLs — `window.ade.app.openPath` expects an OS
 // path, so strip the prefix before passing it through.
@@ -49,7 +42,7 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
   const isRunning = event.status === "running";
   const isFailed = event.status === "failed";
   const result = event.result ?? null;
-  const inlinePreview = inlineBase64DataUrl(result);
+  const inlinePreview = inlineBase64ImageDataUrl(result);
   const previewSrc = isHttpOrDataUrl(result) ? result : inlinePreview;
   const savedPathRaw = event.savedPath ?? (!isHttpOrDataUrl(result) && !inlinePreview ? result : null);
   const inputImagePaths = event.inputImagePaths ?? [];

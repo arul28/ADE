@@ -80,7 +80,7 @@ has them in `node_modules`, so it never downloads them.
 | Tool | Version | Format | Integrity | Download host |
 |---|---|---|---|---|
 | `claude-code` | 0.3.300 (Claude Code 2.1.300) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `codex` | 0.162.1 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `codex` | 0.164.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot` | 1.0.22 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot-cli` | 1.0.98 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
@@ -161,12 +161,12 @@ manifest is a data file, so it is treated as untrusted input.
 
 **The codex install-dir name is not the published package name.**
 `@openai/codex-darwin-arm64` is an npm alias: the tarball is published under
-`@openai/codex` at version `0.162.1-darwin-arm64`. So the pin reads
+`@openai/codex` at version `0.164.0-darwin-arm64`. So the pin reads
 
 ```
 package:   @openai/codex-darwin-arm64      <- the node_modules directory name
-version:   0.162.1-darwin-arm64
-tarball:   .../@openai/codex/-/codex-0.162.1-darwin-arm64.tgz
+version:   0.164.0-darwin-arm64
+tarball:   .../@openai/codex/-/codex-0.164.0-darwin-arm64.tgz
 ```
 
 `ToolTargetPin.package` is deliberately documented as the *install directory*
@@ -293,7 +293,7 @@ profile — 650 MB must never roam.
 
 ```
 <tools root>/
-  @openai/codex-darwin-arm64/0.162.1-darwin-arm64/
+  @openai/codex-darwin-arm64/0.164.0-darwin-arm64/
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.300/

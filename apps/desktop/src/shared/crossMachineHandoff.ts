@@ -73,6 +73,7 @@ const CROSS_MACHINE_TARGET_CONFIG_FIELDS: Record<keyof AgentChatCrossMachineTarg
   reasoningEffort: true,
   fastMode: true,
   fastTier: true,
+  codexDaybreak: true,
   claudePermissionMode: true,
   codexApprovalPolicy: true,
   codexSandbox: true,

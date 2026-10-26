@@ -31,7 +31,7 @@ export function PromptSuggestionsSection() {
         <ModernRow
           anchor="prompt-suggestions-codex"
           title="Suggest the next prompt in Codex chats"
-          hint={hintFor(codex.status, "One short call on Codex's small model per finished turn.")}
+          hint={hintFor(codex.status, "One short call on Codex's small model per finished turn. If that fails, the chat's own model answers, which costs more.")}
           control={(
             <SettingsToggle
               label="Suggest the next prompt in Codex chats"

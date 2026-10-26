@@ -155,13 +155,15 @@ export type NextPromptSuggestionDeps = {
   }) => Promise<{ structuredOutput?: unknown; text?: string | null } | null>;
   /**
    * Asks the chat's own thread (Codex `thread/sample`), only when the helper
-   * (`runPrompt`) threw or had no model to run on.
+   * (`runPrompt`) threw or had no model to run on. Never rejects.
+   * `helperError` is the helper's failure, so a rate limit there skips it.
    */
   sampleThread?: (args: {
     sessionId: string;
     turnId: string;
     prompt: string;
     timeoutMs: number;
+    helperError: string | null;
   }) => Promise<CodexSampleOutcome>;
   /** Live-only: a suggestion is never written to the transcript. */
   emitSuggestion: (sessionId: string, suggestion: string, turnId: string) => void;
@@ -185,9 +187,9 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
     const { sessionId } = facts;
     const startedAt = Date.now();
     let suggestion = "";
+    // "helper" once the helper answers, even "no clear next step": no second call.
     let source: "thread" | "helper" | "none" = "none";
-    // The helper answered (even "no clear next step"): no second call.
-    let helperAnswered = false;
+    let helperError: string | null = null;
     let cwd: string | null = null;
     try {
       // A fresh scratch directory: the helper must load no repo, no
@@ -202,17 +204,13 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
         timeoutMs: SUGGESTION_TIMEOUT_MS,
       });
       if (result) {
-        helperAnswered = true;
         source = "helper";
         suggestion = parsePromptSuggestion(result.structuredOutput, result.text);
       }
     } catch (error) {
       // Fail quiet: no suggestion is the same as an empty one.
-      logger.warn("agent_chat.prompt_suggestion_failed", {
-        sessionId,
-        turnId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      helperError = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.prompt_suggestion_failed", { sessionId, turnId, error: helperError });
     } finally {
       if (cwd) {
         try {
@@ -229,24 +227,17 @@ export function createNextPromptSuggestion(deps: NextPromptSuggestionDeps): Next
     // Only when the helper could not answer: ask the chat's own thread. It
     // knows more but costs far more (the chat's model and its whole context),
     // so it is the fallback, never the first try.
-    if (!helperAnswered && deps.sampleThread && pendingTurnBySession.get(sessionId) === turnId) {
-      try {
-        const sample = await deps.sampleThread({
-          sessionId,
-          turnId,
-          prompt: buildCodexSamplePrompt(PROMPT_SUGGESTION_SYSTEM_PROMPT),
-          timeoutMs: SUGGESTION_TIMEOUT_MS,
-        });
-        if (sample.kind === "answered") {
-          source = "thread";
-          suggestion = parsePromptSuggestion(null, sample.text);
-        }
-      } catch (error) {
-        logger.warn("agent_chat.prompt_suggestion_failed", {
-          sessionId,
-          turnId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    if (source !== "helper" && deps.sampleThread && pendingTurnBySession.get(sessionId) === turnId) {
+      const sample = await deps.sampleThread({
+        sessionId,
+        turnId,
+        prompt: buildCodexSamplePrompt(PROMPT_SUGGESTION_SYSTEM_PROMPT),
+        timeoutMs: SUGGESTION_TIMEOUT_MS,
+        helperError,
+      });
+      if (sample.kind === "answered") {
+        source = "thread";
+        suggestion = parsePromptSuggestion(null, sample.text);
       }
     }
     // Shown only if nothing happened since the turn ended: no user message or

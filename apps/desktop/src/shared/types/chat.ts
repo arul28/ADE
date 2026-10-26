@@ -15,6 +15,7 @@ export type AcpToolKind =
   | "switch_mode"
   | "other";
 
+import type { CodexAccessProgram } from "../codexDaybreak";
 import type { HarnessPreset } from "../harnessPresets";
 import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
@@ -3847,7 +3848,7 @@ export type AgentChatModelInfo = {
    * Codex `model/list` `availableAccessPrograms.cyber` for the signed-in
    * account (camelCase program names). Absent: the catalog said nothing.
    */
-  cyberAccessPrograms?: string[];
+  cyberAccessPrograms?: CodexAccessProgram[];
   aliases?: string[];
   maxThinkingTokens?: number | null;
   // OpenCode-backed model metadata
@@ -4204,11 +4205,7 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
-  /**
-   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
-   * cybersecurity work) on this chat's turns. Applied only where the model's
-   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
-   */
+  /** Codex Daybreak; see `AgentChatSession.codexDaybreak`. */
   codexDaybreak?: boolean;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
@@ -4641,6 +4638,8 @@ export type AgentChatCrossMachineTargetConfig = {
   fastMode?: boolean;
   /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
   fastTier?: "ultrafast" | null;
+  /** Codex Daybreak (`AgentChatSession.codexDaybreak`); a destination that does not know it ignores it. */
+  codexDaybreak?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -6316,11 +6315,7 @@ export type AgentChatUpdateSessionArgs = {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
-  /**
-   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
-   * cybersecurity work) on this chat's turns. Applied only where the model's
-   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
-   */
+  /** Codex Daybreak; see `AgentChatSession.codexDaybreak`. */
   codexDaybreak?: boolean;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;

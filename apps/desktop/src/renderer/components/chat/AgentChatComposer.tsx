@@ -5864,9 +5864,11 @@ function AgentChatComposerImpl({
       .fastUnavailableReason ?? null
     : null;
   // Only a Codex catalog lists access programs, and only for the signed-in
-  // account, so the switch appears exactly where Daybreak can apply.
+  // account, so the switch appears where Daybreak can apply. Once on, it stays
+  // visible on any Codex model so it can always be turned off again.
   const daybreakOffered = !parallelChatMode && Boolean(onCodexDaybreakChange)
-    && codexDaybreakProgram(fastModeDescriptor?.cyberAccessPrograms) != null;
+    && (codexDaybreakProgram(fastModeDescriptor?.cyberAccessPrograms) != null
+      || (codexDaybreak === true && fastModeDescriptor?.family === "openai" && sessionProvider === "codex"));
   const daybreakControl = useMemo(
     () => (daybreakOffered && onCodexDaybreakChange
       ? { active: codexDaybreak === true, onChange: onCodexDaybreakChange }
