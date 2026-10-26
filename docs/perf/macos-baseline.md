@@ -1442,3 +1442,27 @@ copy) took the main-thread block of every-PR-snapshot from 75 ms (459 ms cold)
 to 1-2 ms and of 7,800 history rows from 16-69 ms to 1-3 ms, but the longest
 real read, the sync export, needs cr-sqlite's virtual table, which a plain
 read-only connection does not have.
+
+Brain event loop with sync ON, idle: P0's isolated measurement brain
+(`scripts/perf/net/measure-brain.mjs` on lane `perf-p0-scoreboard`: fake
+`HOME`, loopback, guard preload) on its seeded 1,000-chat project, 5 idle
+minutes after the project is added, `loop-delay-trace.cjs` loaded (its
+`gapMaxMs` is the longest a 50 ms timer fired late; the delay histogram alone
+reported 23 ms for some of these 2 s blocks). Two interleaved runs per side.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Brain event-loop max, idle, sync ON | 2,048-2,052 ms | 22-40 ms | 250 ms |
+| Freezes of 100 ms or more in 5 idle minutes | 8-9 (every ~32 s) | 0 | 1 |
+| Brain watchdog `event_loop_near_miss` lines in that window | 9 | 0 | 0 |
+| Brain event-loop p99, median 5 s window | 13.2 ms | 13.1 ms | 50 ms |
+
+The freeze was the account lease refresh (every ~32 s) reading the encrypted
+credential store, whose synchronous read asked the macOS keychain for key
+material every time its 30 s miss backoff ran out: `security
+find-generic-password`, then `add-generic-password` killed at its 2 s
+timeout, then `find` again, on the main thread. Wherever the keychain cannot
+answer (the measurement brain's fake home has none; a locked or unreachable
+keychain does the same) that is 2 s every cycle. Stores are sealed with the
+machine key alone now, so a read asks the keychain only when the machine key
+does not open the store.

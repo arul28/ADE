@@ -651,6 +651,11 @@ export function startBrainLoopWatchdog(args: {
     return usage.userCPUTime + usage.systemCPUTime;
   })();
   let lastMajorPageFaults = process.resourceUsage().majorPageFault;
+  // Why a lag spent so little CPU: memory being decompressed or read back
+  // (minor faults), or the thread waiting for a core (involuntary switches).
+  // Logged with a near miss, never used to decide one.
+  let lastMinorPageFaults = process.resourceUsage().minorPageFault;
+  let lastInvoluntarySwitches = process.resourceUsage().involuntaryContextSwitches;
   const eventLoopDelayMs = (nanoseconds: number): number =>
     Number.isFinite(nanoseconds) ? Math.round(nanoseconds / 1_000_000) : 0;
 
@@ -668,6 +673,8 @@ export function startBrainLoopWatchdog(args: {
     diagnostics: BrainLoopWatchdogDiagnostics;
     cpuDeltaMs: number;
     majorPageFaultsDelta: number | null;
+    minorPageFaultsDelta: number;
+    involuntaryContextSwitchesDelta: number;
   };
   /**
    * A suspension-shaped lag held back until the worker's verdict can arrive.
@@ -717,6 +724,8 @@ export function startBrainLoopWatchdog(args: {
       workerPausedMs,
       cpuDeltaMs: held.cpuDeltaMs,
       majorPageFaultsDelta: held.majorPageFaultsDelta,
+      minorPageFaultsDelta: held.minorPageFaultsDelta,
+      involuntaryContextSwitchesDelta: held.involuntaryContextSwitchesDelta,
       diagnostics: held.diagnostics,
     });
   };
@@ -758,6 +767,13 @@ export function startBrainLoopWatchdog(args: {
       ? null
       : Math.max(0, resources.majorPageFault - lastMajorPageFaults);
     lastMajorPageFaults = resources.majorPageFault;
+    const minorPageFaultsDelta = Math.max(0, resources.minorPageFault - lastMinorPageFaults);
+    lastMinorPageFaults = resources.minorPageFault;
+    const involuntaryContextSwitchesDelta = Math.max(
+      0,
+      resources.involuntaryContextSwitches - lastInvoluntarySwitches,
+    );
+    lastInvoluntarySwitches = resources.involuntaryContextSwitches;
     resolveHeldLag(nowMonotonicMs);
     const diagnostics: BrainLoopWatchdogDiagnostics = {
       capturedAt: new Date().toISOString(),
@@ -845,6 +861,8 @@ export function startBrainLoopWatchdog(args: {
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,
+        minorPageFaultsDelta,
+        involuntaryContextSwitchesDelta,
       };
       // Only one lag is held at a time. An older one goes out now, with the
       // verdict its pauses support, rather than being overwritten.

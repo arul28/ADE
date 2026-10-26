@@ -619,6 +619,24 @@ function decodeCredentialStore(
 }
 
 /**
+ * The store opened with the machine key alone, or null when that is not the
+ * answer and OS key material has to be read. A missing or empty store and one
+ * declared machine-sealed (what every writer now seals) need no OS material;
+ * a declared store that fails here takes the full path, which reads it.
+ */
+function decodeMachineSealedStore(
+  raw: Record<string, unknown> | null,
+  machineKey: Buffer,
+): CredentialDecodeAttempt | null {
+  const declaredMachine = raw == null
+    || Object.keys(raw).length === 0
+    || (isStoredCredentialEnvelope(raw) && readDeclaredBinding(raw) === "machine");
+  if (!declaredMachine) return null;
+  const attempt = decodeCredentialStore(raw, machineKey, null, false);
+  return attempt.ok ? attempt : null;
+}
+
+/**
  * The one retry a failed decrypt gets, against freshly-read OS key material.
  *
  * Returns null when there is nothing to gain — the OS handed back the same
@@ -1105,8 +1123,24 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       });
     }
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    const material = this.readKeyMaterial();
-    let attempt = decodeCredentialStore(raw, machineKey, material, this.peerMayHoldOsMaterial);
+    // OS key material only opens a store sealed before every writer moved to
+    // the machine key, so it is read only when the machine key alone does not
+    // open this one. On macOS that read is a synchronous `security` run, and
+    // where the keychain cannot answer (no login keychain, a locked one, a
+    // headless session) it blocked the brain's event loop for about 2 s on
+    // every read past its 30 s backoff: the account lease refresh alone made
+    // that a freeze every ~32 s.
+    let material: Buffer | null = null;
+    let materialRead = false;
+    const keyMaterial = (): Buffer | null => {
+      if (!materialRead) {
+        materialRead = true;
+        material = this.readKeyMaterial();
+      }
+      return material;
+    };
+    let attempt = decodeMachineSealedStore(raw, machineKey)
+      ?? decodeCredentialStore(raw, machineKey, keyMaterial(), this.peerMayHoldOsMaterial);
     if (
       !attempt.ok
       && attempt.reason !== "store_format"
@@ -1132,7 +1166,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       const retried = retryDecodeWithRefreshedKeyMaterial({
         raw,
         machineKey,
-        previous: material,
+        previous: keyMaterial(),
         refreshed: this.readKeyMaterial(),
         peerMayHoldMaterial: this.peerMayHoldOsMaterial,
       });
@@ -1160,7 +1194,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
           // Best effort — the ciphertext still reads as it is.
         }
       }
-      const recovered = this.recoverQuarantinedStore(values, machineKey, material);
+      const recovered = this.recoverQuarantinedStore(values, machineKey, keyMaterial);
       if (recovered) values = recovered;
       this.lastReadSettled = attempt.sealedBinding === "machine" && !recovered;
     }
@@ -1221,7 +1255,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private recoverQuarantinedStore(
     values: Record<string, string>,
     machineKey: Buffer,
-    material: Buffer | null,
+    readMaterial: () => Buffer | null,
   ): Record<string, string> | null {
     const record = this.readQuarantineRecordThrottled();
     if (!record) return null;
@@ -1231,6 +1265,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       if (quarantineHasExpired(record)) this.forgetQuarantine();
       return null;
     }
+    // A recoverable quarantine waits for exactly this material.
+    const material = readMaterial();
     let attempt: CredentialDecodeAttempt;
     try {
       attempt = decodeCredentialStore(
