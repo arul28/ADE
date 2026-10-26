@@ -244,8 +244,9 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   // Another client took the connection. The machine answered; nothing here is
   // a failure to back off from.
   if (isPairedRuntimeSupersededError(error)) return false;
-  // The call's answer was lost, but the machine answered again right after.
-  if (error instanceof RemoteActionOutcomeUnknownError && error.reconnected) return false;
+  // The call's answer was lost, but the machine answered again right after,
+  // or another call that dropped the connection already reports on it.
+  if (error instanceof RemoteActionOutcomeUnknownError && error.reconnected !== false) return false;
   // Connect failures carry a structured kind; their text names the cause
   // ("SSH authentication failed", "Nothing is accepting SSH connections"), not
   // the connection, so the pattern below does not see them.

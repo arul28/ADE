@@ -9,7 +9,12 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore } from "../../state/appStore";
-import { requestCrossMachineLanesForMachine, waitForForeignLaneToLeave } from "../../state/crossMachineLanes";
+import {
+  confirmForeignLaneDeleted,
+  requestCrossMachineLanesForMachine,
+  waitForForeignLaneToLeave,
+} from "../../state/crossMachineLanes";
+import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { showToast } from "../app/toast/toastStore";
 import {
@@ -176,7 +181,13 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         return waitForForeignLaneToLeave(machineId, lane.id, FOREIGN_LANE_DELETE_SETTLE_MS)
           .then(clearPending);
       },
-      (error: unknown) => {
+      async (error: unknown) => {
+        // The answer was lost, not the delete: keep the row "deleting" while
+        // that machine is checked, and a lane that left was deleted after all.
+        if (machineId && isRemoteOutcomeUnknownError(error) && await confirmForeignLaneDeleted(machineId, lane.id)) {
+          clearPending();
+          return;
+        }
         clearPending();
         showToast({
           title: `Could not delete ${lane.name}`,

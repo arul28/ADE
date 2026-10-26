@@ -11614,7 +11614,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
     const ctx = ensureFileContext();
-    ctx.fileService.deletePath(arg);
+    await ctx.fileService.deletePath(arg);
   });
 
   ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {

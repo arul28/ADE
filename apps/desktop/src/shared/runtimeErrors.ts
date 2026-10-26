@@ -35,6 +35,16 @@ export function isRemoteRuntimeConnectionError(error: unknown): boolean {
   );
 }
 
+/**
+ * True when a call to another machine lost its answer: the connection dropped
+ * or ADE stopped waiting. The action may still have run there.
+ */
+export function isRemoteOutcomeUnknownError(error: unknown): boolean {
+  return /before ADE could confirm the action result/i.test(errorMessage(error))
+    || isRemoteRuntimeConnectionError(error)
+    || isRuntimeTransportTimeoutError(error);
+}
+
 export function isRuntimeTransportTimeoutError(error: unknown): boolean {
   return /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(
     errorMessage(error),
