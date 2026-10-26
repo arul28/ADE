@@ -31,19 +31,38 @@ const entries = new Map<string, Entry>();
 const listeners = new Map<string, Set<() => void>>();
 const inFlight = new Set<string>();
 const lastFetchAt = new Map<string, number>();
-/** The PRs surface's poll governor: while it stands down, hover reads wait. */
-let standDown: (() => boolean) | null = null;
+/** Bumped whenever a key's files are stored, to drop an older hover response. */
+const revisions = new Map<string, number>();
+/** Each mounted PRs surface's poll governor: while any stands down, hover reads wait. */
+const standDownChecks = new Set<() => boolean>();
 
 /**
- * Lets the PRs provider share its GitHub brake. A row's split is a detail,
- * not something the user asked GitHub for, so it waits out a failure ladder or
- * the quota reserve like the automatic reads do. Returns the unregister.
+ * Lets a PRs provider share its GitHub brake. A row's split is a detail, not
+ * something the user asked GitHub for, so it waits out a failure ladder or the
+ * quota reserve like the automatic reads do. Several surfaces can be mounted
+ * at once, so every one registers its own check; returning a single shared
+ * slot let the last surface to mount speak for all of them.
+ *
+ * While any registered surface is braking, reads wait: a held detail read
+ * costs nothing, and asking GitHub for one while another surface is backing
+ * off is the burst this exists to avoid. Returns the unregister.
  */
 export function setPrChangeSplitStandDown(check: () => boolean): () => void {
-  standDown = check;
+  standDownChecks.add(check);
   return () => {
-    if (standDown === check) standDown = null;
+    standDownChecks.delete(check);
   };
+}
+
+function isPrChangeSplitStoodDown(): boolean {
+  for (const check of standDownChecks) {
+    try {
+      if (check()) return true;
+    } catch {
+      // A broken governor must not stop the user's hover from reading.
+    }
+  }
+  return false;
 }
 
 export function prChangeSplitKey(coords: { repoOwner: string; repoName: string; githubPrNumber: number }): string {
@@ -58,6 +77,7 @@ function notify(key: string): void {
 
 function store(key: string, entry: Entry): void {
   setBounded(entries, key, entry, MAX_ENTRIES);
+  setBounded(revisions, key, (revisions.get(key) ?? 0) + 1, MAX_ENTRIES);
   notify(key);
 }
 
@@ -116,13 +136,18 @@ export function usePrChangeSplit(key: string | null): PrChangeKindSummary | null
 export function requestPrChangeSplit(key: string, load: () => Promise<readonly PrFile[]>): void {
   if (inFlight.has(key) || inFlight.size >= MAX_IN_FLIGHT) return;
   // Not counted against the retry window: the next hover after the brake lifts reads.
-  if (standDown?.()) return;
+  if (isPrChangeSplitStoodDown()) return;
   const last = lastFetchAt.get(key);
   if (last != null && Date.now() - last < FETCH_RETRY_MS) return;
   setBounded(lastFetchAt, key, Date.now(), MAX_ENTRIES);
+  // The detail pane or a snapshot warm-up can record this PR's files while
+  // this read is out. Those are newer than the answer coming back, so the
+  // hover result must not overwrite them.
+  const revisionAtStart = revisions.get(key) ?? 0;
   inFlight.add(key);
   void load()
     .then((files) => {
+      if (revisionAtStart !== (revisions.get(key) ?? 0)) return;
       // Summarize now and drop the files: a row needs only the counts, and a
       // large PR's patches are megabytes.
       if (files.length > 0) store(key, { files: null, summary: summarizePrChangeKinds(files) });

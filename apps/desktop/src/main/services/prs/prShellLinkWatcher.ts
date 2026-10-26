@@ -64,7 +64,11 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
     const event = envelope.event;
     if (event.type === "command") {
       if (event.status === "running" || !mightTouchGhPr(event.command)) return;
-      handle(envelope.sessionId, event.itemId, event.command, event.output ?? "", event.exitCode ?? null);
+      // A failed command may carry no exit code; `readGhPrShellActions` reads a
+      // missing code as success, so hand it a failing one like the tool_result
+      // branch does.
+      const exitCode = event.status === "failed" ? (event.exitCode ?? 1) : (event.exitCode ?? null);
+      handle(envelope.sessionId, event.itemId, event.command, event.output ?? "", exitCode);
       return;
     }
     if (event.type === "tool_call") {

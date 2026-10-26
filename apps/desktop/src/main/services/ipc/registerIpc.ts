@@ -2408,6 +2408,13 @@ export function registerIpc({
         : entry;
       return Array.isArray(result) ? result.map(hideUrl) : hideUrl(result);
     }
+    // A signed media URL carries its own short-lived authorization: a trace
+    // that keeps it hands a private attachment to anyone who reads the log.
+    if (channel === IPC.prsResolveMedia) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+      const record = result as Record<string, unknown>;
+      return "src" in record ? { ...record, src: "[redacted]" } : record;
+    }
     if (!result || typeof result !== "object" || Array.isArray(result)) return result;
     const record = result as Record<string, unknown>;
     if (channel === IPC.accountStartLogin) {

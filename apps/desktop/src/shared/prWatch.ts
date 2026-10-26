@@ -414,9 +414,21 @@ export function evaluatePrWatch(args: {
         isAgentReviewer(remark) && timeMs(remarkAt(remark)) >= timeMs(headSeenAt)));
     // A conflict blocks CI from ever settling, so it never waits.
     const urgent = held.some((change) => change.kind === "conflicting");
-    const release = held.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));
-    changes = release ? held : [];
-    if (release) held = [];
+    // The no-CI warning exists because nothing is verifying this commit. A
+    // preview or review-bot check that is still running must not hold it: that
+    // check is not CI, and waiting for it would silence the warning forever.
+    const noChecksDue = held.some((change) => change.kind === "no_checks");
+    const waitable = held.filter((change) => change.kind !== "no_checks");
+    const release = waitable.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));
+    if (release) {
+      changes = held;
+      held = [];
+    } else if (noChecksDue) {
+      changes = held.filter((change) => change.kind === "no_checks");
+      held = waitable;
+    } else {
+      changes = [];
+    }
   } else {
     // News Ship was holding (the watch switched from Ship) goes out now.
     changes = mergeHeld(held, found);

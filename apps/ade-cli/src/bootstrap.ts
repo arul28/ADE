@@ -3239,15 +3239,18 @@ export async function createAdeRuntime(args: {
     if (terminalWatchService) teardown.push(() => terminalWatchService.dispose());
 
     // A chat's own `gh pr create` / `gh pr merge` links that PR to the chat.
-    if (agentChatService) {
+    // The lightweight no-agent chat stub exposes no event subscription; only
+    // wire the watcher when the service really can deliver events.
+    if (typeof agentChatService?.subscribeToEvents === "function") {
       const chatForShellLinks = agentChatService;
       const prShellLinkWatcher = createPrShellLinkWatcher({
         logger,
         subscribeToEvents: (callback) => chatForShellLinks.subscribeToEvents(callback),
         linkShellPrAction: (args) => headlessLinearServices.prService.linkShellPrAction(args),
       });
-      prShellLinkWatcher.start();
+      // Registered before the start: a throw from start() still unsubscribes.
       teardown.push(() => prShellLinkWatcher.dispose());
+      prShellLinkWatcher.start();
     }
 
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to

@@ -23,6 +23,8 @@ export const PrMediaRepoContext = createContext<{ repoOwner: string; repoName: s
 export type GithubMediaPhase = "original" | "resolving" | "resolved" | "failed";
 
 type Resolved = { src: string; kind: "image" | "video"; expiresAtMs: number };
+/** The rendered state plus the target key it belongs to. */
+type ViewState = { phase: GithubMediaPhase; resolved: Resolved | null; key: string | null };
 type CacheEntry = { resolved: Resolved } | { unavailableUntilMs: number };
 
 /** Hand out a signed copy only while it has this long left. */
@@ -134,10 +136,16 @@ export function useGithubMediaSrc(url: string | undefined): GithubMediaSource {
   }, [url, repo, pinKey]);
   const targetKey = target?.key ?? null;
 
-  const initial = useCallback((): { phase: GithubMediaPhase; resolved: Resolved | null } => {
+  /**
+   * The key is stored with the state on purpose: the reset below runs after
+   * the render that switched targets, so until it does the state still holds
+   * the previous target's answer. Comparing here keeps that one commit from
+   * rendering another attachment's source (or its element kind).
+   */
+  const initial = useCallback((): ViewState => {
     const cached = targetKey ? readCache(targetKey) : null;
-    if (cached && "resolved" in cached) return { phase: "resolved", resolved: cached.resolved };
-    return { phase: "original", resolved: null };
+    if (cached && "resolved" in cached) return { phase: "resolved", resolved: cached.resolved, key: targetKey };
+    return { phase: "original", resolved: null, key: targetKey };
   }, [targetKey]);
 
   const [state, setState] = useState(initial);
@@ -160,14 +168,16 @@ export function useGithubMediaSrc(url: string | undefined): GithubMediaSource {
   const start = useCallback((force: boolean) => {
     if (!target) return;
     const key = target.key;
-    const resolving = { phase: "resolving" as const, resolved: stateRef.current.resolved };
+    // Keep the old picture on screen while the new one resolves, but never
+    // claim it belongs to the new target.
+    const resolving = { phase: "resolving" as const, resolved: stateRef.current.resolved, key };
     stateRef.current = resolving;
     setState(resolving);
     void resolveShared(key, target.args, pinRef.current, force).then((entry) => {
       if (currentKeyRef.current !== key) return;
-      const next = "resolved" in entry
-        ? { phase: "resolved" as const, resolved: entry.resolved }
-        : { phase: "failed" as const, resolved: null };
+      const next: ViewState = "resolved" in entry
+        ? { phase: "resolved" as const, resolved: entry.resolved, key }
+        : { phase: "failed" as const, resolved: null, key };
       if (next.resolved) resolvedAtRef.current = Date.now();
       stateRef.current = next;
       setState(next);
@@ -176,7 +186,9 @@ export function useGithubMediaSrc(url: string | undefined): GithubMediaSource {
 
   const reportError = useCallback((): boolean => {
     if (!target) return false;
-    const { phase } = stateRef.current;
+    // A render before the reset effect still carries the old key; it must be
+    // treated like a fresh target, not like the old one's phase.
+    const { phase } = stateRef.current.key === target.key ? stateRef.current : initial();
     if (phase === "resolving") return true;
     if (phase === "original") {
       start(false);
@@ -187,16 +199,17 @@ export function useGithubMediaSrc(url: string | undefined): GithubMediaSource {
       start(true);
       return true;
     }
-    const failed = { phase: "failed" as const, resolved: null };
+    const failed: ViewState = { phase: "failed" as const, resolved: null, key: target.key };
     stateRef.current = failed;
     setState(failed);
     return false;
-  }, [target, start]);
+  }, [target, start, initial]);
 
+  const current = state.key === targetKey ? state : null;
   return {
-    src: state.phase === "resolved" && state.resolved ? state.resolved.src : (url ?? ""),
-    kind: state.phase === "resolved" && state.resolved ? state.resolved.kind : null,
-    phase: target ? state.phase : "original",
+    src: current?.phase === "resolved" && current.resolved ? current.resolved.src : (url ?? ""),
+    kind: current?.phase === "resolved" && current.resolved ? current.resolved.kind : null,
+    phase: target && current ? current.phase : "original",
     reportError,
   };
 }

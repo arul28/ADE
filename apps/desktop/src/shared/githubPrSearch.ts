@@ -216,9 +216,11 @@ export function sanitizeGitHubPrSearchText(text: string | null | undefined): str
     const qualifier = /^-?([A-Za-z-]+):/.exec(raw);
     return !qualifier || !BLOCKED_TEXT_QUALIFIERS.has(qualifier[1]!.toLowerCase());
   });
-  let joined = kept.join(" ");
+  let joined = kept.join(" ").slice(0, MAX_TEXT_LENGTH);
+  // Cut first: balancing before the cut can leave a quote with no partner
+  // once a long phrase crosses the limit, and GitHub rejects that query.
   if ((joined.match(/"/g)?.length ?? 0) % 2 !== 0) joined = joined.replace(/"/g, "");
-  return joined.slice(0, MAX_TEXT_LENGTH).trim();
+  return joined.trim();
 }
 
 function personQualifier(key: "author" | "assignee", login: string): string {

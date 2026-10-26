@@ -393,7 +393,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     getChatWatches: (args: unknown) => read("prs.getChatWatches", args, []),
     // An older host has no resolver: the picture keeps its own fallback.
-    resolveMedia: async (args: unknown) => {
+    resolveMedia: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.resolveMedia", pin, infra);
       const unavailable = { status: "unavailable" as const, reason: "github_error" as const };
       if (!commands.hasAction("prs.resolveMedia")) return unavailable;
       return await read<ResolvePrMediaResult>("prs.resolveMedia", args, unavailable);
@@ -457,7 +458,14 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // rows (and read-only assignees) instead of reading an empty answer.
     setAssignees: async (args: unknown) => {
       if (!commands.hasAction("prs.setAssignees")) throw new Error("This machine's ADE cannot assign people yet. Update it to edit assignees.");
-      const result = await call<SetPrAssigneesResult>("prs.setAssignees", args, { assignees: [], notAssigned: [] }, false);
+      // A mutation never fabricates success: with no project open on the host
+      // the call resolves no fallback, so reject and let the card keep its draft.
+      const result = await commands.call<SetPrAssigneesResult>("prs.setAssignees", asRecord(args), {
+        fallback: () => {
+          throw new Error("Open a project on the connected ADE host to update assignees.");
+        },
+        idempotent: false,
+      });
       invalidatePrsReads();
       return result;
     },

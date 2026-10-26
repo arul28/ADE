@@ -41,6 +41,12 @@ export type GithubMediaResolverDeps = {
   getReadToken: () => Promise<string>;
   /** The credential-chain API request (rate limits, cooldowns, fallback). */
   apiRequest: ApiRequest;
+  /**
+   * Changes whenever the GitHub credential set does. A signed URL belongs to
+   * the account that asked for it, so a cache entry from before a sign-out or
+   * account switch must never be served afterwards.
+   */
+  credentialRevision?: () => number;
   fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
   now?: () => number;
   logger?: { info: (event: string, data?: Record<string, unknown>) => void };
@@ -235,7 +241,10 @@ export function createGithubMediaResolver(deps: GithubMediaResolverDeps) {
       const canonical = githubAttachmentCanonicalUrl(args?.url);
       const context = githubRepoContext(args?.repoOwner, args?.repoName);
       if (!canonical || !context) return { status: "unavailable", reason: "not_eligible" };
-      const key = `${canonical.toLowerCase()}|${context.toLowerCase()}`;
+      // The revision is part of the key, so a credential change makes every
+      // earlier entry and in-flight read unreachable instead of clearing maps.
+      const revision = deps.credentialRevision?.() ?? 0;
+      const key = `${canonical.toLowerCase()}|${context.toLowerCase()}|${revision}`;
       const cached = cache.get(key);
       if (cached) {
         if (cached.until > now()) {

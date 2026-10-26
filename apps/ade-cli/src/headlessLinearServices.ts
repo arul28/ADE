@@ -853,6 +853,8 @@ export function createHeadlessGitHubService(
   // this a remote runtime reports a corrupted store as "GitHub was never
   // connected" — identical to a fresh install. See GitHubStatus.credentialStoreUnreadable.
   let credentialStoreUnreadable = false;
+  /** Bumped whenever a stored GitHub credential is written or cleared. */
+  let credentialRevision = 0;
   let statusLookupGeneration = 0;
   let statusLookupInFlight: {
     generation: number;
@@ -2368,6 +2370,7 @@ export function createHeadlessGitHubService(
       credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
+      credentialRevision += 1;
       invalidateStatusCache();
       emitStatusChanged();
     },
@@ -2380,8 +2383,13 @@ export function createHeadlessGitHubService(
       // this process holds, so the previous unreadable verdict is stale.
       credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
+      credentialRevision += 1;
       invalidateStatusCache();
       emitStatusChanged();
+    },
+    /** See the desktop service: a signed-URL cache keys on this. */
+    getCredentialRevision(): number {
+      return credentialRevision;
     },
     requestRawWithCredentialFallback,
     /** Runtime-owned twin of the desktop service's star check. */

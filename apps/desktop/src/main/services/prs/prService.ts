@@ -2278,6 +2278,12 @@ export function createPrService({
     options: { hot?: boolean } = {},
   ): Promise<void> => {
     readCache.forgetRepo(target.repo);
+    // A mutation can change what a filter search matches — labels, title,
+    // body, state, assignees — and the mapped PR path below only clears the
+    // list snapshot on a hot refresh or a material summary change. Drop the
+    // filtered-search cache here so the next read cannot answer with the
+    // pre-mutation rows for its 60-second lifetime.
+    prListFilterOps?.invalidateSearchCache();
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
@@ -13036,6 +13042,7 @@ export function createPrService({
       mediaResolver ??= createGithubMediaResolver({
         getReadToken: () => githubService.getReadTokenOrThrowAsync(),
         apiRequest: (request) => githubService.apiRequest(request),
+        credentialRevision: () => githubService.getCredentialRevision(),
         logger,
       });
       return await mediaResolver.resolve(args);

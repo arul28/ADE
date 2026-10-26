@@ -4404,6 +4404,8 @@ const MOCK_FILTER_PEOPLE = [
   { value: "outsider", name: "Fork Contributor", avatarUrl: null },
 ];
 const MOCK_PR_ASSIGNEES = new Map<string, Array<{ login: string; avatarUrl: string | null }>>();
+/** Who `@me` means: the snapshot's viewer when it knows one. */
+const MOCK_VIEWER_LOGIN = String(MOCK_GITHUB_SNAPSHOT?.viewerLogin ?? "mock-user") || "mock-user";
 if (!USE_ADE_DB_SNAPSHOT) {
   (MOCK_GITHUB_SNAPSHOT.repoPullRequests ?? []).forEach((row: any, index: number) => {
     if (!Array.isArray(row.labels) || row.labels.length === 0) {
@@ -4412,6 +4414,17 @@ if (!USE_ADE_DB_SNAPSHOT) {
     }
     if (index % 2 === 0) MOCK_PR_ASSIGNEES.set(String(row.id), [{ login: index % 4 === 0 ? "mock-user" : "teammate", avatarUrl: null }]);
   });
+} else {
+  // A database snapshot already carries each PR's assignees; without seeding
+  // them here the detail card shows people while the assignee filter (and
+  // `@none`) acts as if nobody is assigned.
+  for (const snapshot of ADE_DB_PR_SNAPSHOTS) {
+    const assignees = Array.isArray(snapshot?.detail?.assignees) ? snapshot.detail.assignees : [];
+    const people = assignees
+      .map((user: any) => ({ login: String(user?.login ?? ""), avatarUrl: user?.avatarUrl ?? null }))
+      .filter((user: { login: string }) => user.login.length > 0);
+    if (people.length > 0) MOCK_PR_ASSIGNEES.set(String(snapshot.prId), people);
+  }
 }
 
 function mockPrAssigneeKey(prId: string): string {
@@ -4458,11 +4471,11 @@ async function mockSearchGitHubPrs(args: any) {
     const labelNames = (row.labels ?? []).map((label: any) => String(label.name).toLowerCase());
     if ((filters.labels ?? []).some((label: string) => !labelNames.includes(label.toLowerCase()))) return false;
     const author = String(row.author ?? "").toLowerCase();
-    if (filters.author && author !== (filters.author === "@me" ? "mock-user" : String(filters.author).toLowerCase())) return false;
+    if (filters.author && author !== (filters.author === "@me" ? MOCK_VIEWER_LOGIN.toLowerCase() : String(filters.author).toLowerCase())) return false;
     const assignees = (MOCK_PR_ASSIGNEES.get(String(row.id)) ?? []).map((user) => user.login.toLowerCase());
     if (filters.assignee === "@none" && assignees.length > 0) return false;
     if (filters.assignee && filters.assignee !== "@none"
-      && !assignees.includes(filters.assignee === "@me" ? "mock-user" : String(filters.assignee).toLowerCase())) return false;
+      && !assignees.includes(filters.assignee === "@me" ? MOCK_VIEWER_LOGIN.toLowerCase() : String(filters.assignee).toLowerCase())) return false;
     return !text || String(row.title ?? "").toLowerCase().includes(text);
   });
   return { items, totalCount: items.length, nextCursor: null, query, error: null };

@@ -2696,6 +2696,16 @@ export function createGithubService({
       });
     },
 
+    /**
+     * Bumps whenever the credential set changes (a new PAT, a sign-out, a
+     * GitHub App auth change). A cache that holds anything derived from a
+     * credential — a signed media URL carries one — keys on this so it cannot
+     * hand out the previous account's answer.
+     */
+    getCredentialRevision(): number {
+      return sharedGhAuth.credentialInventoryRevision;
+    },
+
     clearToken(): void {
       const previousToken = readStoredPatToken();
       persistToken(null);
