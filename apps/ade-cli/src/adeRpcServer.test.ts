@@ -5451,6 +5451,30 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-1",
     });
 
+    // A watch wakes the chat that armed it: an agent may arm one only for its
+    // own chat, on a terminal it may read, and always as the agent.
+    const watch = vi.fn(async (args: unknown) => ({ watchId: "watch-1", ...(args as object) }));
+    (fixture.runtime as any).terminalWatchService = { watch, unwatch: vi.fn(), listWatches: vi.fn(() => []) };
+    for (const args of [
+      { terminalId: "terminal-2", match: "error" },
+      { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
+    ]) {
+      const deniedWatch = await callTool(handler, "run_ade_action", { domain: "terminal", action: "watch", args });
+      expect(deniedWatch.isError).toBe(true);
+    }
+    expect(watch).not.toHaveBeenCalled();
+    const ownWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { terminalId: "terminal-1", match: "error", armedBy: "user" },
+    });
+    expect(ownWatch?.isError).toBeUndefined();
+    expect(watch).toHaveBeenCalledWith(expect.objectContaining({
+      chatSessionId: "chat-1",
+      terminalId: "terminal-1",
+      armedBy: "agent",
+    }));
+
     const crossChatRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "readTranscript",
