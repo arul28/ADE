@@ -9,6 +9,13 @@ import { localCheckoutForRemote } from "./projectTabGrouping";
  * Kept in localStorage: the window restores its remote tabs after a reload or
  * a restart, and a pick held only in memory would be forgotten by then, so
  * the restored tab moved back to this computer and closed.
+ *
+ * A pick is forgotten when its tab closes HERE for good (the tab strip's
+ * close, or the local checkout replacing it). A tab moved to another window is
+ * not a close — that window owns it now — so this one must not forget it, and
+ * nothing prunes by "not open in this window": the store is shared by every
+ * window on this origin, and another window's tab is not this one's to forget.
+ * The cap keeps a pick whose tab never comes back from living forever.
  */
 const EXPLICIT_PICKS_STORAGE_KEY = "ade.projectTabs.explicitRemotePicks";
 const MAX_EXPLICIT_PICKS = 50;
@@ -45,6 +52,22 @@ export function rememberExplicitRemotePick(bindingKey: string): void {
 }
 
 /**
+ * Forgets the picks of tabs this window closed for good.
+ *
+ * Only a real close ends a pick: a tab whose close is `forgetState: false`
+ * moved to another window and keeps its choice there. Re-reads first, so a
+ * pick another window made meanwhile survives this write.
+ */
+export function forgetExplicitRemotePicks(bindingKeys: Iterable<string>): void {
+  const picks = readExplicitPicks();
+  let changed = false;
+  for (const key of bindingKeys) {
+    if (picks.delete(key)) changed = true;
+  }
+  if (changed) writeExplicitPicks(picks);
+}
+
+/**
  * A project tab runs on this computer's checkout whenever this computer has the
  * repo. When the window is bound to another machine's copy of a repo that is
  * also here, the tab moves back here in place: same position, no second tab.
@@ -59,8 +82,6 @@ export function usePreferLocalCheckout(args: {
   /** False while something else owns the window's binding (web, restore, Chats, a transition, a new tab). */
   enabled: boolean;
   remoteBinding: RemoteOpenProjectBinding | null;
-  /** The window's open remote tabs; a pick whose tab closed is forgotten. */
-  openRemoteKeys: readonly string[];
   remoteOrigin: string | null;
   openLocalTabs: readonly RecentProjectSummary[];
   knownLocalTabs: readonly RecentProjectSummary[];
@@ -69,7 +90,7 @@ export function usePreferLocalCheckout(args: {
   ) => void;
   setTabOrder: (update: (prev: string[]) => string[]) => void;
 }): void {
-  const { enabled, remoteBinding, openRemoteKeys, remoteOrigin, openLocalTabs, knownLocalTabs, setOpenRemoteProjectTabs, setTabOrder } = args;
+  const { enabled, remoteBinding, remoteOrigin, openLocalTabs, knownLocalTabs, setOpenRemoteProjectTabs, setTabOrder } = args;
   // One attempt per remote binding while it stays bound, so a checkout that
   // fails to open cannot loop. Back on a local checkout, every remote binding
   // gets the preference again.
@@ -79,35 +100,6 @@ export function usePreferLocalCheckout(args: {
     if (remoteBinding) return;
     attemptedKeyRef.current = null;
   }, [remoteBinding]);
-
-  // Only once the window's tabs are restored (`enabled`): before that the
-  // list is empty and would forget every pick.
-  const openRemoteKeysSignature = openRemoteKeys.join("\n");
-  /**
-   * The keys this window had open on the previous pass. Only those can tell
-   * this window that a pick's tab was closed here: the store is shared by
-   * every window on this origin, so "everything I do not have open" includes
-   * every other window's picks, and pruning those made their restored remote
-   * tabs move back to this computer.
-   */
-  const previousOpenKeysRef = useRef<Set<string> | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    const open = new Set(openRemoteKeysSignature ? openRemoteKeysSignature.split("\n") : []);
-    const previous = previousOpenKeysRef.current;
-    previousOpenKeysRef.current = open;
-    if (!previous) return;
-    const closed = [...previous].filter((key) => !open.has(key));
-    if (closed.length === 0) return;
-    // Re-read before writing: another window may have picked since this one
-    // loaded, and its pick has to survive this write.
-    const picks = readExplicitPicks();
-    let changed = false;
-    for (const key of closed) {
-      if (picks.delete(key)) changed = true;
-    }
-    if (changed) writeExplicitPicks(picks);
-  }, [enabled, openRemoteKeysSignature]);
 
   useEffect(() => {
     if (!enabled || !remoteBinding) return;

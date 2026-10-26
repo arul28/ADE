@@ -24,6 +24,7 @@ import {
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
+  LINUX_DESKTOP_ENCODER_REQUIREMENT,
   MAC_DESKTOP_RESOLUTION_PRESETS,
   WINDOWS_DESKTOP_HELD_CODE,
   WINDOWS_DESKTOP_LOCKED_CODE,
@@ -91,6 +92,7 @@ import {
   type WindowsDesktopStatus,
   type WindowsDesktopTakeoverArgs,
   MAC_DESKTOP_ANSWER_CODES,
+  type LinuxDesktopHostFacts,
   type LinuxDesktopSetupResult,
 } from "../../../shared/types/macDesktop";
 import type {
@@ -136,7 +138,6 @@ import {
   installLinuxDesktopPackages,
   linuxDesktopInstallCommand,
   LINUX_DESKTOP_ENCODER_MESSAGE,
-  LINUX_DESKTOP_ENCODER_REQUIREMENT,
 } from "../linuxDesktop/linuxDesktopSetup";
 
 /** KV key for the lane display size. Read on every `start`. */
@@ -986,6 +987,21 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // Status
   // -------------------------------------------------------------------------
 
+  /**
+   * The Linux helper's report plus the one command that installs what is
+   * missing.
+   *
+   * The report is parsed where it arrives (the driver lifecycle, which must not
+   * depend on package management); the command is derived here, where the
+   * status is built, because that is the string the status and the setup verb
+   * hand to a person.
+   */
+  const linuxDesktopStatusFacts = (): LinuxDesktopHostFacts | null => {
+    const report = driverLifecycle.linuxHostReport();
+    if (!report) return null;
+    return { ...report, installCommand: linuxDesktopInstallCommand(report.missing) };
+  };
+
   const buildStatus = async (args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> => {
     const laneId = args.laneId?.trim() || null;
     const driverHealth = driverLifecycle.driverHealth() ?? {
@@ -1030,7 +1046,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       responsibleAppName: responsibleAppName(),
       signing: signingState(),
       windowsDesktop: windowsOps.withOperation(await readWindowsDesktopStatus()),
-      ...(isLinuxSeat ? { linuxDesktop: driverLifecycle.linuxHostFacts() } : {}),
+      ...(isLinuxSeat ? { linuxDesktop: linuxDesktopStatusFacts() } : {}),
     };
     return { ...base, seat: describeDesktopSeat(base) };
   };
@@ -1485,18 +1501,24 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // "Unknown" is not "nothing missing": a health read that raced the
       // helper's start leaves no facts, and answering "installed" there told a
       // bare VPS it was ready when Xvfb, openbox, D-Bus and ffmpeg were absent.
-      let facts = driverLifecycle.linuxHostFacts();
+      let facts = driverLifecycle.linuxHostReport();
       if (!facts) {
         await driverLifecycle.refreshDriverHealth();
-        facts = driverLifecycle.linuxHostFacts();
+        facts = driverLifecycle.linuxHostReport();
       }
       if (!facts) {
+        // Two different faults, two different next steps: a helper that never
+        // answered needs a retry, and a helper that answered without Linux
+        // facts (an older build) needs a restart or an update. The second
+        // otherwise reads as the first and `ade screen status` shows nothing.
         return {
           installed: false,
           alreadyInstalled: false,
           command: null,
           needsUser: false,
-          message: "Could not read what this machine is missing: the Linux screen helper did not answer. Try again, or run: ade screen status --text",
+          message: driverLifecycle.linuxHostFactsUnreported()
+            ? "The Linux screen helper answered but reports no Linux facts, so ADE cannot tell what this machine is missing. Restart the helper, or update ADE on that machine, then run: ade screen status --text"
+            : "Could not read what this machine is missing: the Linux screen helper did not answer. Try again, or run: ade screen status --text",
         };
       }
       const missing = facts.missing;

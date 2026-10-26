@@ -27,8 +27,10 @@ export type CommandCallOptions<T> = {
  *
  * A mutation resolves the host's own answer or rejects — there is no value a
  * caller could pass that would be honest to resolve when the host never took
- * the call. `idempotent: false` is what selects this shape, so a call carrying
- * a fallback stays a read and a mutation cannot quietly inherit one.
+ * the call. `idempotent: false` selects this shape, and a mutation has no read
+ * key, so every branch that would resolve an offline answer rejects before a
+ * fallback could be reached. Write `{ idempotent: false }` and nothing else:
+ * the read shape is the one that carries a fallback.
  */
 export type CommandMutationCallOptions = Omit<CommandCallOptions<never>, "fallback" | "cacheTtlMs"> & {
   idempotent: false;

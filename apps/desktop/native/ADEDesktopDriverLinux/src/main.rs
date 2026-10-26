@@ -10,6 +10,12 @@
 //! viewer's pointer events must land in the order they were sent); `wait`,
 //! `ping` and cross-lane ops run on their own threads so a long wait never
 //! holds a lane's input.
+//!
+//! A lane's worker lives exactly as long as the lane: `display.create` starts
+//! it, and the worker drops its own queue entry once its screen is gone, after
+//! the destroy has run and the requests already queued are answered. Nothing
+//! else removes or re-creates that entry, so a request cannot strand a worker
+//! for a lane that no longer exists.
 
 mod atspi;
 mod draw;
@@ -34,11 +40,25 @@ use std::time::Duration;
 
 const VERSION: &str = concat!("linux-", env!("CARGO_PKG_VERSION"));
 
+/// Sent to a lane's worker after its screen is gone, to wake an idle worker so
+/// it can drop its own queue entry and end. Never answered, never logged.
+const LANE_GONE: &str = "__lane_gone";
+
+/// One lane's request queue, and the gate its requests share with a teardown
+/// that runs off the worker (`display.reconcile`, driver exit).
+struct LaneQueue {
+    tx: Sender<Value>,
+    /// Held by the lane's worker while it answers one request, and by a
+    /// teardown running on another thread: a request never runs while the
+    /// lane's screen is being destroyed.
+    gate: Arc<Mutex<()>>,
+}
+
 struct Driver {
     ade_home: PathBuf,
     out: Arc<Output>,
     lanes: Mutex<HashMap<String, Arc<Lane>>>,
-    queues: Mutex<HashMap<String, Sender<Value>>>,
+    queues: Mutex<HashMap<String, LaneQueue>>,
     shutting_down: AtomicBool,
 }
 
@@ -73,6 +93,10 @@ impl Driver {
             // An installed ffmpeg with no H.264 encoder is a different
             // problem with a different fix, so it carries its own requirement
             // name: installing the `ffmpeg` package again would not help.
+            // Keep this equal to `LINUX_DESKTOP_ENCODER_REQUIREMENT` in
+            // `apps/desktop/src/shared/types/macDesktop.ts`: the CLI and the
+            // setup verb read that constant, and nothing but this build mints
+            // the name on the wire.
             (true, false) => missing.push("ffmpeg-encoder"),
             (true, true) => {}
         }
@@ -116,20 +140,39 @@ impl Driver {
     }
 
     fn destroy(&self, lane_id: &str, reason: &str) -> Value {
+        // The lane goes first, so a request queued behind this destroy finds
+        // no screen and answers `NO_DISPLAY`. The queue entry belongs to the
+        // lane's worker: it drops the entry itself, after this teardown has
+        // run and the requests already queued are answered, which is what
+        // ends the thread. Removing it here would let the next request create
+        // a second worker for a lane whose destroy is still running.
         let lane = self.lanes.lock().unwrap().remove(lane_id);
-        // The lane's worker owns nothing once its screen is gone: drop its
-        // queue entry, so its `recv()` ends as soon as the requests already
-        // queued for it are answered and the thread exits with the lane.
-        self.queues.lock().unwrap().remove(lane_id);
         let Some(lane) = lane else {
             return json!({"destroyed": false, "releasedWindows": 0, "quitApps": [], "appsLeftOpen": []});
         };
         let result = lane.destroy();
+        self.wake_worker(lane_id);
         let mut fields = serde_json::Map::new();
         fields.insert("laneId".into(), json!(lane_id));
         fields.insert("reason".into(), json!(reason));
         self.out.event("display-destroyed", fields);
         result
+    }
+
+    /// Tells a lane's worker its screen is gone.
+    ///
+    /// The worker may be idle in `recv`, in which case nothing else would ever
+    /// wake it: the entry it owns would live until the driver exits.
+    fn wake_worker(&self, lane_id: &str) {
+        if let Some(queue) = self.queues.lock().unwrap().get(lane_id) {
+            let _ = queue.tx.send(json!({ "op": LANE_GONE }));
+        }
+    }
+
+    /// The gate a teardown off the lane's worker must hold: it waits for the
+    /// request in flight to finish and keeps the next one from starting.
+    fn lane_gate(&self, lane_id: &str) -> Option<Arc<Mutex<()>>> {
+        self.queues.lock().unwrap().get(lane_id).map(|queue| queue.gate.clone())
     }
 
     /// One request, answered. Runs on the lane's worker (or its own thread).
@@ -158,6 +201,11 @@ impl Driver {
                 let mut destroyed = Vec::new();
                 for id in self.lane_ids() {
                     if !live.contains(&id) {
+                        // Off the lane's worker, so hold the lane's gate: no
+                        // request of that lane may run while its screen is
+                        // being destroyed.
+                        let gate = self.lane_gate(&id);
+                        let _held = gate.as_ref().map(|gate| gate.lock().unwrap());
                         self.destroy(&id, "reconciled");
                         destroyed.push(id);
                     }
@@ -208,6 +256,10 @@ impl Driver {
             return;
         }
         for id in self.lane_ids() {
+            // The worker is not the caller here, so wait out its request and
+            // keep the next one from starting (it answers `LANE_STOPPING`).
+            let gate = self.lane_gate(&id);
+            let _held = gate.as_ref().map(|gate| gate.lock().unwrap());
             self.destroy(&id, "driver_exit");
         }
     }
@@ -232,6 +284,48 @@ fn spawn_watcher(lane: Arc<Lane>, out: Arc<Output>) {
             }
         }
     });
+}
+
+/// Starts one lane's worker and returns its queue entry.
+///
+/// The worker owns the entry. It holds the gate while it answers a request;
+/// once `Driver::destroy` has run it receives `LANE_GONE`, removes its own
+/// entry, and ends after answering the requests already queued behind it.
+/// Nothing else inserts or removes that entry, so it cannot outlive its lane,
+/// and no request can re-create it for a lane whose destroy is still running.
+fn lane_queue(driver: &Arc<Driver>, lane_id: &str) -> LaneQueue {
+    let (tx, rx) = channel::<Value>();
+    let gate = Arc::new(Mutex::new(()));
+    let gate_for_worker = gate.clone();
+    let worker_lane = lane_id.to_string();
+    let worker_driver = driver.clone();
+    std::thread::Builder::new()
+        .name(format!("lane-{}", &lane_id.chars().take(8).collect::<String>()))
+        .spawn(move || {
+            while let Ok(req) = rx.recv() {
+                // Its screen is gone. Drop the entry if it is still this
+                // worker's, so no new worker is created for the id, then keep
+                // answering what is already queued until the channel ends.
+                if req.get("op").and_then(|op| op.as_str()) == Some(LANE_GONE) {
+                    let mut queues = worker_driver.queues.lock().unwrap();
+                    if queues.get(&worker_lane).map(|queue| Arc::ptr_eq(&queue.gate, &gate_for_worker)).unwrap_or(false) {
+                        queues.remove(&worker_lane);
+                    }
+                    continue;
+                }
+                let id = req.get("id").cloned().unwrap_or(Value::Null);
+                // One request at a time, and never while a teardown holds the
+                // gate from another thread (`display.reconcile`, driver exit).
+                let result = {
+                    let _gate = gate_for_worker.lock().unwrap();
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_driver.handle(&req)))
+                        .unwrap_or_else(|_| Err(DriverError::new(code::INTERNAL_ERROR, "The driver hit an internal fault on this request.")))
+                };
+                worker_driver.out.reply(&id, result);
+            }
+        })
+        .expect("lane worker");
+    LaneQueue { tx, gate }
 }
 
 /// An X server a crashed earlier driver left behind (its parent is gone and
@@ -344,42 +438,27 @@ fn main() {
         let global = matches!(op.as_str(), "ping" | "display.reconcile" | "watch-permissions" | "request-permission")
             || (op == "window.list" && lane_id.is_none());
         // A lane's worker exists only while the lane does: `display.create`
-        // starts one, and `Driver::destroy` drops its queue entry. A request
-        // for a lane that is already gone (a stale read racing a destroy) joins
-        // no worker, so it runs on its own thread instead of stranding one.
-        let use_worker = op == "display.create"
-            || (!global
-                && !is_wait
-                && lane_id.as_ref().map(|id| driver.queues.lock().unwrap().contains_key(id)).unwrap_or(false));
-        match lane_id {
-            Some(lane_id) if use_worker => {
-                let tx = {
-                    let mut queues = driver.queues.lock().unwrap();
-                    queues
-                        .entry(lane_id.clone())
-                        .or_insert_with(|| {
-                            let (tx, rx) = channel::<Value>();
-                            let driver = driver.clone();
-                            // The lane's worker: lives as long as the lane it
-                            // serves, so the children it spawns keep their
-                            // parent-death link. `Driver::destroy` drops this
-                            // queue entry, which ends the thread once the
-                            // requests already queued are answered.
-                            std::thread::Builder::new()
-                                .name(format!("lane-{}", &lane_id.chars().take(8).collect::<String>()))
-                                .spawn(move || {
-                                    while let Ok(req) = rx.recv() {
-                                        let id = req.get("id").cloned().unwrap_or(Value::Null);
-                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver.handle(&req)))
-                                            .unwrap_or_else(|_| Err(DriverError::new(code::INTERNAL_ERROR, "The driver hit an internal fault on this request.")));
-                                        driver.out.reply(&id, result);
-                                    }
-                                })
-                                .expect("lane worker");
-                            tx
-                        })
-                        .clone()
-                };
+        // starts one, and the worker drops its own entry once its screen is
+        // gone. A request for a lane that is already gone (a stale read racing
+        // a destroy) joins no worker, so it runs on its own thread instead of
+        // stranding one. The lookup and the send are one operation: nothing
+        // re-creates an entry that the worker removed.
+        let tx = match lane_id {
+            Some(lane_id) if !global && !is_wait => {
+                let mut queues = driver.queues.lock().unwrap();
+                if let Some(queue) = queues.get(&lane_id) {
+                    Some(queue.tx.clone())
+                } else if op == "display.create" {
+                    let queue = queues.entry(lane_id.clone()).or_insert_with(|| lane_queue(&driver, &lane_id));
+                    Some(queue.tx.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match tx {
+            Some(tx) => {
                 let _ = tx.send(req);
             }
             _ => {

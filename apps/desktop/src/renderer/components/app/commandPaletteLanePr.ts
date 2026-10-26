@@ -20,6 +20,8 @@ export function useCommandPaletteLanePr({
   pin: OpenProjectBinding | null;
 }): CommandPaletteLanePrResult | null {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The snapshot read is unpinned, so it follows the window's binding.
+  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const pinKey = pin?.key ?? null;
   const laneKey = lane
     ? JSON.stringify([lane.id, lane.laneType, lane.branchRef, lane.baseRef, pinKey])
@@ -53,7 +55,7 @@ export function useCommandPaletteLanePr({
     };
     const refresh = () => Promise.all([
       listPrsCoalesced({ projectRoot, pin }),
-      getGitHubSnapshotCoalesced({}, { projectRoot }),
+      getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey }),
     ]).then(([prs, snapshot]) => {
       publish(prs, snapshot?.repoPullRequests ?? []);
     }).catch(() => {
@@ -64,7 +66,7 @@ export function useCommandPaletteLanePr({
     const unsubscribe = typeof window.ade.prs.onEvent === "function"
       ? window.ade.prs.onEvent((event) => {
         if (event.type !== "prs-updated") return;
-        void getGitHubSnapshotCoalesced({}, { projectRoot }).then((snapshot) => {
+        void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey }).then((snapshot) => {
           publish(event.prs, snapshot?.repoPullRequests ?? []);
         }).catch(() => {});
       }, pin)
@@ -77,7 +79,7 @@ export function useCommandPaletteLanePr({
     // Runtime bindings can be rebuilt with the same key; preserve the in-flight
     // request and subscription unless the actual target changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, laneKey, projectRoot, pinKey]);
+  }, [active, laneKey, projectRoot, bindingKey, pinKey]);
 
   if (!laneKey) return null;
   if (result?.key === laneKey) return { status: result.status, tag: result.tag };

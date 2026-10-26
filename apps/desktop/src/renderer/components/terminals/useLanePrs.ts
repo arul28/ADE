@@ -158,6 +158,8 @@ export function lanePrsForMachine(
  */
 export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The GitHub snapshot is an unpinned read, so it follows the window's binding.
+  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const lanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const [prs, setPrs] = useState<PrSummary[]>([]);
@@ -169,7 +171,7 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
     let cancelled = false;
     const refresh = () => Promise.all([
       listPrsCoalesced({ projectRoot }),
-      getGitHubSnapshotCoalesced({}, { projectRoot }),
+      getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey }),
     ])
       .then(([list, snapshot]) => {
         if (cancelled) return;
@@ -181,7 +183,7 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "prs-updated") return;
       setPrs(event.prs);
-      void getGitHubSnapshotCoalesced({}, { projectRoot })
+      void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
         .then((snapshot) => {
           if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
         })
@@ -191,7 +193,7 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
       cancelled = true;
       unsubscribe();
     };
-  }, [projectRoot]);
+  }, [projectRoot, bindingKey]);
   // Derived, not searched. `isEligibleMachineOption` excludes the tab's own
   // machine from the union, so looking it up in `machines` would always miss and
   // the composite key would never be filled — leaving correctness resting on

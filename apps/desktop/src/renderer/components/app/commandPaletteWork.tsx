@@ -24,6 +24,7 @@ import {
   WORK_TOOL_DEFINITIONS,
   workToolAvailability,
   workToolCardLabel,
+  workToolHint,
   workToolLabel,
   type WorkToolContext,
 } from "../terminals/workTools";
@@ -526,7 +527,7 @@ export function buildWorkToolCommands({
         id: `work-tools-${definition.id}`,
         title: `Tools: ${workToolLabel(definition.id, hostPlatform)}`,
         hint:
-          definition.hint ??
+          workToolHint(definition.id, hostPlatform) ??
           (definition.id === "files" ? "Browse lane files" : "Open this tool"),
         keywords: [
           "tools",

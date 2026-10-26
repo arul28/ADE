@@ -8,7 +8,7 @@ import {
   type MacDesktopPermissions,
   type MacDesktopRequestPermissionArgs,
   type MacDesktopRecheckPermissionsArgs,
-  type LinuxDesktopHostFacts,
+  type LinuxDesktopHostReport,
 } from "../../../shared/types/macDesktop";
 import { readLinuxHostFacts } from "../linuxDesktop/linuxHostFacts";
 import { resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
@@ -86,8 +86,14 @@ export type MacDesktopDriverLifecycle = {
   hasDriver(): boolean;
   isDriverRunning(): boolean;
   driverHealth(): MacDesktopDriverHealth | null;
-  /** Linux: the missing system packages the helper last reported, or null. */
-  linuxHostFacts(): LinuxDesktopHostFacts | null;
+  /** Linux: what the helper last said is missing on the machine, or null. */
+  linuxHostReport(): LinuxDesktopHostReport | null;
+  /**
+   * Linux: the helper answered, but its reply carried no `linux` object (an
+   * older helper, or one started before ADE was updated). Null facts alone
+   * cannot tell that apart from a helper that never answered.
+   */
+  linuxHostFactsUnreported(): boolean;
   /** One stack sample of the running driver, for a capture that stalled. */
   sampleCaptureStall(reason: string): void;
   refreshDriverHealth(): Promise<void>;
@@ -191,7 +197,14 @@ export function createMacDesktopDriverLifecycle(
   };
 
   /** Linux: what the helper last said is missing on the machine. */
-  let linuxHostFacts: LinuxDesktopHostFacts | null = null;
+  let linuxHostReport: LinuxDesktopHostReport | null = null;
+  /**
+   * Linux: the last health reply came from a helper that sent no `linux`
+   * object. Distinct from a helper that did not answer at all, which can also
+   * leave {@link linuxHostReport} null: `ade screen setup` says which of the
+   * two it hit instead of blaming a silent helper that answered.
+   */
+  let linuxFactsUnreported = false;
 
   const refreshDriverHealth = async (target: DriverBackend | null = backend): Promise<void> => {
     if (!target) return;
@@ -202,10 +215,16 @@ export function createMacDesktopDriverLifecycle(
       if (driverLaneIds) reconcileWithDriver(driverLaneIds, before);
       target.client.setVersion(asNullableString(reply.version));
       if (permissionsSupported) applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
-      if (reply.linux !== undefined) linuxHostFacts = readLinuxHostFacts(reply.linux);
+      if (reply.linux !== undefined) linuxHostReport = readLinuxHostFacts(reply.linux);
+      // Only a Linux helper is asked for these; an answer without them is an
+      // older helper's answer, not silence.
+      linuxFactsUnreported = deps.platform === "linux" && reply.linux === undefined;
       const mode = asNullableString(reply.displayMode);
       if (mode === "virtual" || mode === "offscreen-region" || mode === "unavailable") displayMode = mode;
     } catch (error) {
+      // No answer at all: the "unreported" state belongs to a helper that
+      // replied, so a failed read clears it.
+      linuxFactsUnreported = false;
       deps.logger.debug("mac_desktop.driver_health_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -307,7 +326,8 @@ export function createMacDesktopDriverLifecycle(
     hasDriver() { return backend !== null; },
     isDriverRunning() { return Boolean(backend?.client.isRunning()); },
     driverHealth() { return backend?.client.getHealth() ?? null; },
-    linuxHostFacts() { return linuxHostFacts; },
+    linuxHostReport() { return linuxHostReport; },
+    linuxHostFactsUnreported() { return linuxFactsUnreported; },
     sampleCaptureStall(reason) { backend?.client.sampleCaptureStall?.(reason); },
     refreshDriverHealth: async () => refreshDriverHealth(),
     reconcileDisplays,

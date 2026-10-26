@@ -206,13 +206,13 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
     },
     start: (args, pin) => {
       routable("macDesktop.start", pin);
-      return commands.call(
+      return commands.call<MacDesktopStatus | SyncMacDesktopStatus | null>(
         "macDesktop.start",
         {
           laneId: args.laneId,
           ...(args.laneName ? { laneName: args.laneName } : {}),
         },
-        { fallback: null as MacDesktopStatus | null, idempotent: false },
+        mutation,
       ).then(paneStatus);
     },
     stop: (args, pin) => {
@@ -220,20 +220,20 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
       return commands.call(
         "macDesktop.stop",
         { laneId: args.laneId },
-        { fallback: null as MacDesktopStopResult | null, idempotent: false },
+        mutation,
       );
     },
     stopPrivate: (args) =>
       commands.call(
         "macDesktop.stopPrivate",
         { laneId: args.laneId },
-        { fallback: null as MacDesktopStopResult | null, idempotent: false },
+        mutation,
       ),
     stopSeat: (args) =>
       commands.call(
         "macDesktop.stopSeat",
         { laneId: args.laneId },
-        { fallback: null as MacDesktopStopResult | null, idempotent: false },
+        mutation,
       ),
     supportsStopSeat: () => commands.hasAction("macDesktop.stopSeat"),
     supportsLiveStream: () => client.supportsMacDesktopStream(),
@@ -245,13 +245,13 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
           subscriptionId: args.subscriptionId,
           ...(args.viewerLabel ? { viewerLabel: args.viewerLabel } : {}),
         },
-        { fallback: null as SyncMacDesktopStreamSubscribeResult | null, idempotent: false },
+        mutation,
       ),
     streamUnsubscribe: (args) =>
       commands.call(
         "macDesktop.streamUnsubscribe",
         { subscriptionId: args.subscriptionId },
-        { fallback: null, idempotent: false },
+        mutation,
       ),
     onStreamRecord: (listener) => client.onMacDesktopStreamRecord(listener),
     onStreamEnded: (listener) => client.onMacDesktopStreamEnded(listener),
@@ -273,25 +273,25 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
           controllerId: args.controllerId,
           ...(args.controllerLabel ? { controllerLabel: args.controllerLabel } : {}),
         },
-        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+        mutation,
       ),
     returnControl: (args) =>
       commands.call(
         "macDesktop.returnControl",
         { laneId: args.laneId, controllerId: args.controllerId },
-        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+        mutation,
       ),
     renewLease: (args) =>
       commands.call(
         "macDesktop.renewLease",
         { laneId: args.laneId, controllerId: args.controllerId ?? args.holderId },
-        { fallback: null as MacDesktopLeaseState | null, idempotent: false },
+        mutation,
       ),
     input: (args) =>
       commands.call(
         "macDesktop.input",
         { laneId: args.laneId, call: args.call },
-        { fallback: null as MacDesktopInputResult | null, idempotent: false },
+        mutation,
       ),
     listWindows: (args, pin) => {
       routable("macDesktop.listWindows", pin);

@@ -691,13 +691,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ): Promise<boolean> => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
+    // The snapshot read is unpinned, so it follows the window's binding.
+    const startedBindingKey = appStore.getState().projectBinding?.key ?? null;
     try {
       const snapshot = await getGitHubSnapshotCoalesced(
         {
           force: options?.force === true,
           ...(options?.automaticRefresh === true ? { automaticRefresh: true } : {}),
         },
-        { projectRoot: startedRoot },
+        { projectRoot: startedRoot, bindingKey: startedBindingKey },
       );
       if (requestId !== laneGithubPrTagsRequestRef.current) return false;
       if (getActiveProjectRoot() !== startedRoot) return false;

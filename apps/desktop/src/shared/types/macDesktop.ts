@@ -1123,6 +1123,7 @@ export {
   WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION,
   WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION,
   LINUX_DESKTOP_SEAT_DESCRIPTION,
+  LINUX_DESKTOP_SETUP_USER_STEP,
   describeDesktopSeat,
   desktopProductName,
   desktopSeatKind,
@@ -1422,11 +1423,27 @@ export type DesktopSeatProviderId =
   | "linux-xvfb";
 
 /**
- * What a Linux host's helper reports about the machine: which of the system
- * packages a lane screen needs are missing, and the one command that installs
- * them. Null on every other host and from a helper that predates it.
+ * The helper's name for an installed ffmpeg whose build has no H.264 encoder.
+ *
+ * It is a requirement name, never a package: no distribution ships an
+ * `ffmpeg-encoder` to install, so every surface that lists installable names
+ * or builds the install command must filter it out and explain it in words.
+ * The native helper mints it (see `native/ADEDesktopDriverLinux/src/main.rs`,
+ * `linux.ping`), so this constant and that string must stay equal.
  */
-export type LinuxDesktopHostFacts = {
+export const LINUX_DESKTOP_ENCODER_REQUIREMENT = "ffmpeg-encoder";
+
+/**
+ * What a Linux host's helper reports about the machine: which of the system
+ * packages a lane screen needs are missing, and which H.264 encoder its ffmpeg
+ * offers.
+ *
+ * `readLinuxHostFacts` answers null on every other host and for a reply from a
+ * helper that predates it. The install command is derived from this report
+ * where the status is built, so the parser that reads the helper's reply has
+ * no dependency on package management.
+ */
+export type LinuxDesktopHostReport = {
   /**
    * The helper's names: `xvfb`, `openbox`, `dbus`, `at-spi2-core`, `ffmpeg`,
    * and `ffmpeg-encoder` when ffmpeg itself is installed but its build has no
@@ -1436,6 +1453,13 @@ export type LinuxDesktopHostFacts = {
   missing: string[];
   /** `x264` or `openh264`: the H.264 encoder the system ffmpeg offers. */
   encoder: string | null;
+};
+
+/**
+ * The `linuxDesktop` field of a status: {@link LinuxDesktopHostReport} plus the
+ * one command that installs what is missing.
+ */
+export type LinuxDesktopHostFacts = LinuxDesktopHostReport & {
   /** The shell command that installs what is missing, or null. */
   installCommand: string | null;
 };
@@ -1574,18 +1598,40 @@ export type WindowsDesktopSetupArgs = {
 /**
  * `ade screen setup`: one verb on every seat host.
  *
- * The Windows fields are the wizard's; a Linux host reads `allowPrompt` and
- * ignores the password fields.
+ * `allowPrompt` is the one argument every host reads; a Linux host ignores the
+ * password fields, which belong to the Windows wizard (and its saved
+ * credential).
  */
-export type DesktopSetupArgs = WindowsDesktopSetupArgs;
+export type DesktopSetupArgs = {
+  /**
+   * Passed true after approval from a trusted CTO client on any device.
+   * The helper refuses Windows admin/Remote Desktop changes otherwise;
+   * native UAC and password entry still occur on the Windows host.
+   */
+  allowPrompt: boolean;
+  /** Windows only: opens a native password dialog and verifies a private sign-in before saving. */
+  savePassword?: boolean;
+  /** Windows only: removes only ADE's saved Windows Desktop credential. */
+  forgetPassword?: boolean;
+};
 
-/** What `ade screen setup` answers, whichever seat the host runs. */
+/**
+ * What `ade screen setup` answers, whichever seat the host runs.
+ *
+ * Every arm carries `needsUser` and `message`, so a surface prints one
+ * sentence and says whether the user still has a step without first asking
+ * which host it is talking to. The rest of each arm stays platform-specific.
+ */
 export type DesktopSetupResult = WindowsDesktopSetupResult | LinuxDesktopSetupResult;
 
 export type WindowsDesktopSetupResult = {
   /** Setup needs an interactive admin prompt the helper has not raised yet. */
   requiresAdmin: boolean;
   status: WindowsDesktopStatus;
+  /** True when only the user can finish the step (the admin prompt). */
+  needsUser: boolean;
+  /** One sentence saying what happened, for a surface that does not know the host. */
+  message: string;
 };
 
 /**

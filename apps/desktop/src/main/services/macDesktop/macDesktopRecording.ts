@@ -250,6 +250,21 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   const stopping = new Map<string, Promise<MacDesktopRecordingStatus>>();
   /** laneId → where the running recording's raw file goes and what it becomes. */
   const raws = new Map<string, RawRecording>();
+  /**
+   * laneIds whose `record.start` has not answered yet.
+   *
+   * The helper's media thread starts inside `record.start`, before its reply
+   * reaches the brain, so its recorder can die while this side still has no
+   * status to fail.
+   */
+  const starting = new Set<string>();
+  /**
+   * laneId → the helper's one `recording-interrupted` report, seen before the
+   * start it belongs to settled. The helper sends it once, so dropping it
+   * would leave a recording that is `running: true` while its frames are not
+   * being written.
+   */
+  const pendingInterrupts = new Map<string, string>();
 
   const endRaw = (laneId: string): RawRecording | null => {
     const raw = raws.get(laneId) ?? null;
@@ -471,25 +486,46 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     return status;
   };
 
+  /**
+   * The helper's encoder died mid-recording (ffmpeg exited: disk full, an
+   * OOM kill, a codec error). Run the ordinary stop so the helper drops its
+   * dead recorder (the next start would otherwise be refused as "already
+   * recording") and the failure lands in the status through the stop's own
+   * error path, instead of a running recording whose frames are dropped.
+   */
+  const reportInterruption = (laneId: string, message: string): void => {
+    deps.logger.warn("mac_desktop.recording.interrupted", { laneId, message });
+    void stopUserRecording(laneId, null, "requested").catch((error: unknown) => {
+      deps.logger.warn("mac_desktop.recording.interrupted_stop_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /** Applies a report the helper sent before the start had a status to fail. */
+  const applyPendingInterrupt = (laneId: string): void => {
+    const message = pendingInterrupts.get(laneId);
+    if (message === undefined) return;
+    pendingInterrupts.delete(laneId);
+    reportInterruption(laneId, message);
+  };
+
   return {
     recordings,
 
     /**
-     * The helper's encoder died mid-recording (ffmpeg exited: disk full, an
-     * OOM kill, a codec error). Run the ordinary stop so the helper drops its
-     * dead recorder (the next start would otherwise be refused as "already
-     * recording") and the failure lands in the status through the stop's own
-     * error path, instead of a running recording whose frames are dropped.
+     * The helper reports this once per recorder. Until `record.start` has
+     * answered there is no status to fail — the media thread starts inside
+     * that request — so the report is kept for the start to apply; dropping it
+     * would leave a "running" recording that had already lost its encoder.
      */
     interruptRecording(laneId: string, message: string): void {
-      if (!recordings.get(laneId)?.running) return;
-      deps.logger.warn("mac_desktop.recording.interrupted", { laneId, message });
-      void stopUserRecording(laneId, null, "requested").catch((error: unknown) => {
-        deps.logger.warn("mac_desktop.recording.interrupted_stop_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      if (!recordings.get(laneId)?.running) {
+        if (starting.has(laneId)) pendingInterrupts.set(laneId, message);
+        return;
+      }
+      reportInterruption(laneId, message);
     },
 
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
@@ -516,6 +552,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       demoTrackRegistry.begin(demoKey, { surface: "mac-desktop", chatSessionId, laneId });
       // A plain recording is still fitted to 10 MB by an engine, so it fetches too.
       deps.demoEngines?.prepare?.();
+      // From here until the status exists, the helper may report the recorder
+      // it has already started; `interruptRecording` keeps that report for the
+      // drain below instead of dropping it.
+      starting.add(laneId);
       try {
         await startHelperRecording({
           start: () => provider.startRecording({ laneId, fps, filePath, keepIdle: true }),
@@ -526,6 +566,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           stillOwned: () => !isUserRecording(laneId),
         });
       } catch (error) {
+        starting.delete(laneId);
+        // The report belonged to a start that failed; the caller gets that
+        // failure directly, and a later start must not inherit the stop.
+        pendingInterrupts.delete(laneId);
         demoTrackRegistry.discard(demoKey);
         throw error;
       }
@@ -565,8 +609,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         plain,
       };
       recordings.set(laneId, status);
+      starting.delete(laneId);
       armCap(laneId, maxDurationMs);
       deps.emit({ type: "recording-changed", status });
+      applyPendingInterrupt(laneId);
       return status;
     },
 
@@ -580,6 +626,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       demoTrackRegistry.discard(macDesktopDemoKey(laneId));
       recordings.delete(laneId);
       recordingPaths.delete(laneId);
+      starting.delete(laneId);
+      pendingInterrupts.delete(laneId);
     },
 
     clear(): void {
@@ -590,6 +638,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       }
       recordings.clear();
       recordingPaths.clear();
+      starting.clear();
+      pendingInterrupts.clear();
     },
   };
 }

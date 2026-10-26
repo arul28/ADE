@@ -104,6 +104,18 @@ export function windowsDesktopPrivateUnavailableMessage(
 export const LINUX_DESKTOP_SEAT_DESCRIPTION =
   "a private virtual screen (its own X display) on this Linux machine; nothing else draws on it, and its pointer and keyboard are the lane's alone";
 
+/**
+ * The user's step when `ade screen setup` is refused to an agent on a Linux
+ * host.
+ *
+ * `setupWindows` is the one setup verb on every seat, so this sentence sits
+ * beside the Windows one and is chosen by the host: a Linux host installs the
+ * screen's system packages and has no saved password or Windows wizard to
+ * point at.
+ */
+export const LINUX_DESKTOP_SETUP_USER_STEP =
+  "Linux Desktop setup installs the lane screen's system packages on that machine, and only its user can run it. Ask the user to run `ade screen setup --allow-prompt` from a trusted ADE client, or to run the `install with` line `ade screen status --text` prints. An agent cannot do this step.";
+
 export function describeDesktopSeat(
   status: Pick<MacDesktopStatus, "supported" | "display" | "windowsDesktop" | "linuxDesktop"> & {
     /** A host platform string; a reply from an older runtime carries it as plain text. */

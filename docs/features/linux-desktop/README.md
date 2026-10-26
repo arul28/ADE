@@ -158,9 +158,12 @@ ade screen status --text
 ```
 
 `ade screen setup --allow-prompt` (a trusted client: the desktop pane, the
-phone, `ade --role cto`) runs it when ADE is root or `sudo` needs no password,
-which covers most cloud VMs; otherwise it answers with the command for the user
-to run. An agent cannot run setup. Packages per manager:
+phone, `ade --role cto`) runs the same install when ADE is root or `sudo`
+needs no password, which covers most cloud VMs; otherwise it answers with the
+command for the user to run. An agent cannot run setup. The printed command is
+the interactive form (`sudo`, no `-n`), so copying it into a terminal can
+prompt for the password; ADE's own run is `sudo -n`, so a brain with no
+terminal fails instead of hanging. Packages per manager:
 
 | Manager | Packages |
 |---|---|
@@ -174,10 +177,11 @@ Only Xvfb is required to start a screen. Without openbox, windows are
 unmanaged (no title bars; Chrome draws its own); without D-Bus or AT-SPI,
 observations carry the screenshot and windows but no elements (the reason is in
 `stalledApps`); without ffmpeg, everything works except the live view and
-recording. An installed ffmpeg that has no H.264 encoder is reported separately
-as `ffmpeg-encoder`, because installing the `ffmpeg` package again would not add
-one; a full build (or one with libopenh264) does. A browser is not a dependency;
-`ade screen open <url>` names what to install when none is found.
+recording. An installed ffmpeg that has no H.264 encoder is a separate
+requirement (`ffmpeg-encoder`): the encoder row says so in words and the
+packages row never lists it, because installing the `ffmpeg` package again
+would not add one; a full build (or one with libopenh264) does. A browser is not
+a dependency; `ade screen open <url>` names what to install when none is found.
 
 `ade connect` on a Linux machine also turns on systemd lingering for the user
 (best effort), so the brain keeps running after logout and comes back after a

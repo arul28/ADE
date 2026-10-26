@@ -822,10 +822,6 @@ export function TopBar({
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
-  const openRemoteProjectTabKeys = useMemo(
-    () => openRemoteProjectTabs.map((binding) => binding.key),
-    [openRemoteProjectTabs],
-  );
   const setOpenRemoteProjectTabs = useAppStore(
     (s) => s.setOpenRemoteProjectTabs,
   );
@@ -1197,7 +1193,6 @@ export function TopBar({
       && !isProjectBusy
       && !isNewTabOpen,
     remoteBinding,
-    openRemoteKeys: openRemoteProjectTabKeys,
     remoteOrigin: remoteBinding
       ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
       : null,

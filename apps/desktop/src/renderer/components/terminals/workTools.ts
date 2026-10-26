@@ -211,6 +211,20 @@ export function workToolCardLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platf
 }
 
 /**
+ * The definition's one line, named for the host it runs on.
+ *
+ * The lane-screen tool is "Linux Desktop" on a Linux host, so its off line has
+ * to say so on every surface that writes it (the picker, the strip, the command
+ * palette) instead of the catalogue's Mac Desktop wording. Null when the
+ * definition carries no hint of its own.
+ */
+export function workToolHint(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null): string | null {
+  const label = hostLaneScreenLabel(id, hostPlatform);
+  if (label) return `${label} is off`;
+  return WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.hint ?? null;
+}
+
+/**
  * Everything the pane needs to decide whether a tool can run *here*.
  *
  * Deliberately capability flags rather than `process.platform` / "is this
@@ -402,7 +416,9 @@ export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WOR
     && (definition.id !== "side-chat" || context.hasSideChat === true))
     .map((definition) => {
       const label = hostLaneScreenLabel(definition.id, context.hostPlatform ?? null);
-      return label ? { ...definition, label, hint: `${label} is off` } : definition;
+      return label
+        ? { ...definition, label, hint: workToolHint(definition.id, context.hostPlatform ?? null) ?? definition.hint }
+        : definition;
     });
 }
 

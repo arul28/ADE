@@ -13,22 +13,14 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
+import {
+  LINUX_DESKTOP_ENCODER_REQUIREMENT,
+  type LinuxDesktopSetupResult,
+} from "../../../shared/types/macDesktop";
 
 /** The helper's names for what it needs, in the order they are installed. */
 export const LINUX_DESKTOP_REQUIREMENTS = ["xvfb", "openbox", "dbus", "at-spi2-core", "ffmpeg"] as const;
 export type LinuxDesktopRequirement = (typeof LINUX_DESKTOP_REQUIREMENTS)[number];
-
-/**
- * What the helper reports for an ffmpeg that is installed but has no H.264
- * encoder.
- *
- * It is deliberately not in {@link LINUX_DESKTOP_REQUIREMENTS}: it is not a
- * package, and reinstalling ffmpeg cannot add an encoder the distribution's
- * build leaves out. `ade screen setup` explains it instead of running the
- * install again, so the user is not sent round a loop that cannot succeed.
- */
-export const LINUX_DESKTOP_ENCODER_REQUIREMENT = "ffmpeg-encoder";
 
 /** The installer's message for that state; status names the encoder and why. */
 export const LINUX_DESKTOP_ENCODER_MESSAGE =
@@ -99,9 +91,12 @@ const isRoot = (): boolean => typeof process.getuid === "function" && process.ge
  * The one description of an install: the argv, whether this process may run
  * it, and the sentence that names it.
  *
- * Built once so the command shown for the user to copy is exactly what ADE
- * runs — `sudo -n` included — and so no `sudo` is printed on a machine that
- * has none.
+ * Built once, then rendered twice: `argv` is what ADE executes (non-interactive
+ * `sudo -n`, so a blocked password fails instead of hanging a brain with no
+ * terminal), and `command` is what a person copies into their own shell
+ * (`sudo`, no `-n`, so their terminal can prompt). The two must not be
+ * swapped: `-n` makes the copyable line fail on exactly the machine that needs
+ * it.
  */
 type LinuxDesktopInstallPlan = {
   /** The missing requirements a package manager can install. */
@@ -112,7 +107,7 @@ type LinuxDesktopInstallPlan = {
   manager: PackageManager | null;
   /** True when only the user can run it (no package manager, or no sudo). */
   needsUser: boolean;
-  /** What to show for `argv`, or the instruction when no manager exists. */
+  /** What a person at a terminal would type for `argv`, or the instruction when no manager exists. */
   command: string | null;
 };
 
@@ -132,13 +127,22 @@ function linuxDesktopInstallPlan(missing: readonly string[]): LinuxDesktopInstal
     };
   }
   const install: [string, ...string[]] = [manager.binary, ...manager.install, ...wanted.map((req) => manager.packages[req])];
-  if (isRoot()) return { wanted, argv: install, manager, needsUser: false, command: install.join(" ") };
-  if (!onPath("sudo")) return { wanted, argv: install, manager, needsUser: true, command: install.join(" ") };
+  // The display form names `sudo` whenever this is not root, even when ADE's
+  // own PATH has none: the brain's PATH is not the user's shell, and it is
+  // their shell that will run this. Never `-n` here.
+  const userCommand = isRoot() ? install.join(" ") : ["sudo", ...install].join(" ");
+  if (isRoot()) return { wanted, argv: install, manager, needsUser: false, command: userCommand };
+  if (!onPath("sudo")) return { wanted, argv: install, manager, needsUser: true, command: userCommand };
   const argv: [string, ...string[]] = ["sudo", "-n", ...install];
-  return { wanted, argv, manager, needsUser: false, command: argv.join(" ") };
+  return { wanted, argv, manager, needsUser: false, command: userCommand };
 }
 
-/** The one shell command that installs what is missing, or null when nothing is. */
+/**
+ * The one shell command a person runs to install what is missing, or null when
+ * nothing is.
+ *
+ * This is the copyable form (`sudo`, no `-n`), never the argv ADE executes.
+ */
 export function linuxDesktopInstallCommand(missing: readonly string[]): string | null {
   return linuxDesktopInstallPlan(missing).command;
 }

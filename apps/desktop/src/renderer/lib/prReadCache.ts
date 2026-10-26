@@ -1,5 +1,4 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrSummary } from "../../shared/types";
-import { useAppStore } from "../state/appStore";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -37,12 +36,16 @@ function projectKey(
  * `getGitHubSnapshot` takes no pin, so the read follows the machine this
  * window's project tab is bound to — the same path on two machines is two
  * different credential stores and two different databases. The root alone
- * cannot say which one a memoized refusal came from, so the window's binding
- * is part of the key: one machine's "no GitHub credential" must never answer
- * the other machine's reads.
+ * cannot say which one a memoized refusal came from, so the caller also names
+ * the window's binding: one machine's "no GitHub credential" must never answer
+ * the other machine's reads. It is an argument, not a store read, so the key
+ * is a function of what the caller asked for.
  */
-function snapshotReadScopeKey(projectRoot: string | null | undefined): string {
-  return JSON.stringify([projectKey(projectRoot), useAppStore.getState().projectBinding?.key ?? null]);
+function snapshotReadScopeKey(
+  projectRoot: string | null | undefined,
+  bindingKey: string | null | undefined,
+): string {
+  return JSON.stringify([projectKey(projectRoot), bindingKey ?? null]);
 }
 
 function summaryFreshness(summary: PrSummary): number {
@@ -97,9 +100,13 @@ export function getGitHubSnapshotCoalesced(
      */
     automaticRefresh?: boolean;
   } = {},
-  options?: { projectRoot?: string | null },
+  options?: {
+    projectRoot?: string | null;
+    /** The window's `projectBinding.key`: the read follows it (see `snapshotReadScopeKey`). */
+    bindingKey?: string | null;
+  },
 ): Promise<GitHubPrSnapshot> {
-  const scopeKey = snapshotReadScopeKey(options?.projectRoot);
+  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey);
   // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
   // answers every snapshot read with the same refusal, and every PR event
   // here used to ask it again over the relay. Remember that answer briefly;
@@ -197,6 +204,8 @@ export function refreshLinkedPrCoalesced(
 
 export function warmPrSurfaceCoalesced(options?: {
   projectRoot?: string | null;
+  /** The window's `projectBinding.key`, as for `getGitHubSnapshotCoalesced`. */
+  bindingKey?: string | null;
   includeGithubSnapshot?: boolean;
   forceGithubSnapshot?: boolean;
 }): Promise<void> {
@@ -205,6 +214,7 @@ export function warmPrSurfaceCoalesced(options?: {
     prSurfaceWarmInFlight,
     JSON.stringify({
       projectRoot: rootKey,
+      bindingKey: options?.bindingKey ?? null,
       includeGithubSnapshot: options?.includeGithubSnapshot !== false,
       forceGithubSnapshot: options?.forceGithubSnapshot === true,
     }),
@@ -216,7 +226,7 @@ export function warmPrSurfaceCoalesced(options?: {
         tasks.push(
           getGitHubSnapshotCoalesced(
             { force: options?.forceGithubSnapshot === true },
-            { projectRoot: options?.projectRoot },
+            { projectRoot: options?.projectRoot, bindingKey: options?.bindingKey },
           ).catch(() => null),
         );
       }

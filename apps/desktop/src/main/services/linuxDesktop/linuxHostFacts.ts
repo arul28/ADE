@@ -1,16 +1,17 @@
 /**
  * The helper's `ping.linux` reply: what a Linux host is missing for a lane
- * screen, and the command that installs it.
+ * screen.
  *
- * Kept apart from the installer so the driver lifecycle can read one protocol
- * field without depending on package management.
+ * Pure on purpose: it reads the reply and nothing else. The install command
+ * is derived from this report where the status is built
+ * (`macDesktopService`), so the driver lifecycle can read one protocol field
+ * without depending on package management.
  */
 
-import type { LinuxDesktopHostFacts } from "../../../shared/types/macDesktop";
-import { linuxDesktopInstallCommand } from "./linuxDesktopSetup";
+import type { LinuxDesktopHostReport } from "../../../shared/types/macDesktop";
 
 /** Read loosely: an older helper sends no `linux` object, and this answers null. */
-export function readLinuxHostFacts(value: unknown): LinuxDesktopHostFacts | null {
+export function readLinuxHostFacts(value: unknown): LinuxDesktopHostReport | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const missing = Array.isArray(record.missing)
@@ -19,6 +20,5 @@ export function readLinuxHostFacts(value: unknown): LinuxDesktopHostFacts | null
   return {
     missing,
     encoder: typeof record.encoder === "string" ? record.encoder : null,
-    installCommand: linuxDesktopInstallCommand(missing),
   };
 }

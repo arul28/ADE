@@ -13,6 +13,7 @@ import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
   LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
+  LINUX_DESKTOP_ENCODER_REQUIREMENT,
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
   MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
@@ -397,9 +398,12 @@ export function formatMacDesktopStatus(value: unknown): string {
     ? linuxDesktop.missing.filter((entry): entry is string => typeof entry === "string")
     : [];
   // The helper reports an installed ffmpeg whose build has no H.264 encoder as
-  // `ffmpeg-encoder`, distinct from ffmpeg itself: reinstalling ffmpeg cannot
-  // add the encoder. Say what it means instead of "install ffmpeg" again.
-  const encoderMissing = missing.includes("ffmpeg-encoder");
+  // `ffmpeg-encoder`, a requirement name rather than a package: reinstalling
+  // ffmpeg cannot add the encoder, and no distribution has such a package. The
+  // encoder row below says what it means in words; the packages row names only
+  // names a person can actually install.
+  const encoderMissing = missing.includes(LINUX_DESKTOP_ENCODER_REQUIREMENT);
+  const packagesMissing = missing.filter((name) => name !== LINUX_DESKTOP_ENCODER_REQUIREMENT);
   const linuxRows: Array<[string, unknown]> = [
     ...seatRows,
     ["display", display?.displayId != null ? `:${display.displayId}` : null],
@@ -407,7 +411,7 @@ export function formatMacDesktopStatus(value: unknown): string {
       ? asString(linuxDesktop.encoder)
         ?? (encoderMissing ? "none — the installed ffmpeg has no H.264 encoder" : "none (install ffmpeg)")
       : null],
-    ["missing packages", missing.length ? missing.join(", ") : linuxDesktop ? "none" : null],
+    ["missing packages", packagesMissing.length ? packagesMissing.join(", ") : linuxDesktop ? "none" : null],
     ["install with", linuxDesktop ? asString(linuxDesktop.installCommand) : null],
   ];
   const shared: Array<[string, unknown]> = [
