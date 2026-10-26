@@ -7,6 +7,7 @@ import {
   buildPrWatchWakeText,
   evaluatePrWatch,
   initialPrWatchState,
+  type PrMergeQueueRemoval,
   type PrWatchMode,
   type PrWatchPrInput,
   type PrWatchRemark,
@@ -42,7 +43,15 @@ const remark = (id: string, author: string, atMs: number, authorIsBot = false): 
 function step(
   mode: PrWatchMode,
   state: PrWatchState,
-  input: { pr?: Partial<PrWatchPrInput>; checks?: PrCheck[] | null; remarks?: PrWatchRemark[] | null; nowMs: number; ignored?: string[] },
+  input: {
+    pr?: Partial<PrWatchPrInput>;
+    checks?: PrCheck[] | null;
+    remarks?: PrWatchRemark[] | null;
+    mergeQueueRemoval?: PrMergeQueueRemoval | null;
+    watchStartedAt?: string;
+    nowMs: number;
+    ignored?: string[];
+  },
 ) {
   return evaluatePrWatch({
     mode,
@@ -51,6 +60,8 @@ function step(
     checks: input.checks === undefined ? [] : input.checks,
     remarks: input.remarks === undefined ? [] : input.remarks,
     ignoredRemarkIds: new Set(input.ignored ?? []),
+    mergeQueueRemoval: input.mergeQueueRemoval,
+    watchStartedAt: input.watchStartedAt,
     nowMs: input.nowMs,
   });
 }
@@ -81,23 +92,26 @@ describe("evaluatePrWatch", () => {
 
   it("tells a review bot's edit of its old comment one time, and not a person's edit or an unchanged comment", () => {
     let state = initialPrWatchState(iso(T0), "head-1");
+    // CI is running on this repo: an empty check list would also be news (no CI
+    // reported), which is not what this test is about.
+    const building = [check("build", "in_progress")];
     const summary = remark("bot-summary", "coderabbitai[bot]", T0 + 60_000, true);
-    const first = step("watch", state, { remarks: [summary], nowMs: T0 + 120_000 });
+    const first = step("watch", state, { checks: building, remarks: [summary], nowMs: T0 + 120_000 });
     expect(kinds(first)).toEqual(["remarks"]);
     state = first.next;
 
     // The bot reviews the next push by editing the same comment: same id, same createdAt.
     const edited = { ...summary, body: "second review", editedAt: iso(T0 + 600_000) };
-    const second = step("watch", state, { remarks: [edited], nowMs: T0 + 660_000 });
+    const second = step("watch", state, { checks: building, remarks: [edited], nowMs: T0 + 660_000 });
     expect(kinds(second)).toEqual(["remarks"]);
     state = second.next;
 
-    expect(kinds(step("watch", state, { remarks: [edited], nowMs: T0 + 720_000 }))).toEqual([]);
+    expect(kinds(step("watch", state, { checks: building, remarks: [edited], nowMs: T0 + 720_000 }))).toEqual([]);
 
     // A person who edits an old comment has said nothing new.
     const person = remark("human-1", "reviewer", T0 + 30_000);
     const typoFix = { ...person, editedAt: iso(T0 + 900_000) };
-    expect(kinds(step("watch", state, { remarks: [edited, typoFix], nowMs: T0 + 960_000 }))).toEqual([]);
+    expect(kinds(step("watch", state, { checks: building, remarks: [edited, typoFix], nowMs: T0 + 960_000 }))).toEqual([]);
   });
 
   it("Ship counts a review bot's edit as the review of the new head, and tells its newest text", () => {
@@ -176,9 +190,35 @@ describe("evaluatePrWatch", () => {
     });
     expect(early.changes).toEqual([]);
     state = early.next;
-    // A repo with no CI at all is released by the grace.
+    // A repo with no CI at all is released by the grace, and the agent is told
+    // once that nothing verified the commit.
     const late = step("ship", state, { checks: [], nowMs: pushedAt + PR_SHIP_REVIEW_BOT_GRACE_MS + 1_000 });
-    expect(kinds(late)).toEqual(["remarks"]);
+    expect(kinds(late)).toEqual(["remarks", "no_checks"]);
+    // The no-CI warning is news once, not on every later read.
+    expect(kinds(step("ship", late.next, { checks: [], nowMs: pushedAt + PR_SHIP_REVIEW_BOT_GRACE_MS + 60_000 }))).toEqual([]);
+  });
+
+  it("tells a merge-queue drop once, and not a queue merge or a drop from before the watch", () => {
+    const state = initialPrWatchState(iso(T0), "head-1");
+    const watchStartedAt = iso(T0);
+    const drop = { id: "removal-1", createdAt: iso(T0 + 60_000), reason: "manual" };
+    const told = step("watch", state, { mergeQueueRemoval: drop, watchStartedAt, nowMs: T0 + 120_000 });
+    expect(kinds(told)).toEqual(["merge_queue_removed"]);
+    // The same removal is not news twice.
+    expect(kinds(step("watch", told.next, { mergeQueueRemoval: drop, watchStartedAt, nowMs: T0 + 180_000 }))).toEqual([]);
+    // The queue merging the PR writes a removal too; the merge itself is the
+    // terminal path's news, so the removal stays quiet.
+    expect(kinds(step("watch", state, {
+      mergeQueueRemoval: { id: "removal-2", createdAt: iso(T0 + 60_000), reason: "merged" },
+      watchStartedAt,
+      nowMs: T0 + 120_000,
+    }))).toEqual([]);
+    // A removal from before the watch began is history.
+    expect(kinds(step("watch", state, {
+      mergeQueueRemoval: { id: "removal-3", createdAt: iso(T0 - 60_000), reason: "manual" },
+      watchStartedAt,
+      nowMs: T0 + 120_000,
+    }))).toEqual([]);
   });
 
   it("switching Ship to Watch releases what Ship was holding", () => {

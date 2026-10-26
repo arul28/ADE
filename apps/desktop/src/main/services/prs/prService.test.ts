@@ -1099,6 +1099,65 @@ describe("prService repository-scoped GraphQL mutations", () => {
     }
   });
 
+  it("reads review threads fresh after a resolve dropped the quiet answer", async () => {
+    const row = makePrRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    let threadReads = 0;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: unknown }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/${row.github_pr_number}`) {
+          return {
+            data: makeGitHubPull({
+              number: row.github_pr_number,
+              updated_at: "2026-01-02T00:00:00Z",
+              head: { ref: "my-feature", sha: "head-sha" },
+            }),
+          };
+        }
+        if (args.path !== "/graphql") throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+        if (query.includes("query AdePullRequestReviewThreads")) {
+          threadReads += 1;
+          return {
+            data: {
+              data: {
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                      nodes: [{ id: "thread-1", isResolved: false, isOutdated: false, comments: { nodes: [] } }],
+                    },
+                  },
+                },
+              },
+            },
+          };
+        }
+        if (query.includes("mutation AdeResolveReviewThread")) {
+          return {
+            data: { data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } } },
+          };
+        }
+        throw new Error("Unexpected GraphQL operation");
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.getReviewThreads(row.id);
+    await service.getReviewThreads(row.id);
+    // The PR is quiet, so the second read reused the first answer.
+    expect(threadReads).toBe(1);
+
+    await service.resolveReviewThread({ prId: row.id, threadId: "thread-1" });
+    const readsBeforeResolveRead = threadReads;
+    await service.getReviewThreads(row.id);
+
+    // Resolving may not bump the pull's updated_at, so the quiet fingerprint
+    // alone would keep serving the unresolved thread from before the write.
+    expect(threadReads).toBe(readsBeforeResolveRead + 1);
+  });
+
   it("resolves REST comment database ids to GraphQL node ids before addReaction", async () => {
     const row = makePrRow();
     const db = makeMockDb();
@@ -9175,41 +9234,64 @@ describe("computeStatus merge-box GraphQL brake", () => {
   it("stops re-discovering a missing stack field once GitHub has rejected it", async () => {
     // `stack` is a GitHub-stacks schema field: a repo either has it or never
     // will. Rediscovering that on every 2.5s tick is a permanent 2x on the
-    // merge-box read for every repo that does not use stacks.
-    const row = makePrRow({ id: "pr-brake-schema", github_pr_number: 90 });
-    const db = makeMockDb();
-    installPullRequestRowStore(db, [row]);
-    const githubService = makeGithubService({
-      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: { query?: string } }) => {
-        if (args.method === "POST" && args.path === "/graphql") {
-          if (String(args.body?.query ?? "").includes("stack {")) {
-            throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
+    // merge-box read for every repo that does not use stacks. Time moves past
+    // the raw-pull memo and the quiet reuse between reads, so the brake — not
+    // either of those caches — is what keeps the field off the wire.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      let pullReads = 0;
+      const row = makePrRow({ id: "pr-brake-schema", github_pr_number: 90 });
+      const db = makeMockDb();
+      installPullRequestRowStore(db, [row]);
+      const githubService = makeGithubService({
+        apiRequest: vi.fn(async (args: { method?: string; path: string; body?: { query?: string } }) => {
+          if (args.method === "POST" && args.path === "/graphql") {
+            if (String(args.body?.query ?? "").includes("stack {")) {
+              throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
+            }
+            return mergeBoxOkPayload();
           }
-          return mergeBoxOkPayload();
-        }
-        return restStatusResponse(args) ?? { data: {} };
-      }),
-    });
-    const { service, logger } = buildService({ db, githubService });
+          if (args.method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/90`) {
+            pullReads += 1;
+            return {
+              data: makeGitHubPull({
+                number: 90,
+                mergeable: true,
+                mergeable_state: "clean",
+                updated_at: new Date(Date.now() + pullReads * 1_000).toISOString(),
+                head: { ref: "my-feature", sha: "head-sha" },
+                base: { ref: "main", sha: "base-sha" },
+              }),
+            };
+          }
+          return restStatusResponse(args) ?? { data: {} };
+        }),
+      });
+      const { service, logger } = buildService({ db, githubService });
 
-    const first = await service.getStatus("pr-brake-schema");
-    const calls = [...graphqlCalls(githubService)];
-    for (let i = 0; i < 9; i += 1) {
-      await service.getStatus("pr-brake-schema");
+      const first = await service.getStatus("pr-brake-schema");
+      const calls = [...graphqlCalls(githubService)];
+      for (let i = 0; i < 9; i += 1) {
+        vi.setSystemTime(new Date(Date.now() + 6_000));
+        await service.getStatus("pr-brake-schema");
+      }
+
+      // First compute pays the discovery (stack, then no-stack); the next nine
+      // ask once each, and the merge box keeps working throughout.
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.query).toContain("stack {");
+      expect(calls[1]?.query).not.toContain("stack {");
+      expect(graphqlCalls(githubService)).toHaveLength(2 + 9);
+      expect(graphqlCalls(githubService).slice(2).every((call) => !call.query.includes("stack {")))
+        .toBe(true);
+      expect(first.mergeStateStatus).toBe("clean");
+      expect(
+        logger.warn.mock.calls.filter(([event]: [string]) => event === "prs.computeStatus.stack_graphql_fallback"),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
     }
-
-    // First compute pays the discovery (stack, then no-stack); the next nine
-    // ask once each, and the merge box keeps working throughout.
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.query).toContain("stack {");
-    expect(calls[1]?.query).not.toContain("stack {");
-    expect(graphqlCalls(githubService)).toHaveLength(2 + 9);
-    expect(graphqlCalls(githubService).slice(2).every((call) => !call.query.includes("stack {")))
-      .toBe(true);
-    expect(first.mergeStateStatus).toBe("clean");
-    expect(
-      logger.warn.mock.calls.filter(([event]: [string]) => event === "prs.computeStatus.stack_graphql_fallback"),
-    ).toHaveLength(1);
   });
 });
 
@@ -9482,9 +9564,13 @@ describe("reconcile sweep delta pagination", () => {
       .toEqual([1, 2]);
   });
 
-  it("records no cursor when an open sweep exhausts its own larger budget", async () => {
-    // Same rule on the open sweep, whose budget is ten pages. Rarer, but the
-    // failure mode is identical and the guard must not be closed-sweep-specific.
+  it("records a cursor for a full open sweep whose own larger budget cut it short", async () => {
+    // The open sweep's budget is a fixed ten pages, so no open walk ever
+    // reaches past it and a full one has already fetched everything an open
+    // sweep can see. Holding the cursor back meant every automatic sweep
+    // re-walked all ten pages on a repo with more than a thousand open PRs.
+    // The closed sweep keeps the old rule (the test above) because its budget
+    // grows when the user pages further into history.
     const updatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
@@ -9498,9 +9584,12 @@ describe("reconcile sweep delta pagination", () => {
     const firstSweep = pullsCalls(githubService);
     await service.getGithubSnapshot({ force: true, automaticRefresh: true });
 
+    // Every page was full, so the budget ended the walk; the cursor still
+    // records that this much was fetched.
     expect(firstSweep.map((query) => query.page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    // Cursor in hand, the next sweep takes the delta walk and page 1 is enough.
     expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
-      .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      .toEqual([1]);
   });
 });
 
