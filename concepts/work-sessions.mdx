@@ -1,0 +1,57 @@
+---
+title: "Work sessions"
+description: "Everything that runs in a lane is a session: an agent chat, a terminal, or a provider CLI."
+icon: "rectangle-terminal"
+---
+
+**Work** is where execution happens. A Work session is one of three things:
+
+| Session | What it is | Use it for |
+|---|---|---|
+| **Agent chat** | A streaming conversation with a coding agent, scoped to a lane. | Most changes: read, edit, run, review. |
+| **Terminal** | A plain shell in the lane's worktree. | Servers, REPLs, one-off commands you drive yourself. |
+| **CLI session** | A provider's own terminal client (`claude`, `codex`, …) tracked by ADE. | When you want the provider's native CLI, with ADE keeping the transcript and status. |
+
+All three are owned by the machine's runtime, not by the window you opened them in.
+
+<Frame caption="A Work session: the transcript, its diff summary, and the composer in one column.">
+  <img src="/media/current/work-chat.jpg" alt="An agent chat in ADE's Work tab" />
+</Frame>
+
+## What every session shows
+
+A session row answers four questions at a glance: what it is doing, which lane it belongs to, how long it has been running, and what it needs from you. The same status follows the session to the phone and the terminal.
+
+Sessions can report two extra details about themselves:
+
+- A short **note** — a one-line summary of what the session is doing right now.
+- An **activity** — planning, exploring, implementing, testing, debugging, reviewing, shipping, or monitoring.
+
+ADE also infers activity from what the agent is doing, so a row is useful without the agent having to narrate.
+
+## Background and scheduled work
+
+Agent work does not have to happen while you watch. A chat can be launched in the background, and any chat runtime can schedule its own durable future work: a wake in ten minutes, a daily cron, or a re-check when CI finishes.
+
+Scheduled work is ADE-owned rather than provider-owned, so every provider uses the same scheduler and the same delivery path. Wake, cron, and background events stay visible in the transcript and in Chat Info.
+
+<Card title="Scheduled work and automations" icon="clock" href="/tools/automations" horizontal>
+  Event-triggered rules, webhooks, and durable scheduled resumes.
+</Card>
+
+## Closing a session
+
+A session ends with a structured closeout: status, summary, artifacts, and any blocker, shown as a card in the transcript. Stopping a chat interrupts the turn; the transcript stays, and the chat can be resumed.
+
+<Tip>
+A session you closed is not a session you lost. Chats are resumable and searchable, and History keeps the timeline of what happened.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    The interactive surface: tool calls, diffs, approvals, questions.
+  </Card>
+  <Card title="Terminals" icon="terminal" href="/tools/terminals">
+    Shells in the lane, and how they relate to chats.
+  </Card>
+</CardGroup>

@@ -1,0 +1,372 @@
+---
+title: "API reference"
+description: "Every function, error, and constant exported by @ade-dev/sdk — generated from the published TypeScript declarations."
+icon: "code"
+---
+
+> Generated from `packages/sdk/src` by `scripts/generate-sdk-reference.mjs`. Do not edit this page by hand — change the source or the generator. For the narrative version, start with [Reference](/sdk/reference).
+
+## Functions
+
+### `assetUrl`
+
+````ts
+export function assetUrl(repo: string, channel: string, asset: string): string
+````
+
+### `bundledRuntimePackageName`
+
+The platform package name for a runtime target, e.g. `darwin-arm64`.
+
+````ts
+export function bundledRuntimePackageName(target: string): string
+````
+
+### `checkAttachmentRoot`
+
+Check one candidate `attachmentRoots` entry without throwing (SDK 0.5).
+
+The runtime refuses some roots — the home folder itself, a filesystem root, a
+path inside the SDK home — and a refused root fails the whole `threads.open`.
+Because a host normally sends the same roots on every open, one bad entry
+locks every chat. Use this to test a candidate before you send it:
+
+  const check = checkAttachmentRoot(downloadsDir, home);
+  if (!check.ok) warn(check.reason); else roots.push(check.root);
+
+`root` is the canonical, validated spelling, so it is what
+`validateAttachmentRoots` and the runtime will accept. `sdkHome` is the same
+`home` you pass to `createAdeChat`.
+
+````ts
+export function checkAttachmentRoot(value: unknown, sdkHome: string): AttachmentRootCheck
+````
+
+### `checkRuntimeCompatibility`
+
+Compare a runtime's reported version with a supported range.
+
+A dev build (`0.0.0`) and a runtime that reports no version count as
+supported, with a `note` saying so: both are what a developer runs from a
+source checkout, and refusing them would make `requireCompatibleRuntime`
+unusable in development. A non-empty version that does not parse is NOT
+supported — the SDK cannot vouch for a build it cannot place.
+
+````ts
+export function checkRuntimeCompatibility(version: string | null | undefined, range: string = SUPPORTED_RUNTIME_RANGE): RuntimeCompatibility
+````
+
+### `createAdeChat`
+
+Boots an isolated ADE runtime and returns a chat client that owns it.
+
+The returned client owns the child process: `dispose()` stops it, and the
+process exit hooks stop it if the host dies first. Two clients on one `home`
+would fight over the same socket and state root, so an app opens one per
+isolated home.
+
+Before shipping, read the MCP caveat on
+ThreadOpenOptions.loadUserMcpServers: withholding the user's own MCP
+config is enforced only on Claude and best-effort on Codex, Cursor, Droid,
+Muse and OpenCode. Check `thread.mcpCapability.strictRequested === true` AND
+`.level === "enforced"` before telling your users that only their tools are
+loaded — on a delivery-only thread the level says nothing about isolation.
+
+````ts
+export async function createAdeChat(options: CreateAdeChatOptions | InternalAdeChatOptions): Promise<AdeChatClient>
+````
+
+### `endpointComparisonKey`
+
+Windows named pipe names are case-insensitive, and `\\.\pipe\` and
+`//./pipe/` name the same object. Collapse both onto one comparison key so
+two spellings of one endpoint are never treated as two runtimes.
+
+````ts
+export function endpointComparisonKey(value: string): string
+````
+
+### `filterAttachmentRoots`
+
+Prepare a root list for `threads.open` without ever failing the open (SDK 0.5).
+
+Keeps every valid entry in list order, canonicalized and de-duplicated, and
+reports each refused entry with its reason instead of throwing. `dropped`
+lists the refused entries first, then the entries past the 32-entry cap. The
+result is safe to pass straight to `threads.open` or
+`threads.open(..., { refresh: { attachmentRoots } })`.
+
+A non-array argument still throws: that is a programming error, not a root a
+caller meant to filter.
+
+````ts
+export function filterAttachmentRoots(value: unknown, sdkHome: string): AttachmentRootFilterResult
+````
+
+### `inferAttachmentType`
+
+`"image"` or `"file"` for one attachment, by the runtime's rule.
+
+Any `image/*` mime type means image. Otherwise — including for a non-image
+mime type, which does NOT force `"file"` — the path's extension decides:
+`.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff .webp` are
+images, everything else is a file. Same name, signature and answer as the
+runtime's `inferAttachmentType`.
+
+````ts
+export function inferAttachmentType(filePath: string, mimeType?: string | null): "file" | "image"
+````
+
+### `isApprovalShaped`
+
+True for the two kinds `approve()` can actually settle.
+
+The canonical partition of `PendingInputKind`. `@ade-dev/chat-ui` states the
+complement of this set in `transcript/ApprovalCard.tsx` because it takes this
+package only as an OPTIONAL peer and cannot import the function; that copy
+points back here.
+
+````ts
+export function isApprovalShaped(kind: PendingInputKind | undefined): boolean
+````
+
+### `isNamedPipePath`
+
+True for a Windows named-pipe endpoint, in either slash spelling.
+
+````ts
+export function isNamedPipePath(value: string): boolean
+````
+
+### `isSupportedProvider`
+
+Narrow a provider string (for example `ModelCatalogEntry.provider`, typed
+open for catalog groups newer than this SDK) to `AdeProvider` without a cast.
+Exported from the package root since SDK 0.4.
+
+````ts
+export function isSupportedProvider(value: string): value is AdeProvider
+````
+
+### `parseChecksums`
+
+Parses a `SHA256SUMS` body into asset -&gt; hex digest.
+
+Format is the coreutils one: `<hex>  <name>` (two spaces, or ` *` for the
+binary marker). Names may carry a directory prefix in some release layouts,
+so only the basename is keyed — the same normalization the install script's
+awk does.
+
+````ts
+export function parseChecksums(body: string): Map<string, string>
+````
+
+### `parseToolIdentity`
+
+Split a tool name into `{ server, tool }`.
+
+Accepts, in this order:
+  - `mcp__<server>__<tool>` — Claude's spelling. The server is the segment
+    up to the next `__`; everything after it is the tool, so a tool whose
+    own name contains `__` survives intact.
+  - `mcp:<server>:<tool>` — the permission-policy spelling. `*` is a valid
+    tool here and is returned as-is.
+  - `<server>:<tool>` — Codex and ACP dialects.
+  - `<tool>` — a built-in. `server` is null.
+
+Never throws. Surrounding whitespace is trimmed. A name that starts with
+an `mcp__` or `mcp:` prefix but has an empty server or tool segment
+(`mcp__srv`, `mcp:srv`, `srv:`) is returned whole as a bare tool rather than
+split into an invented server: a half-formed MCP name is not evidence of
+which server owns it.
+
+`@ade-dev/chat-ui` keeps a copy of this rule for its tool chips (it takes
+this package only as an optional peer); the two must agree.
+
+````ts
+export function parseToolIdentity(name: string): ToolIdentity
+````
+
+### `pickDefaultModel`
+
+The model a new thread should use, or null when none qualifies.
+
+Among the qualifying models (see `DefaultModelOptions`), per provider in the
+order `providers` gives (or all at once without it): the model `prefer`
+scores highest, else the catalog's `isDefault` model, else the first model
+the catalog lists.
+
+````ts
+export function pickDefaultModel(models: readonly ModelCatalogEntry[], opts: DefaultModelOptions = {}): ModelCatalogEntry | null
+````
+
+### `probeRuntimeSignature`
+
+Read the code-signing state of a runtime binary.
+
+Returns `null` on Linux (there is no OS-level signature to read), when the
+probe could not run, and when its output could not be understood. Never
+throws, and never takes longer than 10 s per command.
+
+````ts
+export async function probeRuntimeSignature(binaryPath: string, options: ProbeRuntimeSignatureOptions = {}): Promise<RuntimeSignature | null>
+````
+
+### `resolveBundledRuntime`
+
+Resolve the runtime from an installed `@ade-dev/runtime-*` package.
+
+Returns `null` when no matching package is installed — the caller falls
+through to the cache, PATH, or a download. Throws `binary_not_found` only
+when a package IS installed but does not carry what it promises, because the
+alternative is a dlopen failure several seconds later that names no path and
+that nobody can act on.
+
+````ts
+export function resolveBundledRuntime(options: ResolveBundledRuntimeOptions = {}): BundledRuntime | null
+````
+
+### `resolvePackagedRuntime`
+
+Resolve the runtime a host bundled under its resources directory.
+
+Returns null — so the caller can fall back to `resolveBundledRuntime()` in
+development — when:
+  - `<resourcesPath>/<dir>/bin/ade[.exe]` does not exist; or
+  - on macOS, the binary's Mach-O header names no slice for `arch`. An
+    arm64-only runtime inside an app running under Rosetta on Intel would
+    otherwise fail at spawn with an error that names neither architecture.
+    A universal binary matches when it contains the arch. A header this
+    function does not recognize is not treated as a mismatch.
+
+Throws `AdeError("binary_not_found")`, naming the path, when the binary is
+there but `native/node_modules` is not: the binary dlopens those modules,
+so a bundle missing them is a packaging mistake to fail on, not a fallback
+to take quietly.
+
+````ts
+export function resolvePackagedRuntime(resourcesPath: string, opts: ResolvePackagedRuntimeOptions = {}): PackagedRuntime | null
+````
+
+### `resolveRuntimeSocketPath`
+
+Stable per-home endpoint for the SDK's sidecar runtime.
+
+Pure and platform-parameterized so the Windows branch is unit-testable from
+macOS. Mirrors `resolveAdeRuntimeIpcPath` in
+`apps/desktop/src/shared/adeRuntimeIpc.ts`: a hashed `\\.\pipe\` name on
+Windows (named pipes are a flat kernel namespace, not a filesystem), a real
+socket file elsewhere. The `ade-sdk-` prefix keeps an SDK sidecar from ever
+colliding with the machine brain's own `ade-` pipe.
+
+The tmpdir fallback goes into a per-user subdirectory rather than straight
+into the temp root: on Linux `/tmp` is shared and world-writable, and a
+predictable `ade-sdk-<hash-of-home>.sock` there can be pre-created by another
+local user, who then answers the SDK's connect. `ensurePrivateSocketDirectory`
+creates that subdirectory 0700 and refuses one this user does not own.
+
+````ts
+export function resolveRuntimeSocketPath(home: string, platform: NodeJS.Platform = process.platform, tempDir: string = os.tmpdir(), identity: string = currentUserIdentity(platform)): string
+````
+
+### `resolveRuntimeTarget`
+
+````ts
+export function resolveRuntimeTarget(platform: NodeJS.Platform = process.platform, arch: string = process.arch): RuntimeTarget
+````
+
+### `runtimeSpawnEnv`
+
+Environment a spawned ADE runtime binary needs so it can load the native
+modules that ship in the archive rather than whatever happens to be on the
+host's NODE_PATH. Mirrors `set_runtime_env` in install-runtime.sh.
+
+`nodeModulesPath` defaults to `<runtimeRoot>/node_modules`, which is the
+layout every ADE installer produces. An embedder who relocated the two halves
+inside their bundle passes it explicitly, and it is then used verbatim: the
+binary resolves `ADE_RUNTIME_NODE_MODULES` on its own, so silently deriving
+the path would point a signed app at a directory that is not there.
+
+````ts
+export function runtimeSpawnEnv(runtimeRoot: string, base: NodeJS.ProcessEnv = process.env, nodeModulesPath?: string): NodeJS.ProcessEnv
+````
+
+## Classes
+
+### `AdeError`
+
+````ts
+export class AdeError extends Error {
+    readonly code: AdeErrorCode;
+    override readonly cause?: unknown;
+    constructor(code: AdeErrorCode, message: string, options?: {
+        cause?: unknown;
+    });
+}
+````
+
+## Constants
+
+### `ADE_CLIENT_EVENTS`
+
+Every client-level event name, once. See AdeClientEventMap.
+
+````ts
+export const ADE_CLIENT_EVENTS: readonly ["exit", "transport", "restart", "threadLifecycle"];
+````
+
+### `APPROVAL_DECISIONS`
+
+````ts
+export const APPROVAL_DECISIONS: readonly ApprovalDecision[];
+````
+
+### `DEFAULT_RELEASE_REPO`
+
+Default GitHub repository that publishes the standalone runtime assets.
+
+````ts
+export const DEFAULT_RELEASE_REPO: "arul28/ADE";
+````
+
+### `MAX_ATTACHMENT_ROOTS`
+
+Most roots one thread may name. Matches the runtime's own cap.
+
+````ts
+export const MAX_ATTACHMENT_ROOTS: 32;
+````
+
+### `SDK_VERSION`
+
+````ts
+export const SDK_VERSION: string;
+````
+
+### `SUPPORTED_PROVIDERS`
+
+````ts
+export const SUPPORTED_PROVIDERS: readonly AdeProvider[];
+````
+
+### `SUPPORTED_RUNTIME_RANGE`
+
+The runtime versions this SDK build is written against.
+
+The SDK and the runtime ship on separate cadences, and the runtime a host
+runs may be downloaded (`channel: "latest"`) rather than pinned. So the
+handshake compares the runtime's self-reported version with this range. A
+runtime outside it still connects — features it lacks are feature-detected
+and degrade with a logged line — unless the host passes
+`requireCompatibleRuntime: true`, which refuses it with
+`AdeError("runtime_incompatible")`.
+
+The lower bound is the first runtime that carries every wire change this
+SDK uses: `updateSession.mcpServers`, attachment `type` / `hydrate`, the
+approval-shaped Codex elicitation (1.2.81), and `rerunLastTurn`,
+`attachmentRoots` and the `turn_in_flight` / `unsupported` error codes
+(1.2.82). The upper bound is the next major.
+
+````ts
+export const SUPPORTED_RUNTIME_RANGE: ">=1.2.82 <2.0.0";
+````

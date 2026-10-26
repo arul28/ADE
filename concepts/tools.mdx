@@ -1,0 +1,88 @@
+---
+title: "Tools"
+description: "Every chat gets a small set of universal tools, plus the ADE surfaces it can reach through the ade CLI."
+icon: "toolbox"
+---
+
+A chat agent is not a chatbot with a text box. It is a process with tools. ADE gives every chat the same core set, then adds what the session's runtime and role allow.
+
+There are four layers. Most questions about "what can an agent do?" are really questions about which layer is in play.
+
+## 1. Universal tools
+
+Available to every agent — regular chat, personal chat, and the CTO — in every provider.
+
+| Tool | What it does | Gate |
+|---|---|---|
+| **Read** | Range-aware file reads. | Always allowed. |
+| **Search** | `grep` and `glob` across the worktree. | Always allowed. |
+| **Edit** | A single-file edit, producing a file-change event. | Blocked in plan mode. |
+| **Write** | Create or replace a file. | Blocked in plan mode. |
+| **Run** | A shell command with output and exit code. | Blocked in plan mode; approval in edit mode. |
+| **Web** | Fetch a URL or search the web. | Always allowed. |
+| **Todo** | A session task list, so multi-step work stays visible. | Always allowed. |
+| **Ask** | Pause and ask you a question instead of guessing. | Always allowed. |
+
+These are real tool calls, not prompt instructions. Each one produces an event in the transcript, which is why you can inspect every edit and command after the fact.
+
+## 2. ADE surfaces through the CLI
+
+The agent's shell has the `ade` command. That is how a chat reaches ADE itself:
+
+```bash
+ade lanes create "try-the-new-cache"     # start another lane
+ade prs create --lane <lane> --base main # open a pull request
+ade browser open http://localhost:5173   # drive the built-in browser
+ade proof attach ./shot.png              # file evidence
+ade linear issue view ADE-123            # read a linked issue
+ade chat scheduled-work create ...       # schedule its own wake-up
+```
+
+You do not install this separately: the same binary that runs the machine is on the agent's path, and the agent's system prompt explains how to discover the rest with `ade help`.
+
+<Note>
+This is why "create a lane", "open a PR", and "capture proof" are not separate tool rows. They are commands, so they compose, work from any provider, and stay identical to what you would type.
+</Note>
+
+## 3. Provider-native tools
+
+Each runtime also brings its own tools, and ADE preserves them rather than flattening them into the universal set:
+
+- **Claude Code** brings its native `AskUserQuestion` tool, its own subagent tool, and its own web tools.
+- **Codex** brings its web, MCP/connector, and image capabilities.
+- **Cursor**, **Droid**, **OpenCode**, and the ACP providers bring their own tool loops and MCP support.
+
+Provider-native activity is normalized into compact transcript events, so every client can show what happened without dumping raw SDK envelopes.
+
+## 4. CTO operator tools
+
+The CTO is the one agent with elevated control-plane tools: spawning chats, creating lanes, reading and writing Git and PR state, running tests, reading and updating Linear, and reading and writing its durable memory. Regular chats never see these.
+
+<Card title="CTO" icon="crown" href="/cto/overview" horizontal>
+  The project-level operator and its elevated tool set.
+</Card>
+
+## Permissions decide what runs
+
+Tools exist; the permission mode decides which ones execute.
+
+| Mode | Reads | Writes and shell |
+|---|---|---|
+| **Plan** | Yes | No — proposals only |
+| **Edit** | Yes | Ask before each |
+| **Full auto** | Yes | Run, with post-hoc review when interactive |
+
+The mode is per session and visible in the composer. `full-auto` does not hide what happened: writes and commands still emit approval events for review.
+
+## Seeing the toolset
+
+Open the tools panel from the composer to see what the current session can reach and which actions will require approval.
+
+<CardGroup cols={2}>
+  <Card title="Chat capabilities" icon="comment-check" href="/chat/capabilities">
+    The task-level view: what a chat can do end to end.
+  </Card>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Modes, approval gates, and what they protect.
+  </Card>
+</CardGroup>

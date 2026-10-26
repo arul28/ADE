@@ -6,8 +6,8 @@ icon: "code-branch"
 
 A **lane** is ADE's name for a git worktree: an isolated branch and working copy for a single task. Each lane has its own files, branch, chat and terminal sessions, processes, diff, and PR — so several agents can work in the same repository at once without writing over each other or your main checkout.
 
-<Frame caption="Every task gets its own worktree — describe it and ADE creates the branch.">
-  <img src="/media/demos/auto-worktrees.gif" alt="Auto-create a git worktree from a task" />
+<Frame caption="Every task gets its own worktree, with its branch, PR, and checks in one place.">
+  <img src="/media/current/lanes.jpg" alt="The Lanes tab with a lane selected" />
 </Frame>
 
 ## The primary lane vs. your lanes
@@ -44,7 +44,7 @@ Lanes sync across every surface. Start one on the desktop, continue it in the te
 <Tabs>
   <Tab title="Desktop">
     <Frame caption="The Lanes tab on macOS.">
-      <img src="/media/landing/showcase/worktrees-desktop.webp" alt="Lanes on the desktop" />
+      <img src="/media/current/lanes.jpg" alt="Lanes on the desktop" />
     </Frame>
   </Tab>
   <Tab title="Terminal">
@@ -95,10 +95,6 @@ A lane is more than a branch — it's a full parallel workspace.
   </Step>
 </Steps>
 
-<Frame caption="The worktree graph shows stack order, PR links, and merge risk at a glance.">
-  <img src="/media/features/worktrees/worktree-graph.webp" alt="The worktree graph" />
-</Frame>
-
 <AccordionGroup>
   <Accordion title="Manage lanes from the terminal" icon="terminal">
     Every lane action is also available from the `ade` CLI and `ade code`:
@@ -112,6 +108,38 @@ A lane is more than a branch — it's a full parallel workspace.
     Run `ade lanes --help` to see every flag.
   </Accordion>
 </AccordionGroup>
+
+## Repos, projects, and worktrees
+
+ADE has one rule for organizing your work: **a repository is one project, and every working tree of that repository is a lane inside it.**
+
+- The repository's main checkout is the project root. It becomes the **primary lane**, which always exists and is edit-protected.
+- Lanes ADE creates for you live under `.ade/worktrees/` inside the project.
+- Worktrees you created yourself with `git worktree add` can be attached as lanes too, wherever they live on disk.
+
+This is why a worktree should not become its own project: it would split the same repository across two project entries, with separate lanes, chats, and state for what is really one codebase.
+
+### Opening a worktree
+
+If you point ADE at a directory that is a linked worktree, ADE recognizes it and shows you what it found:
+
+- **Already a lane** — the folder is already attached to its project. ADE offers to open that project and jump straight to the lane, including its live status and any agents working in it.
+- **Not a lane yet** — ADE offers to attach it as a lane in the owning project and take you there. This is the recommended path.
+- **Owning repo not added yet** — ADE offers to add the main repository as the project and open the worktree as a lane in it, in one step.
+
+You can still choose **Open as a separate project** if you really want the worktree to stand alone — for example, if your main clone is a bare repository and there is no primary checkout to open.
+
+### Merging a stray worktree project
+
+If you added a worktree as a standalone project in the past, ADE marks it in the recent projects list with a *worktree of …* badge. From that row you can merge it into the owning project as a lane.
+
+<Warning>
+Merging re-homes the folder as a lane and removes the standalone project entry. Chats and sessions created while it was a standalone project stay under that retired project — they remain searchable, but they do not move into the owning project.
+</Warning>
+
+### Bare repositories
+
+Some workflows keep a bare clone plus a set of worktrees, with no main checkout at all. ADE cannot open a bare repository as a project today, so in that layout opening a worktree as its own project is the right call. ADE detects this case and skips the prompt.
 
 <CardGroup cols={2}>
   <Card title="Create lanes" icon="plus" href="/lanes/creating">

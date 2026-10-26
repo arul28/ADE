@@ -52,12 +52,44 @@ Parallel agents stay safe as long as their work doesn't overlap. Most collisions
 - Merge parent work before rebasing children when possible.
 - Use History to see exactly what each session changed.
 
-## Grid vs. separate lanes
+## Grid view: several agents on one screen
+
+Grid view tiles full chats next to each other so you can run several agents in parallel — across lanes or against the same task — and watch them all at once.
+
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/gridViewDemo.mp4"></video>
+
+<CardGroup cols={3}>
+  <Card title="One task, many models" icon="layer-group">
+    Send the same prompt to Claude, Codex, and Cursor, then keep the best result.
+  </Card>
+  <Card title="Many tasks, one screen" icon="table-cells">
+    Tile one agent per lane and supervise a whole batch of parallel work.
+  </Card>
+  <Card title="Race a hard problem" icon="flag-checkered">
+    Let several agents attempt the same fix and compare diffs before committing.
+  </Card>
+</CardGroup>
+
+### Send one prompt to several models
+
+Compose a prompt once and launch it across the models you pick. Each runs in its own tile with its own transcript, diff, and approval gate.
+
+<Frame caption="Pick the models to run, then launch them together from one prompt.">
+  <img src="/media/features/agent-chat/multi-model-prompt.webp" alt="Compose a prompt for multiple models at once" />
+</Frame>
+
+<Frame caption="Every run lands in its own tile — compare side by side.">
+  <img src="/media/features/agent-chat/grid-view.webp" alt="Grid view with multiple agents" />
+</Frame>
+
+Each tile is a full chat. Open one to read the transcript, inspect its diff in Files, or promote its work to a PR — and close the rest. Nothing is committed until you say so.
+
+## Grid or separate lanes?
 
 Both run agents in parallel, but they answer different questions.
 
 <CardGroup cols={2}>
-  <Card title="Grid view" icon="grid-2" href="/chat/grid">
+  <Card title="Grid view" icon="grid-2">
     Same task, several models — race a narrow, well-specified change and keep the best diff. Each tile is a full chat.
   </Card>
   <Card title="Separate lanes" icon="code-branch" href="/lanes/overview">
@@ -65,17 +97,13 @@ Both run agents in parallel, but they answer different questions.
   </Card>
 </CardGroup>
 
-<Frame caption="Grid view tiles several agents side by side — best for comparing attempts at one task.">
-  <img src="/media/demos/grid-view.gif" alt="Grid view with multiple agents running at once" />
-</Frame>
-
 <Tip>
 Use the grid for narrow, well-specified work where comparing a few attempts is cheap. For broad, multi-step features, give each agent its own lane instead.
 </Tip>
 
 <CardGroup cols={2}>
-  <Card title="Grid & multi-model" icon="grid-2" href="/chat/grid">
-    Run several agents at once and compare side by side.
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    How a single lane-scoped chat works.
   </Card>
   <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
     Isolate each task in its own worktree.
