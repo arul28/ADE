@@ -251,6 +251,12 @@ const DEFAULT_LANE_STATUS: LaneStatus = {
 };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 /**
+ * How long a finished re-check answers the caller that waits for it. The
+ * phone asks right after a cached answer, so a few seconds covers the gap
+ * between its two calls without serving a re-check long past.
+ */
+const LANE_STATUS_REVALIDATION_REUSE_MS = 10_000;
+/**
  * How many worktree index states the count cache remembers. The map is per
  * service and capped on insert so a long-lived desktop does not retain every
  * historical edit.
@@ -2707,6 +2713,37 @@ export function createLaneService({
 
   const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
   /**
+   * Each lane's last computed status, with when it was computed and the inputs
+   * it was computed for. A caller that accepts statuses up to some age (a
+   * phone reconnect, which then waits for the re-check) is answered from here
+   * instead of a `git status` per lane. Lane rows are always read fresh, so a
+   * deleted or renamed lane is never served from it; only the git numbers are.
+   */
+  const recentLaneStatus = new Map<string, { status: LaneStatus; at: number; inputs: string }>();
+  /** The exact re-check a cached answer started, for the caller that waits for it. */
+  let laneStatusRevalidation: {
+    includeArchived: boolean;
+    finishedAt: number | null;
+    result: Promise<LaneSummary[]>;
+  } | null = null;
+  const startLaneStatusRevalidation = (includeArchived: boolean): void => {
+    if (laneStatusRevalidation?.finishedAt === null && laneStatusRevalidation.includeArchived === includeArchived) return;
+    invalidateLaneListCache();
+    const entry = {
+      includeArchived,
+      finishedAt: null as number | null,
+      result: listLanes({ includeArchived, includeStatus: true }),
+    };
+    laneStatusRevalidation = entry;
+    void entry.result.then(
+      () => { entry.finishedAt = Date.now(); },
+      (error) => {
+        if (laneStatusRevalidation === entry) laneStatusRevalidation = null;
+        logger.warn("laneService.status_revalidation_failed", { error: error instanceof Error ? error.message : String(error) });
+      },
+    );
+  };
+  /**
    * Coalesces overlapping `listLanes` calls with the same shape. A full build
    * can take longer than `LANE_LIST_CACHE_TTL_MS`, so on a project with many
    * lanes the TTL cache never served a hit and every caller — the desktop's
@@ -4029,6 +4066,10 @@ export function createLaneService({
     rowsById: Map<string, LaneRow>;
     includeStatus: boolean;
     logContext: string;
+    /** Serve a remembered status no older than this instead of re-reading git. */
+    statusMaxAgeMs?: number;
+    /** Set to the oldest remembered status this resolver served, if any. */
+    servedRememberedAt?: { value: number | null };
   }): Promise<{
     resolveWorktreeAvailable: (row: LaneRow) => Promise<boolean>;
     resolveStatus: (laneId: string) => Promise<LaneStatus>;
@@ -4062,6 +4103,21 @@ export function createLaneService({
     const computeResolvedStatus = async (laneId: string): Promise<LaneStatus> => {
       const row = args.rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
+      const parentRow = row.parent_lane_id ? args.rowsById.get(row.parent_lane_id) : null;
+      const statusInputs = [row.worktree_path, row.branch_ref, row.base_ref, row.lane_type, parentRow?.branch_ref ?? ""].join("\0");
+      const maxAgeMs = args.statusMaxAgeMs ?? 0;
+      if (maxAgeMs > 0) {
+        const remembered = recentLaneStatus.get(laneId);
+        if (remembered && remembered.inputs === statusInputs && Date.now() - remembered.at <= maxAgeMs) {
+          const status = cloneLaneStatus(remembered.status);
+          statusCache.set(laneId, status);
+          if (args.servedRememberedAt) {
+            args.servedRememberedAt.value = Math.min(args.servedRememberedAt.value ?? remembered.at, remembered.at);
+          }
+          return status;
+        }
+      }
+      const computedAt = Date.now();
       const worktreeAvailable = await resolveWorktreeAvailable(row);
       if (!worktreeAvailable) {
         const status = cloneLaneStatus(DEFAULT_LANE_STATUS);
@@ -4074,9 +4130,12 @@ export function createLaneService({
       // For primary lanes with no parent, compare against the upstream tracking ref
       // instead of base_ref (which equals branchRef, giving 0 behind).
       if (!parent && row.lane_type === "primary") {
-        const upstreamRes = await runGit(
+        // A ref SHA like any other: the repo cache keeps it for one refresh's
+        // window and drops it on any git write.
+        const upstreamRes = await runGitRepoCached(
           ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
-          { cwd: row.worktree_path, timeoutMs: 5_000 }
+          { cwd: row.worktree_path, timeoutMs: 5_000 },
+          { key: `rev-parse:${row.worktree_path}:${row.branch_ref}@{upstream}`, cacheClass: "volatile" },
         );
         if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
           baseRef = upstreamRes.stdout.trim();
@@ -4098,6 +4157,7 @@ export function createLaneService({
         worktreeRootVerified: true,
       });
       statusCache.set(laneId, status);
+      recentLaneStatus.set(laneId, { status: cloneLaneStatus(status), at: computedAt, inputs: statusInputs });
       return status;
     };
 
@@ -4119,7 +4179,12 @@ export function createLaneService({
   };
 
   const buildLaneList = async (
-    { includeArchived = false, includeStatus = true }: ListLanesArgs = {},
+    {
+      includeArchived = false,
+      includeStatus = true,
+      statusMaxAgeMs = 0,
+      servedRememberedAt,
+    }: ListLanesArgs & { statusMaxAgeMs?: number; servedRememberedAt?: { value: number | null } } = {},
     readEpoch?: { value: number },
   ): Promise<LaneSummary[]> => {
     // Best-effort primary lane bootstrap -- failures should not block listing.
@@ -4188,6 +4253,9 @@ export function createLaneService({
     if (cached && cached.expiresAt > Date.now()) {
       return cached.rows.map(cloneLaneSummary);
     }
+    // A build allowed to serve remembered statuses is never published to the
+    // exact cache above, so an exact caller cannot be handed its numbers.
+    const servesRemembered = includeStatus && statusMaxAgeMs > 0;
 
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
@@ -4301,6 +4369,8 @@ export function createLaneService({
       rowsById,
       includeStatus,
       logContext: "lane_list",
+      statusMaxAgeMs: servesRemembered ? statusMaxAgeMs : 0,
+      servedRememberedAt,
     });
 
     // Warm the resolver's caches with bounded concurrency before the ordered
@@ -4401,7 +4471,12 @@ export function createLaneService({
     // were read before any such mutation, so caching them would hand back
     // pre-mutation state — a just-deleted lane, still listed — for a full TTL,
     // including to the rebuild the mutation itself kicked off.
-    if (laneListEpoch === buildEpoch) {
+    if (laneListEpoch === buildEpoch && !servesRemembered) {
+      // Statuses of lanes no longer listed are not kept.
+      if (includeStatus && includeArchived) {
+        const listed = new Set(rows.map((row) => row.id));
+        for (const laneId of recentLaneStatus.keys()) if (!listed.has(laneId)) recentLaneStatus.delete(laneId);
+      }
       laneListCache.set(cacheKey, {
         expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
         rows: out.map(cloneLaneSummary)
@@ -5891,12 +5966,49 @@ export function createLaneService({
       }));
     },
 
-    async refreshSnapshots(args: ListLanesArgs = {}): Promise<{ refreshedCount: number; lanes: LaneSummary[] }> {
+    /**
+     * The lane list with every lane's status read now.
+     *
+     * `statusMaxAgeMs` lets a caller that will come back for the re-check
+     * (a phone reconnect) be answered at once: lane rows are read fresh and
+     * a lane's git status may be up to that old. When any status was served
+     * that way the answer says how old (`statusAsOf`) and that an exact
+     * re-check is running (`revalidating`); `awaitRevalidation` then returns
+     * that re-check's result instead of starting another full one. Without
+     * either option the call is exactly what it always was.
+     */
+    async refreshSnapshots(args: ListLanesArgs & {
+      statusMaxAgeMs?: number;
+      awaitRevalidation?: boolean;
+    } = {}): Promise<{ refreshedCount: number; lanes: LaneSummary[]; statusAsOf?: string; revalidating?: boolean }> {
+      const includeArchived = args.includeArchived ?? true;
+      const includeStatus = args.includeStatus ?? true;
+      const revalidation = laneStatusRevalidation;
+      if (
+        args.awaitRevalidation
+        && includeStatus
+        && revalidation
+        && revalidation.includeArchived === includeArchived
+        && (revalidation.finishedAt === null || Date.now() - revalidation.finishedAt <= LANE_STATUS_REVALIDATION_REUSE_MS)
+      ) {
+        const lanes = (await revalidation.result).map(cloneLaneSummary);
+        return { refreshedCount: lanes.length, lanes };
+      }
+      const maxAgeMs = includeStatus ? Math.max(0, args.statusMaxAgeMs ?? 0) : 0;
+      if (maxAgeMs > 0) {
+        const servedRememberedAt: { value: number | null } = { value: null };
+        const lanes = await buildLaneList({ includeArchived, includeStatus, statusMaxAgeMs: maxAgeMs, servedRememberedAt });
+        if (servedRememberedAt.value === null) return { refreshedCount: lanes.length, lanes };
+        startLaneStatusRevalidation(includeArchived);
+        return {
+          refreshedCount: lanes.length,
+          lanes,
+          statusAsOf: new Date(servedRememberedAt.value).toISOString(),
+          revalidating: true,
+        };
+      }
       invalidateLaneListCache();
-      const summaries = await listLanes({
-        includeArchived: args.includeArchived ?? true,
-        includeStatus: args.includeStatus ?? true,
-      });
+      const summaries = await listLanes({ includeArchived, includeStatus });
       return {
         refreshedCount: summaries.length,
         lanes: summaries,
