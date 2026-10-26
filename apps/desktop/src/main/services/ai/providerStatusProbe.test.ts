@@ -496,7 +496,7 @@ describe("probeProviderStatuses — Claude credential ladder", () => {
       spawn,
       env: { HOME: "/Users/tester" },
       readTextFile: (target) => (
-        target === "/Users/tester/.claude.json"
+        target === path.join("/Users/tester", ".claude.json")
           ? JSON.stringify({ oauthAccount: { accountUuid: "abc", emailAddress: "a@b.c" } })
           : null
       ),
@@ -650,7 +650,7 @@ describe("probeProviderStatuses — Pi credentials", () => {
   it("reports authenticated when Pi's auth file exists on the injected filesystem", async () => {
     const report = await probeProviderStatuses(realAuthFor("pi", {
       env: piEnv,
-      fs: createFs({ "/pi-agent/auth.json": {} }),
+      fs: createFs({ [path.join(path.resolve("/pi-agent"), "auth.json")]: {} }),
     }));
 
     expect(report.providers.pi).toMatchObject({ authenticated: true, authMethod: "unknown" });
@@ -659,7 +659,7 @@ describe("probeProviderStatuses — Pi credentials", () => {
   it("accepts the models file as the same proof", async () => {
     const report = await probeProviderStatuses(realAuthFor("pi", {
       env: piEnv,
-      fs: createFs({ "/pi-agent/models.json": {} }),
+      fs: createFs({ [path.join(path.resolve("/pi-agent"), "models.json")]: {} }),
     }));
 
     expect(report.providers.pi.authenticated).toBe(true);

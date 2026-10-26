@@ -33,6 +33,7 @@ import type {
   AgentChatSteerArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatSwitchAccountArgs,
   AgentChatUpdateSessionArgs,
 } from "./chat";
 import type { RemoteRuntimeStreamEventsResult } from "./remoteRuntime";
@@ -64,6 +65,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "setScheduledWorkPaused",
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
+  "switchAccount",
   "updateSession",
   "setPinned",
   "rerunLastTurn",
@@ -173,6 +175,7 @@ export type PersonalChatCallArgs =
   | { action: "setScheduledWorkPaused"; args: AgentChatSetScheduledWorkPausedArgs }
   | { action: "resumeUsageLimitNow"; args: AgentChatResumeUsageLimitNowArgs }
   | { action: "continueUsageLimitOnAlternate"; args: AgentChatContinueUsageLimitOnAlternateArgs }
+  | { action: "switchAccount"; args: AgentChatSwitchAccountArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
   /** Pin or unpin a chat in the rail. `list` rows carry `pinned: true` when pinned. */
   | { action: "setPinned"; args: { sessionId: string; pinned: boolean } }

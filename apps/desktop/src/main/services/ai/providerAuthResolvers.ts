@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolvePiInstallation } from "./piInstallation";
 import type { ShippedProvider } from "../../../shared/providers";
+import { shouldIsolateEmbeddedProviderLogins } from "../../../shared/providerLoginIsolation";
 import { getCachedCliAuthStatuses, parseJsonAuthStatus } from "./authDetector";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { inspectMuseCredentials } from "./museAuth";
@@ -133,8 +134,12 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
    * probed, and only then spends a process.
    */
   claude: async (context, install) => {
+    const isolated = shouldIsolateEmbeddedProviderLogins(context.env.ADE_RUNTIME_PROFILE, context.env);
     try {
-      const credentials = await readClaudeCredentials({ allowKeychain: false });
+      const credentials = await readClaudeCredentials({
+        allowKeychain: false,
+        ...(context.env.CLAUDE_CONFIG_DIR ? { configHome: context.env.CLAUDE_CONFIG_DIR } : {}),
+      });
       if (credentials) {
         // Both the Keychain item and ~/.claude/.credentials.json hold the token
         // a Pro/Max sign-in minted, not a key the user pasted.
@@ -149,7 +154,7 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     if (claudeConfigOauthAccountPresent(context)) {
       return { authenticated: true, authMethod: "subscription" };
     }
-    const cached = cachedCliVerdict("claude");
+    const cached = isolated ? null : cachedCliVerdict("claude");
     if (cached !== null) {
       return cached
         ? { authenticated: true, authMethod: "subscription" }
@@ -161,8 +166,9 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     return { authenticated: false, authMethod: null };
   },
   codex: async (context, install) => {
+    const isolated = shouldIsolateEmbeddedProviderLogins(context.env.ADE_RUNTIME_PROFILE, context.env);
     try {
-      if (await readCodexCredentials()) {
+      if (await readCodexCredentials(context.env.CODEX_HOME)) {
         return { authenticated: true, authMethod: "oauth" };
       }
     } catch {
@@ -171,7 +177,7 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     if (envKeyPresent(context.env, "OPENAI_API_KEY")) {
       return { authenticated: true, authMethod: "api-key" };
     }
-    const cached = cachedCliVerdict("codex");
+    const cached = isolated ? null : cachedCliVerdict("codex");
     if (cached !== null) {
       return cached
         ? { authenticated: true, authMethod: "oauth" }
@@ -184,9 +190,10 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     return { authenticated: false, authMethod: null };
   },
   cursor: async (context) => {
+    const isolated = shouldIsolateEmbeddedProviderLogins(context.env.ADE_RUNTIME_PROFILE, context.env);
     try {
       const snapshot = await getCursorSdkAuthSnapshot();
-      if (snapshot.credentialSource === "cursor-oauth" || snapshot.sdkLoggedIn) {
+      if (!isolated && (snapshot.credentialSource === "cursor-oauth" || snapshot.sdkLoggedIn)) {
         return { authenticated: true, authMethod: "oauth" };
       }
       if (snapshot.adeKeyPresent || snapshot.envKeyPresent || snapshot.adminEnvKeyPresent) {
@@ -207,7 +214,8 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     // Factory's only non-interactive signal is the CLI's own probe, which this
     // path refuses to spawn. Read whatever the auth detector already cached and
     // say nothing when the cache is cold.
-    if (cachedCliVerdict("droid")) return { authenticated: true, authMethod: "unknown" };
+    if (!shouldIsolateEmbeddedProviderLogins(context.env.ADE_RUNTIME_PROFILE, context.env)
+      && cachedCliVerdict("droid")) return { authenticated: true, authMethod: "unknown" };
     return {
       authenticated: false,
       authMethod: null,

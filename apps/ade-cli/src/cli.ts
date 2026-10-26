@@ -26450,6 +26450,10 @@ async function runServe(
   // is connected.
   const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
   const embedded = runtimeProfile === "embedded";
+  // The machine provider-instance store is shared across launch services. Give
+  // it the explicit profile from this runtime invocation so its default
+  // account uses the same isolated home as the embedded chat service.
+  process.env.ADE_RUNTIME_PROFILE = runtimeProfile ?? "full";
   // One decision, two surfaces: the sentence below and the `brain.jsonl`
   // warning after the socket is up. `describeBrainRoleCeiling` returns null
   // exactly when the ceiling is not worth naming, so the warning reads that
@@ -26631,7 +26635,10 @@ async function runServe(
   // Both profiles get it. An embedded runtime is exactly the case that needs
   // it most: the embedder's first screen asks "which CLIs do you have", and
   // without this it would have to write that detection itself.
-  const providerStatus = createProviderStatusService();
+  const providerStatus = createProviderStatusService({
+    runtimeProfile: runtimeProfile ?? "full",
+    adeHome: layout.adeDir,
+  });
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
@@ -27550,6 +27557,7 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      runtimeProfile: runtimeProfile ?? "full",
       providerStatus,
       keepAwakeService,
       productAnalyticsService: brainProductAnalytics,

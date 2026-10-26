@@ -58,6 +58,14 @@ import {
   resolveProviderRemediation,
 } from "../../../shared/providerRemediation";
 import type { ShippedProvider } from "../../../shared/providers";
+import type { AgentChatPermissionMode } from "../../../shared/types/chat";
+import { MODEL_REGISTRY, modelSupportsFastMode } from "../../../shared/modelRegistry";
+import { CALLER_MCP_SUPPORT } from "../../../shared/callerMcpServers";
+import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
+import { HARNESS_ROUTE_PROTOCOLS } from "../../../shared/harnessRoutes";
+import { PROVIDER_INSTANCE_PROVIDERS, type ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import { providerPermissionModes } from "../../../shared/providerPermissionModes";
+import { embeddedProviderLoginEnv, providerLoginIsolation } from "../../../shared/providerLoginIsolation";
 import { DEFAULT_RESOLVERS } from "./providerBinaryResolvers";
 import { DEFAULT_AUTH } from "./providerAuthResolvers";
 import {
@@ -135,6 +143,19 @@ export type ProviderStatusRecord = {
   checkedAt: string;
   /** Human-readable note when the plain flags would mislead. */
   detail: string | null;
+  capabilities: ProviderCapabilities;
+  isolation: "isolated" | "shared";
+};
+
+export type ProviderCapabilities = {
+  permissionModes: AgentChatPermissionMode[];
+  reasoningEfforts: string[];
+  fastMode: boolean;
+  multipleAccounts: boolean;
+  signIn: "cli-login" | "device-code" | "api-key" | "none";
+  apiKeys: boolean;
+  presets: boolean;
+  mcp: "full" | "partial" | "none";
 };
 
 export type ProviderStatusReport = {
@@ -162,6 +183,8 @@ export type ProviderStatusProbeOptions = {
   terminateTree?: TerminateTreeLike;
   /** Use a caller-owned cache instead of the module's. Tests pass a fresh one. */
   cache?: ProviderStatusCache;
+  runtimeProfile?: string | null;
+  adeHome?: string | null;
 };
 
 export type ProviderStatusCache = Map<ShippedProvider, { record: ProviderStatusRecord; checkedAtMs: number }>;
@@ -181,6 +204,29 @@ export function resetProviderStatusProbeForTests(): void {
   inflight = null;
 }
 
+function providerCapabilities(provider: ShippedProvider, platform: NodeJS.Platform): ProviderCapabilities {
+  const models = MODEL_REGISTRY.filter((model) => model.cliCommand === provider);
+  const hasPresetRoute = (HARNESS_PRESET_BODIES as readonly string[]).includes(provider)
+    && HARNESS_ROUTE_PROTOCOLS[provider as (typeof HARNESS_PRESET_BODIES)[number]].length > 0;
+  const apiKeys = models.some((model) => model.authTypes.includes("api-key")) || hasPresetRoute;
+  const multipleAccounts = (PROVIDER_INSTANCE_PROVIDERS as readonly string[]).includes(provider);
+  const remediation = resolveProviderRemediation(provider, platform);
+  const signIn: ProviderCapabilities["signIn"] = multipleAccounts
+    ? provider === "codex" ? "device-code" : "cli-login"
+    : remediation.loginCommand ? "cli-login" : apiKeys ? "api-key" : "none";
+  const mcpLevel = (CALLER_MCP_SUPPORT as Record<string, { level?: string }>)[provider]?.level;
+  return {
+    permissionModes: [...providerPermissionModes(provider)],
+    reasoningEfforts: [...new Set(models.flatMap((model) => model.reasoningTiers ?? []))],
+    fastMode: models.some((model) => modelSupportsFastMode(model)),
+    multipleAccounts,
+    signIn,
+    apiKeys,
+    presets: hasPresetRoute,
+    mcp: mcpLevel === "enforced" ? "full" : mcpLevel === "best-effort" ? "partial" : "none",
+  };
+}
+
 /** A record that claims nothing, for a provider whose probe never finished. */
 /**
  * A record with nothing found yet: the remediation copy filled in, every
@@ -196,6 +242,7 @@ function emptyRecord(
   platform: NodeJS.Platform,
   checkedAt: string,
   detail: string | null,
+  isolation: "isolated" | "shared" = "shared",
 ): ProviderStatusRecord {
   const remediation = resolveProviderRemediation(provider, platform);
   return {
@@ -213,6 +260,8 @@ function emptyRecord(
     stale: false,
     checkedAt,
     detail,
+    capabilities: providerCapabilities(provider, platform),
+    isolation,
   };
 }
 
@@ -240,11 +289,30 @@ async function probeOne(
   now: () => number,
   resolvers: Record<ShippedProvider, ProviderBinaryResolver>,
   auth: Record<ShippedProvider, ProviderAuthResolver>,
+  runtimeProfile: string | null | undefined,
+  adeHome: string | null | undefined,
 ): Promise<ProviderStatusRecord> {
   // Every spawn below runs ADE's pinned copy, which must not update itself.
-  const context: ProbeContext = { ...baseContext, env: { ...baseContext.env, ...providerSelfUpdateEnv(provider) } };
+  const isolation = providerLoginIsolation(
+    provider,
+    runtimeProfile,
+    { ...baseContext.env, ...(adeHome ? { ADE_HOME: adeHome } : {}) },
+    adeHome ?? baseContext.env.ADE_HOME ?? "",
+  );
+  const providerHome = isolation === "isolated" && adeHome
+    ? embeddedProviderLoginEnv(provider, adeHome)
+    : null;
+  const context: ProbeContext = {
+    ...baseContext,
+    env: {
+      ...baseContext.env,
+      ...(runtimeProfile ? { ADE_RUNTIME_PROFILE: runtimeProfile } : {}),
+      ...(providerHome ?? {}),
+      ...providerSelfUpdateEnv(provider),
+    },
+  };
   const checkedAt = new Date(now()).toISOString();
-  const base = emptyRecord(provider, context.platform, checkedAt, null);
+  const base = emptyRecord(provider, context.platform, checkedAt, null, isolation);
 
   let resolved: ResolvedProviderBinary;
   try {
@@ -299,6 +367,8 @@ async function probeOne(
 
 async function runProbe(options: ProviderStatusProbeOptions): Promise<ProviderStatusReport> {
   const env = options.env ?? process.env;
+  const adeHome = options.adeHome?.trim() || env.ADE_HOME?.trim() || null;
+  const runtimeProfile = options.runtimeProfile ?? env.ADE_RUNTIME_PROFILE;
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const now = options.now ?? Date.now;
@@ -333,11 +403,17 @@ async function runProbe(options: ProviderStatusProbeOptions): Promise<ProviderSt
       // provider does not report Cursor's sentence; `docsUrl` is the only
       // remediation left either way.
       const unavailable = providerUnavailableReason(provider, platform, arch);
+      const isolation = providerLoginIsolation(
+        provider,
+        runtimeProfile,
+        { ...env, ...(adeHome ? { ADE_HOME: adeHome } : {}) },
+        adeHome ?? "",
+      );
       if (unavailable !== null) {
         return {
           provider,
           record: {
-            ...emptyRecord(provider, platform, checkedAt, unavailable),
+            ...emptyRecord(provider, platform, checkedAt, unavailable, isolation),
             installCommand: null,
           },
         };
@@ -351,15 +427,15 @@ async function runProbe(options: ProviderStatusProbeOptions): Promise<ProviderSt
       // empty "did not finish" record otherwise. Reporting nothing at all
       // would let one hung CLI erase five healthy ones from the report.
       const fallback: ProviderStatusRecord = cached
-        ? { ...cached.record, stale: true }
-        : emptyRecord(provider, platform, checkedAt, PROVIDER_STATUS_DETAILS.budgetExceeded);
+        ? { ...cached.record, stale: true, isolation }
+        : emptyRecord(provider, platform, checkedAt, PROVIDER_STATUS_DETAILS.budgetExceeded, isolation);
       // The deadline is measured from the RUN's start, not from this probe's.
       // The constant says "the whole report may not outlive this", and a
       // per-probe timer only honored that because the six probes happen to run
       // concurrently — make one sequential and the report's real cap silently
       // became six times the number written here.
       const record = await withDeadline(
-        probeOne(provider, context, now, resolvers, auth),
+        probeOne(provider, context, now, resolvers, auth, runtimeProfile, adeHome),
         startedMs + PROVIDER_STATUS_BUDGET_MS - now(),
         fallback,
       );

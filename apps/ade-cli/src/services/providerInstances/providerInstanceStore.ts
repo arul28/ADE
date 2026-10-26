@@ -21,6 +21,7 @@ import {
   readCodexAccount,
 } from "../../../../desktop/src/main/services/usage/providerAccountIdentity";
 import { providerInstanceLaunchEnv } from "../../../../desktop/src/shared/cliLaunch";
+import { shouldIsolateEmbeddedProviderLogins } from "../../../../desktop/src/shared/providerLoginIsolation";
 import { resolveClaudeCodeExecutable } from "../../../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../../../desktop/src/main/services/ai/codexExecutable";
 import {
@@ -291,6 +292,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    * the registry would make ADE read one directory and launch against another.
    */
   function baseConfigHome(provider: ProviderInstanceProvider): string {
+    if (shouldIsolateEmbeddedProviderLogins(env.ADE_RUNTIME_PROFILE, env)) {
+      return path.join(options.adeDir, "provider-homes", provider, "default");
+    }
     const baseEnv = inheritsAccountHome(provider) ? { ...env, [PROVIDER_INSTANCE_ENV_KEY[provider]]: undefined } : env;
     return provider === "claude"
       ? claudeConfigHome({ env: baseEnv, homeDir })
@@ -537,7 +541,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       // The base identity signs in wherever the environment already points;
       // naming the default directory explicitly would file the credential
       // under a key the plain CLI never reads (see `isBaseProviderInstance`).
-      env: providerInstanceEnvPatch(instance),
+      env: providerInstanceEnvPatch(instance, {
+        allowDefaultConfigHome: shouldIsolateEmbeddedProviderLogins(env.ADE_RUNTIME_PROFILE, env),
+      }),
     };
   }
 
@@ -805,10 +811,15 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const provider = record.provider;
     // The base identity's reader follows the process env, which here names
     // another account; "unreadable" keeps what was known.
-    if (isDefaultProviderInstanceId(record.id) && !options.readAccount && inheritsAccountHome(provider)) {
+    if (isDefaultProviderInstanceId(record.id)
+      && !options.readAccount
+      && !shouldIsolateEmbeddedProviderLogins(env.ADE_RUNTIME_PROFILE, env)
+      && inheritsAccountHome(provider)) {
       return { readable: false, account: {} };
     }
-    const scopedHome = isDefaultProviderInstanceId(record.id) ? undefined : record.configHome;
+    const scopedHome = isDefaultProviderInstanceId(record.id)
+      ? shouldIsolateEmbeddedProviderLogins(env.ADE_RUNTIME_PROFILE, env) ? baseConfigHome(provider) : undefined
+      : record.configHome;
     try {
       const account = options.readAccount
         ? await options.readAccount(provider, record.configHome)
@@ -1005,9 +1016,10 @@ export function claudeAccountStopsOnExtraUsage(instanceId: string | null | undef
 
 export function providerInstanceEnvPatch(
   instance: { id: string; provider: ProviderInstanceProvider; configHome: string } | null | undefined,
+  options: { allowDefaultConfigHome?: boolean } = {},
 ): Record<string, string> {
   if (!instance) return {};
-  return providerInstanceLaunchEnv(instance.provider, instance);
+  return providerInstanceLaunchEnv(instance.provider, instance, options);
 }
 
 /**

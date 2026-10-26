@@ -1509,7 +1509,7 @@ describe("multi-project RPC server", () => {
     // below: the method reaches the machine scope, and `refresh` is forwarded.
     const report = { checkedAt: "2026-09-02T00:00:00.000Z", providers: {} } as ProviderStatusReport;
     const providerStatus = {
-      capabilities: vi.fn(() => ({ status: true as const, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS })),
+      capabilities: vi.fn(() => ({ status: true as const, capabilities: true as const, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS })),
       status: vi.fn(async () => report),
     };
     const handler = createMultiProjectRpcRequestHandler({
@@ -1525,7 +1525,7 @@ describe("multi-project RPC server", () => {
       params: {},
     });
     expect(initialized).toMatchObject({
-      capabilities: { providers: { status: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS } },
+      capabilities: { providers: { status: true, capabilities: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS } },
     });
 
     // No `params.projectId`: the method belongs to the machine scope, so it
@@ -3917,6 +3917,7 @@ describe("providers.status cache TTL", () => {
     expect(PROVIDER_STATUS_CACHE_TTL_MS).toBe(probe.PROVIDER_STATUS_CACHE_TTL_MS);
     expect(createProviderStatusService().capabilities()).toEqual({
       status: true,
+      capabilities: true,
       cacheTtlMs: probe.PROVIDER_STATUS_CACHE_TTL_MS,
     });
   });
