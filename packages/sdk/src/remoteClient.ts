@@ -1,6 +1,9 @@
 import { AdeError, readAdeErrorCode } from "./errors.js";
 import type { AdeClientEvent, AdeClientEventMap } from "./clientEvents.js";
-import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SetModelResult, SteerOptions, ThreadEventChannel, ThreadModelSelection, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SetModelResult, SteerOptions, ThreadEventChannel, ThreadInterruptOptions, ThreadModelSelection, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import type { AccountManagement, SignInStatus } from "./accounts.js";
+import type { ProviderCapabilities } from "./types.js";
+import { createPolledSignIn, type PolledSignInResult } from "./polledSignIn.js";
 import type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
 import { STATUS_EVENT_TYPES, USAGE_EVENT_TYPES, type AgentChatEventEnvelope, type DoctorReport, type McpCapabilityReport, type ModelCatalogEntry, type ProviderStatus, type ThreadHistoryPage, type ThreadSummary, type Unsubscribe } from "./types.js";
 import { envelopeDedupeKey, mergeHistoryWithBuffer, type AdeIpcErrorPayload } from "./electron/protocol.js";
@@ -46,7 +49,14 @@ export type AdeRemoteClient = {
     status(): Promise<Record<string, ProviderStatus>>;
     refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(listener: (statuses: Record<string, ProviderStatus>) => void): Unsubscribe;
+    capabilities(provider: string): Promise<ProviderCapabilities>;
   };
+  /** Refused by the server unless its host passed `allowAccountManagement`. */
+  accounts: AccountManagement["accounts"];
+  /** Refused by the server unless its host passed `allowAccountManagement`. */
+  credentials: AccountManagement["credentials"];
+  /** Refused by the server unless its host passed `allowAccountManagement`. */
+  presets: AccountManagement["presets"];
   models: { list(): Promise<ModelCatalogEntry[]> };
   threads: {
     open(key: string, options?: Record<string, unknown>): Promise<AdeRemoteThread>;
@@ -302,7 +312,28 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
       permissionCapability: state.permissionCapability,
       send: async (text: string, options?: SendOptions) => { await call("thread.send", { key: state.key, text, options: options ?? {} }); },
       steer: async (text: string, options?: SteerOptions) => { await call("thread.steer", { key: state.key, text, options: options ?? {} }); },
-      interrupt: async () => { await call("thread.interrupt", { key: state.key }); },
+      interrupt: async (options?: ThreadInterruptOptions) => { await call("thread.interrupt", { key: state.key, options: options ?? {} }); },
+      respond: async (requestId: string, response: ThreadRespondOptions) => {
+        await call("thread.respond", { key: state.key, requestId, response });
+      },
+      queue: {
+        list: () => call("thread.queue.list", { key: state.key }),
+        cancel: async (id) => { await call("thread.queue.cancel", { key: state.key, id }); },
+        edit: async (id, text) => { await call("thread.queue.edit", { key: state.key, id, text }); },
+        move: async (id, index) => { await call("thread.queue.move", { key: state.key, id, index }); },
+        dispatch: async (id) => { await call("thread.queue.dispatch", { key: state.key, id }); },
+        cancelDispatched: async (id) => { await call("thread.queue.cancelDispatched", { key: state.key, id }); },
+        restore: async () => { await call("thread.queue.restore", { key: state.key }); },
+      },
+      stopTask: async (taskId: string) => { await call("thread.stopTask", { key: state.key, taskId }); },
+      slashCommands: () => call("thread.slashCommands", { key: state.key }),
+      recover: (options) => call("thread.recover", { key: state.key, options: options ?? {} }),
+      resolveUnprocessed: (args) => call("thread.resolveUnprocessed", { key: state.key, args }),
+      usageLimit: {
+        resumeNow: () => call("thread.usageLimit.resumeNow", { key: state.key }),
+        continueOnAlternate: () => call("thread.usageLimit.continueOnAlternate", { key: state.key }),
+      },
+      switchAccount: (instanceId: string) => call("thread.switchAccount", { key: state.key, instanceId }),
       setModel: async (modelId: string, options?: SetModelOptions) => {
         const result = await call<SetModelResult>("thread.setModel", { key: state.key, modelId, options: options ?? {} });
         state.model = result;
@@ -330,6 +361,37 @@ export function createAdeRemoteClient(transportOrUrl: AdeRemoteTransport | strin
       status: () => call<Record<string, ProviderStatus>>("providers.status"),
       refresh: () => call<Record<string, ProviderStatus>>("providers.refresh"),
       onChange: (listener) => { providerListeners.add(listener); return () => providerListeners.delete(listener); },
+      capabilities: (provider) => call<ProviderCapabilities>("providers.capabilities", { provider }),
+    },
+    accounts: {
+      list: (provider) => call("accounts.list", { provider }),
+      add: (provider, options) => call("accounts.add", { provider, options: options ?? {} }),
+      remove: (id) => call("accounts.remove", { id }),
+      rename: (id, label) => call("accounts.rename", { id, label }),
+      setDefault: (id) => call("accounts.setDefault", { id }),
+      signOut: (id) => call("accounts.signOut", { id }),
+      refresh: () => call("accounts.refresh"),
+      signIn: async (id, options) => {
+        const started = await call<{ loginId: string; status: SignInStatus }>("accounts.signIn", { id, options: options ?? {} });
+        return createPolledSignIn<AdeIpcErrorPayload>(started, {
+          status: (loginId) => call<PolledSignInResult<AdeIpcErrorPayload>>("accounts.signInStatus", { loginId }),
+          submitCode: async (loginId, code) => { await call("accounts.signInSubmitCode", { loginId, code }); },
+          cancel: async (loginId) => { await call("accounts.signInCancel", { loginId }); },
+          toError: remoteError,
+        });
+      },
+    },
+    credentials: {
+      list: (provider) => call("credentials.list", { provider }),
+      add: (input) => call("credentials.add", { credential: input }),
+      remove: (id, provider) => call("credentials.remove", { id, provider }),
+      verify: (provider) => call("credentials.verify", { provider }),
+    },
+    presets: {
+      list: () => call("presets.list"),
+      add: (input) => call("presets.add", { preset: input }),
+      update: (id, patch) => call("presets.update", { id, patch }),
+      remove: (id) => call("presets.remove", { id }),
     },
     models: { list: () => call<ModelCatalogEntry[]>("models.list") },
     threads: {

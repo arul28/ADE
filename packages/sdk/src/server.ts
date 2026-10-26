@@ -1,7 +1,8 @@
 import { ADE_CLIENT_EVENTS, type AdeClientEvent } from "./clientEvents.js";
 import type { AdeChatClient } from "./client.js";
 import type { ThreadOpenOptions, ThreadResumeOptions } from "./clientOptions.js";
-import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SteerOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SteerOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
+import type { SignInHandle, SignInStatus } from "./accounts.js";
 import { AdeError } from "./errors.js";
 import type { ApprovalDecision } from "./approvals.js";
 import { serializeAdeError } from "./electron/protocol.js";
@@ -24,6 +25,12 @@ export type CreateAdeServerOptions = {
     rendererOptions: Record<string, unknown> | undefined,
     context: { exists: boolean; summary: ThreadSummary | null },
   ) => ThreadOpenOptions | ThreadResumeOptions | undefined | Promise<ThreadOpenOptions | ThreadResumeOptions | undefined>;
+  /**
+   * Enable account, credential and preset management over this bridge. Off
+   * unless the host opts in: a browser that can sign accounts in or store keys
+   * acts as the end user. A callback decides per socket and method.
+   */
+  allowAccountManagement?: boolean | ((socket: AdeServerSocket, method: string, params: Record<string, unknown>) => boolean | Promise<boolean>);
   /** Extra host-owned RPC methods. They share the same authorization gate. */
   methods?: Record<string, (params: Record<string, unknown>, context: AdeServerContext) => unknown | Promise<unknown>>;
   logger?: (line: string) => void;
@@ -37,13 +44,34 @@ export type AdeServer = {
 };
 
 type SocketThread = { thread: AdeThread; stop: Unsubscribe };
+type SocketSignIn = {
+  handle: SignInHandle;
+  readonly status: SignInStatus;
+  stop: Unsubscribe;
+  result: Promise<{ account?: unknown; error?: unknown }>;
+};
 
 const KEYED_METHODS = new Set([
   "threads.open", "threads.get", "threads.delete", "threads.archive", "threads.unarchive",
   "thread.export", "thread.update", "thread.retry", "thread.editLast", "thread.history",
   "thread.historyPage", "thread.send", "thread.steer", "thread.interrupt", "thread.setModel",
   "thread.approve", "thread.pendingApprovals", "thread.usage", "thread.updateMcpServers", "thread.refreshMcpHeaders",
+  "thread.respond", "thread.queue.list", "thread.queue.cancel", "thread.queue.edit", "thread.queue.move",
+  "thread.queue.dispatch", "thread.queue.cancelDispatched", "thread.queue.restore", "thread.stopTask",
+  "thread.slashCommands", "thread.recover", "thread.resolveUnprocessed", "thread.usageLimit.resumeNow",
+  "thread.usageLimit.continueOnAlternate", "thread.switchAccount",
 ]);
+
+function isAccountMethod(method: string): boolean {
+  return method.startsWith("accounts.") || method.startsWith("credentials.") || method.startsWith("presets.");
+}
+
+function requireText(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new AdeError("invalid_option", label + " must be a non-empty string.");
+  return value;
+}
+
+const TERMINAL_SIGN_IN_STATES = new Set(["succeeded", "failed", "cancelled", "expired"]);
 
 function asParams(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -104,6 +132,9 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
     const threads = new Map<string, SocketThread>();
     const opening = new Map<string, Promise<AdeThread>>();
     const requestIds = new Set<string | number>();
+    // Sign-ins this connection started. A browser that goes away cannot finish
+    // one, so its sign-ins are cancelled with it rather than left running.
+    const signIns = new Map<string, SocketSignIn>();
     let disconnected = false;
     const send = (message: unknown) => { if (!disconnected) safeSend(socket, message); };
     const cleanup = () => {
@@ -114,6 +145,11 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       stopProvider();
       for (const stop of stopClientEvents) stop();
       for (const entry of threads.values()) entry.stop();
+      for (const login of signIns.values()) {
+        login.stop();
+        void login.handle.cancel().catch(() => {});
+      }
+      signIns.clear();
       threads.clear();
       opening.clear();
       detachMessage();
@@ -186,7 +222,14 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "thread.export": ({ key }) => client.exportThread(String(key ?? "")),
       "thread.send": async ({ key, text, options: sendOptions }) => { await requireThread(key).send(String(text ?? ""), asParams(sendOptions) as SendOptions); return null; },
       "thread.steer": async ({ key, text, options: steerOptions }) => { await requireThread(key).steer(String(text ?? ""), asParams(steerOptions) as SteerOptions); return null; },
-      "thread.interrupt": async ({ key }) => { await requireThread(key).interrupt(); return null; },
+      "thread.interrupt": async ({ key, options: interruptOptions }) => {
+        const raw = asParams(interruptOptions);
+        await requireThread(key).interrupt({
+          ...(raw.queue === "keep" || raw.queue === "drop" ? { queue: raw.queue } : {}),
+          ...(typeof raw.mode === "string" ? { mode: raw.mode } : {}),
+        } as Parameters<AdeThread["interrupt"]>[0]);
+        return null;
+      },
       "thread.setModel": async ({ key, modelId, options: modelOptions }) => await requireThread(key).setModel(String(modelId ?? ""), asParams(modelOptions) as SetModelOptions),
       "thread.update": async ({ key, patch, options: updateOptions }) => await requireThread(key).update(asParams(patch) as ThreadUpdate, asParams(updateOptions) as ThreadUpdateOptions),
       "thread.retry": async ({ key }) => await requireThread(key).retry(),
@@ -200,6 +243,94 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "thread.updateMcpServers": async ({ key, servers }) =>
         await requireThread(key).updateMcpServers(asParams(servers) as unknown as Record<string, McpServerConfig>),
       "thread.refreshMcpHeaders": async ({ key }) => await requireThread(key).refreshMcpHeaders(),
+      "thread.respond": async ({ key, requestId, response }) => {
+        await requireThread(key).respond(requireText(requestId, "requestId"), asParams(response) as ThreadRespondOptions);
+        return null;
+      },
+      "thread.queue.list": async ({ key }) => await requireThread(key).queue.list(),
+      "thread.queue.cancel": async ({ key, id }) => { await requireThread(key).queue.cancel(requireText(id, "id")); return null; },
+      "thread.queue.edit": async ({ key, id, text }) => { await requireThread(key).queue.edit(requireText(id, "id"), String(text ?? "")); return null; },
+      "thread.queue.move": async ({ key, id, index }) => {
+        if (typeof index !== "number" || !Number.isInteger(index)) throw new AdeError("invalid_option", "index must be an integer.");
+        await requireThread(key).queue.move(requireText(id, "id"), index);
+        return null;
+      },
+      "thread.queue.dispatch": async ({ key, id }) => { await requireThread(key).queue.dispatch(requireText(id, "id")); return null; },
+      "thread.queue.cancelDispatched": async ({ key, id }) => { await requireThread(key).queue.cancelDispatched(requireText(id, "id")); return null; },
+      "thread.queue.restore": async ({ key }) => { await requireThread(key).queue.restore(); return null; },
+      "thread.stopTask": async ({ key, taskId }) => { await requireThread(key).stopTask(requireText(taskId, "taskId")); return null; },
+      "thread.slashCommands": async ({ key }) => await requireThread(key).slashCommands(),
+      "thread.recover": async ({ key, options: recoverOptions }) =>
+        await requireThread(key).recover(asParams(recoverOptions) as Parameters<AdeThread["recover"]>[0]),
+      "thread.resolveUnprocessed": async ({ key, args }) =>
+        await requireThread(key).resolveUnprocessed(asParams(args) as Parameters<AdeThread["resolveUnprocessed"]>[0]),
+      "thread.usageLimit.resumeNow": async ({ key }) => await requireThread(key).usageLimit.resumeNow(),
+      "thread.usageLimit.continueOnAlternate": async ({ key }) => await requireThread(key).usageLimit.continueOnAlternate(),
+      "thread.switchAccount": async ({ key, instanceId }) => await requireThread(key).switchAccount(requireText(instanceId, "instanceId")),
+      "providers.capabilities": async ({ provider }) => await client.providers.capabilities(requireText(provider, "provider")),
+      "accounts.list": async ({ provider }) => await client.accounts.list(typeof provider === "string" ? provider : undefined),
+      "accounts.add": async ({ provider, options: addOptions }) =>
+        await client.accounts.add(requireText(provider, "provider"), asParams(addOptions) as { label?: string }),
+      "accounts.remove": async ({ id }) => await client.accounts.remove(requireText(id, "id")),
+      "accounts.rename": async ({ id, label }) => await client.accounts.rename(requireText(id, "id"), requireText(label, "label")),
+      "accounts.setDefault": async ({ id }) => await client.accounts.setDefault(requireText(id, "id")),
+      "accounts.signOut": async ({ id }) => await client.accounts.signOut(requireText(id, "id")),
+      "accounts.refresh": async () => await client.accounts.refresh(),
+      "accounts.signIn": async ({ id, options: signInOptions }) => {
+        const handle = await client.accounts.signIn(requireText(id, "id"), asParams(signInOptions) as { deviceAuth?: boolean });
+        let status = {} as SignInStatus;
+        const stop = handle.on("update", (next) => { status = next; });
+        if (!status.loginId) {
+          stop();
+          await handle.cancel().catch(() => {});
+          throw new AdeError("protocol_error", "The sign-in did not provide its initial status.");
+        }
+        signIns.set(status.loginId, {
+          handle,
+          get status() { return status; },
+          stop,
+          result: handle.done.then((account) => ({ account }), (error) => ({ error: serializeAdeError(error) })),
+        });
+        return { loginId: status.loginId, status };
+      },
+      "accounts.signInStatus": async ({ loginId }) => {
+        const id = requireText(loginId, "loginId");
+        const login = signIns.get(id);
+        if (!login) throw new AdeError("invalid_option", "Sign-in " + id + " was not found.");
+        const terminal = TERMINAL_SIGN_IN_STATES.has(login.status.state);
+        const result = terminal ? await login.result : {};
+        if (terminal) {
+          login.stop();
+          signIns.delete(id);
+        }
+        return { status: login.status, ...result };
+      },
+      "accounts.signInSubmitCode": async ({ loginId, code }) => {
+        const login = signIns.get(requireText(loginId, "loginId"));
+        if (!login) throw new AdeError("invalid_option", "This sign-in is no longer active.");
+        await login.handle.submitCode(requireText(code, "code"));
+        return null;
+      },
+      "accounts.signInCancel": async ({ loginId }) => {
+        const id = requireText(loginId, "loginId");
+        const login = signIns.get(id);
+        if (!login) return null;
+        await login.handle.cancel();
+        login.stop();
+        signIns.delete(id);
+        return null;
+      },
+      "credentials.list": async ({ provider }) => await client.credentials.list(typeof provider === "string" ? provider : undefined),
+      "credentials.add": async ({ credential }) =>
+        await client.credentials.add(asParams(credential) as Parameters<AdeChatClient["credentials"]["add"]>[0]),
+      "credentials.remove": async ({ id, provider }) =>
+        await client.credentials.remove(requireText(id, "id"), typeof provider === "string" ? provider : undefined),
+      "credentials.verify": async ({ provider }) => await client.credentials.verify(requireText(provider, "provider")),
+      "presets.list": async () => await client.presets.list(),
+      "presets.add": async ({ preset }) => await client.presets.add(asParams(preset) as Parameters<AdeChatClient["presets"]["add"]>[0]),
+      "presets.update": async ({ id, patch }) =>
+        await client.presets.update(requireText(id, "id"), asParams(patch) as Parameters<AdeChatClient["presets"]["update"]>[1]),
+      "presets.remove": async ({ id }) => await client.presets.remove(requireText(id, "id")),
     };
 
     const dispatch = async (raw: unknown) => {
@@ -216,6 +347,11 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       try {
         if (options.authorize && !(await options.authorize(socket, request.method, params))) {
           throw new AdeError("unauthorized", "The host refused " + request.method + ".");
+        }
+        if (isAccountMethod(request.method)) {
+          const gate = options.allowAccountManagement;
+          const allowed = typeof gate === "function" ? await gate(socket, request.method, params) : gate === true;
+          if (!allowed) throw new AdeError("unauthorized", "The host has not enabled account management over this bridge.");
         }
         if (KEYED_METHODS.has(request.method)) {
           const key = params.key;

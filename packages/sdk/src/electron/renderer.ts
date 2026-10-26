@@ -28,6 +28,7 @@
  *      live or in the page.
  */
 
+import { createPolledSignIn } from "../polledSignIn.js";
 import type { ApprovalDecision, ApprovalRequest } from "../approvals.js";
 import { AdeError, readAdeErrorCode } from "../errors.js";
 import type { AccountInfo, ApiCredentialInfo, SignInHandle, SignInStatus } from "../accounts.js";
@@ -664,65 +665,15 @@ export function createAdeIpcClient(bridgeInput: AdeBridge | null | undefined): A
       refresh: () => call<AccountInfo[]>("accounts.refresh", []),
       signIn: async (id, options) => {
         const started = await call<{ loginId: string; status: SignInStatus }>("accounts.signIn", [id, options ?? null]);
-        const listeners = new Set<(status: SignInStatus) => void>();
-        let current = started.status;
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        let finished = false;
-        let delay = 500;
-        let resolveDone!: (account: AccountInfo) => void;
-        let rejectDone!: (error: Error) => void;
-        const done = new Promise<AccountInfo>((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
-        const publish = (status: SignInStatus) => {
-          current = status;
-          for (const listener of [...listeners]) {
-            try { listener(status); } catch { /* Isolate embedder callbacks. */ }
-          }
-        };
-        const finish = (result: { status: SignInStatus; account?: AccountInfo; error?: AdeIpcErrorPayload }) => {
-          if (finished) return;
-          finished = true;
-          if (timer) clearTimeout(timer);
-          timer = null;
-          publish(result.status);
-          if (result.account) resolveDone(result.account);
-          else if (result.error) {
-            try { rehydrate(result.error); } catch (error) { rejectDone(error instanceof Error ? error : new Error(String(error))); }
-          } else rejectDone(new AdeError("rpc_error", result.status.message ?? `Sign-in ${result.status.state}.`));
-        };
-        const poll = async (): Promise<void> => {
-          if (finished) return;
-          try {
-            const result = await call<{ status: SignInStatus; account?: AccountInfo; error?: AdeIpcErrorPayload }>("accounts.signInStatus", [started.loginId]);
-            if (JSON.stringify(result.status) !== JSON.stringify(current)) publish(result.status);
-            if (["succeeded", "failed", "cancelled", "expired"].includes(result.status.state)) {
-              finish(result);
-              return;
-            }
-            delay = Math.min(5_000, delay * 1.5);
-          } catch (error) {
-            if (finished) return;
-            finish({ status: { ...current, state: "failed", message: error instanceof Error ? error.message : String(error) } });
-            return;
-          }
-          timer = setTimeout(() => { void poll(); }, delay);
-        };
-        const handle: SignInHandle = {
-          on: (_event, listener) => {
-            listeners.add(listener);
-            listener(current);
-            return () => listeners.delete(listener);
+        return createPolledSignIn<AdeIpcErrorPayload>(started, {
+          status: (loginId) => call("accounts.signInStatus", [loginId]),
+          submitCode: async (loginId, code) => { await call<null>("accounts.signInSubmitCode", [loginId, code]); },
+          cancel: async (loginId) => { await call<null>("accounts.signInCancel", [loginId]); },
+          toError: (payload) => {
+            try { rehydrate(payload); } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+            return new AdeError("rpc_error", "Sign-in failed.");
           },
-          submitCode: async (code) => { await call<null>("accounts.signInSubmitCode", [started.loginId, code]); },
-          cancel: async () => {
-            if (finished) return;
-            await call<null>("accounts.signInCancel", [started.loginId]);
-            finish({ status: { ...current, state: "cancelled", endedAt: new Date().toISOString() } });
-          },
-          done,
-        };
-        if (["succeeded", "failed", "cancelled", "expired"].includes(current.state)) void poll();
-        else timer = setTimeout(() => { void poll(); }, delay);
-        return handle;
+        });
       },
     },
     credentials: {

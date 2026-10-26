@@ -28,6 +28,16 @@ import type {
 import { budgetExceeded, ThreadUsageAccumulator, validateThreadBudget, type ThreadBudget, type ThreadUsage } from "./usage.js";
 import type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
 import { runOnce, type RunOptions } from "./run.js";
+import type { AccountInfo, ApiCredentialInfo } from "./accounts.js";
+import type {
+  AgentChatRecoverTurnResult,
+  AgentChatResolveUnprocessedMessageResult,
+  AgentChatSlashCommand,
+  AgentChatSwitchAccountResult,
+  AgentChatUsageLimitResult,
+  ProviderCapabilities,
+} from "./types.js";
+import type { ThreadInterruptOptions, ThreadQueueItem, ThreadRespondOptions } from "./thread.js";
 
 type MockResponse =
   | { kind: "reply"; text: string }
@@ -38,6 +48,12 @@ type MockResponse =
 export type MockToolCall = { tool: string; args: unknown; result?: unknown };
 
 export type MockAdeChat = AdeChatClient & {
+  /** Accounts `accounts.list` returns and `switchAccount` accepts. */
+  setAccounts(accounts: readonly AccountInfo[]): void;
+  /** What `providers.capabilities(provider)` answers; it throws `unsupported` until set. */
+  setCapabilities(provider: string, capabilities: ProviderCapabilities): void;
+  /** What every mock thread's `slashCommands()` returns. */
+  setSlashCommands(commands: readonly AgentChatSlashCommand[]): void;
   queueReply(text: string): void;
   queueToolCall(call: MockToolCall): void;
   queueApproval(request?: Partial<ApprovalRequest>): void;
@@ -59,6 +75,9 @@ export function createMockAdeChat(): MockAdeChat {
   const modelListeners = new Set<(value: ModelCatalogEntry[]) => void>();
   const clientListeners = new Map<string, Set<(value: unknown) => void>>();
   let nextSession = 1;
+  let accounts: AccountInfo[] = [];
+  let slashCommands: AgentChatSlashCommand[] = [];
+  const capabilities = new Map<string, ProviderCapabilities>();
   let disposed = false;
 
   const assertUsable = () => {
@@ -79,6 +98,8 @@ export function createMockAdeChat(): MockAdeChat {
     private readonly listeners = new Map<ThreadEventChannel, Set<(envelope: AgentChatEventEnvelope) => void>>();
     private readonly envelopes: AgentChatEventEnvelope[] = [];
     private readonly pending = new Map<string, ApprovalRequest>();
+    private readonly queued: ThreadQueueItem[] = [];
+    private nextQueued = 1;
     private readonly usageTotals = new ThreadUsageAccumulator();
     private sequence = 0;
     private turn = 0;
@@ -177,8 +198,65 @@ export function createMockAdeChat(): MockAdeChat {
     }
 
     async send(text: string, options?: SendOptions): Promise<void> { await this.dispatch(text, options); }
-    async steer(text: string, options?: SteerOptions): Promise<void> { await this.dispatch(text, options); }
-    async interrupt(): Promise<void> { this.finish("interrupted"); }
+    async steer(text: string, options?: SteerOptions): Promise<void> {
+      // A turn parked on an approval is still running: like the runtime, a
+      // steer then waits in the queue instead of starting a second turn.
+      if (this.active) {
+        this.queued.push({ id: "mock-steer-" + this.nextQueued++, text, ...(options?.attachments ? { attachments: options.attachments } : {}) });
+        return;
+      }
+      await this.dispatch(text, options);
+    }
+    async interrupt(options?: ThreadInterruptOptions): Promise<void> {
+      if (options?.queue === "drop") this.queued.length = 0;
+      this.finish("interrupted");
+    }
+    async respond(requestId: string, response: ThreadRespondOptions): Promise<void> {
+      if (!this.pending.has(requestId)) throw new AdeError("approval_not_found", "No pending mock request " + requestId + ".");
+      this.pending.delete(requestId);
+      const declined = response.decision === "decline" || response.decision === "cancel";
+      this.emit({ type: "pending_input_resolved", itemId: requestId, resolution: declined ? "declined" : "accepted", turnId: "mock-turn-" + this.turn });
+      this.finish("completed");
+    }
+    private queuedIndex(id: string): number {
+      const index = this.queued.findIndex((item) => item.id === id);
+      if (index < 0) throw new AdeError("invalid_option", "No queued mock message " + id + ".");
+      return index;
+    }
+    readonly queue = {
+      list: async (): Promise<ThreadQueueItem[]> => this.queued.map((item) => ({ ...item })),
+      cancel: async (id: string): Promise<void> => { this.queued.splice(this.queuedIndex(id), 1); },
+      edit: async (id: string, text: string): Promise<void> => { this.queued[this.queuedIndex(id)]!.text = text; },
+      move: async (id: string, index: number): Promise<void> => {
+        const [item] = this.queued.splice(this.queuedIndex(id), 1);
+        this.queued.splice(Math.max(0, Math.min(index, this.queued.length)), 0, item!);
+      },
+      dispatch: async (id: string): Promise<void> => {
+        const [item] = this.queued.splice(this.queuedIndex(id), 1);
+        this.finish("interrupted");
+        await this.dispatch(item!.text);
+      },
+      cancelDispatched: async (_id: string): Promise<void> => {},
+      restore: async (): Promise<void> => {},
+    };
+    async stopTask(_taskId: string): Promise<void> {}
+    async slashCommands(): Promise<AgentChatSlashCommand[]> { return slashCommands.map((command) => ({ ...command })); }
+    async recover(options: { turnId?: string; action?: AgentChatRecoverTurnResult["action"] } = {}): Promise<AgentChatRecoverTurnResult> {
+      return { action: options.action ?? "wait", turnId: options.turnId ?? "mock-turn-" + this.turn, status: "waiting" };
+    }
+    async resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult> {
+      return { steerId: args.steerId, action: args.action, status: "completed" };
+    }
+    readonly usageLimit = {
+      resumeNow: async (): Promise<AgentChatUsageLimitResult> => ({ ok: true, turnId: null }),
+      continueOnAlternate: async (): Promise<AgentChatUsageLimitResult> => ({ ok: false, reason: "no_alternate", message: "The mock client has no alternate account." }),
+    };
+    async switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult> {
+      if (!accounts.some((account) => account.id === instanceId)) {
+        return { ok: false, reason: "signed_out", message: "No mock account " + instanceId + "." };
+      }
+      return { ok: true, instanceId };
+    }
     async update(patch: ThreadUpdate, _options?: ThreadUpdateOptions): Promise<ThreadUpdateResult> {
       if (Object.hasOwn(patch, "title")) this.currentTitle = patch.title ?? null;
       return { title: this.currentTitle, model: this.currentModel };
@@ -256,11 +334,41 @@ export function createMockAdeChat(): MockAdeChat {
     }
   }
 
+  const unsupported = (what: string) => async (): Promise<never> => {
+    throw new AdeError("unsupported", "The mock client does not " + what + ".");
+  };
   const client: MockAdeChat = {
     providers: {
       status: async () => ({}),
       refresh: async () => ({}),
       onChange: (listener) => { providerListeners.add(listener); return () => providerListeners.delete(listener); },
+      capabilities: async (provider: string): Promise<ProviderCapabilities> => {
+        const value = capabilities.get(provider);
+        if (!value) throw new AdeError("unsupported", "No mock capability record for provider " + provider + "; set one with setCapabilities().");
+        return value;
+      },
+    },
+    accounts: {
+      list: async (provider?: string) => accounts.filter((account) => !provider || account.provider === provider).map((account) => ({ ...account })),
+      add: unsupported("add accounts; seed them with setAccounts()"),
+      remove: unsupported("remove accounts"),
+      rename: unsupported("rename accounts"),
+      setDefault: unsupported("change the default account"),
+      signOut: unsupported("sign accounts out"),
+      refresh: async () => accounts.map((account) => ({ ...account })),
+      signIn: unsupported("run provider sign-ins"),
+    },
+    credentials: {
+      list: async (): Promise<ApiCredentialInfo[]> => [],
+      add: unsupported("store credentials"),
+      remove: unsupported("remove credentials"),
+      verify: unsupported("verify credentials"),
+    },
+    presets: {
+      list: async () => [],
+      add: unsupported("add presets"),
+      update: unsupported("update presets"),
+      remove: unsupported("remove presets"),
     },
     models: {
       list: async () => [],
@@ -312,6 +420,9 @@ export function createMockAdeChat(): MockAdeChat {
         delete: (key) => client.threads.delete(key),
       },
     }, prompt, options),
+    setAccounts: (next) => { accounts = next.map((account) => ({ ...account })); },
+    setCapabilities: (provider, value) => { capabilities.set(provider, value); },
+    setSlashCommands: (next) => { slashCommands = next.map((command) => ({ ...command })); },
     queueReply: (text) => { responses.push({ kind: "reply", text }); },
     queueToolCall: (call) => { responses.push({ kind: "tool_call", tool: call.tool, args: call.args, result: call.result ?? null }); },
     queueApproval: (request = {}) => { responses.push({ kind: "approval", request }); },
