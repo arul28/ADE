@@ -1547,3 +1547,16 @@ above (Work usable 2.2-2.7 s): each lane also fills its one-time caches (the
 HEAD date, the index path, the conflict check, behind counts), 288 processes
 on 47 lanes. The index path now comes from the worktree's `.git` file
 (`ff8d90ce2`), 49 fewer.
+
+Credential reads while another ADE process holds the store lock
+(`scripts/perf/service/credential-lock.bench.mts`: a second process holds
+the lock 3 s, a cold store reads one key with `getSync`, as the brain does
+on its event loop for the account lease, Linear and session reads), 3 runs:
+
+| Metric | Before | Baseline (`09e100e94`) | Ceiling |
+|---|---:|---:|---:|
+| Brain event loop blocked by one read | 3,004-3,011 ms (up to the 15 s lock timeout) | 0 ms | 50 ms |
+
+The owner's installed brain logged an 11.1 s freeze at idle with 123 ms of
+CPU and no page faults: a sleeping wait, which is what this lock wait is
+(25 ms sleeps until the holder, often an `ade` CLI call, lets go).
