@@ -5836,18 +5836,23 @@ async function runTool(args: {
         ),
       );
     }
+    // The user's settings need the user: one of their clients or their own
+    // terminal at the operator role. A role alone is not enough, because an
+    // agent outside a chat (an orchestrator run, step or attempt) can keep the
+    // operator role it asks for.
+    const userAtControls = callerHasRoleAtLeast(callerCtx.role, "cto") && isUserClientSession(session);
+    const setting = userSettingWrite(domain, action);
+    if (setting && !userAtControls) {
+      // A setting only the user changes. Say so in words an agent can pass
+      // on, with the link that opens it when there is one.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        setting.entryId
+          ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
+          : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
+      );
+    }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
-      const setting = userSettingWrite(domain, action);
-      if (setting) {
-        // A setting only the user changes. Say so in words an agent can pass
-        // on, with the link that opens it when there is one.
-        throw new JsonRpcError(
-          JsonRpcErrorCode.policyDenied,
-          setting.entryId
-            ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
-            : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
-        );
-      }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
@@ -5874,7 +5879,7 @@ async function runTool(args: {
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
     }
-    if (domain === "project_config" && action === "save" && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+    if (domain === "project_config" && action === "save" && !userAtControls) {
       // An agent may change the setup of the work (tests, automations, lane
       // templates…) but not the person's settings that share the same file:
       // PR chat transcripts publish chats, and the rest are sign-ins, AI config

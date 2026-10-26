@@ -4478,12 +4478,13 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(false);
   });
 
-  it("refuses an agent's project config save that changes or drops a key only the user owns", async () => {
+  it("refuses an agent's project config save or setting write that changes a key only the user owns", async () => {
     const fixture = createRuntime();
     const local = { version: 1, automations: [], github: { prTranscriptGists: { enabled: false } } };
     const projectConfigService = {
       get: vi.fn(() => ({ shared: {}, local })),
       save: vi.fn((candidate: unknown) => candidate),
+      setPrTranscriptGists: vi.fn(() => ({ shared: {}, local })),
     };
     (fixture.runtime as any).projectConfigService = projectConfigService;
     const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -4503,6 +4504,18 @@ describe("adeRpcServer", () => {
     // The work setup is the agent's to change.
     const automations = await save(agentHandler, { shared: {}, local: { ...local, automations: [{ id: "nightly" }] } });
     expect(automations?.isError).toBeUndefined();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(1);
+
+    // An agent in an orchestrator run keeps the operator role it asks for; that is still not the user.
+    const runHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(runHandler, { callerId: "run-agent", role: "cto", runId: "run-1" });
+    const runPublish = await save(runHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(runPublish?.isError).toBe(true);
+    const runToggle = await callTool(runHandler, "run_ade_action", {
+      domain: "project_config", action: "setPrTranscriptGists", args: { enabled: true },
+    });
+    expect(runToggle?.isError).toBe(true);
+    expect(projectConfigService.setPrTranscriptGists).not.toHaveBeenCalled();
     expect(projectConfigService.save).toHaveBeenCalledTimes(1);
 
     // The user's own client may change the owner-only key.
