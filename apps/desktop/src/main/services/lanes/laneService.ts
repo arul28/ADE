@@ -55,6 +55,7 @@ import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
+import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
 import type {
   ArchiveAndReclaimLaneArgs,
@@ -433,31 +434,12 @@ async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
   return fs.existsSync(path.resolve(checkoutPath, gitdir));
 }
 
+/**
+ * Bytes a reclaim would free: blocks on disk, each hard-linked file once and
+ * pnpm store clones left out, without following links (`diskUsage`).
+ */
 async function managedTreeBytes(targetPath: string): Promise<number> {
-  let total = 0;
-  const pending = [targetPath];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.lstat(current);
-    } catch {
-      continue;
-    }
-    if (stat.isSymbolicLink()) continue;
-    if (!stat.isDirectory()) {
-      total += Math.max(0, stat.size);
-      continue;
-    }
-    let names: string[];
-    try {
-      names = await fs.promises.readdir(current);
-    } catch {
-      continue;
-    }
-    for (const name of names) pending.push(path.join(current, name));
-  }
-  return total;
+  return (await measureTree(targetPath)).bytes;
 }
 
 async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
@@ -9740,6 +9722,21 @@ export function createLaneService({
         activePtyCount,
         activeWatcherCount,
         envInitialized: false
+      };
+    },
+
+    /**
+     * What runs in the lane on this machine right now: open chats, live
+     * terminals (dev servers run in one) and file watchers. Cheap: no git, no
+     * disk. Null until the chat and terminal services are wired, so a caller
+     * deciding whether the lane is idle cannot mistake "not known yet" for 0.
+     */
+    getLiveWorkCounts(laneId: string): { activeChatCount: number; activePtyCount: number; activeWatcherCount: number } | null {
+      if (!teardownDeps?.ptyService || !teardownDeps.agentChatService) return null;
+      return {
+        activeChatCount: teardownDeps.agentChatService.countActiveForLane(laneId),
+        activePtyCount: teardownDeps.ptyService.countActiveForLane(laneId),
+        activeWatcherCount: teardownDeps.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0,
       };
     },
 

@@ -273,15 +273,20 @@ function desktopPlatform(): AttentionPresence["platform"] {
   return /Mac/i.test(navigator.userAgent || navigator.platform) ? "macOS" : "unknown";
 }
 
+/**
+ * Reports presence and returns whether the person is using this computer
+ * (the desktop's OS idle clock), or `null` when that is unknown.
+ */
 async function reportPresence(
   ambientSurfaceVisible: boolean,
   visibleItemIds: string[],
   foreground: boolean,
-): Promise<void> {
+  leaving = false,
+): Promise<boolean | null> {
   const api = window.ade?.attention;
-  if (!api) return;
+  if (!api) return null;
   const identity = await resolveDesktopIdentity();
-  await api.reportPresence({
+  const receipt = await api.reportPresence({
     ...identity,
     platform: desktopPlatform(),
     appForeground: foreground,
@@ -290,7 +295,9 @@ async function reportPresence(
       ? visibleItemIds.slice(0, MAX_VISIBLE_PRESENCE_ITEMS)
       : [],
     observedAt: new Date().toISOString(),
+    ...(leaving ? { userActive: false } : {}),
   });
+  return receipt && typeof receipt.userActive === "boolean" ? receipt.userActive : null;
 }
 
 /**
@@ -359,16 +366,26 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
   }, [accountLoading, accountUserId]);
 
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
+  // This computer can tell whether the person is using it (in use or idle),
+  // though maybe not ADE: a hidden window keeps the visible cadence then. In
+  // use, the relay's presence window (45 s) never lapses and the phone stays
+  // quiet while they work elsewhere; idle, coming back to the keyboard is
+  // reported within one beat instead of two minutes.
+  const userActivityKnownRef = useRef(false);
 
   useEffect(() => {
     if (accountLoading || !accountUserId) return;
+    userActivityKnownRef.current = false;
     const reporter = createPresenceReporter({
-      send: () => reportPresence(
-        ambientSurfaceVisibleRef.current,
-        visibleItemIdsRef.current,
-        foregroundRef.current,
-      ),
-      isVisible: () => document.visibilityState === "visible",
+      send: async () => {
+        const userActive = await reportPresence(
+          ambientSurfaceVisibleRef.current,
+          visibleItemIdsRef.current,
+          foregroundRef.current,
+        );
+        userActivityKnownRef.current = typeof userActive === "boolean";
+      },
+      isVisible: () => document.visibilityState === "visible" || userActivityKnownRef.current,
       visibleIntervalMs: PRESENCE_INTERVAL_MS,
       hiddenIntervalMs: HIDDEN_PRESENCE_INTERVAL_MS,
       maxBackoffMs: PRESENCE_FAILURE_BACKOFF_MAX_MS,
@@ -417,6 +434,6 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
   }, [presenceStateKey]);
 
   useEffect(() => () => {
-    if (accountUserId) void reportPresence(false, [], false).catch(() => {});
+    if (accountUserId) void reportPresence(false, [], false, true).catch(() => {});
   }, [accountUserId]);
 }

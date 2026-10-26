@@ -53,6 +53,12 @@ export type StorageItem = {
    * bound ("at least"), not the size. Absent on a fully measured item.
    */
   partial?: boolean;
+  /**
+   * A lane folder whose build output ADE removed while the lane sat idle and
+   * that has not all come back yet. Absent on older builds and on lanes with
+   * nothing removed.
+   */
+  buildOutputRemoved?: { at: string; bytes: number; partial?: boolean; folders: string[] };
 };
 
 export type StorageCategorySnapshot = {
@@ -104,9 +110,43 @@ export type StorageLifecycleSnapshot = {
     cleanupIntervalHours: number;
     autoArchiveAfterHours: number;
     reclaimArchivedAfterHours: number;
+    /** Days a lane sits idle before its build output is removed; 0 = off. Absent on older builds. */
+    cleanBuildOutputAfterDays?: number;
   };
   archivedAutomatically: number;
   reviewReadyCount: number;
+  /** What the idle-lane build output cleanup removed. Absent on older builds. */
+  buildOutput?: LaneBuildOutputSummary;
+};
+
+/** `laneCleanup.cleanBuildOutputAfterDays` when local.yaml does not set it: on, at a week. */
+export const DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS = 7;
+
+/** One lane's most recent build output cleanup. */
+export type LaneBuildOutputLaneEntry = {
+  laneId: string;
+  laneName: string;
+  /** When that cleanup ran. */
+  removedAt: string;
+  /** Bytes it freed in this lane. A lower bound when `partial`. */
+  bytes: number;
+  partial?: boolean;
+  /** Folders removed, relative to the lane folder, with `/` separators. */
+  folders: string[];
+  /** Folders it tried to remove and could not, with a plain reason. */
+  failures: Array<{ folder: string; reason: string }>;
+};
+
+export type LaneBuildOutputSummary = {
+  /** The last time ADE checked idle lanes for build output, or null when it never has. */
+  lastCheckAt: string | null;
+  /** Everything removed since `since`, across every lane. */
+  totalFreedBytes: number;
+  totalPartial?: boolean;
+  /** The oldest cleanup still on record, or null when there are none. */
+  since: string | null;
+  /** Newest first. */
+  lanes: LaneBuildOutputLaneEntry[];
 };
 
 export type StorageCleanupTarget =

@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
@@ -509,6 +510,7 @@ const RUNTIME_METHODS = new Set([
   "sync.switchHost",
   "sync.getStatus",
   "sync.runSelfProbe",
+  "sync.checkReachability",
   "sync.refreshDiscovery",
   "sync.listDevices",
   "sync.updateLocalDevice",
@@ -3104,6 +3106,21 @@ export function createMultiProjectRpcRequestHandler(
         };
       }
       return await syncService.runSelfProbe();
+    }
+
+    if (method === "sync.checkReachability") {
+      // Status and self-probe from one host: the project that holds the
+      // machine's listener and relay, so their facts describe the same thing.
+      const hostScope = await scopeRegistry.resolveActiveSyncHost();
+      const hostSyncService = hostScope?.runtime.syncService ?? null;
+      const syncService = hostSyncService ?? await resolveRecoverySyncService(params);
+      return await checkHostReachability({
+        getStatus: async () => syncService
+          ? await syncService.getStatus({ includeTransferReadiness: false })
+          : getMachineOnlySyncStatus(),
+        runSelfProbe: hostSyncService ? () => hostSyncService.runSelfProbe() : null,
+        accountSignedIn: accountAuthService.getStatus().signedIn === true,
+      });
     }
 
     if (method === "sync.refreshDiscovery") {

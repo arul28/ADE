@@ -337,11 +337,14 @@ export async function openSyncEnvelopeConnection(
       connection.close(1000, "Sync connection failed.");
       reject(new Error(`Failed to connect to sync endpoint: ${error.message}`));
     }
-    function onClose(): void {
+    function onClose(code?: number, reason?: Buffer): void {
       if (settled) return;
       settled = true;
       cleanup();
-      reject(new Error("Sync endpoint closed before the connection opened."));
+      reject(Object.assign(
+        new Error("Sync endpoint closed before the connection opened."),
+        { closeCode: typeof code === "number" ? code : null, closeReason: reason?.toString("utf8") || null },
+      ));
     }
     function onAbort(): void {
       if (settled) return;
@@ -477,8 +480,13 @@ export async function waitForSyncEnvelope(
       if (predicate(envelope)) finish(() => resolve(envelope));
     });
     removeError = connection.onError((error) => finish(() => reject(error)));
-    removeClose = connection.onClose(() => {
-      finish(() => reject(new Error("Sync connection closed before the expected response arrived.")));
+    removeClose = connection.onClose((info) => {
+      // The close code says who closed and why (the relay's 4501 is "that
+      // machine is not connected"); keep it for structural classification.
+      finish(() => reject(Object.assign(
+        new Error("Sync connection closed before the expected response arrived."),
+        { closeCode: info?.code ?? null, closeReason: info?.reason ?? null },
+      )));
     });
     signal?.addEventListener("abort", onAbort, { once: true });
   });

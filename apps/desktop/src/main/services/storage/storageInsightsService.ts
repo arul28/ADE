@@ -23,6 +23,7 @@ import type {
   DeletedLaneChatsSummary,
   MaintenanceStepResult,
 } from "../../../shared/types/storage";
+import { DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS } from "../../../shared/types/storage";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -54,6 +55,8 @@ import { deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdow
 import { appendMaintenanceJournal, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { deriveCategoryPolicyChips } from "./storageLedger";
 import { readVolumeSpace } from "./volume";
+import { createLinkedFileTally, pnpmSharedStoreDir } from "./diskUsage";
+import { createLaneBuildOutputSweeper } from "./laneBuildOutput";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
@@ -119,6 +122,12 @@ type LaneLifecycleBackend = {
     blockedReasons: Array<{ code: string }>;
   }>;
   archive: (args: { laneId: string }) => Promise<void>;
+  /** Open chats, live terminals and watchers in the lane; null when not known yet. */
+  getLiveWorkCounts?: (laneId: string) => {
+    activeChatCount: number;
+    activePtyCount: number;
+    activeWatcherCount: number;
+  } | null;
 };
 
 type LaneCleanupConfigReader = {
@@ -270,7 +279,9 @@ function dominantSafety(items: StorageItem[], fallback: StorageSafety): StorageS
 
 async function lstatOrNull(targetPath: string): Promise<fs.Stats | null> {
   try {
-    return await fs.promises.lstat(targetPath);
+    // Unpatched fs: under Electron a stat of a lane's `.asar` file would open
+    // the archive and read it as a folder.
+    return await nonAsarFs.promises.lstat(targetPath);
   } catch (error) {
     if (isEnoentError(error)) return null;
     throw error;
@@ -304,6 +315,10 @@ async function walkPath(
   const result: PathSize = { bytes: 0, fileCount: 0, lastModifiedMs: null, oldFileBytes: 0, compressedBytes: 0 };
   const pending = [path.resolve(rootPath)];
   const oldBefore = Date.now() - COMPRESSIBLE_AGE_MS;
+  // Bytes on disk, each hard-linked file once, pnpm store clones left out:
+  // the same accounting as `diskUsage.measureTree`.
+  const tally = createLinkedFileTally();
+  const skipped = new Set<string>();
 
   while (pending.length > 0) {
     if (state && (state.entries >= state.entryLimit || Date.now() - state.startedAt >= state.budgetMs)) {
@@ -312,6 +327,7 @@ async function walkPath(
     }
     const batch = pending.splice(0, WALK_CONCURRENCY);
     const inspected = await Promise.all(batch.map(async (currentPath) => {
+      if (skipped.has(currentPath)) return null;
       if (excludedRoots.some((excluded) => isSameOrWithin(excluded, currentPath))) return null;
       if (state) {
         if (state.entries >= state.entryLimit) {
@@ -325,7 +341,7 @@ async function walkPath(
       if (!stat.isDirectory()) return { currentPath, stat, children: [] as string[] };
       let names: string[];
       try {
-        names = await fs.promises.readdir(currentPath);
+        names = await nonAsarFs.promises.readdir(currentPath);
       } catch (error) {
         if (isEnoentError(error)) return null;
         // One folder this user cannot list (EPERM/EACCES, common under Windows
@@ -334,6 +350,10 @@ async function walkPath(
         const code = (error as NodeJS.ErrnoException | null)?.code;
         if (code === "EPERM" || code === "EACCES") return { currentPath, stat, children: [] as string[] };
         throw error;
+      }
+      if (path.basename(currentPath) === "node_modules" && names.includes(".modules.yaml")) {
+        const store = await pnpmSharedStoreDir(currentPath, stat);
+        if (store) skipped.add(store);
       }
       return { currentPath, stat, children: names.map((name) => path.join(currentPath, name)) };
     }));
@@ -344,10 +364,11 @@ async function walkPath(
       if (entry.stat.isDirectory()) {
         pending.push(...entry.children);
       } else {
-        result.bytes += entry.stat.size;
+        const bytes = tally(entry.stat);
+        result.bytes += bytes;
         result.fileCount += 1;
-        if (entry.currentPath.endsWith(".gz")) result.compressedBytes += entry.stat.size;
-        else if (entry.stat.mtimeMs < oldBefore) result.oldFileBytes += entry.stat.size;
+        if (entry.currentPath.endsWith(".gz")) result.compressedBytes += bytes;
+        else if (entry.stat.mtimeMs < oldBefore) result.oldFileBytes += bytes;
       }
     }
   }
@@ -443,6 +464,10 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       reclaimArchivedAfterHours: Math.max(0, Math.floor(
         cleanup.reclaimArchivedAfterHours ?? cleanup.autoDeleteArchivedAfterHours ?? 0,
       )),
+      // On by default: a local.yaml without the key gets a week.
+      cleanBuildOutputAfterDays: Math.max(0, Math.floor(
+        cleanup.cleanBuildOutputAfterDays ?? DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS,
+      )),
     };
   };
 
@@ -468,6 +493,23 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     const validValues = values.filter(Number.isFinite);
     return validValues.length > 0 ? Math.max(...validValues) : Date.now();
   };
+
+  // Build output (node_modules, dist, ...) in idle lanes. Runs as a storage
+  // doctor step, so it keeps its own once-a-day pace whether or not the lane
+  // archive rules above are on.
+  const buildOutput = createLaneBuildOutputSweeper({
+    db: options.db,
+    logger: options.logger,
+    projectId: options.projectId,
+    projectRoot,
+    worktreesDir: layout.worktreesDir,
+    idleDays: () => (options.projectConfigService ? lifecyclePolicy().cleanBuildOutputAfterDays : 0),
+    listLanes: () => listLaneRows(),
+    liveWorkCounts: options.laneService?.getLiveWorkCounts
+      ? (laneId) => options.laneService?.getLiveWorkCounts?.(laneId) ?? null
+      : null,
+    latestLaneActivityMs: (laneId, createdAt) => latestLaneActivityMs(laneId, createdAt),
+  });
 
   const hasActiveLaneWorktreeLock = (laneId: string): boolean => {
     const now = Date.now();
@@ -1019,6 +1061,13 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       "select lane_id, reclaim_state, last_known_bytes, last_error from local_lane_storage_state where project_id = ?",
       [options.projectId ?? ""],
     ).map((entry) => [entry.lane_id, entry] as const));
+    const buildOutputRead = await buildOutput.describe(lanes).catch((error) => {
+      options.logger.warn("storage.build_output_summary_failed", {
+        projectRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
     const worktreeNames = await readdirOrEmpty(layout.worktreesDir);
     for (const [index, name] of worktreeNames.entries()) {
       const worktreePath = path.join(layout.worktreesDir, name);
@@ -1053,6 +1102,8 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           ? Math.max(0, (Date.now() - Date.parse(entry.item.lastModifiedAt)) / (60 * 60_000))
           : null;
         if (row) entry.item.laneId = row.id;
+        const removedBuildOutput = row ? buildOutputRead?.removedByLane.get(row.id) : undefined;
+        if (removedBuildOutput) entry.item.buildOutputRemoved = removedBuildOutput;
         if (storageState?.reclaim_state) entry.item.reclaimState = storageState.reclaim_state;
         if (storageState?.last_error) entry.item.blockedReasons = [`Last cleanup failed: ${storageState.last_error}`];
         add("lanes_worktrees", entry.item);
@@ -1198,6 +1249,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           policy,
           archivedAutomatically: run?.archived_automatically ?? 0,
           reviewReadyCount,
+          ...(buildOutputRead ? { buildOutput: buildOutputRead.summary } : {}),
         };
       })(),
     };
@@ -1652,6 +1704,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   /** For the deleted-chats reminder: one directory listing and a few header reads, no full scan. */
   const deletedLaneChatsSummary = (): Promise<DeletedLaneChatsSummary> => deletedLanes.summary();
 
+  /**
+   * For the lane view: build output the idle-lane cleanup removed from this
+   * lane that is still gone, or null. Reads one lane's records, no scan.
+   */
+  const laneBuildOutputRemoved = async (laneId: string): Promise<StorageItem["buildOutputRemoved"] | null> => {
+    const lane = options.db.get<LaneRow>(
+      "select id, name, worktree_path, archived_at, created_at, lane_type, is_edit_protected from lanes where id = ?",
+      [laneId],
+    );
+    if (!lane || lane.archived_at) return null;
+    return await buildOutput.describeLane(lane);
+  };
+
   const collectIosDerivedData = async (): Promise<StorageCleanupTarget[]> => {
     const stat = await lstatOrNull(iosDerivedDataDir);
     if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return [];
@@ -1721,9 +1786,16 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         return { itemsAffected: summary.filesCompressed, bytesReclaimed: summary.savedBytes };
       });
 
-      // Filesystem cleanup is review-only. The doctor may identify candidates,
-      // but it never removes a directory without a fresh user preview and
-      // confirmation in Settings > Storage.
+      // c. Build output (node_modules, dist, .next, ...) in lanes idle past
+      // the configured days. The one folder removal the doctor does on its
+      // own: only rebuildable folders git ignores, never in a lane with
+      // anything running, each checked again right before it goes. Paced to
+      // once a day across restarts; a manual run goes now.
+      await runStep(actions, "fs.lane_build_output", "delete", () => buildOutput.sweep({ force: trigger === "manual" }));
+
+      // Other filesystem cleanup is review-only. The doctor may identify
+      // candidates, but it never removes those without a fresh user preview
+      // and confirmation in Settings > Storage.
       const recordReviewCandidates = async (targets: StorageCleanupTarget[]) => ({
         itemsAffected: targets.length,
         bytesReclaimed: 0,
@@ -1898,6 +1970,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     compressNow,
     runMaintenanceNow,
     deletedLaneChatsSummary,
+    laneBuildOutputRemoved,
     runLifecycleScanNow: runLifecycleScan,
     dispose,
   };

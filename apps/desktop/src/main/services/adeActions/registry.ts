@@ -4144,6 +4144,10 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
     deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),
+    laneBuildOutputRemoved: (args?: { laneId?: string }) =>
+      typeof args?.laneId === "string" && args.laneId.trim()
+        ? storageInsightsService.laneBuildOutputRemoved(args.laneId.trim())
+        : Promise.resolve(null),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {

@@ -10,6 +10,7 @@ import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
 import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanePageModel";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
+import { LaneBuildOutputNotice } from "./LaneBuildOutputNotice";
 import { LaneChangesSection } from "./LaneChangesSection";
 import { LaneChatsSection } from "./LaneChatsSection";
 import { LaneHistoryFeed } from "./LaneHistoryFeed";
@@ -414,6 +415,7 @@ export function LaneDashboard({
               onDismiss={dismissNotice}
             />
           ) : null}
+          <LaneBuildOutputNotice laneId={laneId} pin={pin} active={active} />
           {rebaseError ? (
             <div className="-mx-2 truncate rounded-md px-2 py-2 text-[12.5px]" style={{ color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 7%, transparent)" }} title={rebaseError}>
               {rebaseError}

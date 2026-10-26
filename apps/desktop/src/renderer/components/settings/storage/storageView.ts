@@ -315,6 +315,7 @@ const LEDGER_LABELS: Record<string, string> = {
   "fs.artifacts": "Proof & recordings",
   "fs.attachments": "Attachments",
   "fs.worktrees": "Lane worktrees",
+  "fs.lane_build_output": "Build output in idle lanes",
 };
 
 export function ledgerLabel(ledgerId: string): string {
@@ -731,7 +732,7 @@ export function buildSafeCleanupPlan(
   snapshot: {
     categories: StorageCategorySnapshot[];
     extras?: StorageSnapshotExtras;
-    lifecycle?: { policy: { cleanupIntervalHours: number } };
+    lifecycle?: { policy: { cleanupIntervalHours: number; cleanBuildOutputAfterDays?: number } };
   },
   laneIdByKey: Map<string, string>,
   opts: { maintenance: boolean } = { maintenance: true },
@@ -778,6 +779,10 @@ export function buildSafeCleanupPlan(
     if (lifecycle && lifecycle.policy.cleanupIntervalHours > 0) {
       alsoRuns.push("Checks for idle lanes first and archives the ones your Archive idle lanes rules allow. Their branches, chats and files are kept.");
     }
+    const buildOutputDays = lifecycle?.policy.cleanBuildOutputAfterDays ?? 0;
+    if (buildOutputDays > 0) {
+      alsoRuns.push(`Removes build output, like node_modules and dist, from lanes idle ${buildOutputDays} ${buildOutputDays === 1 ? "day" : "days"}. A reinstall or build brings it back.`);
+    }
     const compressible = snapshot.categories.find((c) => c.id === "chats_history")?.compressibleBytes ?? 0;
     if (compressible > 0) {
       alsoRuns.push(`Compresses ${formatBytes(compressible)} of old chat and terminal history. Nothing is lost.`);
@@ -796,6 +801,6 @@ export function buildSafeCleanupPlan(
     estimatedBytes,
     partial,
     alsoRuns,
-    keeps: "Your chats, active lanes and newest recovery backup are never touched.",
+    keeps: "Your chats, your lanes' own files and the newest recovery backup are never touched.",
   };
 }

@@ -21,6 +21,7 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
+import { HostStallNote } from "./HostStallNote";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
@@ -339,7 +340,9 @@ export function SavedMachineRow({
               >
                 <Plugs size={15} />
               </button>
-            ) : section !== "unavailable" ? (
+            ) : null}
+            {/* Connected, Test also asks the machine itself whether other devices can reach it. */}
+            {section !== "unavailable" ? (
               <button
                 type="button"
                 aria-label="Test"
@@ -439,6 +442,11 @@ export function SavedMachineRow({
           </div>
         ) : null}
 
+        <HostStallNote
+          stall={status?.hostStall}
+          machineName={target.name?.trim() || target.hostname}
+        />
+
         <ConnectionRouteDetails
           attempts={routeAttempts}
           correlationId={routeCorrelationId}
@@ -458,7 +466,11 @@ export function SavedMachineRow({
 
       {testOpen ? (
         <div id={`remote-target-test-${target.id}`}>
-          <ConnectionDoctorPanel machineId={target.id} />
+          <ConnectionDoctorPanel
+            machineId={target.id}
+            machineName={target.name?.trim() || target.hostname}
+            connected={Boolean(row.connected)}
+          />
         </div>
       ) : null}
 

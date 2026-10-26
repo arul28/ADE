@@ -17,6 +17,7 @@ import type {
 import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { ThisComputerStatus } from "../remoteTargets/ThisComputerStatus";
+import { HostReachabilityCheck } from "../remoteTargets/HostReachabilityCheck";
 import {
   PhoneConnectionsTab,
   ThisMacCard,
@@ -347,10 +348,13 @@ export function ConnectionsPanel({
           sessionState={accountSessionState(accountStatus)}
           onOpenYourComputers={goToYourComputers}
           statusSlot={(
-            <ThisComputerStatus
-              accountSignedIn={accountStatus.signedIn}
-              onAccountMachinesChanged={reloadAccountMachines}
-            />
+            <>
+              <ThisComputerStatus
+                accountSignedIn={accountStatus.signedIn}
+                onAccountMachinesChanged={reloadAccountMachines}
+              />
+              <HostReachabilityCheck />
+            </>
           )}
         />
       </div>

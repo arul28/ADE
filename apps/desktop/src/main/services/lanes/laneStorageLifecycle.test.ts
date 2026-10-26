@@ -503,8 +503,11 @@ describe("lane storage lifecycle", () => {
 
     expect(fs.existsSync(worktreePath)).toBe(false);
     expect(fs.existsSync(lanePackDir)).toBe(true);
+    // What is left is the pack file: its blocks on disk (its length on Windows).
+    const generated = fs.statSync(path.join(lanePackDir, "generated.bin"));
+    const leftBytes = process.platform === "win32" ? generated.size : generated.blocks * 512;
     expect(db.get("select reclaim_state, attempts, last_known_bytes from local_lane_storage_state where lane_id = ?", ["12345678-lane"]))
-      .toMatchObject({ reclaim_state: "failed", attempts: 1, last_known_bytes: 9 });
+      .toMatchObject({ reclaim_state: "failed", attempts: 1, last_known_bytes: leftBytes });
 
     const retry = await service.archiveAndReclaim({
       laneId: "12345678-lane",

@@ -173,6 +173,14 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     enforcement: "manual",
   },
   {
+    id: "fs.lane_build_output",
+    kind: "file_family",
+    description: "Build output (node_modules, dist, .next, Cargo target, ...) in lane folders idle past the configured days. Only folders git ignores and tracks nothing in; rebuilt by a reinstall or build.",
+    policyClass: "derived",
+    policy: { maxAgeDays: 7 },
+    enforcement: "doctor",
+  },
+  {
     id: "fs.worktrees",
     kind: "directory",
     description: "Lane worktrees. Active lanes are protected; archived and orphaned ones are removed only on request.",

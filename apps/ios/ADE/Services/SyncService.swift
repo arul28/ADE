@@ -4219,6 +4219,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastPairingFailure: SyncPairingFailureCode?
   @Published private(set) var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
   @Published private(set) var hostCompatibilityMissingActions: [String] = []
+  /// The machine froze shortly before this connection (from its hello). A
+  /// clean reconnect clears it.
+  @Published private(set) var hostStallNotice: SyncHostStallNotice?
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
@@ -20945,6 +20948,13 @@ final class SyncService: ObservableObject {
     if let snapshot = parseSyncHostReadinessSnapshot(payload["projectHost"]) {
       applyIncomingProjectHostSnapshot(snapshot)
     }
+    // Without this, a machine that froze and dropped the phone reads as the
+    // phone's network failing.
+    hostStallNotice = parseSyncHostStallNotice(
+      payload["hostHealth"],
+      machineName: remoteHostName ?? activeHostProfile?.hostName,
+      now: Date()
+    )
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       hostTransport: payload["connectionTransport"] as? String,

@@ -408,7 +408,7 @@ export function AccountMachineRow({
               ))}
             </div>
           ) : null}
-          {row.matchedTargetId ? <ConnectionDoctorPanel machineId={row.matchedTargetId} /> : null}
+          {row.matchedTargetId ? <ConnectionDoctorPanel machineId={row.matchedTargetId} machineName={displayName} /> : null}
         </div>
       ) : null}
     </div>
