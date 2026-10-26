@@ -1379,12 +1379,13 @@ export function createConflictService({
   const indexSignature = async (worktreePath: string): Promise<string | null> => {
     try {
       const indexPath = await runGitRepoCached(
-        ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        ["rev-parse", "--git-path", "index"],
         { cwd: worktreePath, timeoutMs: 8_000 },
         { key: `index-path:${worktreePath}`, cacheClass: "stable" },
       );
       if (indexPath.exitCode !== 0 || !indexPath.stdout.trim()) return null;
-      const stat = await fs.promises.stat(indexPath.stdout.trim(), { bigint: true });
+      // Relative to the worktree (`--path-format=absolute` needs git 2.31).
+      const stat = await fs.promises.stat(path.resolve(worktreePath, indexPath.stdout.trim()), { bigint: true });
       return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
     } catch {
       return null;

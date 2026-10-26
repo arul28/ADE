@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
+import { gitCommandError, parseNameStatusRecords, runGit, runGitRepoCached } from "../git/git";
 import { parseNumstatRecordsZ, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
@@ -319,10 +319,17 @@ async function resolveBranchCompareBase(
   return { label: compare, mergeBase: sha };
 }
 
-/** Where the worktree's own index lives; empty when git cannot say. */
+/**
+ * Where the worktree's own index lives; empty when git cannot say. A
+ * worktree's index never moves, so this is asked once per worktree (the
+ * conflict check shares the answer) rather than on every diff click.
+ */
 function readRealIndexPath(worktreePath: string): Promise<string> {
-  return runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: 10_000 })
-    .then((res) => (res.exitCode === 0 ? path.resolve(worktreePath, res.stdout.trim()) : ""), () => "");
+  return runGitRepoCached(
+    ["rev-parse", "--git-path", "index"],
+    { cwd: worktreePath, timeoutMs: 10_000 },
+    { key: `index-path:${worktreePath}`, cacheClass: "stable" },
+  ).then((res) => (res.exitCode === 0 && res.stdout.trim() ? path.resolve(worktreePath, res.stdout.trim()) : ""), () => "");
 }
 
 /**

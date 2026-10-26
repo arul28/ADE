@@ -19861,9 +19861,14 @@ export function createAgentChatService(args: {
    * waits to start a fresh thread (`claudeFreshThreadPending`), and only one
    * written for the chat's own lane.
    */
-  const claudeResumePointer = (sessionId: string, laneId: string, freshThreadPending: boolean) => {
+  const claudeResumePointer = (
+    sessionId: string,
+    laneId: string,
+    freshThreadPending: boolean,
+    scope?: SummaryCallScope,
+  ) => {
     if (freshThreadPending) return null;
-    const pointer = getClaudeSessionPointerForChat(sessionId);
+    const pointer = scope ? scope.claudePointer(sessionId) : getClaudeSessionPointerForChat(sessionId);
     return pointer?.laneId === laneId ? pointer : null;
   };
 
@@ -20409,7 +20414,7 @@ export function createAgentChatService(args: {
   const copilotRewindEventIdsOf = (managed: ManagedChatSession): Record<string, string> | undefined =>
     managed.copilotRewindEventIds ?? readPersistedState(managed.session.id)?.copilotRewindEventIds;
 
-  const readPersistedState = (sessionId: string): PersistedChatState | null => {
+  const readPersistedState = (sessionId: string, scope?: SummaryCallScope): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
     const recovered = persistedStateFiles.read(filePath);
     if (recovered.value === null) return null;
@@ -20590,7 +20595,7 @@ export function createAgentChatService(args: {
             .slice(-12)
         : undefined;
       const claudeFreshThreadPending = record.claudeFreshThreadPending === true;
-      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending) : null;
+      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending, scope) : null;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length
         ? record.sdkSessionId.trim()
         : claudePointer?.sessionId;
@@ -21008,7 +21013,36 @@ export function createAgentChatService(args: {
     let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> | null = null;
     const ownerDecisions = new Map<string, ChatRuntimeOwnershipDecision>();
     let batchApprovals: Map<string, AgentChatCrossMachineBatchMoveApproval> | null = null;
+    const claudePointers = new Map<string, ReturnType<typeof getClaudeSessionPointerForChat>>();
+    const parentsPresent = new Map<string, boolean>();
+    let movedSessionIds: ReadonlySet<string> | null | undefined;
+    let idleOpenCodeCompact: Promise<boolean> | null = null;
     return {
+      idleOpenCodeCompactListed: (sessionId: string): Promise<boolean> => {
+        idleOpenCodeCompact ??= getSlashCommands({ sessionId, provider: "opencode" })
+          .then((commands) => commands.some((command) => command.name.replace(/^\//, "") === "compact"));
+        return idleOpenCodeCompact;
+      },
+      // A row's state and its summary both read the chat's Claude pointer.
+      claudePointer: (sessionId: string) => {
+        if (!claudePointers.has(sessionId)) claudePointers.set(sessionId, getClaudeSessionPointerForChat(sessionId));
+        return claudePointers.get(sessionId) ?? null;
+      },
+      // Siblings share a parent, and each summary asks about it twice.
+      parentChatExists: (parentSessionId: string): boolean => {
+        let present = parentsPresent.get(parentSessionId);
+        if (present === undefined) {
+          present = parentChatStillExists(parentSessionId);
+          parentsPresent.set(parentSessionId, present);
+        }
+        return present;
+      },
+      // Which chats have a move record, from one read of the key range: most
+      // chats have none, and asking each row for its record is a query per row.
+      crossMachineMove: (sessionId: string) => {
+        if (movedSessionIds === undefined) movedSessionIds = crossMachineSource.listMoveSessionIds();
+        return !movedSessionIds || movedSessionIds.has(sessionId) ? readCrossMachineMove(sessionId) : null;
+      },
       projectConfig: () => {
         config ??= projectConfigService.get();
         return config;
@@ -44056,9 +44090,13 @@ export function createAgentChatService(args: {
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   /** OpenCode runs `/compact` only when its server lists the command. */
-  const openCodeCompactListed = async (sessionId: string): Promise<boolean> =>
-    (await getSlashCommands({ sessionId, provider: "opencode" }))
+  const openCodeCompactListed = async (sessionId: string, scope?: SummaryCallScope): Promise<boolean> => {
+    // A chat that is not running lists the project's prompt files, the same
+    // for every such chat, so a listing walks them once, not once per row.
+    if (scope && !managedSessions.has(sessionId)) return await scope.idleOpenCodeCompactListed(sessionId);
+    return (await getSlashCommands({ sessionId, provider: "opencode" }))
       .some((command) => command.name.replace(/^\//, "") === "compact");
+  };
   const compactionSignatureFor = (managed: ManagedChatSession) =>
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
   /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
@@ -65594,7 +65632,7 @@ export function createAgentChatService(args: {
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
     scope: SummaryCallScope = createSummaryCallScope(),
   ): Promise<AgentChatSessionSummary> => {
-    const persisted = readPersistedState(row.id);
+    const persisted = readPersistedState(row.id, scope);
     const liveManagedInitial = managedSessions.get(row.id) ?? null;
     if (liveManagedInitial) {
       reconcileOrphanedSubagent(liveManagedInitial);
@@ -65604,7 +65642,7 @@ export function createAgentChatService(args: {
         persisted?.spawnKind === "subagent"
         && persistedParent
         && persistedParent !== row.id
-        && !parentChatStillExists(persistedParent)
+        && !scope.parentChatExists(persistedParent)
       ) {
         try {
           reconcileOrphanedSubagent(ensureManagedSession(row.id));
@@ -65680,7 +65718,7 @@ export function createAgentChatService(args: {
       : null;
     const codexEffectiveCollaborationMode = liveCodexRuntime?.effectiveCollaborationMode ?? null;
     const claudeTag = provider === "claude"
-      ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
+      ? scope.claudePointer(row.id)?.tags[0] ?? null
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
@@ -65787,14 +65825,14 @@ export function createAgentChatService(args: {
       ? undefined
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
-    const crossMachineMove = readCrossMachineMove(row.id)?.record ?? null;
+    const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
     return {
       sessionId: row.id,
       laneId: row.laneId,
       provider,
       model,
-      ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id) } : {}),
+      ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id, scope) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
@@ -66030,7 +66068,7 @@ export function createAgentChatService(args: {
       ...(() => {
         const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
         if (!parentId) return {};
-        return { orchestrationParentReachable: parentChatStillExists(parentId) };
+        return { orchestrationParentReachable: scope.parentChatExists(parentId) };
       })(),
     } satisfies AgentChatSessionSummary;
   };

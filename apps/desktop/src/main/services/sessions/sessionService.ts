@@ -802,7 +802,39 @@ export function createSessionService({
     return Array.from(seen);
   };
 
+  /**
+   * The last mapped form of each row, reused while every column read is the
+   * same: lists re-read hundreds of rows per refresh and most never change.
+   * Compared by value, so a changed row (from any writer, or sync) maps again.
+   * Callers get a copy of their own; the nested objects are shared, and no
+   * caller writes into them.
+   */
+  const mappedRows = new Map<string, { row: SessionRow; mapped: ReturnType<typeof mapRowUncached> }>();
+  const MAPPED_ROWS_MAX = 2_000;
+  const sameRow = (left: SessionRow, right: SessionRow): boolean => {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    let count = 0;
+    for (const key in b) {
+      if (a[key] !== b[key]) return false;
+      count += 1;
+    }
+    return count === Object.keys(a).length;
+  };
   const mapRow = (row: SessionRow) => {
+    const cached = mappedRows.get(row.id);
+    if (cached && sameRow(cached.row, row)) return { ...cached.mapped };
+    const mapped = mapRowUncached(row);
+    mappedRows.delete(row.id);
+    mappedRows.set(row.id, { row, mapped: { ...mapped } });
+    if (mappedRows.size > MAPPED_ROWS_MAX) {
+      const oldest = mappedRows.keys().next().value;
+      if (oldest !== undefined) mappedRows.delete(oldest);
+    }
+    return mapped;
+  };
+
+  const mapRowUncached = (row: SessionRow) => {
     const { activityStatusJson, ...summaryRow } = row;
     const activityStatus = normalizeSessionActivityReport(activityStatusJson);
     const toolType = inferToolTypeFromResumeCommand(
@@ -1000,18 +1032,44 @@ export function createSessionService({
         }
       }
 
-      const rowsById = new Map<string, SessionRow>();
-      for (const toolType of normalizedToolTypes) {
-        for (const row of fetchRows(["s.tool_type = ?"], [toolType])) {
-          rowsById.set(row.id, row);
-        }
+      // One statement: each part keeps its own indexed, limited read, and
+      // SQLite merges them, so only the rows kept come back to JavaScript.
+      const parts: Array<{ where: string[]; params: (string | number | null)[] }> = normalizedToolTypes
+        .map((toolType) => ({ where: ["s.tool_type = ?"], params: [toolType] }));
+      // Asking for type 'other' already reads every legacy chat row.
+      if (legacyChatClauses.length > 0 && !normalizedToolTypes.includes("other")) {
+        parts.push({ where: ["s.tool_type = 'other'", `(${legacyChatClauses.join(" or ")})`], params: legacyChatParams });
       }
-      if (legacyChatClauses.length > 0) {
-        for (const row of fetchRows(["s.tool_type = 'other'", `(${legacyChatClauses.join(" or ")})`], legacyChatParams)) {
-          rowsById.set(row.id, row);
-        }
+      if (effectiveSettledLimit === null) {
+        const limitSql = effectiveLimit === null ? "" : "limit ?";
+        const unionParams: (string | number | null)[] = [];
+        const unionSql = parts.map((part) => {
+          const queryWhere = [...where, ...part.where];
+          unionParams.push(...params, ...part.params);
+          if (effectiveLimit !== null) unionParams.push(effectiveLimit);
+          return `select * from (
+            select ${SESSION_COLUMNS}
+            from terminal_sessions s
+            join lanes l on l.id = s.lane_id
+            where ${queryWhere.join(" and ")}
+            order by s.started_at desc
+            ${limitSql}
+          )`;
+        }).join(" union all ");
+        if (effectiveLimit !== null) unionParams.push(effectiveLimit);
+        const rows = db.all<SessionRow>(`${unionSql} order by startedAt desc ${limitSql}`, unionParams);
+        // A row matches one part only (its stored type is one value), so the
+        // merge has no duplicates.
+        rows.sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+        return rows.map(mapRow) as TerminalSessionSummary[];
       }
 
+      // The live-first page splits each part by settled state, so it keeps one
+      // read per part and applies the page rule to the merged rows.
+      const rowsById = new Map<string, SessionRow>();
+      for (const part of parts) {
+        for (const row of fetchRows(part.where, part.params)) rowsById.set(row.id, row);
+      }
       const rows = Array.from(rowsById.values())
         .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
       return limitMergedRows(rows).map(mapRow) as TerminalSessionSummary[];

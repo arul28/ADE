@@ -183,6 +183,20 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     deps.db?.setJson(moveKey(sessionId), value);
   };
 
+  /**
+   * The chats that have a move key, from the key range alone; null when this
+   * database cannot list keys, so a caller reads each chat's record instead.
+   */
+  const listMoveSessionIds = (): Set<string> | null => {
+    if (!deps.db) return new Set();
+    if (!deps.db.all) return null;
+    const rows = deps.db.all<{ key: string }>(
+      "select key from kv where key >= ? and key < ?",
+      [MOVE_KEY_PREFIX, `${MOVE_KEY_PREFIX}\uffff`],
+    );
+    return new Set(rows.map((row) => row.key.slice(MOVE_KEY_PREFIX.length)));
+  };
+
   const listMoves = (): Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> => {
     const rows = deps.db?.all?.<{ key: string }>("select key from kv where key like ?", [`${MOVE_KEY_PREFIX}%`]) ?? [];
     const moves: Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> = [];
@@ -505,6 +519,7 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     listBatches,
     listOpenBatches,
     listBatchApprovals,
+    listMoveSessionIds,
     inspect,
     inspectLane,
     outbox,
