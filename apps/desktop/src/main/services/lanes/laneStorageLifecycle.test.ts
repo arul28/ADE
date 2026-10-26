@@ -14,6 +14,20 @@ vi.mock("../git/git", async (importOriginal) => ({
 
 import { runGit, runGitOrThrow } from "../git/git";
 
+vi.mock("../shared/removeTreeOffProcess", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/removeTreeOffProcess")>();
+  return { removeTreeOffProcess: vi.fn(actual.removeTreeOffProcess) };
+});
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
+const removeTreeForReal = vi.mocked(removeTreeOffProcess).getMockImplementation()!;
+
+function failTreeRemovalOf(folder: string, code: string): void {
+  vi.mocked(removeTreeOffProcess).mockImplementation(async (target) =>
+    path.resolve(target) === path.resolve(folder)
+      ? Promise.reject(Object.assign(new Error(`${code}: could not remove ${folder}`), { code }))
+      : removeTreeForReal(target));
+}
+
 const roots: string[] = [];
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -138,10 +152,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(runGit).mockReset();
   vi.mocked(runGitOrThrow).mockReset();
+  vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
   // Best effort: on Windows a fixture root can be undeletable (`rmSync` raises
   // EPERM on a directory symlink the test could not create in the first place
   // without Developer Mode). Throwing here popped the failure onto whichever
@@ -416,6 +432,15 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "file.bin"), "data");
     installGitStub();
+    failTreeRemovalOf(worktreePath, "EBUSY");
+    const originalRm = fs.promises.rm.bind(fs.promises);
+    vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
+      if (path.resolve(String(target)) === path.resolve(worktreePath)) {
+        expect(onArchived).toHaveBeenCalledTimes(1);
+        throw Object.assign(new Error("disk is busy"), { code: "EIO" });
+      }
+      return originalRm(target, options);
+    });
     vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
       if (command[0] === "worktree" && command[1] === "remove") return gitResult(1, "", "remove failed");
       if (command[0] === "worktree" && command[1] === "prune") return gitResult(0);
@@ -426,15 +451,6 @@ describe("lane storage lifecycle", () => {
       if (command[0] === "merge-base") return gitResult(0);
       return gitResult(0);
     });
-    const originalRm = fs.promises.rm.bind(fs.promises);
-    vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
-      if (path.resolve(String(target)) === path.resolve(worktreePath)) {
-        expect(onArchived).toHaveBeenCalledTimes(1);
-        throw new Error("disk is busy");
-      }
-      return originalRm(target, options);
-    });
-
     await expect(service.archiveAndReclaim({
       laneId: "12345678-lane",
       confirmation: "RECLAIM",

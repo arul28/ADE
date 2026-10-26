@@ -12,6 +12,20 @@ import type { LaneDeleteProgress } from "../../../shared/types";
 // behaviour they promise (a reserved id, live checkout %, a clean abort) is
 // only meaningful against an actual `git worktree add`.
 
+vi.mock("../shared/removeTreeOffProcess", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/removeTreeOffProcess")>();
+  return { removeTreeOffProcess: vi.fn(actual.removeTreeOffProcess) };
+});
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
+const removeTreeForReal = vi.mocked(removeTreeOffProcess).getMockImplementation()!;
+
+function failTreeRemovalOf(folder: string, code: string): void {
+  vi.mocked(removeTreeOffProcess).mockImplementation(async (target) =>
+    path.resolve(target) === path.resolve(folder)
+      ? Promise.reject(Object.assign(new Error(`${code}: could not remove ${folder}`), { code }))
+      : removeTreeForReal(target));
+}
+
 const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never;
 const RESERVED_ID = "7d3f2b10-5a4c-4e8d-9b21-0c9f8e7d6a5b";
 const roots: string[] = [];
@@ -54,6 +68,7 @@ async function setup(options: { fileCount?: number; fileBytes?: number; onDelete
 }
 
 afterEach(() => {
+  vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -196,6 +211,7 @@ describe("laneService.create runtime options", () => {
     const target = path.join(root, "held");
     fs.mkdirSync(target);
     fs.writeFileSync(path.join(target, "file.txt"), "x");
+    failTreeRemovalOf(target, "EBUSY");
     const realRm = fs.promises.rm.bind(fs.promises);
     let calls = 0;
     const spy = vi.spyOn(fs.promises, "rm").mockImplementation(async (...args: Parameters<typeof fs.promises.rm>) => {
@@ -211,12 +227,13 @@ describe("laneService.create runtime options", () => {
       spy.mockRestore();
     }
     // A non-retryable error surfaces at once.
-    const other = vi.spyOn(fs.promises, "rm").mockRejectedValue(Object.assign(new Error("bad"), { code: "EINVAL" }));
+    const otherPath = path.join(root, "other");
+    fs.mkdirSync(otherPath);
+    failTreeRemovalOf(otherPath, "EINVAL");
     try {
-      await expect(removeWorktreeDirectoryWithRecovery(path.join(root, "x"))).rejects.toThrow("bad");
-      expect(other).toHaveBeenCalledTimes(1);
+      await expect(removeWorktreeDirectoryWithRecovery(otherPath)).rejects.toThrow("EINVAL: could not remove");
     } finally {
-      other.mockRestore();
+      vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
     }
   });
 });

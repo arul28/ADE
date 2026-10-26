@@ -114,6 +114,7 @@ export async function removeTreeOffProcess(targetPath: string): Promise<void> {
     captureProblem("Tree removal child process could not start; removing in process", {
       tags: { area: "remove_tree" },
       extra: { reason: error.message },
+      fingerprint: ["remove-tree", "child-unavailable"],
     });
     await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
   }
