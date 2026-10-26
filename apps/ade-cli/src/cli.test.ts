@@ -10460,7 +10460,7 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("routes prs draft/ready/auto-merge to pr.setDraft and pr.setAutoMerge", () => {
+  it("routes prs draft/ready/auto-merge and assignees to pr actions", () => {
     const argsOf = (argv: string[]) => {
       const plan = buildCliPlan(argv);
       if (plan.kind !== "execute") throw new Error(`Expected ${argv.join(" ")} to produce an execute plan`);
@@ -10489,6 +10489,19 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "maybe"])).toThrow(/on or off/);
     expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "off", "--method", "squash"])).toThrow(/--method/);
     expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "--method", "fast"])).toThrow(/merge, squash, or rebase/);
+    expect(argsOf(["prs", "assignees", "pr-1", "--add", "alice,bob", "--remove", "carol"])).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "setAssignees",
+        args: { prId: "pr-1", add: ["alice", "bob"], remove: ["carol"] },
+      },
+    });
+    expect(argsOf(["prs", "assignees", "pr-1", "--add-assignee", "alice", "--add", "bob"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAssignees", args: { prId: "pr-1", add: ["alice", "bob"] } },
+    });
+    expect(() => buildCliPlan(["prs", "assignees", "pr-1"])).toThrow(/--add or --remove/);
   });
 
   it("maps git user-identity and prs list-open to typed RPC tools", () => {
