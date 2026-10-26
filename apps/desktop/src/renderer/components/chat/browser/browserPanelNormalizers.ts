@@ -12,7 +12,12 @@
  * them testable without a browser view — the reason they no longer live inside
  * the component that renders one.
  */
-import type { BuiltInBrowserTab, BuiltInBrowserTabHandoff } from "../../../../shared/types/builtInBrowser";
+import type {
+  BuiltInBrowserCertificateProblem,
+  BuiltInBrowserTab,
+  BuiltInBrowserTabHandoff,
+  BuiltInBrowserTabLoadError,
+} from "../../../../shared/types/builtInBrowser";
 import { completeBrowserUrl } from "../../../lib/browserUrl";
 import type {
   BrowserFrame,
@@ -54,7 +59,7 @@ export type NormalizedNavigationUrl =
   | { ok: true; url: string }
   | { ok: false; reason: string };
 
-export function normalizeUrlForNavigation(value: string): NormalizedNavigationUrl {
+export function normalizeUrlForNavigation(value: string, searchTemplate?: string): NormalizedNavigationUrl {
   const trimmed = value.trim();
   if (!trimmed) return { ok: true, url: trimmed };
   if (UNSUPPORTED_NAVIGATION_SCHEME_RE.test(trimmed)) {
@@ -65,7 +70,7 @@ export function normalizeUrlForNavigation(value: string): NormalizedNavigationUr
   }
   // Anything that is not already a URL becomes a search: an omnibox that
   // silently does nothing with typed words is worse than one that guesses.
-  return { ok: true, url: completeBrowserUrl(trimmed, { fallback: "search", scheme: "http" }) ?? trimmed };
+  return { ok: true, url: completeBrowserUrl(trimmed, { fallback: "search", scheme: "http", searchTemplate }) ?? trimmed };
 }
 
 export function normalizeFrame(value: unknown): BrowserFrame | null {
@@ -179,6 +184,39 @@ export function normalizeTab(value: unknown): BrowserTab | null {
     networkLogging: booleanField(value.networkLogging, false),
     recording: (isRecord(value.recording) ? value.recording : null) as BuiltInBrowserTab["recording"],
     handoff: normalizeTabHandoff(value.handoff),
+    loadError: normalizeTabLoadError(value.loadError),
+  };
+}
+
+/** Why the page failed to load, with the certificate it may offer to trust. */
+export function normalizeTabLoadError(value: unknown): BuiltInBrowserTabLoadError | null {
+  if (!isRecord(value)) return null;
+  const code = numberField(value.code);
+  if (code == null) return null;
+  return {
+    code,
+    description: stringField(value.description) ?? "The page failed to load.",
+    url: stringField(value.url),
+    certificate: normalizeCertificateProblem(value.certificate),
+  };
+}
+
+function normalizeCertificateProblem(value: unknown): BuiltInBrowserCertificateProblem | null {
+  if (!isRecord(value)) return null;
+  const host = stringField(value.host);
+  const port = numberField(value.port);
+  const fingerprint = stringField(value.fingerprint);
+  const error = stringField(value.error);
+  if (!host || port == null || !fingerprint || !error) return null;
+  return {
+    host,
+    port,
+    fingerprint,
+    fingerprintHex: stringField(value.fingerprintHex) ?? fingerprint,
+    error,
+    subjectName: stringField(value.subjectName),
+    issuerName: stringField(value.issuerName),
+    validUntil: stringField(value.validUntil),
   };
 }
 

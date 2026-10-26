@@ -2990,6 +2990,21 @@ hex; the agent's `--generate` marks it as suggested), and one line of copy —
 saves, Esc declines. When the name already exists the card opens on "Keep
 existing" (Enter) with "Replace" one click away.
 
+**Temporary private file.** The card also asks where the value goes: "Save to
+ADE secrets" or "Temporary private file" (`--delivery file` on the request makes
+the file the default; the person decides). A file answer is written on the
+chat's machine to `<ADE home>/secrets/temp-files/<random>` (0600 in a 0700 dir,
+created with `wx`, owner-only ACL on Windows) with a value-free `<id>.json`
+sidecar, and the agent gets only `{saved: true, delivery: "file", file,
+expiresAt}`. The value never enters the project's secrets, the transcript,
+events or logs; the agent's own commands can read the file, and the card says
+so. Files go when the chat is archived or deleted, after the TTL (24 h, the
+maximum), and in the next runtime start's sweep (`secretTempFiles.ts`). A
+retry with the same `--request-id` returns the same file without a second card
+(or joins the card still open). The pick is the `secret_delivery` question, so
+a client with no native card (the phone, the TUI) shows it as a normal choice;
+an answer with no pick (an older desktop) goes where the agent asked.
+
 The card is an ordinary pending-input request (`requestChatInput`, kind
 `question`) marked by `providerMetadata.projectSecretRequest` (`name`, `reason`,
 `generate`, `exists`; `shared/projectSecretRequest.ts`). The value travels as

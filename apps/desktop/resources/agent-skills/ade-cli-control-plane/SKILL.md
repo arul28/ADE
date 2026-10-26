@@ -56,7 +56,11 @@ The chat shows the user a password field (with a "Generate a strong one"
 button; `--generate` marks it as suggested). The command blocks until they
 answer and prints only the outcome — `{name, saved: true}`, `{name, saved:
 false, kept: true}` or `{name, saved: false, declined: true}` — never the
-value. Then use the secret by name without printing it, e.g.
+value. For a token a shell CLI needs that should not stay in ADE, add
+`--delivery file --request-id <key>`: the user may choose a temporary private
+file, and you get `{saved: true, delivery: "file", file}`. Read it only inside
+a command (`TOKEN="$(cat <file>)" wrangler deploy`) and never print it; it is
+deleted after 24 hours or when the chat is archived. Otherwise use the secret by name without printing it, e.g.
 `gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
 declines, carry on without it or explain what is blocked.
 
@@ -174,6 +178,17 @@ under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
 set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
 Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
 asks.
+
+To wait on a terminal (a dev server, a long build, a log), watch it instead of
+polling `ade terminal read`: `ade terminal watch <terminal-id> [--match error |
+--match "ready|listening"] [--lifetime 30m]`, then end your turn. ADE wakes
+you with the new output (last ~4 KB, colors and redraws removed) once it goes
+quiet, and once more when the terminal exits (with the exit code). Output
+already on screen never wakes you. `ade terminal watch --command "npm run dev"`
+starts the command in a new shell in your lane and watches it from the first
+byte. `ade terminal watches` lists yours; `ade terminal unwatch <watch-id>`
+stops one. A watch ends after 2h by default (max 24h), after 20 wakes in an
+hour, or if ADE restarts; re-arm it then.
 
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use

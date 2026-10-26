@@ -3237,8 +3237,14 @@ function ensurePtyTargetAuthorized(
   if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
   const ptyId = asOptionalTrimmedString(ptyArgs.ptyId);
   const sessionId = asOptionalTrimmedString(ptyArgs.sessionId);
-  const target = findPtySessionByPtyId(runtime, ptyId) ?? getPtySessionForAuthorization(runtime, sessionId);
-  if (!target || !isPtySessionAuthorized(runtime, session, target)) {
+  // Every id the caller names must be one it may use: services resolve the
+  // two in different orders, so authorizing only the first would let an
+  // allowed pty id carry someone else's terminal id.
+  const targets = [
+    ...(ptyId ? [findPtySessionByPtyId(runtime, ptyId)] : []),
+    ...(sessionId ? [getPtySessionForAuthorization(runtime, sessionId)] : []),
+  ];
+  if (targets.length === 0 || targets.some((target) => !target || !isPtySessionAuthorized(runtime, session, target))) {
     ptyAccessDenied(method);
   }
 }
@@ -3406,6 +3412,30 @@ function scopeTerminalTargetArgs(
   return scopedArgs;
 }
 
+/**
+ * A watch wakes the chat that armed it, so an agent arms one only for its own
+ * chat, on a terminal it may already read, or (with `command`) in a lane it
+ * may open terminals in.
+ */
+function scopeTerminalWatchArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = scopeTerminalChatArgs(runtime, session, method, terminalArgs);
+  const terminalId = asOptionalTrimmedString(scopedArgs.terminalId);
+  const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
+  if (terminalId || ptyId) {
+    ensurePtyTargetAuthorized(runtime, session, method, {
+      ...(terminalId ? { sessionId: terminalId } : {}),
+      ...(ptyId ? { ptyId } : {}),
+    });
+  }
+  // An agent's own watch is armed by the agent, whatever it claims.
+  return { ...scopedArgs, armedBy: "agent" };
+}
+
 function scopeTerminalAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3425,6 +3455,13 @@ function scopeTerminalAdeActionArgs(
     case "resize":
     case "signal":
       return scopeTerminalTargetArgs(runtime, session, method, terminalArgs);
+    case "watch":
+      return scopeTerminalWatchArgs(runtime, session, method, terminalArgs);
+    case "unwatch":
+    case "listWatches":
+      // Only the caller's own chat's watches: a watch id or terminal narrows
+      // within it, never past it.
+      return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
     default:
       ptyAccessDenied(method);
   }
@@ -4000,6 +4037,21 @@ function scopeWorkToolsAdeActionArgs(
       scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
     }
     return workToolsArgs;
+  }
+  if (action === "stopDevServer") {
+    // An agent stops the servers of its OWN chat. A human (a desktop, a
+    // terminal) names the chat; the runtime still checks the process on the
+    // port belongs to it.
+    if (isUserClient) return workToolsArgs;
+    const ownChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!ownChatSessionId) {
+      scopeAccessDenied("work_tools.stopDevServer needs the chat it runs in", method);
+    }
+    const askedFor = asOptionalTrimmedString(workToolsArgs.chatSessionId);
+    if (askedFor && askedFor !== ownChatSessionId) {
+      scopeAccessDenied("work_tools.stopDevServer can only stop this agent's own chat's servers", method);
+    }
+    return { ...workToolsArgs, chatSessionId: ownChatSessionId };
   }
   if (action === "listDevServers") {
     // Same rule as getLaneState: an agent sees its own lane's servers, and an
@@ -4599,7 +4651,7 @@ export const APP_CONTROL_AGENT_DRIVING_ACTIONS = new Set<string>(
 );
 
 /** `work_tools` actions scoped for every role, the CTO's included. */
-const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow", "stopDevServer"]);
 
 /**
  * `ios_simulator` actions that mean an agent is driving the device, so the
@@ -4918,6 +4970,7 @@ async function runCtoOperatorBridgeTool(
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
     prService: runtime.prService ?? null,
+    terminalWatchService: runtime.terminalWatchService ?? null,
     fileService: runtime.fileService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,

@@ -13,7 +13,7 @@ import {
 
 /**
  * Machine-wide browser settings: tab limit, download folder, standing
- * permission grants.
+ * permission grants, the address bar's search engine.
  *
  * One browser profile per install, so the answers are per install too. The
  * read path is deliberately synchronous and allocation-light: the permission
@@ -66,6 +66,8 @@ export function createBuiltInBrowserSettingsController(args: {
     tabLimit: current.tabLimit,
     downloadDir: current.downloadDir,
     autoGrant: { ...current.autoGrant },
+    searchEngine: current.searchEngine,
+    customSearchUrl: current.customSearchUrl,
   });
 
   const persist = (): void => {
@@ -84,6 +86,8 @@ export function createBuiltInBrowserSettingsController(args: {
     && left.autoGrant.camera === right.autoGrant.camera
     && left.autoGrant.microphone === right.autoGrant.microphone
     && left.autoGrant.geolocation === right.autoGrant.geolocation
+    && left.searchEngine === right.searchEngine
+    && left.customSearchUrl === right.customSearchUrl
   );
 
   return {
@@ -117,6 +121,9 @@ export function createBuiltInBrowserSettingsController(args: {
         // there is one is enough to diagnose a setting that did not stick.
         downloadDirSet: current.downloadDir != null,
         autoGrant: current.autoGrant,
+        // The engine, not the custom URL: a person's own search URL can carry
+        // an account token.
+        searchEngine: current.searchEngine,
       });
       try {
         args.onChange?.(snapshot());

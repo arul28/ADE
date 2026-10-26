@@ -1708,6 +1708,16 @@ export function createSessionService({
       };
     },
 
+    /**
+     * Tell every client a session changed without writing its row: state that
+     * lives beside the row (a chat's terminal watches) moved, and the chat's
+     * pane re-reads it on this event.
+     */
+    notifyChanged(sessionId: string): void {
+      const trimmed = sessionId.trim();
+      if (trimmed) emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    },
+
     reconcileStaleRunningSessions({
       endedAt,
       status,

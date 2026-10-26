@@ -177,35 +177,79 @@ export function createDevServerWatcher(args: {
       .sort((left, right) => right.root.length - left.root.length);
 
     const listeningPorts = new Set(result.sockets.map((socket) => socket.port));
-    const found = new Map<string, { laneId: string; port: number }>();
+    // The chats each port's listeners name in their environment; null when any
+    // listener on it names none (or its environment could not be read).
+    const portChats = new Map<number, Set<string> | null>();
+    for (const socket of result.sockets) {
+      const chat = result.locations.get(socket.pid)?.chatSessionId ?? null;
+      const seen = portChats.get(socket.port);
+      if (seen === null) continue;
+      if (!chat) portChats.set(socket.port, null);
+      else portChats.set(socket.port, (seen ?? new Set<string>()).add(chat));
+    }
+    const found = new Map<string, { laneId: string; port: number; chatSessionId: string | null }>();
     for (const socket of result.sockets) {
       if (excludePids.has(socket.pid)) continue;
       if (socket.port < MIN_DEV_SERVER_PORT || NON_PAGE_PORTS.has(socket.port)) continue;
       if (socket.command && NON_PAGE_COMMANDS.test(socket.command)) continue;
-      const laneId = laneForLocation(result.locations.get(socket.pid), roots, platform, excludePids);
+      const location = result.locations.get(socket.pid);
+      const laneId = laneForLocation(location, roots, platform, excludePids);
       if (!laneId) continue;
-      found.set(devServerKey(laneId, socket.port), { laneId, port: socket.port });
+      const key = devServerKey(laneId, socket.port);
+      // The chat that started it, from the listener's own environment. A
+      // second listener on the same port without one does not erase it.
+      const chatSessionId = location?.chatSessionId ?? found.get(key)?.chatSessionId ?? null;
+      found.set(key, { laneId, port: socket.port, chatSessionId });
     }
 
     // This project's records only; another project's watcher owns the rest.
     const known = args.registry.list().filter(ownsRecord);
-    const knownKeys = new Set(known.map((record) => devServerKey(record.source.laneId, record.port)));
+    const knownByKey = new Map(known.map((record) => [devServerKey(record.source.laneId, record.port), record]));
     for (const [key, entry] of found) {
-      if (knownKeys.has(key)) continue;
+      const existing = knownByKey.get(key);
+      if (existing) {
+        // A server first seen with no chat (a scan that ran before its
+        // agent's command finished, or a terminal) gains the chat its own
+        // environment names, so the chat's row can show it. A chat already
+        // on the record is never replaced.
+        if (!existing.source.sessionId && entry.chatSessionId) {
+          args.registry.record({
+            port: existing.port,
+            url: existing.url,
+            sessionId: entry.chatSessionId,
+            laneId: entry.laneId,
+            projectRoot: args.projectRoot,
+            detectedAt: existing.detectedAt,
+          });
+        }
+        continue;
+      }
       args.registry.record({
         port: entry.port,
         url: `http://localhost:${entry.port}/`,
         laneId: entry.laneId,
+        sessionId: entry.chatSessionId,
         projectRoot: args.projectRoot,
       });
-      args.logger?.info("dev_servers.listener_detected", { laneId: entry.laneId, port: entry.port });
+      args.logger?.info("dev_servers.listener_detected", {
+        laneId: entry.laneId,
+        port: entry.port,
+        chatSessionId: entry.chatSessionId,
+      });
     }
     // A record whose port nothing listens on any more is a stopped server. A
     // record newer than the snapshot (another project's watcher may have taken
     // it) is not judged by it.
     for (const record of known) {
-      if (listeningPorts.has(record.port)) continue;
       if (Date.parse(record.detectedAt) >= result.takenAt) continue;
+      if (listeningPorts.has(record.port)) {
+        // The chat's server stopped and another chat's server now answers on
+        // the same port: the record no longer describes anything this chat
+        // started, so its row stops showing it.
+        const chats = portChats.get(record.port);
+        const owner = record.source.sessionId;
+        if (!owner || !chats || chats.has(owner)) continue;
+      }
       args.registry.forget(record.source.laneId, record.port);
     }
   };

@@ -475,18 +475,18 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   pty: {
     read: [
-      "list",
+      "list", "getShellSettings",
     ],
     write: [
-      "create", "dispose", "resize", "resumeSession", "sendToSession", "write",
+      "create", "dispose", "resize", "resumeSession", "sendToSession", "write", "setDefaultShell",
     ],
   },
   terminal: {
     read: [
-      "list", "read", "preview", "activeForChat",
+      "list", "read", "preview", "activeForChat", "listWatches",
     ],
     write: [
-      "write", "resize", "signal", "reattachChatCli",
+      "write", "resize", "signal", "reattachChatCli", "watch", "unwatch",
     ],
   },
   layout: {
@@ -510,7 +510,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getLaneState", "readObservationPreview", "listDevServers", "probePort",
     ],
     write: [
-      "setActiveTool", "show", "acknowledgeShow",
+      "setActiveTool", "show", "acknowledgeShow", "stopDevServer",
     ],
   },
   computer_use_artifacts: {

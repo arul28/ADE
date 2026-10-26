@@ -1,7 +1,7 @@
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { existsSync, mkdirSync } from "node:fs";
-import { WebContentsView, app, nativeImage, screen, session } from "electron";
+import { Menu, WebContentsView, app, clipboard, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -64,6 +64,10 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTab,
   BuiltInBrowserTabLoadError,
+  BuiltInBrowserCertificateProblem,
+  BuiltInBrowserRevokeCertificatesArgs,
+  BuiltInBrowserTrustCertificateArgs,
+  BuiltInBrowserTrustedCertificatesResult,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
@@ -231,6 +235,12 @@ import {
   type BuiltInBrowserSettingsStore,
 } from "./builtInBrowserSettings";
 import { configureBuiltInBrowserAuthentication } from "./builtInBrowserAuthentication";
+import {
+  certificateProblemFor,
+  createBuiltInBrowserCertificateTrust,
+  type BuiltInBrowserCertificateTrust,
+} from "./builtInBrowserCertificateTrust";
+import { buildBuiltInBrowserPageContextMenuTemplate } from "./builtInBrowserContextMenu";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
 import {
   createBuiltInBrowserPermissionController,
@@ -452,6 +462,12 @@ export type BrowserTabState = {
   isLaunchpad: boolean;
   /** The current page's main-frame load failure; cleared when the next navigation starts. */
   loadError: BuiltInBrowserTabLoadError | null;
+  /**
+   * A main-frame certificate the person may choose to trust, held between
+   * Chromium's `certificate-error` and the `did-fail-load` that follows it,
+   * where it is attached to `loadError`. Cleared when a load starts.
+   */
+  pendingCertificate: BuiltInBrowserCertificateProblem | null;
   /**
    * The favicon the renderer draws, and the origin it belongs to.
    *
@@ -776,6 +792,8 @@ export function createBuiltInBrowserService(args: {
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
+  /** Where the shared profile's trusted local certificates are saved; null keeps them in memory. */
+  certificateTrustFilePath?: string | null;
   /**
    * Login-handoff side effects that belong to the chat stack, not the browser:
    * raising and clearing the requesting session's hand, the phone push, and the
@@ -852,6 +870,13 @@ export function createBuiltInBrowserService(args: {
   const permissionFilePath = args.permissionFilePath === null
     ? null
     : args.permissionFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-permissions.json") : null);
+  const certificateTrust = createBuiltInBrowserCertificateTrust({
+    filePath: args.certificateTrustFilePath === null
+      ? null
+      : args.certificateTrustFilePath ?? (userDataPath ? path.join(userDataPath, "ade-browser-certificates.json") : null),
+    persistentPartition: BROWSER_PARTITION,
+    getLogger: args.getLogger,
+  });
   const personalObservationRootPath = userDataPath
     ? path.join(userDataPath, "browser-observations")
     : null;
@@ -982,6 +1007,7 @@ export function createBuiltInBrowserService(args: {
         ? path.join(collection.projectRoot, OBSERVATION_CACHE_DIR)
         : personalObservationRootPath,
       permissionController,
+      certificateTrust,
       agentAccessController: agentAccessController.forProjectRoot(collection.projectRoot),
       getTabLimit: () => browserSettings.get().tabLimit,
       resolveDownloadDirectory: () => browserSettings.get().downloadDir,
@@ -1177,6 +1203,7 @@ export function createBuiltInBrowserService(args: {
         onStateChange: (state) => stateStore?.record("window", state),
         observationRootPath: personalObservationRootPath,
         permissionController,
+        certificateTrust,
         agentAccessController: agentAccessController.forProjectRoot(null),
         getTabLimit: () => browserSettings.get().tabLimit,
         resolveDownloadDirectory: () => browserSettings.get().downloadDir,
@@ -1246,6 +1273,7 @@ export function createBuiltInBrowserService(args: {
           onStateChange: (state) => stateStore?.record("personal", state),
           observationRootPath: personalObservationRootPath,
           permissionController,
+          certificateTrust,
           agentAccessController: agentAccessController.forProjectRoot(null),
           getTabLimit: () => browserSettings.get().tabLimit,
           resolveDownloadDirectory: () => browserSettings.get().downloadDir,
@@ -1584,6 +1612,25 @@ export function createBuiltInBrowserService(args: {
     async clearPermissions(input: BuiltInBrowserClearPermissionsArgs = {}): Promise<BuiltInBrowserClearPermissionsResult> {
       const removed = await permissionController.clear(input);
       return { removed, permissions: permissionController.list() };
+    },
+    /*
+     * Certificate trust is the person's answer, so these three are reached
+     * only from the trusted ADE renderer's IPC. They are deliberately absent
+     * from `BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS`, which is the only way an
+     * agent's call (local bridge or a remote runtime) reaches this service.
+     */
+    trustCertificate(input: BuiltInBrowserTrustCertificateArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
+      return serviceForInput(input, sourceWindow).trustCertificate(input);
+    },
+    listTrustedCertificates(): BuiltInBrowserTrustedCertificatesResult {
+      return { certificates: certificateTrust.list() };
+    },
+    async revokeTrustedCertificates(input: BuiltInBrowserRevokeCertificatesArgs = {}): Promise<BuiltInBrowserTrustedCertificatesResult> {
+      const { partitions } = await certificateTrust.revoke(input.id ?? null);
+      // Chromium keeps a TLS connection it was told to accept open for reuse;
+      // close them so the next request meets the certificate check again.
+      await Promise.allSettled(partitions.map((partition) => session.fromPartition(partition).closeAllConnections()));
+      return { certificates: certificateTrust.list() };
     },
     async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
       await profileMigrationPromise;
@@ -2175,6 +2222,8 @@ function createBuiltInBrowserWindowService(args: {
   onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
   observationRootPath: string | null;
   permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
+  /** Shared by every window: an approval holds wherever the profile is open. */
+  certificateTrust?: BuiltInBrowserCertificateTrust | null;
   agentAccessController: BuiltInBrowserAgentAccessGate;
   /** The machine-wide tab limit, read live so a settings change applies at once. */
   getTabLimit?: (() => number) | null;
@@ -3454,6 +3503,64 @@ function createBuiltInBrowserWindowService(args: {
       },
       getLogger: args.getLogger,
     });
+    wc.on("certificate-error", (event, url, error, certificate, callback, isMainFrame) => {
+      // Not handled means refused: Electron denies an error nobody prevents.
+      const trust = args.certificateTrust;
+      const tab = tabForWebContents(wc);
+      if (!trust || !tab) return;
+      const problem = certificateProblemFor(url, error, certificate);
+      if (!problem) return;
+      if (trust.isTrusted(tab.isolation?.partition ?? BROWSER_PARTITION, problem)) {
+        event.preventDefault();
+        callback(true);
+        return;
+      }
+      // Offered only for the page itself: a subresource on another local
+      // endpoint is trusted by opening that endpoint once, where it can be
+      // seen, not from a prompt about a page that never named it.
+      if (isMainFrame) tab.pendingCertificate = problem;
+      logger()?.info("built_in_browser.certificate_untrusted", {
+        host: problem.host,
+        port: problem.port,
+        error: problem.error,
+        isMainFrame,
+      });
+    });
+    wc.on("context-menu", (_event, params) => {
+      // Only for the page a person is looking at, in a window they are using:
+      // an agent's synthetic right-click on a background tab must not pop a
+      // menu over whatever the person is doing.
+      const tab = tabForWebContents(wc);
+      const host = win;
+      if (!tab || !host || host.isDestroyed() || !host.isFocused()) return;
+      if (!visible || tab.id !== activeTabId) return;
+      const tabId = tab.id;
+      // The menu can outlive the page: every action re-finds it first.
+      const live = (): BrowserTabState | null => (wc.isDestroyed() ? null : tabById(tabId));
+      const runTabAction = (action: (input: BuiltInBrowserTabTargetArgs) => Promise<unknown>) => {
+        if (!live()) return;
+        void action({ tabId }).catch(emitError);
+      };
+      const template = buildBuiltInBrowserPageContextMenuTemplate(params, {
+        editTarget: wc,
+        canGoBack: wc.canGoBack(),
+        canGoForward: wc.canGoForward(),
+        back: () => runTabAction(goBack),
+        forward: () => runTabAction(goForward),
+        reload: () => runTabAction(reload),
+        copySelection: () => {
+          if (live()) wc.copy();
+        },
+        copyText: (text) => clipboard.writeText(text),
+        copyImageAt: (x, y) => {
+          if (live()) wc.copyImageAt(x, y);
+        },
+        inspectAt: (x, y) => {
+          if (live()) wc.inspectElement(x, y);
+        },
+      });
+      Menu.buildFromTemplate(template).popup({ window: host });
+    });
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -3560,7 +3667,10 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
       const tab = tabForWebContents(wc);
-      if (tab) tab.loadError = null;
+      if (tab) {
+        tab.loadError = null;
+        tab.pendingCertificate = null;
+      }
       noteNetworkActivity(tab);
       if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "start");
       emitStatus();
@@ -3678,6 +3788,7 @@ function createBuiltInBrowserWindowService(args: {
           code: errorCode,
           description: failure,
           url: failedUrl,
+          certificate: certificateForFailedLoad(tab, errorCode, failedUrl),
         };
         noteNetworkActivity(tab);
         pushNetworkDiagnostic(tab, {
@@ -3699,6 +3810,30 @@ function createBuiltInBrowserWindowService(args: {
       emitError(new Error(failure));
       emitStatus();
     });
+  };
+
+  /**
+   * The certificate a failed main-frame load can offer to trust, taken from
+   * the `certificate-error` that preceded it. Only a certificate failure
+   * (-200..-299) for the same endpoint qualifies, so a stale problem from an
+   * earlier request can never label an unrelated failure.
+   */
+  const certificateForFailedLoad = (
+    tab: BrowserTabState,
+    errorCode: number,
+    failedUrl: string | null,
+  ): BuiltInBrowserCertificateProblem | null => {
+    const pending = tab.pendingCertificate;
+    tab.pendingCertificate = null;
+    if (!pending || !failedUrl || errorCode > -200 || errorCode <= -300) return null;
+    try {
+      const parsed = new URL(failedUrl);
+      const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      const port = parsed.port ? Number(parsed.port) : 443;
+      return parsed.protocol === "https:" && host === pending.host && port === pending.port ? pending : null;
+    } catch {
+      return null;
+    }
   };
 
   const browserWebPreferences = (partition: string = BROWSER_PARTITION): Electron.WebPreferences => ({
@@ -3752,6 +3887,7 @@ function createBuiltInBrowserWindowService(args: {
       emulation: null,
       isLaunchpad: false,
       loadError: null,
+      pendingCertificate: null,
       faviconUrl: null,
       faviconSourceUrl: null,
       faviconOrigin: null,
@@ -4370,9 +4506,11 @@ function createBuiltInBrowserWindowService(args: {
   });
 
   const releaseUnusedIsolatedSessions = (): void => {
-    isolatedSessions.release(new Set(tabs.flatMap((tab) => (
+    const released = isolatedSessions.release(new Set(tabs.flatMap((tab) => (
       tab.isolation && !tab.webContents.isDestroyed() ? [tab.isolation.partition] : []
     ))));
+    // A throwaway sign-in's trusted certificates are part of what is thrown away.
+    for (const partition of released) args.certificateTrust?.forgetPartition(partition);
   };
 
   const configureBrowserSession = (): void => {
@@ -5639,6 +5777,34 @@ function createBuiltInBrowserWindowService(args: {
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
+  }
+
+  /**
+   * The person chose to trust the certificate this tab's page failed on.
+   *
+   * Renderer-only (see the coordinator's `trustCertificate`). The fingerprint
+   * must be the one the person was shown: if the page reloaded onto another
+   * certificate in between, that one has not been approved.
+   */
+  async function trustCertificate(input: BuiltInBrowserTrustCertificateArgs): Promise<BuiltInBrowserStatus> {
+    const tab = tabById(input.tabId);
+    if (!tab) throw new BuiltInBrowserNoTabError("Browser tab not found", input.tabId);
+    const problem = tab.loadError?.certificate ?? null;
+    const failedUrl = tab.loadError?.url ?? null;
+    if (!problem || !failedUrl) {
+      throw new AdeExpectedError("This tab has no certificate waiting for approval.", "user");
+    }
+    if (problem.fingerprint !== input.fingerprint) {
+      throw new AdeExpectedError("The page's certificate changed. Reload the page and check it again.", "user");
+    }
+    if (!args.certificateTrust) throw new Error("Certificate trust is not available in this ADE build.");
+    await args.certificateTrust.trust(tab.isolation?.partition ?? BROWSER_PARTITION, problem);
+    if (!tab.webContents.isDestroyed()) {
+      tab.loadError = null;
+      void loadUrlSafely(tab.webContents, failedUrl).catch(emitError);
+    }
+    emitStatus();
+    return getStatus();
   }
 
   async function stop(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -7157,6 +7323,7 @@ function createBuiltInBrowserWindowService(args: {
     goBack,
     goForward,
     stop,
+    trustCertificate,
     observe,
     getTrace,
     click,

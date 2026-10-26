@@ -5627,6 +5627,7 @@ type MovedAwayPath =
   | "session_board_move"
   | "scheduled_work"
   | "pr_watch"
+  | "terminal_watch"
   | "subagent_report"
   | "chat_wait"
   | "held_completion"
@@ -11443,6 +11444,8 @@ export function createAgentChatService(args: {
     markDismissed: () => void;
   } | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
+  /** Terminal watches for the CTO's watchTerminal tools; built after this service, so read lazily. */
+  getTerminalWatchService?: () => CtoOperatorToolDeps["terminalWatchService"];
   ptyService?: (
     Pick<
       ReturnType<typeof createPtyService>,
@@ -11721,6 +11724,7 @@ export function createAgentChatService(args: {
     prService,
     diskPressureMonitor,
     getTestService,
+    getTerminalWatchService,
     ptyService,
     getAutomationService,
     getAccountUsage,
@@ -14597,6 +14601,7 @@ export function createAgentChatService(args: {
         fileService: fileService ?? null,
         testService: getTestService?.() ?? null,
         ptyService: ptyService ?? null,
+        terminalWatchService: getTerminalWatchService?.() ?? null,
         automationService,
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
@@ -62302,6 +62307,7 @@ export function createAgentChatService(args: {
     if (metadata.boardMove) return "session_board_move";
     if (metadata.scheduledWake) return "scheduled_work";
     if (metadata.prWatchWake) return "pr_watch";
+    if (metadata.terminalWatchWake) return "terminal_watch";
     if (metadata.spawnCompletion) return "subagent_report";
     if (metadata.usageLimitResume) return "usage_limit_resume";
     const continuation = metadata.hostContinuation;

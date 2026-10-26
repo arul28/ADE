@@ -1,16 +1,44 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX,
+  BUILT_IN_BROWSER_SEARCH_ENGINES,
   BUILT_IN_BROWSER_SETTINGS_DEFAULTS,
   BUILT_IN_BROWSER_TAB_LIMIT_MAX,
   BUILT_IN_BROWSER_TAB_LIMIT_MIN,
+  isValidBrowserSearchTemplate,
+  type BuiltInBrowserSearchEngineId,
+  type BuiltInBrowserTrustedCertificate,
 } from "../../../shared/types/builtInBrowser";
 import { browserSettingsActions, useBrowserSettings, useBrowserSettingsStatus } from "../chat/browser/browserSettings";
-import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsToggle } from "./primitives";
+import {
+  ModernRow,
+  ModernRows,
+  ModernSection,
+  SettingsNumber,
+  SettingsSelect,
+  SettingsTextField,
+  SettingsToggle,
+} from "./primitives";
 import { useSettingsAction } from "./useSettingsAction";
+import { Banner } from "../ui/notice";
 import "./machineSettings.css";
 
-/** Tab limit and download folder. */
+const SEARCH_ENGINE_OPTIONS: readonly { value: BuiltInBrowserSearchEngineId; label: string }[] = [
+  ...BUILT_IN_BROWSER_SEARCH_ENGINES.map((engine) => ({ value: engine.id, label: engine.label })),
+  { value: "custom", label: "Custom…" },
+];
+
+/** Tab limit, download folder, address bar search, trusted local certificates. */
 export function BrowserSettingsSection() {
+  return (
+    <>
+      <BrowserBehaviourSection />
+      <BrowserTrustedCertificatesSection />
+    </>
+  );
+}
+
+function BrowserBehaviourSection() {
   const snapshot = useBrowserSettings();
   const loadStatus = useBrowserSettingsStatus();
   const settings = snapshot ?? BUILT_IN_BROWSER_SETTINGS_DEFAULTS;
@@ -32,6 +60,19 @@ export function BrowserSettingsSection() {
     setDraftLimit(null);
     if (next !== settings.tabLimit) void act(() => browserSettingsActions.set({ tabLimit: next }));
   };
+
+  // The custom URL is committed on blur/Enter like the tab limit, so a URL
+  // half typed is never saved, and the warning describes what is saved.
+  const [draftCustomUrl, setDraftCustomUrl] = useState<string | null>(null);
+  useEffect(() => setDraftCustomUrl(null), [settings.customSearchUrl]);
+  const commitCustomUrl = () => {
+    if (draftCustomUrl == null) return;
+    const next = draftCustomUrl.trim().slice(0, BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX) || null;
+    setDraftCustomUrl(null);
+    if (next !== settings.customSearchUrl) void act(() => browserSettingsActions.set({ customSearchUrl: next }));
+  };
+  const customInvalid = settings.searchEngine === "custom" && !isValidBrowserSearchTemplate(settings.customSearchUrl);
+  const defaultEngineLabel = BUILT_IN_BROWSER_SEARCH_ENGINES[0].label;
 
   const chooseFolder = async () => {
     const chosen = await window.ade.project.chooseDirectory({
@@ -110,7 +151,174 @@ export function BrowserSettingsSection() {
             </span>
           )}
         />
+        <ModernRow
+          anchor="browser-search-engine"
+          title="Search engine"
+          hint="What the address bar searches with when you type words instead of an address. Used by this computer's ADE browser."
+          control={(
+            <SettingsSelect
+              ariaLabel="Search engine"
+              value={settings.searchEngine}
+              options={SEARCH_ENGINE_OPTIONS}
+              disabled={busy != null || !snapshot}
+              onChange={(next) => void act(() => browserSettingsActions.set({ searchEngine: next }))}
+            />
+          )}
+        />
+        {settings.searchEngine === "custom" ? (
+          <ModernRow
+            anchor="browser-custom-search-url"
+            title="Custom search URL"
+            hint={customInvalid ? (
+              <span style={{ color: "var(--kit-warn)" }} role="status">
+                {settings.customSearchUrl
+                  ? "This URL can't be used. It needs http:// or https:// and %s after the site's address."
+                  : "Enter a search URL with %s where the words go."}
+                {` Searches use ${defaultEngineLabel} until it's fixed.`}
+              </span>
+            ) : "Put %s where the words go, for example https://search.example.com/?q=%s."}
+          >
+            <span
+              onBlur={commitCustomUrl}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") (event.target as HTMLElement).blur();
+              }}
+            >
+              <SettingsTextField
+                ariaLabel="Custom search URL"
+                type="url"
+                mono
+                spellCheck={false}
+                autoComplete="off"
+                placeholder="https://search.example.com/?q=%s"
+                value={draftCustomUrl ?? settings.customSearchUrl ?? ""}
+                disabled={busy != null || !snapshot}
+                onChange={setDraftCustomUrl}
+              />
+            </span>
+          </ModernRow>
+        ) : null}
       </ModernRows>
+      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
+    </ModernSection>
+  );
+}
+
+type TrustedCertificatesApi = {
+  listTrustedCertificates: () => Promise<{ certificates: BuiltInBrowserTrustedCertificate[] }>;
+  revokeTrustedCertificates: (args?: { id?: string | null }) => Promise<{ certificates: BuiltInBrowserTrustedCertificate[] }>;
+};
+
+function trustedCertificatesApi(): TrustedCertificatesApi | null {
+  const candidate = (typeof window === "undefined" ? null : window.ade?.builtInBrowser) as
+    | Partial<TrustedCertificatesApi>
+    | null
+    | undefined;
+  return candidate
+    && typeof candidate.listTrustedCertificates === "function"
+    && typeof candidate.revokeTrustedCertificates === "function"
+    ? (candidate as TrustedCertificatesApi)
+    : null;
+}
+
+function certificateEndpoint(certificate: BuiltInBrowserTrustedCertificate): string {
+  const host = certificate.host.includes(":") ? `[${certificate.host}]` : certificate.host;
+  return certificate.port === 443 ? host : `${host}:${certificate.port}`;
+}
+
+/**
+ * Local HTTPS certificates the person chose to trust from the browser's
+ * "isn't trusted" banner, and the way to take that back.
+ * Read when Settings opens and after each change; nothing polls.
+ */
+function BrowserTrustedCertificatesSection() {
+  const api = trustedCertificatesApi();
+  const [certificates, setCertificates] = useState<BuiltInBrowserTrustedCertificate[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const { busy, error, run } = useSettingsAction();
+  const load = useCallback(() => {
+    if (!api) return;
+    setLoadFailed(false);
+    api.listTrustedCertificates()
+      .then((result) => setCertificates(Array.isArray(result?.certificates) ? result.certificates : []))
+      .catch(() => setLoadFailed(true));
+  }, [api]);
+  useEffect(load, [load]);
+  if (!api) return null;
+  const revoke = (id?: string) => run("browser-certificates", async () => {
+    const result = await api.revokeTrustedCertificates(id ? { id } : {});
+    setCertificates(result.certificates);
+  });
+
+  return (
+    <ModernSection
+      group="ADE browser"
+      anchor="browser-trusted-certificates"
+      title="Trusted local certificates"
+      hint="Self-signed HTTPS certificates you trusted for a local or private address. A site whose certificate changes asks again."
+    >
+      {loadFailed ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-certificates-load-failed",
+            tone: "error",
+            title: "Couldn't load trusted certificates",
+            actions: [{ label: "Try again", onClick: load }],
+          }}
+        />
+      ) : null}
+      {certificates && certificates.length > 0 ? (
+        <ModernRows>
+          {certificates.map((certificate) => (
+            <ModernRow
+              key={certificate.id}
+              title={certificateEndpoint(certificate)}
+              hint={(
+                <>
+                  <span className="ade-modern-path" title={certificate.fingerprint}>
+                    SHA-256 {certificate.fingerprintHex}
+                  </span>
+                  <br />
+                  {certificate.profile === "isolated"
+                    ? "An agent's throwaway sign-in, until its tabs close."
+                    : "Shared browser profile."}
+                  {` Trusted ${new Date(certificate.trustedAt).toLocaleString()}.`}
+                </>
+              )}
+              control={(
+                <button
+                  type="button"
+                  className="ade-modern-btn"
+                  data-size="sm"
+                  disabled={busy != null}
+                  onClick={() => void revoke(certificate.id)}
+                >
+                  Remove
+                </button>
+              )}
+            />
+          ))}
+        </ModernRows>
+      ) : certificates ? (
+        <p className="ade-modern-muted">
+          None. When a local HTTPS page's certificate isn't trusted, the ADE browser offers to trust it above the page.
+        </p>
+      ) : null}
+      {certificates && certificates.length > 1 ? (
+        <span className="ade-modern-inline-actions">
+          <button
+            type="button"
+            className="ade-modern-btn"
+            data-size="sm"
+            data-variant="ghost"
+            disabled={busy != null}
+            onClick={() => void revoke()}
+          >
+            Remove all
+          </button>
+        </span>
+      ) : null}
       {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
     </ModernSection>
   );

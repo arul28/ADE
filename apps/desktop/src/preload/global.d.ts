@@ -4,6 +4,7 @@ import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } fro
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { MusicBridge } from "../shared/types/music";
+import type { SetDefaultTerminalShellArgs, TerminalShellSettings } from "../shared/types/terminalShells";
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type { GitHubIssueTemplateSet } from "../shared/githubIssueTemplates";
 import type {
@@ -24,6 +25,14 @@ import type {
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
+import type {
+  TerminalListWatchesArgs,
+  TerminalUnwatchArgs,
+  TerminalUnwatchResult,
+  TerminalWatchArgs,
+  TerminalWatchResult,
+  TerminalWatchSummary,
+} from "../shared/terminalWatch";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -1025,6 +1034,9 @@ import type {
   BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserSettings,
   BuiltInBrowserSettingsPatch,
+  BuiltInBrowserRevokeCertificatesArgs,
+  BuiltInBrowserTrustCertificateArgs,
+  BuiltInBrowserTrustedCertificatesResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -1040,6 +1052,8 @@ import type {
   DevServerEvent,
   DevServersArgs,
   DevServersResult,
+  DevServerStopArgs,
+  DevServerStopResult,
   BuiltInBrowserFindInPageResult,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLoggingResult,
@@ -3754,6 +3768,16 @@ declare global {
         getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
         listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
         /**
+         * Trust the local HTTPS certificate a tab's page failed on, and list or
+         * revoke those approvals. Human-only and machine-local, like
+         * `browserSettings`: no `pin` overload.
+         */
+        trustCertificate: (args: BuiltInBrowserTrustCertificateArgs) => Promise<BuiltInBrowserStatus>;
+        listTrustedCertificates: () => Promise<BuiltInBrowserTrustedCertificatesResult>;
+        revokeTrustedCertificates: (
+          args?: BuiltInBrowserRevokeCertificatesArgs,
+        ) => Promise<BuiltInBrowserTrustedCertificatesResult>;
+        /**
          * "Agents can use the ADE browser": the setting, the saved lane and
          * chat grants, and the open prompts. Machine-local and human-only.
          */
@@ -3994,6 +4018,19 @@ declare global {
           args: ChatTerminalReattachArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ChatTerminalReattachResult>;
+        /** Absent on hosts without terminal watches (the web client). */
+        watch?: (
+          args: TerminalWatchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalWatchResult>;
+        unwatch?: (
+          args: TerminalUnwatchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalUnwatchResult>;
+        listWatches?: (
+          args: TerminalListWatchesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalWatchSummary[]>;
       };
       localhost: {
         probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
@@ -4116,6 +4153,13 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
+        /** The terminal machine's installed shells and its default for new shells. */
+        getShellSettings: (pin?: OpenProjectBinding | null) => Promise<TerminalShellSettings>;
+        /** Save that machine's default shell: a reported id, or null for Automatic. */
+        setDefaultShell: (
+          args: SetDefaultTerminalShellArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<TerminalShellSettings>;
         setDataSubscriptions: (
           args: { ptyIds: string[] },
           pin?: OpenProjectBinding | null,
@@ -4896,6 +4940,12 @@ declare global {
         ) => Promise<WorkToolsObservationPreview | null>;
         /** Dev servers on the lane's machine, for the Browser on any machine. */
         listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
+        /**
+         * Stop a dev server one chat's agent started, on the chat's machine
+         * (pass the row's pin). Refused unless the process on the port is still
+         * that chat's; feature-detect before use.
+         */
+        stopDevServer?: (args: DevServerStopArgs, pin?: OpenProjectBinding | null) => Promise<DevServerStopResult>;
         /** A dev server started or stopped on the lane's machine. */
         onDevServer: (
           cb: (event: DevServerEvent) => void,

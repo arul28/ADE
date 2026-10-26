@@ -208,7 +208,11 @@ import {
   projectSecretKeepAnswers,
   projectSecretSaveAnswers,
 } from "./ProjectSecretCard";
-import { projectSecretComposerNote, readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
+import {
+  PROJECT_SECRET_DELIVERY_QUESTION_ID,
+  projectSecretComposerNote,
+  readProjectSecretRequestCard,
+} from "../../../shared/projectSecretRequest";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -9233,7 +9237,9 @@ function AgentChatComposerImpl({
               request={askQuestionRequest}
               card={secretRequestCard}
               responding={approvalResponding ?? false}
-              onSave={(value) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value)); }}
+              // A runtime that cannot write temporary files asks no "where" question.
+              fileDeliveryAvailable={askQuestionRequest.questions.some((question) => question.id === PROJECT_SECRET_DELIVERY_QUESTION_ID)}
+              onSave={(value, delivery) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value, delivery)); }}
               onKeepExisting={() => { void onApproval("accept", null, projectSecretKeepAnswers()); }}
               onDecline={() => { void onApproval("decline"); }}
             />
