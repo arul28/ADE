@@ -6966,6 +6966,39 @@ export function createPrService({
   const settledCommitChecks = new Map<string, { status: "success" | "failure" | "none"; at: number }>();
   const settledCommitChecksKey = (repo: GitHubRepoRef, sha: string): string =>
     `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}|${sha}`;
+  const COMMIT_CHECK_ROLLUP_QUERY = `query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        commits(last: $last) { nodes { commit { oid statusCheckRollup { state } } } }
+      }
+    }
+  }`;
+  const fetchCommitCheckRollups = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    last: number,
+  ): Promise<Map<string, "success" | "failure" | "pending" | "none">> => {
+    const data = await graphqlRequest<{
+      repository?: { pullRequest?: { commits?: { nodes?: Array<{ commit?: { oid?: unknown; statusCheckRollup?: { state?: unknown } | null } }> } } | null } | null;
+    }>(COMMIT_CHECK_ROLLUP_QUERY, { owner: repo.owner, name: repo.name, number: prNumber, last: Math.min(100, Math.max(1, last)) }, { repo });
+    const nodes = data.repository?.pullRequest?.commits?.nodes;
+    if (!Array.isArray(nodes)) throw new Error("GitHub returned no commits for the check rollup.");
+    const out = new Map<string, "success" | "failure" | "pending" | "none">();
+    for (const node of nodes) {
+      const oid = asString(node?.commit?.oid);
+      if (!oid) continue;
+      const state = asString(node?.commit?.statusCheckRollup?.state).toUpperCase();
+      out.set(
+        oid,
+        state === "SUCCESS" ? "success"
+          : state === "FAILURE" || state === "ERROR" ? "failure"
+            : state === "PENDING" || state === "EXPECTED" ? "pending"
+              : "none",
+      );
+    }
+    return out;
+  };
+
   const getCommitsSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrCommit[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prId = String(coords.githubPrNumber);
@@ -6999,6 +7032,42 @@ export function createPrService({
       };
     });
 
+    const remember = (sha: string, status: "success" | "failure" | "pending" | "none"): void => {
+      if (status === "pending") return;
+      const key = settledCommitChecksKey(repo, sha);
+      settledCommitChecks.delete(key);
+      settledCommitChecks.set(key, { status, at: Date.now() });
+      while (settledCommitChecks.size > SETTLED_COMMIT_CHECKS_MAX_ENTRIES) {
+        const oldest = settledCommitChecks.keys().next();
+        if (oldest.done) break;
+        settledCommitChecks.delete(oldest.value);
+      }
+    };
+    const knownStatus = (sha: string): "success" | "failure" | "none" | null => {
+      const settled = settledCommitChecks.get(settledCommitChecksKey(repo, sha));
+      return settled && Date.now() - settled.at < SETTLED_COMMIT_CHECKS_TTL_MS ? settled.status : null;
+    };
+
+    // One GraphQL read gives every commit GitHub's own check rollup (what its
+    // commit list shows), where the REST path below costs a request per
+    // commit. Used when any older commit is not already known; a failure
+    // falls through to REST.
+    const olderUnknown = baseCommits.slice(0, -1).some((commit) => commit.sha && knownStatus(commit.sha) == null);
+    if (olderUnknown && baseCommits.length > 1) {
+      const rollups = await fetchCommitCheckRollups(repo, Number(coords.githubPrNumber), baseCommits.length)
+        .catch((err: unknown) => {
+          logger.warn("prs.commit_check_rollup_failed", { prId, error: getErrorMessage(err) });
+          return null;
+        });
+      if (rollups) {
+        return baseCommits.map((commit) => {
+          const status = rollups.get(commit.sha) ?? "none";
+          if (commit.sha) remember(commit.sha, status);
+          return { ...commit, checkStatus: status };
+        });
+      }
+    }
+
     // Fetch per-commit check-runs in parallel (capped to 5 concurrent).
     // Each 404/403 is caught and downgraded to "none" for that commit.
     const started = Date.now();
@@ -7008,22 +7077,13 @@ export function createPrService({
       async (commit, index): Promise<"success" | "failure" | "pending" | "none"> => {
         if (!commit.sha) return "none";
         const isHead = index === baseCommits.length - 1;
-        const key = settledCommitChecksKey(repo, commit.sha);
-        const settled = isHead ? undefined : settledCommitChecks.get(key);
-        if (settled && Date.now() - settled.at < SETTLED_COMMIT_CHECKS_TTL_MS) return settled.status;
+        const settled = isHead ? null : knownStatus(commit.sha);
+        if (settled) return settled;
         if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
         try {
           const runs = await fetchCheckRuns(repo, commit.sha);
           const status = aggregateCommitCheckStatus(runs);
-          if (status !== "pending") {
-            settledCommitChecks.delete(key);
-            settledCommitChecks.set(key, { status, at: Date.now() });
-            while (settledCommitChecks.size > SETTLED_COMMIT_CHECKS_MAX_ENTRIES) {
-              const oldest = settledCommitChecks.keys().next();
-              if (oldest.done) break;
-              settledCommitChecks.delete(oldest.value);
-            }
-          }
+          remember(commit.sha, status);
           return status;
         } catch (err) {
           logger.warn("prs.commit_check_runs_failed", {
@@ -10918,7 +10978,15 @@ export function createPrService({
     // the moment the repo goes quiet, and never revisit the rows the truncated
     // walk missed. Leaving the older cursor in place makes the next sweep walk
     // deeper instead, which is how this heals itself.
-    if (!sweepBudgetExhausted) lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
+    //
+    // A FULL walk the budget cut short is the exception: no walk ever reaches
+    // past the budget, so it already fetched everything any sweep can see.
+    // On a repo with more than a thousand open PRs every walk hits the
+    // budget, and holding the cursor back there meant every automatic sweep
+    // re-walked all ten pages, every couple of minutes, forever.
+    if (!sweepBudgetExhausted || deltaBoundaryMs == null) {
+      lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
+    }
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
     // throws into snapshot building. The legacy backfill below then adopts any
@@ -11085,7 +11153,10 @@ export function createPrService({
       if (revalidationOptions.revalidate === false) return;
       if (snapshotBackoffError()) return;
       if (githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) return;
-      void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
+      // Nobody waits on a background revalidation, so it is automatic by
+      // definition: it takes the delta walk once a sweep cursor exists, where
+      // passing the reader's own options made each one a full ten-page walk.
+      void startSnapshotRequest(githubStatus, { ...revalidationOptions, automaticRefresh: true }).catch((error) => {
         logger.warn("prs.github_snapshot_revalidation_failed", { error: getErrorMessage(error) });
       });
     };
