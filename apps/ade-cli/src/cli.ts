@@ -36220,7 +36220,7 @@ async function runChatWaitCommand(
         arguments: {
           domain: "chat",
           action: "waitFor",
-          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs, stopWhenUserWaits: true },
         },
       });
       const result = unwrapActionEnvelope(unwrapToolResult(raw));

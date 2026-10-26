@@ -2789,11 +2789,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const known = deviceScreenScales.get(deviceUdid);
     if (known) return known;
     const read = (async (): Promise<number | null> => {
+      // Only the profile's own answer is remembered. A device or profile not
+      // found yet (a list read while simctl was busy, a device type still
+      // installing) is asked again by the next snapshot.
       const device = (await listInstalledSimulators()).find((entry) => entry.udid === deviceUdid);
-      if (!device?.deviceTypeIdentifier) return null;
+      if (!device?.deviceTypeIdentifier) throw new Error("device type not listed");
       const { stdout: types } = await run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 });
       const bundlePath = deviceTypeBundlePath(types, device.deviceTypeIdentifier);
-      if (!bundlePath) return null;
+      if (!bundlePath) throw new Error(`no profile for ${device.deviceTypeIdentifier}`);
       const capabilitiesPath = path.join(bundlePath, "Contents", "Resources", "capabilities.plist");
       const { stdout } = await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", capabilitiesPath], { timeoutMs: 10_000 });
       return deviceTypeScreenScale(JSON.parse(stdout) as unknown);

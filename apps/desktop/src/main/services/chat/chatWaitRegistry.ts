@@ -288,7 +288,7 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
     },
 
     /** Resolve once `sessionId`'s summary matches, the budget runs out, or it is gone. */
-    async waitFor({ sessionId, waitFor: target = "idle", timeoutMs }: ChatWaitForArgs): Promise<ChatWaitForResult> {
+    async waitFor({ sessionId, waitFor: target = "idle", timeoutMs, stopWhenUserWaits }: ChatWaitForArgs): Promise<ChatWaitForResult> {
       const id = sessionId.trim();
       const budget = Math.max(0, Math.min(CHAT_WAIT_LONG_POLL_MAX_MS, Math.floor(timeoutMs ?? CHAT_WAIT_LONG_POLL_MAX_MS)));
       const deadline = Date.now() + budget;
@@ -296,7 +296,9 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         const summary = await deps.readSummary(id);
         if (!summary) return { matched: false, missing: true, summary: null };
         if (chatWaitTargetMatches(summary, target)) return { matched: true, summary };
-        if (chatWaitsOnUser(summary, target)) return { matched: false, waitingOnUser: true, summary };
+        if (stopWhenUserWaits === true && chatWaitsOnUser(summary, target)) {
+          return { matched: false, waitingOnUser: true, summary };
+        }
         const remaining = deadline - Date.now();
         if (remaining <= 0) return { matched: false, summary };
         await new Promise<void>((resolve) => {

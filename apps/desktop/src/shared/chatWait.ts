@@ -106,6 +106,12 @@ export type ChatWaitForArgs = {
   waitFor?: ChatWaitTarget;
   /** One long-poll's budget; the CLI loops. Capped at 25 s. */
   timeoutMs?: number;
+  /**
+   * Answer at once with `waitingOnUser` when the chat waits on a card only
+   * the user can answer. Opt-in: an older CLI calls again with no pause, as
+   * each call used to block, so an early answer would make it spin.
+   */
+  stopWhenUserWaits?: boolean;
 };
 
 export type ChatWaitForResult = {
