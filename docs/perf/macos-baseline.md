@@ -1111,11 +1111,14 @@ minutes apart. Not the baseline machine.
 | Opening the PR: most requests in flight at once | 19 | 6 (the process-wide cap) | 6 |
 | Opening the PR: time until the overview body shows | 1,118 ms | 710–896 ms | not set yet; needs approval |
 | Launch to the PRs tab: PR-list pages read | 29 (three full walks) | 14 (one full walk, then one page per refresh) | not set yet; needs approval |
-| Idle with the PR open: GitHub requests per hour | 1,680 (40+ list pages, 24 CI job reads and 12 `GET /user` per 5 min) | 648 (no list walks, no job reads, 4 `GET /user`) | not set yet; needs approval |
+| Idle with the PR open: GitHub requests per hour | 1,680 (40+ list pages, 24 CI job reads and 12 `GET /user` per 5 min) | 600 (no list walks, no job reads, 4 `GET /user`) | not set yet; needs approval |
+| Idle with the PR open: requests per hour that count against the rate limit (not `304`) | 540 | 144 (merge box and review threads GraphQL reused while the PR is quiet) | not set yet; needs approval |
 
 The list rows paint from the local cache in 80–130 ms in both, so time to
-rows did not move. About half the idle requests are `304 Not Modified`
-answers, which GitHub does not count against the rate limit.
+rows did not move. Most idle requests are `304 Not Modified` answers, which
+GitHub does not count against the rate limit. The tab still loads the first
+PR's detail when it opens without a deep link: that PR is the one on screen,
+so its reads are the point, not waste.
 
 ## iOS app: Lanes and PRs (simulator)
 

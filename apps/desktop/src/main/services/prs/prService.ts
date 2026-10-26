@@ -2272,6 +2272,7 @@ export function createPrService({
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     options: { hot?: boolean } = {},
   ): Promise<void> => {
+    forgetSharedReads(target.repo);
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
@@ -2630,6 +2631,7 @@ export function createPrService({
     rawPullMemo.clear();
     activityInputMemo.clear();
     sharedReads.clear();
+    quietReuse.clear();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4725,11 +4727,60 @@ export function createPrService({
     }
     return value;
   };
+  /**
+   * GraphQL answers reused while the PR is quiet. GraphQL is never a free
+   * `304`, and the detail refresh asked for the merge box and the review
+   * threads every minute even when every REST read beside them had just come
+   * back unchanged. The pull's own record is read first anyway (and is a
+   * `304` when nothing moved), so its last update, head, base and GitHub's
+   * merge state fingerprint the PR: an answer is reused while that
+   * fingerprint holds, for at most 3 minutes. Any write through ADE clears
+   * the repo's answers.
+   */
+  const QUIET_REUSE_MAX_AGE_MS = 3 * 60_000;
+  const QUIET_REUSE_MAX_ENTRIES = 128;
+  const quietReuse = new Map<string, { fingerprint: string; at: number; value: unknown }>();
+  const quietFingerprint = (pull: any): string | null => {
+    const updatedAt = asString(pull?.updated_at);
+    const headSha = asString(pull?.head?.sha);
+    if (!updatedAt || !headSha) return null;
+    return [updatedAt, headSha, asString(pull?.base?.sha), asString(pull?.mergeable_state), String(pull?.mergeable ?? "")].join("|");
+  };
+  const reuseWhileQuiet = async <T>(
+    key: string,
+    pull: any,
+    load: () => Promise<T>,
+    /** An answer GitHub is still working out (mergeability computing) is never kept. */
+    settled: (value: T) => boolean = () => true,
+  ): Promise<T> => {
+    const fingerprint = quietFingerprint(pull);
+    const known = quietReuse.get(key);
+    if (fingerprint && known && known.fingerprint === fingerprint && Date.now() - known.at < QUIET_REUSE_MAX_AGE_MS) {
+      return structuredClone(known.value) as T;
+    }
+    const value = await load();
+    if (fingerprint && value != null && settled(value)) {
+      quietReuse.delete(key);
+      quietReuse.set(key, { fingerprint, at: Date.now(), value: structuredClone(value) });
+      while (quietReuse.size > QUIET_REUSE_MAX_ENTRIES) {
+        const oldest = quietReuse.keys().next();
+        if (oldest.done) break;
+        quietReuse.delete(oldest.value);
+      }
+    } else {
+      quietReuse.delete(key);
+    }
+    return value;
+  };
+
   /** Drops a repo's shared reads after a write that can change them. */
   const forgetSharedReads = (repo: GitHubRepoRef): void => {
     const prefix = `${sharedReadRepoKey(repo)}|`;
     for (const key of Array.from(sharedReads.keys())) {
       if (key.slice(key.indexOf(":") + 1).startsWith(prefix)) sharedReads.delete(key);
+    }
+    for (const key of Array.from(quietReuse.keys())) {
+      if (key.slice(key.indexOf(":") + 1).startsWith(prefix)) quietReuse.delete(key);
     }
   };
 
@@ -5824,6 +5875,18 @@ export function createPrService({
     ));
   };
 
+  /**
+   * The review threads the detail pane polls. A reply or a new review bumps
+   * the pull's last update, so they are reused while it is quiet; resolving a
+   * thread on github.com may not, and shows within the 3-minute ceiling.
+   * Writes through ADE (and `assertThreadBelongsToPr`) read fresh.
+   */
+  const fetchReviewThreadsWhileQuiet = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
+    const pull = await fetchPr(repo, prNumber).catch(() => null);
+    if (!pull) return await fetchReviewThreads(repo, prNumber);
+    return await reuseWhileQuiet(`threads:${sharedReadRepoKey(repo)}|${prNumber}`, pull, () => fetchReviewThreads(repo, prNumber));
+  };
+
   const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
     const threads: PrReviewThread[] = [];
     let after: string | null = null;
@@ -6471,7 +6534,12 @@ export function createPrService({
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
       bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
-      fetchMergeStateViaGraphql(repo, prNumber),
+      reuseWhileQuiet(
+        `merge:${sharedReadRepoKey(repo)}|${prNumber}`,
+        pr,
+        () => fetchMergeStateViaGraphql(repo, prNumber),
+        (value) => !value?.mergeableUnknown && value?.mergeStateStatus != null && value.mergeStateStatus !== "unknown",
+      ),
     ]);
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
@@ -12750,7 +12818,7 @@ export function createPrService({
     async getReviewThreads(prId: string): Promise<PrReviewThread[]> {
       const row = requireRow(prId);
       const repo = repoFromRow(row);
-      return await fetchReviewThreads(repo, Number(row.github_pr_number));
+      return await fetchReviewThreadsWhileQuiet(repo, Number(row.github_pr_number));
     },
 
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
@@ -13484,7 +13552,7 @@ export function createPrService({
 
     async getReviewThreadsByGithub(coords: PrGithubCoords): Promise<PrReviewThread[]> {
       const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
-      return await fetchReviewThreads(repo, Number(coords.githubPrNumber));
+      return await fetchReviewThreadsWhileQuiet(repo, Number(coords.githubPrNumber));
     },
 
 
