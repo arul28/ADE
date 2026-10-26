@@ -1085,6 +1085,19 @@ function looksLikePathToken(value: string, windowsMode = process.platform === "w
 /** A cmd switch: `/b`, `/s`, `/a:h`, `/?`. One segment, no further slash. */
 const CMD_SWITCH_TOKEN = /^\/[A-Za-z0-9?][A-Za-z0-9?-]{0,15}(?::[^\\/]*)?$/;
 
+/** Commands whose arguments name files they create, overwrite, or delete. */
+const CMD_FILE_COMMANDS = new Set([
+  "cp", "copy", "xcopy", "robocopy", "install", "ln", "mv", "move",
+  "ren", "rename", "rm", "del", "erase", "mkdir", "md", "rmdir", "rd",
+  "touch", "chmod", "chown", "patch", "truncate", "tee",
+]);
+
+/** A one-letter token at the end is still a flag (`xcopy src dest /s`, `del /q`). */
+const CMD_TRAILING_FLAG_COMMANDS = new Set(["xcopy", "robocopy", "rmdir", "rd", "del", "erase", "rm"]);
+
+/** A one-letter token with no other operand is the file (`mkdir /b` creates `C:\b`). */
+const CMD_LONE_NAME_COMMANDS = new Set(["mkdir", "md", "touch", "ren", "rename", "tee", "truncate"]);
+
 /**
  * cmd.exe and Windows programs read `/b` as a switch, not as `C:\b`. A token
  * that names an existing drive-root path is still checked as a path, since a
@@ -1099,6 +1112,23 @@ function isCmdSwitchToken(value: string, cwd: string, pathApi: SandboxPathApi): 
   } catch {
     return false;
   }
+}
+
+/**
+ * A `/name` argument of a file command. It names `C:\name`, which may not
+ * exist until the command creates it. A switch that another operand follows
+ * (`copy /y src dest`, `del /q file`) stays a switch, as does a trailing flag
+ * (`xcopy src dest /s`).
+ */
+function isCmdWriteOperand(command: string, value: string, args: string[], index: number): boolean {
+  if (!CMD_FILE_COMMANDS.has(command) || !CMD_SWITCH_TOKEN.test(value)) return false;
+  const name = value.slice(1).split(":")[0]!.toLowerCase();
+  if (name.length !== 1) return true;
+  const isFileOperand = (arg: string) => arg.length > 0 && !arg.startsWith("-") && !CMD_SWITCH_TOKEN.test(arg);
+  if (args.slice(index + 1).some(isFileOperand)) return false;
+  if (CMD_TRAILING_FLAG_COMMANDS.has(command)) return false;
+  if (args.slice(0, index).some(isFileOperand)) return true;
+  return CMD_LONE_NAME_COMMANDS.has(command);
 }
 
 const COMMAND_SEPARATORS = new Set(["|", "||", "&&", ";", "&"]);
@@ -1187,8 +1217,15 @@ function collectPathReferences(
     const normalizedCommand = pathApi.basename(commandName).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, "");
     const normalizedArgs = args
       .map((value) => normalizePathToken(value))
-      .filter((value) => value.length > 0 && !value.startsWith("-") && !(windowsMode && /^\/[a-z?]/i.test(value)));
-    const pathOperands = normalizedArgs.filter((value) => looksLikePathToken(value, windowsMode));
+      .filter((value) => value.length > 0 && !value.startsWith("-"));
+    const pathOperands = normalizedArgs.filter((value, index) => {
+      if (!looksLikePathToken(value, windowsMode)) return false;
+      // A missing `C:\name` is still a write. Drop only tokens that are flags.
+      if (windowsMode && CMD_SWITCH_TOKEN.test(value) && !isCmdWriteOperand(normalizedCommand, value, normalizedArgs, index)) {
+        return false;
+      }
+      return true;
+    });
     if (!pathOperands.length) return;
 
     switch (normalizedCommand) {
@@ -1198,7 +1235,7 @@ function collectPathReferences(
       case "robocopy":
       case "install":
       case "ln": {
-        const destination = [...normalizedArgs].reverse().find((value) => looksLikePathToken(value, windowsMode));
+        const destination = pathOperands[pathOperands.length - 1];
         if (destination) {
           pathOperands.slice(0, -1).forEach((value) => addPath(value, "read"));
           addPath(destination, "write");

@@ -209,6 +209,17 @@ describe("checkWorkerSandbox", () => {
     }
     // More than one segment is a path, not a switch.
     expect(checkWorkerSandbox("type /Users/other/secret.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(false);
+    // A drive-root file that is not there yet is still a write, not a switch.
+    for (const command of ["mkdir /outside-dir", "copy payload /outside-file", "copy payload /b", "del /outside-file"]) {
+      const write = checkWorkerSandbox(command, DEFAULT_WORKER_SANDBOX_CONFIG, cwd);
+      expect(write.allowed, command).toBe(false);
+      expect(write.reason, command).toContain("Path outside sandbox");
+    }
+    expect(checkWorkerSandbox("mkdir sub\\ok", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("copy /y payload sub\\out.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("copy /b payload sub\\out.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("xcopy payload sub\\out /s", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("del /q notes.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
   });
 
   it.runIf(isWin)("refuses a UNC path without opening it", () => {
