@@ -40,10 +40,11 @@ import {
   decodeAcceptCrossMachineHandoffResult,
   decodeCrossMachineDestinationPreflightResult,
   isCrossMachineHandoffActive,
-  normalizeGitRemoteIdentity,
   pickCrossMachineTargetConfig,
   withoutCrossMachinePermissionFields,
+  normalizeGitRemoteIdentity,
 } from "../../../shared/crossMachineHandoff";
+import { gitRemoteIdentity } from "../github/githubSshAlias";
 import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
@@ -163,7 +164,10 @@ export type CrossMachineHandoffSource = {
 export type CrossMachineSourceInspection = {
   /** Normalized identity (host/owner/repo), for matching machines' projects. */
   originUrl: string | null;
-  /** `git remote get-url origin` as configured, for the capsule. */
+  /**
+   * `git remote get-url origin` for the capsule. An SSH alias of GitHub comes
+   * as its `github.com` form, which the other machine can match and fetch.
+   */
   rawOriginUrl?: string | null;
   branchRef: string | null;
   headSha?: string | null;
@@ -579,10 +583,13 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     online: machine.online,
     unavailableReason: machine.online ? null : "Offline",
     // Both sides normalized here: SSH and HTTPS forms of one remote must
-    // match whatever shape the transport reports.
+    // match whatever shape the transport reports. The roster carries an
+    // identity the other machine already normalized; a machine on an ADE
+    // older than SSH-alias resolution reports its alias host, so an alias
+    // checkout there matches only after that machine updates.
     hasRepository: machine.projects && originUrl
       ? machine.projects.some((project) =>
-        normalizeGitRemoteIdentity(project.origin) === normalizeGitRemoteIdentity(originUrl))
+        normalizeGitRemoteIdentity(project.origin) === gitRemoteIdentity(originUrl))
       : null,
   });
 

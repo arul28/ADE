@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ChatCircleText,
@@ -32,7 +33,6 @@ import {
   commitAgentProvider,
   findCommitSession,
   githubAvatarForEmail,
-  githubRepoFromRemote,
   isBaseLinePrimary,
   prsForLaneBranch,
   reflowCommitBody,
@@ -137,7 +137,7 @@ export function CommitDetailPanel({
       });
     void window.ade.git.getOriginRemote({ laneId }, pin)
       .then((remote) => {
-        if (!cancelled) setRepo(githubRepoFromRemote(remote.remoteUrl));
+        if (!cancelled) setRepo(githubRepoRefFromRemoteUrl(remote.remoteUrl));
       })
       .catch(() => {});
     return () => {

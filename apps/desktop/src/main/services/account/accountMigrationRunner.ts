@@ -1,8 +1,10 @@
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
-import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProjectSummary";
+import { resolveCanonicalGitOrigin } from "../github/githubSshAlias";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "./accountVaultBridge";
 import type { AccountBridge } from "./accountBridge";
+import type { AccountStoreResult, AccountStoreWriteOptions } from "../../../shared/types/accountStore";
 import {
   runAccountMigration,
   type AccountMigrationSourceResult,
@@ -92,9 +94,21 @@ export function createAccountMigrationStartRetry(options: AccountMigrationStartR
   return { tryStart };
 }
 
+/** The two account-settings calls the migration needs, from desktop or the brain. */
+export type AccountMigrationSettingsBridge = {
+  list(scope: string): Promise<AccountStoreResult<ReadonlyArray<{ scope: string; key: string; value: unknown; updatedAt?: string }>>>;
+  set(scope: string, key: string, value: unknown, options?: AccountStoreWriteOptions): Promise<AccountStoreResult<null>>;
+  /** Keys some machine deleted, with the deletion's stamp; `list` hides them. */
+  deletedKeys(scope: string): Promise<AccountStoreResult<Array<{ key: string; updatedAt: string }>>>;
+  /** Pulls the account's rows; the value is the store's sync status. */
+  syncStatus(): Promise<AccountStoreResult<"ready" | "unavailable" | "failed" | null>>;
+};
+
 export type AccountMigrationRunnerOptions = {
   accountBridge: Pick<AccountBridge, "status">;
-  accountVaultBridge: Pick<AccountVaultBridge, "list" | "get" | "set">;
+  accountVaultBridge: Pick<AccountVaultBridge, "list" | "get" | "set"> & Partial<Pick<AccountVaultBridge, "sync">>;
+  /** The account settings store, for rows filed under a repository's old alias key. */
+  accountSettingsBridge?: AccountMigrationSettingsBridge | null;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   getLogger: () => AccountMigrationLogger;
   getReceiptDir?: () => string;
@@ -277,6 +291,92 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     return { moved, skipped };
   };
 
+  /**
+   * Copies a repository's account rows from its SSH-alias key to its GitHub
+   * key, once per project.
+   *
+   * Before ADE resolved SSH aliases, a checkout whose origin is
+   * `git@github.com-work:org/repo` filed its synced secrets and settings
+   * under `repo:github.com-work/org/repo`. The key is now
+   * `repo:github.com/org/repo`, so without this copy those rows would look
+   * lost. A row already under the new key wins: another machine's checkout of
+   * the same repository wrote it. The old rows stay, because a machine that
+   * still runs an older ADE keeps reading them.
+   */
+  const migrateRepoScopeAlias = async (
+    context: AccountMigrationContext,
+    isCurrent: () => boolean,
+    expectedAccountUserId: string,
+    storesSynced: () => Promise<boolean>,
+  ): Promise<AccountMigrationSourceResult> => {
+    const root = context.project?.rootPath;
+    if (!root) return { moved: 0, skipped: 0, complete: false };
+    const raw = readGitConfigOriginUrl(root);
+    const canonical = resolveCanonicalGitOrigin(raw);
+    // A failed ssh lookup cannot tell an alias from another host: retry later.
+    if (canonical.lookupFailed) return { moved: 0, skipped: 0, complete: false };
+    const legacyScope = accountRepoScopeKey(raw);
+    const scope = accountRepoScopeKey(canonical.url);
+    if (!legacyScope || !scope || legacyScope === scope) return { moved: 0, skipped: 0 };
+
+    // Compare against the account's current rows, not a stale local copy: a
+    // row another machine wrote under the new key since the last pull wins.
+    if (!(await storesSynced()) || !isCurrent()) return { moved: 0, skipped: 0, complete: false };
+
+    let moved = 0;
+    let skipped = 0;
+    const legacyItems = await listVaultItems(legacyScope);
+    const currentItems = await listVaultItems(scope);
+    if (!legacyItems || !currentItems || !isCurrent()) return { moved, skipped, complete: false };
+    // A tombstone under the new key is a deletion made there; it wins too.
+    const presentItems = new Set(
+      currentItems.filter((item) => item.scope === scope).map((item) => `${item.kind}\u0000${item.key}`),
+    );
+    for (const item of legacyItems) {
+      if (item.scope !== legacyScope || item.kind !== "project_secret" || item.deleted) continue;
+      if (presentItems.has(`${item.kind}\u0000${item.key}`)) {
+        skipped += 1;
+        continue;
+      }
+      const value = typeof item.value === "string"
+        ? { ok: true as const, value: item.value }
+        : await options.accountVaultBridge.get(legacyScope, item.kind, item.key);
+      if (!value.ok) return { moved, skipped, complete: false };
+      if (!value.value) continue;
+      const saved = await setVaultItem(isCurrent, expectedAccountUserId, scope, item.kind, item.key, value.value);
+      if (!saved?.ok) return { moved, skipped, complete: false };
+      moved += 1;
+    }
+
+    const settings = options.accountSettingsBridge;
+    // A runtime with no settings store has no settings rows to copy.
+    if (!settings) return { moved, skipped };
+    const legacyRows = await settings.list(legacyScope);
+    const currentRows = await settings.list(scope);
+    const deletedKeys = await settings.deletedKeys(scope);
+    if (!legacyRows.ok || !currentRows.ok || !deletedKeys.ok || !isCurrent()) {
+      return { moved, skipped, complete: false };
+    }
+    const presentKeys = new Set(currentRows.value.filter((row) => row.scope === scope).map((row) => row.key));
+    const deletedAt = new Map(deletedKeys.value.map((entry) => [entry.key, entry.updatedAt]));
+    for (const row of legacyRows.value) {
+      if (row.scope !== legacyScope) continue;
+      // A deletion under the new key wins over an older row; a row an older
+      // ADE wrote after that deletion is newer and still copies.
+      const deletion = deletedAt.get(row.key);
+      const deletedLater = deletion !== undefined && (!row.updatedAt || deletion >= row.updatedAt);
+      if (presentKeys.has(row.key) || deletedLater) {
+        skipped += 1;
+        continue;
+      }
+      if (!isCurrent()) return { moved, skipped, complete: false };
+      const saved = await settings.set(scope, row.key, row.value, { expectedAccountUserId });
+      if (!saved.ok || !isCurrent()) return { moved, skipped, complete: false };
+      moved += 1;
+    }
+    return { moved, skipped };
+  };
+
   let accountMigrationInFlight: Promise<void> | null = null;
 
   const start = (): boolean => {
@@ -365,6 +465,17 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           },
         });
         if (machineRun.pending.length > 0 || machineRun.failed.length > 0) complete = false;
+        // One pull of both account stores serves every project in this run, so
+        // a relay that cannot answer costs one attempt, not two per project.
+        let storesSyncedForRun: Promise<boolean> | null = null;
+        const syncStoresOnce = async (): Promise<boolean> => {
+          const vault = await options.accountVaultBridge.sync?.();
+          if (!vault?.ok || vault.value !== "ready") return false;
+          const settings = options.accountSettingsBridge;
+          if (!settings) return true;
+          const synced = await settings.syncStatus();
+          return synced.ok && synced.value === "ready";
+        };
         for (const context of openAccountContexts()) {
           if (!isCurrent()) {
             complete = false;
@@ -372,11 +483,13 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           }
           const projectRoot = context.project?.rootPath;
           if (!projectRoot) continue;
+          const storesSynced = (): Promise<boolean> => (storesSyncedForRun ??= syncStoresOnce());
           const projectRun = await runAccountMigration({
             ...migrationOptions(),
             projectRoot,
             sources: {
               project_secrets: () => migrateProjectSecrets(context, isCurrent, ownerToken.userId),
+              repo_scope_alias: () => migrateRepoScopeAlias(context, isCurrent, ownerToken.userId, storesSynced),
             },
           });
           if (projectRun.pending.length > 0 || projectRun.failed.length > 0) complete = false;

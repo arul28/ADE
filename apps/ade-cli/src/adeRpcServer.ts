@@ -9,6 +9,7 @@ import {
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { DIRTY_WORKTREE_PREFIX } from "../../desktop/src/main/services/prs/prService";
@@ -52,6 +53,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
+  userSettingWrite,
   isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   laneEnvironmentSetupDeps,
@@ -3588,6 +3590,7 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // Switching accounts changes which login pays for a chat's next turn.
   "switchAccount",
   "requestSessionAttention",
+  "clearAsk",
   "setSessionActivity",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a
@@ -5834,6 +5837,22 @@ async function runTool(args: {
         ),
       );
     }
+    // The user's settings need the user: one of their clients or their own
+    // terminal at the operator role. A role alone is not enough, because an
+    // agent outside a chat (an orchestrator run, step or attempt) can keep the
+    // operator role it asks for.
+    const userAtControls = callerHasRoleAtLeast(callerCtx.role, "cto") && isUserClientSession(session);
+    const setting = userSettingWrite(domain, action);
+    if (setting && !userAtControls) {
+      // A setting only the user changes. Say so in words an agent can pass
+      // on, with the link that opens it when there is one.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        setting.entryId
+          ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
+          : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
+      );
+    }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
@@ -5860,6 +5879,29 @@ async function runTool(args: {
         JsonRpcErrorCode.policyDenied,
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
+    }
+    if (domain === "project_config" && action === "save" && !userAtControls) {
+      // An agent may change the setup of the work (tests, automations, lane
+      // templates…) but not the person's settings that share the same file:
+      // PR chat transcripts publish chats, and the rest are sign-ins, AI config
+      // and cleanup rules (`shared/settingsAgentAccess.ts`). The whole save is
+      // refused, so nothing is half written.
+      // Save writes only `local` (the shared layer is ignored), and a missing
+      // or malformed `local` becomes an empty config — which would clear every
+      // owner-only key — so compare exactly what save would write.
+      const candidate = argsList?.[0] ?? (hasScalarArg ? toolArgs.arg : toolArgs.args);
+      const current = runtime.projectConfigService?.get();
+      const candidateLocal = isRecord(candidate) && isRecord(candidate.local) ? candidate.local : {};
+      const change = current
+        ? ownerOnlyProjectConfigChange(current.local as Record<string, unknown>, candidateLocal)
+        : null;
+      if (change) {
+        const link = change.entryId ? ` It is at ade://settings/${change.entryId}.` : "";
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          `Only the user can change '${change.key}' in the project config, so nothing was saved.${link} Tell the user where it is.`,
+        );
+      }
     }
     // Every chat action whose caller metadata lands in a persisted
     // `user_message` re-derives the spawn-dispatch stamp here, before any

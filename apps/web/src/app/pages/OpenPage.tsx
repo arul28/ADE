@@ -17,6 +17,7 @@ type OpenTarget =
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
+  | { kind: "settings"; entryId: string; machineId?: string }
   | { kind: "unknown" };
 
 type OpenEnvelope = {
@@ -27,6 +28,10 @@ type OpenEnvelope = {
 };
 
 const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
+
+// The desktop parser's shapes (`shared/deeplinks.ts`): ADE refuses anything else.
+const SETTINGS_ENTRY_ID_RE = /^[a-z0-9][a-z0-9.-]{0,95}$/;
+const MACHINE_ID_BAD_RE = /[\x00-\x1f\x7f]/;
 
 function positiveInteger(raw: string | null): number | undefined {
   if (!raw) return undefined;
@@ -121,6 +126,15 @@ function parseQuery(search: string): OpenTarget {
         : { kind: "linear-issue", issueIdentifier };
     }
   }
+  if (type === "settings") {
+    const entryId = (params.get("id") ?? "").toLowerCase();
+    if (SETTINGS_ENTRY_ID_RE.test(entryId)) {
+      const machineId = (params.get("machine") ?? "").trim();
+      return machineId && machineId.length <= 512 && !MACHINE_ID_BAD_RE.test(machineId)
+        ? { kind: "settings", entryId, machineId }
+        : { kind: "settings", entryId };
+    }
+  }
   return { kind: "unknown" };
 }
 
@@ -172,6 +186,8 @@ function buildAdeUrl(target: OpenTarget): string | null {
       const base = `ade://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
     }
+    case "settings":
+      return appendQuery(`ade://settings/${encodeURIComponent(target.entryId)}`, [["machine", target.machineId]]);
     case "unknown":
       return null;
   }
@@ -248,6 +264,13 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
       return {
         title: `Open ${target.issueIdentifier} in ADE`,
         summary: target.branch ? `Branch ${target.branch}` : "Linear issue",
+      };
+    case "settings":
+      return {
+        title: "Open a setting in ADE",
+        summary: "Opens this setting in ADE's Settings.",
+        valueLabel: "Setting",
+        value: target.entryId,
       };
     case "unknown":
       return {

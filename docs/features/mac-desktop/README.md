@@ -1095,10 +1095,16 @@ long document; `press` with no target goes to the newest modal panel, where a
 person's keys would; `park` leaves a panel that already opened on the lane
 display where its app put it.
 
-A panel the system draws for another app (`com.apple.appkit.xpc.openAndSavePanelService`)
-cannot be moved through Accessibility, and taking that process would give one
-lane every app's next panel. `claim`/`park` refuse it with that reason, and a
-lane listing shows it only while it sits on the lane's display.
+A sandboxed app's Open and Save panels get their content from a system
+service (`com.apple.appkit.xpc.openAndSavePanelService`), but on macOS 27 the
+panel window on screen belongs to the app itself. Measured with TextEdit on a
+lane display (2026-10-26): the panel opened on the lane's display, also when
+the app had no window left there. The service owned only a hidden window. An
+Accessibility move of the panel reported success, and the panel did not move.
+So a lane app's panel is a lane window like any other: listed, observed and
+watched. A window the service itself owns is never taken, because taking that
+process would give one lane every app's next panel: `claim`/`park` refuse it,
+and a lane listing shows it only while it sits on the lane's display.
 
 The 1 s watcher sweep moves a new panel of a lane app onto the lane display the
 same way it moves a window. When it cannot — the window never answers

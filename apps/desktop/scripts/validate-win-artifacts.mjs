@@ -878,6 +878,19 @@ async function validatePackagedRuntime(appDir) {
       env: { ...process.env },
     });
     assertAdeCliHelp(installedHelp.stdout, "Installed ADE CLI shim");
+
+    // Git Bash runs only an extensionless `ade`, and only with LF line ends;
+    // through `ade.cmd` it would cut every multi-line argument at cmd.exe.
+    const installedGitBashPath = path.join(installRoot, "bin", "ade");
+    await assertPathExists(installedGitBashPath, "installed Git Bash ade command");
+    const gitBashShim = await fsp.readFile(installedGitBashPath, "utf8");
+    if (gitBashShim.includes("\r") || !gitBashShim.startsWith("#!/bin/sh\n") || !gitBashShim.includes('"$@"')) {
+      fail(`Installed Git Bash ade command is malformed: ${JSON.stringify(gitBashShim)}`);
+    }
+    const packagedPosixWrapper = await fsp.readFile(path.join(resourcesPath, "ade-cli", "bin", "ade"), "utf8");
+    if (packagedPosixWrapper.includes("\r")) {
+      fail("Packaged POSIX ade wrapper has CRLF line ends; Git Bash cannot run it (check .gitattributes).");
+    }
   } finally {
     await fsp.rm(installRoot, { recursive: true, force: true });
   }

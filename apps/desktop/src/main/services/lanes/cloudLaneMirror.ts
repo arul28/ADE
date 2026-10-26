@@ -1,3 +1,4 @@
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import type { Logger } from "../logging/logger";
 import { branchNameFromHeadRef, runGit } from "../git/git";
 import { getErrorMessage } from "../shared/utils";
@@ -31,7 +32,7 @@ export async function syncCloudLaneMirror(args: {
   if (!branch || !cwd) return "skipped_no_branch";
   const { logger } = args;
   try {
-    const fetched = await runGit(["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+    const fetched = await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
       cwd,
       timeoutMs: 60_000,
     });

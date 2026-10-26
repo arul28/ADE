@@ -257,6 +257,8 @@ jobs:
       # The iOS scene shell and the web client's scene headers are copies of
       # the scene document's one source; this fails when either has drifted.
       - run: node apps/desktop/scripts/generate-ios-scene-shell.mjs --check
+      # The iOS settings-chip labels are a copy of the settings manifest.
+      - run: node apps/desktop/scripts/generate-ios-settings-catalog.mjs --check
 
   test-desktop:
     needs: install

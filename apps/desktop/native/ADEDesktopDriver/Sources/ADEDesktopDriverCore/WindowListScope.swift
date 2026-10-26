@@ -91,8 +91,10 @@ public enum WindowLayerPolicy {
     }
 
     /// The process macOS runs an app's Open and Save panels in, when the app
-    /// is sandboxed or asks for the remote panel. Its windows belong to that
-    /// service, not to the app, and they cannot be moved.
+    /// is sandboxed or asks for the remote panel. On macOS 27 the panel window
+    /// on screen belongs to the app, which shows the service's content in it;
+    /// the service owns only a hidden window. A window it does own is never a
+    /// lane's to take.
     public static func isOpenSavePanelService(bundleId: String?) -> Bool {
         guard let bundleId else { return false }
         return bundleId.hasPrefix("com.apple.appkit.xpc.openAndSavePanelService")

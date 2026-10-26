@@ -16,7 +16,7 @@ import { inspectProjectPath } from "../../desktop/src/main/services/projects/pro
 import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
+import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
@@ -136,7 +136,7 @@ import {
   omitRemoteCaller,
   readMachineCallScope,
 } from "./services/account/agentRemoteRpc";
-import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
+import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 
 type HandlerEntry = {
@@ -1094,7 +1094,8 @@ async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
 ): Promise<ProjectRecord> {
-  const identity = normalizeGitRemoteIdentity(originUrl);
+  // The origin comes from another machine: never start ssh for its host.
+  const identity = peerGitRemoteIdentity(originUrl);
   const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(identity) : null;
   if (!identity || !match) {
     throw new JsonRpcError(
@@ -1103,7 +1104,7 @@ async function cloneRepositoryForRemoteAgent(
     );
   }
   const existing = projectRegistry.list()
-    .find((record) => normalizeGitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
+    .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
   if (existing) return existing;
   const repoName = match[2]!;
   const parentDir = defaultParentDir(projectRegistry);
@@ -2072,6 +2073,10 @@ export function createMultiProjectRpcRequestHandler(
           // (`REMOTE_CALLER_PARAM`). A caller must not send them to a runtime
           // that would silently ignore the claim.
           agentRemoteCallers: true,
+          // `machines.deliverWake` reads `wake.notice` ("the child waits on
+          // the user") as a notice, not as a finished turn. A sender skips
+          // notices to a runtime without this.
+          externalWakeNotices: true,
           machineProjects: {
             browseDirectories: true,
             getDetail: true,

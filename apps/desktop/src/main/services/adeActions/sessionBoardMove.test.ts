@@ -175,7 +175,7 @@ describe("boardMoveMessageText", () => {
       "You moved this chat from Done to Working. Continue the work, or ask me what you need if the next step is unclear.",
     );
     expect(BOARD_MOVE_TO_NEEDS_YOU_TEXT).toBe(
-      "The user parked this for their input. Stop, summarize where you are, and list what you need from them.",
+      "The user set this chat's status to Needs you. Ask them what they need before you continue.",
     );
   });
 });

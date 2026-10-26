@@ -16,6 +16,8 @@ import {
   deriveGithubRepoConnectionState,
   describeGithubCliBanner,
   describeGithubOutage,
+  describeGitTransportFailure,
+  GH_AUTH_LOGIN_COMMAND,
   githubStatusHasWriteCredential,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
@@ -23,6 +25,7 @@ import {
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { showToast } from "./toast/toastStore";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import {
   APP_BANNER_PRIORITY,
@@ -264,6 +267,9 @@ export function IntegrationBanners({
     if (githubStatus?.connected && githubStatusHasWriteCredential(githubStatus)) {
       clearDismissal(`github-cli:${currentProjectRoot}`);
     }
+    if (githubStatus?.gitTransport?.state === "ok") {
+      clearDismissal(`github-git-transport:${currentProjectRoot}`);
+    }
     if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
     if (relayOutage == null) clearDismissal("relay-offline");
     if (!describeGithubOutage(githubStatus)) clearDismissal("github-outage");
@@ -395,6 +401,7 @@ export function IntegrationBanners({
       }
     }
 
+    let githubCliShown = false;
     // 2) gh CLI / PAT not connected (MIGRATED). A DISTINCT concern from the App
     // block: this is the token ADE uses for git & PR operations, not webhooks.
     // An unreadable credential store pierces the outage suppression: it is a
@@ -407,6 +414,7 @@ export function IntegrationBanners({
       && githubStatus
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
     ) {
+      githubCliShown = true;
       const cli = describeGithubCliBanner(githubStatus);
       list.push({
         id: "github-cli",
@@ -428,6 +436,40 @@ export function IntegrationBanners({
           },
         ],
         dismiss: { key: `github-cli:${currentProjectRoot}`, fingerprint: cli.subState },
+      });
+    }
+
+    // 2b) Git itself can't sign in to push (NEW). ADE's API credential can be
+    // fine while git, which signs in on its own, has nothing: pull requests
+    // load, but every push, pull and new PR fails. ADE already lends git its
+    // token when it has one, so this shows only when that did not help. Not
+    // stacked under the banner above, whose fix (sign in, add a token) is the
+    // same one.
+    const gitTransportFailure = describeGitTransportFailure(githubStatus);
+    if (!githubSuppressed && !githubCliShown && currentProjectRoot && gitTransportFailure) {
+      list.push({
+        id: "github-git-transport",
+        tone: "warning",
+        icon: GITHUB_ICON,
+        title: gitTransportFailure.title,
+        detail: gitTransportFailure.detail,
+        actions: [
+          { label: "Open GitHub settings", variant: "primary", onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE) },
+          ...(!gitTransportFailure.signInFixes
+            ? []
+            : [{
+                label: "Copy sign-in command",
+                variant: "secondary" as const,
+                title: GH_AUTH_LOGIN_COMMAND,
+                onClick: () => {
+                  void window.ade.app.writeClipboardText(GH_AUTH_LOGIN_COMMAND).then(
+                    () => showToast({ tone: "success", title: "Command copied", message: "Run it in a terminal on the computer this project is on, then check again in GitHub settings." }),
+                    () => showToast({ tone: "error", title: "Couldn't copy the command", message: GH_AUTH_LOGIN_COMMAND }),
+                  );
+                },
+              }]),
+        ],
+        dismiss: { key: `github-git-transport:${currentProjectRoot}`, fingerprint: gitTransportFailure.fingerprint },
       });
     }
 
