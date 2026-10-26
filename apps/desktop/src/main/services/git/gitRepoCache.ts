@@ -246,6 +246,37 @@ export async function cachedGitRepoValue<T>(args: {
   return await request;
 }
 
+/** The repository's mutation count now; `rememberGitRepoValue` compares against it. */
+export function gitRepoCacheEpoch(commonGitDir: string): number {
+  return commonGitDir ? repoFor(commonGitDir).epoch : -1;
+}
+
+/**
+ * Publish an answer another read already produced, as if `key` had been
+ * asked at `askedAtMs`: a `git status` that names HEAD answers `rev-parse
+ * HEAD` for the same worktree. Like a load, it is dropped when the repository
+ * was mutated after `epoch` was read, and its freshness runs from when it was
+ * asked. A fresher entry is kept.
+ */
+export function rememberGitRepoValue<T>(args: {
+  commonGitDir: string;
+  key: string;
+  cacheClass: GitRepoCacheClass;
+  value: T;
+  askedAtMs: number;
+  epoch: number;
+  nowMs?: number;
+}): void {
+  if (!args.commonGitDir) return;
+  const repo = repoFor(args.commonGitDir);
+  if (repo.epoch !== args.epoch) return;
+  const expiresAt = args.askedAtMs + ttlFor(args.cacheClass);
+  if (expiresAt <= (args.nowMs ?? Date.now())) return;
+  const entry = repo.entries.get(args.key);
+  if (entry && entry.expiresAt >= expiresAt) return;
+  repo.entries.set(args.key, { value: args.value, expiresAt });
+}
+
 /**
  * Drop cached answers. With no argument, drops every repository.
  *

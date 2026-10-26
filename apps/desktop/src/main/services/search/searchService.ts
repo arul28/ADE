@@ -283,6 +283,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   let repoSlugPass: Promise<{ owner: string; name: string } | null> | null = null;
   let laneBranchPass: Promise<Map<string, string>> | null = null;
+  // Every lane's git source is due at once after a start, and each one listed
+  // every lane again (a `git worktree list` and more per list): quadratic in
+  // lanes. One list per pass serves them all.
+  let lanesPass: Promise<LaneSummary[]> | null = null;
   // A sweep enqueues every PR at once, and each one re-read the whole PR list
   // and re-synced its chat terms: quadratic in PRs, seconds of brain time per
   // drain on a repo with a thousand of them. One read per pass serves them all.
@@ -385,6 +389,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         if (dueNow.length === 0) break;
         repoSlugPass = null;
         laneBranchPass = null;
+        lanesPass = null;
         prSummariesPass = null;
         for (const [key, entry] of dueNow) {
           queue.delete(key);
@@ -1005,7 +1010,8 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processLaneGit = async (laneId: string): Promise<void> => {
     if (!deps.git || !deps.lanes) return;
-    const lanes = await deps.lanes.list();
+    lanesPass ??= deps.lanes.list();
+    const lanes = await lanesPass;
     const lane = lanes.find((entry) => entry.id === laneId);
     if (!lane) {
       withTransaction(() => {

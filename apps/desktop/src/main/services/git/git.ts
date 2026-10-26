@@ -27,8 +27,10 @@ import {
 } from "../ai/cliExecutableResolver";
 import {
   cachedGitRepoValue,
+  gitRepoCacheEpoch,
   invalidateGitRepoCache,
   isRefAffectingGitCommand,
+  rememberGitRepoValue,
   type GitRepoCacheClass,
 } from "./gitRepoCache";
 import {
@@ -775,6 +777,19 @@ export async function runGitRepoCached(
     cacheClass: cache.cacheClass,
     load: () => runGit(args, opts),
   });
+}
+
+/** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */
+export type GitRepoObservation = { commonGitDir: string; epoch: number; askedAtMs: number };
+
+export async function beginGitRepoObservation(cwd: string): Promise<GitRepoObservation> {
+  const commonGitDir = await gitCommonDirFor(cwd);
+  return { commonGitDir, epoch: gitRepoCacheEpoch(commonGitDir), askedAtMs: Date.now() };
+}
+
+/** Serve `key` from `result` for the volatile window of the read that produced it. */
+export function rememberGitRepoResult(observation: GitRepoObservation, key: string, result: GitRunResult): void {
+  rememberGitRepoValue({ ...observation, key, cacheClass: "volatile", value: result });
 }
 
 export function resetGitCommonDirCacheForTests(): void {

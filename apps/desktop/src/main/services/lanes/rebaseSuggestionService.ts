@@ -159,12 +159,21 @@ export function createRebaseSuggestionService(args: {
     return result.exitCode === 0 && result.stdout.trim() ? result.stdout.trim() : null;
   };
 
+  // A count between two commit ids never changes, so each pair is asked once.
+  const behindCountByRange = new Map<string, number>();
   const readBehindCount = async (args: { laneHeadSha: string; baseHeadSha: string }): Promise<number> => {
-    const result = await runGit(
-      ["rev-list", "--count", `${args.laneHeadSha}..${args.baseHeadSha}`],
-      { cwd: projectRoot, timeoutMs: 10_000 }
-    );
-    return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
+    const range = `${args.laneHeadSha}..${args.baseHeadSha}`;
+    const known = behindCountByRange.get(range);
+    if (known !== undefined) return known;
+    const result = await runGit(["rev-list", "--count", range], { cwd: projectRoot, timeoutMs: 10_000 });
+    if (result.exitCode !== 0) return 0;
+    const count = Math.max(0, Number(result.stdout.trim()) || 0);
+    behindCountByRange.set(range, count);
+    if (behindCountByRange.size > 2_000) {
+      const oldest = behindCountByRange.keys().next().value;
+      if (oldest !== undefined) behindCountByRange.delete(oldest);
+    }
+    return count;
   };
 
   /**

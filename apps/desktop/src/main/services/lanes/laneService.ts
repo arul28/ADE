@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import {
+  beginGitRepoObservation,
   branchNameFromHeadRef,
   getHeadSha,
   GIT_REMOTE_FETCH_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
   GitTimeoutError,
   parseGitCheckoutProgressLine,
   refreshNewWorktreeIndexSoon,
+  rememberGitRepoResult,
   runGit,
   runGitOrThrow,
   runGitRepoCached,
@@ -1282,6 +1284,9 @@ async function computeLaneStatus(
   // once this worktree has an answer the status (whose `# branch.oid` names
   // HEAD) decides whether HEAD moved, and the read runs only then. The first
   // read of a worktree still runs both at once.
+  // Taken before the status starts: the HEAD it names then answers the
+  // conflict and rebase checks' `rev-parse HEAD` for this worktree.
+  const observation = await beginGitRepoObservation(worktreePath).catch(() => null);
   const statusPromise = runGit(
     ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
     { cwd: worktreePath, timeoutMs: 8_000 },
@@ -1307,6 +1312,13 @@ async function computeLaneStatus(
         upstreamBehind: null,
         headOid: null,
       };
+  if (observation && parsedStatus.headOid) {
+    rememberGitRepoResult(observation, `rev-parse:${worktreePath}:HEAD`, {
+      exitCode: 0,
+      stdout: `${parsedStatus.headOid}\n`,
+      stderr: "",
+    });
+  }
   const headMeta = headMetaPromise
     ? await headMetaPromise
     : parsedStatus.headOid && previousHeadMeta?.oid === parsedStatus.headOid
