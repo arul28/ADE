@@ -227,7 +227,7 @@ function certificateEndpoint(certificate: BuiltInBrowserTrustedCertificate): str
 
 /**
  * Local HTTPS certificates the person chose to trust from the browser's
- * "uses a certificate ADE doesn't trust" banner, and the way to take that back.
+ * "isn't trusted" banner, and the way to take that back.
  * Read when Settings opens and after each change; nothing polls.
  */
 function BrowserTrustedCertificatesSection() {

@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, CircleNotch, Globe, Stop } from "@phosphor-icons/react";
+import { ArrowSquareOut, Globe } from "@phosphor-icons/react";
 import type { DevServerRecord, OpenProjectBinding } from "../../../shared/types";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { refreshDevServersForMachine, useSessionDevServers } from "../../lib/laneDevServers";
@@ -140,35 +140,34 @@ export function SessionDevServerBadge({
         aria-label="Servers this chat started"
         data-testid="session-dev-server-menu"
         remeasureKey={servers.length}
-        className={cn(MENU_SURFACE_CLASS, "w-[232px]")}
+        className={cn(MENU_SURFACE_CLASS, "min-w-[168px] max-w-[232px]")}
         onClick={keepFromRow}
         onPointerDown={keepFromRow}
         onMouseDown={keepFromRow}
         onContextMenu={keepFromRow}
         onDoubleClick={keepFromRow}
       >
-        <div className={MENU_LABEL_CLASS}>
-          {runtimePin ? `Started by this chat · ${machine}` : "Started by this chat"}
-        </div>
+        {/* The globe's tooltip already says who started these; a heading is
+            only worth its row when the servers are on another machine. */}
+        {runtimePin ? <div className={MENU_LABEL_CLASS}>{`On ${machine}`}</div> : null}
         {servers.map((server) => {
           const label = devServerLabel(server);
           const busy = stopping.has(server.port);
           return (
-            <div key={`${server.source.laneId ?? ""}:${server.port}`} className="flex items-center gap-1" data-dev-server-port={server.port}>
+            <div key={`${server.source.laneId ?? ""}:${server.port}`} className="group/server flex items-center gap-0.5" data-dev-server-port={server.port}>
               <button
                 type="button"
                 role="menuitem"
                 data-testid="session-dev-server-open"
                 title={`Open ${label} in the Browser`}
-                className="flex min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.07] hover:text-fg"
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-left transition-colors hover:bg-fg/[0.07] hover:text-fg"
                 onClick={() => {
                   setOpen(false);
                   openUrlInAdeBrowser(server.url, { runtimePin: pinRef.current });
                 }}
               >
-                <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-emerald-400" aria-hidden />
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{label}</span>
-                <ArrowSquareOut size={12} className="shrink-0 text-muted-fg/55" aria-hidden />
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{label}</span>
+                <ArrowSquareOut size={11} className="shrink-0 text-muted-fg/55 opacity-0 transition-opacity group-hover/server:opacity-100" aria-hidden />
               </button>
               {canStop ? (
                 <button
@@ -176,17 +175,29 @@ export function SessionDevServerBadge({
                   role="menuitem"
                   data-testid="session-dev-server-stop"
                   disabled={busy}
-                  title={`Stop ${label}. Only processes this chat started are stopped.`}
-                  aria-label={`Stop ${label}`}
-                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[11px] text-muted-fg/75 transition-colors hover:bg-fg/[0.07] hover:text-fg disabled:opacity-50"
+                  title={busy ? `Stopping ${label}` : `Stop ${label}. Only processes this chat started are stopped.`}
+                  aria-label={busy ? `Stopping ${label}` : `Stop ${label}`}
+                  className="group/stop inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full disabled:cursor-default"
                   onClick={() => { void stop(server); }}
                 >
-                  {busy
-                    ? <CircleNotch size={11} className="motion-safe:animate-spin" aria-hidden />
-                    : <Stop size={11} weight="fill" aria-hidden />}
-                  {busy ? "Stopping" : "Stop"}
+                  {/* A ring says "running"; the square inside is the stop. */}
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "relative inline-flex h-[16px] w-[16px] items-center justify-center rounded-full border-[1.5px] transition-colors",
+                      busy
+                        ? "border-fg/15 border-t-fg/60 motion-safe:animate-spin"
+                        : "border-emerald-400/70 group-hover/stop:border-[color:var(--color-error)]",
+                    )}
+                  >
+                    {busy ? null : (
+                      <span className="h-[6px] w-[6px] rounded-[1.5px] bg-fg/70 transition-colors group-hover/stop:bg-[color:var(--color-error)]" />
+                    )}
+                  </span>
                 </button>
-              ) : null}
+              ) : (
+                <span aria-hidden className="mx-2 h-[6px] w-[6px] shrink-0 rounded-full bg-emerald-400" />
+              )}
             </div>
           );
         })}
