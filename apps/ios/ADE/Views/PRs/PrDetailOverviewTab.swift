@@ -13,6 +13,11 @@ struct PrOverviewSections: View {
   let onResolve: (_ threadId: String, _ resolved: Bool) -> Void
   /// The PR body has not arrived yet: placeholder lines, not "No description."
   var isLoading = false
+  /// Reactions and comment edits, when this host and account can make them.
+  var conversation: PrConversationControls = .none
+  var onReact: (_ subjectId: String, _ content: String) async throws -> Void = { _, _ in }
+  var onReactionError: (Error) -> Void = { _ in }
+  var onEditComment: (PrDigestEntry) -> Void = { _ in }
 
   @State private var expandedBots: Set<String> = []
   @State private var expandedEntries: Set<String> = []
@@ -68,6 +73,18 @@ struct PrOverviewSections: View {
             }
           }
           .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
+        }
+        if let subjectId = conversation.descriptionSubjectId, !isLoading {
+          PrReactionBar(
+            subjectKey: "description:\(subjectId)",
+            reactions: conversation.descriptionReactions,
+            viewerLogin: conversation.viewerLogin,
+            canReact: conversation.canReact,
+            onReact: { try await onReact(subjectId, $0) },
+            onError: onReactionError
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .adeFlatRow(insets: EdgeInsets(top: 0, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
         }
       }
 
@@ -154,7 +171,14 @@ struct PrOverviewSections: View {
         PrOpenThreadRow(entry: entry, identity: identity)
       }
     } else {
-      PrHumanEntryRow(entry: entry, identity: identity)
+      PrHumanEntryRow(
+        entry: entry,
+        identity: identity,
+        conversation: conversation,
+        onReact: onReact,
+        onReactionError: onReactionError,
+        onEdit: { onEditComment(entry) }
+      )
         .adeFlatRow(insets: EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
     }
   }
@@ -329,10 +353,15 @@ struct PrDigestEntryLine: View {
   }
 }
 
-/// A person's review or comment, in full.
+/// A person's review or comment, in full. A conversation comment carries its
+/// reactions, and the account's own comment can be edited from its long-press.
 struct PrHumanEntryRow: View {
   let entry: PrDigestEntry
   let identity: PrAuthorIdentity
+  var conversation: PrConversationControls = .none
+  var onReact: (_ subjectId: String, _ content: String) async throws -> Void = { _, _ in }
+  var onReactionError: (Error) -> Void = { _ in }
+  var onEdit: () -> Void = {}
 
   private var verb: String {
     switch entry.kind {
@@ -358,11 +387,49 @@ struct PrHumanEntryRow: View {
           .font(.footnote)
           .foregroundStyle(entry.reviewState == "approved" ? ADEColor.success : entry.reviewState == "changes_requested" ? ADEColor.danger : ADEColor.textSecondary)
         Spacer(minLength: 0)
+        if conversation.canEdit(entry) {
+          Button(action: onEdit) {
+            Image(systemName: "pencil")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .frame(width: 26, height: 22)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Edit comment")
+        }
         Text(prCompactRelativeTime(entry.at)).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
       }
       if !body.isEmpty {
         PrMarkdownRenderer(markdown: body)
           .padding(.leading, 27)
+      }
+      if let subjectId = entry.reactionSubjectId {
+        PrReactionBar(
+          subjectKey: "comment:\(subjectId)",
+          reactions: entry.reactions,
+          viewerLogin: conversation.viewerLogin,
+          canReact: conversation.canReact,
+          onReact: { try await onReact(subjectId, $0) },
+          onError: onReactionError
+        )
+        .padding(.leading, 27)
+        .padding(.top, 2)
+      }
+    }
+    .contentShape(Rectangle())
+    .contextMenu {
+      if conversation.canEdit(entry) {
+        Button(action: onEdit) {
+          Label("Edit comment", systemImage: "pencil")
+        }
+      }
+      if let raw = entry.body, !raw.isEmpty {
+        Button {
+          UIPasteboard.general.string = raw
+        } label: {
+          Label("Copy text", systemImage: "doc.on.doc")
+        }
       }
     }
   }

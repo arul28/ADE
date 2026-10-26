@@ -523,6 +523,31 @@ function resolveCandidatePath(
   return cursor;
 }
 
+/**
+ * Whether a resolved Windows path starts with `\\` and is not a device path to
+ * a drive letter (`\\?\C:\`, `\\.\C:\`). That covers `\\host\share`, the
+ * device forms of a share (`\\?\UNC\host\share`, `\\.\UNC\host\share`,
+ * `\\?\GLOBALROOT\Device\Mup\…`) and other device paths, none of which a
+ * project file lives under.
+ */
+export function isWindowsUncLikePath(resolved: string): boolean {
+  return /^[\\/]{2}(?![?.][\\/][A-Za-z]:(?:[\\/]|$))/.test(resolved);
+}
+
+/**
+ * On Windows, whether `candidate` is a UNC path (`\\host\share\…`) outside
+ * `root`. Such a path is refused before any filesystem call: a stat of it
+ * connects to that host over SMB, which can send this user's NTLM credentials
+ * to it. See `isWindowsUncLikePath` for the forms this covers.
+ */
+export function isForeignUncPath(root: string, candidate: string): boolean {
+  if (process.platform !== "win32") return false;
+  const resolved = path.win32.resolve(root, candidate);
+  if (!isWindowsUncLikePath(resolved)) return false;
+  const rel = path.win32.relative(path.win32.resolve(root).toLowerCase(), resolved.toLowerCase());
+  return rel.startsWith("..") || path.win32.isAbsolute(rel);
+}
+
 /** The message `resolvePathWithinRoot` uses for a containment failure. */
 export const PATH_ESCAPES_ROOT_MESSAGE = "Path escapes root";
 
@@ -546,6 +571,7 @@ export function resolvePathWithinRoot(
   candidate: string,
   opts: { allowMissing?: boolean } = {},
 ): string {
+  if (isForeignUncPath(root, candidate)) throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
   const rootReal = realpathExisting(path.resolve(root));
   const candidateReal = resolveCandidatePath(root, candidate, opts);
   if (!isWithinDir(rootReal, candidateReal)) {

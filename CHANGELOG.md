@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### SDK 0.7
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
+- **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
+
 ## [1.2.123] - 2026-10-25
 
 ### Desktop and web

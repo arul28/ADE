@@ -4,12 +4,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
+import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../../shared/utils";
 import {
   checkWorkerSandbox,
   createUniversalToolSet,
   resolveWorkerShellInvocation,
   tokenizePowerShellCommand,
 } from "./universalTools";
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 
 const isWin = process.platform === "win32";
 
@@ -160,12 +165,14 @@ describe("checkWorkerSandbox", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("allows read-only access to /usr/bin and /usr/local/bin paths", () => {
+  // POSIX paths: on Windows the bash tool runs cmd.exe, which has no /usr/bin.
+  it.skipIf(isWin)("allows read-only access to /usr/bin and /usr/local/bin paths", () => {
     const result = checkWorkerSandbox("cat /usr/bin/env", DEFAULT_WORKER_SANDBOX_CONFIG, "/tmp/project");
     expect(result.allowed).toBe(true);
   });
 
-  it("treats POSIX double-slash paths as POSIX paths", () => {
+  // On Windows `//mnt/shared` is a UNC path; see the UNC test below.
+  it.skipIf(isWin)("treats POSIX double-slash paths as POSIX paths", () => {
     const result = checkWorkerSandbox(
       "//mnt/shared/tool --version",
       sandboxWith({ allowedPaths: ["/"] }),
@@ -189,6 +196,50 @@ describe("checkWorkerSandbox", () => {
     );
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("Blocked command pattern");
+  });
+
+  it("reads cmd switches as switches, but still checks a redirect target", () => {
+    const cwd = "C:\\projects\\repo";
+    expect(checkWorkerSandbox("dir /s /b src", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("findstr /i /c:needle notes.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("exit /b 42", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    // `> /b` writes C:\b, outside the project.
+    for (const redirect of ["echo hi > /b", "echo hi >> /b", "dir 2> /b", "echo hi >/b"]) {
+      expect(checkWorkerSandbox(redirect, DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(false);
+    }
+    // More than one segment is a path, not a switch.
+    expect(checkWorkerSandbox("type /Users/other/secret.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(false);
+    // A drive-root file that is not there yet is still a write, not a switch.
+    for (const command of ["mkdir /outside-dir", "copy payload /outside-file", "copy payload /b", "del /outside-file"]) {
+      const write = checkWorkerSandbox(command, DEFAULT_WORKER_SANDBOX_CONFIG, cwd);
+      expect(write.allowed, command).toBe(false);
+      expect(write.reason, command).toContain("Path outside sandbox");
+    }
+    expect(checkWorkerSandbox("mkdir sub\\ok", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("copy /y payload sub\\out.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("copy /b payload sub\\out.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("xcopy payload sub\\out /s", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+    expect(checkWorkerSandbox("del /q notes.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(true);
+  });
+
+  it.runIf(isWin)("refuses a UNC path without opening it", () => {
+    const realpath = vi.spyOn(fs, "realpathSync");
+    try {
+      const cwd = makeTmpDir("ade-sandbox-unc-");
+      for (const share of [
+        "\\\\unreachable-host\\share\\x.txt",
+        "\\\\?\\UNC\\unreachable-host\\share\\x.txt",
+        "\\\\.\\UNC\\unreachable-host\\share\\x.txt",
+        "//?/UNC/unreachable-host/share/x.txt",
+      ]) {
+        expect(checkWorkerSandbox(`type ${share}`, DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(false);
+        expect(() => resolvePathWithinRoot(cwd, share)).toThrow(PATH_ESCAPES_ROOT_MESSAGE);
+      }
+      const opened = realpath.mock.calls.map(([target]) => String(target)).filter((target) => target.toLowerCase().includes("unreachable-host"));
+      expect(opened).toEqual([]);
+    } finally {
+      realpath.mockRestore();
+    }
   });
 
   it("blocks reg.exe mutation commands", () => {
@@ -451,7 +502,7 @@ describe("checkWorkerSandbox", () => {
     const linkedDir = path.join(cwd, "linked-outside");
     const outsideFile = path.join(outsideDir, "secret.txt");
     fs.writeFileSync(outsideFile, "secret\n", "utf-8");
-    fs.symlinkSync(outsideDir, linkedDir, "dir");
+    fs.symlinkSync(outsideDir, linkedDir, DIRECTORY_LINK_TYPE);
 
     const result = checkWorkerSandbox(
       `cat ${path.join(linkedDir, "secret.txt")}`,
@@ -499,7 +550,7 @@ describe("checkWorkerSandbox", () => {
     const projectRoot = makeTmpDir("ade-sandbox-root-");
     const outsideDir = makeTmpDir("ade-sandbox-outside-");
     const linkPath = path.join(projectRoot, "linked-outside");
-    fs.symlinkSync(outsideDir, linkPath, "dir");
+    fs.symlinkSync(outsideDir, linkPath, DIRECTORY_LINK_TYPE);
     fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret", "utf8");
 
     const result = checkWorkerSandbox("cat linked-outside/secret.txt", DEFAULT_WORKER_SANDBOX_CONFIG, projectRoot);
@@ -805,7 +856,7 @@ describe("createUniversalToolSet", () => {
     const cwd = makeTmpDir("ade-tools-write-symlink-root-");
     const outsideDir = makeTmpDir("ade-tools-write-symlink-outside-");
     const linkedDir = path.join(cwd, "linked-outside");
-    fs.symlinkSync(outsideDir, linkedDir, "dir");
+    fs.symlinkSync(outsideDir, linkedDir, DIRECTORY_LINK_TYPE);
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.writeFile as any).execute({
@@ -946,7 +997,7 @@ describe("createUniversalToolSet", () => {
     const linkedDir = path.join(cwd, "linked-outside");
     const outsideFile = path.join(outsideDir, "escape.txt");
     fs.writeFileSync(outsideFile, "outside\n", "utf-8");
-    fs.symlinkSync(outsideDir, linkedDir, "dir");
+    fs.symlinkSync(outsideDir, linkedDir, DIRECTORY_LINK_TYPE);
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
     const result = await (tools.editFile as any).execute({

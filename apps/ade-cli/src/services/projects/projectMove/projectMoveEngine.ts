@@ -10,6 +10,7 @@ import type {
   ProjectMoveStepId,
 } from "../../../../../desktop/src/shared/types/projectMove";
 import { nonAsarFs } from "../../../../../desktop/src/main/services/shared/nonAsarFs";
+import { removeTreeOffProcess } from "../../../../../desktop/src/main/services/shared/removeTreeOffProcess";
 import { listAppleDeviceMarkers, writeAppleDeviceMarker } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import { ProjectRegistry } from "../projectRegistry";
 import { readGitDirPointer } from "../projectRoots";
@@ -554,7 +555,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
           // meets it; the slow removal happens after ADE opens.
           const removing = `${copyRoot}.removing-${record.moveId}`;
           fs.renameSync(copyRoot, removing);
-          slowWork.push(() => nonAsarFs.promises.rm(removing, { recursive: true, force: true }));
+          slowWork.push(() => removeTreeOffProcess(removing));
         }
         record.state = "failed";
         record.error = "ADE stopped during the move. Your project wasn't changed.";
@@ -571,7 +572,7 @@ export async function recoverInterruptedMoves(): Promise<{ settled: ProjectMoveR
   for (const record of listMoveRecords()) {
     if (record.state !== "failed" || !record.copyCreated) continue;
     const removing = `${copyLocation(record.destinationRoot)}.removing-${record.moveId}`;
-    if (fs.existsSync(removing)) slowWork.push(() => nonAsarFs.promises.rm(removing, { recursive: true, force: true }));
+    if (fs.existsSync(removing)) slowWork.push(() => removeTreeOffProcess(removing));
   }
   const tidyUp = (async () => {
     for (const work of slowWork) await work();
@@ -675,7 +676,8 @@ async function removeKeepingMarkerLast(root: string, movedTo: string, moveId: st
     for (const name of await nonAsarFs.promises.readdir(dir)) {
       const entry = path.join(dir, name);
       if (keep.has(entry)) continue;
-      await nonAsarFs.promises.rm(entry, { recursive: true, force: true, maxRetries: 2 });
+      // A project's node_modules and build output: see removeTreeOffProcess.
+      await removeTreeOffProcess(entry);
     }
   };
   await removeAllBut(root);

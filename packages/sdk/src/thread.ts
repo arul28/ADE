@@ -3,9 +3,11 @@ import {
   approvalFromPendingInput,
   engineApprovalDecision,
   isApprovalShaped,
+  validateRespondOptions,
   type ApprovalDecision,
   type ApprovalRequest,
 } from "./approvals.js";
+import { pendingQueue, restorableQueueId, type ThreadQueueItem } from "./threadQueue.js";
 import { ApprovalTracker } from "./approvalTracker.js";
 import { completeAttachments } from "./attachments.js";
 import { AdeError } from "./errors.js";
@@ -30,8 +32,8 @@ import {
   type StoredMcpServerConfig,
 } from "./mcpHeaders.js";
 import { modelSelectionOf, type ModelSummaryFields } from "./modelSelection.js";
-import { isSupportedProvider } from "./permissions.js";
 import { summaryTurnActive, type PersonalChatsApi } from "./personalChats.js";
+import { budgetExceeded, ThreadUsageAccumulator, type ThreadBudget, type ThreadUsage } from "./usage.js";
 import {
   STATUS_EVENT_TYPES,
   USAGE_EVENT_TYPES,
@@ -40,6 +42,13 @@ import {
   type AgentChatFileRef,
   type McpCapabilityReport,
   type McpServerConfig,
+  type AgentChatStopMode,
+  type AgentChatUsageLimitResult,
+  type AgentChatSlashCommand,
+  type AgentChatRecoverTurnResult,
+  type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSwitchAccountResult,
+  type AgentChatRespondToInputArgs,
   type ThreadCapabilities,
   type ThreadHistoryPage,
   type ThreadModelSelection,
@@ -78,6 +87,21 @@ export type SendOptions = {
   displayText?: string;
   reasoningEffort?: string | null;
 };
+
+export type { ThreadQueueItem } from "./threadQueue.js";
+
+export type ThreadInterruptOptions = {
+  /** Keep queued messages, or remove them along with the active turn. */
+  queue?: "keep" | "drop";
+  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  mode?: AgentChatStopMode;
+};
+
+/** The response fields accepted by the runtime's `respondToInput` action. */
+export type ThreadRespondOptions = Pick<
+  AgentChatRespondToInputArgs,
+  "answers" | "decision" | "responseText"
+>;
 
 /** Options for `steer`. */
 export type SteerOptions = {
@@ -394,6 +418,8 @@ export interface AdeThread {
    * thread prefer `historyPage`, which reads one bounded page at a time.
    */
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /** Token totals observed on this thread; cost is present only when reported by the provider. */
+  usage(): ThreadUsage;
   /**
    * One page of the durable transcript, for "load older" on scroll.
    *
@@ -423,11 +449,9 @@ export interface AdeThread {
    * items silently, so without this check an answer to a dead card would look
    * like it worked.
    *
-   * Throws `invalid_option` for a request whose `requestKind` is one of the
-   * four that want prose or a choice rather than a verdict. Those are listed
-   * by `pendingApprovals()` and are meant to be rendered read-only. The kind
-   * is the runtime's own answer: an MCP elicitation that only asks "may this
-   * tool run?" arrives as `"approval"` and is answerable here.
+   * Use `respond()` for questions and plan approvals. This method accepts only
+   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
+   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
    *
    * `accept_always` settles this request and every later one the provider
    * considers the same, for the life of the session.
@@ -437,11 +461,39 @@ export interface AdeThread {
    * Every request this thread is currently blocked on.
    *
    * Call it after a reload to restore approval cards: the requests outlive the
-   * client that saw the events. Requests whose `requestKind` is not
-   * `"approval"` or `"permissions"` are included and cannot be answered with
-   * `approve()` — render those read-only.
+   * client that saw the events. The `answerable` field identifies whether the
+   * runtime supports a response for each request. Questions and plan approvals
+   * use `respond()` when that action is available; tool approvals use
+   * `approve()`.
    */
   pendingApprovals(): Promise<ApprovalRequest[]>;
+  /**
+   * Answer a question, structured question, or plan approval through the
+   * runtime's `respondToInput` action. Question answers are keyed by question
+   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
+   * SDK never infers it from option labels.
+   */
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  /** Mutable queued sends belonging to this thread. */
+  readonly queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  readonly usageLimit: {
+    resumeNow(): Promise<AgentChatUsageLimitResult>;
+    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
+  };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
   on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
 }
 
@@ -479,12 +531,16 @@ export type ThreadHostConfig = {
   requestedSettingSources?: boolean;
   /** Whether the caller asked for a permission policy. See `requestedInstructions`. */
   requestedPermissionPolicy?: boolean;
+  /** Host-side cumulative cap; it never reaches the provider runtime. */
+  budget?: ThreadBudget;
   /**
    * Whether the CURRENT runtime advertises the `pendingInputs` action. False
    * makes `pendingApprovals()` fall back to the events this client observed,
    * which cannot see requests raised before it connected.
    */
   pendingInputsSupported?: () => boolean;
+  /** True only when the current runtime explicitly lists this new action. */
+  actionListed?: (action: string) => boolean;
   logger?: (line: string) => void;
   /** Title at open, from the runtime's summary or the stored record. */
   title?: string | null;
@@ -535,9 +591,12 @@ export type ThreadRecordPatch = {
   title?: string | null;
   mcpServers?: Record<string, McpServerConfig>;
   attachmentRoots?: string[];
+  budget?: ThreadBudget;
   provider?: string;
   model?: string;
   modelId?: string;
+  reasoningEffort?: string | null;
+  fastMode?: boolean;
 };
 
 const USAGE = new Set<string>(USAGE_EVENT_TYPES);
@@ -589,6 +648,11 @@ export class Thread implements AdeThread {
   /** Replaced by `adoptSession`: a recreate resolves its services afresh. */
   private hostConfig: ThreadHostConfig;
   private warnedAboutHistoryPage = false;
+  private readonly usageTotals = new ThreadUsageAccumulator();
+  private usageInitialization: Promise<void> | null = null;
+  private usageInitializationError: Error | null = null;
+  private currentTurnId: string | null = null;
+  private budgetTripped = false;
 
   /** The provider this thread runs, kept in step with `setModel`. */
   private provider: AdeProvider;
@@ -602,6 +666,8 @@ export class Thread implements AdeThread {
   private lastMcpRefreshProblem: string | null = null;
   /** The constructor's subscription to the shared stream, released by `dispose()`. */
   private unsubscribeEvents: Unsubscribe | null = null;
+  readonly queue: AdeThread["queue"];
+  readonly usageLimit: AdeThread["usageLimit"];
 
   constructor(
     id: string,
@@ -638,6 +704,46 @@ export class Thread implements AdeThread {
       logger: this.logger,
       timeoutMs: () => this.hostConfig.approvalTimeoutMs,
     });
+    this.queue = {
+      list: async () => await this.listQueue(),
+      cancel: async (id) => {
+        this.assertAction("cancelSteer");
+        await this.chats.cancelSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id") });
+      },
+      edit: async (id, text) => {
+        this.assertAction("editSteer");
+        if (typeof text !== "string" || !text.trim()) {
+          throw new AdeError("invalid_option", "queue.edit() needs non-empty text.");
+        }
+        await this.chats.editSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), text });
+      },
+      move: async (id, index) => {
+        this.assertAction("moveSteer");
+        if (!Number.isInteger(index) || index < 0) {
+          throw new AdeError("invalid_option", "queue.move() needs a zero-based index.");
+        }
+        await this.chats.moveSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), toIndex: index });
+      },
+      dispatch: async (id) => {
+        this.assertAction("dispatchSteer");
+        await this.chats.dispatchSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), mode: "inline" });
+      },
+      cancelDispatched: async (id) => {
+        this.assertAction("cancelDispatchedSteer");
+        await this.chats.cancelDispatchedSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id") });
+      },
+      restore: async () => await this.restoreQueue(),
+    };
+    this.usageLimit = {
+      resumeNow: async () => {
+        this.assertAction("resumeUsageLimitNow");
+        return await this.chats.resumeUsageLimitNow({ sessionId: this.id }) as AgentChatUsageLimitResult;
+      },
+      continueOnAlternate: async () => {
+        this.assertAction("continueUsageLimitOnAlternate");
+        return await this.chats.continueUsageLimitOnAlternate({ sessionId: this.id }) as AgentChatUsageLimitResult;
+      },
+    };
     // Subscribed from construction, not lazily on the first `pendingApprovals`
     // call: an approval raised before anyone asked is exactly the one a host
     // needs back after a reload, and a lazy subscription would have missed it.
@@ -646,7 +752,88 @@ export class Thread implements AdeThread {
       const event = envelope.event;
       if (!event || typeof event.type !== "string") return;
       this.approvals.handle(event);
+      this.observeUsage(envelope);
     });
+  }
+
+  /** Seed durable totals before the thread handle is returned to its caller. */
+  async initializeUsage(): Promise<void> {
+    if (this.usageInitializationError) {
+      this.usageInitialization = null;
+      this.usageInitializationError = null;
+    }
+    this.usageInitialization ??= this.history().then((events) => {
+      this.usageTotals.seed(events);
+      if (budgetExceeded(this.hostConfig.budget, this.usageSnapshot())) {
+        this.budgetTripped = true;
+        if (this.hostConfig.budget) {
+          this.hostConfig.emitSynthetic?.({
+            sessionId: this.id,
+            timestamp: new Date().toISOString(),
+            event: {
+              type: "budget_exceeded",
+              budget: this.hostConfig.budget,
+              usage: this.usageSnapshot(),
+              resumed: true,
+            },
+          });
+          void this.chats.interrupt(this.id).catch((error: unknown) => {
+            this.logger(`ade sdk: could not interrupt thread "${this.key}" after its budget was exceeded: ${String(error)}`);
+          });
+        }
+      }
+    }).catch((error: unknown) => {
+      this.usageInitializationError = error instanceof Error ? error : new Error(String(error));
+      this.logger(`ade sdk: could not load usage history for thread "${this.key}": ${this.usageInitializationError.message}`);
+    });
+    await this.usageInitialization;
+  }
+
+  private assertBudgetCanStartTurn(action: string): void {
+    if (this.hostConfig.budget && this.usageInitializationError) {
+      throw new AdeError(
+        "rpc_error",
+        `Cannot ${action} on thread "${this.key}" because its usage history could not be loaded; the budget cannot be enforced.`,
+        { cause: this.usageInitializationError },
+      );
+    }
+    if (this.budgetTripped) {
+      throw new AdeError("invalid_option", `Thread "${this.key}" has exceeded its usage budget and cannot ${action}.`);
+    }
+  }
+
+  private usageSnapshot(): ThreadUsage {
+    return { ...this.usageTotals.snapshot(), complete: !this.usageInitializationError };
+  }
+
+  private observeUsage(envelope: AgentChatEventEnvelope): void {
+    const event = envelope.event as Record<string, unknown>;
+    const type = event.type;
+    if (type === "status" && event.turnStatus === "started") {
+      this.currentTurnId = typeof event.turnId === "string" ? event.turnId : null;
+    }
+    this.usageTotals.observe(envelope);
+    const usage = this.usageSnapshot();
+    if (!this.budgetTripped && budgetExceeded(this.hostConfig.budget, usage)) {
+      this.budgetTripped = true;
+      const turnId = typeof event.turnId === "string" ? event.turnId : this.currentTurnId;
+      this.hostConfig.emitSynthetic?.({
+        sessionId: this.id,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "budget_exceeded",
+          budget: this.hostConfig.budget,
+          usage,
+          ...(turnId ? { turnId } : {}),
+        },
+      });
+      if (type !== "done" && type !== "status" && this.currentTurnId) {
+        void this.chats.interrupt(this.id).catch((error: unknown) => {
+          this.logger(`ade sdk: could not interrupt thread "${this.key}" after its budget was exceeded: ${String(error)}`);
+        });
+      }
+    }
+    if (type === "done" || (type === "status" && event.turnStatus !== "started")) this.currentTurnId = null;
   }
 
   /**
@@ -777,6 +964,8 @@ export class Thread implements AdeThread {
 
   async send(text: string, opts: SendOptions = {}): Promise<void> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("start another turn");
     if (!text.trim() && !(opts.attachments?.length)) {
       throw new AdeError("invalid_option", "send() needs text or at least one attachment.");
     }
@@ -792,6 +981,8 @@ export class Thread implements AdeThread {
 
   async steer(text: string, opts: SteerOptions = {}): Promise<void> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("accept another steer");
     const body = typeof text === "string" ? text : "";
     if (!body.trim() && !(opts.attachments?.length)) {
       throw new AdeError("invalid_option", "steer() needs text or at least one attachment.");
@@ -834,6 +1025,14 @@ export class Thread implements AdeThread {
       );
     }
     const updated = await this.chats.updateSession(args);
+    // A recreate rebuilds the thread from its record, so a reconfigure that is
+    // not written there would come back as the old setting.
+    if (reconfigures) {
+      await this.hostConfig.onRecordChanged?.({
+        ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
+        ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
+      });
+    }
     if (patch.title !== undefined) {
       this.currentTitle =
         typeof updated?.title === "string" ? updated.title : (args.title as string | null);
@@ -869,6 +1068,8 @@ export class Thread implements AdeThread {
 
   private async rerunLastTurn(text: string | undefined, opts: EditLastOptions): Promise<ThreadRerunResult> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("run another turn");
     const action = text === undefined ? "retry()" : "editLast()";
     if (this.provider !== "claude" && this.provider !== "codex") {
       throw new AdeError(
@@ -1014,9 +1215,15 @@ export class Thread implements AdeThread {
     }
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(options?: ThreadInterruptOptions): Promise<void> {
     this.assertUsable();
-    await this.chats.interrupt(this.id);
+    if (!options) {
+      await this.chats.interrupt(this.id);
+      return;
+    }
+    this.assertAction("interruptWithQueueMode");
+    const mode = options.mode ?? (options.queue === "keep" ? "stop_only" : "stop_and_clear");
+    await this.chats.interruptWithQueueMode({ sessionId: this.id, mode });
   }
 
   async setModel(
@@ -1079,7 +1286,7 @@ export class Thread implements AdeThread {
       updated?.permissionCapability,
       this.requestedPermissionPolicy,
     );
-    if (isSupportedProvider(selection.provider)) this.provider = selection.provider;
+    if (selection.provider) this.provider = selection.provider as AdeProvider;
     this.currentModel = selection;
     await this.hostConfig.onRecordChanged?.({
       ...(selection.provider ? { provider: selection.provider } : {}),
@@ -1118,13 +1325,100 @@ export class Thread implements AdeThread {
       );
     }
     const requests = await this.chats.pendingInputs(this.id);
-    return requests.map((request) =>
-      approvalFromPendingInput(
+    return requests.map((request) => {
+      const mapped = approvalFromPendingInput(
         request,
         this.provider,
         this.approvals.get(request.itemId ?? request.requestId),
-      ),
-    );
+      );
+      const answerable = isApprovalShaped(mapped.requestKind) ||
+        (mapped.requestKind !== undefined && this.hostConfig.actionListed?.("respondToInput") === true);
+      return { ...mapped, answerable };
+    });
+  }
+
+  async respond(requestId: string, response: ThreadRespondOptions): Promise<void> {
+    this.assertUsable();
+    this.assertAction("respondToInput");
+    const id = this.requireId(requestId, "request id");
+    validateRespondOptions(response);
+    await this.chats.respondToInput({ sessionId: this.id, itemId: id, ...response });
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    this.assertUsable();
+    this.assertAction("stopTask");
+    await this.chats.stopTask({ sessionId: this.id, taskId: this.requireId(taskId, "task id") });
+  }
+
+  async slashCommands(): Promise<AgentChatSlashCommand[]> {
+    this.assertUsable();
+    this.assertAction("slashCommands");
+    const commands = await this.chats.slashCommands({ sessionId: this.id, provider: this.provider });
+    return Array.isArray(commands) ? commands : [];
+  }
+
+  async recover(options: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" } = {}): Promise<AgentChatRecoverTurnResult> {
+    this.assertUsable();
+    this.assertAction("recoverTurn");
+    let turnId = options.turnId?.trim();
+    if (!turnId) {
+      const history = await this.chats.getEventHistory({ sessionId: this.id });
+      for (const envelope of [...(history?.events ?? [])].reverse()) {
+        const event = envelope.event;
+        if (typeof event.turnId === "string" && event.turnId) {
+          turnId = event.turnId;
+          break;
+        }
+      }
+    }
+    if (!turnId) throw new AdeError("invalid_option", `Thread "${this.key}" has no turn id to recover.`);
+    return await this.chats.recoverTurn({ sessionId: this.id, turnId, action: options.action ?? "wait" }) as AgentChatRecoverTurnResult;
+  }
+
+  async resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult> {
+    this.assertUsable();
+    this.assertAction("resolveUnprocessedMessage");
+    const steerId = this.requireId(args?.steerId, "steer id");
+    if (args.action !== "run_next" && args.action !== "dismiss") {
+      throw new AdeError("invalid_option", "resolveUnprocessed() action must be run_next or dismiss.");
+    }
+    return await this.chats.resolveUnprocessedMessage({ sessionId: this.id, steerId, action: args.action }) as AgentChatResolveUnprocessedMessageResult;
+  }
+
+  async switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult> {
+    this.assertUsable();
+    this.assertAction("switchAccount");
+    return await this.chats.switchAccount({ sessionId: this.id, instanceId: this.requireId(instanceId, "account id") }) as AgentChatSwitchAccountResult;
+  }
+
+  private requireId(value: unknown, label: string): string {
+    const id = typeof value === "string" ? value.trim() : "";
+    if (!id) throw new AdeError("invalid_option", `${label} must be a non-empty string.`);
+    return id;
+  }
+
+  private assertAction(action: string): void {
+    this.assertUsable();
+    if (this.hostConfig.actionListed?.(action) !== true) {
+      throw new AdeError("unsupported", `This ADE runtime does not advertise the ${action} action.`);
+    }
+  }
+
+  private async listQueue(): Promise<ThreadQueueItem[]> {
+    this.assertUsable();
+    const history = await this.chats.getEventHistory({ sessionId: this.id });
+    return pendingQueue(history?.events ?? []);
+  }
+
+  private async restoreQueue(): Promise<void> {
+    this.assertAction("restoreCancelledQueue");
+    const history = await this.chats.getEventHistory({ sessionId: this.id });
+    const recoveryId = restorableQueueId(history?.events ?? []);
+    if (!recoveryId) {
+      throw new AdeError("invalid_option", `Thread "${this.key}" has no cancelled queue to restore.`);
+    }
+    await this.chats.restoreCancelledQueue({ sessionId: this.id, recoveryId });
   }
 
   async approve(
@@ -1190,6 +1484,10 @@ export class Thread implements AdeThread {
       ...(opts.limit != null ? { maxEvents: opts.limit } : {}),
     });
     return snapshot?.events ?? [];
+  }
+
+  usage(): ThreadUsage {
+    return this.usageSnapshot();
   }
 
   async historyPage(opts: HistoryPageOptions = {}): Promise<ThreadHistoryPage> {

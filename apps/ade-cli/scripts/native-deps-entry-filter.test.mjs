@@ -38,18 +38,32 @@ test("the sql.js exclusion is scoped to sql.js", () => {
   assert.equal(keeps("other-pkg", "/pkg/other", "dist/thing-debug.js", "darwin-arm64"), true);
 });
 
-test("node-pty keeps only its own prebuild subtree, directory entries included", () => {
+test("node-pty keeps the target prebuild and runtime helpers, but drops debug and wrong-arch files", () => {
   const root = "/pkg/node-pty";
   assert.equal(keeps("node-pty", root, "prebuilds", "darwin-arm64"), true);
   assert.equal(keeps("node-pty", root, "prebuilds/darwin-arm64", "darwin-arm64"), true);
   assert.equal(keeps("node-pty", root, "prebuilds/darwin-arm64/pty.node", "darwin-arm64"), true);
   assert.equal(keeps("node-pty", root, "prebuilds/win32-x64", "darwin-arm64"), false);
+  assert.equal(keeps("node-pty", root, "prebuilds/win32-x64/pty.node", "win32-x64"), true);
+  assert.equal(keeps("node-pty", root, "prebuilds/win32-x64/pty.pdb", "win32-x64"), false);
+  assert.equal(
+    keeps("node-pty", root, "third_party/conpty/1.23/win10-x64/OpenConsole.exe", "win32-x64"),
+    true,
+  );
+  assert.equal(
+    keeps("node-pty", root, "third_party/conpty/1.23/win10-arm64/OpenConsole.exe", "win32-x64"),
+    false,
+  );
+  assert.equal(
+    keeps("node-pty", root, "third_party/conpty/1.23/win10-arm64/conpty.dll", "win32-x64"),
+    false,
+  );
   assert.equal(nodePtyPrebuildTarget("win32-x64"), "win32-x64");
 });
 
-test("the OpenCode Windows shim stays out of non-Windows archives", () => {
+test("the OpenCode Windows shim stays out of every runtime archive", () => {
   assert.equal(keeps("@opencode/cli", "/pkg/@opencode/cli", "bin/opencode.exe", "linux-x64"), false);
-  assert.equal(keeps("@opencode/cli", "/pkg/@opencode/cli", "bin/opencode.exe", "win32-x64"), true);
+  assert.equal(keeps("@opencode/cli", "/pkg/@opencode/cli", "bin/opencode.exe", "win32-x64"), false);
 });
 
 // Codex, Claude and OpenCode are fetched at runtime into the pinned tools cache,
@@ -98,7 +112,7 @@ test("the runtime-fetched agent CLI platform packages are excluded in their enti
 // agent SDK in-process, and the other three are the thin entry points that
 // resolve the fetched binary. A prefix match on the platform names would take
 // @anthropic-ai/claude-agent-sdk with them and break the product.
-test("the JS launcher and SDK packages still ship", () => {
+test("runtime entry points and license files ship without package docs and declarations", () => {
   for (const packageName of [
     "@anthropic-ai/claude-agent-sdk",
     "@openai/codex",
@@ -107,6 +121,12 @@ test("the JS launcher and SDK packages still ship", () => {
     const root = `/pkg/${packageName}`;
     assert.equal(keeps(packageName, root, "package.json", "darwin-arm64"), true, packageName);
     assert.equal(keeps(packageName, root, "dist/index.js", "darwin-arm64"), true, packageName);
+    assert.equal(keeps(packageName, root, "LICENSE", "darwin-arm64"), true, `${packageName} license`);
+    assert.equal(keeps(packageName, root, "docs/NOTICE.md", "darwin-arm64"), true, `${packageName} notice`);
+    assert.equal(keeps(packageName, root, "README.md", "darwin-arm64"), false, `${packageName} readme`);
+    assert.equal(keeps(packageName, root, "types/index.d.ts", "darwin-arm64"), false, `${packageName} declarations`);
+    assert.equal(keeps(packageName, root, "examples/demo.js", "darwin-arm64"), false, `${packageName} examples`);
+    assert.equal(keeps(packageName, root, "tests/fixture.js", "darwin-arm64"), false, `${packageName} tests`);
     assert.equal(shouldCopyPackageEntry(packageName, root, root, "darwin-arm64"), true, packageName);
   }
 });

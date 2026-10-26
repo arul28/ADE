@@ -6,6 +6,12 @@ icon: "shield-check"
 
 Every thread gates tool use one of three ways: the `"default"` preset, the `"always-allow"` preset, or a policy object that names the tools individually.
 
+SDK 0.7 also accepts the provider-native `permissionMode` on `threads.open()`.
+Use `client.providers.capabilities(provider)` to see which modes that provider
+advertises; when capability data is available, an unsupported mode is rejected
+before the thread opens. This is separate from ADE's `permissions` policy below.
+Provider accounts and login isolation are covered in [Accounts](/sdk/accounts).
+
 <Warning>
 An unanswered approval blocks the turn. The runtime has no timeout — the turn stays parked until you call `approve()` or `interrupt()`. Render a card for every `approval_request` you receive, pass `fallback: "deny"` so nothing ever asks, or set [`approvalTimeoutMs`](#approval-timeout) so the SDK declines what nobody answers.
 </Warning>

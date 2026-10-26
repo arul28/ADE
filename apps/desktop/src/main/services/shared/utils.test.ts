@@ -43,6 +43,10 @@ import {
   signalProcessGroup,
   terminateChildProcessTree,
 } from "./utils";
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 
 describe("isRecord", () => {
   it("returns true for plain objects", () => {
@@ -259,7 +263,7 @@ describe("resolvePathWithinRoot", () => {
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
     const linkPath = path.join(root, "linked-outside");
     try {
-      fs.symlinkSync(outsideDir, linkPath);
+      fs.symlinkSync(outsideDir, linkPath, DIRECTORY_LINK_TYPE);
       expect(() => resolvePathWithinRoot(root, path.join(linkPath, "secret.txt"), { allowMissing: true })).toThrow(
         /Path escapes root/,
       );
@@ -299,7 +303,7 @@ describe("resolvePathWithinRoot", () => {
       const linkPath = path.join(tempRoot, "linked");
       const outsideFile = path.join(outsideDir, "secret.txt");
       fs.writeFileSync(outsideFile, "secret", "utf8");
-      fs.symlinkSync(outsideDir, linkPath, "dir");
+      fs.symlinkSync(outsideDir, linkPath, DIRECTORY_LINK_TYPE);
 
       expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
     } finally {
@@ -312,7 +316,7 @@ describe("resolvePathWithinRoot", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
     try {
-      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), "dir");
+      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), DIRECTORY_LINK_TYPE);
       expect(() => resolvePathWithinRoot(tempRoot, "linked/../secret.txt", { allowMissing: true })).toThrow("Path escapes root");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });

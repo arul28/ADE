@@ -76,9 +76,9 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
     presetId: null,
     credentialId: null,
     interfaceMode: draftKind,
-    model: descriptor?.providerModelId ?? "gpt-6-astra",
+    model: descriptor?.providerModelId ?? "gpt-6.1-sol",
     modelId: descriptor?.id ?? null,
-    displayName: descriptor?.displayName ?? "GPT-6 Astra",
+    displayName: descriptor?.displayName ?? "GPT-6.1 Sol",
     reasoningEffort: descriptor?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
     fastMode: false,
     // Every provider starts on its most permissive mode, like the desktop
@@ -360,7 +360,7 @@ export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCode
     ?? getDefaultModelDescriptor("codex");
   return {
     provider,
-    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-6-astra",
+    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-6.1-sol",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
   };

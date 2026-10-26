@@ -32,6 +32,7 @@ export type DoctorInput = {
   threads: { tracked: number; live: number };
   recentErrors: DoctorReport["recentErrors"];
   compatibility: RuntimeCompatibility;
+  logins: DoctorReport["logins"];
 };
 
 /**
@@ -87,6 +88,7 @@ export function buildDoctorReport(input: DoctorInput): DoctorReport {
     },
     events: input.events,
     providers,
+    logins: input.logins,
     threads: input.threads,
     recentErrors: input.recentErrors,
   };

@@ -223,6 +223,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesArchive:
       return 4 * 60_000;
+    case IPC.filesDelete:
+      return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see
     // LANE_GIT_WRITE_ACTION_TIMEOUT_MS.
     case IPC.lanesCreate:

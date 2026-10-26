@@ -106,7 +106,7 @@ export async function runSyncFileServiceRequest(
       fileService.rename(payload.args);
       return { ok: true };
     case "deletePath":
-      fileService.deletePath(payload.args);
+      await fileService.deletePath(payload.args);
       return { ok: true };
     case "quickOpen":
       return await fileService.quickOpen(payload.args);

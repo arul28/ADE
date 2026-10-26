@@ -325,6 +325,19 @@ export type AttentionPresence = {
   ambientSurfaceVisible: boolean;
   visibleItemIds: string[];
   observedAt: string;
+  /**
+   * Someone is using this computer: OS input in the last two minutes, screen
+   * unlocked, machine awake. Stamped by the desktop app's main process from
+   * the OS idle clock; absent where that clock is unknown (web, older apps).
+   * While any computer reports `true`, the relay keeps phone alerts quiet.
+   */
+  userActive?: boolean;
+};
+
+/** What a presence report learned on the way out. */
+export type AttentionPresenceReceipt = {
+  /** The OS idle clock's answer for this computer; `null` when unknown. */
+  userActive: boolean | null;
 };
 
 export type AttentionPreferenceScope = {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createAccountManagement, type AccountManagement, type AccountActionCall } from "./accounts.js";
 import { readBinaryVersion } from "./binary.js";
 import { isAdeClientEvent, type AdeClientEvent, type AdeClientEventMap } from "./clientEvents.js";
 import { buildDoctorReport } from "./doctorReport.js";
@@ -11,8 +12,9 @@ import { probeRuntimeSignature, type RuntimeSignature } from "./runtimeSignature
 import { flattenCatalog, pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 import { createProviderStatusPublisher } from "./providerStatusPublisher.js";
 import { readRestartPolicy, resolveRuntimeBinary, RuntimeSupervisor } from "./runtimeSupervisor.js";
+import { runOnce, type RunOptions } from "./run.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
-import type { AdeThread, Thread } from "./thread.js";
+import { Thread, type AdeThread } from "./thread.js";
 import { createThreadOpener, isAbsentSessionError } from "./threadOpener.js";
 import { ThreadStore } from "./threadStore.js";
 import type {
@@ -22,6 +24,9 @@ import type {
   ModelCatalogEntry,
   ProviderStatus,
   ProviderStatusRpcResult,
+  ProviderCapabilities,
+  UsageLimitEvent,
+  UsageLimitResume,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";
@@ -66,6 +71,9 @@ const MAX_RECENT_ERRORS = 20;
  * letting the consumer discover it as a response that stopped mid-sentence.
  */
 export interface AdeChatClient {
+  accounts: AccountManagement["accounts"];
+  credentials: AccountManagement["credentials"];
+  presets: AccountManagement["presets"];
   providers: {
     /**
      * Per-provider install, auth and availability.
@@ -84,6 +92,8 @@ export interface AdeChatClient {
      */
     refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
+    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
+    capabilities(provider: string): Promise<ProviderCapabilities>;
   };
   models: {
     list(): Promise<ModelCatalogEntry[]>;
@@ -152,6 +162,8 @@ export interface AdeChatClient {
   };
   doctor(): Promise<DoctorReport>;
   exportThread(key: string): Promise<string>;
+  /** Run a temporary thread and delete it after the final answer is received. */
+  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
   /**
    * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
    * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
@@ -316,12 +328,51 @@ export async function createAdeChat(
   });
   const publishProviderStatus = providerStatus.publish;
 
+  const accountAction: AccountActionCall = async (domain, action, args) => {
+    assertUsable();
+    const capabilities = runtime.initialize.capabilities?.[domain] as { actions?: unknown } | undefined;
+    if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
+      throw new AdeError("unsupported", `This ADE runtime does not advertise ${domain}.${action}.`);
+    }
+    if (!runtime.managesAccounts) {
+      throw new AdeError(
+        "unsupported",
+        "Account, credential and preset management needs a runtime this client started. It is attached to " +
+          "one another process started (attach mode, or a runtime left running by an earlier host); dispose " +
+          "the client, stop that runtime, and create the client again.",
+      );
+    }
+    const response = await runtime.connection.request<{ action?: string; result?: unknown }>(
+      `${domain}.call`,
+      { action, ...(args !== undefined ? { args } : {}) },
+    );
+    return response && typeof response === "object" && response.action === action && "result" in response
+      ? response.result
+      : response;
+  };
+  const accountManagement = createAccountManagement(accountAction, assertUsable);
+
+  const providerCapabilities = async (provider: string): Promise<ProviderCapabilities> => {
+    assertUsable();
+    if (runtime.initialize.capabilities?.providers?.capabilities !== true) {
+      throw new AdeError("unsupported", "This ADE runtime does not advertise provider capabilities.");
+    }
+    const statuses = await publishProviderStatus();
+    const capabilities = statuses[provider]?.capabilities;
+    if (!capabilities) {
+      throw new AdeError("unsupported", `The ADE runtime has no capability record for provider "${provider}".`);
+    }
+    return capabilities;
+  };
+
+
   // ---- threads -------------------------------------------------------------
 
   const opener = createThreadOpener({
     home,
     defaultInstructions: options.instructions,
     mcpHeaders: options.mcpHeaders,
+    resolveSecret: options.resolveSecret,
     chats,
     store,
     hub,
@@ -346,7 +397,58 @@ export async function createAdeChat(
       pendingInputs: () => runtime.actionListed("pendingInputs"),
       historyPage: () => runtime.actionListed("getEventHistoryPage"),
       rerunLastTurn: () => runtime.actionListed("rerunLastTurn"),
+      actionListed: (action) => runtime.actionListed(action),
+      providerCapabilities: async (provider) => {
+        if (runtime.initialize.capabilities?.providers?.capabilities !== true) return undefined;
+        return (await publishProviderStatus())[provider]?.capabilities;
+      },
     },
+  });
+
+  // The runtime announces a usage limit by republishing the whole resume
+  // state on `session_meta_updated.usageLimitResume` at every transition, and
+  // null when it clears. There is no separate limit event. The last state per
+  // session dedupes the replays a resubscribe or history read delivers, and
+  // keeps failover to one attempt per limited turn.
+  const usageLimitStates = new Map<string, string>();
+  const failoverAttempted = new Set<string>();
+  const unsubscribeUsageLimits = hub.onEvent((envelope) => {
+    const event = envelope.event as { type: string; usageLimitResume?: unknown };
+    if (event.type !== "session_meta_updated" || !("usageLimitResume" in event) || event.usageLimitResume === undefined) return;
+    const status = event.usageLimitResume && typeof event.usageLimitResume === "object"
+      ? event.usageLimitResume as UsageLimitResume
+      : null;
+    const fingerprint = status ? `${status.state}:${status.turnId ?? ""}:${status.alternateAccount?.instanceId ?? ""}` : "clear";
+    if (usageLimitStates.get(envelope.sessionId) === fingerprint) return;
+    if (!status && !usageLimitStates.has(envelope.sessionId)) return;
+    if (status) usageLimitStates.set(envelope.sessionId, fingerprint);
+    else usageLimitStates.delete(envelope.sessionId);
+    if (usageLimitStates.size > 500) usageLimitStates.delete(usageLimitStates.keys().next().value!);
+    void (async () => {
+      const record = (await store.all()).find((entry) => entry.sessionId === envelope.sessionId);
+      const live = [...liveSessions.values()].find((thread) => thread.id === envelope.sessionId);
+      const provider = status?.provider || live?.model?.provider || record?.provider || "claude";
+      const payload: UsageLimitEvent = {
+        key: record?.key ?? live?.key ?? "",
+        sessionId: envelope.sessionId,
+        provider,
+        status,
+      };
+      emitClient("usageLimit", payload);
+      // Failover only when the runtime names an alternate account: it already
+      // checked that account has room, which a bare signed-in count cannot.
+      if (options.onUsageLimit !== "failover" || !status?.alternateAccount) return;
+      if (status.state === "resuming" || status.state === "opted_out") return;
+      const attemptKey = `${envelope.sessionId}:${status.turnId ?? ""}`;
+      if (failoverAttempted.has(attemptKey) || !runtime.actionListed("continueUsageLimitOnAlternate")) return;
+      failoverAttempted.add(attemptKey);
+      if (failoverAttempted.size > 500) failoverAttempted.delete(failoverAttempted.values().next().value!);
+      try {
+        await chats.continueUsageLimitOnAlternate({ sessionId: envelope.sessionId });
+      } catch (error) {
+        recordError("usageLimit.failover", error);
+      }
+    })().catch((error: unknown) => recordError("usageLimit.event", error));
   });
 
   /**
@@ -399,7 +501,8 @@ export async function createAdeChat(
 
     const started = opener
       .open(trimmedKey, opts)
-      .then((thread) => {
+      .then(async (thread) => {
+        await thread.initializeUsage();
         liveSessions.set(trimmedKey, thread);
         return thread;
       })
@@ -613,6 +716,9 @@ export async function createAdeChat(
   // ---- client --------------------------------------------------------------
 
   const client: AdeChatClient = {
+    accounts: accountManagement.accounts,
+    credentials: accountManagement.credentials,
+    presets: accountManagement.presets,
     providers: {
       status: async () => {
         assertUsable();
@@ -623,6 +729,7 @@ export async function createAdeChat(
         return await publishProviderStatus(true);
       },
       onChange: providerStatus.onChange,
+      capabilities: providerCapabilities,
     },
 
     models: {
@@ -641,6 +748,9 @@ export async function createAdeChat(
     },
 
     on: onClient,
+
+    run: <T = unknown>(prompt: string, options: RunOptions) =>
+      runOnce<T>({ threads: { open: openThread, delete: deleteThread } }, prompt, options),
 
     doctor: async () => {
       assertUsable();
@@ -678,6 +788,13 @@ export async function createAdeChat(
         threads: { tracked: records.length, live },
         recentErrors: [...recentErrors],
         compatibility: runtime.compatibility,
+        logins: {
+          mode: runtime.loginMode,
+          perProvider: Object.fromEntries(Object.entries(statuses).map(([provider, status]) => [
+            provider,
+            status.isolation ?? "unknown",
+          ])),
+        },
       });
     },
 
@@ -693,8 +810,10 @@ export async function createAdeChat(
 
     dispose: async () => {
       if (disposed) return;
+      await accountManagement.dispose();
       disposed = true;
       providerStatus.dispose();
+      unsubscribeUsageLimits();
       // Each thread holds a listener on the shared event hub from its
       // constructor. Clearing the map alone left those subscribed for the life
       // of the client, with every envelope fanned out to all of them.

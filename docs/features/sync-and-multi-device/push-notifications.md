@@ -660,6 +660,29 @@ exact item. Desktops on Windows and Linux report platform `unknown` and the
 hosted web client `web`; both count, where only `macOS` used to. The next
 machine heartbeat escalates an item that is still unseen after the delay.
 
+The delay is only the fallback. The desktop app also reports `userActive`
+from the OS input clock (`main/services/attention/userActivityProbe.ts`,
+Electron `powerMonitor`): input in the last 2 minutes, screen unlocked,
+machine awake. While any computer reports `userActive: true`, the phone stays
+quiet for as long as that holds, not just for the delay: that computer shows
+its own system notification. Locking the screen, sleeping, quitting or two
+idle minutes release it, and the next machine heartbeat sends the alert (the
+15-minute staleness gate still applies). A computer that reports itself idle,
+locked or asleep does not count as attended at all, even with ADE in front.
+The main process stamps the field on every report, so a window cannot claim
+"in use" (it may only say it is leaving); lock and suspend resend the last
+report as away at once, and unlock and resume refresh it. While the computer
+can tell (active or idle), the window keeps the 30 s visible cadence even when
+hidden: active, because the relay's presence window is 45 s; idle, so coming
+back to the keyboard holds the phone within one beat. Away and back reports go
+out one after the other, so a quick lock and unlock cannot land "away" last. The clock counts as known only after it has
+been seen to move: some Linux/Wayland sessions report 0 forever, and taking
+that at face value would keep the phone quiet for good. The web client, older
+desktops and phones send no `userActive` and keep the timed hold. Older relays
+drop the field and keep the timed hold too. The relay stores a report's
+`observedAt` no later than its own clock, so a desktop whose clock runs ahead
+cannot keep a stale "in use" report fresh, and the phone quiet, for hours.
+
 Two gates run before any preference is consulted, because they are about
 whether the item deserves an interruption at all:
 
@@ -934,7 +957,9 @@ than a message match, because the user-visible recovery instruction branches on
 it and a copy edit should not silently reroute the user.
 
 Presence reports include foreground state, whether an ambient Activity surface
-is visible, and the currently visible item ids. They are posted every 30 s while
+is visible, the currently visible item ids, and (desktop app only) `userActive`.
+The relay stores `ambientSurfaceVisible` too; before it did, the "this exact
+item is on screen" hold could never apply. They are posted every 30 s while
 the ADE window is visible and every 120 s while it is hidden, plus promptly on
 focus, on blur, on becoming visible again, and when the visible items change: a
 hidden window still has to hold its claim, but it does not need to hold it at

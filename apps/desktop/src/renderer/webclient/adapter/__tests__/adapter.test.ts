@@ -26,6 +26,7 @@ import { stableCacheKey } from "../infra/cacheKey";
 import { createCoalescingReadCache } from "../infra/coalescingReadCache";
 import { createProjectState } from "../infra/projectState";
 import { isAdeAvailable, isAdeUnavailableError } from "../../../lib/adeAvailability";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../../shared/removeTreeTimeouts";
 
 const project: ProjectInfo = {
   rootPath: "/repo",
@@ -1280,7 +1281,7 @@ describe("createAdeWebAdapter", () => {
       {
         action: "deletePath",
         args: { workspaceId: "workspace", path: "old.txt" },
-        opts: { projectId: "project-1", timeoutMs: undefined },
+        opts: { projectId: "project-1", timeoutMs: FILE_DELETE_TIMEOUT_MS },
       },
     ]);
 

@@ -1278,27 +1278,65 @@ describe("JsonRpcClient", () => {
     }
   });
 
-  it("times out pending requests by tearing down the socket", async () => {
+  it.each([
+    { name: "fails only that request while the brain still answers", answersPing: true },
+    { name: "closes the socket once the brain answers nothing", answersPing: false },
+  ])("after a request times out, $name", async ({ answersPing }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
     const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
     });
-    const server = net.createServer((socket) => resolveServerSocket(socket));
+    let resolvePingSeen: () => void = () => {};
+    const pingSeen = new Promise<void>((resolve) => {
+      resolvePingSeen = resolve;
+    });
+    const server = net.createServer((socket) => {
+      let buffered = "";
+      socket.on("data", (chunk) => {
+        buffered += chunk.toString("utf8");
+        let newline = buffered.indexOf("\n");
+        while (newline >= 0) {
+          const request = JSON.parse(buffered.slice(0, newline)) as { id: number; method: string };
+          buffered = buffered.slice(newline + 1);
+          newline = buffered.indexOf("\n");
+          // "slow" is never answered; "ping" only by a brain that is still there.
+          if (request.method === "ping") {
+            resolvePingSeen();
+            if (!answersPing) continue;
+          } else if (request.method === "slow") {
+            continue;
+          }
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { ok: true } })}\n`);
+        }
+      });
+      resolveServerSocket(socket);
+    });
     await listenRpc(server, socketPath);
     const client = await JsonRpcClient.connect(socketPath);
     const socket = await serverSocketReady;
+    let closed = false;
+    client.onClose(() => {
+      closed = true;
+    });
     try {
-      const closed = new Promise<void>((resolve) => client.onClose(resolve));
-      const first = client.request("slow", undefined, { timeoutMs: 25 });
-      const second = client.request("also-slow", undefined, { timeoutMs: 1_000 });
-
-      await expect(first).rejects.toThrow(/timed out/i);
-      await expect(second).rejects.toThrow(/timed out|closed/i);
-      await expect(closed).resolves.toBeUndefined();
-      await expect(client.request("after-timeout")).rejects.toThrow(/closed/i);
+      const slow = client.request("slow", undefined, { timeoutMs: 25 });
+      const slowFailed = expect(slow).rejects.toThrow(/timed out/i);
+      await vi.advanceTimersByTimeAsync(25);
+      await slowFailed;
+      await pingSeen;
+      if (answersPing) {
+        await expect(client.request("echo")).resolves.toEqual({ ok: true });
+        expect(closed).toBe(false);
+      } else {
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(closed).toBe(true);
+        await expect(client.request("after-timeout")).rejects.toThrow(/closed/i);
+      }
     } finally {
+      vi.useRealTimers();
       client.close();
       socket.destroy();
       await closeServer(server);

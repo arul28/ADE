@@ -30,6 +30,20 @@ Install a specific platform package directly when you cross-build: `npm install 
 Install with a version that matches the ADE release you tested against. The npm version of a runtime package is the ADE release version.
 </Note>
 
+These packages use the runtime's `embedded` profile. They omit the TUI bundle
+and UI-only packages, `@linear/sdk`, and cr-sqlite, which the embedded profile
+does not load. The full ADE CLI runtime archive keeps those pieces for
+`ade code`, Linear, and sync. Both retain `node-pty` for personal-chat terminal
+mentions and tracked CLI sessions. Provider CLIs are resolved from ADE's pinned
+tools cache; the runtime archive does not carry a duplicate OpenCode executable.
+The Droid SDK is bundled into the CLI, so its package directory is omitted while
+its license notice remains.
+
+On 2026-10-26, the Windows x64 `1.0.0-beta.1` platform package measured
+167,499,075 B (167.499 MB) unpacked and 54,602,441 B (54.602 MB) packed by
+`npm pack --dry-run --json`. The same build's full runtime binary plus extracted
+native tree measured 191,403,602 B (191.404 MB).
+
 ## The layout
 
 ```
@@ -38,8 +52,8 @@ Install with a version that matches the ADE release you tested against. The npm 
   bin/ade               the runtime binary (ade.exe on Windows), mode 0755
   native/               ADE_RUNTIME_ROOT
     node_modules/       ADE_RUNTIME_NODE_MODULES — the modules the binary dlopens
-    vendor/crsqlite/…   the cr-sqlite extension
-    tuiClient/
+    third-party-notices/ bundled package license notices
+    manifest.json       target and native dependency inventory
   LICENSE
   RUNTIME-EMBEDDING-EXCEPTION.md
   README.md

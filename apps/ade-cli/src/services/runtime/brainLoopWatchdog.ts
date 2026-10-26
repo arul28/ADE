@@ -555,6 +555,11 @@ export function startBrainLoopWatchdog(args: {
    * can answer.
    */
   onMemoryPressure?: (sample: BrainMemoryPressureSample) => void;
+  /**
+   * A stall the process came back from (not a suspension). Lets the host tell
+   * devices that reconnect after it why they lost it.
+   */
+  onStall?: (stall: { observedLagMs: number }) => void;
 }): () => void {
   const recovered = recoverBrainLoopWatchdogBreadcrumb({
     runtimeDir: args.runtimeDir,
@@ -698,6 +703,11 @@ export function startBrainLoopWatchdog(args: {
         majorPageFaultsDelta: held.majorPageFaultsDelta,
       });
       return;
+    }
+    try {
+      args.onStall?.({ observedLagMs: held.lagMs });
+    } catch {
+      // Reporting a stall must never break the watchdog.
     }
     warn?.("brain.event_loop_near_miss", {
       lastCommand: held.lastCommand,

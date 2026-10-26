@@ -155,6 +155,39 @@ describe("createAgentChatService", () => {
     }
   });
 
+  it("puts a spawn tree in one PR family, including the chats the linked chat spawned", async () => {
+    const db = await openKvDb(path.join(tmpRoot, "spawn-family.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const now = new Date().toISOString();
+    let service: ReturnType<typeof createAgentChatService> | undefined;
+    try {
+      db.run("insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values ('proj', ?, 'ADE', 'main', ?, ?)", [tmpRoot, now, now]);
+      db.run("insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-1', 'proj', 'lane', 'main', 'lane', ?, 'active', ?)", [tmpRoot, now]);
+      const chatService = createService({ sessionService: createSessionService({ db }) }).service;
+      service = chatService;
+      const createChat = (parentId?: string) => chatService.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        ...(parentId ? { orchestrationParentSessionId: parentId, spawnKind: "subagent" as const } : {}),
+      });
+      const root = await createChat();
+      const middle = await createChat(root.id);
+      const sibling = await createChat(root.id);
+      const leaf = await createChat(middle.id);
+      const unrelated = await createChat();
+
+      // A PR the middle chat opens belongs to the chats above it, beside it and
+      // below it: a family follows the whole tree, not just the way up.
+      const family = chatService.getChatFamilySessionIds(middle.id);
+      expect(family).toEqual(expect.arrayContaining([root.id, sibling.id, leaf.id]));
+      expect(family).not.toContain(middle.id);
+      expect(family).not.toContain(unrelated.id);
+    } finally {
+      service?.forceDisposeAll();
+      db.close();
+    }
+  });
+
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
     const getIssue = vi.fn().mockResolvedValue({ title: "Keep desktop previews consistent" });
     const { service } = createService({ githubService: { getIssue } });
@@ -3647,7 +3680,7 @@ describe("createAgentChatService", () => {
   describe("getAvailableModels", () => {
 
 
-    it("pins GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
+    it("keeps GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
       mockState.codexResponseOverrides.set("model/list", {
         data: [
           {
@@ -3670,6 +3703,7 @@ describe("createAgentChatService", () => {
               { reasoningEffort: "high", description: "High" },
               { reasoningEffort: "xhigh", description: "Extra high" },
               { reasoningEffort: "max", description: "Max" },
+              { reasoningEffort: "ultra", description: "Ultra" },
             ],
             additionalSpeedTiers: ["fast"],
           },
@@ -3720,10 +3754,9 @@ describe("createAgentChatService", () => {
 
       const models = await service.getAvailableModels({ provider: "codex" });
 
-      expect(models.slice(0, 5).map((model) => model.id)).toEqual([
+      expect(models.slice(0, 4).map((model) => model.id)).toEqual([
         "gpt-6-astra",
         "gpt-5.6-sol",
-        "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",
       ]);
@@ -3736,25 +3769,24 @@ describe("createAgentChatService", () => {
           expect.objectContaining({ effort: "high" }),
           expect.objectContaining({ effort: "xhigh" }),
           expect.objectContaining({ effort: "max" }),
+          expect.objectContaining({ effort: "ultra" }),
         ],
         serviceTiers: ["fast"],
       });
-      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).not.toContain("ultra");
+      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).toContain("ultra");
       expect(models[1]).toMatchObject({ isDefault: false, defaultReasoningEffort: "low" });
       expect(models[1]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
         "low", "medium", "high", "xhigh", "max", "ultra",
       ]);
-      expect(models[2]?.isDefault).toBe(false);
-      expect(models[3]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+      expect(models[2]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
         "low", "medium", "high", "xhigh", "max",
       ]);
-      expect(models[4]?.isDefault).toBe(false);
-
+      expect(models[3]?.isDefault).toBe(false);
       const aggregate = await service.getAvailableModels({});
-      const codexIds = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+      const codexIds = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"]);
       const aggregatedCodexModels = aggregate.filter((model) => codexIds.has(model.id));
       expect(aggregate.length).toBeGreaterThan(0);
-      expect(aggregatedCodexModels).toEqual(models.slice(0, 5));
+      expect(aggregatedCodexModels).toEqual(models.slice(0, 4));
     });
 
     it("uses the Qwen CLI's configured model instead of unrelated curated rows", async () => {

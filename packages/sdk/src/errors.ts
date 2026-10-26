@@ -25,6 +25,8 @@ export const ADE_ERROR_CODES = [
   "runtime_incompatible",
   "turn_in_flight",
   "unsupported",
+  "invalid_output",
+  "sign_in_failed",
 ] as const;
 
 /**
@@ -86,7 +88,13 @@ export type AdeErrorCode =
    * changed. `retry` and `editLast` throw it for a provider other than Claude
    * or Codex, and for a runtime older than the `rerunLastTurn` action.
    */
-  | "unsupported";
+  | "unsupported"
+  | "invalid_output"
+  /**
+   * A provider sign-in ended without signing in: it failed, was cancelled, or
+   * expired. The handle's last status says which (`state`) and why (`message`).
+   */
+  | "sign_in_failed";
 
 /**
  * The list and the union must stay identical. Both directions are checked, so

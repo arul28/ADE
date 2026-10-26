@@ -62,12 +62,12 @@ down together.
 ## The three seams this app exercises
 
 1. **The SDK is Node-only.** It spawns and owns an ADE runtime, so it lives in
-   `app/host.mjs`, not the renderer. The bridge mirrors `AdeChatClient` /
-   `AdeThread` method for method rather than inventing an app protocol.
+   `app/host.mjs`, not the renderer. `@ade-dev/sdk/server` supplies the shared
+   WebSocket RPC protocol; the host owns the listener, access rules and app config.
 2. **The renderer's proxy satisfies the same interface.** `bridgeClient.ts`
-   implements `SdkLikeChatClient` over a WebSocket, and `adaptSdkClient()` from
-   `@ade-dev/chat-ui` accepts it unchanged — the client surface survives a process
-   boundary with no "remote" mode on either side.
+   wraps `createAdeRemoteClient()` from the SDK package, and `adaptSdkClient()`
+   from `@ade-dev/chat-ui` accepts it unchanged — the client surface survives a
+   process boundary with no app-specific remote mode.
 3. **The host owns placement and vocabulary.** Provider cards sit in the
    sidebar; the label map renames `mcp__demodata__get_invoices` to "Searching
    your invoices…"; one `createTheme()` call supplies the brand.

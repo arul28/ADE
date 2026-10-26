@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
+import { shouldIsolateEmbeddedProviderLogins } from "../../../shared/providerLoginIsolation";
 
 /**
  * Provider config: where it lives, and who owns each key.
@@ -147,6 +148,7 @@ export function openCodeDataDirs(args: HomeArg & { platform?: NodeJS.Platform } 
     ? env
     : { ...env, ADE_HOME: path.join(home, ".ade") };
   dirs.push(resolveAdeOpenCodeStoreDir(adeEnv));
+  if (shouldIsolateEmbeddedProviderLogins(env.ADE_RUNTIME_PROFILE, env)) return dirs;
   const xdgData = trimmed(env.XDG_DATA_HOME);
   if (xdgData) dirs.push(path.join(path.resolve(xdgData), "opencode"));
   dirs.push(path.join(home, ".local", "share", "opencode"));

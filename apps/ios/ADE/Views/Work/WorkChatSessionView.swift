@@ -635,6 +635,8 @@ struct WorkChatSessionView: View {
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
   @StateObject var outputViewer = WorkOutputViewerModel()
+  /// The skill chip sheet: one per chat surface, asked for by chips in cells.
+  @StateObject var skillInstructions = WorkSkillInstructionsModel()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -2083,6 +2085,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
             .modifier(
@@ -2584,6 +2587,14 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// Skill chips in this chat open their instructions from this chat's own
+  /// machine, so the capability is asked of that machine, per chat.
+  private func bindSkillInstructions() {
+    let sessionId = session.id
+    let reference = syncServiceReference
+    skillInstructions.isSupported = { reference.service?.supportsSkillInstructions(sessionId: sessionId) ?? false }
+  }
+
   /// Haptics and sheet presenters, split from `body` for type-checker budget.
   private func feedbackAndSheets<V: View>(_ content: V) -> some View {
     content
@@ -2592,6 +2603,18 @@ struct WorkChatSessionView: View {
         .environment(\.workOutputViewer, outputViewer)
         .fullScreenCover(item: $outputViewer.request) { request in
           WorkOutputViewerScreen(request: request)
+        }
+        .environment(\.workSkillInstructions, skillInstructions)
+        .onAppear { bindSkillInstructions() }
+        .onChange(of: session.id) { _, _ in bindSkillInstructions() }
+        .sheet(item: $skillInstructions.request) { request in
+          WorkSkillInstructionsSheet(
+            sessionId: session.id,
+            name: request.name,
+            service: syncServiceReference.service
+          )
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $artifactDrawerPresented, onDismiss: { proofDrawerFocus = nil }) {
           WorkProofSheet(

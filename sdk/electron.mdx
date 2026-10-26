@@ -51,6 +51,8 @@ const disposeIpc = registerAdeIpc(ipcMain, client, {
   }),
   /** Which models a renderer may pick. */
   allowModel: (key, { modelId }) => modelId.startsWith("claude-"),
+  /** Account and credential surfaces are off unless the host opts in. */
+  allowAccountManagement: (event, method) => isTrustedFrame(event.sender) && method.startsWith("accounts."),
 });
 
 const window = new BrowserWindow({
@@ -267,6 +269,7 @@ Everything that crosses `contextBridge` is structured-cloned, which drops protot
 | IPC method | Renderer call | Gate | Notes |
 | --- | --- | --- | --- |
 | `providers.status` / `providers.refresh` | `providers.status()` / `providers.refresh()` | `authorize` | request and response |
+| `providers.capabilities` | `providers.capabilities(provider)` | `authorize` | runtime-derived provider capabilities |
 | `providers.subscribe` / `providers.unsubscribe` | `providers.onChange(cb)` | `authorize` | a subscription; the unsubscribe reaches main |
 | `models.list` | `models.list()` | `authorize` | request and response |
 | `doctor` | `doctor()` | `authorize` | the full `DoctorReport` |
@@ -280,12 +283,14 @@ Everything that crosses `contextBridge` is structured-cloned, which drops protot
 | `thread.retry` / `thread.editLast` | `thread.retry()` / `thread.editLast(text, opts)` | `authorize`, `allowThreadKey` | SDK 0.4. `editLast` takes only `displayText` and `attachments` |
 | `thread.send` | `thread.send(text, opts)` | `authorize`, `allowThreadKey` | resolves on dispatch, matching the SDK's own asymmetry. Options are filtered; see [below](#what-a-renderer-may-send-to-threadsend) |
 | `thread.steer` | `thread.steer(text, { attachments })` | `authorize`, `allowThreadKey` | attachments cross as paths, filtered like `thread.send` |
-| `thread.interrupt` | `thread.interrupt()` | `authorize`, `allowThreadKey` | request and response |
+| `thread.interrupt` | `thread.interrupt(options?)` | `authorize`, `allowThreadKey` | request and response; options select queued-message behavior |
+| `thread.respond`, `thread.queue.*`, `thread.stopTask`, `thread.slashCommands`, `thread.recover`, `thread.resolveUnprocessed`, `thread.usageLimit.*`, `thread.switchAccount` | matching thread methods | `authorize`, `allowThreadKey` | same feature checks and results as the main-process SDK |
 | `thread.history` | `thread.history({ limit })` | `authorize`, `allowThreadKey` | merged against the live stream; see [ordering](#ordering) |
 | `thread.historyPage` | `thread.historyPage({ beforeSequence, limit })` | `authorize`, `allowThreadKey` | the newest page is merged like `history()` |
 | `thread.setModel` | `thread.setModel(id, opts)` | `authorize`, `allowThreadKey`, `allowModel` | refuses mid-turn like the real thing |
 | `thread.approve` / `thread.pendingApprovals` | the same names | `authorize`, `allowThreadKey` | see [Permissions](/sdk/permissions) |
 | `thread.subscribe` / `thread.unsubscribe` | `thread.on("event" \| "status" \| "usage", cb)` | `authorize`, `allowThreadKey` | a subscription |
+| `accounts.*`, `credentials.*`, `presets.*` | matching client methods | `authorize`, `allowAccountManagement` | refused unless the host explicitly enables account management; secrets are never returned |
 
 The thread handle also carries snapshots: `id`, `key`, `title`, `model`, `mcpCapability`, `instructionsCapability`, `settingSourcesCapability` and `permissionCapability`. They are taken at open. The handle's own `setModel()` and `update()` refresh them. A change from another renderer or from main shows at the next `threads.open` of the key.
 
@@ -423,7 +428,14 @@ try {
 
 `error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `AdeError` from `@ade-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
 
-`authorize`, `allowThreadKey` or `allowModel` returning false rejects with code `unauthorized`, and the SDK is not called at all.
+`authorize`, `allowThreadKey`, `allowModel` or `allowAccountManagement` refusing a
+call rejects with code `unauthorized`, and the SDK is not called at all.
+
+`allowAccountManagement` is a separate opt-in gate for every `accounts.*`,
+`credentials.*`, and `presets.*` method. It accepts `true` or a sync/async
+callback `(event, method, args) => boolean`. Without it, those renderer methods
+are refused. An API key may be submitted through `credentials.add`; no other
+credential response contains the key value.
 
 A call that is refused only because a turn is running (`setModel`, a reasoning `update`, `retry`, `editLast`) rejects with code `turn_in_flight` from SDK 0.4. Before 0.4 those refusals used `invalid_option`. Branch on the code, not on the message:
 

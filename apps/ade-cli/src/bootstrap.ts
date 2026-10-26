@@ -339,6 +339,7 @@ import { createPrEventFanout } from "./prEventFanout";
 import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
 import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+import { shouldIsolateEmbeddedProviderLogins } from "../../desktop/src/shared/providerLoginIsolation";
 import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -2297,6 +2298,8 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => workToolsStateService.dispose());
 
+    // Late-bound: the PR poller is built after the PR service it watches.
+    let prPollingServiceForHotRefresh: { poke: () => void } | null = null;
     const headlessLinearServices = createHeadlessLinearServices({
       projectRoot,
       adeDir: paths.adeDir,
@@ -2318,6 +2321,7 @@ export async function createAdeRuntime(args: {
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
       getDeviceId: readSyncDeviceId,
+      onPrHotRefreshChanged: () => prPollingServiceForHotRefresh?.poke(),
       refreshDefaultBranchAfterMerge: embeddedRuntime
         ? undefined
         : async (baseBranch) => {
@@ -2422,6 +2426,7 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         projectNotesService,
         // The MCP registry's secret values: the generic vault kind, account-wide.
@@ -3209,6 +3214,7 @@ export async function createAdeRuntime(args: {
     prPollingService.start();
     prWatchService?.start();
     prPollingServiceForIngress = prPollingService;
+    prPollingServiceForHotRefresh = prPollingService;
     void automationIngressService.start().catch((error) => {
       logger.warn("automations.ingress_start_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -3572,6 +3578,7 @@ export async function createAdeRuntime(args: {
         getJiraService: () => jiraServiceRef,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
+        builtInBrowserService: builtInBrowserBridge,
         macDesktopService,
         // App Control's `onEvent` feeds the runtime event buffer; the live
         // view for phones and the web client reads the same events there.

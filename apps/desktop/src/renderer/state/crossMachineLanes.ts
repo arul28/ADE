@@ -2203,8 +2203,9 @@ export function requestCrossMachineLanesForMachine(machineId: string): void {
 }
 
 /**
- * Resolves once `laneId` is no longer in `machineId`'s lane list in the union,
- * or once `timeoutMs` has passed, whichever comes first. Never rejects.
+ * Resolves once `laneId` is no longer in `machineId`'s lane list in the union
+ * (true), or once `timeoutMs` has passed (false), whichever comes first. Never
+ * rejects.
  *
  * Pair it with {@link requestCrossMachineLanesForMachine}, which asks for a
  * re-read and returns nothing to await. A machine with no slice does not count
@@ -2215,27 +2216,50 @@ export function waitForForeignLaneToLeave(
   machineId: string,
   laneId: string,
   timeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
   const hasLeft = (state: Pick<AppState, "crossMachineLanesByMachineId">): boolean => {
     const entry = state.crossMachineLanesByMachineId[machineId];
     return entry != null && !entry.lanes.some((lane) => lane.id === laneId);
   };
   return new Promise((resolve) => {
     if (hasLeft(rootAppStoreApi.getState())) {
-      resolve();
+      resolve(true);
       return;
     }
     let unsubscribe: (() => void) | null = null;
-    const finish = () => {
+    const finish = (left: boolean) => {
       clearTimeout(timer);
       unsubscribe?.();
-      resolve();
+      resolve(left);
     };
-    const timer = setTimeout(finish, timeoutMs);
+    const timer = setTimeout(() => finish(false), timeoutMs);
     unsubscribe = rootAppStoreApi.subscribe((state) => {
-      if (hasLeft(state)) finish();
+      if (hasLeft(state)) finish(true);
     });
   });
+}
+
+/** How long a delete whose answer was lost is checked for before it counts as failed. */
+const FOREIGN_LANE_DELETE_OUTCOME_CHECK_MS = 60_000;
+const FOREIGN_LANE_DELETE_OUTCOME_REREAD_MS = 5_000;
+
+/**
+ * A delete on another machine whose answer was lost (the connection dropped,
+ * or the wait for it ran out) may still have gone through there. Re-reads that
+ * machine every few seconds until the lane is gone (true) or the check runs
+ * out (false).
+ */
+export async function confirmForeignLaneDeleted(machineId: string, laneId: string): Promise<boolean> {
+  requestCrossMachineLanesForMachine(machineId);
+  const reread = setInterval(
+    () => requestCrossMachineLanesForMachine(machineId),
+    FOREIGN_LANE_DELETE_OUTCOME_REREAD_MS,
+  );
+  try {
+    return await waitForForeignLaneToLeave(machineId, laneId, FOREIGN_LANE_DELETE_OUTCOME_CHECK_MS);
+  } finally {
+    clearInterval(reread);
+  }
 }
 
 /**

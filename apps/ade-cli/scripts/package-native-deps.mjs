@@ -5,7 +5,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { spawn } from "node:child_process";
-import { shouldCopyPackageEntry } from "./native-deps-entry-filter.mjs";
+import {
+  isPackageNoticeFile,
+  RUNTIME_INLINED_PACKAGES,
+  RUNTIME_INLINED_PACKAGE_NOTICE_PATHS,
+  shouldCopyPackageEntry,
+} from "./native-deps-entry-filter.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nodeModulesRoot = path.join(packageRoot, "node_modules");
@@ -169,21 +174,55 @@ async function copyPackage(packageName, destinationRoot, target) {
     recursive: true,
     filter: (entry) => {
       const normalized = entry.split(path.sep).join("/");
-      return !normalized.includes("/.cache/")
-        && !normalized.includes("/test/")
-        && !normalized.includes("/tests/")
-        && !normalized.endsWith(".map")
+      return !normalized.endsWith(".map")
         && shouldCopyPackageEntry(packageName, source, entry, target);
     },
   });
   return true;
 }
 
-async function writeManifest(bundleRoot, target, packages) {
+async function copyInlinedPackageNotices(bundleRoot, packageName) {
+  const sourceRoot = packagePath(packageName);
+  const destinationRoot = path.join(bundleRoot, "third-party-notices", ...packageName.split("/"));
+  const expectedNoticePath = RUNTIME_INLINED_PACKAGE_NOTICE_PATHS.get(packageName);
+  let copied = 0;
+
+  async function visit(current) {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const source = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await visit(source);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relative = path.relative(sourceRoot, source).split(path.sep).join("/");
+      if (!isPackageNoticeFile(relative)) continue;
+      const destination = path.join(destinationRoot, ...relative.split("/"));
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.copyFile(source, destination);
+      copied += 1;
+    }
+  }
+
+  await visit(sourceRoot);
+  const expectedNoticeMissing = expectedNoticePath
+    ? !(await exists(path.join(bundleRoot, ...expectedNoticePath.split("/"))))
+    : false;
+  if (copied === 0 || expectedNoticeMissing) {
+    throw new Error(
+      `[package-native-deps] inlined package ${packageName} has no required license notice at ` +
+        `${expectedNoticePath ?? "a license/notice file"}. Refusing to publish bundled code without its notice.`,
+    );
+  }
+  return copied;
+}
+
+async function writeManifest(bundleRoot, target, packages, inlinedPackages) {
   const manifest = {
     target,
     createdAt: new Date().toISOString(),
     packages,
+    inlinedPackages,
   };
   await fs.writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
@@ -230,10 +269,9 @@ async function copyBuiltTuiClient(bundleRoot) {
 }
 
 async function chmodRuntimeExecutables(bundleRoot, target) {
-  const executablePaths = [
-    path.join(bundleRoot, "node_modules", "@opencode", "cli", "bin", "opencode.exe"),
-    path.join(bundleRoot, "node_modules", "@opencode", `cli-${target}`, "bin", "opencode"),
-  ];
+  // Provider CLIs are fetched into the pinned tools cache, not launched from
+  // this archive. node-pty's macOS helper is the only copied executable here.
+  const executablePaths = [];
   if (target.startsWith("darwin-")) {
     executablePaths.push(path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper"));
   }
@@ -277,7 +315,13 @@ async function main() {
 
   const packageNames = await collectRuntimePackages(args.target);
   const copied = [];
+  const inlined = [];
   for (const packageName of packageNames) {
+    if (RUNTIME_INLINED_PACKAGES.has(packageName)) {
+      await copyInlinedPackageNotices(bundleRoot, packageName);
+      inlined.push(packageName);
+      continue;
+    }
     if (await copyPackage(packageName, bundleRoot, args.target)) {
       copied.push(packageName);
     }
@@ -285,7 +329,7 @@ async function main() {
   await copyBuiltTuiClient(bundleRoot);
   await copyCrsqliteExtension(bundleRoot, args.target);
   await chmodRuntimeExecutables(bundleRoot, args.target);
-  await writeManifest(bundleRoot, args.target, copied);
+  await writeManifest(bundleRoot, args.target, copied, inlined);
 
   const archivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
   await makeTarGz(bundleRoot, archivePath);

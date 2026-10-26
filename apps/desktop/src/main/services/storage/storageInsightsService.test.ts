@@ -30,6 +30,17 @@ function writeSized(filePath: string, bytes: number): void {
   fs.writeFileSync(filePath, Buffer.alloc(bytes, 1));
 }
 
+/**
+ * What storage counts for these files: the blocks they take on disk, or
+ * their length on Windows. Read straight from stat, not from the code under test.
+ */
+function onDisk(...filePaths: string[]): number {
+  return filePaths.reduce((sum, filePath) => {
+    const stat = fs.lstatSync(filePath);
+    return sum + (process.platform === "win32" ? stat.size : stat.blocks * 512);
+  }, 0);
+}
+
 function seedProject(db: AdeDb, projectRoot: string): void {
   const now = "2026-07-01T00:00:00.000Z";
   db.run(
@@ -120,11 +131,16 @@ describe("storageInsightsService", () => {
   });
 
   it("reports exact fixture totals and counts nested lane data only as a worktree", async () => {
-    writeSized(path.join(projectRoot, ".ade", "transcripts", "chat", "one.log"), 11);
-    writeSized(path.join(projectRoot, ".ade", "cache", "terminal-snapshots", "one.txt"), 13);
-    writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "cache.bin"), 7);
-    writeSized(path.join(projectRoot, ".ade", "artifacts", "computer-use", "proof.bin"), 5);
-    writeSized(path.join(projectRoot, ".ade", "ade.db.recovery-fixture.bak"), 3);
+    const history = path.join(projectRoot, ".ade", "transcripts", "chat", "one.log");
+    const snapshotFile = path.join(projectRoot, ".ade", "cache", "terminal-snapshots", "one.txt");
+    const cacheFile = path.join(projectRoot, ".ade", "cache", "browser-observations", "cache.bin");
+    const proofFile = path.join(projectRoot, ".ade", "artifacts", "computer-use", "proof.bin");
+    const backupFile = path.join(projectRoot, ".ade", "ade.db.recovery-fixture.bak");
+    writeSized(history, 11);
+    writeSized(snapshotFile, 13);
+    writeSized(cacheFile, 7);
+    writeSized(proofFile, 5);
+    writeSized(backupFile, 3);
     const lanePath = path.join(projectRoot, ".ade", "worktrees", "active-lane");
     writeSized(path.join(lanePath, "source.bin"), 17);
     writeSized(path.join(lanePath, ".ade", "transcripts", "nested.log"), 19);
@@ -133,12 +149,12 @@ describe("storageInsightsService", () => {
     const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger }).getSnapshot();
     const byId = Object.fromEntries(snapshot.categories.map((category) => [category.id, category]));
 
-    expect(byId.chats_history.bytes).toBe(24);
+    expect(byId.chats_history.bytes).toBe(onDisk(history, snapshotFile));
     expect(byId.chats_history.fileCount).toBe(2);
-    expect(byId.caches.bytes).toBe(7);
-    expect(byId.lanes_worktrees.bytes).toBe(36);
-    expect(byId.proof_attachments.bytes).toBe(5);
-    expect(byId.recovery_backups.bytes).toBe(3);
+    expect(byId.caches.bytes).toBe(onDisk(cacheFile));
+    expect(byId.lanes_worktrees.bytes).toBe(onDisk(path.join(lanePath, "source.bin"), path.join(lanePath, ".ade", "transcripts", "nested.log")));
+    expect(byId.proof_attachments.bytes).toBe(onDisk(proofFile));
+    expect(byId.recovery_backups.bytes).toBe(onDisk(backupFile));
     expect(byId.chats_history.items.every((item) => !item.path.startsWith(lanePath))).toBe(true);
     expect(byId.lanes_worktrees.items[0]).toMatchObject({ label: "Active lane", laneStatus: "active", safety: "protected" });
     expect(snapshot.totalAdeBytes).toBe(snapshot.categories.reduce((sum, category) => sum + category.bytes, 0));
@@ -156,8 +172,8 @@ describe("storageInsightsService", () => {
     const snapshot = await createStorageInsightsService({ projectRoot, adeHome, db, logger }).getSnapshot();
     const history = snapshot.categories.find((category) => category.id === "chats_history")!;
 
-    expect(history.compressedBytes).toBe(17);
-    expect(history.compressibleBytes).toBe(23);
+    expect(history.compressedBytes).toBe(onDisk(compressedPath));
+    expect(history.compressibleBytes).toBe(onDisk(plainPath));
   });
 
   it("compressNow runs one bounded history sweep", async () => {
@@ -230,7 +246,7 @@ describe("storageInsightsService", () => {
     expect(items.find((item) => item.path === activePath)).toMatchObject({ laneStatus: "active", safety: "protected" });
     expect(items.find((item) => item.path === archivedPath)).toMatchObject({ laneStatus: "archived", safety: "review_first" });
     expect(items.find((item) => item.path === orphanedPath)).toMatchObject({
-      bytes: 29,
+      bytes: onDisk(path.join(orphanedPath, "data")),
       laneStatus: "orphaned",
       safety: "review_first",
       detail: "Left over from a deleted lane",
@@ -345,11 +361,12 @@ describe("storageInsightsService", () => {
 
     const preview = await service.cleanupPreview(targets);
     expect(preview.blocked.map((item) => item.path)).toContain(fresh);
+    const staleBytes = onDisk(path.join(stale, "data"));
     expect(preview.items).toEqual([
-      { path: stale, bytes: 31, label: "Old release staging", identity: expect.any(String) },
+      { path: stale, bytes: staleBytes, label: "Old release staging", identity: expect.any(String) },
     ]);
     const result = await service.cleanup([{ kind: "stale_tmp_staging", path: stale }], { preview });
-    expect(result).toEqual({ removed: [{ path: stale, bytes: 31 }], failed: [], freedBytes: 31 });
+    expect(result).toEqual({ removed: [{ path: stale, bytes: staleBytes }], failed: [], freedBytes: staleBytes });
     expect(fs.existsSync(stale)).toBe(false);
 
     // The removed files are in the cleanup history, and the maintenance run
@@ -357,14 +374,14 @@ describe("storageInsightsService", () => {
     // of hiding them behind its own smaller number.
     const journalPath = path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json");
     expect(readMaintenanceJournal(journalPath)).toMatchObject([
-      { filesOnly: true, reclaimedBytes: 31, actions: [{ ledgerId: "fs.tmp_staging", kind: "delete", bytesReclaimed: 31 }] },
+      { filesOnly: true, reclaimedBytes: staleBytes, actions: [{ ledgerId: "fs.tmp_staging", kind: "delete", bytesReclaimed: staleBytes }] },
     ]);
     const maintenance = await service.runMaintenanceNow();
     const journal = readMaintenanceJournal(journalPath);
     expect(journal).toHaveLength(1);
     expect(journal[0]!.filesOnly).toBeUndefined();
-    expect(journal[0]!.reclaimedBytes).toBe(31 + maintenance.reclaimedBytes);
-    expect(journal[0]!.actions.find((action) => action.bytesReclaimed === 31)?.ledgerId).toBe("fs.tmp_staging");
+    expect(journal[0]!.reclaimedBytes).toBe(staleBytes + maintenance.reclaimedBytes);
+    expect(journal[0]!.actions.find((action) => action.bytesReclaimed === staleBytes)?.ledgerId).toBe("fs.tmp_staging");
     expect(journal[0]!.dbSizeDefinition).toBe("files");
     service.dispose();
   });
@@ -586,8 +603,8 @@ describe("storageInsightsService", () => {
     expect(byId.chats_history!.partial).toBe(true);
     expect(snapshot.truncated).toBe(true);
     expect(byId.lanes_worktrees!.items.map((item) => [item.label, item.bytes, item.partial ?? false]).sort()).toEqual([
-      ["A", 11, false],
-      ["B", 13, false],
+      ["A", onDisk(path.join(laneA, "a.bin")), false],
+      ["B", onDisk(path.join(laneB, "b.bin")), false],
     ]);
   });
 
@@ -601,7 +618,7 @@ describe("storageInsightsService", () => {
     const caches = snapshot.categories.find((category) => category.id === "caches")!;
     expect(caches.items).toHaveLength(50);
     expect(caches.itemCount).toBe(55);
-    expect(caches.bytes).toBe(110);
+    expect(caches.bytes).toBe(onDisk(...Array.from({ length: 55 }, (_, index) => path.join(projectRoot, ".ade", "cache", `cache-${index}`, "data"))));
     expect(snapshot.truncated).toBe(false);
   });
 
@@ -642,10 +659,11 @@ describe("storageInsightsService", () => {
     const targets: StorageCleanupTarget[] = [{ kind: "proof_attachments", path: proofDir }];
     const preview = await service.cleanupPreview(targets);
     expect(preview.blocked).toEqual([]);
-    expect(preview.items[0]).toMatchObject({ path: proofDir, bytes: 21, label: "Proof and recordings" });
+    const proofBytes = onDisk(path.join(proofDir, "shot.png"));
+    expect(preview.items[0]).toMatchObject({ path: proofDir, bytes: proofBytes, label: "Proof and recordings" });
 
     const result = await service.cleanup(targets, { preview });
-    expect(result.removed).toEqual([{ path: proofDir, bytes: 21 }]);
+    expect(result.removed).toEqual([{ path: proofDir, bytes: proofBytes }]);
     expect(fs.existsSync(proofDir)).toBe(false);
     expect(fs.existsSync(path.join(packsDir, "lane-pack.tar"))).toBe(true);
     expect(fs.existsSync(path.join(logBundlesDir, "diagnostic.log"))).toBe(true);
@@ -738,13 +756,14 @@ describe("storageInsightsService", () => {
     writeSized(path.join(replaced, "data"), 11);
     fs.utimesSync(replaced, old, old);
 
+    const firstBytes = onDisk(path.join(first, "data"));
     const result = await service.cleanup(targets, { preview });
-    expect(result.removed).toEqual([{ path: first, bytes: 9 }]);
+    expect(result.removed).toEqual([{ path: first, bytes: firstBytes }]);
     expect(result.failed).toEqual([
       { path: second, reason: "This item no longer exists." },
       { path: replaced, reason: "This item changed after the preview. Preview it again before removing it." },
     ]);
-    expect(result.freedBytes).toBe(9);
+    expect(result.freedBytes).toBe(firstBytes);
   });
 
   it("binds a confirmation to its own preview so a later preview cannot revalidate a stale confirm", async () => {
@@ -782,8 +801,9 @@ describe("storageInsightsService", () => {
     ]);
     expect(fs.existsSync(staging)).toBe(true);
 
+    const innerBytes = onDisk(inner);
     const freshResult = await service.cleanup(targets, { preview: freshPreview });
-    expect(freshResult.removed).toEqual([{ path: staging, bytes: 13 }]);
+    expect(freshResult.removed).toEqual([{ path: staging, bytes: innerBytes }]);
     expect(fs.existsSync(staging)).toBe(false);
   });
 
@@ -839,11 +859,12 @@ describe("storageInsightsService", () => {
 
     buildActive = false;
     const inactivePreview = await service.cleanupPreview([target]);
+    const objectBytes = onDisk(objectFile);
     const removed = await service.cleanup([target], { preview: inactivePreview });
     expect(removed).toEqual({
-      removed: [{ path: derivedData, bytes: 37 }],
+      removed: [{ path: derivedData, bytes: objectBytes }],
       failed: [],
-      freedBytes: 37,
+      freedBytes: objectBytes,
     });
     expect(fs.existsSync(derivedData)).toBe(false);
   });
@@ -1069,16 +1090,17 @@ describe("storageInsightsService", () => {
     );
     const recoveryBackups = snapshot.categories.find((category) => category.id === "recovery_backups")!;
     expect(recoveryBackups.items.find((item) => item.path === obsoleteBackup)).toMatchObject({
-      bytes: 500,
+      bytes: onDisk(obsoleteBackup),
       safety: "safe_to_remove",
     });
-    expect(presentedFilesystemBytes).toBe(900);
+    const cacheBytes = onDisk(path.join(projectRoot, ".ade", "cache", "browser-observations", "c.bin"));
+    expect(presentedFilesystemBytes).toBe(cacheBytes + onDisk(derivedObject, appUpdateStaging));
     expect(snapshot.categories.find((category) => category.id === "caches")?.items).toContainEqual(
       expect.objectContaining({ path: appUpdateStaging, safety: "safe_to_remove" }),
     );
-    // Project cache + stale DerivedData are valid targets (300 bytes). App
-    // update staging is outside the project cache validator and is omitted.
-    expect(extras.safeReclaimableBytes).toBe(300);
+    // Project cache + stale DerivedData are valid targets. App update
+    // staging is outside the project cache validator and is omitted.
+    expect(extras.safeReclaimableBytes).toBe(cacheBytes + onDisk(derivedObject));
     if (extras.dbBreakdown.length > 0) {
       expect(extras.dbBreakdown.some((entry) => entry.category === "core")).toBe(true);
     }

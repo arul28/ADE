@@ -16,6 +16,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -23,7 +24,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { ChatAttachment, SendInput, ThreadStatus } from "../sdkTypes";
+import type { ChatAttachment, SendInput, SlashCommand, ThreadStatus } from "../sdkTypes";
 import {
   blockedHint,
   resolveComposerState,
@@ -129,6 +130,11 @@ export type ComposerProps = {
   actions?: ReactNode;
   /** Errors from a failed send, surfaced under the input. */
   error?: string | null;
+  /** Runtime commands for slash autocomplete. Omit when unsupported. */
+  slashCommands?: readonly SlashCommand[] | null;
+  slashCommandsLoading?: boolean;
+  slashCommandsError?: string | null;
+  onRetrySlashCommands?: () => void | Promise<void>;
   className?: string;
 };
 
@@ -151,12 +157,20 @@ export function Composer({
   modelRail,
   actions,
   error,
+  slashCommands,
+  slashCommandsLoading = false,
+  slashCommandsError = null,
+  onRetrySlashCommands,
   className,
 }: ComposerProps) {
   const [internalDraft, setInternalDraft] = useState("");
   const [internalAttachments, setInternalAttachments] = useState<ChatAttachment[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [cursorPosition, setCursorPosition] = useState<number | null>(null);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [dismissedSlashQuery, setDismissedSlashQuery] = useState<string | null>(null);
+  const slashMenuId = `adechat-slash-${useId()}`;
 
   const draft = value ?? internalDraft;
   // De-duplicated for display and for sending: two chips under one React key
@@ -200,6 +214,45 @@ export function Composer({
     allowSteer: Boolean(onSteer),
     hasAttachments: staged.length > 0,
   });
+
+  const slashMatch = useMemo(() => {
+    const cursor = cursorPosition ?? draft.length;
+    const before = draft.slice(0, cursor);
+    const match = /^\/([^\s/]*)$/.exec(before);
+    return match ? { start: 0, query: match[1] ?? "" } : null;
+  }, [cursorPosition, draft]);
+  const slashSuggestions = useMemo(() => {
+    if (!slashMatch || !slashCommands) return [];
+    const query = slashMatch.query.toLocaleLowerCase();
+    return slashCommands
+      .filter((command) => command.name.replace(/^\//, "").toLocaleLowerCase().startsWith(query))
+      .slice(0, 10);
+  }, [slashCommands, slashMatch]);
+  const slashMenuOpen = Boolean(
+    slashMatch
+    && dismissedSlashQuery !== slashMatch.query
+    && (slashCommands !== undefined || slashCommandsLoading || slashCommandsError),
+  );
+
+  useEffect(() => setSelectedSlashIndex(0), [slashMatch?.query]);
+
+  const selectSlashCommand = useCallback((command: SlashCommand) => {
+    if (!slashMatch) return;
+    const cursor = inputRef.current?.selectionStart ?? draft.length;
+    const before = draft.slice(0, slashMatch.start);
+    const after = draft.slice(cursor);
+    const name = command.name.replace(/^\//, "");
+    const next = `${before}/${name} ${after}`;
+    const nextCursor = before.length + name.length + 2;
+    setDraft(next);
+    setCursorPosition(nextCursor);
+    setDismissedSlashQuery(null);
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      input?.focus();
+      input?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }, [draft, setDraft, slashMatch]);
 
   // Autosize: reset to auto first so the box can shrink as text is deleted.
   useEffect(() => {
@@ -245,6 +298,28 @@ export function Composer({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashMenuOpen) {
+        if (event.key === "ArrowDown" && slashSuggestions.length > 0) {
+          event.preventDefault();
+          setSelectedSlashIndex((current) => (current + 1) % slashSuggestions.length);
+          return;
+        }
+        if (event.key === "ArrowUp" && slashSuggestions.length > 0) {
+          event.preventDefault();
+          setSelectedSlashIndex((current) => (current - 1 + slashSuggestions.length) % slashSuggestions.length);
+          return;
+        }
+        if ((event.key === "Enter" || event.key === "Tab") && slashSuggestions.length > 0) {
+          event.preventDefault();
+          selectSlashCommand(slashSuggestions[selectedSlashIndex] ?? slashSuggestions[0]!);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setDismissedSlashQuery(slashMatch?.query ?? "");
+          return;
+        }
+      }
       const intent = resolveKeyIntent({
         key: event.key,
         shiftKey: event.shiftKey,
@@ -266,7 +341,7 @@ export function Composer({
         void interrupt();
       }
     },
-    [draft, interrupt, onInterrupt, sendOnEnter, state.running, submit],
+    [draft, interrupt, onInterrupt, sendOnEnter, slashMatch, slashMenuOpen, slashSuggestions, selectedSlashIndex, selectSlashCommand, state.running, submit],
   );
 
   const attach = useCallback(async () => {
@@ -306,6 +381,41 @@ export function Composer({
           </div>
         ) : null}
 
+        {slashMenuOpen ? (
+          <div className="adechat-slash-menu" id={slashMenuId} role="listbox" aria-label="Slash commands">
+            {slashCommandsLoading && slashCommands === null ? <p className="adechat-slash-state">Loading commands…</p> : null}
+            {slashCommandsError ? (
+              <div className="adechat-slash-error" role="alert">
+                <span>Couldn’t load slash commands.</span>
+                {onRetrySlashCommands ? <button type="button" className="adechat-button" onClick={() => void onRetrySlashCommands()} disabled={slashCommandsLoading}>Retry</button> : null}
+              </div>
+            ) : null}
+            {slashSuggestions.map((command, index) => {
+              const name = command.name.replace(/^\//, "");
+              const optionId = `${slashMenuId}-${index}`;
+              return (
+                <button
+                  type="button"
+                  role="option"
+                  id={optionId}
+                  aria-selected={index === selectedSlashIndex}
+                  className="adechat-slash-option"
+                  key={`${command.name}-${index}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectSlashCommand(command)}
+                >
+                  <span>/{name}</span>
+                  {command.argumentHint ? <small>{command.argumentHint}</small> : null}
+                  {command.description ? <span className="adechat-slash-description">{command.description}</span> : null}
+                </button>
+              );
+            })}
+            {!slashCommandsLoading && !slashCommandsError && slashCommands !== null && slashSuggestions.length === 0 ? (
+              <p className="adechat-slash-state">No matching commands.</p>
+            ) : null}
+          </div>
+        ) : null}
+
         <textarea
           ref={inputRef}
           className="adechat-composer-input"
@@ -314,9 +424,21 @@ export function Composer({
           placeholder={placeholder}
           disabled={disabled}
           autoFocus={autoFocus}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setCursorPosition(event.currentTarget.selectionStart);
+            setDismissedSlashQuery(null);
+          }}
           onKeyDown={handleKeyDown}
+          onClick={(event) => setCursorPosition(event.currentTarget.selectionStart)}
+          onKeyUp={(event) => setCursorPosition(event.currentTarget.selectionStart)}
           aria-label="Message"
+          {...(slashMenuOpen ? {
+            "aria-autocomplete": "list" as const,
+            "aria-controls": slashMenuId,
+            "aria-expanded": true,
+            ...(slashSuggestions[selectedSlashIndex] ? { "aria-activedescendant": `${slashMenuId}-${selectedSlashIndex}` } : {}),
+          } : {})}
         />
 
         <div className="adechat-composer-actions">

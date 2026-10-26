@@ -42,6 +42,7 @@ import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
+  RemoteActionOutcomeUnknownError,
 } from "./pairedRuntimeErrors";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import {
@@ -58,6 +59,7 @@ type DisconnectListener = (error: Error) => void;
 type FakeRuntimeRpcClient = RuntimeRpcClient & {
   call: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
+  lastInboundAt: ReturnType<typeof vi.fn>;
   emitDisconnect(error?: Error): void;
   emitNotification(method: string, params: unknown): void;
   onDisconnect: ReturnType<typeof vi.fn>;
@@ -132,6 +134,8 @@ function createClient(): FakeRuntimeRpcClient {
   >();
   const client = {
     call: vi.fn(),
+    isClosed: vi.fn(() => false),
+    lastInboundAt: vi.fn((): number | null => null),
     close: vi.fn(() => {
       for (const listener of [...listeners]) {
         listener(new Error("closed"));
@@ -1042,13 +1046,21 @@ describe("RemoteConnectionPool", () => {
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("reconnects a stream after its bounded transport timeout", async () => {
-    const firstClient = createClient();
-    firstClient.call.mockRejectedValueOnce(
-      new Error(
-        `Remote ADE service timed out waiting for method ade/actions/call (${REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS}ms).`,
-      ),
+  it.each([
+    { name: "reconnects when the machine does not answer a ping", ping: "silent", recentTraffic: false, reconnects: true },
+    { name: "keeps the connection when the machine answers a ping", ping: "answers", recentTraffic: false, reconnects: false },
+    { name: "keeps the connection without a ping when data arrived recently", ping: "unused", recentTraffic: true, reconnects: false },
+  ] as const)("after a stream read times out, $name", async ({ ping, recentTraffic, reconnects }) => {
+    const streamTimeout = new Error(
+      `Remote ADE service timed out waiting for method ade/actions/call (${REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS}ms).`,
     );
+    const firstClient = createClient();
+    firstClient.lastInboundAt.mockReturnValue(recentTraffic ? Date.now() : null);
+    firstClient.call.mockImplementation(async (method: string) => {
+      if (method !== "ping") throw streamTimeout;
+      if (ping === "answers") return { pong: true };
+      throw new Error("Remote ADE service timed out waiting for method ping (15000ms).");
+    });
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: firstClient,
       ssh: createSsh(),
@@ -1069,17 +1081,62 @@ describe("RemoteConnectionPool", () => {
     });
 
     const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+    const read = pool.streamEventsForTarget(target, "project-1", { cursor: 3 });
 
-    await expect(
-      pool.streamEventsForTarget(target, "project-1", { cursor: 3 }),
-    ).resolves.toMatchObject({ nextCursor: 4, events: [] });
-
+    if (reconnects) {
+      await expect(read).resolves.toMatchObject({ nextCursor: 4, events: [] });
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+      expect(firstClient.close).toHaveBeenCalled();
+    } else {
+      await expect(read).rejects.toBe(streamTimeout);
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+      expect(firstClient.close).not.toHaveBeenCalled();
+    }
     expect(firstClient.call).toHaveBeenCalledWith(
       "ade/actions/call",
       expect.objectContaining({ name: "stream_events" }),
       { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS },
     );
-    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call.mock.calls.some(([method]) => method === "ping")).toBe(ping !== "unused");
+  });
+
+  it("reports an unknown outcome to an action whose connection another call dropped", async () => {
+    const firstClient = createClient();
+    let failDelete: (error: Error) => void = () => {};
+    firstClient.call.mockImplementation((method: string, params: { name?: string }) => {
+      if (method === "ping") return Promise.reject(new Error("Remote ADE service timed out waiting for method ping (15000ms)."));
+      if (params?.name === "stream_events") {
+        return Promise.reject(new Error(
+          `Remote ADE service timed out waiting for method ade/actions/call (${REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS}ms).`,
+        ));
+      }
+      return new Promise((_, reject) => {
+        failDelete = reject;
+      });
+    });
+    firstClient.close.mockImplementation(() => failDelete(new Error("Remote ADE service connection closed.")));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValue({ ok: true, events: [], nextCursor: 4, hasMore: false });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    const deletion = pool.callActionForTarget(target, "project-1", {
+      domain: "lane",
+      action: "delete",
+      args: { laneId: "lane-1" },
+    });
+    await pool.streamEventsForTarget(target, "project-1", { cursor: 3 });
+
+    await expect(deletion).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
   });
 
   it("retries idempotent reads once when the connection closes during the request", async () => {
