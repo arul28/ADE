@@ -1,5 +1,5 @@
 export const CODEX_COMPACTION_STALL_MS = 180_000;
-export const PINNED_CODEX_APP_SERVER_VERSION = "0.162.1";
+export const PINNED_CODEX_APP_SERVER_VERSION = "0.164.0";
 
 export type CodexAppServerVersion = {
   major: number;
@@ -30,7 +30,7 @@ export function codexServerSupportsDeferGoalContinuation(version: CodexAppServer
   return codexServerAtLeast(version, 145);
 }
 
-/** Durable FIFO `thread/queue/*` (0.146+; ADE pins 0.162.1). */
+/** Durable FIFO `thread/queue/*` (0.146+). */
 export function codexServerSupportsThreadQueue(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 146);
 }
@@ -75,6 +75,15 @@ export function codexServerSupportsMemoryRpc(version: CodexAppServerVersion | nu
  */
 export function codexServerSupportsGoalMutationOrigin(version: CodexAppServerVersion | null): boolean {
   return codexServerAtLeast(version, 162);
+}
+
+/**
+ * Experimental `thread/sample` (0.164+): one model answer on a hidden,
+ * ephemeral fork of an idle thread, reusing its context and prompt cache. The
+ * source conversation is never changed. An unknown version never gets it.
+ */
+export function codexServerSupportsThreadSample(version: CodexAppServerVersion | null): boolean {
+  return codexServerAtLeast(version, 164);
 }
 
 export type { ContextCompactFailReason as CodexCompactionFailReason } from "../../../shared/contextCompaction";

@@ -459,6 +459,7 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.serviceTiers?.length
                 ? { serviceTiers: base.serviceTiers }
                 : {}),
+            ...(model.cyberAccessPrograms !== undefined ? { cyberAccessPrograms: model.cyberAccessPrograms } : {}),
             catalogGroupKey: String(model.groupKey || group.key),
             catalogAvailable: model.isAvailable,
             catalogRequiresConfiguration: model.requiresConfiguration,

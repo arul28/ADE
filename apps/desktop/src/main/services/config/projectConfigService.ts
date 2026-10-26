@@ -346,6 +346,8 @@ function coerceAiChatConfig(value: unknown): AiConfig["chat"] {
   if (continueAfterRestart != null) chat.continueAfterRestart = continueAfterRestart;
   const promptSuggestionsEnabled = asBool(value.promptSuggestionsEnabled);
   if (promptSuggestionsEnabled != null) chat.promptSuggestionsEnabled = promptSuggestionsEnabled;
+  const codexPromptSuggestionsEnabled = asBool(value.codexPromptSuggestionsEnabled);
+  if (codexPromptSuggestionsEnabled != null) chat.codexPromptSuggestionsEnabled = codexPromptSuggestionsEnabled;
   const smartDecisionsEnabled = asBool(value.smartDecisionsEnabled);
   if (smartDecisionsEnabled != null) chat.smartDecisionsEnabled = smartDecisionsEnabled;
   for (const key of ["smartChatStatusEnabled", "smartSettleNudgeEnabled", "smartPaletteEnabled", "smartLaneEmojiEnabled", "smartPlainTerminalsEnabled", "jevZenCreditEnabled"] as const) {

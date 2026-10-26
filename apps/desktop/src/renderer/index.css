@@ -5383,7 +5383,7 @@ button, [role="button"] {
   color: transparent;
 }
 
-.ade-ultrathink-switch {
+.ade-picker-switch {
   position: relative;
   width: 28px;
   height: 16px;
@@ -5393,7 +5393,7 @@ button, [role="button"] {
   transition: background-color 160ms ease;
 }
 
-.ade-ultrathink-switch::after {
+.ade-picker-switch::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -5405,11 +5405,15 @@ button, [role="button"] {
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease;
 }
 
-.ade-ultrathink-switch[data-on="true"] {
+.ade-picker-switch[data-tone="ultrathink"][data-on="true"] {
   background: linear-gradient(120deg, #f87171, #facc15, #4ade80, #60a5fa, #c084fc);
 }
 
-.ade-ultrathink-switch[data-on="true"]::after {
+.ade-picker-switch[data-tone="daybreak"][data-on="true"] {
+  background: linear-gradient(120deg, #f97316, #fbbf24);
+}
+
+.ade-picker-switch[data-on="true"]::after {
   transform: translateX(12px);
   background: #fff;
 }

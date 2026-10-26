@@ -644,9 +644,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "chat.prompt-suggestions",
     label: "Next prompt suggestions",
-    keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer"],
+    keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer", "codex"],
     tab: "chat",
-    anchor: "prompt-suggestions",
+    anchor: "prompt-suggestions-codex",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
     scope: "machine-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.

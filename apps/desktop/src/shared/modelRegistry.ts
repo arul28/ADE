@@ -2,6 +2,7 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import type { CodexAccessProgram } from "./codexDaybreak";
 import bundledModelManifestJson from "./model-manifest.json";
 import { compareTextInsensitive } from "./formatting";
 import {
@@ -90,6 +91,8 @@ export type ModelDescriptor = {
   /** Provider-reported multiplier used for request-cost display when available. */
   billingMultiplier?: number;
   serviceTiers?: string[];
+  /** Codex runtime catalog only: access programs this account may ask for (`shared/codexDaybreak.ts`). */
+  cyberAccessPrograms?: CodexAccessProgram[];
   color: string;
   providerRoute: string;
   providerModelId: string;
