@@ -69,8 +69,26 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The lane's directory name. A lane id that is already a safe, short name
+/// (ADE's are UUIDs) is used as is; any other id gets a hash of the original
+/// appended, so two ids that sanitize to the same text never share a lane's
+/// Xauthority, profiles or logs.
 fn safe_name(lane_id: &str) -> String {
-    lane_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(80).collect()
+    let cleaned: String = lane_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(64)
+        .collect();
+    if cleaned == lane_id {
+        return cleaned;
+    }
+    // FNV-1a: stable across runs and builds, unlike std's randomized hasher.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in lane_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{cleaned}-{hash:016x}")
 }
 
 /// An Xauthority file with one wildcard MIT-MAGIC-COOKIE-1 entry for `:num`.
