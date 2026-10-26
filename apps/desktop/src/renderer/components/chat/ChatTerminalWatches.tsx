@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Eye, Square } from "@phosphor-icons/react";
 import type { TerminalWatchSummary } from "../../../shared/terminalWatch";
 import type { OpenProjectBinding, TerminalSessionChangedEvent } from "../../../shared/types";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { showToast } from "../app/toast/toastStore";
 
 /**
  * A chat's live terminal watches (`ade terminal watch`), read from the chat's
@@ -16,14 +18,23 @@ export function useChatTerminalWatches(
   sessionId: string | null | undefined,
   pin: OpenProjectBinding | null,
   pinKey: string | null,
-): { watches: TerminalWatchSummary[]; stop: (watch: TerminalWatchSummary) => void } {
+): {
+  watches: TerminalWatchSummary[];
+  /** The read failed: the section says so instead of showing no watches. */
+  loadError: boolean;
+  retry: () => void;
+  stop: (watch: TerminalWatchSummary) => void;
+} {
   const [watches, setWatches] = useState<TerminalWatchSummary[]>([]);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const pinRef = useRef(pin);
   pinRef.current = pin;
 
   useEffect(() => {
     const chatId = sessionId?.trim();
     setWatches([]);
+    setLoadError(false);
     const list = window.ade?.terminal?.listWatches;
     // A host without terminal watches (the web client) shows none.
     if (!chatId || typeof list !== "function") return undefined;
@@ -31,10 +42,16 @@ export function useChatTerminalWatches(
     const load = async () => {
       try {
         const rows = await list({ chatSessionId: chatId }, pinRef.current);
-        if (!cancelled) setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
+        if (cancelled) return;
+        setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
+        setLoadError(false);
       } catch (error) {
-        // An older brain does not know the action: no watches to show.
-        if (!cancelled) setWatches([]);
+        if (cancelled) return;
+        // An older brain does not know the action: it has no watches to show.
+        // Any other failure is said, not shown as an empty list.
+        const unsupported = isUnsupportedAdeActionError(error);
+        setLoadError(!unsupported);
+        if (unsupported) setWatches([]);
         console.warn("[ChatTerminalWatches] list failed", { chatId, error });
       }
     };
@@ -49,19 +66,29 @@ export function useChatTerminalWatches(
       cancelled = true;
       unsubscribe();
     };
-  }, [sessionId, pinKey]);
+    // `reloadNonce` is the Retry action.
+  }, [sessionId, pinKey, reloadNonce]);
 
   const stop = useCallback((watch: TerminalWatchSummary) => {
     const unwatch = window.ade?.terminal?.unwatch;
     if (typeof unwatch !== "function") return;
     // Optimistic: the row goes now; the brain's change event confirms it.
     setWatches((current) => current.filter((row) => row.watchId !== watch.watchId));
-    void unwatch({ watchId: watch.watchId }, pinRef.current).catch((error: unknown) => {
+    void unwatch({ watchId: watch.watchId, chatSessionId: watch.chatSessionId }, pinRef.current).catch((error: unknown) => {
       console.error("[ChatTerminalWatches] stop failed", { watchId: watch.watchId, error });
+      // It may still be waking the chat: put the row back so Stop can be tried again.
+      setWatches((current) => (current.some((row) => row.watchId === watch.watchId) ? current : [watch, ...current]));
+      showToast({
+        tone: "error",
+        title: `Couldn't stop watching "${watch.terminalTitle}"`,
+        message: error instanceof Error ? error.message : String(error),
+      });
     });
   }, []);
 
-  return { watches, stop };
+  const retry = useCallback(() => setReloadNonce((value) => value + 1), []);
+
+  return { watches, loadError, retry, stop };
 }
 
 function remainingLabel(expiresAt: string, nowMs: number): string {

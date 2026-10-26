@@ -3220,7 +3220,8 @@ export async function createAdeRuntime(args: {
         sessionService,
         messageSession: (args) => chatForTerminalWatch.messageSession(args),
         getChatLiveness: chatLivenessReader(chatForTerminalWatch),
-        isChatMovedAway: (sessionId) => Boolean(chatForTerminalWatch.getCrossMachineMoveLock(sessionId, "terminal_watch")),
+        // The headless chat stand-in (no agent chat runtime) has no move locks.
+        isChatMovedAway: (sessionId) => Boolean(chatForTerminalWatch.getCrossMachineMoveLock?.(sessionId, "terminal_watch")),
       })
       : null;
     if (terminalWatchService) teardown.push(() => terminalWatchService.dispose());

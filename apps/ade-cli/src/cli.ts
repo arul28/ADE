@@ -10030,6 +10030,8 @@ function buildTerminalPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "terminal watch",
       steps: [actionStep("result", "terminal", "watch", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
     };
   }
   if (sub === "unwatch") {
@@ -10049,6 +10051,8 @@ function buildTerminalPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "terminal unwatch",
       steps: [actionStep("result", "terminal", "unwatch", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
     };
   }
   if (sub === "watches" || sub === "list-watches") {
@@ -10067,6 +10071,8 @@ function buildTerminalPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "terminal watches",
       steps: [actionStep("result", "terminal", "listWatches", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
     };
   }
   if (sub === "signal" || sub === "interrupt" || sub === "stop") {
@@ -17163,6 +17169,11 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       return {
         kind: "execute",
         label: "browser dev server stop",
+        // A refusal (not this chat's, port shared, kill did not take) fails the command.
+        exitCodeFromResult: (result) => {
+          const record = firstRecord(result, ["result"]) ?? (isRecord(result) ? result : {});
+          return record.ok === false ? 1 : 0;
+        },
         steps: [
           actionStep("result", "work_tools", "stopDevServer", {
             port,
@@ -24704,7 +24715,8 @@ function buildInitializeParams(
 
 function parseOptionalPort(value: string | null, label: string): number | null {
   if (value == null) return null;
-  const parsed = Number.parseInt(value, 10);
+  // The whole operand: `5173oops` is a typo, not port 5173.
+  const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65_535) {
     throw new CliUsageError(`${label} must be a TCP port between 1 and 65535.`);
   }

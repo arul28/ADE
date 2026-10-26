@@ -548,6 +548,12 @@ function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(env, key);
 }
 
+/** An environment that names a terminal program of its own, not the host's. */
+function setsOwnTermProgram(env: NodeJS.ProcessEnv, hostEnv: NodeJS.ProcessEnv = process.env): boolean {
+  if (!hasEnvKey(env, "TERM_PROGRAM")) return false;
+  return env.TERM_PROGRAM !== hostEnv.TERM_PROGRAM;
+}
+
 function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
   if (platform !== "darwin") return null;
   if (arch === "arm64") return "darwin-arm64";
@@ -6839,10 +6845,12 @@ export function createPtyService({
         { preserveNoColor: explicitNoColor },
       );
       // ADE renders this PTY, so it names itself rather than the terminal the
-      // host happened to start in. A caller or lane that set TERM_PROGRAM keeps it.
+      // host happened to start in. A caller or lane that set TERM_PROGRAM keeps
+      // it, unless the value is only a copy of the host's (App Control passes
+      // its whole environment along).
       withAdeTerminalIdentityEnv(launchEnv, {
         version: appVersion,
-        keepTermProgram: hasEnvKey(effectiveArgs.env ?? {}, "TERM_PROGRAM") || hasEnvKey(laneRuntimeEnv, "TERM_PROGRAM"),
+        keepTermProgram: setsOwnTermProgram(effectiveArgs.env ?? {}) || setsOwnTermProgram(laneRuntimeEnv),
       });
       if (isTrackedAgentCliToolType(toolTypeHint)) {
         launchEnv.ADE_DEFAULT_ROLE = "agent";

@@ -1967,7 +1967,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           chatSessionId: sessionId ?? deps.currentSessionId,
           terminalId: terminalId ?? null,
           command: command ?? null,
-          laneId: laneId ?? (command ? deps.defaultLaneId : null),
+          laneId: laneId ?? null,
           match: match ?? null,
           lifetime: lifetime ?? null,
           armedBy: "agent",

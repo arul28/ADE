@@ -52,7 +52,7 @@ export function buildBuiltInBrowserPageContextMenuTemplate(
   const editable = buildEditableContextMenuTemplate(actions.editTarget, params);
   if (editable) {
     groups.push(editable);
-  } else if (params.selectionText.trim()) {
+  } else if (params.selectionText.length > 0) {
     groups.push([{ label: "Copy", click: actions.copySelection }]);
   }
   // The page itself: nothing more specific was under the pointer.

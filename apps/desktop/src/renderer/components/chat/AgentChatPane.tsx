@@ -16352,6 +16352,8 @@ export function AgentChatPane({
       onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
       terminalWatches={chatTerminalWatches.watches}
       onStopTerminalWatch={chatTerminalWatches.stop}
+      terminalWatchesLoadError={chatTerminalWatches.loadError}
+      onRetryTerminalWatches={chatTerminalWatches.retry}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}

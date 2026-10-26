@@ -33,7 +33,7 @@ export type TerminalWatchSummary = {
   /** The watched terminal's session id. */
   terminalId: string;
   terminalTitle: string;
-  /** The filter as the caller gave it (`error`, `/ready|listening/i`), or null for any output. */
+  /** The filter as the caller gave it (`error`, `ready|listening`), or null for any output. */
   match: string | null;
   armedBy: "agent" | "user";
   status: "active" | "stopped";

@@ -448,8 +448,12 @@ export async function stopChatDevServer(input: {
     }
   }
 
-  const stillListening = await listeningPidsOnPort(port, platform);
-  if (stillListening && stillListening.some((pid) => listeners.includes(pid))) {
+  const stillListening = await listeningPidsOnPort(port, platform, logReadFailure("final_check"));
+  // Could not look: do not claim it stopped, or the row forgets a running server.
+  if (stillListening === null) {
+    return refuse("failed", `ADE could not confirm that the server on port ${port} stopped.`);
+  }
+  if (stillListening.some((pid) => listeners.includes(pid))) {
     return refuse("failed", `The server on port ${port} is still running.`);
   }
   input.logger?.info("dev_servers.stopped", { chatSessionId, port, forced });

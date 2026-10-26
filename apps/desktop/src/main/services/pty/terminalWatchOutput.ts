@@ -131,10 +131,16 @@ export function buildTerminalWatchExcerpt(
   return { text: kept.join("\n"), omittedLines: Math.max(0, omittedLines), matchedLines };
 }
 
+/** The `…` marker is 3 bytes in UTF-8. */
+const ELLIPSIS_BYTES = 3;
+
+/** The tail of `text` in at most `maxBytes` UTF-8 bytes, the `…` marker included. */
 function sliceUtf8Tail(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   const buffer = Buffer.from(text, "utf8");
   if (buffer.length <= maxBytes) return text;
+  const room = maxBytes - ELLIPSIS_BYTES;
+  if (room <= 0) return "";
   // Drop a split leading multibyte sequence rather than show a replacement char.
-  return `…${buffer.subarray(buffer.length - maxBytes).toString("utf8").replace(/^�+/, "")}`;
+  return `…${buffer.subarray(buffer.length - room).toString("utf8").replace(/^\uFFFD+/, "")}`;
 }

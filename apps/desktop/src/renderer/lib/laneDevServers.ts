@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DevServerRecord, OpenProjectBinding } from "../../shared/types";
 import { pinKey } from "../state/pinKey";
+import { isUnsupportedAdeActionError } from "../../shared/codedError";
 
 /**
  * The dev servers a lane is running, as seen from any machine.
@@ -21,6 +22,8 @@ type Entry = {
   listeners: Set<(servers: DevServerRecord[]) => void>;
   loading: Promise<void> | null;
   stale: boolean;
+  /** The last read failed (not "unsupported"): re-read on the next re-check. */
+  failed?: boolean;
 };
 
 type MachineSubscription = {
@@ -49,13 +52,13 @@ let stopWindowListeners: (() => void) | null = null;
 function recheckLitEntries(): void {
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   for (const [key, entry] of entries) {
-    if (entry.servers.length > 0) scheduleRefresh(key, entry.pin, entry.laneId);
+    if (entry.servers.length > 0 || entry.failed) scheduleRefresh(key, entry.pin, entry.laneId);
   }
 }
 
 /** Start or stop the background re-check to match whether anything is lit. */
 function syncRecheck(): void {
-  const anyLit = [...entries.values()].some((entry) => entry.servers.length > 0);
+  const anyLit = [...entries.values()].some((entry) => entry.servers.length > 0 || entry.failed);
   if (anyLit && !recheckTimer) {
     recheckTimer = setInterval(recheckLitEntries, LIT_RECHECK_MS);
   } else if (!anyLit && recheckTimer) {
@@ -108,13 +111,23 @@ function load(key: string, pin: OpenProjectBinding | null, laneId: string): void
         ? result.servers.filter((server) =>
           laneId === ALL_LANES || !server.source.laneId || server.source.laneId === laneId)
         : EMPTY;
+      if (entry.failed) {
+        entry.failed = false;
+        syncRecheck();
+      }
       if (sameServers(entry.servers, next)) return;
       entry.servers = next;
       for (const listener of [...entry.listeners]) listener(next);
       syncRecheck();
     })
-    .catch(() => {
-      // An unreachable machine or an older runtime: keep what we had.
+    .catch((error: unknown) => {
+      // Keep what we had. An older runtime has no list to give; anything else
+      // (an unreachable machine) is read again on the next re-check, so a row
+      // does not stay blank after one failed read.
+      const failed = !isUnsupportedAdeActionError(error);
+      if (failed && !entry.failed) console.warn("[laneDevServers] list failed", { laneId, error });
+      entry.failed = failed;
+      syncRecheck();
     })
     .finally(() => {
       entry.loading = null;

@@ -754,7 +754,8 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       const watchId = args?.watchId?.trim() || null;
       const terminalId = args?.terminalId?.trim() || null;
       const chatSessionId = args?.chatSessionId?.trim() || null;
-      if (!watchId && !chatSessionId && !terminalId) {
+      // A terminal alone would reach every chat's watch on it.
+      if (!watchId && !chatSessionId) {
         throw new Error("terminal.unwatch requires a watch id, or the chat (and optionally the terminal) to stop.");
       }
       const targets = [...watches.values()].filter((watch) => {

@@ -1297,7 +1297,7 @@ private func workPrWatchWakeEvent(
   turnId: String?
 ) -> WorkChatEvent? {
   guard let metadata = eventDict["metadata"] as? [String: Any],
-        let wake = (metadata["prWatchWake"] ?? metadata["terminalWatchWake"]) as? [String: Any],
+        let wake = (metadata["prWatchWake"] as? [String: Any]) ?? (metadata["terminalWatchWake"] as? [String: Any]),
         let cardDict = wake["card"] as? [String: Any]
   else { return nil }
   var card = workAdeCardModel(
