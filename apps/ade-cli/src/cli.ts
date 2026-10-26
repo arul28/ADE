@@ -27663,6 +27663,8 @@ async function runServe(
   // connection" and "Reconnect this computer": a repair that lands mid-attempt
   // joins it instead of racing a second start against the same lease.
   let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
+  // Each missing project is reported once per brain, not on every retry.
+  const reportedMissingSyncProjectIds = new Set<string>();
   const startSyncHost = (deliberateRepair = false): ReturnType<typeof startSyncHostOnce> => {
     if (deliberateRepair) scopeRegistry.clearSyncHostPhaseBackoff();
     startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
@@ -27680,7 +27682,19 @@ async function runServe(
       // a reader and let the scope's blocker determine whether it is a viewer.
       activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
     } else {
-      activeScope = await scopeRegistry.resolveActiveSyncHost();
+      activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
+        if (reportedMissingSyncProjectIds.has(record.projectId)) return;
+        reportedMissingSyncProjectIds.add(record.projectId);
+        const message = fs.existsSync(record.rootPath)
+          ? `ADE brain is hosting sync without project "${record.displayName}": ADE's data for it is missing from ${path.join(record.rootPath, ".ade")}. Open it in the ADE app to restore it or start fresh.`
+          : `ADE brain is hosting sync without project "${record.displayName}": the project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`;
+        process.stderr.write(`${message}\n`);
+        headlessProjectLogger.warn("sync.host_project_missing", {
+          projectId: record.projectId,
+          rootPath: record.rootPath,
+          message,
+        });
+      });
     }
     if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
       // A null here can mean "superseded" rather than "no host"; adopt the

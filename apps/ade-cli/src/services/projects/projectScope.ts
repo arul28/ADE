@@ -564,7 +564,13 @@ export class ProjectScopeRegistry {
     return null;
   }
 
-  async resolveActiveSyncHost(): Promise<ProjectScope | null> {
+  /**
+   * @param onSkippedMissingProject told about each recent project passed over
+   *   because its folder or ADE data is gone, so the caller can say why.
+   */
+  async resolveActiveSyncHost(
+    onSkippedMissingProject?: (record: ProjectRecord) => void,
+  ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
     const existingHostId = this.syncHostProjectId;
     if (existingHostId) {
@@ -575,13 +581,22 @@ export class ProjectScopeRegistry {
       }
     }
 
+    // The newest project whose folder is still there. A scratch project in a
+    // folder a restart wiped (/tmp) used to be retried forever here, and phones
+    // and other machines had no sync until some other project happened to open.
+    // With none left, the caller hosts machine-level sync without a project.
     const record = this.projectRegistry
       .list()
       .slice()
       .sort((left, right) => {
         const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
-      })[0];
+      })
+      .find((candidate) => {
+        if (!this.projectRegistry.isProjectDataMissing(candidate)) return true;
+        onSkippedMissingProject?.(candidate);
+        return false;
+      });
     // This caller reads: it wants whatever owns sync on this machine, and a
     // project that follows another machine is a legitimate answer to that.
     return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;

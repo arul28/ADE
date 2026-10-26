@@ -293,6 +293,10 @@ ade app-control launch --command "npm run dev" --text
 ade app-control launch --command "npm run dev:desktop -- --socket /tmp/ade-runtime-app.sock {ADE_APP_CONTROL_DEBUG_FLAGS}" --text
 ```
 
+A dev app you launch opens no DevTools window (you have CDP; `ADE_OPEN_DEVTOOLS=1`
+opts back in). Run one at a time, check `memory_pressure | tail -1` first and
+wait while free memory is under ~30%, and `stop` it when you are done.
+
 `npm run dev` uses its own runtime socket (`/tmp/ade-runtime-dev.sock`) and its
 own Electron profile (`ade-desktop-dev`), so it does not collide with the ADE
 that hosts you. `ade runtime status --text` tells you which socket the CLI uses.

@@ -70,6 +70,10 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   app unless that is the task: either takes the machine away from the user's
   installed ADE. When you are done, stop the app's process group and confirm
   its brain exited (`pgrep -fl "<your socket>"`).
+- **Mind memory.** One dev app per agent, only while you use it. Check
+  `memory_pressure | tail -1` before a dev app, brain, simulator or build, and
+  wait while free memory is under ~30%. Agent-started dev apps open no DevTools
+  window (`ADE_OPEN_DEVTOOLS=1` opts back in).
 - **Close the dev app before you edit its main-process code.** A saved change
   under `apps/desktop/src/main`, the preload or `src/shared` rebuilds main and
   relaunches the window, which jumps to the front over the user's work
