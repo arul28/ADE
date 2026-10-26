@@ -1195,6 +1195,21 @@ Fields:
   `writeViewerLogin` (see [Timeline comment identity](#timeline-comment-identity)).
   When the write source is `none` or does not match the read source,
   `writeViewerLogin` is `null` and the timeline hides Edit / Add reaction.
+- `gitTransport` — optional (older runtimes omit it): whether `git push` to the
+  project's https GitHub origin can sign in. A separate leg from the ladder
+  above, which covers API calls only: git signs in with this machine's own
+  credential (keychain, gh's helper). Every ADE push, fetch, pull and sync, and
+  the push inside `prs.create`, goes through `runGitWithGithubAuthFallback`
+  (`services/git/gitTransportAuth.ts`): git's own sign-in first, then on a
+  sign-in failure the same command with ADE's write credential as an
+  `http.extraheader` in git's config environment (never persisted, never on the
+  command line). After a failure the next ten minutes go straight to ADE's
+  credential. The state comes from the last real command or a dry-run push of
+  HEAD (`--no-verify`, nothing sent), cached ten minutes while healthy and two
+  while broken, re-checked at once when a credential appears, and a status read
+  waits at most four seconds on it. `null` for SSH or non-GitHub origins.
+  `state: "auth_failed"` raises the **Git can't sign in to GitHub** banner and
+  the Settings card's **Pushes with** fact.
 - `credentialStates`, `credentialFallback` — optional per-source availability,
   capabilities, active roles, cooldown/failure state, and the active read
   fallback transition. Different sources that resolve to the same token are

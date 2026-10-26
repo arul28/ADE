@@ -734,7 +734,11 @@ export class GitTimeoutError extends Error {
 }
 
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
-  const res = await runGit(args, opts);
+  return gitStdoutOrThrow(await runGit(args, opts), args, opts);
+}
+
+/** `runGitOrThrow`'s handling of a result a caller ran itself: stdout, or the error. */
+export function gitStdoutOrThrow(res: GitRunResult, args: string[], opts: GitRunOptions): string {
   if (res.cancelled) throw markExpected(new Error(opts.cancelMessage ?? "Git was cancelled."), "user");
   if (res.timedOut) {
     throw new GitTimeoutError(

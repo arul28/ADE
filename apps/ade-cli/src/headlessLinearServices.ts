@@ -22,6 +22,7 @@ import type { createAutomationSecretService } from "../../desktop/src/main/servi
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
+import { readGitTransportStatus } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -2234,10 +2235,20 @@ export function createHeadlessGitHubService(
       // reaching the real githubstatus.com from the unit suite. Passed raw
       // rather than via `requestGitHub`, which would replace the status-page
       // lookup's own abort signal and defeat its timeout.
-      return await attachGitHubServiceHealth(await resolveStatus(opts), {
-        logger,
-        fetchImpl: options.fetchImpl,
-      });
+      const [status, gitTransport] = await Promise.all([
+        resolveStatus(opts).then((resolved) => attachGitHubServiceHealth(resolved, {
+          logger,
+          fetchImpl: options.fetchImpl,
+        })),
+        // Git's own sign-in, a separate leg from the API ladder; cached per
+        // repository, so this usually costs nothing.
+        readGitTransportStatus(
+          projectRoot,
+          async () => (await readGitTransportTokenAsync()).token,
+          opts,
+        ).catch(() => null),
+      ]);
+      return { ...status, gitTransport };
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();

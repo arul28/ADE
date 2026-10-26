@@ -169,6 +169,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { isGitAuthFailure, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -4474,11 +4475,20 @@ export function createPrService({
     const pushArgs = readiness.hasUpstream
       ? ["push"]
       : ["push", "-u", "origin", headBranch];
-    const pushResult = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const pushResult = await runGitWithGithubAuthFallback(pushArgs, {
+      cwd: lane.worktreePath,
+      timeoutMs: 60_000,
+      readToken: () => githubService.getGitTransportTokenOrThrowAsync(),
+    });
     if (pushResult.exitCode === 0) return;
 
     const detail = redactGitOutput((pushResult.stderr || pushResult.stdout).trim());
     const detailLower = detail.toLowerCase();
+    if (isGitAuthFailure(detail)) {
+      throw new Error(
+        `Git couldn't sign in to GitHub to push "${headBranch}". Run \`gh auth login\` in a terminal, or add a personal access token in Settings → GitHub.${detail ? `\n\n${detail}` : ""}`
+      );
+    }
     if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
       throw new Error(
         `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`

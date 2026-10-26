@@ -67,6 +67,7 @@ import {
   type GithubRequestAccountingContext,
   type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
+import { readGitTransportStatus } from "../git/gitTransportAuth";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -2083,7 +2084,13 @@ export function createGithubService({
     }
     // Corroborate a failing status against githubstatus.com. Shared with the
     // headless (brain) service so both getStatus owners behave identically.
-    const work = computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger }));
+    // Git's own sign-in is a separate leg from the API ladder; its check is
+    // cached per repository, so this usually costs nothing.
+    const work = Promise.all([
+      computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger })),
+      readGitTransportStatus(projectRoot, async () => (await readGitTransportAuthToken()).token, opts)
+        .catch(() => null),
+    ]).then(([status, gitTransport]): GitHubStatus => ({ ...status, gitTransport }));
     statusInFlight = work;
     try {
       return await work;

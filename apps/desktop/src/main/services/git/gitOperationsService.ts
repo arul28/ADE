@@ -2,6 +2,7 @@ import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
+import { runGitWithGithubAuthFallbackOrThrow, type GitTransportTokenReader } from "./gitTransportAuth";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -198,12 +199,19 @@ export function createGitOperationsService({
   laneService,
   operationService,
   logger,
+  readGitTransportToken,
   onHeadChanged,
   onWorktreeChanged
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   logger: Logger;
+  /**
+   * ADE's GitHub credential for push, fetch and pull, tried when this
+   * machine's own git credential cannot sign in. Lazy: the GitHub service is
+   * built after this one.
+   */
+  readGitTransportToken?: GitTransportTokenReader | null;
   onHeadChanged?: (args: {
     laneId: string;
     reason: string;
@@ -220,6 +228,9 @@ export function createGitOperationsService({
   }) => void;
 }) {
   const laneReadCache = new Map<string, CachedReadEntry<unknown>>();
+  /** Push, fetch and pull: git's own sign-in first, then ADE's GitHub credential. */
+  const runRemoteGitOrThrow = (args: string[], opts: Parameters<typeof runGitOrThrow>[1]) =>
+    runGitWithGithubAuthFallbackOrThrow(args, { ...opts, readToken: readGitTransportToken });
   const pullTails = new Map<string, Promise<void>>();
 
   async function serializePull<T>(laneId: string, pull: () => Promise<T>): Promise<T> {
@@ -516,7 +527,7 @@ export function createGitOperationsService({
 
     // Sync runs on the default 30 s action budget, so its fetch keeps the
     // short Fetch-button bound.
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
+    await runRemoteGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);
@@ -1379,7 +1390,7 @@ export function createGitOperationsService({
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitOrThrow(["fetch", "--prune"], {
+          await runRemoteGitOrThrow(["fetch", "--prune"], {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,
@@ -1421,7 +1432,7 @@ export function createGitOperationsService({
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runRemoteGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
           }
         });
         return action;
@@ -1499,7 +1510,7 @@ export function createGitOperationsService({
           if (upstreamRes.exitCode === 0) {
             const cmd = ["push"];
             if (forceWithLease) cmd.push("--force-with-lease");
-            await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runRemoteGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
             return;
           }
 
@@ -1507,7 +1518,7 @@ export function createGitOperationsService({
           if (forceWithLease) {
             cmd.push("--force-with-lease");
           }
-          await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          await runRemoteGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
         }
       });
       return action;

@@ -479,6 +479,9 @@ Git
 
   Git commands run in the lane worktree and record ADE operations so the app can
   refresh lane state. Use --lane for anything other than the active workspace.
+  Push, pull, fetch and sync try git's own GitHub sign-in first, then ADE's
+  GitHub credential (GitHub CLI or a personal access token in Settings), so they
+  work where a bare "git push" says "could not read Username".
 
     $ ade git status --lane <lane> --text           Show ADE-aware sync status
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
