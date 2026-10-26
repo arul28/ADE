@@ -289,13 +289,15 @@ If you run inside one ADE (Beta or stable) and need the ADE dev app under App
 Control, the dev launcher is isolated and safe:
 
 ```bash
-ade app-control launch --command "npm run dev" --text
-ade app-control launch --command "npm run dev:desktop -- --socket /tmp/ade-runtime-app.sock {ADE_APP_CONTROL_DEBUG_FLAGS}" --text
+ade app-control launch --command "NO_DEVTOOLS=1 npm run dev" --text
+ade app-control launch --command "NO_DEVTOOLS=1 npm run dev:desktop -- --socket /tmp/ade-runtime-app.sock {ADE_APP_CONTROL_DEBUG_FLAGS}" --text
 ```
 
-A dev app you launch opens no DevTools window (you have CDP; `ADE_OPEN_DEVTOOLS=1`
-opts back in). Run one at a time, check `memory_pressure | tail -1` first and
-wait while free memory is under ~30%, and `stop` it when you are done.
+Put `NO_DEVTOOLS=1` in the launch command (`--command "NO_DEVTOOLS=1 npm run dev:desktop -- …"`):
+App Control cannot tell your launch from a person's, so the dev launcher only
+skips the DevTools window by itself for a shell an agent runs, and you have CDP
+anyway. Run one at a time, check `memory_pressure | tail -1` first and wait
+while free memory is under ~30%, and `stop` it when you are done.
 
 `npm run dev` uses its own runtime socket (`/tmp/ade-runtime-dev.sock`) and its
 own Electron profile (`ade-desktop-dev`), so it does not collide with the ADE

@@ -185,7 +185,7 @@ type RemoteImageCache = {
    * One pull per picture at a time: an answer and the proof drawer often show
    * the same picture at once, and both asked the other machine for every byte.
    */
-  inFlight: Map<string, Promise<WholeImagePull>>;
+  inFlight: Map<string, InFlightImagePull>;
   /**
    * Distinct pictures pulled whole at once. Each holds up to 24 MiB until it
    * is kept, and a chat scrolled into view asks for all its pictures together.
@@ -242,6 +242,13 @@ function createSlots(limit: number): { run: <T>(task: () => Promise<T>) => Promi
   };
 }
 
+/**
+ * A pull and the showings waiting on it. When every one has gone (a fast
+ * scroll past the picture), a pull still queued never starts and a running one
+ * stops at its next chunk, so it does not hold a slot a visible picture needs.
+ */
+type InFlightImagePull = { promise: Promise<WholeImagePull>; viewers: number };
+
 type WholeImagePull =
   | { kind: "whole"; bytes: Buffer }
   /** Too big to keep: the first chunk, so the stream does not read it again. */
@@ -251,13 +258,19 @@ async function pullWholeImage(
   read: (offset: number, length: number) => Promise<{ totalSize: number; bytes: Buffer }>,
   imageCache: RemoteImageCache,
   cacheKey: string,
+  abandoned: () => boolean,
 ): Promise<WholeImagePull> {
+  const stopIfAbandoned = () => {
+    if (abandoned()) throw new Error("Nobody is showing this picture any more.");
+  };
+  stopIfAbandoned();
   const first = await read(0, REMOTE_ARTIFACT_CHUNK_BYTES);
   if (first.totalSize > REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES) return { kind: "large", first };
   // One buffer of the final size: no list of chunks and second copy to join them.
   const whole = Buffer.alloc(first.totalSize);
   let received = first.bytes.copy(whole, 0);
   while (received < first.totalSize) {
+    stopIfAbandoned();
     const chunk = (await read(received, first.totalSize - received)).bytes;
     if (chunk.length === 0) throw new Error("The file ended early on the other computer.");
     received += chunk.copy(whole, received);
@@ -338,18 +351,37 @@ async function serveRemote(
   // round trip. One too big to keep streams below like a video, starting from
   // the chunk this already read.
   if (image && req.method === "GET") {
-    let pull = imageCache.inFlight.get(cacheKey);
-    if (!pull) {
-      pull = imageCache.pullSlots.run(() => pullWholeImage(read, imageCache, cacheKey))
-        .finally(() => imageCache.inFlight.delete(cacheKey));
-      imageCache.inFlight.set(cacheKey, pull);
+    let joined = imageCache.inFlight.get(cacheKey);
+    if (joined) {
+      joined.viewers += 1;
+    } else {
+      // Counted before the pull starts: a free slot runs it at once.
+      const created: InFlightImagePull = { promise: Promise.resolve(null as never), viewers: 1 };
+      created.promise = imageCache.pullSlots
+        .run(() => pullWholeImage(read, imageCache, cacheKey, () => created.viewers === 0))
+        .finally(() => {
+          if (imageCache.inFlight.get(cacheKey) === created) imageCache.inFlight.delete(cacheKey);
+        });
+      imageCache.inFlight.set(cacheKey, created);
+      joined = created;
     }
-    let pulled: Awaited<typeof pull>;
+    const pull = joined;
+    let watching = true;
+    const leave = () => {
+      if (!watching) return;
+      watching = false;
+      pull.viewers -= 1;
+    };
+    res.once("close", leave);
+    let pulled: WholeImagePull;
     try {
-      pulled = await pull;
+      pulled = await pull.promise;
     } catch (error) {
-      sendReadFailure(error);
+      if (!gone) sendReadFailure(error);
       return;
+    } finally {
+      leave();
+      res.off("close", leave);
     }
     if (pulled.kind === "whole") {
       if (!gone) serveBuffer(req, res, pulled.bytes, target.relativePath);

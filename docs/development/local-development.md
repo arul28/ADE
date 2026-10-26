@@ -132,9 +132,10 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
   check `memory_pressure | tail -1` and wait while free memory is under ~30%:
   many lanes' dev apps, brains and simulators at once once filled a Mac
   Studio, and the installed ADE that hosts every agent kept crashing. A dev
-  app started by an agent (an ADE chat, run or App Control launch) opens no
-  detached DevTools window; attach over CDP instead, or set
-  `ADE_OPEN_DEVTOOLS=1` to get it. Run by hand, it still opens DevTools
+  app an agent starts from its shell (an ADE chat or run) opens no detached
+  DevTools window; attach over CDP instead, or set `ADE_OPEN_DEVTOOLS=1` to get
+  it. An App Control launch cannot be told from a person's, so put
+  `NO_DEVTOOLS=1` in its command. Run by hand, it still opens DevTools
   unless `NO_DEVTOOLS=1` is set. View > Toggle DevTools works either way.
 - **Stop what you started, brain included.** Stop the dev app's process group
   (the pid `dev-detached.mjs` printed) and then confirm its brain exited:

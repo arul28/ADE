@@ -2740,9 +2740,9 @@ struct WorkSessionDestinationView: View {
   /// replica cannot know), any other chat re-reads its list (throttled).
   @MainActor
   func resolveMissingProof(_ artifactId: String) async {
-    // Held while the ask runs and kept once the host answers. A failed ask (a
-    // phone offline, a timeout, a row scrolled away) is forgotten, so the
-    // citation asks again the next time it shows.
+    // Held while the ask runs, kept once the host finds the proof. A failed
+    // or empty ask (a phone offline, a timeout, a row scrolled away, proof not
+    // filed yet) is forgotten, so the citation asks again when it next shows.
     guard askedMissingProofIds.insert(artifactId).inserted else { return }
     guard isRemoteOnlyChat, !personalChat else {
       await refreshArtifacts(force: false)
@@ -2754,6 +2754,10 @@ struct WorkSessionDestinationView: View {
         artifactId: artifactId
       ) {
         citedProofArtifacts[artifactId] = found
+      } else {
+        // Not there yet (filed after this answer was drawn): ask again when
+        // the citation next shows. A by-id read is small.
+        askedMissingProofIds.remove(artifactId)
       }
     } catch {
       askedMissingProofIds.remove(artifactId)
@@ -2789,7 +2793,8 @@ struct WorkSessionDestinationView: View {
       } else {
         refreshed = try await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)
       }
-      let validArtifactIds = Set(refreshed.map(\.id))
+      // Cited proof found outside the list keeps its loaded picture too.
+      let validArtifactIds = Set(refreshed.map(\.id)).union(citedProofArtifacts.keys)
 
       for (artifactId, content) in artifactContent where !validArtifactIds.contains(artifactId) {
         workRemoveLoadedArtifactTempFile(content)

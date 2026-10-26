@@ -514,7 +514,7 @@ export class ProjectRegistry {
     }
     const restore = `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh`;
     return options.commandHints
-      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${record.rootPath}\`. ADE has not created a replacement.`
+      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${JSON.stringify(record.rootPath)}\`. ADE has not created a replacement.`
       : `${restore}.`;
   }
 

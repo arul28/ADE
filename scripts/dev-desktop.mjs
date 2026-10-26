@@ -245,21 +245,18 @@ function laneUserDataEnv() {
 }
 
 /**
- * A dev app an agent starts never opens the detached DevTools window: each one
- * costs memory, a busy machine runs many, and an agent attaches over CDP
- * instead. ADE_OPEN_DEVTOOLS=1 opts back in; NO_DEVTOOLS, when already set,
+ * A dev app an agent starts from its shell never opens the detached DevTools
+ * window: each one costs memory, a busy machine runs many, and an agent
+ * attaches over CDP instead. An App Control launch passes NO_DEVTOOLS=1 itself. ADE_OPEN_DEVTOOLS=1 opts back in; NO_DEVTOOLS, when already set,
  * wins either way. A person running this keeps DevTools as before.
  */
 function devToolsEnv() {
   const env = process.env;
   if (env.NO_DEVTOOLS) return {};
   if (env.ADE_OPEN_DEVTOOLS === "1") return {};
-  const launchedByAgent = [
-    "ADE_CHAT_SESSION_ID",
-    "ADE_RUN_ID",
-    "ADE_APP_CONTROL_CDP_PORT",
-    "ADE_APP_CONTROL_DEBUG_FLAGS",
-  ].some((key) => env[key]?.trim()) || env.ADE_DEFAULT_ROLE === "agent";
+  // Not App Control's variables: it sets them for a person's launch too.
+  const launchedByAgent = ["ADE_CHAT_SESSION_ID", "ADE_RUN_ID"].some((key) => env[key]?.trim())
+    || env.ADE_DEFAULT_ROLE === "agent";
   if (!launchedByAgent) return {};
   process.stdout.write("[ade] devtools   : off (started by an agent; ADE_OPEN_DEVTOOLS=1 opens it)\n");
   return { NO_DEVTOOLS: "1" };
