@@ -133,3 +133,23 @@ or Git operations until the visible surface needs them.
   `prs-ui-rebase-fetch-ttl-20260512-062130`, queue reload lane reads dropped
   from `1393ms` to `47-80ms`, and `listAutoRebaseStatuses` dropped from
   `1404-1407ms` to `40-70ms`.
+
+### Share reads, cap concurrency, and keep what cannot change (2026-10-26)
+
+- **Why it helped**: opening one PR on `pingdotgg/t3code` sent 57 GitHub
+  requests, 19 at once: status, checks and reviews each read the head's
+  check-runs and combined status themselves, and the commit list read
+  check-runs once per commit (29) for a field no desktop surface draws.
+  Idle, the list was re-walked ten pages at a time every two minutes because
+  a budget-cut full walk never advanced the delta cursor.
+- **Apply when**: adding a GitHub read to `prService`, a timer on the PRs
+  surface, or anything that fans out per commit, run or row.
+- **Patterns**: join an in-flight read and reuse it for 5 s (`sharedRead`);
+  every request passes `acquireGithubRequestSlot` (6 in flight per process);
+  keep immutable results (finished run jobs by run and attempt, settled
+  older-commit checks); prefer one GraphQL read over N REST reads; treat
+  background revalidation as automatic so it takes the delta walk; skip
+  polling ticks while the window is hidden.
+- **Verification**: see "PRs tab: GitHub requests" in
+  `docs/perf/macos-baseline.md` (57 → 22 requests per open, peak 19 → 6,
+  1,680 → 648 requests per idle hour).

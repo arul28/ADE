@@ -1712,6 +1712,24 @@ fetch and write cannot skip a window. Only automatic sweeps
 (`options.automaticRefresh`) take the early exit; user-driven history paging
 walks untruncated, and a truncated closed-inclusive walk forces
 `repoPullRequestsMayHaveMore: true` so the pagination affordance never lies.
+A background revalidation (a reader served cached or projected data) counts as
+automatic. A walk the page budget cut short advances no cursor, with one
+exception: a full walk of the open list. Its budget is a fixed ten pages, so it
+already saw everything any open walk can. Without that exception a repo with
+more than a thousand open PRs re-walked all ten pages on every sweep.
+
+**Fewer reads per PR.** Every GitHub request in a process passes one gate of
+six in flight (`githubRequestGate.ts`). A request waits for a slot before its
+timeout starts. Opening a PR reads its status, checks and reviews together,
+so those reads are shared: a read in flight is joined, and a settled one is
+reused for 5 s (`sharedRead` in `prService.ts`). Jobs of a finished CI run
+attempt are kept, since they never change. The commit list's check dots come
+from one GraphQL `statusCheckRollup` read, not one check-runs read per commit,
+and settled results of older commits are kept for 30 minutes. A healthy GitHub
+status is reused for 2 minutes (`GITHUB_STATUS_CACHE_TTL_MS`), so the detail
+refresh no longer checks the token with `GET /user` on every tick. The detail
+refresh and the mergeability re-poll skip their ticks while the window is
+hidden.
 
 ## Background polling
 

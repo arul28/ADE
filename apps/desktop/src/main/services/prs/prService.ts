@@ -10979,12 +10979,15 @@ export function createPrService({
     // walk missed. Leaving the older cursor in place makes the next sweep walk
     // deeper instead, which is how this heals itself.
     //
-    // A FULL walk the budget cut short is the exception: no walk ever reaches
-    // past the budget, so it already fetched everything any sweep can see.
-    // On a repo with more than a thousand open PRs every walk hits the
-    // budget, and holding the cursor back there meant every automatic sweep
-    // re-walked all ten pages, every couple of minutes, forever.
-    if (!sweepBudgetExhausted || deltaBoundaryMs == null) {
+    // A FULL walk of the OPEN list that the budget cut short is the
+    // exception: that budget is a fixed ten pages, so no open walk ever
+    // reaches past it, and a full one already fetched everything any open
+    // sweep can see. On a repo with more than a thousand open PRs every walk
+    // hits the budget, and holding the cursor back there meant every
+    // automatic sweep re-walked all ten pages, every couple of minutes. The
+    // closed sweep keeps the rule: its budget grows when the user pages
+    // further into history, so a later walk can reach rows this one missed.
+    if (!sweepBudgetExhausted || (deltaBoundaryMs == null && options.includeExternalClosed !== true)) {
       lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
     }
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
