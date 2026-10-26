@@ -2226,8 +2226,6 @@ type PersistedChatState = {
   usageLimitResume?: AgentChatUsageLimitResume | null;
   /** PDF pages and media bytes ADE inlined into the current Claude session. */
   claudeRetainedMedia?: ClaudeRetainedMedia;
-  /** Counts resets of that budget, so a message built across one can restore its own spend. Not persisted. */
-  claudeRetainedMediaResets?: number;
   codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -5515,6 +5513,8 @@ type ManagedChatSession = {
    * a resumed session keeps counting what it already carries.
    */
   claudeRetainedMedia?: ClaudeRetainedMedia;
+  /** Counts resets of that budget, so a message built across one can restore its own spend. Not persisted. */
+  claudeRetainedMediaResets?: number;
   /**
    * In-memory only: this chat's Claude session UUID hit a hard plan/session
    * quota. ADE restart clears it. The next send reaps (already done) and
