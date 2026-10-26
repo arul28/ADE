@@ -1548,6 +1548,22 @@ HEAD date, the index path, the conflict check, behind counts), 288 processes
 on 47 lanes. The index path now comes from the worktree's `.git` file
 (`ff8d90ce2`), 49 fewer.
 
+Lane refresh answered from each lane's last status (`93ccf2adb`, the
+owner-approved option): same real-load clone and brain, the phone asks with
+the status allowed to be up to 5 minutes old, the brain answers from each
+lane's last check and re-checks git behind it. The follow-up waits for that
+re-check. Five interleaved runs per side, 5 refreshes each, load 12-62.
+
+| Real load, 47 lanes | Exact status | Baseline (last status) | Ceiling |
+|---|---:|---:|---:|
+| First answer, median of the 5 run medians | 1,753 ms (runs 1,600-1,871) | 45 ms (runs 44-126) | 300 ms |
+| Slowest first answer in 25 | 3,008 ms | 300 ms (load 62) | 1,000 ms |
+| Background re-check, median | n/a | 1,700 ms (one 7.7 s at load 62) | 3,000 ms |
+
+Only the dirty/ahead/behind numbers can be old; lane names, archive state,
+parents and deleted lanes are read live. Without the option (desktop, older
+phones) the answer is the exact one.
+
 Credential reads while another ADE process holds the store lock
 (`scripts/perf/service/credential-lock.bench.mts`: a second process holds
 the lock 3 s, a cold store reads one key with `getSync`, as the brain does
