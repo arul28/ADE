@@ -70,6 +70,7 @@ import {
   LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   localRuntimeActionTimeoutMs,
+  localRuntimeSourceCliStartupConnectMaxMs,
 } from "./localRuntimeTimeoutPolicy";
 import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
@@ -467,6 +468,11 @@ export function createLocalRuntimeOutputLogger(args: {
       pending = "";
     },
   };
+}
+
+/** A `.ts` CLI boots through tsx; a bundled `.cjs` does not. */
+function isSourceCliScriptPath(cliPath: string): boolean {
+  return /\.[cm]?tsx?$/i.test(cliPath);
 }
 
 export function resolveCliScriptPath(): string {
@@ -3928,7 +3934,11 @@ export class LocalRuntimeConnectionPool {
     child: ChildProcess,
     options: { preserveVersionSkew?: boolean } = {},
   ): Promise<RuntimeRpcClient> {
-    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS;
+    // A source CLI boots through tsx; a bundled `cli.cjs` keeps the shorter budget.
+    const startupConnectMaxMs = isSourceCliScriptPath(resolveCliScriptPath())
+      ? localRuntimeSourceCliStartupConnectMaxMs(process.platform)
+      : LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS;
+    const deadline = Date.now() + startupConnectMaxMs;
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       if (child.exitCode != null || child.signalCode != null) {
