@@ -102,6 +102,15 @@ function compatibilityError(error: unknown): PairedRuntimeCompatibilityError {
   );
 }
 
+/**
+ * How long a local-network route gets to open while another route is still
+ * waiting behind it. A socket on the same network opens in milliseconds; the
+ * default 10 s is for a route that is the last hope. A paired box in a data
+ * centre advertises private addresses nobody else can reach, and each of
+ * them used to hold the relay back by the full 10 s.
+ */
+const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
+
 export async function bootstrapPairedRuntime(args: {
   target: RemoteRuntimeTarget;
   registry: RemoteTargetRegistry;
@@ -160,8 +169,9 @@ export async function bootstrapPairedRuntime(args: {
       candidate.endpoint,
     );
   };
-  for (const candidate of orderedCandidates) {
+  for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
+    const hasFallback = candidateIndex < orderedCandidates.length - 1;
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
     let relayAccountToken: string | null = null;
     let relayAccountOwnerUserId: string | null = null;
@@ -227,6 +237,9 @@ export async function bootstrapPairedRuntime(args: {
         appVersion: args.appVersion,
         relayAccountToken,
         ...(candidate.kind === "relay" ? { correlationId } : {}),
+        ...(candidate.kind === "lan" && hasFallback
+          ? { connectTimeoutMs: LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
+          : {}),
       });
     } catch (error) {
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
