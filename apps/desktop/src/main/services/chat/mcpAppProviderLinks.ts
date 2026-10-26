@@ -95,8 +95,19 @@ export function claudeMcpAppLink(args: {
       // SDK bump: without it an app's tool calls are refused, nothing else.
       const control = query as unknown as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> };
       if (typeof control.request !== "function") throw new Error("This version of Claude Code cannot run a tool for an app.");
+      // `result_not_for_model` (Claude Code 2.1.301+; older CLIs ignore it):
+      // the app gets the server's own content blocks, as Codex hands them,
+      // not the copy reshaped for a model (images resized, text beside
+      // structuredContent dropped). That content is unbounded and untrusted;
+      // the host caps it (`MCP_APP_LIMITS.maxCallResultBytes`) and hands it
+      // only to the server's own sandboxed app.
       const reply = await withTimeout(
-        control.request({ subtype: "mcp_call", tool: claudeMcpToolName(server, tool), arguments: toolArgs }),
+        control.request({
+          subtype: "mcp_call",
+          tool: claudeMcpToolName(server, tool),
+          arguments: toolArgs,
+          result_not_for_model: true,
+        }),
         MCP_APP_PROVIDER_TIMEOUT_MS,
         "Claude did not finish the tool call in time.",
       );

@@ -166,7 +166,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getAvailableModels", "getLaunchDefaults", "getClaudeSessionInfo",
       "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
-      "getContextUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
+      "getContextUsage", "getClaudeUsage", "getImageDataUrl", "getMainTranscript", "getSubagentTranscript",
       "getCodexRealtimeState", "getCodexGoal", "listClaudeOutputStyles",
       "getSessionCapabilities", "getSessionSummary", "getTurnStatus", "listPendingInputs", "getSlashCommands",
       "getTurnFileDiff", "getParallelLaunchState", "waitFor", "listWaits", "getLaunch",

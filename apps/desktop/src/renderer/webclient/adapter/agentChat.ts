@@ -596,6 +596,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("getContextUsage", pin);
       return await call("chat.getContextUsage", args, null);
     },
+    getClaudeUsage: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("getClaudeUsage", pin);
+      return await callRequired("chat.getClaudeUsage", args, "Usage limit", true);
+    },
     rewindFiles: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rewindFiles", pin);
       return await call(

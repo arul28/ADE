@@ -488,6 +488,7 @@ export const IPC = {
   agentChatGetMainTranscript: "ade.agentChat.getMainTranscript",
   agentChatGetSubagentTranscript: "ade.agentChat.getSubagentTranscript",
   agentChatGetContextUsage: "ade.agentChat.getContextUsage",
+  agentChatGetClaudeUsage: "ade.agentChat.getClaudeUsage",
   agentChatRewindFiles: "ade.agentChat.rewindFiles",
   agentChatFileSearch: "ade.agentChat.fileSearch",
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",

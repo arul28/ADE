@@ -200,6 +200,7 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { ClaudeUsageSheet } from "./usage/ClaudeUsageSheet";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
@@ -4507,6 +4508,8 @@ export function AgentChatPane({
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [importBrowserOpen, setImportBrowserOpen] = useState(false);
+  /** `/usage` in a Claude chat opens this sheet instead of sending. */
+  const [claudeUsageSheetOpen, setClaudeUsageSheetOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   // Seeded warm: on a remount into a project whose model catalog was already
   // fetched there is nothing left to wait for, and re-gating would stall the
@@ -14519,6 +14522,22 @@ export function AgentChatPane({
     }
     void copyPromptForLaunch(text);
     if (
+      text === "/usage"
+      && selectedSessionId
+      && sessionProvider === "claude"
+      && !personalScope
+      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      // Claude Code's usage report as a sheet; nothing reaches the transcript.
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setClaudeUsageSheetOpen(true);
+      return;
+    }
+    if (
       text === "/context"
       && selectedSessionId
       && sessionProvider === "claude"
@@ -15005,6 +15024,7 @@ export function AgentChatPane({
     countSentMessages,
     openSideChatFromComposer,
     isPersonalPane, attachments,
+    personalScope,
     ambientTurnContext,
     buildNativeControlPayload,
     busy,
@@ -19061,6 +19081,16 @@ export function AgentChatPane({
             setHandoffNote("");
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
+        />
+      ) : null}
+      {selectedSessionId && sessionProvider === "claude" && !personalScope ? (
+        <ClaudeUsageSheet
+          open={claudeUsageSheetOpen}
+          onOpenChange={setClaudeUsageSheetOpen}
+          sessionId={selectedSessionId}
+          pin={chatRuntimePin}
+          turnActive={turnActive}
+          onApplyEffort={handleReasoningEffortChange}
         />
       ) : null}
       {claudeSignInTarget ? (

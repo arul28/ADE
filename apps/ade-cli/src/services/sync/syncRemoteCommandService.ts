@@ -86,6 +86,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
   AgentChatDroidPermissionMode,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
@@ -1193,6 +1194,13 @@ function parseRemoteBranchDriftResolution(
 
 function parseAgentChatContextUsageArgs(value: Record<string, unknown>): AgentChatContextUsageArgs {
   return parseSessionIdArgs(value, "chat.getContextUsage");
+}
+
+function parseAgentChatClaudeUsageArgs(value: Record<string, unknown>): AgentChatClaudeUsageArgs {
+  return {
+    ...parseSessionIdArgs(value, "chat.getClaudeUsage"),
+    ...(value.skipBehaviors === true ? { skipBehaviors: true } : {}),
+  };
 }
 
 function parseAgentChatRewindFilesArgs(value: Record<string, unknown>): AgentChatRewindFilesArgs {
@@ -5404,6 +5412,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
+    ));
+  register("chat.getClaudeUsage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getClaudeUsage(
+      parseAgentChatClaudeUsageArgs(payload),
     ));
   register("chat.rewindFiles", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").rewindFiles(

@@ -1145,6 +1145,11 @@ import {
 } from "../../../shared/claudeClassifierContext";
 import { normalizeClaudeContextUsage as normalizeStructuredClaudeContextUsage } from "../../../shared/claudeContextUsage";
 import {
+  normalizeClaudeUsageReport,
+  type AgentChatClaudeUsageArgs,
+  type ClaudeUsageReport,
+} from "../../../shared/claudeUsageReport";
+import {
   claudeModelSwitchAdditionalContext,
   claudeModelSwitchDividerMessage,
   parseClaudeModelSwitchArgs,
@@ -5239,6 +5244,12 @@ type ManagedChatSession = {
    * just stopped.
    */
   stoppedByParentStopAt?: number;
+  /**
+   * A restart asked for with `afterTurn` while a turn ran (an agent restarting
+   * its own chat). Runs at the next turn end that leaves the chat idle; in
+   * memory only, since a process that dies restarts the chat anyway.
+   */
+  restartAfterTurn?: boolean;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
@@ -21353,6 +21364,10 @@ export function createAgentChatService(args: {
     // `turnStartedAt` is the same guard `maybeRefreshIdleStatusLine` uses: no
     // turn ran, nothing ended. Fire-and-forget and error-safe by construction.
     if (turnStartedAt) notifySimRecordingTurnEnded(managed.session.id);
+    // A restart the turn asked for (`afterTurn`) runs here, where every
+    // provider's turn settles; the `done` event schedules it too, for a turn
+    // whose idle mark came first.
+    if (managed.restartAfterTurn) runRestartAfterTurn(managed);
   };
 
   /**
@@ -23628,6 +23643,7 @@ export function createAgentChatService(args: {
     if (event.type === "done") {
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
+      if (managed.restartAfterTurn) runRestartAfterTurn(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -63016,13 +63032,29 @@ export function createAgentChatService(args: {
   const restartSession = async ({
     sessionId,
     stopFirst = false,
+    afterTurn = false,
   }: AgentChatRestartSessionArgs): Promise<AgentChatRestartSessionResult> => {
     const managed = ensureManagedSession(sessionId);
     if (managed.deleted) throw new Error("This chat was deleted.");
-    const midTurn = runtimeMidTurn(managed) || managed.session.status === "active";
+    const midTurn = sessionTurnRunning(managed);
+    if (midTurn && afterTurn && !stopFirst) {
+      // The turn that asked (usually the agent itself, through `ade chat
+      // restart`) finishes first; `runRestartAfterTurn` picks it up at the end.
+      if (!managed.restartAfterTurn) {
+        managed.restartAfterTurn = true;
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "The agent session restarts when this turn ends. The conversation is kept.",
+        });
+      }
+      logger.info("agent_chat.session_restart_scheduled", { sessionId, provider: managed.session.provider });
+      return { sessionId, restarted: false, stoppedTurn: false, backgroundJobsStopped: 0, scheduled: true };
+    }
     if (midTurn && !stopFirst) {
       throw turnInFlightError("A turn is running. Stop it first, or restart with stopFirst to stop it now.");
     }
+    managed.restartAfterTurn = false;
     if (midTurn) await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
     const backgroundJobsStopped = totalBackgroundWork(runtimeBackgroundWork(managed.runtime ?? null));
     const hadRuntime = Boolean(managed.runtime);
@@ -63047,6 +63079,32 @@ export function createAgentChatService(args: {
       backgroundJobsStopped,
     });
     return { sessionId, restarted: hadRuntime, stoppedTurn: midTurn, backgroundJobsStopped };
+  };
+
+  const sessionTurnRunning = (managed: ManagedChatSession): boolean =>
+    runtimeMidTurn(managed) || managed.session.status === "active";
+
+  /**
+   * Run a restart deferred by `afterTurn`, once the turn's `done` has settled.
+   * A queued message that already started the next turn keeps it waiting for
+   * that turn's end; a chat deleted meanwhile drops it.
+   */
+  const runRestartAfterTurn = (managed: ManagedChatSession): void => {
+    setTimeout(() => {
+      if (!managed.restartAfterTurn) return;
+      if (managed.deleted) {
+        managed.restartAfterTurn = false;
+        return;
+      }
+      if (sessionTurnRunning(managed)) return;
+      void restartSession({ sessionId: managed.session.id }).catch((error) => {
+        managed.restartAfterTurn = false;
+        logger.warn("agent_chat.session_restart_after_turn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 0);
   };
 
   /**
@@ -72455,6 +72513,24 @@ export function createAgentChatService(args: {
       return usage;
     };
 
+    /**
+     * `/usage` in a Claude chat: the structured twin of Claude Code's own
+     * usage dialog (session cost, plan limits, what is using them). Read-only;
+     * the chat's sheet renders it and adds nothing to the transcript.
+     */
+    const getClaudeUsage = async ({ sessionId, skipBehaviors }: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+      const managed = ensureManagedSession(sessionId);
+      const sessionQuery = await getClaudeControlQuery(managed, "/usage");
+      // `get_usage` is a control request the SDK types but gives no method
+      // for (0.3.310); `request` is the channel its typed methods use.
+      const control = sessionQuery as unknown as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> };
+      if (typeof control.request !== "function") {
+        throw new Error("This Claude SDK build cannot report usage.");
+      }
+      const reply = await control.request({ subtype: "get_usage", ...(skipBehaviors ? { skip_behaviors: true } : {}) });
+      return normalizeClaudeUsageReport(reply?.response);
+    };
+
   /**
    * Move a Codex chat's app-server thread back to just before `targetTurnId`.
    *
@@ -74392,6 +74468,7 @@ export function createAgentChatService(args: {
     getSubagentTranscript,
     killDroidWorker,
     getContextUsage,
+    getClaudeUsage,
     rewindFiles,
     rerunLastTurn,
     codexFuzzyFileSearch,

@@ -1484,8 +1484,19 @@ conversation, so the next message starts a fresh process that resumes the same
 provider thread and picks up skills, plugins, MCP servers, and project
 instructions added since the chat started. Entry points: the session
 right-click menu, the command palette (for the chat in front of you),
-`ade chat restart <session> [--stop]`, the `chat.restartSession` action, and
-the sync remote command of the same name.
+`ade chat restart [<session>] [--stop | --after-turn]`, the
+`chat.restartSession` action, and the sync remote command of the same name.
+
+An agent restarts its own chat with a bare `ade chat restart` (the session
+defaults to `$ADE_CHAT_SESSION_ID`). That call always sends `afterTurn`, never
+`stopFirst`: stopping the turn would cut off the command call itself. With
+`afterTurn` during a turn, the action records `restartAfterTurn` on the managed
+session, posts "The agent session restarts when this turn ends", and returns
+`scheduled: true`. The restart runs at the next turn end that leaves the chat
+idle (hooked on both the `done` event and `markSessionIdleWithFreshCache`); a
+queued message that starts the next turn first keeps it waiting for that turn.
+A session-bound agent can aim `restartSession` only at its own chat or its
+descendants (`SCOPED_CHAT_ACTIONS` in `adeRpcServer.ts`).
 
 `restartSession` tears the runtime down with the `restart` reason, which keeps
 the provider resume pointer the way an idle eviction does (Claude session id,
