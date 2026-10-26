@@ -74,7 +74,7 @@ export function isTimelineUserMessageRow(row: ChatTranscriptGroupedEnvelope): ro
 
 /**
  * True for a message the reader wrote. ADE, the scheduler and other agents
- * also deliver `user_message` events (a board move, a PR watch wake, a
+ * also deliver `user_message` events (a board move, a PR or terminal watch wake, a
  * scheduled wake, a child's completion, a relay, a resume prompt); none of
  * those is the reader speaking.
  */
@@ -83,6 +83,7 @@ export function isReaderAuthoredMessage(metadata: AgentChatEventMetadata | null 
   return !(
     metadata.boardMove
     || metadata.prWatchWake
+    || metadata.terminalWatchWake
     || metadata.scheduledWake
     || metadata.spawnCompletion
     || metadata.agentRelay

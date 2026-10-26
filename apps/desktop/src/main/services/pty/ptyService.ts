@@ -55,7 +55,9 @@ import {
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
-import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
+import { stripHostRuntimeEnv, withAdeTerminalIdentityEnv } from "../shared/hostRuntimeEnv";
+import type { TerminalShellPreferenceStore } from "./terminalShells";
+import type { TerminalShellSettings } from "../../../shared/types/terminalShells";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
@@ -544,6 +546,12 @@ function ptySendPreDeliveryError(
 
 function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(env, key);
+}
+
+/** An environment that names a terminal program of its own, not the host's. */
+function setsOwnTermProgram(env: NodeJS.ProcessEnv, hostEnv: NodeJS.ProcessEnv = process.env): boolean {
+  if (!hasEnvKey(env, "TERM_PROGRAM")) return false;
+  return env.TERM_PROGRAM !== hostEnv.TERM_PROGRAM;
 }
 
 function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
@@ -1181,6 +1189,17 @@ function resolveShellCandidates(mode: WindowsShellLaunchMode = "interactive"): S
     if (mode === "login") return loginShellSpec(file);
     return { file, args: [] };
   });
+}
+
+/** The launch for a shell the machine detected, in the same modes Automatic uses. */
+function shellSpecForInstalledShell(file: string, mode: WindowsShellLaunchMode): ShellSpec | null {
+  if (process.platform === "win32") {
+    const fields = resolveWindowsShellLaunchFields(file, { mode });
+    return fields ? { file: fields.command, args: fields.args, ...(fields.env ? { env: fields.env } : {}) } : null;
+  }
+  if (mode === "clean") return cleanShellSpec(file);
+  if (mode === "login") return loginShellSpec(file);
+  return { file, args: [] };
 }
 
 function quotePosixShellArg(value: string): string {
@@ -2516,6 +2535,8 @@ export function createPtyService({
   onSessionAttentionResolved,
   diskPressureMonitor,
   releaseChatBrowser,
+  appVersion,
+  terminalShellPreferences,
   loadPty,
   disposePtyBackend
 }: {
@@ -2561,6 +2582,13 @@ export function createPtyService({
    * outside ADE (the brain detaches its `ade browser attach`).
    */
   releaseChatBrowser?: ((chatSessionId: string) => void) | null;
+  /** ADE's version, published to terminals as `TERM_PROGRAM_VERSION`. */
+  appVersion?: string | null;
+  /**
+   * The machine's default-shell choice for new user shells. Absent (tests,
+   * older embedders): every shell uses Automatic, today's behaviour.
+   */
+  terminalShellPreferences?: TerminalShellPreferenceStore | null;
   loadPty: () => typeof ptyNs;
   disposePtyBackend?: () => void;
 }) {
@@ -2620,6 +2648,48 @@ export function createPtyService({
       return processRegistry?.isProcessIdentityLive(session.ownerPid, ownerStartedAt) === true;
     }
     return processRegistry?.isPidLive(session.ownerPid) === true;
+  };
+
+  /**
+   * The saved default shell as a launch, or null for Automatic. A saved shell
+   * that is gone (uninstalled, a moved Git install) falls back to Automatic
+   * rather than failing the terminal; Settings says so.
+   */
+  const resolvePreferredShellSpec = async (
+    mode: WindowsShellLaunchMode,
+    context: { ptyId: string; sessionId: string },
+  ): Promise<ShellSpec | null> => {
+    if (!terminalShellPreferences) return null;
+    try {
+      const shellId = await terminalShellPreferences.readDefaultShellId();
+      if (!shellId) return null;
+      const shell = await terminalShellPreferences.findShell(shellId);
+      if (!shell) {
+        logger.warn("pty.default_shell_missing", { ...context, shellId });
+        return null;
+      }
+      return shellSpecForInstalledShell(shell.path, mode);
+    } catch (error) {
+      logger.warn("pty.default_shell_resolve_failed", {
+        ...context,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const readShellSettings = async (options: { refresh?: boolean } = {}): Promise<TerminalShellSettings> => {
+    if (!terminalShellPreferences) throw new Error("Choosing a shell is not available on this machine.");
+    const [defaultShellId, shells] = await Promise.all([
+      terminalShellPreferences.readDefaultShellId(),
+      terminalShellPreferences.listShells(options),
+    ]);
+    return {
+      defaultShellId,
+      savedShellMissing: Boolean(defaultShellId) && !shells.some((shell) => shell.id === defaultShellId),
+      automaticShell: resolveShellCandidates("login")[0]?.file ?? null,
+      shells,
+    };
   };
 
   const getSessionIntelligence = () => {
@@ -6774,6 +6844,14 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
+      // ADE renders this PTY, so it names itself rather than the terminal the
+      // host happened to start in. A caller or lane that set TERM_PROGRAM keeps
+      // it, unless the value is only a copy of the host's (App Control passes
+      // its whole environment along).
+      withAdeTerminalIdentityEnv(launchEnv, {
+        version: appVersion,
+        keepTermProgram: setsOwnTermProgram(effectiveArgs.env ?? {}) || setsOwnTermProgram(laneRuntimeEnv),
+      });
       if (isTrackedAgentCliToolType(toolTypeHint)) {
         launchEnv.ADE_DEFAULT_ROLE = "agent";
         const activitySocketPath = sessionActivityReportingEnabled !== false
@@ -6856,7 +6934,17 @@ export function createPtyService({
       let shellMode: WindowsShellLaunchMode = "interactive";
       if (directCommand || startupCommand) shellMode = "clean";
       else if (useLoginInteractiveShell) shellMode = "login";
-      const shellCandidates = resolveShellCandidates(shellMode);
+      let shellCandidates = resolveShellCandidates(shellMode);
+      // The machine's chosen shell applies to a shell the user opens with
+      // nothing to run. Commands, startup lines, agent CLIs and App Control's
+      // agent shells keep Automatic: their lines are written for it.
+      if (useLoginInteractiveShell && args.launchedBy !== "agent") {
+        const preferred = await resolvePreferredShellSpec(shellMode, { ptyId, sessionId });
+        if (preferred) {
+          const preferredKey = pathKey(preferred.file);
+          shellCandidates = [preferred, ...shellCandidates.filter((shell) => pathKey(shell.file) !== preferredKey)];
+        }
+      }
       let launchedDirectCommand = false;
       // Set when the launch names a provider CLI: its pinned copy runs, and a
       // caller's per-shell Windows lines (bare words) no longer apply.
@@ -9300,6 +9388,33 @@ export function createPtyService({
     },
 
     getResourceAttribution,
+
+    /** This machine's shells and its default for new shells. Settings re-scans on open. */
+    async getShellSettings(): Promise<TerminalShellSettings> {
+      return await readShellSettings({ refresh: true });
+    },
+
+    /**
+     * Save the default shell for new user shells: an id this machine reported,
+     * or null for Automatic. Anything else is refused, so no free-text
+     * command can be stored.
+     */
+    async setDefaultShell(args: { shellId?: unknown } = {}): Promise<TerminalShellSettings> {
+      if (!terminalShellPreferences) throw new Error("Choosing a shell is not available on this machine.");
+      const raw = args?.shellId;
+      if (raw !== null && raw !== undefined && typeof raw !== "string") {
+        throw new Error("shellId must be a string or null.");
+      }
+      const shellId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+      if (shellId) {
+        const shells = await terminalShellPreferences.listShells({ refresh: true });
+        if (!shells.some((shell) => shell.id === shellId)) {
+          throw new Error("That shell is not installed on this machine.");
+        }
+      }
+      await terminalShellPreferences.writeDefaultShellId(shellId);
+      return await readShellSettings();
+    },
 
     onData(listener: PtyDataListener): () => void {
       dataListeners.add(listener);

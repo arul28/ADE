@@ -47,6 +47,7 @@ import {
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import type { JevDecideRequest } from "../../../shared/types/jev";
+import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
 import type {
   AntigravitySignInCancelArgs,
   AntigravitySignInCompleteArgs,
@@ -288,6 +289,7 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { machineSecretTempFiles } from "../secrets/secretTempFiles";
 import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
@@ -2998,6 +3000,9 @@ type TerminalDomainService = {
   signal(args?: unknown): unknown;
   activeForChat(args?: unknown): unknown;
   reattachChatCli(args?: unknown): Promise<unknown>;
+  watch(args?: unknown): Promise<unknown>;
+  unwatch(args?: unknown): unknown;
+  listWatches(args?: unknown): unknown;
 };
 
 type PrAiRuntimeSession = {
@@ -3928,7 +3933,25 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
     async reattachChatCli(args) {
       return await runtime.ptyService.reattachChatCli(args as Parameters<typeof runtime.ptyService.reattachChatCli>[0]);
     },
+    // Terminal watches run where the chat runs. A runtime without one (no chat
+    // service) answers plainly instead of advertising a watch nobody delivers.
+    async watch(args) {
+      return await requireTerminalWatchService(runtime).watch(readTerminalWatchArgs(args));
+    },
+    unwatch(args) {
+      return requireTerminalWatchService(runtime).unwatch(readTerminalUnwatchArgs(args));
+    },
+    listWatches(args) {
+      return runtime.terminalWatchService?.listWatches(readTerminalListWatchesArgs(args)) ?? [];
+    },
   };
+}
+
+function requireTerminalWatchService(runtime: AdeRuntime): NonNullable<AdeRuntime["terminalWatchService"]> {
+  if (!runtime.terminalWatchService) {
+    throw new Error("Terminal watches are not available on this runtime: it does not run chats.");
+  }
+  return runtime.terminalWatchService;
 }
 
 function buildSearchDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -4159,6 +4182,9 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
               const result = await requestProjectSecretFromUser({
                 requestChatInput: (input) => agentChatService.requestChatInput(input),
                 projectSecrets: projectSecretService,
+                // Written here, on the machine that runs the chat: the answer
+                // reaches this runtime wherever the person answered from.
+                secretFiles: machineSecretTempFiles(runtime.logger),
               }, args);
               capture(result.saved ? "completed" : "kept" in result && result.kept ? "kept" : "cancelled");
               return result;

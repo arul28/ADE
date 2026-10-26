@@ -441,6 +441,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE MCP",
   },
   {
+    id: "behaviour.terminal-shell",
+    label: "Default terminal shell",
+    keywords: ["shell", "terminal", "zsh", "bash", "fish", "powershell", "pwsh", "cmd", "git bash", "default shell"],
+    tab: "behaviour",
+    anchor: "terminal-shell",
+    scope: "machine",
+    // Read and saved through the machine's runtime, which a hosted tab drives too.
+    web: "machine",
+    group: "Terminal",
+  },
+  {
     id: "general.capture-gesture",
     label: "Capture with a key gesture",
     keywords: ["screenshot", "capture", "screen", "gesture", "command", "ctrl", "window", "cto", "shortcut"],
@@ -479,10 +490,14 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.browser-settings",
-    label: "Tabs and downloads",
+    label: "Tabs, downloads and search",
     // No "browser" here on purpose: the access entry already owns that word in
     // search, and a second match reordered the command palette's thread results.
-    keywords: ["tabs", "tab limit", "downloads", "download folder", "save", "directory"],
+    keywords: [
+      "tabs", "tab limit", "downloads", "download folder", "save", "directory",
+      "search engine", "address bar", "google", "duckduckgo", "bing", "kagi",
+      "certificate", "https", "self-signed", "trusted",
+    ],
     tab: "behaviour",
     anchor: "browser-settings",
     scope: "machine",

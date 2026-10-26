@@ -150,6 +150,11 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
         },
         detectedAt: input.detectedAt ?? new Date().toISOString(),
       };
+      // Keep who named this port before, when that was another chat.
+      const previousReport = previous && previous.source.sessionId !== next.source.sessionId
+        ? (previous.source.sessionId ? { sessionId: previous.source.sessionId, detectedAt: previous.detectedAt } : previous.previousReport ?? null)
+        : previous?.previousReport ?? null;
+      if (previousReport) next.previousReport = previousReport;
       records.set(key, next);
       if (records.size > maxEntries) {
         const oldest = records.keys().next();

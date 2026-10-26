@@ -160,6 +160,7 @@ import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, S
 import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
+import { terminalShellPreferenceStoreFor } from "./services/pty/terminalShells";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
 import {
   normalizePtyDataSubscriptions,
@@ -218,6 +219,7 @@ import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLoca
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrWatchService } from "./services/prs/prWatchService";
+import { createTerminalWatchService } from "./services/pty/terminalWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -4300,6 +4302,7 @@ app.whenReady().then(async () => {
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
     let prWatchServiceRef: ReturnType<typeof createPrWatchService> | null = null;
+    let terminalWatchServiceRef: ReturnType<typeof createTerminalWatchService> | null = null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -4559,6 +4562,8 @@ app.whenReady().then(async () => {
         });
       },
       diskPressureMonitor,
+      appVersion: app.getVersion(),
+      terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeDir(), logger),
       loadPty,
       disposePtyBackend: ptyBackend?.dispose,
     });
@@ -4782,6 +4787,7 @@ app.whenReady().then(async () => {
         },
       },
       getTestService: () => testServiceRef,
+      getTerminalWatchService: () => terminalWatchServiceRef,
       ptyService,
       getAutomationService: () => automationService,
       getAccountUsage: () => usageTrackingService,
@@ -4949,6 +4955,14 @@ app.whenReady().then(async () => {
       isChatMovedAway: (sessionId) => Boolean(agentChatService.getCrossMachineMoveLock(sessionId, "pr_watch")),
       emitPrEvent,
       getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
+    });
+    terminalWatchServiceRef = createTerminalWatchService({
+      logger,
+      ptyService,
+      sessionService,
+      messageSession: (args) => agentChatService.messageSession(args),
+      getChatLiveness: chatLivenessReader(agentChatService),
+      isChatMovedAway: (sessionId) => Boolean(agentChatService.getCrossMachineMoveLock(sessionId, "terminal_watch")),
     });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
@@ -6398,6 +6412,7 @@ app.whenReady().then(async () => {
         linearIssueTracker,
         fileService,
         ptyService,
+        terminalWatchService: terminalWatchServiceRef,
         computerUseArtifactBrokerService,
         iosSimulatorService,
         macDesktopService,
@@ -6460,6 +6475,7 @@ app.whenReady().then(async () => {
       prService,
       prPollingService,
       prWatchService: prWatchServiceRef,
+      terminalWatchService: terminalWatchServiceRef,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -6679,6 +6695,7 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       prWatchService: null,
+      terminalWatchService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,
@@ -7043,6 +7060,7 @@ app.whenReady().then(async () => {
     try {
       ctx.prPollingService?.dispose();
       ctx.prWatchService?.dispose();
+      ctx.terminalWatchService?.dispose();
     } catch {
       // ignore
     }

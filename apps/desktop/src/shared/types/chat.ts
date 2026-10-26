@@ -1361,6 +1361,14 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   boardMove?: AgentChatBoardMoveMetadata;
   /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
   prWatchWake?: AgentChatPrWatchWakeMetadata;
+  /** Marks a terminal watch wake. Renders as its card, never as a user bubble. */
+  terminalWatchWake?: AgentChatTerminalWatchWakeMetadata;
+};
+
+export type AgentChatTerminalWatchWakeMetadata = {
+  watchId: string;
+  terminalId: string;
+  card: AdeCardPayload;
 };
 
 export type AgentChatPrWatchWakeMetadata = {

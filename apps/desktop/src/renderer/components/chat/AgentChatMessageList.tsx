@@ -2886,8 +2886,9 @@ function renderEvent(
     );
   }
 
-  /* ── PR Watch / Ship wake ──
-     ADE woke the agent because its pull request changed. The user did not
+  /* ── PR Watch / Ship wake, terminal watch wake ──
+     ADE woke the agent because its pull request changed (or a watched
+     terminal printed something). The user did not
      write this message, so it is never a user bubble: the card says what
      changed and that the agent was told, and the exact text sits folded
      underneath for anyone who wants to see what the agent read. */

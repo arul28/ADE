@@ -40,6 +40,12 @@ import type {
   UsageSnapshot,
 } from "../../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
+import type {
+  TerminalUnwatchArgs,
+  TerminalUnwatchResult,
+  TerminalWatchArgs,
+  TerminalWatchResult,
+} from "../../../../shared/terminalWatch";
 import type { IssueTracker } from "../../cto/issueTracker";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
@@ -92,6 +98,11 @@ export interface CtoOperatorToolDeps {
   } | null;
   ptyService?: {
     create: (args: PtyCreateArgs) => Promise<{ ptyId: string; sessionId: string }>;
+  } | null;
+  /** Wakes a chat when one of this machine's terminals prints; absent where no chat service runs. */
+  terminalWatchService?: {
+    watch: (args: TerminalWatchArgs) => Promise<TerminalWatchResult>;
+    unwatch: (args: TerminalUnwatchArgs) => TerminalUnwatchResult;
   } | null;
   automationService?: {
     list: () => AutomationRuleSummary[];
@@ -1927,6 +1938,61 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           tracked: true,
         });
         return { success: true, ...result };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.watchTerminal = core({
+    description:
+      "Have ADE wake a chat when an ADE terminal on this machine prints something new, instead of polling it. "
+      + "Output already on screen never wakes; new output wakes after it goes quiet for a few seconds, with the last "
+      + "~4 KB cleaned of colors and redraws. 'match' limits wakes to lines containing that text (case-insensitive; | separates alternatives). "
+      + "The terminal exiting, the lifetime (default 2h, max 24h) or 20 wakes in an hour ends the watch with one "
+      + "last wake. Pass 'command' instead of a terminal to start it in a new shell and watch it from the first byte. "
+      + "Defaults to your own thread; pass sessionId to wake a worker chat.",
+    inputSchema: z.object({
+      terminalId: z.string().trim().min(1).optional().describe("Terminal session id or PTY id. Omit with 'command'."),
+      command: z.string().trim().min(1).optional().describe("Start this command in a new shell in laneId and watch it."),
+      laneId: z.string().trim().min(1).optional().describe("Lane for 'command'. Defaults to the chat's lane."),
+      match: z.string().trim().min(1).max(200).optional(),
+      lifetime: z.string().trim().min(1).optional().describe("30m, 2h, 1d. Defaults to 2h."),
+      sessionId: z.string().trim().min(1).optional().describe("Chat to wake. Defaults to this CTO thread."),
+    }),
+    execute: async ({ terminalId, command, laneId, match, lifetime, sessionId }) => {
+      if (!deps.terminalWatchService) return { success: false, error: "Terminal watches are not available on this runtime." };
+      try {
+        const result = await deps.terminalWatchService.watch({
+          chatSessionId: sessionId ?? deps.currentSessionId,
+          terminalId: terminalId ?? null,
+          command: command ?? null,
+          laneId: laneId ?? null,
+          match: match ?? null,
+          lifetime: lifetime ?? null,
+          armedBy: "agent",
+        });
+        return { success: true, ...result, note: "End your turn; ADE wakes the chat on new output." };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.unwatchTerminal = core({
+    description: "Stop terminal watches quietly: one by watchId, or this chat's watch on terminalId, or (neither) all of this chat's.",
+    inputSchema: z.object({
+      watchId: z.string().trim().min(1).optional(),
+      terminalId: z.string().trim().min(1).optional(),
+      sessionId: z.string().trim().min(1).optional().describe("Chat whose watches to stop. Defaults to this CTO thread."),
+    }),
+    execute: async ({ watchId, terminalId, sessionId }) => {
+      if (!deps.terminalWatchService) return { success: false, error: "Terminal watches are not available on this runtime." };
+      try {
+        const result = deps.terminalWatchService.unwatch(
+          watchId ? { watchId } : { chatSessionId: sessionId ?? deps.currentSessionId, terminalId: terminalId ?? null },
+        );
+        return { success: true, stoppedCount: result.stopped.length, ...result };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

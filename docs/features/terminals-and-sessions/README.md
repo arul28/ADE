@@ -1563,7 +1563,17 @@ Renderer surfaces:
   paste is not tried a second time. The paste code lives in
   `terminalImagePaste.ts` (see below). Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
-  fallback for previews). Shift+drag remains available for local text
+  fallback for previews). Programs copy with OSC 52 (`osc52.ts`, registered
+  with xterm's `parser.registerOscHandler(52)`, which frames chunk splits, BEL
+  and ST, and CAN/SUB aborts): write-only (a `?` read is never answered), at
+  most 1 MiB of base64, invalid base64 or UTF-8 dropped, an empty payload never
+  clears the clipboard. A copy lands only from the terminal that is visible, in
+  the focused window and holds focus, and shows a short "Copied from terminal"
+  toast. Hydration, snapshots, replay and output buffered while hidden are
+  written through `writeTerminalHistory`, which brackets those bytes with
+  ordered write callbacks so an old copy is never acted on again. The brain's
+  headless mirror and the `ade code` TUI ignore OSC 52; the iOS terminal
+  (SwiftTerm) copies live output only and skips history feeds. Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
   ADE translates that gesture to xterm's Option-based force-selection path so
   remote and local CLI sessions behave the same. A recovery event with
@@ -1882,6 +1892,26 @@ Renderer surfaces:
   PowerShell 7, cmd, or an absolute Git for Windows `bash.exe` path and then
   falls back through PowerShell 5.1, PowerShell 7, and cmd. Bare `bash.exe` and
   `wsl.exe` are rejected so the local runtime never crosses into WSL.
+  **Default shell** (Settings → Computer → Behaviour → Terminal shell,
+  `TerminalShellSection.tsx`): `pty/terminalShells.ts` detects the terminal
+  machine's shells (`/etc/shells` + `$SHELL`, deduped by realpath; on Windows
+  PowerShell 7, Windows PowerShell, cmd and Git Bash from Program Files,
+  `%LocalAppData%\Programs\Git` or next to `git.exe` on PATH; never WSL) and
+  keeps the choice in `<ADE home>/terminal-shell.json`. Detection is cached
+  for 5 minutes; Settings re-scans when it opens. The choice applies only to a
+  plain shell the user opens (`toolType: "shell"`, no command or startup line,
+  not `launchedBy: "agent"`): it goes first in the candidate list in login
+  mode and Automatic follows as the fallback. Automatic (no file, or `null`)
+  is exactly `resolveShellCandidates`. A saved shell that is gone falls back to
+  Automatic and Settings shows a warning. Actions `pty.getShellSettings` (read)
+  and `pty.setDefaultShell` (CTO-only; only ids the machine reported) are
+  reached with the Settings page's machine pin.
+  Every PTY env gets `TERM_PROGRAM=ADE` and `TERM_PROGRAM_VERSION=<ADE
+  version>` (`withAdeTerminalIdentityEnv` in `shared/hostRuntimeEnv.ts`, after
+  `stripHostRuntimeEnv`), and the host terminal's session pointers
+  (`LC_TERMINAL`, `ITERM_SESSION_ID`, `WT_SESSION`, …) are dropped when they
+  are the host's own values. A `TERM_PROGRAM` set by the caller or the lane env
+  is kept. tmux inside an ADE terminal still sets its own.
   `deriveTrackedCliInitialInputSessionMeta`
   seeds the session title and `goal` field from the first prompt
   (sanitised + clipped to ~72 chars) when the caller did not supply a
@@ -2870,6 +2900,44 @@ applied fresh on every relaunch. `config-toml` is its own permission mode
 rather than folded into `edit`: it means "use your own OpenCode configuration",
 so ADE sets no agent and no permission policy for it, and the instructions say
 so explicitly rather than asserting a tier ADE never set.
+
+## Terminal watch (`ade terminal watch`)
+
+A chat can ask to be woken when an ADE terminal prints something new, instead
+of polling `ade terminal read` (whose `--since` cursor is positional in a
+sliding window, not an absolute offset).
+
+- **Service:** `main/services/pty/terminalWatchService.ts` (state machine),
+  `terminalWatchOutput.ts` (ANSI strip, `\r` redraws, spinner/paint lines,
+  repeat collapse, excerpt), `shared/terminalWatch.ts` (wire types, lifetime and
+  `match` parsers). Wired in `apps/ade-cli/src/bootstrap.ts` (the brain) and
+  `main.ts` (legacy in-process desktop).
+- **Event driven.** One `ptyService.onData` / `onExit` subscription, held only
+  while a watch exists. Per chunk it only appends; cleaning and matching run
+  once per wake. Baseline is the stream at arm time; a `--command` watch
+  buffers from the shell's first byte.
+- **Debounce:** wakes after 3 s of quiet, or 20 s max for a process that never
+  goes quiet. Pure paint, nothing matching `match`, or the same excerpt as the
+  last wake: no wake. Excerpt: newest ~4 KB; at most 64 KB of raw output is
+  kept between wakes (the rest is counted and reported).
+- **Wake path:** `agentChatService.messageSession({ kind: "wake" })` with
+  `metadata.terminalWatchWake` (a `terminal_watch_wake` card), the same path
+  PR watch uses. While the chat is mid-turn the output is held and coalesced
+  into one wake at the turn's end; a settled or moved-away chat holds until it
+  is back. Archived/deleted chats end the watch.
+- **Caps:** 5 watches per chat, 100 per brain, lifetime 2 h default (1 min to
+  24 h), 20 wakes an hour. The lifetime or wake cap, and the terminal exiting
+  (with its exit code), end the watch with one final wake. Stop/unwatch is
+  quiet. A second watch on the same terminal from the same chat replaces the
+  first.
+- **Remote:** actions `terminal.watch` / `unwatch` / `listWatches` (allowlisted
+  in `actionPolicy.ts`, read/write in `adeActionAccess.ts`). The watch runs on
+  the brain that owns the chat and refuses a terminal that is not live there.
+  The chat pane's **Watching** section (`ChatTerminalWatches.tsx`) reads and
+  stops them through the chat's pin and re-reads on the `meta-updated`
+  session event the service raises for the chat (`sessionService.notifyChanged`).
+- **Persistence:** in memory only. Watches end when the brain restarts; agents
+  re-arm. CTO tools: `watchTerminal` / `unwatchTerminal`.
 
 ## Gotchas
 

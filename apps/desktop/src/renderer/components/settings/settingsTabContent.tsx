@@ -23,6 +23,7 @@ import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
+import { TerminalShellSection } from "./TerminalShellSection";
 import { AdeMcpPage } from "./AdeMcpPage";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
@@ -365,6 +366,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   behaviour: [
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
+    // Detected and stored on the machine the terminals run on; every call
+    // carries that machine's pin.
+    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
