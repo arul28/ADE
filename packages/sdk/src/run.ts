@@ -25,7 +25,17 @@ export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
   model: string;
   schema?: JsonSchema;
   budget?: ThreadBudget;
+  /**
+   * Longest one turn may take, in ms (default 10 minutes). On expiry the turn
+   * is interrupted and `run()` rejects with `rpc_timeout`.
+   */
+  timeoutMs?: number;
 };
+
+const DEFAULT_RUN_TIMEOUT_MS = 10 * 60_000;
+
+/** Event types that park a turn until someone answers, which `run()` cannot. */
+const WAITS_FOR_AN_ANSWER = new Set(["approval_request", "structured_question"]);
 
 export class InvalidOutputError extends AdeError {
   readonly rawText: string;
@@ -123,7 +133,7 @@ type RunClient = {
 };
 
 function appendSchemaInstructions(options: RunOptions): ThreadOpenOptions {
-  const { schema, provider, model, budget, ...openOptions } = options;
+  const { schema, provider, model, budget, timeoutMs: _timeoutMs, ...openOptions } = options;
   if (!schema) return { ...openOptions, provider, model, ...(budget ? { budget } : {}) };
 
   const existing = openOptions.instructions;
@@ -143,21 +153,40 @@ function appendSchemaInstructions(options: RunOptions): ThreadOpenOptions {
   };
 }
 
-async function runTurn(thread: AdeThread, prompt: string): Promise<string> {
+async function runTurn(thread: AdeThread, prompt: string, timeoutMs: number): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     let output = "";
     let errorMessage: string | null = null;
     let settled = false;
     let stop: (() => void) | undefined;
+    // A run that stops waiting must also stop the turn, or the provider keeps
+    // working (and spending) on a thread that is about to be deleted.
+    const abandon = (error: Error) => {
+      // Settle first: the interrupt's own `done` must not resolve this run.
+      finish(error);
+      void thread.interrupt().catch(() => {});
+    };
+    const timer = setTimeout(() => {
+      abandon(new AdeError("rpc_timeout", `client.run() gave up after ${timeoutMs} ms; pass a larger timeoutMs for long tasks.`));
+    }, timeoutMs);
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       stop?.();
       if (error) reject(error);
       else resolve(output);
     };
     stop = thread.on("event", (envelope: AgentChatEventEnvelope) => {
       const event = envelope.event;
+      if (WAITS_FOR_AN_ANSWER.has(event.type)) {
+        abandon(new AdeError(
+          "unsupported",
+          "client.run() cannot answer approvals or questions. Give it permissions that need none " +
+            "(for example permissions: \"always-allow\" with a sandboxed cwd), or use a thread.",
+        ));
+        return;
+      }
       if (event.type === "text" && typeof event.text === "string") output += event.text;
       if (event.type === "error" && typeof event.message === "string") errorMessage = event.message;
       if (event.type === "done") {
@@ -177,14 +206,18 @@ export async function runOnce<T = unknown>(client: RunClient, prompt: string, op
   if (typeof options.model !== "string" || !options.model.trim()) throw new AdeError("invalid_option", "client.run() needs a model id.");
   if (options.schema) validateSchemaShape(options.schema);
 
+  const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new AdeError("invalid_option", "client.run() timeoutMs must be a positive number of milliseconds.");
+  }
   const key = `__ade_run_${randomUUID()}`;
   const thread = await client.threads.open(key, appendSchemaInstructions(options));
   try {
-    let rawText = await runTurn(thread, prompt);
+    let rawText = await runTurn(thread, prompt, timeoutMs);
     if (!options.schema) return rawText;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const parsed: unknown = JSON.parse(rawText.trim());
+        const parsed: unknown = JSON.parse(withoutCodeFence(rawText));
         const errors = validateJsonSchema(parsed, options.schema);
         if (!errors.length) return parsed as T;
         if (attempt === 1) throw new InvalidOutputError(rawText, errors.join("; "));
@@ -192,12 +225,13 @@ export async function runOnce<T = unknown>(client: RunClient, prompt: string, op
           thread,
           `Your previous response did not match the requested JSON Schema: ${errors.join("; ")}. ` +
             "Try once more and return only the corrected JSON value.",
+          timeoutMs,
         );
       } catch (error) {
         if (error instanceof InvalidOutputError) throw error;
         if (error instanceof SyntaxError) {
           if (attempt === 1) throw new InvalidOutputError(rawText, "the output was not valid JSON");
-          rawText = await runTurn(thread, "Your previous response was not valid JSON. Try once more and return only a corrected JSON value.");
+          rawText = await runTurn(thread, "Your previous response was not valid JSON. Try once more and return only a corrected JSON value.", timeoutMs);
           continue;
         }
         throw error;
@@ -205,6 +239,18 @@ export async function runOnce<T = unknown>(client: RunClient, prompt: string, op
     }
     throw new InvalidOutputError(rawText, "the output could not be validated");
   } finally {
-    await client.threads.delete(key);
+    // Best effort: a failed cleanup must not replace the run's own result or
+    // error. The key is unique to this run, so a leftover cannot be reopened.
+    await client.threads.delete(key).catch(() => {});
   }
+}
+
+/**
+ * Models often wrap JSON in a Markdown fence despite being told not to. Strip
+ * exactly one fence around the whole answer, and nothing else.
+ */
+function withoutCodeFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = /^```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n?```$/.exec(trimmed);
+  return fenced ? fenced[1]!.trim() : trimmed;
 }

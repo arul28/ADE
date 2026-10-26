@@ -55,11 +55,17 @@ export const META_PACKAGE_NAME = "@ade-dev/runtime";
 // The npm runtime packages are used only by SDK embedders, which always start
 // the binary with `--profile embedded`. ADE's CLI installer still consumes the
 // full native archive and keeps these files for `ade code`, Linear and sync.
+//
+// Only packages the runtime bundle (`dist/cli.cjs`) never requires belong
+// here: anything it requires is loaded from `native/node_modules` at startup,
+// whatever the profile. `@xterm/headless` and `@xterm/addon-serialize` are
+// required by the terminal service the bootstrap always builds, so they stay.
+// `verify-built-cli.mjs` fails the CLI build when this set and the bundle
+// disagree; a smoke run on the build machine cannot catch it, because the
+// checkout's own node_modules resolve whatever the package left out.
 export const EMBEDDED_EXCLUDED_PACKAGES = new Set([
   "@linear/sdk",
   "@xterm/addon-fit",
-  "@xterm/addon-serialize",
-  "@xterm/headless",
   "@xterm/xterm",
   "highlight.js",
   "ink",
@@ -452,7 +458,7 @@ function isRuntimeCriticalPackedFile(relativePath) {
 }
 
 function isEmbeddedExcludedPackage(packageName) {
-  return EMBEDDED_EXCLUDED_PACKAGES.has(packageName) || packageName.startsWith("@xterm/");
+  return EMBEDDED_EXCLUDED_PACKAGES.has(packageName);
 }
 
 function embeddedPackagePath(packageName) {
@@ -496,8 +502,7 @@ function assertEmbeddedPackageContents({ packageDir, packedFiles }) {
   const onDisk = listFilesRelative(nativeDir).map((relative) => `native/${relative}`);
   const forbiddenPaths = onDisk.filter((relative) =>
     EMBEDDED_EXCLUDED_NATIVE_PATHS.some((prefix) => relative === prefix || relative.startsWith(`${prefix}/`))
-      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name)))
-      || /^native\/node_modules\/@xterm\//.test(relative),
+      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name))),
   );
   if (forbiddenPaths.length > 0) {
     throw new Error(
@@ -515,8 +520,7 @@ function assertEmbeddedPackageContents({ packageDir, packedFiles }) {
 
   const forbiddenPackedPaths = packedFiles.filter((relative) =>
     EMBEDDED_EXCLUDED_NATIVE_PATHS.some((prefix) => relative === prefix || relative.startsWith(`${prefix}/`))
-      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name)))
-      || /^native\/node_modules\/@xterm\//.test(relative),
+      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name))),
   );
   if (forbiddenPackedPaths.length > 0) {
     throw new Error(
@@ -532,8 +536,6 @@ function pruneEmbeddedRuntime(nativeDir) {
   for (const packageName of EMBEDDED_EXCLUDED_PACKAGES) {
     fs.rmSync(path.join(nativeDir, "node_modules", ...packageName.split("/")), { recursive: true, force: true });
   }
-  const xtermDir = path.join(nativeDir, "node_modules", "@xterm");
-  fs.rmSync(xtermDir, { recursive: true, force: true });
 
   const manifestPath = path.join(nativeDir, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));

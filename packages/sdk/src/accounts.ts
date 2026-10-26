@@ -59,7 +59,6 @@ export type SignInStatus = {
   url: string | null;
   awaitingCode: boolean;
   deviceCode?: string;
-  output: string;
   email?: string;
   message?: string;
   startedAt: string;
@@ -224,7 +223,6 @@ function loginInfo(value: unknown, accountId: string, provider: string): SignInS
     url: typeof row.url === "string" ? row.url : null,
     awaitingCode: row.awaitingCode === true,
     ...(typeof row.deviceCode === "string" ? { deviceCode: row.deviceCode } : {}),
-    output: typeof row.output === "string" ? row.output : "",
     ...(typeof row.email === "string" ? { email: row.email } : {}),
     ...(typeof row.message === "string" ? { message: row.message } : {}),
     startedAt: typeof row.startedAt === "string" ? row.startedAt : new Date().toISOString(),
@@ -269,6 +267,10 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
         resolveDone = resolve;
         rejectDone = reject;
       });
+      // A host may follow the sign-in only through `on("update")` and cancel
+      // it without ever awaiting `done`; its rejection must not then surface
+      // as an unhandled rejection, which crashes a Node or Electron-main host.
+      done.catch(() => {});
       const publish = (status: SignInStatus) => {
         current = status;
         for (const listener of [...listeners]) {
@@ -292,7 +294,7 @@ export function createAccountManagement(call: AccountActionCall, assertUsable: (
             } catch (error) { rejectDone(error instanceof Error ? error : new Error(String(error))); }
           })();
         } else {
-          rejectDone(failure ?? new AdeError(status.state === "cancelled" || status.state === "expired" ? "unsupported" : "rpc_error", status.message ?? `Sign-in ${status.state}.`));
+          rejectDone(failure ?? new AdeError("sign_in_failed", status.message ?? `Sign-in ${status.state}.`));
         }
       };
       const handle: SignInHandle & { dispose(): void; cancelForDispose(): Promise<void> } = {

@@ -1451,7 +1451,10 @@ export class Thread implements AdeThread {
           });
         } else {
           queued.delete(event.steerId);
-          if (["accepted", "processed", "delivered", "inline", "failed"].includes(String(event.deliveryState))) settled.add(event.steerId);
+          // The same rule as ADE's own queue (`isSettledSteerDeliveryState`):
+          // `accepted` is not final, because a Cursor or OpenCode turn can
+          // refuse an inline steer and the same steerId comes back `queued`.
+          if (event.deliveryState !== "accepted") settled.add(event.steerId);
         }
       } else if (event.type === "queue_reordered" && Array.isArray(event.steerIds)) {
         const reordered = new Map<string, ThreadQueueItem>();
@@ -1462,12 +1465,25 @@ export class Thread implements AdeThread {
       } else if (event.type === "user_message_resolution" && typeof event.steerId === "string") {
         queued.delete(event.steerId);
         settled.add(event.steerId);
-      } else if (event.type === "system_notice" && typeof event.steerId === "string" && typeof event.message === "string" && /cancelled|deliver(?:ing|ed)/i.test(event.message)) {
+      } else if (event.type === "system_notice" && typeof event.steerId === "string" && typeof event.message === "string" && /cancelled|delivering/i.test(event.message)) {
+        // ADE's own queue resolves a steer on exactly these two notices.
         queued.delete(event.steerId);
         settled.add(event.steerId);
       } else if (event.type === "command_lifecycle" && typeof event.steerId === "string" && event.status !== "queued") {
         queued.delete(event.steerId);
         settled.add(event.steerId);
+      } else if (event.type === "queue_recovery" && event.state === "restored" && Array.isArray(event.restoredSteers)) {
+        // A restored queue comes back with its messages, after their earlier
+        // cancellation settled them.
+        for (const steer of event.restoredSteers as Array<{ steerId?: unknown; text?: unknown; attachments?: unknown }>) {
+          if (typeof steer.steerId !== "string" || !steer.steerId) continue;
+          settled.delete(steer.steerId);
+          queued.set(steer.steerId, {
+            id: steer.steerId,
+            text: typeof steer.text === "string" ? steer.text : "",
+            ...(Array.isArray(steer.attachments) ? { attachments: steer.attachments as AgentChatFileRef[] } : {}),
+          });
+        }
       }
     }
     return [...queued.values()];

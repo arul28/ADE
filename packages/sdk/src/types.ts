@@ -516,7 +516,14 @@ export type KnownAgentChatEvent =
     }
   | { type: "user_message_resolution"; steerId: string; action: "run_next" | "dismiss"; state: "completed"; replacementMessageId?: string }
   | { type: "queue_reordered"; steerIds: string[] }
-  | { type: "queue_recovery"; recoveryId: string; state: "available" | "restored" | "expired"; messageCount: number }
+  | {
+    type: "queue_recovery";
+    recoveryId: string;
+    state: "available" | "restored" | "expired";
+    messageCount: number;
+    /** On `restored`: the messages put back in the queue. */
+    restoredSteers?: Array<{ steerId: string; text: string; attachments?: AgentChatFileRef[] }>;
+  }
   | { type: "text"; text: string; messageId?: string; turnId?: string }
   | { type: "reasoning"; text?: string; turnId?: string }
   | { type: "tool_call"; tool: string; args: unknown; itemId: string; turnId?: string }

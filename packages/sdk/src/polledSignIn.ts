@@ -47,7 +47,7 @@ export function createPolledSignIn<E>(
     publish(result.status);
     if (result.account) resolveDone(result.account);
     else if (result.error !== undefined) rejectDone(ops.toError(result.error));
-    else rejectDone(new AdeError("rpc_error", result.status.message ?? `Sign-in ${result.status.state}.`));
+    else rejectDone(new AdeError("sign_in_failed", result.status.message ?? `Sign-in ${result.status.state}.`));
   };
   const poll = async (): Promise<void> => {
     if (finished) return;
