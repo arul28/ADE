@@ -380,7 +380,7 @@ describe("Claude query lifecycle", () => {
   // An afterTurn restart asked for mid-turn (the agent running `ade chat restart`
   // on itself) waits for that turn to end, runs once, and does not run again on a later turn.
   it("defers an afterTurn restart until the turn that asked for it ends, then runs it once", async () => {
-    const { service, events, reaper } = createHarness([]);
+    const { service, events } = createHarness([]);
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
