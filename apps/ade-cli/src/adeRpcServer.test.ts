@@ -4478,6 +4478,41 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(false);
   });
 
+  it("refuses an agent's project config save that changes or drops a key only the user owns", async () => {
+    const fixture = createRuntime();
+    const local = { version: 1, automations: [], github: { prTranscriptGists: { enabled: false } } };
+    const projectConfigService = {
+      get: vi.fn(() => ({ shared: {}, local })),
+      save: vi.fn((candidate: unknown) => candidate),
+    };
+    (fixture.runtime as any).projectConfigService = projectConfigService;
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const save = (handler: typeof agentHandler, candidate: unknown) =>
+      callTool(handler, "run_ade_action", { domain: "project_config", action: "save", argsList: [candidate] });
+
+    // Turning on PR chat transcripts publishes chats: refused, with the link to the setting.
+    const publish = await save(agentHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(publish?.isError).toBe(true);
+    expect(JSON.stringify(publish)).toContain("ade://settings/lanes-git.pr-chat-transcripts");
+    // Save writes `local`; leaving it out would write an empty file and drop the key.
+    const wipe = await save(agentHandler, { shared: {} });
+    expect(wipe?.isError).toBe(true);
+    expect(projectConfigService.save).not.toHaveBeenCalled();
+
+    // The work setup is the agent's to change.
+    const automations = await save(agentHandler, { shared: {}, local: { ...local, automations: [{ id: "nightly" }] } });
+    expect(automations?.isError).toBeUndefined();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(1);
+
+    // The user's own client may change the owner-only key.
+    const userHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "user-1", role: "cto" });
+    const userPublish = await save(userHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(userPublish?.isError).toBeUndefined();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(2);
+  });
+
   it("routes account settings and vault actions through the runtime stores", async () => {
     const fixture = createRuntime();
     const accountSettingsStore = {

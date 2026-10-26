@@ -685,10 +685,15 @@ Renderer — settings:
   notes, secrets) and settings only the user changes (publishing, sign-ins,
   money, agent reach, the computer, deleting data, preferences). A setting
   not listed is the user's. The refusals live in the brain:
-  `ADE_ACTION_CTO_ONLY` for the writes, and `ownerOnlyProjectConfigChange`,
-  which refuses an agent's `project_config.save` that touches any config key
-  outside the work setup (`AGENT_EDITABLE_PROJECT_CONFIG_KEYS`). An agent can
-  still hand-edit `.ade/local.yaml`; that gap is known.
+  `ADE_ACTION_CTO_ONLY` for the writes (`USER_SETTING_WRITES` in
+  `actionPolicy.ts` lists them with the card each refusal links to), and
+  `ownerOnlyProjectConfigChange`, which refuses an agent's
+  `project_config.save` whose `local` layer would change or drop any config key
+  outside the work setup (`AGENT_EDITABLE_PROJECT_CONFIG_KEYS`). Automation
+  steps may not run `project_config.save` at all. The user's own terminal keeps
+  these commands (`ade settings …`, `ade providers accounts add|remove|default`
+  connect as the operator role; an agent's shell is clamped back to agent). An
+  agent can still hand-edit `.ade/local.yaml`; that gap is known.
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
   `keywords`, `tab`, `anchor`, `scope`, `web`, `group`, and an optional
