@@ -3,7 +3,7 @@ import path from "node:path";
 import { errorMessage } from "./errors.js";
 import { readStoredMcpServers, type StoredMcpServerConfig } from "./mcpHeaders.js";
 import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
-import type { AgentChatInstructions, AgentChatSettingSources } from "./types.js";
+import type { AgentChatInstructions, AgentChatPermissionMode, AgentChatSettingSources } from "./types.js";
 import { validateThreadBudget, type ThreadBudget } from "./usage.js";
 
 /**
@@ -82,6 +82,13 @@ export type ThreadRecord = {
    * `"default"`.
    */
   permissionPreset?: PermissionPreset;
+  /** Harness launch configuration, restored only when the runtime loses this session. */
+  permissionMode?: AgentChatPermissionMode;
+  reasoningEffort?: string;
+  fastMode?: boolean;
+  instanceId?: string;
+  credentialId?: string;
+  presetId?: string;
 };
 
 type ThreadStoreFile = {
@@ -284,7 +291,18 @@ function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean }
           ? { permissionPreset: record.permissionPreset }
           : {}),
       ...(budget ? { budget } : {}),
+      ...(isStoredPermissionMode(record.permissionMode) ? { permissionMode: record.permissionMode } : {}),
+      ...(typeof record.reasoningEffort === "string" && record.reasoningEffort ? { reasoningEffort: record.reasoningEffort } : {}),
+      ...(typeof record.fastMode === "boolean" ? { fastMode: record.fastMode } : {}),
+      ...(typeof record.instanceId === "string" && record.instanceId ? { instanceId: record.instanceId } : {}),
+      ...(typeof record.credentialId === "string" && record.credentialId ? { credentialId: record.credentialId } : {}),
+      ...(typeof record.presetId === "string" && record.presetId ? { presetId: record.presetId } : {}),
     };
   }
   return { file: { version: 1, threads }, migrated };
+}
+
+function isStoredPermissionMode(value: unknown): value is AgentChatPermissionMode {
+  return value === "default" || value === "auto" || value === "plan" || value === "edit" ||
+    value === "full-auto" || value === "config-toml";
 }

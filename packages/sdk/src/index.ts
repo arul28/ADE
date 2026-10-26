@@ -58,7 +58,11 @@ export type {
   ThreadUpdateResult,
   ThreadRerunResult,
   EditLastOptions,
+  ThreadQueueItem,
+  ThreadInterruptOptions,
+  ThreadRespondOptions,
 } from "./thread.js";
+export type { AccountInfo, ApiCredentialInfo, SignInHandle, SignInStatus } from "./accounts.js";
 export { SUPPORTED_RUNTIME_RANGE, checkRuntimeCompatibility } from "./compatibility.js";
 export { parseToolIdentity, type ToolIdentity } from "./toolIdentity.js";
 export { inferAttachmentType } from "./attachments.js";
@@ -147,6 +151,8 @@ export type {
   ProviderStatus,
   ProviderStatusProbeRecord,
   ProviderStatusRpcResult,
+  ProviderCapabilities,
+  UsageLimitEvent,
   RuntimeCompatibility,
   SyntheticRuntimeLostStatusEvent,
   ThreadCapabilities,

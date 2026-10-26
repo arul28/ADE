@@ -1713,6 +1713,34 @@ describe("approvals", () => {
     expect(runtime.approvals[2]).toMatchObject({ itemId: "i3", responseText: "not this time" });
   });
 
+  it("forwards thread.respond fields to respondToInput without relabeling decisions", async () => {
+    const runtime = await startRuntime();
+    const client = await connect(runtime);
+    const thread = await client.threads.open("a", { provider: "codex", model: "m" });
+
+    await thread.respond("question-request", {
+      answers: { "question-1": ["option-a", "option-b"] },
+      responseText: null,
+    });
+    await thread.respond("plan-accept", { decision: "accept" });
+    await thread.respond("plan-decline", { decision: "decline" });
+    await thread.respond("session-accept", { decision: "accept_for_session" });
+    await thread.respond("cancel-request", { decision: "cancel" });
+
+    expect(runtime.responses).toEqual([
+      {
+        sessionId: thread.id,
+        itemId: "question-request",
+        answers: { "question-1": ["option-a", "option-b"] },
+        responseText: null,
+      },
+      { sessionId: thread.id, itemId: "plan-accept", decision: "accept" },
+      { sessionId: thread.id, itemId: "plan-decline", decision: "decline" },
+      { sessionId: thread.id, itemId: "session-accept", decision: "accept_for_session" },
+      { sessionId: thread.id, itemId: "cancel-request", decision: "cancel" },
+    ]);
+  });
+
   it("declines an approval the policy's approvalTimeoutMs leaves unanswered", async () => {
     // Opt-in only: the SDK owns this clock, so the host does not have to build a
     // timer to keep a turn from parking forever on a card nobody answered.

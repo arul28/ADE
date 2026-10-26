@@ -41,6 +41,13 @@ import {
   type AgentChatFileRef,
   type McpCapabilityReport,
   type McpServerConfig,
+  type AgentChatStopMode,
+  type AgentChatUsageLimitResult,
+  type AgentChatSlashCommand,
+  type AgentChatRecoverTurnResult,
+  type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSwitchAccountResult,
+  type AgentChatRespondToInputArgs,
   type ThreadCapabilities,
   type ThreadHistoryPage,
   type ThreadModelSelection,
@@ -79,6 +86,33 @@ export type SendOptions = {
   displayText?: string;
   reasoningEffort?: string | null;
 };
+
+export type ThreadQueueItem = {
+  id: string;
+  text: string;
+  attachments?: AgentChatFileRef[];
+};
+
+export type ThreadInterruptOptions = {
+  /** Keep queued messages, or remove them along with the active turn. */
+  queue?: "keep" | "drop";
+  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  mode?: AgentChatStopMode;
+};
+
+/** The response fields accepted by the runtime's `respondToInput` action. */
+export type ThreadRespondOptions = Pick<
+  AgentChatRespondToInputArgs,
+  "answers" | "decision" | "responseText"
+>;
+
+const RESPOND_FIELDS: ReadonlySet<string> = new Set(["answers", "decision", "responseText"]);
+const RESPOND_DECISIONS: ReadonlySet<string> = new Set([
+  "accept",
+  "accept_for_session",
+  "decline",
+  "cancel",
+]);
 
 /** Options for `steer`. */
 export type SteerOptions = {
@@ -426,11 +460,9 @@ export interface AdeThread {
    * items silently, so without this check an answer to a dead card would look
    * like it worked.
    *
-   * Throws `invalid_option` for a request whose `requestKind` is one of the
-   * four that want prose or a choice rather than a verdict. Those are listed
-   * by `pendingApprovals()` and are meant to be rendered read-only. The kind
-   * is the runtime's own answer: an MCP elicitation that only asks "may this
-   * tool run?" arrives as `"approval"` and is answerable here.
+   * Use `respond()` for questions and plan approvals. This method accepts only
+   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
+   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
    *
    * `accept_always` settles this request and every later one the provider
    * considers the same, for the life of the session.
@@ -440,11 +472,39 @@ export interface AdeThread {
    * Every request this thread is currently blocked on.
    *
    * Call it after a reload to restore approval cards: the requests outlive the
-   * client that saw the events. Requests whose `requestKind` is not
-   * `"approval"` or `"permissions"` are included and cannot be answered with
-   * `approve()` — render those read-only.
+   * client that saw the events. The `answerable` field identifies whether the
+   * runtime supports a response for each request. Questions and plan approvals
+   * use `respond()` when that action is available; tool approvals use
+   * `approve()`.
    */
   pendingApprovals(): Promise<ApprovalRequest[]>;
+  /**
+   * Answer a question, structured question, or plan approval through the
+   * runtime's `respondToInput` action. Question answers are keyed by question
+   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
+   * SDK never infers it from option labels.
+   */
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  /** Mutable queued sends belonging to this thread. */
+  readonly queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  readonly usageLimit: {
+    resumeNow(): Promise<AgentChatUsageLimitResult>;
+    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
+  };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
   on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
 }
 
@@ -490,6 +550,8 @@ export type ThreadHostConfig = {
    * which cannot see requests raised before it connected.
    */
   pendingInputsSupported?: () => boolean;
+  /** True only when the current runtime explicitly lists this new action. */
+  actionListed?: (action: string) => boolean;
   logger?: (line: string) => void;
   /** Title at open, from the runtime's summary or the stored record. */
   title?: string | null;
@@ -613,6 +675,8 @@ export class Thread implements AdeThread {
   private lastMcpRefreshProblem: string | null = null;
   /** The constructor's subscription to the shared stream, released by `dispose()`. */
   private unsubscribeEvents: Unsubscribe | null = null;
+  readonly queue: AdeThread["queue"];
+  readonly usageLimit: AdeThread["usageLimit"];
 
   constructor(
     id: string,
@@ -649,6 +713,46 @@ export class Thread implements AdeThread {
       logger: this.logger,
       timeoutMs: () => this.hostConfig.approvalTimeoutMs,
     });
+    this.queue = {
+      list: async () => await this.listQueue(),
+      cancel: async (id) => {
+        this.assertAction("cancelSteer");
+        await this.chats.cancelSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id") });
+      },
+      edit: async (id, text) => {
+        this.assertAction("editSteer");
+        if (typeof text !== "string" || !text.trim()) {
+          throw new AdeError("invalid_option", "queue.edit() needs non-empty text.");
+        }
+        await this.chats.editSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), text });
+      },
+      move: async (id, index) => {
+        this.assertAction("moveSteer");
+        if (!Number.isInteger(index) || index < 0) {
+          throw new AdeError("invalid_option", "queue.move() needs a zero-based index.");
+        }
+        await this.chats.moveSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), toIndex: index });
+      },
+      dispatch: async (id) => {
+        this.assertAction("dispatchSteer");
+        await this.chats.dispatchSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id"), mode: "inline" });
+      },
+      cancelDispatched: async (id) => {
+        this.assertAction("cancelDispatchedSteer");
+        await this.chats.cancelDispatchedSteer({ sessionId: this.id, steerId: this.requireId(id, "queue id") });
+      },
+      restore: async () => await this.restoreQueue(),
+    };
+    this.usageLimit = {
+      resumeNow: async () => {
+        this.assertAction("resumeUsageLimitNow");
+        return await this.chats.resumeUsageLimitNow({ sessionId: this.id }) as AgentChatUsageLimitResult;
+      },
+      continueOnAlternate: async () => {
+        this.assertAction("continueUsageLimitOnAlternate");
+        return await this.chats.continueUsageLimitOnAlternate({ sessionId: this.id }) as AgentChatUsageLimitResult;
+      },
+    };
     // Subscribed from construction, not lazily on the first `pendingApprovals`
     // call: an approval raised before anyone asked is exactly the one a host
     // needs back after a reload, and a lazy subscription would have missed it.
@@ -1112,9 +1216,15 @@ export class Thread implements AdeThread {
     }
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(options?: ThreadInterruptOptions): Promise<void> {
     this.assertUsable();
-    await this.chats.interrupt(this.id);
+    if (!options) {
+      await this.chats.interrupt(this.id);
+      return;
+    }
+    this.assertAction("interruptWithQueueMode");
+    const mode = options.mode ?? (options.queue === "keep" ? "stop_only" : "stop_and_clear");
+    await this.chats.interruptWithQueueMode({ sessionId: this.id, mode });
   }
 
   async setModel(
@@ -1216,13 +1326,163 @@ export class Thread implements AdeThread {
       );
     }
     const requests = await this.chats.pendingInputs(this.id);
-    return requests.map((request) =>
-      approvalFromPendingInput(
+    return requests.map((request) => {
+      const mapped = approvalFromPendingInput(
         request,
         this.provider,
         this.approvals.get(request.itemId ?? request.requestId),
-      ),
+      );
+      const answerable = isApprovalShaped(mapped.requestKind) ||
+        (mapped.requestKind !== undefined && this.hostConfig.actionListed?.("respondToInput") === true);
+      return { ...mapped, answerable };
+    });
+  }
+
+  async respond(requestId: string, response: ThreadRespondOptions): Promise<void> {
+    this.assertUsable();
+    this.assertAction("respondToInput");
+    const id = this.requireId(requestId, "request id");
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+      throw new AdeError("invalid_option", "respond() needs a response object.");
+    }
+    const responseRecord = response as Record<string, unknown>;
+    const unexpectedField = Object.keys(responseRecord).find((field) => !RESPOND_FIELDS.has(field));
+    if (unexpectedField) {
+      throw new AdeError("invalid_option", `respond() does not accept the "${unexpectedField}" field.`);
+    }
+    const { answers, decision, responseText } = responseRecord;
+    if (decision !== undefined && (typeof decision !== "string" || !RESPOND_DECISIONS.has(decision))) {
+      throw new AdeError(
+        "invalid_option",
+        'respond() decision must be "accept", "accept_for_session", "decline" or "cancel".',
+      );
+    }
+    if (answers !== undefined) {
+      if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+        throw new AdeError("invalid_option", "respond() answers must be an object keyed by question id.");
+      }
+      for (const [questionId, answer] of Object.entries(answers)) {
+        if (!questionId || !(typeof answer === "string" ||
+          (Array.isArray(answer) && answer.every((value) => typeof value === "string")))) {
+          throw new AdeError("invalid_option", "respond() answers must map question ids to strings or string arrays.");
+        }
+      }
+    }
+    if (responseText !== undefined && responseText !== null && typeof responseText !== "string") {
+      throw new AdeError("invalid_option", "respond() responseText must be a string or null.");
+    }
+    await this.chats.respondToInput({ sessionId: this.id, itemId: id, ...response });
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    this.assertUsable();
+    this.assertAction("stopTask");
+    await this.chats.stopTask({ sessionId: this.id, taskId: this.requireId(taskId, "task id") });
+  }
+
+  async slashCommands(): Promise<AgentChatSlashCommand[]> {
+    this.assertUsable();
+    this.assertAction("slashCommands");
+    const commands = await this.chats.slashCommands({ sessionId: this.id, provider: this.provider });
+    return Array.isArray(commands) ? commands : [];
+  }
+
+  async recover(options: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" } = {}): Promise<AgentChatRecoverTurnResult> {
+    this.assertUsable();
+    this.assertAction("recoverTurn");
+    let turnId = options.turnId?.trim();
+    if (!turnId) {
+      const history = await this.chats.getEventHistory({ sessionId: this.id });
+      for (const envelope of [...(history?.events ?? [])].reverse()) {
+        const event = envelope.event;
+        if (typeof event.turnId === "string" && event.turnId) {
+          turnId = event.turnId;
+          break;
+        }
+      }
+    }
+    if (!turnId) throw new AdeError("invalid_option", `Thread "${this.key}" has no turn id to recover.`);
+    return await this.chats.recoverTurn({ sessionId: this.id, turnId, action: options.action ?? "wait" }) as AgentChatRecoverTurnResult;
+  }
+
+  async resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult> {
+    this.assertUsable();
+    this.assertAction("resolveUnprocessedMessage");
+    const steerId = this.requireId(args?.steerId, "steer id");
+    if (args.action !== "run_next" && args.action !== "dismiss") {
+      throw new AdeError("invalid_option", "resolveUnprocessed() action must be run_next or dismiss.");
+    }
+    return await this.chats.resolveUnprocessedMessage({ sessionId: this.id, steerId, action: args.action }) as AgentChatResolveUnprocessedMessageResult;
+  }
+
+  async switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult> {
+    this.assertUsable();
+    this.assertAction("switchAccount");
+    return await this.chats.switchAccount({ sessionId: this.id, instanceId: this.requireId(instanceId, "account id") }) as AgentChatSwitchAccountResult;
+  }
+
+  private requireId(value: unknown, label: string): string {
+    const id = typeof value === "string" ? value.trim() : "";
+    if (!id) throw new AdeError("invalid_option", `${label} must be a non-empty string.`);
+    return id;
+  }
+
+  private assertAction(action: string): void {
+    this.assertUsable();
+    if (this.hostConfig.actionListed?.(action) !== true) {
+      throw new AdeError("unsupported", `This ADE runtime does not advertise the ${action} action.`);
+    }
+  }
+
+  private async listQueue(): Promise<ThreadQueueItem[]> {
+    this.assertUsable();
+    const history = await this.chats.getEventHistory({ sessionId: this.id });
+    const queued = new Map<string, ThreadQueueItem>();
+    const settled = new Set<string>();
+    const events = history?.events ?? [];
+    for (const envelope of events) {
+      const event = envelope.event;
+      if (event.type === "user_message" && typeof event.steerId === "string" && event.steerId) {
+        if (event.deliveryState === "queued") {
+          if (!settled.has(event.steerId)) queued.set(event.steerId, {
+            id: event.steerId,
+            text: typeof event.displayText === "string" ? event.displayText : String(event.text ?? ""),
+            ...(Array.isArray(event.attachments) ? { attachments: event.attachments as AgentChatFileRef[] } : {}),
+          });
+        } else {
+          queued.delete(event.steerId);
+          if (["accepted", "processed", "delivered", "inline", "failed"].includes(String(event.deliveryState))) settled.add(event.steerId);
+        }
+      } else if (event.type === "queue_reordered" && Array.isArray(event.steerIds)) {
+        const reordered = new Map<string, ThreadQueueItem>();
+        for (const id of event.steerIds) if (typeof id === "string" && queued.has(id)) reordered.set(id, queued.get(id)!);
+        for (const [id, entry] of queued) if (!reordered.has(id)) reordered.set(id, entry);
+        queued.clear();
+        for (const [id, entry] of reordered) queued.set(id, entry);
+      } else if (event.type === "user_message_resolution" && typeof event.steerId === "string") {
+        queued.delete(event.steerId);
+        settled.add(event.steerId);
+      } else if (event.type === "system_notice" && typeof event.steerId === "string" && typeof event.message === "string" && /cancelled|deliver(?:ing|ed)/i.test(event.message)) {
+        queued.delete(event.steerId);
+        settled.add(event.steerId);
+      } else if (event.type === "command_lifecycle" && typeof event.steerId === "string" && event.status !== "queued") {
+        queued.delete(event.steerId);
+        settled.add(event.steerId);
+      }
+    }
+    return [...queued.values()];
+  }
+
+  private async restoreQueue(): Promise<void> {
+    this.assertAction("restoreCancelledQueue");
+    const history = await this.chats.getEventHistory({ sessionId: this.id });
+    const recovery = [...(history?.events ?? [])].reverse().find(({ event }) =>
+      event.type === "queue_recovery" && event.state === "available" && typeof event.recoveryId === "string",
     );
+    if (!recovery || typeof recovery.event.recoveryId !== "string") {
+      throw new AdeError("invalid_option", `Thread "${this.key}" has no cancelled queue to restore.`);
+    }
+    await this.chats.restoreCancelledQueue({ sessionId: this.id, recoveryId: recovery.event.recoveryId });
   }
 
   async approve(

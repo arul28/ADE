@@ -1,0 +1,132 @@
+---
+title: "Accounts"
+description: "Isolated provider sign-in, accounts, API credentials, endpoint presets, and usage-limit handling in the ADE SDK."
+icon: "users"
+---
+
+The SDK owns the provider logins used by its embedded runtime. Each app can
+manage its own accounts and credentials without reading keys from another
+tool's config directory.
+
+## Login isolation
+
+SDK 0.7 defaults `useMachineLogin` to `false`. The runtime starts with isolated
+provider logins, so a Claude or Codex login on the host machine is not silently
+reused. **BREAKING from SDK 0.6:** to keep using machine logins, pass
+`useMachineLogin: true` explicitly:
+
+```ts
+const client = await createAdeChat({
+  home: "./.ade-embed",
+  useMachineLogin: true,
+});
+```
+
+`doctor()` reports `logins.mode` (`isolated`, `machine`, or `attached`) and a
+per-provider `logins.perProvider` map (`isolated`, `shared`, or `unknown`).
+Check this before describing which credentials a thread can use.
+
+## Provider accounts
+
+```ts
+const accounts = await client.accounts.list("claude");
+const account = await client.accounts.add("claude", { label: "Work" });
+const login = await client.accounts.signIn(account.id, { deviceAuth: true });
+
+login.on("update", (status) => {
+  if (status.url) showLoginLink(status.url, status.deviceCode);
+  if (status.awaitingCode) showCodeEntry();
+});
+const signedIn = await login.done;
+```
+
+`SignInHandle` also provides `submitCode(code)` and `cancel()`. `done` resolves
+to the refreshed account or rejects when sign-in fails or is cancelled. Always
+cancel a login the user abandons. The provider account API also has `remove`,
+`rename`, `setDefault`, `signOut`, and `refresh`.
+
+`client.providers.capabilities(provider)` returns the runtime's choices for
+permission modes, reasoning effort, fast mode, accounts, sign-in, API keys,
+presets and MCP ([`ProviderCapabilities`](/sdk/reference#providercapabilities)). It throws `unsupported` if the runtime does not advertise
+provider capabilities.
+
+## Credentials and presets
+
+Credentials are stored by the runtime. `credentials.list()` returns summaries
+with labels, provider, source, timestamps and a masked tail; the API key value
+is never returned. Add a key explicitly when the user supplies it:
+
+```ts
+const saved = await client.credentials.add({ provider: "codex", key, label: "Build key" });
+await client.credentials.verify("codex");
+await client.threads.open("build", {
+  provider: "codex",
+  model: "gpt-5-codex",
+  credential: saved.credentialId,
+});
+```
+
+`credentials.remove(id, provider?)` removes a stored key. Custom endpoint
+presets use `client.presets.list()`, `add(input)`, `update(id, patch)`, and
+`remove(id)`. Preset results omit key material.
+
+When a credential is kept in the host's vault instead, pass its id to a thread
+and resolve it just for the live session:
+
+```ts
+const client = await createAdeChat({
+  home,
+  resolveSecret: (provider, credentialId) => vault.get(provider, credentialId),
+});
+
+await client.threads.open("support", {
+  provider: "openai",
+  model: "gpt-5",
+  credential: "build-key",
+});
+```
+
+The secret is pushed to the runtime for that session and is not saved in the
+SDK thread record. If the resolver has no value, open/resume reports a warning
+and the runtime's own credential behavior applies.
+
+## Accounts on a thread
+
+Pass `account`, `credential`, or `preset` when opening a thread to select the
+provider instance, stored credential, or endpoint preset. These choices are
+saved with the thread and used again if the runtime loses the session and the
+SDK recreates it. `thread.switchAccount(instanceId)` changes the account for a
+live thread; check its result because the runtime can report `busy`,
+`signed_out`, or `failed` without switching.
+
+## Usage limits
+
+New threads default to `onUsageLimit: "wait"`. Choose another policy when
+creating the client:
+
+```ts
+const client = await createAdeChat({ home, onUsageLimit: "failover" });
+client.on("usageLimit", (event) => showLimitNotice(event));
+```
+
+`"failover"` asks the runtime to continue on another signed-in account. If no
+alternate account is available, the turn waits. `"ask"` emits `usageLimit` and
+leaves the decision to the host. Threads expose `usageLimit.resumeNow()` and
+`usageLimit.continueOnAlternate()` for an explicit choice.
+
+## Electron renderers
+
+Account, credential, and preset methods are refused for renderers by default.
+Enable them only for trusted frames by passing `allowAccountManagement` to
+`registerAdeIpc`:
+
+```ts
+registerAdeIpc(ipcMain, client, {
+  authorize: (event) => isTrustedFrame(event.sender),
+  allowAccountManagement: (event, method) => isTrustedFrame(event.sender) && method.startsWith("accounts."),
+});
+```
+
+The gate covers `accounts.*`, `credentials.*`, and `presets.*`. Credential
+values can cross into main only through `credentials.add`; list and verify
+responses contain summaries, not secret values.

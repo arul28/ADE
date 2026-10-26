@@ -112,6 +112,7 @@ await thread.send("What changed?");
 await thread.steer("Focus on the outage"); // mid-turn follow-up
 await thread.steer("", { attachments: [{ path: "/Users/me/MyApp/work/log.txt" }] });
 await thread.interrupt();
+await thread.interrupt({ queue: "keep" }); // stop the turn, retain queued messages
 ```
 
 `send()` dispatches the turn and resolves when the runtime accepts it, **not** when the reply finishes. Watch `thread.on("status")` / `thread.on("event")` for the rest.
@@ -120,7 +121,50 @@ Submitting during a running turn is a **steer**, not a second send. `steer()` is
 
 `steer()` takes `{ attachments }` with the same rules as `send()`. It needs text, at least one attachment, or both. A steer with attachments and empty text is allowed. It resolves when the runtime accepts the steer, not when the agent reads it.
 
-### Usage and budgets
+`interrupt({ queue: "keep" })` stops the active turn and preserves queued
+messages; `queue: "drop"` clears them. A `mode` option can select one of ADE's
+full stop modes and takes precedence over `queue`.
+
+## Queue and recovery controls
+
+`thread.queue` exposes `list`, `cancel`, `edit`, `move`, `dispatch`,
+`cancelDispatched`, and `restore`. `list()` reconstructs queued messages from
+the thread history, so a host can restore its queue UI after a reload. Each
+write is feature-detected and throws `unsupported` when the runtime does not
+advertise the matching action.
+
+`thread.respond(requestId, response)` forwards the response to the runtime's
+`respondToInput` action. Question answers are keyed by question id:
+
+```ts
+interface Thread {
+  respond(requestId: string, response: {
+    answers?: Record<string, string | string[]>;
+    decision?: "accept" | "accept_for_session" | "decline" | "cancel";
+    responseText?: string | null;
+  }): Promise<void>;
+}
+
+await thread.respond(requestId, {
+  answers: { [question.id]: "the selected answer" },
+});
+```
+
+Plan approvals use an explicit decision, matching ADE's plan card: `accept`
+approves the plan and `decline` keeps planning. The SDK never guesses from
+option labels. The response may also include `responseText`, and its decision
+may be `accept_for_session` or `cancel` where the runtime supports them.
+
+Tool approval requests still use `thread.approve()`. `thread.stopTask(taskId)` stops a
+provider task, `thread.slashCommands()` lists provider commands, and
+`thread.recover()` or `thread.resolveUnprocessed()` handles interrupted turns
+and queued messages the runtime could not process.
+
+Usage-limit actions are available as `thread.usageLimit.resumeNow()` and
+`thread.usageLimit.continueOnAlternate()`. See [Accounts](/sdk/accounts#usage-limits)
+for automatic handling and the client `usageLimit` event.
+
+## Usage and budgets
 
 ```ts
 const thread = await ade.threads.open("support", {

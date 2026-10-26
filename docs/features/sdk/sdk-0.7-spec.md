@@ -116,11 +116,14 @@ tell the user. `=machine` (or unset, for older SDKs) keeps today's behaviour.
   (preset id). Existing `permissions` presets/policy keep working.
   Validated against `providers.capabilities` when the runtime reports it.
 - `AdeThread` additions:
-  - `respond(requestId, response)` — questions, structured questions,
-    plan approvals (`respondToInput` `{ answers?, decision?, responseText? }`).
-    Plan review sends `decision: "accept"` or `"decline"`; question answers
-    are keyed by question id. `pendingApprovals()` returns these as
-    actionable, not read-only, when the runtime serves the action.
+  - `respond(requestId, response)` where `response` is exactly
+    `{ answers?: Record<string, string | string[]>; decision?:
+    "accept" | "accept_for_session" | "decline" | "cancel";
+    responseText?: string | null }` — forwarded to `respondToInput` as
+    `{ sessionId, itemId: requestId, ...response }`. Question answers use
+    question ids. Plan approval is an explicit `"accept"` or `"decline"`,
+    never inferred from option labels. `pendingApprovals()` returns supported
+    requests as actionable, not read-only, when the runtime serves the action.
   - `queue` — `list()`, `cancel(id)`, `edit(id, text)`, `move(id, index)`,
     `dispatch(id)`, `cancelDispatched(id)`, `restore()`;
     `interrupt({ queue: "keep" | "drop" | ... })` via `interruptWithQueueMode`.

@@ -30,6 +30,7 @@
 
 import type { ApprovalDecision, ApprovalRequest } from "../approvals.js";
 import { AdeError, readAdeErrorCode } from "../errors.js";
+import type { AccountInfo, ApiCredentialInfo, SignInHandle, SignInStatus } from "../accounts.js";
 import type {
   InstructionsCapability,
   PermissionCapability,
@@ -49,6 +50,9 @@ import type {
   ThreadUpdateResult,
   ThreadRerunResult,
   EditLastOptions,
+  ThreadInterruptOptions,
+  ThreadQueueItem,
+  ThreadRespondOptions,
 } from "../thread.js";
 import {
   STATUS_EVENT_TYPES,
@@ -58,6 +62,12 @@ import {
   type McpCapabilityReport,
   type ModelCatalogEntry,
   type ProviderStatus,
+  type ProviderCapabilities,
+  type AgentChatSlashCommand,
+  type AgentChatUsageLimitResult,
+  type AgentChatRecoverTurnResult,
+  type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSwitchAccountResult,
   type ThreadHistoryPage,
   type ThreadSummary,
   type Unsubscribe,
@@ -100,7 +110,23 @@ export interface AdeIpcThread {
   send(text: string, opts?: SendOptions): Promise<void>;
   /** See `AdeThread.steer`. Attachments cross as path refs, like `send`. */
   steer(text: string, opts?: SteerOptions): Promise<void>;
-  interrupt(): Promise<void>;
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  usageLimit: { resumeNow(): Promise<AgentChatUsageLimitResult>; continueOnAlternate(): Promise<AgentChatUsageLimitResult> };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
   /**
    * See `AdeThread.setModel`. Refused with `unauthorized` when the host's
    * `allowModel` hook says no. Refreshes this handle's `model` and capability
@@ -130,7 +156,30 @@ export interface AdeIpcClient {
   providers: {
     status(): Promise<Record<string, ProviderStatus>>;
     refresh(): Promise<Record<string, ProviderStatus>>;
+    capabilities(provider: string): Promise<ProviderCapabilities>;
     onChange(cb: (statuses: Record<string, ProviderStatus>) => void): Unsubscribe;
+  };
+  accounts: {
+    list(provider?: string): Promise<AccountInfo[]>;
+    add(provider: string, options?: { label?: string }): Promise<AccountInfo>;
+    remove(id: string): Promise<unknown>;
+    rename(id: string, label: string): Promise<AccountInfo>;
+    setDefault(id: string): Promise<unknown>;
+    signOut(id: string): Promise<unknown>;
+    refresh(): Promise<AccountInfo[]>;
+    signIn(id: string, options?: { deviceAuth?: boolean }): Promise<SignInHandle>;
+  };
+  credentials: {
+    list(provider?: string): Promise<ApiCredentialInfo[]>;
+    add(input: { provider: string; key: string; label: string }): Promise<ApiCredentialInfo>;
+    remove(id: string, provider?: string): Promise<unknown>;
+    verify(provider: string): Promise<unknown>;
+  };
+  presets: {
+    list(): Promise<Record<string, unknown>[]>;
+    add(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    update(id: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>;
+    remove(id: string): Promise<unknown>;
   };
   models: { list(): Promise<ModelCatalogEntry[]> };
   threads: {
@@ -441,9 +490,30 @@ export function createAdeIpcClient(bridgeInput: AdeBridge | null | undefined): A
       async steer(text, opts) {
         await call<null>("thread.steer", [key, text, opts?.attachments ? { attachments: opts.attachments } : null]);
       },
-      async interrupt() {
-        await call<null>("thread.interrupt", [key]);
+      async interrupt(options) {
+        await call<null>("thread.interrupt", [key, options ?? null]);
       },
+      async respond(requestId, response) {
+        await call<null>("thread.respond", [key, requestId, response]);
+      },
+      queue: {
+        list: () => call<ThreadQueueItem[]>("thread.queue.list", [key]),
+        cancel: async (id) => { await call<null>("thread.queue.cancel", [key, id]); },
+        edit: async (id, text) => { await call<null>("thread.queue.edit", [key, id, text]); },
+        move: async (id, index) => { await call<null>("thread.queue.move", [key, id, index]); },
+        dispatch: async (id) => { await call<null>("thread.queue.dispatch", [key, id]); },
+        cancelDispatched: async (id) => { await call<null>("thread.queue.cancelDispatched", [key, id]); },
+        restore: async () => { await call<null>("thread.queue.restore", [key]); },
+      },
+      async stopTask(taskId) { await call<null>("thread.stopTask", [key, taskId]); },
+      slashCommands: () => call<AgentChatSlashCommand[]>("thread.slashCommands", [key]),
+      recover: (options) => call<AgentChatRecoverTurnResult>("thread.recover", [key, options ?? null]),
+      resolveUnprocessed: (args) => call<AgentChatResolveUnprocessedMessageResult>("thread.resolveUnprocessed", [key, args]),
+      usageLimit: {
+        resumeNow: () => call<AgentChatUsageLimitResult>("thread.usageLimit.resumeNow", [key]),
+        continueOnAlternate: () => call<AgentChatUsageLimitResult>("thread.usageLimit.continueOnAlternate", [key]),
+      },
+      switchAccount: (instanceId) => call<AgentChatSwitchAccountResult>("thread.switchAccount", [key, instanceId]),
       async setModel(modelId, opts) {
         const result = await call<SetModelResult>("thread.setModel", [key, modelId, opts ?? null]);
         const { capabilities, ...selection } = result;
@@ -581,7 +651,91 @@ export function createAdeIpcClient(bridgeInput: AdeBridge | null | undefined): A
     providers: {
       status: () => call<Record<string, ProviderStatus>>("providers.status", []),
       refresh: () => call<Record<string, ProviderStatus>>("providers.refresh", []),
+      capabilities: (provider) => call<ProviderCapabilities>("providers.capabilities", [provider]),
       onChange: providersOnChange,
+    },
+    accounts: {
+      list: (provider) => call<AccountInfo[]>("accounts.list", [provider ?? null]),
+      add: (provider, options) => call<AccountInfo>("accounts.add", [provider, options ?? null]),
+      remove: (id) => call("accounts.remove", [id]),
+      rename: (id, label) => call<AccountInfo>("accounts.rename", [id, label]),
+      setDefault: (id) => call("accounts.setDefault", [id]),
+      signOut: (id) => call("accounts.signOut", [id]),
+      refresh: () => call<AccountInfo[]>("accounts.refresh", []),
+      signIn: async (id, options) => {
+        const started = await call<{ loginId: string; status: SignInStatus }>("accounts.signIn", [id, options ?? null]);
+        const listeners = new Set<(status: SignInStatus) => void>();
+        let current = started.status;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let finished = false;
+        let delay = 500;
+        let resolveDone!: (account: AccountInfo) => void;
+        let rejectDone!: (error: Error) => void;
+        const done = new Promise<AccountInfo>((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
+        const publish = (status: SignInStatus) => {
+          current = status;
+          for (const listener of [...listeners]) {
+            try { listener(status); } catch { /* Isolate embedder callbacks. */ }
+          }
+        };
+        const finish = (result: { status: SignInStatus; account?: AccountInfo; error?: AdeIpcErrorPayload }) => {
+          if (finished) return;
+          finished = true;
+          if (timer) clearTimeout(timer);
+          timer = null;
+          publish(result.status);
+          if (result.account) resolveDone(result.account);
+          else if (result.error) {
+            try { rehydrate(result.error); } catch (error) { rejectDone(error instanceof Error ? error : new Error(String(error))); }
+          } else rejectDone(new AdeError("rpc_error", result.status.message ?? `Sign-in ${result.status.state}.`));
+        };
+        const poll = async (): Promise<void> => {
+          if (finished) return;
+          try {
+            const result = await call<{ status: SignInStatus; account?: AccountInfo; error?: AdeIpcErrorPayload }>("accounts.signInStatus", [started.loginId]);
+            if (JSON.stringify(result.status) !== JSON.stringify(current)) publish(result.status);
+            if (["succeeded", "failed", "cancelled", "expired"].includes(result.status.state)) {
+              finish(result);
+              return;
+            }
+            delay = Math.min(5_000, delay * 1.5);
+          } catch (error) {
+            if (finished) return;
+            finish({ status: { ...current, state: "failed", message: error instanceof Error ? error.message : String(error) } });
+            return;
+          }
+          timer = setTimeout(() => { void poll(); }, delay);
+        };
+        const handle: SignInHandle = {
+          on: (_event, listener) => {
+            listeners.add(listener);
+            listener(current);
+            return () => listeners.delete(listener);
+          },
+          submitCode: async (code) => { await call<null>("accounts.signInSubmitCode", [started.loginId, code]); },
+          cancel: async () => {
+            if (finished) return;
+            await call<null>("accounts.signInCancel", [started.loginId]);
+            finish({ status: { ...current, state: "cancelled", endedAt: new Date().toISOString() } });
+          },
+          done,
+        };
+        if (["succeeded", "failed", "cancelled", "expired"].includes(current.state)) void poll();
+        else timer = setTimeout(() => { void poll(); }, delay);
+        return handle;
+      },
+    },
+    credentials: {
+      list: (provider) => call<ApiCredentialInfo[]>("credentials.list", [provider ?? null]),
+      add: (input) => call<ApiCredentialInfo>("credentials.add", [input]),
+      remove: (id, provider) => call("credentials.remove", [id, provider ?? null]),
+      verify: (provider) => call("credentials.verify", [provider]),
+    },
+    presets: {
+      list: () => call<Record<string, unknown>[]>("presets.list", []),
+      add: (input) => call<Record<string, unknown>>("presets.add", [input]),
+      update: (id, patch) => call<Record<string, unknown>>("presets.update", [id, patch]),
+      remove: (id) => call("presets.remove", [id]),
     },
     models: { list: () => call<ModelCatalogEntry[]>("models.list", []) },
     threads: {

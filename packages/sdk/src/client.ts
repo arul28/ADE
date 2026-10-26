@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createAccountManagement, type AccountManagement, type AccountActionCall } from "./accounts.js";
 import { readBinaryVersion } from "./binary.js";
 import { isAdeClientEvent, type AdeClientEvent, type AdeClientEventMap } from "./clientEvents.js";
 import { buildDoctorReport } from "./doctorReport.js";
@@ -23,6 +24,8 @@ import type {
   ModelCatalogEntry,
   ProviderStatus,
   ProviderStatusRpcResult,
+  ProviderCapabilities,
+  UsageLimitEvent,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";
@@ -67,6 +70,9 @@ const MAX_RECENT_ERRORS = 20;
  * letting the consumer discover it as a response that stopped mid-sentence.
  */
 export interface AdeChatClient {
+  accounts: AccountManagement["accounts"];
+  credentials: AccountManagement["credentials"];
+  presets: AccountManagement["presets"];
   providers: {
     /**
      * Per-provider install, auth and availability.
@@ -85,6 +91,8 @@ export interface AdeChatClient {
      */
     refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
+    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
+    capabilities(provider: string): Promise<ProviderCapabilities>;
   };
   models: {
     list(): Promise<ModelCatalogEntry[]>;
@@ -319,12 +327,54 @@ export async function createAdeChat(
   });
   const publishProviderStatus = providerStatus.publish;
 
+  const accountAction: AccountActionCall = async (domain, action, args) => {
+    assertUsable();
+    const capabilities = runtime.initialize.capabilities?.[domain] as { actions?: unknown } | undefined;
+    if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
+      throw new AdeError("unsupported", `This ADE runtime does not advertise ${domain}.${action}.`);
+    }
+    const response = await runtime.connection.request<{ action?: string; result?: unknown }>(
+      `${domain}.call`,
+      { action, ...(args !== undefined ? { args } : {}) },
+    );
+    return response && typeof response === "object" && response.action === action && "result" in response
+      ? response.result
+      : response;
+  };
+  const accountManagement = createAccountManagement(accountAction, assertUsable);
+
+  const providerCapabilities = async (provider: string): Promise<ProviderCapabilities> => {
+    assertUsable();
+    if (runtime.initialize.capabilities?.providers?.capabilities !== true) {
+      throw new AdeError("unsupported", "This ADE runtime does not advertise provider capabilities.");
+    }
+    const statuses = await publishProviderStatus();
+    const capabilities = statuses[provider]?.capabilities;
+    if (!capabilities) {
+      throw new AdeError("unsupported", `The ADE runtime has no capability record for provider "${provider}".`);
+    }
+    return capabilities;
+  };
+
+  const providerListed = async (provider: string): Promise<boolean> => {
+    assertUsable();
+    const catalog = await chats.modelCatalog({ mode: "refresh-stale" });
+    return (catalog?.groups ?? []).some((group) =>
+      group.key === provider || (group.providers ?? []).some((entry) =>
+        entry.key === provider || (entry.subsections ?? []).some((section) =>
+          (section.models ?? []).some((model) => model.groupKey === provider || model.providerKey === provider),
+        ),
+      ),
+    );
+  };
+
   // ---- threads -------------------------------------------------------------
 
   const opener = createThreadOpener({
     home,
     defaultInstructions: options.instructions,
     mcpHeaders: options.mcpHeaders,
+    resolveSecret: options.resolveSecret,
     chats,
     store,
     hub,
@@ -349,7 +399,48 @@ export async function createAdeChat(
       pendingInputs: () => runtime.actionListed("pendingInputs"),
       historyPage: () => runtime.actionListed("getEventHistoryPage"),
       rerunLastTurn: () => runtime.actionListed("rerunLastTurn"),
+      actionListed: (action) => runtime.actionListed(action),
+      providerListed,
+      providerCapabilities: async (provider) => {
+        if (runtime.initialize.capabilities?.providers?.capabilities !== true) return undefined;
+        return (await publishProviderStatus())[provider]?.capabilities;
+      },
     },
+  });
+
+  const usageLimitEventsSeen = new Set<string>();
+  const unsubscribeUsageLimits = hub.onEvent((envelope) => {
+    const event = envelope.event;
+    const isLimit = event.type === "usage_limit" ||
+      (event.type === "status" && [event.turnStatus, event.status, event.reason].includes("usage_limited"));
+    if (!isLimit) return;
+    const turnId = typeof event.turnId === "string" ? event.turnId : undefined;
+    const marker = `${envelope.sessionId}:${turnId ?? envelope.sequence ?? envelope.timestamp}:${event.type}`;
+    if (usageLimitEventsSeen.has(marker)) return;
+    usageLimitEventsSeen.add(marker);
+    if (usageLimitEventsSeen.size > 500) usageLimitEventsSeen.delete(usageLimitEventsSeen.values().next().value!);
+    void (async () => {
+      const record = (await store.all()).find((entry) => entry.sessionId === envelope.sessionId);
+      const live = [...liveSessions.values()].find((thread) => thread.id === envelope.sessionId);
+      const provider = live?.model?.provider || record?.provider || (typeof event.provider === "string" ? event.provider : "claude");
+      const payload: UsageLimitEvent = {
+        key: record?.key ?? live?.key ?? "",
+        sessionId: envelope.sessionId,
+        provider,
+        ...(turnId ? { turnId } : {}),
+        ...(typeof event.message === "string" ? { message: event.message } : {}),
+      };
+      emitClient("usageLimit", payload);
+      if (options.onUsageLimit !== "failover" || !runtime.actionListed("continueUsageLimitOnAlternate")) return;
+      try {
+        const accounts = await accountManagement.accounts.list(provider);
+        if (accounts.filter((account) => account.signedIn).length > 1) {
+          await chats.continueUsageLimitOnAlternate({ sessionId: envelope.sessionId });
+        }
+      } catch (error) {
+        recordError("usageLimit.failover", error);
+      }
+    })().catch((error: unknown) => recordError("usageLimit.event", error));
   });
 
   /**
@@ -617,6 +708,9 @@ export async function createAdeChat(
   // ---- client --------------------------------------------------------------
 
   const client: AdeChatClient = {
+    accounts: accountManagement.accounts,
+    credentials: accountManagement.credentials,
+    presets: accountManagement.presets,
     providers: {
       status: async () => {
         assertUsable();
@@ -627,6 +721,7 @@ export async function createAdeChat(
         return await publishProviderStatus(true);
       },
       onChange: providerStatus.onChange,
+      capabilities: providerCapabilities,
     },
 
     models: {
@@ -685,6 +780,13 @@ export async function createAdeChat(
         threads: { tracked: records.length, live },
         recentErrors: [...recentErrors],
         compatibility: runtime.compatibility,
+        logins: {
+          mode: runtime.loginMode,
+          perProvider: Object.fromEntries(Object.entries(statuses).map(([provider, status]) => [
+            provider,
+            status.isolation ?? "unknown",
+          ])),
+        },
       });
     },
 
@@ -700,8 +802,10 @@ export async function createAdeChat(
 
     dispose: async () => {
       if (disposed) return;
+      await accountManagement.dispose();
       disposed = true;
       providerStatus.dispose();
+      unsubscribeUsageLimits();
       // Each thread holds a listener on the shared event hub from its
       // constructor. Clearing the map alone left those subscribed for the life
       // of the client, with every envelope fanned out to all of them.

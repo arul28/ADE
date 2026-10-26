@@ -112,10 +112,11 @@ Limits:
 
 ## Version compatibility
 
-The SDK and the runtime release on separate cadences, and a downloaded runtime can be newer or older than the SDK. `SUPPORTED_RUNTIME_RANGE` is the range that this SDK build is written for.
+The SDK and the runtime release on separate cadences, and a downloaded runtime can be newer or older than the SDK. `SUPPORTED_RUNTIME_RANGE` is the range that this SDK build is written for. SDK 0.7 keeps this range and feature-detects its new actions through `runtime/info`.
 
 | SDK | Supported runtime |
 |---|---|
+| 0.7.0 | `>=1.2.82 <2.0.0` |
 | 0.6.0 | `>=1.2.82 <2.0.0` |
 | 0.5.3 | `>=1.2.82 <2.0.0` |
 | 0.5.2 | `>=1.2.82 <2.0.0` |

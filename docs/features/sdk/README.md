@@ -12,8 +12,9 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 
 | Path | Role |
 |---|---|
-| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads (open, list, delete, archive, unarchive), models (change events and default selection), providers, doctor, export, `on("exit" \| "transport" \| "restart")`, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
-| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, `refreshMcpHeaders` (also run before every send / retry / editLast), history, `historyPage`, `usage`, persisted per-thread budgets, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
+| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: accounts, credentials, presets, provider capabilities, usage-limit events, threads, models, doctor, export, runtime events, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
+| `packages/sdk/src/accounts.ts` | Provider accounts, sign-in handles, secret-safe credential summaries, and harness presets over feature-detected runtime actions. |
+| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer, queue controls, stop task, slash commands, recovery, usage-limit actions, account switching, retry/edit, interrupt, update, history, model selection and approvals. |
 | `packages/sdk/src/run.ts` | `client.run(prompt, options)` — temporary one-shot thread, supported JSON Schema subset validation and one repair attempt; `InvalidOutputError` preserves the raw response. |
 | `packages/sdk/src/usage.ts` | Per-thread token/cost aggregation, durable-history seeding, budget validation and crossing detection. Cost is present only when the provider reports it. |
 | `packages/sdk/src/server.ts` | `@ade-dev/sdk/server` — host-owned WebSocket bridge with authorization and thread-key gates, custom host methods, and `createAdeRemoteClient(urlOrTransport)`. |
@@ -22,18 +23,18 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/scripts/check-wire-types.mjs` | Compiler-API drift check for the SDK's curated wire subset against desktop chat and personal-chat contracts; runs in SDK CI. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
-| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.6.0, unchanged from 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0`) and `checkRuntimeCompatibility`. Feature detection handles the new SDK 0.7 actions; pre-release suffixes are ignored and `0.0.0` / missing passes with a note. |
 | `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only, tool filters kept), `readStoredMcpServers` (migration), `withResolvedHeaders` (async: explicit headers, then the `mcpHeaders` callback, which may return a Promise), and the missing-headers warning. |
 | `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
 | `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
-| `packages/sdk/src/sidecar.ts` | Spawns `ade runtime run --socket <path> --profile embedded`, scrubs host `ADE_*` env, sets `ADE_EMBEDDED_PARENT_PID`. |
+| `packages/sdk/src/sidecar.ts` | Spawns `ade runtime run --socket <path> --profile embedded`, scrubs host `ADE_*` env, sets `ADE_EMBEDDED_PARENT_PID`, defaults provider logins to isolated. |
 | `packages/sdk/src/jsonRpc.ts` | NDJSON JSON-RPC 2.0 over a Unix socket or Windows named pipe. |
 | `packages/sdk/src/personalChats.ts` | Typed `personalChats.call` / push subscribe / cursor drain. |
 | `packages/sdk/src/download.ts` | Fail-closed GitHub release fetch: binary + `.native.tar.gz` + `SHA256SUMS`. |
 | `packages/sdk/src/binary.ts` | Resolves a local `ade` binary: explicit path, bundled platform package, home cache, PATH, else download. |
 | `packages/sdk/src/bundledRuntime.ts` | `resolveBundledRuntime()` — finds an installed `@ade-dev/runtime-<target>` package and its `bin/` + `native/` halves. |
 | `packages/sdk/src/runtimeSignature.ts` | `probeRuntimeSignature()` — `codesign` + `spctl` on macOS, `Get-AuthenticodeSignature` on Windows. Never throws; null means "not known". |
-| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, a per-`webContents.id` registry, `authorize` / `allowThreadKey` / `allowModel` gates, the `openOptions` hook and the four-field renderer filter, the `onThreadRemoved(key, kind)` host callback, the client getter and client swap, teardown on destroy and navigation. |
+| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, per-renderer registry, `authorize` / `allowThreadKey` / `allowModel` / `allowAccountManagement` gates, sign-in handle bridge, `openOptions`, lifecycle callbacks and teardown. |
 | `packages/sdk/src/electron/preload.ts` | `exposeAdeBridge()` — single-file, zero-import preload module safe under `sandbox: true`. It exports the function and does not call it. |
 | `packages/sdk/src/electron/preload-auto.ts` | `@ade-dev/sdk/electron/preload-auto` — calls `exposeAdeBridge` with the default key and prefix. One CJS file whose only `require` is `"electron"`, for `webPreferences.preload` directly. |
 | `packages/sdk/src/electron/global.ts` | `@ade-dev/sdk/electron/global` — types only: `declare global { interface Window { ade: AdeBridge } }`. |
@@ -188,9 +189,34 @@ link handler.
 
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
-SDK 0.6.0 keeps the 0.4.0 runtime range too (chat-ui is bumped to 0.6.0 with
-it; its source is unchanged). Its MCP additions behave on an older runtime as
-follows:
+### SDK 0.7 client track
+
+The client consumes the runtime-wire additions through `runtime/info` feature
+checks and keeps the runtime range at `>=1.2.82 <2.0.0`. Missing actions fail
+with `unsupported` and a named action instead of being sent optimistically.
+
+- **BREAKING:** `useMachineLogin` defaults to `false`, and the sidecar starts
+  with isolated provider logins. Existing hosts that depend on the machine's
+  Claude or Codex login must pass `useMachineLogin: true`.
+- `accounts`, `credentials`, and `presets` use the runtime's existing stores;
+  the SDK strips secret-valued fields from summaries. `resolveSecret` pushes a
+  host-vault value for a live session without writing it to the thread record.
+- Thread create options persist provider permission mode, effort, fast mode,
+  account, credential and preset ids. A resume ignores conflicting options
+  with the same warning behavior as the older host fields.
+- Threads expose structured responses, mutable queue operations, task stop,
+  slash commands, recovery, usage-limit actions and account switching. The
+  Electron renderer bridge applies `allowThreadKey` to these thread methods and
+  refuses account/credential/preset calls unless `allowAccountManagement` is
+  explicitly enabled.
+- `doctor().logins` reports isolated, machine or attached mode; usage-limit
+  notifications use the client `usageLimit` event. Automatic failover only
+  proceeds when another account is signed in.
+
+SDK 0.7 keeps the `>=1.2.82 <2.0.0` runtime range; chat-ui's source is
+unchanged. The new runtime surfaces are feature-detected through
+`runtime/info`, and the SDK throws `unsupported` when the action or capability
+is absent. Its MCP additions behave on an older runtime as follows:
 
 - Async `mcpHeaders`, the before-turn header refresh and
   `thread.refreshMcpHeaders()` need no new capability: they push through the
