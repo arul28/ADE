@@ -2,24 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   classifyChangedPath,
   isPrChangeSummaryComplete,
-  parseLinguistAttributes,
   summarizePrChangeKinds,
   type PrChangeKind,
 } from "./prChangeKind";
 
-const LINGUIST = parseLinguistAttributes([
-  "# comment",
-  "docs-site/** linguist-documentation",
-  "api/schema.ts linguist-generated=true",
-  "package-lock.json -linguist-generated",
-  "third_party/keep/** linguist-vendored=false",
-  "*.proto.ts linguist-generated",
-  "*.proto.ts !linguist-generated",
-  "*.sql text eol=lf",
-].join("\n"));
-
 describe("classifyChangedPath", () => {
-  it.each<[string, PrChangeKind, boolean?]>([
+  it.each<[string, PrChangeKind]>([
     ["src/app/server.ts", "code"],
     ["README.md", "docs"],
     ["docs/guide/README.txt", "docs"],
@@ -57,15 +45,8 @@ describe("classifyChangedPath", () => {
     ["src\\components\\Button.test.tsx", "tests"],
     ["C:\\repo\\node_modules\\left-pad\\index.js", "generated"],
     ["./docs/intro.MD", "docs"],
-    // linguist overrides
-    ["docs-site/assets/app.js", "docs", true],
-    ["api/schema.ts", "generated", true],
-    ["package-lock.json", "code", true],
-    ["third_party/keep/lib.c", "code", true],
-    ["src/user.proto.ts", "code", true],
-    ["db/init.sql", "code", true],
-  ])("%s -> %s", (path, kind, withLinguist) => {
-    expect(classifyChangedPath(path, withLinguist ? { linguist: LINGUIST } : null)).toBe(kind);
+  ])("%s -> %s", (path, kind) => {
+    expect(classifyChangedPath(path)).toBe(kind);
   });
 });
 

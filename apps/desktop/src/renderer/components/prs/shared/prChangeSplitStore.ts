@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { PrFile } from "../../../../shared/types/prs";
 import { summarizePrChangeKinds, type PrChangeKindSummary } from "../../../../shared/prChangeKind";
+import { setBounded } from "../../../../shared/boundedMap";
 
 /**
  * The code / tests / docs / generated split of PRs whose file lists this
@@ -56,21 +57,8 @@ function notify(key: string): void {
 }
 
 function store(key: string, entry: Entry): void {
-  entries.delete(key);
-  entries.set(key, entry);
-  while (entries.size > MAX_ENTRIES) {
-    const oldest = entries.keys().next().value;
-    if (oldest === undefined) break;
-    entries.delete(oldest);
-  }
+  setBounded(entries, key, entry, MAX_ENTRIES);
   notify(key);
-}
-
-/** Records a summary the caller already computed (the detail pane's). */
-export function notePrChangeSummary(key: string, summary: PrChangeKindSummary): void {
-  if (summary.total.files === 0) return;
-  if (entries.get(key)?.summary === summary) return;
-  store(key, { files: null, summary });
 }
 
 /** Records a file list; summarized the first time anything reads it. */
@@ -131,11 +119,7 @@ export function requestPrChangeSplit(key: string, load: () => Promise<readonly P
   if (standDown?.()) return;
   const last = lastFetchAt.get(key);
   if (last != null && Date.now() - last < FETCH_RETRY_MS) return;
-  lastFetchAt.set(key, Date.now());
-  if (lastFetchAt.size > MAX_ENTRIES) {
-    const oldest = lastFetchAt.keys().next().value;
-    if (oldest !== undefined) lastFetchAt.delete(oldest);
-  }
+  setBounded(lastFetchAt, key, Date.now(), MAX_ENTRIES);
   inFlight.add(key);
   void load()
     .then((files) => {

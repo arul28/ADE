@@ -37,6 +37,8 @@ import {
 import { githubAuthFailureKindOf, GitHubRateLimitError } from "../github/githubRateLimit";
 import type { createGithubService } from "../github/githubService";
 import type { Logger } from "../logging/logger";
+import { createKeyedPromiseCache } from "../../../shared/expiringPromiseCache";
+import { githubRepoKey } from "./prGithubReadCache";
 
 const FILTER_OPTIONS_TTL_MS = 5 * 60_000;
 const SEARCH_TTL_MS = 60_000;
@@ -47,60 +49,26 @@ const SEARCH_PAGE = 50;
 /** GitHub accepts at most 10 assignees per request (and per issue). */
 const MAX_ASSIGNEES = 10;
 
-type CacheEntry<T> = { at: number; promise: Promise<T> };
-
-/** A small TTL map that keeps in-flight promises, so equal reads share one request. */
-function createTtlCache<T>(ttlMs: number) {
-  const entries = new Map<string, CacheEntry<T>>();
-  return {
-    get(key: string, load: () => Promise<T>): Promise<T> {
-      const now = Date.now();
-      const hit = entries.get(key);
-      if (hit && now - hit.at < ttlMs) return hit.promise;
-      const promise = load();
-      entries.set(key, { at: now, promise });
-      if (entries.size > CACHE_MAX_ENTRIES) {
-        const oldest = entries.keys().next().value;
-        if (oldest !== undefined) entries.delete(oldest);
-      }
-      // A failure must not be served for the whole TTL.
-      promise.catch(() => {
-        if (entries.get(key)?.promise === promise) entries.delete(key);
-      });
-      return promise;
-    },
-    delete(key: string): void {
-      entries.delete(key);
-    },
-    clear(): void {
-      entries.clear();
-    },
-  };
-}
-
 type GraphqlRequest = <T>(
   query: string,
   variables: Record<string, unknown>,
   options?: { repo?: GitHubRepoRef; capability?: "read" | "write" },
 ) => Promise<T>;
 
-type PrTarget = { repo: GitHubRepoRef; prNumber: number; row: unknown };
+/** What the PR service resolves a PR id to; only the coordinates are read here. */
+type PrTarget = { repo: GitHubRepoRef; prNumber: number };
 
-export type PrListFilterDeps = {
+export type PrListFilterDeps<TTarget extends PrTarget> = {
   githubService: Pick<ReturnType<typeof createGithubService>, "apiRequest" | "getStatus">;
   graphqlRequest: GraphqlRequest;
   logger: Logger;
   /** The same row builder the snapshot uses, so linked lane context still shows. */
   buildItems: (rawPulls: unknown[], repo: GitHubRepoRef) => Promise<GitHubPrListItem[]>;
-  resolvePrTarget: (prId: string) => PrTarget;
-  refreshAfterMutation: (target: PrTarget) => Promise<void>;
+  resolvePrTarget: (prId: string) => TTarget;
+  refreshAfterMutation: (target: TTarget) => Promise<void>;
 };
 
 const asString = (value: unknown): string => (typeof value === "string" ? value : "");
-
-function repoKey(repo: GitHubRepoRef): string {
-  return `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -184,10 +152,10 @@ export function describeAssigneeFailure(error: unknown): string {
   return errorMessage(error) || "GitHub did not change the assignees.";
 }
 
-export function createPrListFilterOps(deps: PrListFilterDeps) {
+export function createPrListFilterOps<TTarget extends PrTarget>(deps: PrListFilterDeps<TTarget>) {
   const { githubService, graphqlRequest, logger } = deps;
-  const optionsCache = createTtlCache<ListGitHubPrFilterOptionsResult>(FILTER_OPTIONS_TTL_MS);
-  const searchCache = createTtlCache<{ raw: unknown[]; totalCount: number; nextCursor: string | null }>(SEARCH_TTL_MS);
+  const optionsCache = createKeyedPromiseCache<ListGitHubPrFilterOptionsResult>({ ttlMs: FILTER_OPTIONS_TTL_MS, maxEntries: CACHE_MAX_ENTRIES });
+  const searchCache = createKeyedPromiseCache<{ raw: unknown[]; totalCount: number; nextCursor: string | null }>({ ttlMs: SEARCH_TTL_MS, maxEntries: CACHE_MAX_ENTRIES });
   /** One assignee change at a time per PR, so two quick clicks cannot interleave. */
   const assigneeChains = new Map<string, Promise<unknown>>();
 
@@ -245,8 +213,8 @@ export function createPrListFilterOps(deps: PrListFilterDeps) {
     const kind: GitHubPrFilterKind = args?.kind === "author" || args?.kind === "assignee" ? args.kind : "label";
     const query = asString(args?.query).trim().slice(0, 100);
     const repo = await resolveRepo(args ?? {});
-    return optionsCache.get(
-      `${repoKey(repo)}|${kind}|${query.toLowerCase()}`,
+    return optionsCache.read(
+      `${githubRepoKey(repo)}|${kind}|${query.toLowerCase()}`,
       () => fetchFilterOptions(repo, kind, query),
     );
   };
@@ -287,8 +255,8 @@ export function createPrListFilterOps(deps: PrListFilterDeps) {
     const cacheKey = `${q}|${cursor ?? ""}`;
     if (args?.force === true) searchCache.delete(cacheKey);
     try {
-      const page = await searchCache.get(cacheKey, () => runSearch(q, cursor, repo));
-      const ownRepo = repoKey(repo);
+      const page = await searchCache.read(cacheKey, () => runSearch(q, cursor, repo));
+      const ownRepo = githubRepoKey(repo);
       const items = (await deps.buildItems(page.raw, repo))
         // Defence in depth: the query is scoped to this repo, and so is the list.
         .filter((item) => `${item.repoOwner.toLowerCase()}/${item.repoName.toLowerCase()}` === ownRepo)
@@ -342,7 +310,7 @@ export function createPrListFilterOps(deps: PrListFilterDeps) {
       }
     } catch (error) {
       logger.warn("prs.set_assignees_failed", {
-        repo: repoKey(target.repo),
+        repo: githubRepoKey(target.repo),
         prNumber: target.prNumber,
         status: httpStatusOf(error),
         error: errorMessage(error),
@@ -366,7 +334,7 @@ export function createPrListFilterOps(deps: PrListFilterDeps) {
     let key: string;
     try {
       const target = deps.resolvePrTarget(args?.prId);
-      key = `${repoKey(target.repo)}#${target.prNumber}`;
+      key = `${githubRepoKey(target.repo)}#${target.prNumber}`;
     } catch (error) {
       return Promise.reject(error);
     }

@@ -154,6 +154,7 @@ import type { AdeDb } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
+import { createPrGithubReadCache } from "./prGithubReadCache";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
@@ -1291,6 +1292,21 @@ function githubRateLimitResetAtMsOf(error: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** What linking a PR that a chat's shell command created or merged came to. */
+export type ShellPrLinkResult =
+  | { status: "linked" | "already_linked"; prId: string }
+  | { status: "skipped"; reason: string };
+
+/** A PR number a chat's `gh pr create` / `gh pr merge` printed, to link to that chat. */
+export type ShellPrLinkArgs = {
+  sessionId: string;
+  kind: "create" | "merge";
+  /** From the command's `--repo`, when it named one. */
+  repoOwner: string | null;
+  repoName: string | null;
+  prNumber: number;
+};
+
 /**
  * Whether GitHub rejected the GraphQL `stack` field itself, as opposed to
  * refusing the request. Only this failure is fixable by re-asking without the
@@ -1303,11 +1319,6 @@ function githubRateLimitResetAtMsOf(error: unknown): number | null {
  * false positive costs nothing at all, because the no-stack query is the
  * correct query for every repo without GitHub stacks.
  */
-/** What linking a PR that a chat's shell command created or merged came to. */
-export type ShellPrLinkResult =
-  | { status: "linked" | "already_linked"; prId: string }
-  | { status: "skipped"; reason: string };
-
 function isGraphqlUndefinedFieldError(error: unknown): boolean {
   return /field '?stack'?\b|undefined field|doesn't exist on type|cannot query field/i
     .test(getErrorMessage(error));
@@ -2099,24 +2110,6 @@ export function createPrService({
   });
 
   /**
-   * Repo + PR number for any PR mutation, from either a real DB row (mapped PR)
-   * or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
-   *
-   * A lane mapping is a convenience link, not an authorization: every mutation
-   * below reaches GitHub over the GitHub API, and GitHub does not care whether
-   * ADE holds a local row. So resolution never requires one — `row` is null for
-   * an unmapped PR and callers make only their *local bookkeeping* conditional
-   * on it (see `refreshAfterMutation`).
-   *
-   * A synthetic id says *which* PR, not whether ADE holds a row for it: the
-   * GitHub tab keys every row it renders that way, mapped or not. So the
-   * coordinates still get looked up locally. Returning `row: null` for every
-   * `gh:` id made a land or cleanup issued from that tab skip the bookkeeping
-   * the same PR gets when it is addressed by row id — merge outcome, child-lane
-   * auto-rebase, lane archive, row refresh. The parsed coordinates stay
-   * authoritative; the row only supplies the local half.
-   */
-  /**
    * Repositories whose GitHub has no merge-queue schema (GitHub Enterprise
    * Server, which ADE does not otherwise support either). Asked once, then
    * never again for the life of the process.
@@ -2125,13 +2118,7 @@ export function createPrService({
   /** One shell-created PR is checked once at a time, however many events name it. */
   const shellPrLinksInFlight = new Map<string, Promise<ShellPrLinkResult>>();
 
-  const linkShellPrActionOnce = async (args: {
-    sessionId: string;
-    kind: "create" | "merge";
-    repoOwner: string | null;
-    repoName: string | null;
-    prNumber: number;
-  }): Promise<ShellPrLinkResult> => {
+  const linkShellPrActionOnce = async (args: ShellPrLinkArgs): Promise<ShellPrLinkResult> => {
     const skip = (reason: string): ShellPrLinkResult => {
       logger.info("prs.shell_link_skipped", { sessionId: args.sessionId, kind: args.kind, prNumber: args.prNumber, reason });
       return { status: "skipped", reason };
@@ -2229,6 +2216,24 @@ export function createPrService({
     return { status: "linked", prId: row.id };
   };
 
+  /**
+   * Repo + PR number for any PR mutation, from either a real DB row (mapped PR)
+   * or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
+   *
+   * A lane mapping is a convenience link, not an authorization: every mutation
+   * below reaches GitHub over the GitHub API, and GitHub does not care whether
+   * ADE holds a local row. So resolution never requires one — `row` is null for
+   * an unmapped PR and callers make only their *local bookkeeping* conditional
+   * on it (see `refreshAfterMutation`).
+   *
+   * A synthetic id says *which* PR, not whether ADE holds a row for it: the
+   * GitHub tab keys every row it renders that way, mapped or not. So the
+   * coordinates still get looked up locally. Returning `row: null` for every
+   * `gh:` id made a land or cleanup issued from that tab skip the bookkeeping
+   * the same PR gets when it is addressed by row id — merge outcome, child-lane
+   * auto-rebase, lane archive, row refresh. The parsed coordinates stay
+   * authoritative; the row only supplies the local half.
+   */
   const resolvePrTarget = (
     prId: string,
   ): { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null } => {
@@ -2272,7 +2277,7 @@ export function createPrService({
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     options: { hot?: boolean } = {},
   ): Promise<void> => {
-    forgetSharedReads(target.repo);
+    readCache.forgetRepo(target.repo);
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
@@ -2630,8 +2635,7 @@ export function createPrService({
     // lets an invalidated list be rebuilt from pulls read before the mutation.
     rawPullMemo.clear();
     activityInputMemo.clear();
-    sharedReads.clear();
-    quietReuse.clear();
+    readCache.clearLive();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4678,6 +4682,9 @@ export function createPrService({
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
+  /** GitHub answers kept between the reads below; see prGithubReadCache.ts. */
+  const readCache = createPrGithubReadCache();
+
   /**
    * Opening one PR fans out into detail, status, checks, reviews and activity,
    * and each of those independently re-fetched `GET /pulls/{n}` — five or more
@@ -4687,103 +4694,6 @@ export function createPrService({
    * `refreshOne`, which bypasses the memo and republishes what it read, so a
    * post-merge / post-edit read never sees the pre-mutation pull.
    */
-  /**
-   * Shares the per-PR reads that several calls make at the same moment.
-   * Opening a PR asks for its status, checks and reviews together, and each of
-   * those read the head's check-runs and combined status (and the reviews) on
-   * its own: three check-runs reads and two of the rest for one open. A read
-   * in flight is joined; a settled one is reused for the same 5 s as
-   * `rawPullMemo`. Failures are never kept. Every caller gets its own copy,
-   * so one that sorts or edits the result cannot change another's.
-   */
-  const SHARED_READ_TTL_MS = 5_000;
-  const SHARED_READ_MAX_ENTRIES = 192;
-  const sharedReads = new Map<string, { settledAt: number | null; value: Promise<unknown> }>();
-  const sharedReadRepoKey = (repo: GitHubRepoRef): string => `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
-  const sharedRead = <T>(key: string, load: () => Promise<T>): Promise<T> => {
-    const now = Date.now();
-    const cached = sharedReads.get(key);
-    if (cached && (cached.settledAt == null || now - cached.settledAt < SHARED_READ_TTL_MS)) {
-      return cached.value as Promise<T>;
-    }
-    const entry: { settledAt: number | null; value: Promise<unknown> } = { settledAt: null, value: Promise.resolve() };
-    const value = load().then(
-      (result) => {
-        entry.settledAt = Date.now();
-        return result;
-      },
-      (error: unknown) => {
-        if (sharedReads.get(key) === entry) sharedReads.delete(key);
-        throw error;
-      },
-    );
-    entry.value = value;
-    sharedReads.set(key, entry);
-    if (sharedReads.size > SHARED_READ_MAX_ENTRIES) {
-      for (const [staleKey, staleEntry] of sharedReads) {
-        if (sharedReads.size <= SHARED_READ_MAX_ENTRIES) break;
-        if (staleEntry.settledAt != null) sharedReads.delete(staleKey);
-      }
-    }
-    return value;
-  };
-  /**
-   * GraphQL answers reused while the PR is quiet. GraphQL is never a free
-   * `304`, and the detail refresh asked for the merge box and the review
-   * threads every minute even when every REST read beside them had just come
-   * back unchanged. The pull's own record is read first anyway (and is a
-   * `304` when nothing moved), so its last update, head, base and GitHub's
-   * merge state fingerprint the PR: an answer is reused while that
-   * fingerprint holds, for at most 3 minutes. Any write through ADE clears
-   * the repo's answers.
-   */
-  const QUIET_REUSE_MAX_AGE_MS = 3 * 60_000;
-  const QUIET_REUSE_MAX_ENTRIES = 128;
-  const quietReuse = new Map<string, { fingerprint: string; at: number; value: unknown }>();
-  const quietFingerprint = (pull: any): string | null => {
-    const updatedAt = asString(pull?.updated_at);
-    const headSha = asString(pull?.head?.sha);
-    if (!updatedAt || !headSha) return null;
-    return [updatedAt, headSha, asString(pull?.base?.sha), asString(pull?.mergeable_state), String(pull?.mergeable ?? "")].join("|");
-  };
-  const reuseWhileQuiet = async <T>(
-    key: string,
-    pull: any,
-    load: () => Promise<T>,
-    /** An answer GitHub is still working out (mergeability computing) is never kept. */
-    settled: (value: T) => boolean = () => true,
-  ): Promise<T> => {
-    const fingerprint = quietFingerprint(pull);
-    const known = quietReuse.get(key);
-    if (fingerprint && known && known.fingerprint === fingerprint && Date.now() - known.at < QUIET_REUSE_MAX_AGE_MS) {
-      return structuredClone(known.value) as T;
-    }
-    const value = await load();
-    if (fingerprint && value != null && settled(value)) {
-      quietReuse.delete(key);
-      quietReuse.set(key, { fingerprint, at: Date.now(), value: structuredClone(value) });
-      while (quietReuse.size > QUIET_REUSE_MAX_ENTRIES) {
-        const oldest = quietReuse.keys().next();
-        if (oldest.done) break;
-        quietReuse.delete(oldest.value);
-      }
-    } else {
-      quietReuse.delete(key);
-    }
-    return value;
-  };
-
-  /** Drops a repo's shared reads after a write that can change them. */
-  const forgetSharedReads = (repo: GitHubRepoRef): void => {
-    const prefix = `${sharedReadRepoKey(repo)}|`;
-    for (const key of Array.from(sharedReads.keys())) {
-      if (key.slice(key.indexOf(":") + 1).startsWith(prefix)) sharedReads.delete(key);
-    }
-    for (const key of Array.from(quietReuse.keys())) {
-      if (key.slice(key.indexOf(":") + 1).startsWith(prefix)) quietReuse.delete(key);
-    }
-  };
-
   const RAW_PULL_MEMO_TTL_MS = 5_000;
   const RAW_PULL_MEMO_MAX_ENTRIES = 64;
   const rawPullMemo = new Map<string, { fetchedAt: number; pull: Promise<any> }>();
@@ -4881,7 +4791,7 @@ export function createPrService({
     for (const kind of ["comments", "reviews", "checks"] as const) {
       activityInputMemo.delete(activityInputMemoKey(kind, repo, prNumber));
     }
-    forgetSharedReads(repo);
+    readCache.forgetRepo(repo);
   };
 
   const forgetActivityInputsForPr = (prId: string): void => {
@@ -5824,7 +5734,7 @@ export function createPrService({
   };
 
   const fetchReviews = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
-    const reviews = await sharedRead(`reviews:${sharedReadRepoKey(repo)}|${prNumber}`, () => fetchReviewsUncached(repo, prNumber));
+    const reviews = await readCache.shared(repo, `reviews:${prNumber}`, () => fetchReviewsUncached(repo, prNumber));
     return reviews.map((review) => ({ ...review }));
   };
 
@@ -5884,7 +5794,7 @@ export function createPrService({
   const fetchReviewThreadsWhileQuiet = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
     const pull = await fetchPr(repo, prNumber).catch(() => null);
     if (!pull) return await fetchReviewThreads(repo, prNumber);
-    return await reuseWhileQuiet(`threads:${sharedReadRepoKey(repo)}|${prNumber}`, pull, () => fetchReviewThreads(repo, prNumber));
+    return await readCache.whileQuiet(repo, `threads:${prNumber}`, pull, () => fetchReviewThreads(repo, prNumber));
   };
 
   const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
@@ -6023,7 +5933,7 @@ export function createPrService({
   };
 
   const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<CombinedStatus> => {
-    const combined = await sharedRead(`status:${sharedReadRepoKey(repo)}|${sha}`, async (): Promise<CombinedStatus> => {
+    const combined = await readCache.shared(repo, `status:${sha}`, async (): Promise<CombinedStatus> => {
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/status`
@@ -6037,7 +5947,7 @@ export function createPrService({
   };
 
   const fetchCheckRuns = async (repo: GitHubRepoRef, sha: string): Promise<any[]> => {
-    const runs = await sharedRead(`checkRuns:${sharedReadRepoKey(repo)}|${sha}`, async (): Promise<any[]> => {
+    const runs = await readCache.shared(repo, `checkRuns:${sha}`, async (): Promise<any[]> => {
       const { data } = await githubService.apiRequest<any>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
@@ -6534,8 +6444,9 @@ export function createPrService({
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
       bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
-      reuseWhileQuiet(
-        `merge:${sharedReadRepoKey(repo)}|${prNumber}`,
+      readCache.whileQuiet(
+        repo,
+        `merge:${prNumber}`,
         pr,
         () => fetchMergeStateViaGraphql(repo, prNumber),
         (value) => !value?.mergeableUnknown && value?.mergeStateStatus != null && value.mergeStateStatus !== "unknown",
@@ -7022,18 +6933,6 @@ export function createPrService({
    */
   const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
   const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
-  /**
-   * Settled check results of the PR's older commits. Only the head commit's
-   * checks move in practice, yet every open read check-runs for each of up to
-   * 30 commits (28 requests for one 28-commit PR). A settled result (success,
-   * failure, or nothing ran) is kept for 30 minutes; a pending one is read
-   * again, and the head commit is always read.
-   */
-  const SETTLED_COMMIT_CHECKS_TTL_MS = 30 * 60_000;
-  const SETTLED_COMMIT_CHECKS_MAX_ENTRIES = 2_000;
-  const settledCommitChecks = new Map<string, { status: "success" | "failure" | "none"; at: number }>();
-  const settledCommitChecksKey = (repo: GitHubRepoRef, sha: string): string =>
-    `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}|${sha}`;
   const COMMIT_CHECK_ROLLUP_QUERY = `query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
@@ -7100,21 +6999,14 @@ export function createPrService({
       };
     });
 
+    // The head is never kept: read seconds after a push, before CI has
+    // registered, it says nothing ran, and that would stick once it becomes
+    // an older commit.
+    const headSha = baseCommits[baseCommits.length - 1]?.sha ?? "";
     const remember = (sha: string, status: "success" | "failure" | "pending" | "none"): void => {
-      if (status === "pending") return;
-      const key = settledCommitChecksKey(repo, sha);
-      settledCommitChecks.delete(key);
-      settledCommitChecks.set(key, { status, at: Date.now() });
-      while (settledCommitChecks.size > SETTLED_COMMIT_CHECKS_MAX_ENTRIES) {
-        const oldest = settledCommitChecks.keys().next();
-        if (oldest.done) break;
-        settledCommitChecks.delete(oldest.value);
-      }
+      if (sha !== headSha) readCache.noteCommitCheck(repo, sha, status);
     };
-    const knownStatus = (sha: string): "success" | "failure" | "none" | null => {
-      const settled = settledCommitChecks.get(settledCommitChecksKey(repo, sha));
-      return settled && Date.now() - settled.at < SETTLED_COMMIT_CHECKS_TTL_MS ? settled.status : null;
-    };
+    const knownStatus = (sha: string) => readCache.commitCheck(repo, sha);
 
     // One GraphQL read gives every commit GitHub's own check rollup (what its
     // commit list shows), where the REST path below costs a request per
@@ -7175,26 +7067,6 @@ export function createPrService({
     return await getCommitsSnapshotByCoords(coordsFromRow(row));
   };
 
-  /**
-   * Jobs of finished runs, by run and attempt. A completed attempt's jobs
-   * never change (a re-run is a new attempt, so a new key), yet every detail
-   * refresh used to read them again: six job lists a minute for a PR whose CI
-   * finished hours ago.
-   */
-  const FINISHED_RUN_JOBS_MAX_ENTRIES = 256;
-  const finishedRunJobs = new Map<string, PrActionJob[]>();
-  const finishedRunJobsKey = (repo: GitHubRepoRef, runId: number, attempt: number): string =>
-    `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}|${runId}|${attempt}`;
-  const rememberFinishedRunJobs = (key: string, jobs: PrActionJob[]): void => {
-    finishedRunJobs.delete(key);
-    finishedRunJobs.set(key, jobs);
-    while (finishedRunJobs.size > FINISHED_RUN_JOBS_MAX_ENTRIES) {
-      const oldest = finishedRunJobs.keys().next();
-      if (oldest.done) break;
-      finishedRunJobs.delete(oldest.value);
-    }
-  };
-
   const getActionRunsByCoords = async (coords: PrGithubCoords): Promise<PrActionRun[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const pr = await fetchPr(repo, Number(coords.githubPrNumber));
@@ -7226,9 +7098,8 @@ export function createPrService({
         const runId = Number(run?.id);
         const runAttempt = Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1;
         const runFinished = toRunStatus(run?.status) === "completed";
-        const jobsKey = finishedRunJobsKey(repo, runId, runAttempt);
-        const knownJobs = runFinished ? finishedRunJobs.get(jobsKey) : undefined;
-        let jobs: PrActionJob[] = knownJobs ? knownJobs.map((job) => ({ ...job, steps: [...job.steps] })) : [];
+        const knownJobs = runFinished ? readCache.finishedJobs(repo, runId, runAttempt) : null;
+        let jobs: PrActionJob[] = knownJobs ?? [];
         if (runId > 0 && jobFetchAllowed[index] && !knownJobs) {
           try {
             const { data: jobsData } = await githubService.apiRequest<any>({
@@ -7259,7 +7130,7 @@ export function createPrService({
             // Kept only once every job has finished too; a run marked done
             // while a job still reports running is read again next time.
             if (runFinished && jobs.every((job) => job.status === "completed")) {
-              rememberFinishedRunJobs(jobsKey, jobs.map((job) => ({ ...job, steps: [...job.steps] })));
+              readCache.noteFinishedJobs(repo, runId, runAttempt, jobs);
             }
           } catch {
             // Jobs fetch failed; return empty jobs array
@@ -11224,10 +11095,13 @@ export function createPrService({
       if (revalidationOptions.revalidate === false) return;
       if (snapshotBackoffError()) return;
       if (githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) return;
-      // Nobody waits on a background revalidation, so it is automatic by
-      // definition: it takes the delta walk once a sweep cursor exists, where
+      // Nobody waits on a background revalidation of the open list, so it is
+      // automatic: it takes the delta walk once a sweep cursor exists, where
       // passing the reader's own options made each one a full ten-page walk.
-      void startSnapshotRequest(githubStatus, { ...revalidationOptions, automaticRefresh: true }).catch((error) => {
+      // A history revalidation keeps the full walk: a delta stop there would
+      // claim older history exists when it was all loaded.
+      const automaticRefresh = revalidationOptions.includeExternalClosed !== true || revalidationOptions.automaticRefresh === true;
+      void startSnapshotRequest(githubStatus, { ...revalidationOptions, automaticRefresh }).catch((error) => {
         logger.warn("prs.github_snapshot_revalidation_failed", { error: getErrorMessage(error) });
       });
     };
@@ -12607,7 +12481,7 @@ export function createPrService({
       return rawPulls.map((rawPull) => gitHubItemFromRawPull(rawPull, repo, metadata, "repo"));
     },
     resolvePrTarget: (prId) => resolvePrTarget(prId),
-    refreshAfterMutation: (target) => refreshAfterMutation(target as ReturnType<typeof resolvePrTarget>),
+    refreshAfterMutation,
   });
   prListFilterOps = filterOps;
 
@@ -13034,13 +12908,7 @@ export function createPrService({
      * a PR's lane from its branch, and this is the chat's own verified PR,
      * linked the way `ade prs create` links one.
      */
-    async linkShellPrAction(args: {
-      sessionId: string;
-      kind: "create" | "merge";
-      repoOwner: string | null;
-      repoName: string | null;
-      prNumber: number;
-    }): Promise<ShellPrLinkResult> {
+    async linkShellPrAction(args: ShellPrLinkArgs): Promise<ShellPrLinkResult> {
       if (!Number.isSafeInteger(args.prNumber) || args.prNumber <= 0) return { status: "skipped", reason: "bad_number" };
       const key = `${args.sessionId}:${(args.repoOwner ?? "").toLowerCase()}/${(args.repoName ?? "").toLowerCase()}#${args.prNumber}`;
       const running = shellPrLinksInFlight.get(key);
@@ -13159,7 +13027,6 @@ export function createPrService({
       return summary;
     },
 
-    /** A chat's (or a PR's) live watches. */
     /**
      * A private repository's PR picture or video, as a short-lived signed URL
      * the renderer loads directly. A read on this machine's GitHub credential;
@@ -13174,6 +13041,7 @@ export function createPrService({
       return await mediaResolver.resolve(args);
     },
 
+    /** A chat's (or a PR's) live watches. */
     getChatWatches(args: GetPrChatWatchArgs = {}): PrChatWatchSummary[] {
       const sessionId = args.sessionId?.trim()
         ? resolveCanonicalChatSessionId(args.sessionId.trim()) ?? args.sessionId.trim()
@@ -13692,6 +13560,9 @@ export function createPrService({
         { threadId: args.threadId },
         { repo },
       );
+      // Resolving may not bump the pull's updated_at, so the quiet-reuse
+      // fingerprint would keep serving the unresolved thread.
+      readCache.forgetRepo(repo);
     },
 
     async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
@@ -13760,6 +13631,7 @@ export function createPrService({
           { threadId: args.threadId },
           { repo },
         );
+        readCache.forgetRepo(repo);
         const thread = data.resolveReviewThread?.thread ?? null;
         return {
           threadId: asString(thread?.id) || args.threadId,
@@ -13779,6 +13651,7 @@ export function createPrService({
         { threadId: args.threadId },
         { repo },
       );
+      readCache.forgetRepo(repo);
       const thread = data.unresolveReviewThread?.thread ?? null;
       return {
         threadId: asString(thread?.id) || args.threadId,

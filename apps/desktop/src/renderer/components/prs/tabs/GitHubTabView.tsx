@@ -11,9 +11,9 @@ import type {
 import {
   GitHubPrFilterChips,
   GitHubPrFilterMenu,
-  type GitHubFilterOptionsLoader,
   type GitHubPrFilterFacets,
 } from "../shared/GitHubPrFilters";
+import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import { EmptyState } from "../../ui/EmptyState";
 import { dialogBus } from "../../../lib/dialogBus";
 import { Banner } from "../../ui/notice";
@@ -65,7 +65,7 @@ export type GitHubTabFilterSearchView = {
   onLoadMore: () => void;
 };
 
-type GitHubTabViewChrome = {
+export type GitHubTabViewChrome = {
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   onSearchSubmit?: () => void;

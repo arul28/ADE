@@ -3,9 +3,7 @@
  * what they mostly skim (tests, test support, docs, generated output), so a
  * PR's `+N −N` can say how much of it is logic.
  *
- * Path-only and pure: no file reads, no network. Optional `.gitattributes`
- * `linguist-*` rules (see `parseLinguistAttributes`) override the heuristics
- * the same way GitHub's own diff view does.
+ * Path-only and pure: no file reads, no network.
  */
 
 export type PrChangeKind = "code" | "tests" | "mocks" | "docs" | "generated";
@@ -18,19 +16,6 @@ export type PrChangeKindTally = { files: number; additions: number; deletions: n
 export type PrChangeKindSummary = {
   kinds: Record<PrChangeKind, PrChangeKindTally>;
   total: PrChangeKindTally;
-};
-
-/** One compiled `.gitattributes` line that sets at least one linguist attribute. */
-export type LinguistRule = {
-  pattern: RegExp;
-  generated?: boolean | null;
-  documentation?: boolean | null;
-  vendored?: boolean | null;
-};
-
-export type PrChangeKindOptions = {
-  /** From `parseLinguistAttributes`; later rules win, as in git. */
-  linguist?: readonly LinguistRule[] | null;
 };
 
 /**
@@ -168,45 +153,19 @@ function dirFlags(lowerPath: string, nameStart: number): number {
   return flags;
 }
 
-type LinguistVerdict = { generated?: boolean; documentation?: boolean };
-
-function linguistVerdict(path: string, rules: readonly LinguistRule[]): LinguistVerdict | null {
-  let generated: boolean | null | undefined;
-  let documentation: boolean | null | undefined;
-  let vendored: boolean | null | undefined;
-  for (const rule of rules) {
-    if (!rule.pattern.test(path)) continue;
-    if (rule.generated !== undefined) generated = rule.generated;
-    if (rule.documentation !== undefined) documentation = rule.documentation;
-    if (rule.vendored !== undefined) vendored = rule.vendored;
-  }
-  if (generated == null && documentation == null && vendored == null) return null;
-  const verdict: LinguistVerdict = {};
-  if (generated === true || vendored === true) verdict.generated = true;
-  else if (generated === false || vendored === false) verdict.generated = false;
-  if (documentation != null) verdict.documentation = documentation;
-  return verdict;
-}
-
 /**
  * The bucket one changed path belongs to. Pass the file's current name; a
  * rename is judged by where it ended up.
  */
-export function classifyChangedPath(path: string, options?: PrChangeKindOptions | null): PrChangeKind {
+export function classifyChangedPath(path: string): PrChangeKind {
   const normalized = normalizePath(path);
   const lower = normalized.toLowerCase();
   const nameStart = lower.lastIndexOf("/") + 1;
   const lowerName = nameStart > 0 ? lower.slice(nameStart) : lower;
 
-  const verdict = options?.linguist?.length ? linguistVerdict(normalized, options.linguist) : null;
-  if (verdict?.generated === true) return "generated";
-  if (verdict?.documentation === true) return "docs";
   const dirs = nameStart > 0 ? dirFlags(lower, nameStart) : 0;
 
-  if (
-    verdict?.generated !== false
-    && (LOCKFILE_NAMES.has(lowerName) || GENERATED_NAME.test(lowerName) || (dirs & IN_GENERATED_DIR) !== 0)
-  ) {
+  if (LOCKFILE_NAMES.has(lowerName) || GENERATED_NAME.test(lowerName) || (dirs & IN_GENERATED_DIR) !== 0) {
     return "generated";
   }
   if (MOCK_NAME.test(lowerName) || (dirs & IN_MOCK_DIR) !== 0) return "mocks";
@@ -214,10 +173,7 @@ export function classifyChangedPath(path: string, options?: PrChangeKindOptions 
   if (TEST_NAME.test(lowerName) || CLASS_TEST_NAME.test(name) || (dirs & IN_TEST_DIR) !== 0) {
     return "tests";
   }
-  if (
-    verdict?.documentation !== false
-    && ((DOCS_NAME.test(lowerName) && !NOT_DOCS_NAME.test(lowerName)) || DOCS_BARE_NAMES.has(lowerName))
-  ) {
+  if ((DOCS_NAME.test(lowerName) && !NOT_DOCS_NAME.test(lowerName)) || DOCS_BARE_NAMES.has(lowerName)) {
     return "docs";
   }
   return "code";
@@ -234,10 +190,7 @@ function emptyTally(): PrChangeKindTally {
 }
 
 /** Per-bucket files, additions and deletions, plus the totals they add up to. */
-export function summarizePrChangeKinds(
-  files: readonly PrChangeFileLike[],
-  options?: PrChangeKindOptions | null,
-): PrChangeKindSummary {
+export function summarizePrChangeKinds(files: readonly PrChangeFileLike[]): PrChangeKindSummary {
   const kinds: Record<PrChangeKind, PrChangeKindTally> = {
     code: emptyTally(),
     tests: emptyTally(),
@@ -249,7 +202,7 @@ export function summarizePrChangeKinds(
   for (const file of files) {
     const additions = Number.isFinite(file.additions) ? Math.max(0, file.additions) : 0;
     const deletions = Number.isFinite(file.deletions) ? Math.max(0, file.deletions) : 0;
-    const tally = kinds[classifyChangedPath(file.filename, options)];
+    const tally = kinds[classifyChangedPath(file.filename)];
     tally.files += 1;
     tally.additions += additions;
     tally.deletions += deletions;
@@ -287,130 +240,4 @@ export function isPrChangeSummaryComplete(
 export function prChangeNonCodeLines(summary: PrChangeKindSummary): number {
   return summary.total.additions + summary.total.deletions
     - summary.kinds.code.additions - summary.kinds.code.deletions;
-}
-
-// ---------------------------------------------------------------------------
-// .gitattributes
-
-const LINGUIST_ATTRS = {
-  "linguist-generated": "generated",
-  "linguist-documentation": "documentation",
-  "linguist-vendored": "vendored",
-} as const;
-
-function escapeRegExpChar(ch: string): string {
-  return /[\\^$.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;
-}
-
-/**
- * A gitattributes pattern as a regex over a repo-relative path. A pattern with
- * no slash matches the file name at any depth; one with a slash is anchored at
- * the repository root. `**`, `*`, `?` and `[...]` follow git.
- */
-function compileGitattributesPattern(raw: string): RegExp | null {
-  let pattern = raw;
-  if (!pattern || pattern.endsWith("/")) return null; // git never applies attributes to a directory pattern
-  const anchored = pattern.includes("/");
-  if (pattern.startsWith("/")) pattern = pattern.slice(1);
-  let body = "";
-  for (let index = 0; index < pattern.length; index += 1) {
-    const ch = pattern[index]!;
-    if (ch === "*") {
-      if (pattern[index + 1] === "*") {
-        const atStart = index === 0 || pattern[index - 1] === "/";
-        const next = pattern[index + 2];
-        if (atStart && next === "/") {
-          body += "(?:[^/]*/)*"; // `**/` — zero or more directories
-          index += 2;
-          continue;
-        }
-        if (atStart && next === undefined) {
-          body += ".*"; // trailing `/**` — everything inside
-          index += 1;
-          continue;
-        }
-        body += "[^/]*";
-        index += 1;
-        continue;
-      }
-      body += "[^/]*";
-    } else if (ch === "?") {
-      body += "[^/]";
-    } else if (ch === "[") {
-      const close = pattern.indexOf("]", index + 2);
-      if (close < 0) {
-        body += "\\[";
-      } else {
-        let cls = pattern.slice(index + 1, close).replace(/\\/g, "\\\\");
-        if (cls.startsWith("!")) cls = `^${cls.slice(1)}`;
-        body += `[${cls}]`;
-        index = close;
-      }
-    } else if (ch === "\\" && index + 1 < pattern.length) {
-      index += 1;
-      body += escapeRegExpChar(pattern[index]!);
-    } else {
-      body += escapeRegExpChar(ch);
-    }
-  }
-  try {
-    return new RegExp(anchored ? `^${body}$` : `(?:^|/)${body}$`);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The `linguist-generated`, `linguist-documentation` and `linguist-vendored`
- * lines of a root `.gitattributes` file, in file order. `attr`/`attr=true`
- * sets, `-attr`/`attr=false` clears, and `!attr` returns it to unspecified.
- * Lines that set no linguist attribute, macros and comments are dropped.
- */
-export function parseLinguistAttributes(text: string): LinguistRule[] {
-  const rules: LinguistRule[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || line.startsWith("[attr]")) continue;
-    let pattern: string;
-    let rest: string;
-    if (line.startsWith("\"")) {
-      const close = line.indexOf("\"", 1);
-      if (close < 0) continue;
-      pattern = line.slice(1, close);
-      rest = line.slice(close + 1);
-    } else {
-      const space = line.search(/\s/);
-      if (space < 0) continue;
-      pattern = line.slice(0, space);
-      rest = line.slice(space);
-    }
-    const rule: Omit<LinguistRule, "pattern"> = {};
-    let touched = false;
-    for (const token of rest.trim().split(/\s+/)) {
-      let name = token;
-      let value: boolean | null = true;
-      if (name.startsWith("-")) {
-        name = name.slice(1);
-        value = false;
-      } else if (name.startsWith("!")) {
-        name = name.slice(1);
-        value = null;
-      } else {
-        const eq = name.indexOf("=");
-        if (eq >= 0) {
-          const raw = name.slice(eq + 1).toLowerCase();
-          name = name.slice(0, eq);
-          value = raw === "false" ? false : raw === "true" ? true : null;
-        }
-      }
-      const key = (LINGUIST_ATTRS as Record<string, keyof Omit<LinguistRule, "pattern">>)[name];
-      if (!key) continue;
-      rule[key] = value;
-      touched = true;
-    }
-    if (!touched) continue;
-    const compiled = compileGitattributesPattern(pattern);
-    if (compiled) rules.push({ pattern: compiled, ...rule });
-  }
-  return rules;
 }

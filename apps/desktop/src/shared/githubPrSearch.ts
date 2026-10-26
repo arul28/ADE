@@ -88,6 +88,11 @@ export function hasGitHubPrListFilters(filters: GitHubPrListFilters | null | und
   return Boolean(filters && (filters.labels.length > 0 || filters.author || filters.assignee));
 }
 
+/** How many filters are on: each label, plus the author and the assignee. */
+export function countGitHubPrListFilters(filters: GitHubPrListFilters): number {
+  return filters.labels.length + (filters.author ? 1 : 0) + (filters.assignee ? 1 : 0);
+}
+
 /** Stable identity for caching and effect keys (case-insensitive like GitHub). */
 export function githubPrListFiltersKey(filters: GitHubPrListFilters): string {
   return JSON.stringify([

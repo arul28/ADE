@@ -7,6 +7,7 @@ import {
   type ResolvePrMediaArgs,
   type ResolvePrMediaResult,
 } from "../../../shared/githubMedia";
+import { setBounded } from "../../../shared/boundedMap";
 
 /**
  * Turns a private repository's PR attachment URL into a short-lived signed URL
@@ -141,13 +142,7 @@ export function createGithubMediaResolver(deps: GithubMediaResolverDeps) {
       ? Date.parse(result.expiresAt) - EXPIRY_MARGIN_MS
       : now() + UNAVAILABLE_TTL_MS;
     if (until <= now()) return;
-    cache.delete(key);
-    cache.set(key, { result, until });
-    while (cache.size > MAX_CACHE_ENTRIES) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
+    setBounded(cache, key, { result, until }, MAX_CACHE_ENTRIES);
   };
 
   /** A showable content type for a signed copy, or null. Tokenless. */

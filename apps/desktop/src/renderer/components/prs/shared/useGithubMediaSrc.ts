@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { githubAttachmentCanonicalUrl, githubRepoContext } from "../../../../shared/githubMedia";
+import { setBounded } from "../../../../shared/boundedMap";
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
 import { usePrRuntimePin } from "../state/prMachines";
 
@@ -48,13 +49,7 @@ function readCache(key: string): CacheEntry | null {
 }
 
 function writeCache(key: string, entry: CacheEntry): void {
-  cache.delete(key);
-  cache.set(key, entry);
-  while (cache.size > MAX_CACHE_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
+  setBounded(cache, key, entry, MAX_CACHE_ENTRIES);
 }
 
 function resolveShared(

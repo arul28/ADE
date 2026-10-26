@@ -17,8 +17,12 @@ export const GITHUB_MAX_REQUESTS_IN_FLIGHT = 6;
 let inFlight = 0;
 const waiting: Array<() => void> = [];
 
-/** Resolves with a release function once a slot is free. Release is idempotent. */
-export function acquireGithubRequestSlot(): Promise<() => void> {
+/**
+ * Resolves with a release function once a slot is free. Release is
+ * idempotent. A caller whose `signal` aborts while it waits leaves the line
+ * and rejects with the signal's reason, as `fetch` would.
+ */
+export function acquireGithubRequestSlot(signal?: AbortSignal | null): Promise<() => void> {
   const grant = (): (() => void) => {
     inFlight += 1;
     let released = false;
@@ -30,8 +34,19 @@ export function acquireGithubRequestSlot(): Promise<() => void> {
       if (next) next();
     };
   };
+  if (signal?.aborted) return Promise.reject(signal.reason);
   if (inFlight < GITHUB_MAX_REQUESTS_IN_FLIGHT) return Promise.resolve(grant());
-  return new Promise((resolve) => {
-    waiting.push(() => resolve(grant()));
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      const index = waiting.indexOf(admit);
+      if (index >= 0) waiting.splice(index, 1);
+      reject(signal?.reason);
+    };
+    const admit = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(grant());
+    };
+    waiting.push(admit);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

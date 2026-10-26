@@ -7,6 +7,7 @@ import type {
   SearchGitHubPrsResult,
 } from "../../../../shared/types";
 import { githubPrListFiltersKey } from "../../../../shared/githubPrSearch";
+import { setBounded } from "../../../../shared/boundedMap";
 
 /** Typing pause before the list asks GitHub. */
 export const GITHUB_PR_SEARCH_DEBOUNCE_MS = 300;
@@ -33,13 +34,19 @@ function readCache(key: string): GitHubPrSearchPage | null {
 
 function writeCache(page: GitHubPrSearchPage): void {
   if (page.error) return;
-  resultCache.delete(page.key);
-  resultCache.set(page.key, { at: Date.now(), page });
-  while (resultCache.size > RESULT_CACHE_MAX) {
-    const oldest = resultCache.keys().next().value;
-    if (oldest === undefined) break;
-    resultCache.delete(oldest);
-  }
+  setBounded(resultCache, page.key, { at: Date.now(), page }, RESULT_CACHE_MAX);
+}
+
+const staleListeners = new Set<() => void>();
+
+/**
+ * Drops every kept search answer and re-runs the visible one. Called after
+ * ADE changes a PR's labels or assignees, which can move it in or out of a
+ * filtered list (the main process drops its own copy on the same write).
+ */
+export function forgetGitHubPrSearchResults(): void {
+  resultCache.clear();
+  for (const listener of staleListeners) listener();
 }
 
 /** An older host answers a new action with "not callable" / "not exposed". */
@@ -157,6 +164,14 @@ export function useGitHubPrFilterSearch({
     }, GITHUB_PR_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [baseKey, enabled, key, refreshNonce, unavailable]);
+
+  React.useEffect(() => {
+    const listener = () => setRefreshNonce((value) => value + 1);
+    staleListeners.add(listener);
+    return () => {
+      staleListeners.delete(listener);
+    };
+  }, []);
 
   const loadMore = React.useCallback(() => {
     const current = pageRef.current;

@@ -30,7 +30,6 @@ import { buildDigestTimelineModel, type DigestPushTick } from "../shared/prDiges
 import { PrPushTickRail } from "../shared/PrPushTickRail";
 import {
   NEXT_STEP_TONE_COLOR,
-  PrAssigneesCard,
   PrCommentCard,
   PrFloatingDock,
   PrLabelsCard,
@@ -42,8 +41,8 @@ import {
   type PrMergeCardActions,
   type PrMergeCardButton,
 } from "../shared/PrFloatingDock";
-import type { PrAssigneeChange } from "../shared/PrFloatingDock";
-import type { GitHubFilterOptionsLoader } from "../shared/GitHubPrFilters";
+import { PrAssigneesCard, type PrAssigneeChange } from "../shared/PrAssigneesCard";
+import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import { buildUnifiedChecks, summarizePipelineStates } from "../shared/prUnifiedChecks";
 import { buildPrChatPrompt, prFailingCheckNames, prOpenFindings } from "../shared/prChatActions";
 import { resolvePrNextStepFromStatus, type PrNextStepAction } from "../../../../shared/prNextStep";

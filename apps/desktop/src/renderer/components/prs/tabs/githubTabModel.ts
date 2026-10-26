@@ -6,6 +6,7 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
+import { GITHUB_PR_FILTER_ME } from "../../../../shared/githubPrSearch";
 import { isTerminalPrState } from "../../../lib/prState";
 import type { OptimisticTerminalState } from "../state/PrsContext";
 import type { GitHubTabSort } from "./prBlockedSort";
@@ -202,7 +203,7 @@ export function matchesListFiltersLocally(
   const names = new Set(item.labels.map((label) => label.name.toLowerCase()));
   if (!filters.labels.every((label) => names.has(label.toLowerCase()))) return false;
   if (filters.author) {
-    const wanted = filters.author === "@me" ? viewerLogin : filters.author;
+    const wanted = filters.author === GITHUB_PR_FILTER_ME ? viewerLogin : filters.author;
     if (!wanted || item.author?.toLowerCase() !== wanted.toLowerCase()) return false;
   }
   return true;

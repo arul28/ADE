@@ -144,7 +144,7 @@ or Git operations until the visible surface needs them.
   a budget-cut full walk never advanced the delta cursor.
 - **Apply when**: adding a GitHub read to `prService`, a timer on the PRs
   surface, or anything that fans out per commit, run or row.
-- **Patterns**: join an in-flight read and reuse it for 5 s (`sharedRead`);
+- **Patterns**: join an in-flight read and reuse it for 5 s (`readCache.shared` in `prGithubReadCache.ts`);
   every request passes `acquireGithubRequestSlot` (6 in flight per process);
   keep immutable results (finished run jobs by run and attempt, settled
   older-commit checks); prefer one GraphQL read over N REST reads; treat

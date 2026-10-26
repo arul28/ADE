@@ -3,12 +3,12 @@ import {
   readGhPrShellActions,
   shellToolCallCommand,
   shellToolResultText,
-  type GhPrShellAction,
 } from "../../../shared/ghPrShellCommands";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
-import type { ShellPrLinkResult } from "./prService";
+import { setBounded } from "../../../shared/boundedMap";
+import type { ShellPrLinkArgs, ShellPrLinkResult } from "./prService";
 
 /** Tool calls waiting for their result, across all chats. Oldest drop first. */
 const PENDING_CALLS_CAP = 256;
@@ -18,24 +18,8 @@ const HANDLED_CAP = 512;
 export type PrShellLinkWatcherDeps = {
   logger: Logger;
   subscribeToEvents: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
-  linkShellPrAction: (args: {
-    sessionId: string;
-    kind: GhPrShellAction["kind"];
-    repoOwner: string | null;
-    repoName: string | null;
-    prNumber: number;
-  }) => Promise<ShellPrLinkResult>;
+  linkShellPrAction: (args: ShellPrLinkArgs) => Promise<ShellPrLinkResult>;
 };
-
-function remember<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
-  map.delete(key);
-  map.set(key, value);
-  while (map.size > cap) {
-    const oldest = map.keys().next();
-    if (oldest.done) break;
-    map.delete(oldest.value);
-  }
-}
 
 /**
  * Links the PRs a chat's own shell commands create or merge (`gh pr create`,
@@ -56,7 +40,7 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
   const handle = (sessionId: string, itemId: string, command: string, output: string, exitCode: number | null) => {
     const key = `${sessionId}:${itemId}`;
     if (handled.has(key)) return;
-    remember(handled, key, true, HANDLED_CAP);
+    setBounded(handled, key, true, HANDLED_CAP);
     const actions = readGhPrShellActions({ command, output, exitCode });
     for (const action of actions) {
       void deps.linkShellPrAction({
@@ -86,7 +70,7 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
     if (event.type === "tool_call") {
       const command = shellToolCallCommand(event.args);
       if (command && mightTouchGhPr(command)) {
-        remember(pendingCalls, `${envelope.sessionId}:${event.itemId}`, command, PENDING_CALLS_CAP);
+        setBounded(pendingCalls, `${envelope.sessionId}:${event.itemId}`, command, PENDING_CALLS_CAP);
       }
       return;
     }

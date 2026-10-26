@@ -776,7 +776,7 @@ async function fetchGitHub(
 ): Promise<Response> {
   // Waiting for a slot happens before the timeout starts: the timeout is for
   // GitHub's answer, not for ADE's own queue.
-  const releaseSlot = await acquireGithubRequestSlot();
+  const releaseSlot = await acquireGithubRequestSlot(init.signal);
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);

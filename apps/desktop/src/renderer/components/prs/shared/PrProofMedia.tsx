@@ -46,15 +46,14 @@ export function PrRemoteMedia({
   useEffect(() => setFailed({ image: false, video: false }), [url]);
   const media = useGithubMediaSrc(url);
   const order = likely === "video" ? (["video", "image"] as const) : (["image", "video"] as const);
-  // A signed copy says what it is; the original URL does not.
+  // A signed copy says what it is; the original URL does not, so it tries
+  // each element kind in turn (also after a signed copy could not be had).
   const kind = media.phase === "resolved"
     ? media.kind
-    : media.phase === "failed"
-      ? null
-      : order.find((entry) => !failed[entry]) ?? null;
+    : order.find((entry) => !failed[entry]) ?? null;
   const onError = (entry: "image" | "video") => () => {
-    if (media.reportError()) return;
-    if (media.phase === "original") setFailed((current) => ({ ...current, [entry]: true }));
+    if (media.phase !== "resolved") setFailed((current) => ({ ...current, [entry]: true }));
+    media.reportError();
   };
   if (media.phase === "resolving") {
     // Same footprint as the link it may become, so nothing jumps.

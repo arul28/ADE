@@ -1722,14 +1722,14 @@ more than a thousand open PRs re-walked all ten pages on every sweep.
 six in flight (`githubRequestGate.ts`). A request waits for a slot before its
 timeout starts. Opening a PR reads its status, checks and reviews together,
 so those reads are shared: a read in flight is joined, and a settled one is
-reused for 5 s (`sharedRead` in `prService.ts`). Jobs of a finished CI run
+reused for 5 s (`readCache.shared`, `prs/prGithubReadCache.ts`). Jobs of a finished CI run
 attempt are kept, since they never change. The commit list's check dots come
 from one GraphQL `statusCheckRollup` read, not one check-runs read per commit,
 and settled results of older commits are kept for 30 minutes. A healthy GitHub
 status is reused for 2 minutes (`GITHUB_STATUS_CACHE_TTL_MS`), so the detail
 refresh no longer checks the token with `GET /user` on every tick. GraphQL is
 never a free `304`, so the merge box and the review threads are reused while
-the PR is quiet (`reuseWhileQuiet`): the pull's last update, head, base and
+the PR is quiet (`readCache.whileQuiet`): the pull's last update, head, base and
 merge state are unchanged, for at most 3 minutes. A merge state GitHub is still
 computing is never reused, and any write through ADE clears them. The detail
 refresh and the mergeability re-poll skip their ticks while the window is

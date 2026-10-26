@@ -29,6 +29,18 @@ import {
   type GitHubFilterCounts,
 } from "./githubTabModel";
 
+/**
+ * What the label / author / assignee filters make the list:
+ * - `search`: GitHub's answer is the list (selection still finds snapshot
+ *   rows). `totalCount` is GitHub's total, shown as the active tab's count;
+ *   `matchesText` means GitHub already matched the free text.
+ * - `local`: until GitHub answers, or when it cannot, the loaded rows are
+ *   narrowed here.
+ */
+export type GitHubTabListSource =
+  | { kind: "search"; items: GitHubPrListItem[]; totalCount: number | null; matchesText: boolean }
+  | { kind: "local"; filters: GitHubPrListFilters; viewerLogin: string | null };
+
 export function useGitHubTabListModel({
   snapshot,
   searchQuery,
@@ -40,11 +52,7 @@ export function useGitHubTabListModel({
   lastSeenRowByCoordRef,
   currentHistoryPageLimit,
   optimisticTerminalByCoord,
-  searchItems = null,
-  searchTotalCount = null,
-  searchMatchesText = false,
-  localListFilters = null,
-  viewerLogin = null,
+  listSource = null,
 }: {
   snapshot: GitHubPrSnapshot | null;
   searchQuery: string;
@@ -57,19 +65,16 @@ export function useGitHubTabListModel({
   currentHistoryPageLimit: () => number;
   /** Merges/closes GitHub has confirmed but the snapshot has not caught up to. */
   optimisticTerminalByCoord?: ReadonlyMap<string, OptimisticTerminalState> | null;
-  /**
-   * GitHub's answer for the active label / author / assignee filters. When set
-   * it is the list (selection still finds snapshot rows); null is the snapshot.
-   */
-  searchItems?: GitHubPrListItem[] | null;
-  /** GitHub's total for `searchItems`, shown as the active tab's count. */
-  searchTotalCount?: number | null;
-  /** GitHub already matched the free text, so do not filter it again here. */
-  searchMatchesText?: boolean;
-  /** Filters to apply to loaded rows while GitHub search cannot answer. */
-  localListFilters?: GitHubPrListFilters | null;
-  viewerLogin?: string | null;
+  /** What the label / author / assignee filters make the list; null is the snapshot. */
+  listSource?: GitHubTabListSource | null;
 }) {
+  const searchSource = listSource?.kind === "search" ? listSource : null;
+  const searchItems = searchSource?.items ?? null;
+  const searchTotalCount = searchSource?.totalCount ?? null;
+  const searchMatchesText = searchSource?.matchesText ?? false;
+  const localSource = listSource?.kind === "local" ? listSource : null;
+  const localListFilters = localSource?.filters ?? null;
+  const viewerLogin = localSource?.viewerLogin ?? null;
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (searchMatchesText) return true;
     if (!searchQuery.trim()) return true;

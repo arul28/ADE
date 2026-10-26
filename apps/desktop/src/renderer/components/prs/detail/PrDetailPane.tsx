@@ -1,6 +1,6 @@
 import React from "react";
-import type { PrAssigneeChange } from "../shared/PrFloatingDock";
-import type { GitHubFilterOptionsLoader } from "../shared/GitHubPrFilters";
+import type { PrAssigneeChange } from "../shared/PrAssigneesCard";
+import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import {
   XCircle,
   CircleNotch,
@@ -66,6 +66,7 @@ import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { PrRuntimePinProvider } from "../state/prMachines";
 import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
+import { forgetGitHubPrSearchResults } from "../tabs/useGitHubPrFilterSearch";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -1341,6 +1342,7 @@ export function PrDetailPane({
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels }, ...onPin);
+    forgetGitHubPrSearchResults();
     await loadDetail({ forceLive: true });
   });
 
@@ -1352,6 +1354,7 @@ export function PrDetailPane({
     const setAssignees = window.ade.prs.setAssignees;
     if (!setAssignees) throw new Error("This machine's ADE cannot assign people yet.");
     const result = await setAssignees({ prId: pr.id, add: change.add, remove: change.remove }, ...onPin);
+    forgetGitHubPrSearchResults();
     void loadDetail({ forceLive: true }).catch(() => undefined);
     return result;
   }, [loadDetail, onPin, pr.id]);
