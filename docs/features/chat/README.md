@@ -1443,7 +1443,11 @@ come):
   without the action is polled every 2 s as before. Matching is
   `chatWaitTargetMatches` in `shared/chatWait.ts`, shared by both sides. A
   chat another live brain runs never matches through this brain (see
-  [One brain per chat](#one-brain-per-chat)).
+  [One brain per chat](#one-brain-per-chat)). A wait for `idle`, `active` or
+  `terminal` on a chat that waits on a card only the user can answer
+  (`chatWaitsOnUser`: the summary's `pendingInputUserOnly`) stops at once: the
+  long-poll answers `waitingOnUser`, and the CLI exits 1 with
+  `error: "waiting_on_user"` instead of spending its timeout in silence.
 - **Durable waits** (`chat.armWait`, `ade chat wait <ids…> --async [--any]`,
   the CTO tool `waitForChats`) return at once. When all (or any) of the target
   chats reach the state, ADE wakes the caller with one line per chat (title,
@@ -1454,6 +1458,16 @@ come):
   persist in the project database (`agent-chat:waiters:v1`), re-arm on start,
   and re-check on each target's events with a 15 s backstop. Checks run one at
   a time, so a waiter fires once, and one cancelled mid-check never fires.
+  While a waiter is armed, a target that waits on a user-only card is reported
+  to its caller once per card (`userWaitsNoticed`, persisted with the waiter)
+  and the waiter stays armed. That holds for a wait that wakes its caller and
+  for `ade chat send <B> --after <A>`: the sender hears that the queued prompt
+  has not been sent yet, provided it runs on the same brain as A (the brain
+  that checks the wait) — a cross-machine sender is not woken, and its prompt
+  still goes when the card is answered. A caller's own subagent is skipped
+  there, because the subagent relay already told it (`callerToldOfUserWait`).
+  This is how a coordinator that waits on a peer hears it: a peer never wakes
+  its parent.
   A session-bound agent's wake wait can only wake that agent's own chat.
   `main/services/chat/chatWaitRegistry.ts` owns all of this.
   `chat.listWaits` / `ade chat waits` and `chat.cancelWait` /
@@ -3625,9 +3639,9 @@ written by `describePendingInputForAgent` (`shared/pendingInputCommand.ts`, also
 what `ade chat pending --text` prints). Once per child item (in memory); the
 card stays in the child so the person can still answer it there. Not relayed:
 approvals and permission prompts (an agent approving its child's tool call
-would grant itself access), secret questions, user-only consent cards, peers,
-and parents that are not a chat in this service (a CLI terminal, another
-project or machine).
+would grant itself access), secret questions, user-only consent cards, a
+peer's questions (they are the user's), and parents that are not a chat in
+this service (a CLI terminal, another project or machine).
 
 A secret question or a user-only consent card (`isUserOnlyConsentCard`: the
 real-input lease, the shared-desktop consent, MCP app calls, project secret
@@ -3639,8 +3653,12 @@ notice also reaches a parent in another project or on another machine: it goes
 through the brain's external parent router as an `ExternalParentWake` with
 `notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a
 message, not a completion, so the parent's card for the child stays open. A
-brain older than the field reads it as a finished turn whose summary says the
-child waits. The chat summary carries `pendingInputUserOnly` and
+peer's parent gets the same fact as one quiet line (`awaitingUserQuietNotice`),
+locally or from another machine, and is not woken, as for the peer's finished
+turns. Across machines the notice goes only to a brain whose `ade/initialize`
+advertises `externalWakeNotices`: an older brain would read it as a finished
+turn, so the agent machine bridge drops it there (`agent_cross_machine.wake_notice_skipped`)
+and that parent hears of the child only when its turn ends, as before. The chat summary carries `pendingInputUserOnly` and
 `chat.getTurnStatus` carries `ask.userOnly` for the same cards, which `ade chat
 status` prints as "only the user can answer this".
 

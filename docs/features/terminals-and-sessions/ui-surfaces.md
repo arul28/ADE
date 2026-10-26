@@ -1930,19 +1930,10 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.
-- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest — "at rest"
-  being the negation of `sessionIsMidFlight` (`renderer/lib/terminalAttention.ts`),
-  the one predicate the row's hover slot and its right-click menu share. Note
-  mid-flight is narrower than the `running` phase: it is `stale`, or `running`
-  with `liveness === "turn"`. A session whose turn has ended but which still owns
-  background work is promoted back to `running` with a non-turn liveness, so it
-  is *not* mid-flight and must stay settleable — settle teardown is what stops
-  that work and releases the warm agent. Hiding Settle there left the one state
-  a user most wants to stop as the only state with no control. The chat block
-  also carries **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
-  through the backend settlement transaction; it interrupts the provider and
-  clears live/restored pending input before writing settle instead of sending a
-  synthetic decline.
+- Chat: Set tag… (running Claude only), **Change status** (see the lifecycle
+  block below), and Delete chat. A settle clears the row's attention hand as
+  part of the same transaction, so there is no separate "Dismiss & settle"
+  entry any more: the hand and the settle are one write.
 - Chat rows also carry a **Hand off…** submenu with **Local handoff** and
   **Another machine** — both select the row and route the intent to the chat
   pane through `lib/chatHandoffIntent.ts`, which opens the local handoff dialog
@@ -1971,26 +1962,61 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   the request is running win per field. Generate lane name is disabled for the
   primary lane, and a busy session disables duplicate generation.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and Settle/Unsettle when the runtime is not actively working (same shared
-  predicate). A tracked CLI's
-  explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
-  prompt shows the disabled **Resolve input to settle** row.
+  and **Change status** (see the lifecycle block below). A tracked CLI waiting
+  at its own prompt with no recorded hand keeps **Done** disabled — "Resolve the
+  prompt in the terminal first" — because the terminal owns that question. A
+  hand ADE recorded for an idle prompt (`cli_prompt`) can be dismissed with
+  **Done**, since that guess can be a false alarm.
 
 Every row also carries one exhaustive lifecycle block holding each action that
-changes where the sidebar files it. **Snooze…** expands in place into the
-durations resolved by `resolveSnoozePresets` (`In 1 hour`, `This evening`,
-`Tomorrow`, `Next week`, `Until I'm asked` — each with a time column beside it,
-and `This evening` dropped once 18:00 is within an hour or past, so the row
-count varies with the time of day); an already-snoozed row instead shows
-**Wake now** with its wake label. Settle actions operate on explicit declarations: a declared settle
-has `settledAt` for **Unsettle** to clear and can additionally be pinned with
-**Keep active**, while `settleOverride` explicitly pins either state. The block
-is kept exhaustive on purpose: a
-row that reaches the end of it with nothing rendered is a row the user cannot
-un-hide. All writes go through
-`components/terminals/sessionLifecycleActions.ts`, which also owns the
-five-second undo toast, so the row menu, the hover `SessionSnoozeControl`, and
-the chat header chips can never disagree about what an action does.
+changes where the sidebar files it: **Stop runtime** where the row owns one, and
+**Change status**, whose hint states the column the row is in right now. Its
+entries are **Working**, **Needs you**, **Done**, then the snooze durations (or
+**Wake now**), then **Unsettle** / **Keep active** once the row is declared
+settled.
+
+The three column entries are `session.moveOnBoard` — the same action a board
+drag uses — so the menu and the board cannot disagree about what a column means,
+and a refusal ("Answer the question first") reads the same in both. Both go
+through `moveSessionOnBoard` (`sessionBoardMoveUi.ts`) for the toast and its
+5-second Undo; a row on another machine is re-read after the move and after
+any undo answer, refused or not.
+`renderer/lib/sessionStatusChange.ts` is the one model for what may be offered,
+and every disabled entry names its reason:
+
+- **Working** is offered only when the session is already live
+  (`runtimeState === "running"`, or live background work). A status change
+  cannot start a model, so an idle row shows "Nothing is running — send a
+  message to start it" instead of moving somewhere it cannot stay. It is also
+  refused over a live provider card, on an at-rest failure (failure outranks
+  running, so the row would keep its Failed badge), on an ended or detached row,
+  and while a derived wait (CI running, review requested, wake scheduled,
+  subagent working) would file it straight back to Waiting.
+- **Needs you** is always offered: the write is a person parking the row for
+  themselves. On a running chat it steers the live turn with "The user set this
+  chat's status to Needs you. Ask them what they need before you continue."
+- **Done** clears the attention hand and settles in one write. It is refused
+  over a live provider card, and on a tracked CLI in Needs you with no recorded
+  hand, where the terminal owns the question.
+- **Snooze** expands in place into the durations resolved by
+  `resolveSnoozePresets` (`In 1 hour`, `This evening`, `Tomorrow`, `Next
+  week`, `Until I'm asked` — each with a time column beside it, and `This
+  evening` dropped once 18:00 is within an hour or past, so the row count varies
+  with the time of day); an already-snoozed row instead shows **Wake now** with
+  its wake label. A declared settle has `settledAt` for **Unsettle** to clear
+  and can additionally be pinned with **Keep active**, while `settleOverride`
+  explicitly pins either state.
+
+**Waiting** is deliberately absent as a target: a row sits there because it is
+snoozed, its PR is mid-CI, a review is outstanding, a wake is armed, or a
+subagent is still working. Only the snooze is the person's to set.
+
+The block is kept exhaustive on purpose: a row that reaches the end of it with
+nothing rendered is a row the user cannot un-hide. Snooze and settle writes go
+through `components/terminals/sessionLifecycleActions.ts` and the column writes
+through `sessionBoardMoveUi.ts`, which owns the five-second undo toast, so the
+row menu, the board, the hover `SessionSnoozeControl`, and the chat header chips
+can never disagree about what an action does.
 
 A singleton lane has no divider to right-click, so its session menu adds a
 **Lane** hover submenu. `LaneActionsSubmenu` renders the exact

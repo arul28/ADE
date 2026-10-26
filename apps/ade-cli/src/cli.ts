@@ -99,6 +99,8 @@ import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/share
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
+import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import {
   registerSentryDiagnosticAttachment,
   registerSentryDiagnosticContext,
@@ -216,7 +218,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
-import { chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -2255,6 +2257,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Git commands run in the lane worktree and record ADE operations so the app can
   refresh lane state. Use --lane for anything other than the active workspace.
+  For a GitHub HTTPS remote, push, pull, fetch and sync try git's own sign-in
+  first, then ADE's GitHub credential (GitHub CLI or a personal access token in
+  Settings), so they work where a bare "git push" says "could not read
+  Username". SSH remotes sign in with your SSH key only.
 
     $ ade git status --lane <lane> --text           Show ADE-aware sync status
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
@@ -2560,6 +2566,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
+                                                    --clear takes that hand back down (alias: 'ade chat unask'):
+                                                    only the marker this chat raised, never one the user raised.
+                                                    Clear it when you asked and then kept working anyway, so the
+                                                    row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
@@ -2602,9 +2612,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
-                                                    Wait for idle, active, awaiting-input, or terminal
+                                                    Wait for idle, active, awaiting-input, or terminal.
+                                                    Stops early with waiting_on_user when only the user
+                                                    can answer the chat's card
     $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
-                                                    Return now; ADE wakes this chat when all (or any) of them get there
+                                                    Return now; ADE wakes this chat when all (or any) of them get there,
+                                                    and once when one of them waits on the user
     $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
     $ ade chat waits [<session>]                    Waits this chat armed or is a target of
     $ ade chat wait --cancel <waitId>               Cancel an armed wait
@@ -10400,7 +10413,7 @@ export function formatChatLaunches(value: unknown): string {
  * (project-less) chat they belong to the personal scope, not to whatever
  * project the CLI would otherwise resolve from the cwd.
  */
-const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
+const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "unask", "note", "activity"]);
 
 function remoteMcpTurnMetadata(): { remoteMcp: { connectionId: string; label: string } } | null {
   const connectionId = process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim();
@@ -10670,7 +10683,7 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "note" || sub === "activity"
+  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity"
     || sub === "generate-names" || sub === "generate_names" || sub === "names";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
@@ -10689,7 +10702,14 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(sessionId ? { sessionId } : {}),
     });
   const requireSession = () => requireValue(sessionId, "sessionId");
-  if (sub === "ask") {
+  if (sub === "ask" || sub === "unask") {
+    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
+      return {
+        kind: "execute",
+        label: "chat ask --clear",
+        steps: [actionStep("result", "chat", "clearAsk", withSession({}))],
+      };
+    }
     const message = requireValue(
       readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
       "question",
@@ -12904,7 +12924,14 @@ function buildPersonalSelfReportPlan(
     readValue(args, ["--session", "--session-id"]) ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null),
     "sessionId",
   );
-  if (sub === "ask") {
+  if (sub === "ask" || sub === "unask") {
+    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
+      return {
+        ...base,
+        label: "personal chat ask --clear",
+        steps: [personalChatStep("clearAsk", { sessionId })],
+      };
+    }
     const message = requireValue(
       readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
       "question",
@@ -22345,18 +22372,23 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
   };
 }
 
+/**
+ * The project's origin in identity form: an SSH alias of GitHub
+ * (`git@github.com-work:org/repo`) comes back as its `github.com` form, which
+ * other machines can match.
+ */
 function getGitRemote(projectRoot: string): string | null {
   const remote = runLocalCommand(
     "git",
     ["config", "--get", "remote.origin.url"],
     projectRoot,
   );
-  return remote.ok && remote.stdout ? remote.stdout : null;
+  return canonicalGitOriginUrl(remote.ok && remote.stdout ? remote.stdout : null);
 }
 
 function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
   const remote = getGitRemote(projectRoot);
-  const hasGitHubRemote = Boolean(remote && /github\.com[:/]/i.test(remote));
+  const hasGitHubRemote = Boolean(parseGithubRemoteUrl(remote));
   const ghInstalled = commandExists("gh");
   const envTokenPresent = Boolean(
     process.env.ADE_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim(),
@@ -36303,7 +36335,7 @@ async function runChatWaitCommand(
         arguments: {
           domain: "chat",
           action: "waitFor",
-          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs, stopWhenUserWaits: true },
         },
       });
       const result = unwrapActionEnvelope(unwrapToolResult(raw));
@@ -36361,6 +36393,21 @@ async function runChatWaitCommand(
           summary,
         };
         return { output: formatOutput(result, options), exitCode: 0 };
+      }
+      // Nothing an agent does moves this chat until the user answers its
+      // card, so the rest of the timeout would only be spent in silence.
+      if (chatWaitsOnUser(summary, plan.waitFor)) {
+        const result = {
+          ok: false,
+          error: "waiting_on_user",
+          message: "The chat waits on a card only the user can answer; an agent cannot. "
+            + "Do not start another chat for the same work. Tell the user if it is urgent, then wait again.",
+          sessionId: plan.sessionId,
+          waitFor: plan.waitFor,
+          elapsedMs,
+          summary,
+        };
+        return { output: formatOutput(result, options), exitCode: 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
         const result = {

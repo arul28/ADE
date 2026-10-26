@@ -19,7 +19,9 @@ import {
   runGitOrThrow,
   type GitCheckoutProgress,
 } from "../git/git";
+import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
+import { runGitPushOrThrow } from "../git/gitPushFailure";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -1415,7 +1417,7 @@ async function resolveImportBranchTarget(args: {
   const rawRef = args.rawRef.trim();
 
   // Refresh cached remote refs, but still allow import when the fetch fails and refs are already present locally.
-  await runGit(["fetch", "--prune", "--all"], {
+  await runGitWithGithubAuthFallback(["fetch", "--prune", "--all"], {
     cwd: args.projectRoot,
     timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
   }).catch(() => {});
@@ -2852,7 +2854,7 @@ export function createLaneService({
         timeoutMs: 8_000,
       }).then((res) => res.exitCode === 0);
       if (remoteTrackingExists) return true;
-      return runGit(["ls-remote", "--heads", "origin", ref], {
+      return runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", ref], {
         cwd: projectRoot,
         timeoutMs: 15_000,
       }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
@@ -4455,7 +4457,10 @@ export function createLaneService({
     // best-effort upstream setup.
     if (!isAutoLaneTemporaryBranch(branchRef)) {
       try {
-        await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+        await runGitWithGithubAuthFallback(["push", "-u", "origin", branchRef], {
+          cwd: worktreePath,
+          timeoutMs: 60_000,
+        });
       } catch {
         // Non-fatal: lane works locally even without remote tracking
       }
@@ -6293,7 +6298,7 @@ export function createLaneService({
           // If we are branching directly from the current primary checkout, ensure
           // it is in sync with remote before using it as the base.
           if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-            await runGitOrThrow(["fetch", "--prune"], {
+            await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
               cwd: parent.worktree_path,
               timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
               signal: gitWrite.signal,
@@ -6782,7 +6787,10 @@ export function createLaneService({
           try {
             const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: worktreePath, timeoutMs: 5_000 });
             if (upstreamCheck.exitCode !== 0) {
-              await runGit(["push", "-u", "origin", branchRef], { cwd: worktreePath, timeoutMs: 60_000 });
+              await runGitWithGithubAuthFallback(["push", "-u", "origin", branchRef], {
+                cwd: worktreePath,
+                timeoutMs: 60_000,
+              });
             }
           } catch {
             // Non-fatal: lane works locally even without remote tracking
@@ -7850,7 +7858,11 @@ export function createLaneService({
         const lane = getLaneRow(laneId);
         if (!lane) continue;
 
-        await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        await runGitPushOrThrow(["push", "--force-with-lease"], {
+          cwd: lane.worktree_path,
+          timeoutMs: 120_000,
+          branch: lane.branch_ref,
+        });
         laneItem.pushed = true;
         run.pushedLaneIds.push(laneId);
         emitRunLog({
@@ -8196,7 +8208,7 @@ export function createLaneService({
       });
       const hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
       if (hasOrigin) {
-        const remoteTemp = await runGit(
+        const remoteTemp = await runGitWithGithubAuthFallback(
           ["ls-remote", "--exit-code", "--heads", "origin", temporaryBranch],
           { cwd: lane.worktree_path, timeoutMs: 12_000 },
         );
@@ -8277,7 +8289,7 @@ export function createLaneService({
           timeoutMs: 8_000,
         });
         const remote = hasOrigin
-          ? await runGit(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
+          ? await runGitWithGithubAuthFallback(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
             cwd: projectRoot,
             timeoutMs: 12_000,
           })
@@ -9526,7 +9538,7 @@ export function createLaneService({
             if (remoteCheck.exitCode !== 0) {
               throw new Error(`Remote '${remote}' is not configured for this repository`);
             }
-            const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
+            const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
               cwd: projectRoot,
               timeoutMs: 30_000,
             });
@@ -9537,7 +9549,7 @@ export function createLaneService({
             if (remoteRefCheck.stdout.trim().length === 0) {
               return { detail: `${remote}/${branchName} not found` };
             }
-            await runGitOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+            await runGitWithGithubAuthFallbackOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
             return { detail: `${remote}/${branchName}` };
           }, { fatal: requireRemoteBranchDelete });
         }
@@ -9690,7 +9702,7 @@ export function createLaneService({
           unpushedCommitCount = Number.parseInt(unpushed.stdout.trim(), 10) || 0;
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
-        const remoteCheck = await runGit(
+        const remoteCheck = await runGitWithGithubAuthFallback(
           ["ls-remote", "--heads", "origin", riskBranchName],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );

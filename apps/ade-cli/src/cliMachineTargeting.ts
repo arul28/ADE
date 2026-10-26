@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
+import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
+import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import {
   CLI_COMMAND_ALIASES,
@@ -485,7 +486,7 @@ async function executePlanOnAllMachines(
     process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
   }
   const roots = resolveRoots(options);
-  const localIdentity = normalizeGitRemoteIdentity(getGitRemote(roots.projectRoot));
+  const localIdentity = gitRemoteIdentity(getGitRemote(roots.projectRoot));
   // The project a row came from, as that machine names it. A projects list is
   // its own project column.
   const projectNameOn = (machine: JsonObject | null): string | null => {

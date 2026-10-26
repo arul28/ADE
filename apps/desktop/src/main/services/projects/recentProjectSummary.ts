@@ -7,6 +7,7 @@ import type { RecentProjectRemote } from "../state/globalState";
 import { hasTable, openReadOnlyDatabase } from "./readOnlySqlite";
 import { readOriginRemoteUrlFromGitConfig } from "./repoProjectResolver";
 import { resolveGitMetadataDirectory, resolveWorktreeParentRef } from "./worktreeParent";
+import { canonicalGitOriginUrl } from "../github/githubSshAlias";
 
 type RecentProjectEntry = {
   rootPath: string;
@@ -346,13 +347,13 @@ const GIT_ORIGIN_CACHE_LIMIT = 256;
 const gitOriginCache = new Map<string, GitOriginCacheEntry>();
 
 /**
- * Reads `origin` straight out of the repo's git config.
+ * Reads `origin` straight out of the repo's git config, as written there.
  *
- * This is what lets the top bar join a local checkout and a remote checkout of
- * the same repository into one tab. Deliberately a plain file read rather than
- * `git remote get-url`: spawning `git` once per recent would not be free.
+ * Deliberately a plain file read rather than `git remote get-url`: spawning
+ * `git` once per recent would not be free. Identity code wants
+ * {@link readGitOriginUrl}; this raw form is for code that must see the alias.
  */
-export function readGitOriginUrl(projectRoot: string): string | null {
+export function readGitConfigOriginUrl(projectRoot: string): string | null {
   try {
     const gitDir = resolveGitMetadataDirectory(projectRoot);
     if (!gitDir) return null;
@@ -376,6 +377,17 @@ export function readGitOriginUrl(projectRoot: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The repository's origin for identity: the git config value, with an SSH
+ * alias of GitHub (`git@github.com-work:org/repo`) given as its `github.com`
+ * form. This is what lets the top bar join a local checkout and a remote
+ * checkout of the same repository into one tab, and what keys the account's
+ * repo-scoped settings and secrets.
+ */
+export function readGitOriginUrl(projectRoot: string): string | null {
+  return canonicalGitOriginUrl(readGitConfigOriginUrl(projectRoot));
 }
 
 function remoteRecentSummary(entry: RecentProjectEntry): RecentProjectSummary {

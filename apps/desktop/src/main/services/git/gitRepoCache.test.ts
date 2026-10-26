@@ -71,6 +71,8 @@ describe("isRefAffectingGitCommand", () => {
       ["branch", "-r"],
       ["tag", "--list"],
       ["stash", "list"],
+      // The GitHub sign-in check, run on status reads.
+      ["push", "--dry-run", "--no-verify", "--porcelain", "origin", "HEAD:refs/heads/ade-push-sign-in-check"],
     ]) {
       expect(isRefAffectingGitCommand(args), args.join(" ")).toBe(false);
     }

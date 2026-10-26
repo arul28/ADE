@@ -224,6 +224,11 @@ Shared git engine (every lane service reaches git through these):
   single-flight loads and epoch-guarded invalidation. `isRefAffectingGitCommand`
   classifies argv as read or write for both the cache and the semaphore. See
   [Architecture › Process budget](../../ARCHITECTURE.md#92-process-budget-concurrency-ceiling-and-the-repo-scoped-cache).
+- `src/main/services/git/gitTransportAuth.ts` — GitHub sign-in for ADE's
+  push, fetch, pull and `ls-remote`: git's own credential first, then ADE's
+  GitHub credential through git's config environment on an https GitHub
+  remote, and the cached sign-in check behind `GitHubStatus.gitTransport`. See
+  [Pull requests › GitHub connectivity model](../pull-requests/README.md#github-connectivity-model).
 
 iOS companion (`apps/ios/ADE/Views/Lanes/`):
 

@@ -482,6 +482,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, itemId: string, decision?: \"accept\" | \"accept_for_session\" | \"decline\" | \"cancel\" (default decline: send accept to answer a question), answers?: { [questionId]: string | string[] } (option values or free text; \"selection\" for a model pick), responseText?: string (free answer, or the reason for a decline) }",
       example: "ade chat respond chat-123 --option 2   (or: ade actions run chat.respondToInput --input-json '{\"sessionId\":\"chat-123\",\"itemId\":\"item-1\",\"decision\":\"accept\",\"answers\":{\"q1\":\"staging\"}}')",
     },
+    clearAsk: {
+      description: "Take back a \"Needs you\" hand this chat raised with `ade chat ask`. Clears only the agent-raised marker: a hand the user raised, the turn-end inference, and a provider question card are left alone. Use it when you asked and then kept working anyway, so the row stops claiming it is blocked on the user.",
+      input: "object { sessionId: string }",
+      example: "ade chat ask --clear",
+    },
     createScheduledWork: {
       description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
       input: "object { sessionId?: string, prompt: string, exactly one of cron?: string | runAt?: ISO 8601 string with offset/Z | delaySeconds?: positive integer, recurring?: boolean, reason?: string }",

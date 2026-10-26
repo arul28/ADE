@@ -765,7 +765,14 @@ Renderer — settings:
   account-scoped but one-value-per-computer — the Apple device options — keeps
   the account-wide scope and carries the device in the key
   (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`) so another machine
-  skips it while this brain can read it. See
+  skips it while this brain can read it. An `account-repo` key is
+  `repo:<host>/<owner>/<repo>` from the canonical origin
+  (`readGitOriginUrl`): the machine that owns the checkout resolves an SSH
+  alias of GitHub (`git@github.com-work:org/repo`) through `ssh -G`
+  (`github/githubSshAlias.ts`), so every checkout of one repository shares a
+  key. The `repo_scope_alias` account migration copies a project's secrets and
+  settings from the alias key an older ADE used, once per project; a row
+  already under the new key wins, and the old rows stay. See
   [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
   window backdrop, configured under Settings → This computer → Appearance →

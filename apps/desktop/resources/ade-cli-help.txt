@@ -479,6 +479,10 @@ Git
 
   Git commands run in the lane worktree and record ADE operations so the app can
   refresh lane state. Use --lane for anything other than the active workspace.
+  For a GitHub HTTPS remote, push, pull, fetch and sync try git's own sign-in
+  first, then ADE's GitHub credential (GitHub CLI or a personal access token in
+  Settings), so they work where a bare "git push" says "could not read
+  Username". SSH remotes sign in with your SSH key only.
 
     $ ade git status --lane <lane> --text           Show ADE-aware sync status
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
@@ -753,6 +757,10 @@ Work chats
                                                     Values: planning | exploring | implementing | testing | debugging | reviewing | shipping | monitoring. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
+                                                    --clear takes that hand back down (alias: 'ade chat unask'):
+                                                    only the marker this chat raised, never one the user raised.
+                                                    Clear it when you asked and then kept working anyway, so the
+                                                    row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
@@ -795,9 +803,12 @@ Work chats
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
-                                                    Wait for idle, active, awaiting-input, or terminal
+                                                    Wait for idle, active, awaiting-input, or terminal.
+                                                    Stops early with waiting_on_user when only the user
+                                                    can answer the chat's card
     $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
-                                                    Return now; ADE wakes this chat when all (or any) of them get there
+                                                    Return now; ADE wakes this chat when all (or any) of them get there,
+                                                    and once when one of them waits on the user
     $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
     $ ade chat waits [<session>]                    Waits this chat armed or is a target of
     $ ade chat wait --cancel <waitId>               Cancel an armed wait

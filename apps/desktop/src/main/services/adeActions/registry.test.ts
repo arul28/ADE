@@ -471,6 +471,7 @@ describe("runtime domain services behind the allowlist", () => {
       ? { activityStatus: { value: "testing", source: "agent", updatedAt: "2026-08-01T12:00:00.000Z" } }
       : null);
     const getTurnStatus = vi.fn(async (sessionId: string) => ({ sessionId, phase: "idle" }));
+    const clearAsk = vi.fn((sessionId: string) => ({ cleared: sessionId === "chat-1" }));
     const readTranscript = vi.fn(async (sessionId: string, limit?: number, since?: string) => ([
       { role: "user", text: sessionId, timestamp: since ?? "now", limit },
     ]));
@@ -492,6 +493,7 @@ describe("runtime domain services behind the allowlist", () => {
         getAvailableModels,
         getSessionSummary,
         getTurnStatus,
+        clearAsk,
         readTranscript,
         getChatEventHistory,
         getChatEventHistoryPage,
@@ -506,6 +508,7 @@ describe("runtime domain services behind the allowlist", () => {
       getAvailableModels?: (args?: unknown) => Promise<unknown>;
       getSessionSummary?: (args?: unknown) => Promise<unknown>;
       getTurnStatus?: (args?: unknown) => Promise<unknown>;
+      clearAsk?: (args?: unknown) => unknown;
       readTranscript?: (args?: unknown) => Promise<unknown>;
       getChatEventHistory?: (args?: unknown, options?: unknown) => Promise<unknown>;
       getChatEventHistoryPage?: (args?: unknown, options?: unknown) => Promise<unknown>;
@@ -538,6 +541,12 @@ describe("runtime domain services behind the allowlist", () => {
     await expect(chat.getTurnStatus?.("chat-2")).resolves.toEqual({ sessionId: "chat-2", phase: "idle" });
     expect(getTurnStatus).toHaveBeenNthCalledWith(1, "chat-1");
     expect(getTurnStatus).toHaveBeenNthCalledWith(2, "chat-2");
+
+    // `ade chat ask --clear` sends `{ sessionId }`; the service takes the id.
+    expect(chat.clearAsk?.({ sessionId: " chat-1 " })).toEqual({ cleared: true });
+    expect(chat.clearAsk?.("chat-2")).toEqual({ cleared: false });
+    expect(clearAsk).toHaveBeenNthCalledWith(1, "chat-1");
+    expect(clearAsk).toHaveBeenNthCalledWith(2, "chat-2");
 
     await expect(chat.createSession?.({
       laneId: "lane-1",
