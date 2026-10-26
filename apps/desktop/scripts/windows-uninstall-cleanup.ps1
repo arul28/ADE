@@ -102,6 +102,36 @@ function Test-CliShimOwnedByInstall(
   return $false
 }
 
+# The extensionless Git Bash command install-path.cmd writes next to a `.cmd`
+# shim: one `exec '<packaged bin>/ade' "$@"` line. Owned when that target is
+# this install's packaged `ade`.
+function Test-GitBashShimOwnedByInstall(
+  [string]$ShimPath,
+  [string]$ExpectedCliDir
+) {
+  $contents = Get-Content -LiteralPath $ShimPath -Raw -ErrorAction Stop
+  foreach ($line in ($contents -split "`r?`n")) {
+    $match = [System.Text.RegularExpressions.Regex]::Match(
+      $line,
+      '^\s*exec\s+''(?<target>(?:[^'']|''\\'''')+)''\s+"\$@"\s*$'
+    )
+    if (-not $match.Success) { continue }
+    $targetPath = $match.Groups["target"].Value.Replace("'\''", "'").Replace("/", "\")
+    if (-not [string]::Equals([System.IO.Path]::GetFileName($targetPath), "ade", [System.StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
+    try {
+      $targetDir = Resolve-NormalizedPath ([System.IO.Path]::GetDirectoryName($targetPath))
+      if ([string]::Equals($targetDir, $ExpectedCliDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+    } catch {
+      # An invalid command target is not owned by this installation.
+    }
+  }
+  return $false
+}
+
 function Restore-EnvironmentValue([string]$Name, [string]$Value, [bool]$WasPresent) {
   if ($WasPresent) {
     [System.Environment]::SetEnvironmentVariable($Name, $Value, "Process")
@@ -416,6 +446,21 @@ if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
   foreach ($shim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*.cmd" -File -ErrorAction Stop) {
     if (Test-CliShimOwnedByInstall $shim.FullName $packagedCliDir $expectedWrapperNames) {
       Remove-Item -LiteralPath $shim.FullName -Force -ErrorAction Stop
+    }
+  }
+  # The extensionless Git Bash command install-path.cmd writes next to a
+  # `.cmd`. Removed by its own scan, not only beside a `.cmd`: a partial
+  # uninstall (or an older uninstaller) can leave it behind with no `.cmd`,
+  # and then it stays on PATH pointing into an uninstalled app. Ownership is
+  # still this install's packaged wrapper, under this channel's names.
+  $expectedGitBashNames = @(
+    $expectedWrapperNames | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) }
+  )
+  foreach ($gitBashShim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*" -File -ErrorAction Stop) {
+    if ($gitBashShim.Extension -ne "") { continue }
+    if ($expectedGitBashNames -notcontains $gitBashShim.Name) { continue }
+    if (Test-GitBashShimOwnedByInstall $gitBashShim.FullName $packagedCliDir) {
+      Remove-Item -LiteralPath $gitBashShim.FullName -Force -ErrorAction Stop
     }
   }
 }

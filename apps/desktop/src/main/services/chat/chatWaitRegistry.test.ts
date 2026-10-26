@@ -6,7 +6,14 @@ const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } 
 
 type Summary = Record<string, unknown> | null | Error;
 
-function harness(initial: Record<string, Summary>, ownedByAnotherBrain: Set<string> = new Set()) {
+function harness(
+  initial: Record<string, Summary>,
+  ownedByAnotherBrain: Set<string> = new Set(),
+  overrides: Partial<Pick<
+    Parameters<typeof createChatWaitRegistry>[0],
+    "callerToldOfUserWait" | "callerIsLiveHere"
+  >> = {},
+) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
   const sent: AgentChatMessageSessionArgs[] = [];
   let store: unknown = null;
@@ -29,6 +36,7 @@ function harness(initial: Record<string, Summary>, ownedByAnotherBrain: Set<stri
       if (ownedByAnotherBrain.has(sessionId)) throw new Error(`${sessionId} runs under another brain`);
     },
     whenReady: async () => {},
+    ...overrides,
   });
   // `arm` reads each target once (the fake read waits on a timer).
   const arm = async (args: Parameters<typeof registry.arm>[0]) => {
@@ -117,5 +125,67 @@ describe("chatWaitRegistry", () => {
     await armed;
     expect(await registry.list()).toEqual([]);
     expect(sent).toEqual([]);
+  });
+
+  const userWaiting = { status: "active", pendingInputUserOnly: true, pendingInputItemId: "card-1" };
+
+  it("tells the caller once when a target waits on the user, and keeps the wait armed", async () => {
+    const { registry, arm, sent } = harness({ caller: { status: "active" }, worker: userWaiting });
+    const waiter = await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      sessionId: "caller",
+      kind: "wake",
+      metadata: { hostContinuation: { reason: "chat_wait" } },
+    });
+    expect(sent[0]?.text).toContain("worker");
+    expect((await registry.list()).map((entry) => entry.id)).toEqual([waiter.id]);
+
+    // A later check (the 15 s backstop) does not repeat the same card.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("leaves a target's user-wait notice to the subagent relay when it already told the caller", async () => {
+    const { registry, arm, sent } = harness(
+      { caller: { status: "active" }, worker: userWaiting },
+      new Set(),
+      { callerToldOfUserWait: () => true },
+    );
+    const waiter = await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(sent).toEqual([]);
+    const listed = await registry.list();
+    expect(listed.map((entry) => entry.id)).toEqual([waiter.id]);
+    // The card is still recorded, so a later check does not think it is new.
+    expect(listed[0]?.userWaitsNoticed).toContain("worker:card-1");
+  });
+
+  it.each([
+    ["its caller runs here", (): boolean => true, 1],
+    ["its caller runs on another brain", (): boolean => false, 0],
+  ] as const)("tells a queued send's caller about a user wait only when %s", async (_label, callerIsLiveHere, expected) => {
+    const { registry, arm, sent } = harness(
+      { caller: { status: "active" }, worker: userWaiting, target: { status: "active" } },
+      new Set(),
+      { callerIsLiveHere },
+    );
+    await arm({
+      callerSessionId: "caller",
+      targetSessionIds: ["worker"],
+      sendToSessionId: "target",
+      text: "start the review",
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(sent).toHaveLength(expected);
+    expect(await registry.list()).toHaveLength(1);
+    if (expected) {
+      expect(sent[0]).toMatchObject({ sessionId: "caller", kind: "wake" });
+      expect(sent[0]?.text).toContain("worker");
+    }
   });
 });

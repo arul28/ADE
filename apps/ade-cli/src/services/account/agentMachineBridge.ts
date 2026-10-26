@@ -385,6 +385,11 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
   /**
    * Wake a parent on another machine with a child's completion. The target
    * refuses unless its own brain started that child (see `crossScopeChats`).
+   *
+   * A notice (`wake.notice`, "the child waits on the user") goes only to a
+   * brain that advertises `externalWakeNotices`. An older brain ignores the
+   * field and files the notice as the child's finished turn, so it gets
+   * nothing, as before notices existed; it still gets the real completion.
    */
   const deliverWake = async (
     machineKey: string,
@@ -393,6 +398,15 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     const machine = await pool.selectMachine(machineKey);
     if (!machine.online) return "failed";
     const entry = await pool.acquire(machine);
+    const notice = isRecord(payload) && isRecord(payload.wake) ? payload.wake.notice : undefined;
+    if (notice !== undefined && entry.capabilities?.externalWakeNotices !== true) {
+      options.logger?.info("agent_cross_machine.wake_notice_skipped", {
+        machineKey,
+        notice: String(notice),
+        reason: "target_too_old",
+      });
+      return "delivered";
+    }
     const answer = await pool.request(
       machine,
       entry,

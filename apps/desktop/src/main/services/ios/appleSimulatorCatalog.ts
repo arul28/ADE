@@ -152,6 +152,43 @@ export function parseAppleInstalledRuntimes(stdout: string): AppleInstalledRunti
   });
 }
 
+/** `simctl list devicetypes -j`: the profile bundle of one device type, or null. */
+export function deviceTypeBundlePath(stdout: string, deviceTypeIdentifier: string): string | null {
+  const parsed = JSON.parse(stdout) as { devicetypes?: Array<{ identifier?: unknown; bundlePath?: unknown }> };
+  const type = (parsed.devicetypes ?? []).find((entry) => entry.identifier === deviceTypeIdentifier);
+  return typeof type?.bundlePath === "string" && type.bundlePath ? type.bundlePath : null;
+}
+
+/**
+ * The pixels per point of a device type's own screens, from its profile's
+ * `capabilities.plist` (as JSON): the scale of every integrated display when
+ * they all agree. The iPhone Duo's two panels are both @3x. Null when the
+ * profile names none, or when its screens disagree, so the caller keeps its
+ * other evidence instead of picking one screen's scale for the other.
+ */
+export function deviceTypeScreenScale(capabilities: unknown): number | null {
+  if (!capabilities || typeof capabilities !== "object") return null;
+  const root = (capabilities as { capabilities?: unknown }).capabilities;
+  if (!root || typeof root !== "object") return null;
+  const displays = (root as { displays?: unknown }).displays;
+  const scales = new Set<number>();
+  if (Array.isArray(displays)) {
+    for (const display of displays) {
+      if (!display || typeof display !== "object") continue;
+      const { displayType, scale } = display as { displayType?: unknown; scale?: unknown };
+      if (displayType !== "integrated") continue;
+      if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) scales.add(scale);
+    }
+  }
+  if (scales.size === 1) return [...scales][0] ?? null;
+  if (scales.size > 1) return null;
+  const dimensions = (root as { ScreenDimensionsCapability?: unknown }).ScreenDimensionsCapability;
+  const main = dimensions && typeof dimensions === "object"
+    ? (dimensions as Record<string, unknown>)["main-screen-scale"]
+    : undefined;
+  return typeof main === "number" && Number.isFinite(main) && main > 0 ? main : null;
+}
+
 const matchesName = (value: string, wanted: string): boolean =>
   value === wanted || value.toLowerCase() === wanted.toLowerCase();
 

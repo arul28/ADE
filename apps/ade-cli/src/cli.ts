@@ -218,7 +218,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
-import { chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -2603,9 +2603,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
-                                                    Wait for idle, active, awaiting-input, or terminal
+                                                    Wait for idle, active, awaiting-input, or terminal.
+                                                    Stops early with waiting_on_user when only the user
+                                                    can answer the chat's card
     $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
-                                                    Return now; ADE wakes this chat when all (or any) of them get there
+                                                    Return now; ADE wakes this chat when all (or any) of them get there,
+                                                    and once when one of them waits on the user
     $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
     $ ade chat waits [<session>]                    Waits this chat armed or is a target of
     $ ade chat wait --cancel <waitId>               Cancel an armed wait
@@ -36301,7 +36304,7 @@ async function runChatWaitCommand(
         arguments: {
           domain: "chat",
           action: "waitFor",
-          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs, stopWhenUserWaits: true },
         },
       });
       const result = unwrapActionEnvelope(unwrapToolResult(raw));
@@ -36359,6 +36362,21 @@ async function runChatWaitCommand(
           summary,
         };
         return { output: formatOutput(result, options), exitCode: 0 };
+      }
+      // Nothing an agent does moves this chat until the user answers its
+      // card, so the rest of the timeout would only be spent in silence.
+      if (chatWaitsOnUser(summary, plan.waitFor)) {
+        const result = {
+          ok: false,
+          error: "waiting_on_user",
+          message: "The chat waits on a card only the user can answer; an agent cannot. "
+            + "Do not start another chat for the same work. Tell the user if it is urgent, then wait again.",
+          sessionId: plan.sessionId,
+          waitFor: plan.waitFor,
+          elapsedMs,
+          summary,
+        };
+        return { output: formatOutput(result, options), exitCode: 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
         const result = {

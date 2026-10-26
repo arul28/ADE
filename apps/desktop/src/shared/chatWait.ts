@@ -51,6 +51,16 @@ export function chatWaitTargetMatches(summary: SummaryLike, waitFor: ChatWaitTar
     || (cliStatus !== null && cliStatus !== "running");
 }
 
+/**
+ * The chat waits on a card only the user can answer (a real-input lease, a
+ * consent, a secret). No agent can move it, so a wait for "idle", "active" or
+ * "terminal" would only run out its clock: the CLI wait stops and says so, and
+ * a durable waiter tells its caller once while it stays armed.
+ */
+export function chatWaitsOnUser(summary: SummaryLike, waitFor: ChatWaitTarget): boolean {
+  return waitFor !== "awaiting-input" && summary.pendingInputUserOnly === true;
+}
+
 /** A durable wait one chat armed on others. */
 export type ChatWaiter = {
   id: string;
@@ -69,6 +79,11 @@ export type ChatWaiter = {
     | { kind: "send"; sessionId: string; text: string; metadata?: Record<string, unknown> };
   createdAt: string;
   expiresAt: string;
+  /**
+   * `<target>:<card item id>` for each user-only card the caller was already
+   * told about, so a restart or a re-check does not tell it twice.
+   */
+  userWaitsNoticed?: string[];
 };
 
 export type ArmChatWaitArgs = {
@@ -91,10 +106,18 @@ export type ChatWaitForArgs = {
   waitFor?: ChatWaitTarget;
   /** One long-poll's budget; the CLI loops. Capped at 25 s. */
   timeoutMs?: number;
+  /**
+   * Answer at once with `waitingOnUser` when the chat waits on a card only
+   * the user can answer. Opt-in: an older CLI calls again with no pause, as
+   * each call used to block, so an early answer would make it spin.
+   */
+  stopWhenUserWaits?: boolean;
 };
 
 export type ChatWaitForResult = {
   matched: boolean;
   missing?: boolean;
+  /** Not matched, and it will not match until the user answers a card (`chatWaitsOnUser`). */
+  waitingOnUser?: boolean;
   summary: Record<string, unknown> | null;
 };

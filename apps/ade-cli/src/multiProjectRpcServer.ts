@@ -2073,6 +2073,10 @@ export function createMultiProjectRpcRequestHandler(
           // (`REMOTE_CALLER_PARAM`). A caller must not send them to a runtime
           // that would silently ignore the claim.
           agentRemoteCallers: true,
+          // `machines.deliverWake` reads `wake.notice` ("the child waits on
+          // the user") as a notice, not as a finished turn. A sender skips
+          // notices to a runtime without this.
+          externalWakeNotices: true,
           machineProjects: {
             browseDirectories: true,
             getDetail: true,
