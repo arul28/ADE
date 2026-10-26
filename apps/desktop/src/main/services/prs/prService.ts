@@ -247,6 +247,7 @@ import {
   toPrReactions,
   type GithubCommentSource,
 } from "./prCommentMutations";
+import { redactGitOutput } from "../../utils/redaction";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -4338,7 +4339,7 @@ export function createPrService({
       maxOutputBytes: 256 * 1024,
     });
     if (fetchResult.exitCode === 0) return;
-    const detail = (fetchResult.stderr || fetchResult.stdout).trim();
+    const detail = redactGitOutput((fetchResult.stderr || fetchResult.stdout).trim());
     throw new Error(`Could not check the remote branch "${args.headBranch}" before creating the PR.${detail ? ` ${detail}` : ""}`);
   };
 
@@ -4352,7 +4353,7 @@ export function createPrService({
       { cwd: args.cwd, timeoutMs: 15_000 }
     );
     if (result.exitCode !== 0) {
-      const detail = (result.stderr || result.stdout).trim();
+      const detail = redactGitOutput((result.stderr || result.stdout).trim());
       throw new Error(`Could not compare "${args.headBranch}" with remote before creating the PR.${detail ? ` ${detail}` : ""}`);
     }
     const counts = parseLeftRightCounts(result.stdout);
@@ -4476,7 +4477,7 @@ export function createPrService({
     const pushResult = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
     if (pushResult.exitCode === 0) return;
 
-    const detail = (pushResult.stderr || pushResult.stdout).trim();
+    const detail = redactGitOutput((pushResult.stderr || pushResult.stdout).trim());
     const detailLower = detail.toLowerCase();
     if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
       throw new Error(
@@ -4823,7 +4824,7 @@ export function createPrService({
       timeoutMs: 60_000,
     });
     if (fetch.exitCode !== 0) {
-      const detail = (fetch.stderr || fetch.stdout).trim();
+      const detail = redactGitOutput((fetch.stderr || fetch.stdout).trim());
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
         `Fork PR branch '${headRepoLabel}:${args.headBranch}' could not be fetched from ${args.repo.owner}/${args.repo.name}${detail ? `: ${detail}` : "."}`,
@@ -7892,7 +7893,7 @@ export function createPrService({
         const deleteFlag = state === "merged" ? "-D" : "-d";
         const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
         if (deleted.exitCode === 0) result.localDeleted = true;
-        else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
+        else result.localError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete local branch ${branchName}`;
       }
     }
 
@@ -7909,7 +7910,7 @@ export function createPrService({
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
           const deleted = await runGit(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
           if (deleted.exitCode === 0) result.remoteDeleted = true;
-          else result.remoteError = deleted.stderr || deleted.stdout || `Failed to delete remote branch ${branchName}`;
+          else result.remoteError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete remote branch ${branchName}`;
         }
       }
     }

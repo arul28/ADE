@@ -39,6 +39,7 @@ import {
   parseGitOwnershipError,
   type GitOwnershipProblem,
 } from "../../../../../ade-cli/src/services/projects/gitOwnership";
+import { redactGitOutput } from "../../utils/redaction";
 
 export { gitOwnershipReason, gitSafeDirectorySpec, parseGitOwnershipError, type GitOwnershipProblem };
 
@@ -752,7 +753,8 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
  * for its owner is a {@link GitUntrustedFolderError}; a machine that cannot
  * run git (no developer tools, the Xcode license, no git installed at all) is
  * marked an expected `environment` failure. `message` replaces the text shown
- * when the caller words it itself.
+ * when the caller words it itself; it is not scrubbed, so pass git output in
+ * it through `redactGitOutput` (the default already does).
  */
 export function gitCommandError(raw: string, message: string = formatGitExecutionError(raw)): Error {
   const ownership = describeGitOwnershipProblem(raw);
@@ -804,8 +806,9 @@ export function formatGitExecutionError(raw: string): string {
       // Git Bash is a POSIX shell: quoted for it, a folder named `$(…)` stays text.
       + `Delete the file, then try again. In Git Bash, from the project folder, run: rm ${quoteShellArg(reservedFile, { platform: "linux" })}`;
   }
-  if (GIT_REMOTE_SIGN_IN_FAILED.test(raw)) return `${raw}\n\n${GIT_REMOTE_SIGN_IN_HINT}`;
-  if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return raw;
+  // Git repeats a remote URL, query and all; a token in it must not reach the message.
+  if (GIT_REMOTE_SIGN_IN_FAILED.test(raw)) return `${redactGitOutput(raw)}\n\n${GIT_REMOTE_SIGN_IN_HINT}`;
+  if (!XCODE_LICENSE_NOT_AGREED.test(raw)) return redactGitOutput(raw);
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
 }
 

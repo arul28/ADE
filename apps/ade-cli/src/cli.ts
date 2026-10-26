@@ -102,6 +102,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
@@ -36962,6 +36963,14 @@ async function runParsedCli(
       // Claude session it may have been started from.
       stripParentClaudeSessionEnv(process.env);
       initBrainSentry({ mode: "serve" });
+      // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
+      // Node's bundled set; read the OS store off the loop and add it.
+      // The brain's log says once whether the environment's proxy is in use.
+      if (outboundProxyConfigured) process.stderr.write("ADE: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n");
+      if (outboundProxyUnsupported) {
+        process.stderr.write(`ADE: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.14 or newer can); outbound requests go direct.\n`);
+      }
+      void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:
@@ -37076,6 +37085,26 @@ const SDK_WORKER_MODULES: Record<SdkWorkerName, () => Promise<unknown>> = {
   pi: () => import("../../desktop/src/main/services/chat/piSdkWorker"),
 };
 
+/**
+ * A network setup failure (an unusable proxy setting, an unreadable OS trust
+ * store) goes to stderr, where the brain's other startup notes go; stdout
+ * stays the command's output. Success is quiet here, so short commands print
+ * nothing; the brain notes the proxy once itself. So does a Node too old to
+ * use the proxy: every command then runs as it always did, going direct.
+ */
+let outboundProxyConfigured = false;
+let outboundProxyUnsupported = false;
+const networkWarningLogger = {
+  info: () => {},
+  warn: (event: string, meta?: Record<string, unknown>) => {
+    if (event === "network.proxy_unsupported") {
+      outboundProxyUnsupported = true;
+      return;
+    }
+    process.stderr.write(`ADE: ${event} ${JSON.stringify(meta ?? {})}\n`);
+  },
+};
+
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
     process.stderr.write(
@@ -37102,6 +37131,13 @@ async function main(): Promise<void> {
       process.exitCode = healthy ? 0 : 1;
       return;
     }
+    // A proxy named in the environment applies to every command's outbound
+    // fetch (updates, sign-in, the brain's API calls); loopback stays direct.
+    // Behind a proxy the OS's CAs (a TLS-inspecting proxy's root) are trusted
+    // before the command runs. Without one, only the long-lived brain pays
+    // the ~140 ms store read (below), not every short `ade` call.
+    outboundProxyConfigured = configureOutboundProxyFromEnv(process.env, networkWarningLogger);
+    if (outboundProxyConfigured) await trustSystemCertificates(networkWarningLogger);
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
     process.exitCode = result.exitCode;

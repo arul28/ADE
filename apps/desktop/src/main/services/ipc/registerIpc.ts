@@ -112,6 +112,8 @@ import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
+import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
+import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
@@ -4064,20 +4066,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
-    clipboard.writeText(text);
+    await clipboard.writeText(text);
   });
 
   ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
     assertTrustedAppControlSender(event, IPC.appReadClipboardText);
-    return clipboard.readText() ?? "";
+    return (await clipboard.readText()) ?? "";
   });
 
   ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
-    return !clipboard.readImage().isEmpty();
+    return !(await readClipboardImage(await readClipboardItem())).isEmpty();
   });
 
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4132,7 +4134,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4169,7 +4171,7 @@ export function registerIpc({
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
     }
-    clipboard.writeImage(image);
+    await writeClipboardFlavors({ image });
   });
 
   ipcMain.handle(
@@ -4500,7 +4502,7 @@ export function registerIpc({
         title: "Open repository",
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) {
         return null;
       }
@@ -4521,7 +4523,7 @@ export function registerIpc({
         defaultPath: args.defaultPath?.trim() || undefined,
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) return null;
       return result.filePaths[0] ?? null;
     }
@@ -5188,7 +5190,7 @@ export function registerIpc({
       properties: ["openDirectory", "createDirectory"],
       ...(typeof arg?.defaultPath === "string" && path.isAbsolute(arg.defaultPath) ? { defaultPath: arg.defaultPath } : {}),
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showRememberedOpenDialog(win, options);
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
@@ -5275,7 +5277,7 @@ export function registerIpc({
       buttonLabel: "Move lanes here",
       properties: ["openDirectory", "createDirectory"],
     };
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const picked = await showRememberedOpenDialog(owner, options);
     return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
@@ -5341,7 +5343,7 @@ export function registerIpc({
       const written = writeDiagnosticReportFile(result.filePath, result.report);
       let copied = false;
       try {
-        clipboard.writeText(result.report);
+        await clipboard.writeText(result.report);
         copied = true;
       } catch {
         copied = false;
