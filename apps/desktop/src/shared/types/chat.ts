@@ -4909,6 +4909,16 @@ export type AgentChatCrossMachineLaneImportResult = {
 };
 
 /** Provider-native session files shipped inside a fork-mode capsule. */
+/**
+ * What one Claude session already carries: PDF pages, and base64 bytes of the
+ * PDFs and images ADE inlined into it. Persisted per chat, and carried by a
+ * fork, whose history carries the same documents.
+ */
+export type ClaudeRetainedMedia = {
+  pages: number;
+  bytes: number;
+};
+
 export type AgentChatCrossMachineForkTransport = {
   provider: AgentChatProvider;
   /** Source provider session/thread id the destination forks from. */
@@ -4925,6 +4935,8 @@ export type AgentChatCrossMachineForkTransport = {
     contentBase64Gzip: string;
     uncompressedBytes: number;
   }>;
+  /** Claude only: what the moved history already carries. Absent from older sources. */
+  claudeRetainedMedia?: ClaudeRetainedMedia;
 };
 
 export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {

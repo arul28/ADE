@@ -74,6 +74,10 @@ const NON_DIRECTIVE_METADATA_KEYS = [
   "agentRelay",
   "hostContinuation",
   "prWatchWake",
+  // An automation run's prompt: the rule wrote it, not a person. Stamped by
+  // the automation service; a forged one would fold a person's message out of
+  // sight, so it is stripped from callers with the rest.
+  "automationRun",
 ] as const;
 
 /**
@@ -93,9 +97,6 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   // rule (or an agent) forge "the user moved this card", which the renderer
   // renders as a user act and which clears the attention markers.
   "boardMove",
-  // Stamped by the automation service on the prompts its runs send. A forged
-  // one would fold a person's message out of sight.
-  "automationRun",
   ...NON_DIRECTIVE_METADATA_KEYS,
   // Host-only dispatch markers are host-authored provenance too, and they are
   // the load-bearing kind: each one exempts its message from the auto-resume
@@ -132,6 +133,8 @@ const HOST_AUTHORED_NON_USER_ACTIVITY_KEYS = [
   "agentRelay",
   // PR Watch telling the agent about its PR: the watch wrote it, not the user.
   "prWatchWake",
+  // An automation run's prompt.
+  "automationRun",
 ] as const;
 
 /**

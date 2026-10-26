@@ -991,9 +991,10 @@ export function createChatAutoResumeCoordinator(
     if (!Number.isFinite(armedFireAt) || armedFireAt <= fireAt + 60_000) return false;
     if (!isSessionSchedulable(sessionId)) return false;
     // Spent before the first await, so two readings arriving together move the
-    // row once.
+    // row once. Given back when the row did not move, so a later reading can.
     state.earlyResumeSpent = true;
     const epoch = state.cancelEpoch;
+    let moved = false;
     try {
       await whenSchedulerReady();
       const scheduler = getScheduler();
@@ -1009,6 +1010,7 @@ export function createChatAutoResumeCoordinator(
         return false;
       }
       if (schedule.status !== "scheduled" || schedule.pausedFlag) return false;
+      moved = true;
       logger.info("agent_chat.auto_resume_early", {
         sessionId,
         scheduleId: schedule.id,
@@ -1035,6 +1037,10 @@ export function createChatAutoResumeCoordinator(
         error: error instanceof Error ? error.message : String(error),
       });
       return false;
+    } finally {
+      if (!moved && stateBySession.get(sessionId) === state && state.cancelEpoch === epoch) {
+        state.earlyResumeSpent = false;
+      }
     }
   };
 

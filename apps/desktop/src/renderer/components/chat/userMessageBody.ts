@@ -69,15 +69,17 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
   if (!metadata) return null;
   const text = event.text;
   const shown = event.displayText?.trim() || "";
+  // The preview is the display line, unless it only repeats the sender; then
+  // the prompt itself.
   const make = (
     source: FoldedMessageSource,
     sender: string,
     fromSessionId: string | null,
-    preview?: string,
+    line = shown,
   ): FoldedMessage => ({
     source,
     sender,
-    preview: firstLine(preview || shown || text),
+    preview: firstLine((line !== sender && line) || text),
     text,
     markdown: userTextLooksLikeMarkdown(text),
     fromSessionId,
@@ -93,7 +95,7 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
     // already the sender, so the preview keeps only what set it off.
     const name = automation.name.trim() || "Automation";
     const trigger = shown.startsWith(`${name} · `) ? shown.slice(name.length + 3) : shown;
-    return make("automation", name, null, trigger === name ? "" : trigger);
+    return make("automation", name, null, trigger);
   }
   const wake = metadata.scheduledWake;
   if (wake && typeof wake.kind === "string") {

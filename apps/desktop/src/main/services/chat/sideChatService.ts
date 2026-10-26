@@ -22,6 +22,7 @@ import type {
   AgentChatStartSideChatResult,
   AgentChatSteerArgs,
   AgentChatSteerResult,
+  ClaudeRetainedMedia,
 } from "../../../shared/types";
 import {
   cursorSessionRunsInCloud,
@@ -49,7 +50,7 @@ type SideChatManaged = {
   closed: boolean;
   recentConversationEntries: Array<{ role: "user" | "assistant"; text: string; turnId?: string }>;
   /** PDFs and images the Claude history carries; a fork carries them too. */
-  claudeRetainedMedia?: { pages: number; bytes: number };
+  claudeRetainedMedia?: ClaudeRetainedMedia;
 };
 
 type SideChatLineage = { sideChatParentSessionId?: string; sideChatSessionId?: string };

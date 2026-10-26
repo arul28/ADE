@@ -1,4 +1,7 @@
 import { inflateSync } from "node:zlib";
+import type { ClaudeRetainedMedia } from "../../../shared/types/chat";
+
+export type { ClaudeRetainedMedia };
 
 /**
  * PDFs Claude reads as `document` blocks, and the budget that keeps them safe.
@@ -30,12 +33,6 @@ const BLOCK_OVERHEAD_BYTES = 128;
 const MAX_INFLATED_OBJECT_STREAM_BYTES = 64 * 1024 * 1024;
 /** How far back a key may sit from the `<<` of its dictionary. */
 const MAX_DICT_LOOKBACK_CHARS = 256 * 1024;
-
-/** What one Claude session already carries. Mutated in place by the builder. */
-export type ClaudeRetainedMedia = {
-  pages: number;
-  bytes: number;
-};
 
 export function emptyClaudeRetainedMedia(): ClaudeRetainedMedia {
   return { pages: 0, bytes: 0 };
@@ -116,17 +113,19 @@ function enclosingDictStart(text: string, index: number): number {
   return -1;
 }
 
-type PageScan = { pageObjects: number; treeCount: number };
+type PageScan = { pageObjects: number; treeCount: number; indirectCounts: string[] };
 
 const PAGE_TYPE_RE = /\/Type\s*\/Page(?![A-Za-z0-9#])/g;
 const PAGES_TYPE_RE = /\/Type\s*\/Pages(?![A-Za-z0-9#])/g;
-// A direct count. `/Count 3 0 R` is an indirect reference and is not read.
+// A direct count. `/Count 3 0 R` is an indirect reference, read separately.
 const DIRECT_COUNT_RE = /\/Count\s+(\d{1,9})(?!\s*\d+\s+R)(?=[\s/>\]%])/;
+const INDIRECT_COUNT_RE = /\/Count\s+(\d{1,9})\s+(\d{1,5})\s+R(?![A-Za-z0-9#])/;
 
 function scanPages(text: string): PageScan {
   let pageObjects = 0;
   for (const _match of text.matchAll(PAGE_TYPE_RE)) pageObjects += 1;
   let treeCount = 0;
+  const indirectCounts: string[] = [];
   for (const match of text.matchAll(PAGES_TYPE_RE)) {
     const start = enclosingDictStart(text, match.index);
     if (start < 0) continue;
@@ -142,8 +141,10 @@ function scanPages(text: string): PageScan {
     }
     const count = DIRECT_COUNT_RE.exec(own);
     if (count) treeCount = Math.max(treeCount, Number(count[1]));
+    const indirect = INDIRECT_COUNT_RE.exec(own);
+    if (indirect) indirectCounts.push(`${indirect[1]} ${indirect[2]}`);
   }
-  return { pageObjects, treeCount };
+  return { pageObjects, treeCount, indirectCounts };
 }
 
 /**
@@ -193,8 +194,8 @@ function objectStreamTexts(text: string, bytes: Buffer): string[] | null {
 /**
  * The number of pages in a PDF, or null when it cannot be told with
  * confidence: not a PDF, encrypted, or a page tree ADE cannot read. Errs high,
- * never low: an incremental update that leaves an older, larger page tree in
- * the file counts that tree, which at worst sends the PDF as a path hint.
+ * never low: stale copies an incremental update leaves in the file are
+ * counted too, which at worst sends the PDF as a path hint.
  */
 export function countPdfPages(bytes: Buffer): number | null {
   if (!isPdfBytes(bytes)) return null;
@@ -210,9 +211,17 @@ export function countPdfPages(bytes: Buffer): number | null {
     const scan = scanPages(source);
     pageObjects += scan.pageObjects;
     treeCount = Math.max(treeCount, scan.treeCount);
+    for (const ref of scan.indirectCounts) {
+      // `/Count 5 0 R` points at a plain `5 0 obj 60 endobj`. One kept in an
+      // object stream is not resolved; the page objects still count.
+      const [num, gen] = ref.split(" ");
+      const target = new RegExp(`(?:^|[^0-9])${num}\\s+${gen}\\s+obj\\s+(\\d{1,9})\\s+endobj`).exec(text);
+      if (target) treeCount = Math.max(treeCount, Number(target[1]));
+    }
   }
-  // The page tree's own count is authoritative. Page objects are only the
-  // fallback: an incremental update can leave old copies of them behind.
-  if (treeCount > 0) return treeCount;
-  return pageObjects > 0 ? pageObjects : null;
+  // The larger of the two. A tree count can be low when an indirect root
+  // /Count cannot be resolved and only a subtree's is read; page objects can
+  // be high when an incremental update leaves old copies behind. High is safe.
+  const pages = Math.max(treeCount, pageObjects);
+  return pages > 0 ? pages : null;
 }

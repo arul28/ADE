@@ -121,7 +121,8 @@ type BuildClaudeV2MessageOptions = {
   /**
    * What this Claude session already carries. When given, PDFs that fit go as
    * `document` blocks, and every inlined PDF and image is added to it in place.
-   * The caller passes a copy and keeps it only once the message is delivered.
+   * Pass the session's live budget: a PDF is checked and added with no await in
+   * between, so concurrent builds cannot both spend the same pages.
    */
   retainedMedia?: ClaudeRetainedMedia;
 };
