@@ -137,7 +137,15 @@ const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
  * page: a pile of archived shells once pushed a live chat past it, and opening
  * that chat from the Lanes tab found nothing.
  */
-const FOREIGN_SESSION_LIMIT = 60;
+const FOREIGN_SESSION_LIMIT = 200;
+/**
+ * Settled rows are capped on their own (`settledLimit`), so every chat still
+ * working on that machine fits the page. A newest-first page of 60 once dropped
+ * a long-running coordinator chat behind ~100 newer, settled agent chats, and it
+ * blinked in and out of the Work list. Older brains ignore the cap and return
+ * the plain newest page of `FOREIGN_SESSION_LIMIT`.
+ */
+const FOREIGN_SETTLED_SESSION_LIMIT = 40;
 /** Match the local optimistic-session window while a foreign list catches up. */
 const FOREIGN_OPTIMISTIC_SESSION_TTL_MS = 2 * 60 * 1000;
 
@@ -1475,7 +1483,11 @@ async function readMachine(
         callAction(targetId, projectId, {
           domain: "session",
           action: "list",
-          args: { limit: FOREIGN_SESSION_LIMIT, includeArchived: false },
+          args: {
+            limit: FOREIGN_SESSION_LIMIT,
+            settledLimit: FOREIGN_SETTLED_SESSION_LIMIT,
+            includeArchived: false,
+          },
         }),
         MACHINE_READ_TIMEOUT_MS,
         `session.list on ${machineName}`,
@@ -1588,7 +1600,11 @@ async function readThisMachine(
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
-          { limit: FOREIGN_SESSION_LIMIT, includeArchived: false },
+          {
+            limit: FOREIGN_SESSION_LIMIT,
+            settledLimit: FOREIGN_SETTLED_SESSION_LIMIT,
+            includeArchived: false,
+          },
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,

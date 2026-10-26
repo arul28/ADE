@@ -960,6 +960,13 @@ export type ListSessionsArgs = {
    * machine's Work list) gets a short page that misses live chats.
    */
   includeArchived?: boolean;
+  /**
+   * Caps settled rows on their own. When set, every unsettled row comes back
+   * (up to `limit`) and at most this many settled ones fill what is left, so
+   * a page cannot drop a chat that is still working just because newer chats
+   * were settled. Older brains ignore it and return the plain newest page.
+   */
+  settledLimit?: number;
 };
 
 /**
