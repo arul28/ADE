@@ -365,17 +365,6 @@ export async function createAdeChat(
     return capabilities;
   };
 
-  const providerListed = async (provider: string): Promise<boolean> => {
-    assertUsable();
-    const catalog = await chats.modelCatalog({ mode: "refresh-stale" });
-    return (catalog?.groups ?? []).some((group) =>
-      group.key === provider || (group.providers ?? []).some((entry) =>
-        entry.key === provider || (entry.subsections ?? []).some((section) =>
-          (section.models ?? []).some((model) => model.groupKey === provider || model.providerKey === provider),
-        ),
-      ),
-    );
-  };
 
   // ---- threads -------------------------------------------------------------
 
@@ -409,7 +398,6 @@ export async function createAdeChat(
       historyPage: () => runtime.actionListed("getEventHistoryPage"),
       rerunLastTurn: () => runtime.actionListed("rerunLastTurn"),
       actionListed: (action) => runtime.actionListed(action),
-      providerListed,
       providerCapabilities: async (provider) => {
         if (runtime.initialize.capabilities?.providers?.capabilities !== true) return undefined;
         return (await publishProviderStatus())[provider]?.capabilities;

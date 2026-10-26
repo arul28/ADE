@@ -337,8 +337,9 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
  * Exported from the package root since SDK 0.4.
  */
 export function isSupportedProvider(value: string): value is AdeProvider {
-  // `AdeProvider` is open to provider ids newer than this SDK. This helper
-  // rejects only an empty id; callers that open threads also check the live
-  // runtime catalog. `SUPPORTED_PROVIDERS` remains the autocomplete list.
-  return typeof value === "string" && value.trim().length > 0;
+  // Membership in the providers this SDK knows by name. It is not a gate on
+  // opening a thread: `threads.open` passes any provider id to the runtime,
+  // which refuses one it cannot run. It is how a value that may also be a
+  // pending-input source (`"acp"`, `"ade"`) is told apart from a provider.
+  return (SUPPORTED_PROVIDERS as readonly string[]).includes(value);
 }

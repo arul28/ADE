@@ -35,7 +35,8 @@ export type OpenCodeProviderDetail = {
   placeholder?: string;
 };
 
-export type ApiKeySource = "config" | "env" | "store";
+/** `host`: a key an SDK host supplied for this run, held in memory only. */
+export type ApiKeySource = "config" | "env" | "store" | "host";
 
 /** Another provider's sign-in, for a provider with none of its own. */
 export type OpenCodeSignInVia = { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };

@@ -136,7 +136,6 @@ export type ThreadOpenerContext = {
     historyPage(): boolean;
     rerunLastTurn(): boolean;
     actionListed(action: string): boolean;
-    providerListed(provider: string): Promise<boolean>;
     providerCapabilities(provider: string): Promise<ProviderCapabilities | undefined>;
   };
 };
@@ -519,9 +518,6 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     }
     if (!model?.trim()) {
       throw new AdeError("invalid_option", `Opening the new thread "${key}" needs a model id. Pass { provider, model }.`);
-    }
-    if (!(await ctx.runtime.providerListed(provider))) {
-      throw new AdeError("invalid_option", `Provider "${provider}" is not listed by this ADE runtime's model catalog.`);
     }
 
     const permissionMode = record?.permissionMode ?? opts.permissionMode;
