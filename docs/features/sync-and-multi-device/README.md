@@ -3241,7 +3241,14 @@ phone flow:
      (`VIEWER_CONNECT_TIMEOUT_MS`), so checking the blocker first means a
      refused switch never dials.
    - `"serve"` (status, roster and document reads, via `resolveActiveSyncHost`,
-     and the brain's startup loop) **adopts the scope as-is**. A laptop
+     and the brain's startup loop) **adopts the scope as-is**. With no host
+     yet, `resolveActiveSyncHost` takes the most recently opened project whose
+     folder and `.ade` data are still there, and with none it returns null, so
+     the startup loop hosts machine-level sync without a project. A scratch
+     project in a folder a restart wiped (`/tmp`) once kept a brain retrying
+     it for minutes with no sync for phones or other machines. Each skipped
+     project is logged once per brain as `sync.host_project_missing`, with the
+     same "isn't there" sentence. A laptop
      following a desktop is a supported, working configuration and a viewer
      already owns sync here, so refusing it would break reads that work.
      Nothing is activated for it — there is no host here to start — and this

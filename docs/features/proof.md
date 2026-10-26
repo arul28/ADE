@@ -540,19 +540,32 @@ Proof surfaces across chat and linked workflow contexts:
 
 Both clients resolve media through the owning runtime instead of opening the
 runtime host's filesystem path. Desktop shows local images through the
-`ade-artifact://project/` protocol and remote images through
-`computerUse.readArtifactPreview` (the RPC response is capped at 10 MiB). Every
-video, local or remote, plays from main's token-guarded loopback media server,
-which answers each Range read; a remote one is pulled in 2 MiB slices from that
-machine's broker. See
+`ade-artifact://project/` protocol. Every video, local or remote, and every
+image on a paired machine plays from main's token-guarded loopback media
+server, which answers each Range read; a remote file is pulled in 1 MiB slices
+from that machine's broker. Main keeps a paired machine's pictures in memory
+(64 MiB, least recently used out first, pictures up to 24 MiB), so showing one
+again after a scroll, a remount or the lightbox costs no round trip; stored
+proof is never rewritten in place, so a kept copy cannot go stale. A paired
+machine too old for range reads, and the web client, fall back to
+`computerUse.readArtifactPreview` (a data URL, capped at 10 MiB). See
 [computer use › Renderer](./computer-use/README.md#renderer). The thumbnail a
 "Filed proof" row opens reads its picture through the same preview path as answer
 citations, local or on a paired machine; a record it cannot draw (a trace, a
 log, a missing file) draws nothing, since the row's words already say what was
-filed. iOS requests artifact content over its
-sync command surface and caches renderable images locally. When a runtime is
-unreachable or a desktop remote preview exceeds its bound, the artifact remains
-listed with an unavailable-preview state.
+filed. A preview that failed for a reason another try can fix (the machine was
+slow, away, or did not send the bytes) offers **Retry**; a record whose stored
+file is gone does not.
+
+iOS requests artifact content over its sync command surface and caches
+renderable images locally. A chat of another project or another machine lists
+its proof from the host that holds it (`computerUse.listArtifacts`, routed like
+the chat's other commands), and its file reads name that project, so the
+answer's pictures load there too; the phone's replica holds only the focused
+machine's active project. A picture over the host's 8 MiB whole-file read is
+pulled in slices, like a video. Pictures decode at most 2,400 px on the long
+side. A failed load shows its reason with **Retry**. When a runtime is
+unreachable the artifact remains listed with an unavailable-preview state.
 
 ---
 

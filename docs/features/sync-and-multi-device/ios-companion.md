@@ -3609,7 +3609,13 @@ Proof a chat answer cites renders inline in the transcript. `WorkMarkdownParsing
 turns a line that holds only `![caption](ade-proof://<id>)` into a `proofCitation`
 block and a `proof-compare` fence into a `proofCompare` block; `WorkProofCitation.swift`
 finds the artifact in the chat's proof list, loads its bytes with the sheet's
-loader, and shows an id outside that list as "This chat has no proof with the id …".
+loader, and shows an id outside that list as "ADE has no proof with the id …"
+(asking the chat's host for its list once more first). A chat of another
+project or another machine lists its proof from that host
+(`fetchRemoteChatComputerUseArtifacts`, `computerUse.listArtifacts`) and reads
+the bytes there, in that project (`loadThisChatArtifact`). A failed load keeps
+its reason on screen with a Retry button (`WorkArtifactLoadIntent.retry`)
+instead of re-asking on every redraw.
 
 `WorkProofRowModel` derives everything a row writes — title fallback (an empty
 title becomes the kind label), kind label, relative time, and the VoiceOver
