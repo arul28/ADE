@@ -76,8 +76,8 @@ import { modelPermissionPresentation } from "../../lib/modelPermissionOptions";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
-import { settingsEntryById, settingsEntryLabelPath, settingUnavailableReason } from "../settings/settingsManifest";
-import { settingAgentAccess } from "../../../shared/settingsAgentAccess";
+import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from "../settings/settingsManifest";
+import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -403,8 +403,9 @@ export async function loadChipCardData(
     const access = settingAgentAccess(entry.id);
     return {
       kind: "setting",
-      path: settingsEntryLabelPath(entry).join(" › "),
+      path: settingsEntryLabel(entry),
       ownerOnly: access.agent === "owner-only" ? access.explanation : null,
+      locked: settingIsProtected(entry.id),
       unavailable: settingUnavailableReason(entry),
     };
   }

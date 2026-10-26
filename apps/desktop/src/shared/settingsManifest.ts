@@ -140,6 +140,11 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
 }
 
+/** A Computer page that follows the picked machine (every one but This computer's own). */
+export function isMachineSelectableSettingsTab(tab: SettingsTabId): boolean {
+  return isMachineSettingsTab(tab) && !isThisComputerOnlyTab(tab);
+}
+
 export const SETTINGS_TABS: readonly SettingsTab[] = [
   // ── Overview: where Settings opens ─────────────────────────────────────
   // No description: the page is what needs attention, then a glance at each area.
@@ -1695,12 +1700,9 @@ export function scoreSettingsEntry(entry: SettingEntry, query: string): number |
 
 
 /** The group heading a path starts with. Project pages say "Project", not the repo name. */
-const GROUP_PATH_LABEL: Record<SettingsGroupId, string> = {
-  overview: "Overview",
-  account: "You",
-  project: "Project",
-  machines: "Computer",
-};
+function groupLabel(group: SettingsGroupId): string {
+  return SETTINGS_GROUPS.find((candidate) => candidate.id === group)?.label ?? group;
+}
 
 function tabGroup(tab: SettingsTabId): SettingsGroupId {
   return SETTINGS_TABS.find((candidate) => candidate.id === tab)?.group ?? "account";
@@ -1717,21 +1719,27 @@ function tabGroup(tab: SettingsTabId): SettingsGroupId {
  */
 export function settingsEntryLabelPath(entry: SettingEntry, machineName?: string | null): string[] {
   const group = tabGroup(entry.tab);
-  const parts = [GROUP_PATH_LABEL[group]];
+  const parts = [groupLabel(group)];
   const machine = machineName?.trim();
   if (group === "machines" && machine) parts.push(machine);
   const tabLabel = settingsTabLabel(entry.tab);
-  if (group !== "overview" || tabLabel !== GROUP_PATH_LABEL.overview) parts.push(tabLabel);
+  if (group !== "overview" || tabLabel !== parts[0]) parts.push(tabLabel);
   if (entry.label.trim().toLowerCase() !== tabLabel.toLowerCase()) parts.push(entry.label);
   return parts;
 }
 
-export function isComputerSettingsEntry(entry: SettingEntry): boolean {
-  return tabGroup(entry.tab) === "machines";
+/** `settingsEntryLabelPath` as one line, the way chips, cards and `ade settings find` print it. */
+export function settingsEntryLabel(entry: SettingEntry, machineName?: string | null): string {
+  return settingsEntryLabelPath(entry, machineName).join(" › ");
 }
 
-export function isProjectSettingsEntry(entry: SettingEntry): boolean {
-  return tabGroup(entry.tab) === "project";
+/**
+ * A Computer page that follows the picked machine, so a chip names and opens
+ * the chat's machine. Appearance and Apple devices are only ever This
+ * computer's (`THIS_COMPUTER_ONLY_TAB_IDS`).
+ */
+export function isComputerSettingsEntry(entry: SettingEntry): boolean {
+  return isMachineSelectableSettingsTab(entry.tab);
 }
 
 // Words a question carries that say nothing about which setting: "how do I

@@ -63,7 +63,8 @@ ade://open/<page>             # an ADE page (prs, lanes, history, connections…
 ```
 
 - The chip's label comes from ADE's own settings list, not from your text,
-  and a click opens the card on the chat's machine.
+  and a click opens the card; a page for one computer opens on the chat's
+  machine.
 - `ade://open/...` works only when the user clicks it in a chat; ADE ignores
   it from anywhere else.
 - `find` marks settings only the user can change (publishing, sign-ins,

@@ -19,7 +19,7 @@ import { AppleRenderHost } from "../apple/AppleRenderHost";
 import {
   ACCOUNT_SETTINGS_ROUTE,
   isMachineScopedSettingsRoute,
-  isMachineSettingsTab,
+  isMachineSelectableSettingsTab,
   resolveSettingsTab,
   settingsEntryById,
 } from "../settings/settingsManifest";
@@ -1389,7 +1389,7 @@ function AppNavigationBridge() {
       const params = new URLSearchParams();
       if (tab) params.set("tab", tab);
       const machineId = target.machineId?.trim();
-      if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSettingsTab(tab)) params.set("machine", machineId);
+      if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
       const search = params.toString();
       navigate({
         pathname: "/settings",

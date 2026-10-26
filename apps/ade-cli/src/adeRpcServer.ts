@@ -53,6 +53,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
+  userSettingWrite,
   isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   laneEnvironmentSetupDeps,
@@ -335,17 +336,6 @@ function isUserClientSession(session: SessionState): boolean {
 function mayUseUserOnlyActions(session: SessionState): boolean {
   return isUserClientSession(session) && isDesktopClientName(session.clientName);
 }
-
-/** Domains whose CTO-only writes are the user's settings (`shared/settingsAgentAccess.ts`). */
-const USER_SETTINGS_ACTION_DOMAINS: ReadonlySet<string> = new Set([
-  "account_settings",
-  "provider_instances",
-  "keybindings",
-  "project_config",
-  "keep_awake",
-  "budget",
-  "analytics",
-]);
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
@@ -5847,12 +5837,15 @@ async function runTool(args: {
       );
     }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
-      if (USER_SETTINGS_ACTION_DOMAINS.has(domain)) {
+      const setting = userSettingWrite(domain, action);
+      if (setting) {
         // A setting only the user changes. Say so in words an agent can pass
-        // on, with the way to point the user at it.
+        // on, with the link that opens it when there is one.
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
-          `Only the user can change this setting (${domain}.${action}). Run \`ade settings find <words>\` and give the user its link.`,
+          setting.entryId
+            ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
+            : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
         );
       }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
@@ -5887,16 +5880,14 @@ async function runTool(args: {
       // PR chat transcripts publish chats, and the rest are sign-ins, AI config
       // and cleanup rules (`shared/settingsAgentAccess.ts`). The whole save is
       // refused, so nothing is half written.
+      // Save writes only `local` (the shared layer is ignored), and a missing
+      // or malformed `local` becomes an empty config — which would clear every
+      // owner-only key — so compare exactly what save would write.
       const candidate = argsList?.[0] ?? (hasScalarArg ? toolArgs.arg : toolArgs.args);
       const current = runtime.projectConfigService?.get();
-      const change = current && isRecord(candidate)
-        ? ownerOnlyProjectConfigChange(
-          { shared: current.shared as Record<string, unknown>, local: current.local as Record<string, unknown> },
-          {
-            shared: isRecord(candidate.shared) ? candidate.shared : current.shared as Record<string, unknown>,
-            local: isRecord(candidate.local) ? candidate.local : current.local as Record<string, unknown>,
-          },
-        )
+      const candidateLocal = isRecord(candidate) && isRecord(candidate.local) ? candidate.local : {};
+      const change = current
+        ? ownerOnlyProjectConfigChange(current.local as Record<string, unknown>, candidateLocal)
         : null;
       if (change) {
         const link = change.entryId ? ` It is at ade://settings/${change.entryId}.` : "";

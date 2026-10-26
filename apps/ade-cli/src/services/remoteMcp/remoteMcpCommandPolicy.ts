@@ -69,6 +69,10 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["help", true],
   ["doctor", true],
   ["search", true],
+  // `find` reads the built-in settings list; nothing reaches the brain.
+  ["settings", new Set(["find", "search", "where"])],
+  ["setting", new Set(["find", "search", "where"])],
+  ["config", new Set(["find", "search", "where"])],
   ["auth", new Set(["status"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],

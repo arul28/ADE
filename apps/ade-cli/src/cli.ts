@@ -95,7 +95,7 @@ import {
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
-import { findSettingsEntries, settingsEntryLabelPath } from "../../desktop/src/shared/settingsManifest";
+import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
@@ -3997,7 +3997,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   The machine's own pre-existing login is always present, is always removable-
   proof, and starts out as the default. Accounts have no names: each shows as
   its signed-in email, and its id (what --instance takes) never changes. A new
-  account's id is the next free <provider>-<n>.
+  account's id is the next free <provider>-<n>. Adding, removing, signing in
+  and the default are the user's: run them from your own terminal; an agent's
+  call is refused.
 
     $ ade providers accounts list --text            All accounts, both providers
     $ ade providers accounts list --provider claude --text
@@ -18429,7 +18431,7 @@ function findSettings(query: string): { query: string; results: SettingsFindRow[
   const rows: SettingsFindRow[] = findSettingsEntries(query, 3).map((entry) => {
     const access = settingAgentAccess(entry.id);
     return {
-      path: settingsEntryLabelPath(entry).join(" › "),
+      path: settingsEntryLabel(entry),
       link: `ade://settings/${entry.id}`,
       onlyUser: access.agent === "owner-only" ? access.explanation : null,
     };
@@ -18479,6 +18481,9 @@ function buildSettingsPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "enable PR chat transcripts",
+        // Only the user changes this, so the user's own terminal asserts the
+        // operator role, as `ade logout` does; an agent's shell is held to agent.
+        connectRole: "cto",
         steps: [
           actionStep("result", "project_config", "setPrTranscriptGists", { enabled: true }),
         ],
@@ -18488,6 +18493,9 @@ function buildSettingsPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "disable PR chat transcripts",
+        // Only the user changes this, so the user's own terminal asserts the
+        // operator role, as `ade logout` does; an agent's shell is held to agent.
+        connectRole: "cto",
         steps: [
           actionStep("result", "project_config", "setPrTranscriptGists", { enabled: false }),
         ],
@@ -18505,11 +18513,17 @@ function buildSettingsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "settings action",
+      // Only the user changes this, so the user's own terminal asserts the
+      // operator role, as `ade logout` does; an agent's shell is held to agent.
+      connectRole: "cto",
       steps: [buildActionRunStep(["project_config", ...args])],
     };
   return {
     kind: "execute",
     label: `settings ${sub}`,
+    // Only the user changes this, so the user's own terminal asserts the
+    // operator role, as `ade logout` does; an agent's shell is held to agent.
+    connectRole: "cto",
     steps: [
       actionStep(
         "result",
@@ -19428,6 +19442,9 @@ function buildProvidersPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "providers accounts add",
+      // Only the user changes this, so the user's own terminal asserts the
+      // operator role, as `ade logout` does; an agent's shell is held to agent.
+      connectRole: "cto",
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "create", {
         provider,
@@ -19440,6 +19457,9 @@ function buildProvidersPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "providers accounts remove",
+      // Only the user changes this, so the user's own terminal asserts the
+      // operator role, as `ade logout` does; an agent's shell is held to agent.
+      connectRole: "cto",
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "remove", { id })],
     };
@@ -19452,6 +19472,9 @@ function buildProvidersPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "providers accounts default",
+      // Only the user changes this, so the user's own terminal asserts the
+      // operator role, as `ade logout` does; an agent's shell is held to agent.
+      connectRole: "cto",
       formatter: "provider-accounts",
       steps: [actionStep("result", "provider_instances", "setDefault", { id })],
     };

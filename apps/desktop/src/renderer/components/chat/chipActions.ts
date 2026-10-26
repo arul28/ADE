@@ -164,7 +164,7 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
       }
     }
     if (target.kind === "settings") {
-      openSettingFromChat(target.entryId, scope);
+      openSettingFromChat(target.entryId, target.machineId ?? null, scope);
       return;
     }
     if (target.kind === "open") {
@@ -225,10 +225,11 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
 
 /**
  * A settings chip's click: the card, on the chat's machine when it is a
- * Computer page (Providers in a chat on Studio opens Studio's Providers). A
+ * Computer page (Providers in a chat on Studio opens Studio's Providers), or on
+ * the machine the link names. Project pages stay on the project's machine. A
  * setting this window cannot show says why instead of opening nothing.
  */
-function openSettingFromChat(entryId: string, scope: ChatRuntimeScope): void {
+function openSettingFromChat(entryId: string, linkMachineId: string | null, scope: ChatRuntimeScope): void {
   const entry = settingsEntryById(entryId);
   if (!entry) {
     navigateToAppTarget({ kind: "settings" });
@@ -242,7 +243,8 @@ function openSettingFromChat(entryId: string, scope: ChatRuntimeScope): void {
   navigateToAppTarget({
     kind: "settings",
     entryId: entry.id,
-    machineId: isComputerSettingsEntry(entry) ? chatSettingsMachineId(scope) : null,
+    // A link that names its machine opens that one, as it does from outside ADE.
+    machineId: isComputerSettingsEntry(entry) ? linkMachineId ?? chatSettingsMachineId(scope) : null,
   });
 }
 

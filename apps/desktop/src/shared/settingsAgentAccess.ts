@@ -10,8 +10,9 @@
  *    keys, money, what agents may do on your computer, the computer itself,
  *    anything that deletes your data, and how ADE works for you.
  *
- * A new setting is "only you" until someone puts it on the agent list. Every
- * manifest entry must appear in exactly one list (`settingsManifest.test.ts`).
+ * A setting on neither list is a preference, so a new setting is "only you"
+ * until someone puts it on the agent list. A listed id must name a manifest
+ * entry, once: the iOS catalog generator checks that in CI.
  *
  * This file is the WORDING and the chip's lock. The refusals themselves live
  * in the brain: `ADE_ACTION_CTO_ONLY` / `ADE_ACTION_USER_ONLY` / the person-only
@@ -52,8 +53,7 @@ const AGENT_CAN_CHANGE: readonly string[] = [
   "lanes-git.rebase-min-behind",
   "lanes-git.lane-templates",
   "project-agents.agent-notes",
-  // `ade secrets set` is how an agent stores a key it was handed for the
-  // work; reading a value back is still refused (`isSecretBearingAdeAction`).
+  // `ade secrets set` is how an agent stores a key it was handed for the work.
   "secrets.secrets",
 ];
 
@@ -147,9 +147,23 @@ export function settingAgentAccess(entryId: string): SettingAgentAccess {
   return ACCESS_BY_ID.get(entryId) ?? PREFERENCE;
 }
 
-/** Every entry id the lists name, for the manifest test that keeps them honest. */
+/**
+ * Whether a setting guards the person's work (publishing, sign-ins, money…):
+ * the chip draws a lock. Preferences are also the person's, but a lock on
+ * every Theme chip would stop meaning anything.
+ */
+export function settingIsProtected(entryId: string): boolean {
+  const access = settingAgentAccess(entryId);
+  return access.agent === "owner-only" && access.reason !== "preference";
+}
+
+/**
+ * Every id the lists name, repeats included. The iOS catalog generator checks
+ * them against the manifest in CI, so a renamed or mistyped id fails the build
+ * instead of silently turning an agent setting into the person's.
+ */
 export function listedSettingAgentAccessIds(): string[] {
-  return [...ACCESS_BY_ID.keys()];
+  return [...AGENT_CAN_CHANGE, ...Object.values(OWNER_ONLY).flat()];
 }
 
 /**
@@ -183,8 +197,6 @@ const PROJECT_CONFIG_KEY_SETTING: Readonly<Record<string, string>> = {
   linearSync: "integrations.linear",
 };
 
-type ConfigLayer = Record<string, unknown> | null | undefined;
-
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -197,23 +209,18 @@ function stableJson(value: unknown): string {
 
 /**
  * The first owner-only key an agent's config save would change, or null when
- * every change is to the work setup. Compared per layer (shared and local), so
- * moving a value between files counts as a change. A key that is absent on
- * both sides is unchanged.
+ * every change is to the work setup. Compares the local layer
+ * (`.ade/local.yaml`), the only one a save writes. A key that is absent on both
+ * sides is unchanged; a key the save would drop counts as a change.
  */
 export function ownerOnlyProjectConfigChange(
-  current: { shared?: ConfigLayer; local?: ConfigLayer },
-  candidate: { shared?: ConfigLayer; local?: ConfigLayer },
+  current: Record<string, unknown>,
+  candidate: Record<string, unknown>,
 ): { key: string; entryId: string | null } | null {
-  for (const layer of ["shared", "local"] as const) {
-    const before = current[layer] ?? {};
-    const after = candidate[layer] ?? {};
-    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-    for (const key of keys) {
-      if (AGENT_EDITABLE_PROJECT_CONFIG_KEYS.has(key)) continue;
-      if (stableJson(before[key]) === stableJson(after[key])) continue;
-      return { key, entryId: PROJECT_CONFIG_KEY_SETTING[key] ?? null };
-    }
+  for (const key of new Set([...Object.keys(current), ...Object.keys(candidate)])) {
+    if (AGENT_EDITABLE_PROJECT_CONFIG_KEYS.has(key)) continue;
+    if (stableJson(current[key]) === stableJson(candidate[key])) continue;
+    return { key, entryId: PROJECT_CONFIG_KEY_SETTING[key] ?? null };
   }
   return null;
 }

@@ -58,7 +58,7 @@ import { buildChipMenuEntries } from "./chipMenu";
 import { chipMenuExtras, isChipActionable, openChipTarget, type ChipActionContext } from "./chipActions";
 import { useMachineFacts } from "./useMachineFacts";
 import { isComputerSettingsEntry, settingsEntryById, settingsEntryLabelPath, settingUnavailableReason } from "../settings/settingsManifest";
-import { settingAgentAccess } from "../../../shared/settingsAgentAccess";
+import { settingIsProtected } from "../../../shared/settingsAgentAccess";
 
 type SettingChipFacts = {
   parts: string[];
@@ -78,10 +78,12 @@ function settingChipFacts(chip: Chip, machineName: string): SettingChipFacts | n
   if (chip.kind !== "setting" || chip.source.origin !== "deeplink" || chip.source.target.kind !== "settings") return null;
   const entry = settingsEntryById(chip.source.target.entryId);
   if (!entry) return null;
-  const access = settingAgentAccess(entry.id);
+  // A link that names its own machine opens that one, so the chat machine's
+  // name would be wrong; leave the machine out of the path.
+  const named = isComputerSettingsEntry(entry) && !chip.source.target.machineId;
   return {
-    parts: settingsEntryLabelPath(entry, isComputerSettingsEntry(entry) ? machineName : null),
-    locked: access.agent === "owner-only" && access.reason !== "preference",
+    parts: settingsEntryLabelPath(entry, named ? machineName : null),
+    locked: settingIsProtected(entry.id),
     unavailable: settingUnavailableReason(entry),
   };
 }

@@ -12,7 +12,7 @@ export type ExtraChipCardData =
   | { kind: "branch"; name: string; lane: string; pullRequest: string | null }
   | { kind: "artifact"; artifact: ComputerUseArtifactView; artifactKind: string; createdAt: string }
   /** A settings chip: where it is, whether only you may change it, and whether this window can open it. */
-  | { kind: "setting"; path: string; ownerOnly: string | null; unavailable: string | null };
+  | { kind: "setting"; path: string; ownerOnly: string | null; locked: boolean; unavailable: string | null };
 
 export function ExtraChipCardBody({ data }: { data: ExtraChipCardData }) {
   if (data.kind === "artifact") return <ArtifactCardBody data={data} />;
@@ -20,8 +20,8 @@ export function ExtraChipCardBody({ data }: { data: ExtraChipCardData }) {
     return <div className="max-w-[260px] text-[11px] text-fg/65">
       <div className="text-[12px] font-medium text-fg/90">{data.path}</div>
       {data.ownerOnly ? (
-        <div className="mt-1 flex gap-1 text-amber-200/90">
-          <Lock size={11} weight="bold" className="mt-[2px] shrink-0" aria-hidden />
+        <div className={`mt-1 flex gap-1 ${data.locked ? "text-amber-200/90" : ""}`}>
+          {data.locked ? <Lock size={11} weight="bold" className="mt-[2px] shrink-0" aria-hidden /> : null}
           <span>Only you can change this. {data.ownerOnly}</span>
         </div>
       ) : null}

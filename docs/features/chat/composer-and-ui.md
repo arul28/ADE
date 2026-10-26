@@ -2118,17 +2118,23 @@ changes, plus one line telling the agent not to look for another way.
 
 - **`ade://settings/<id>`** draws a `setting` chip labelled with the
   manifest's path (`Computer › Studio › Providers › AI connections`), never the
-  agent's text, so a markdown link's own words are dropped. The chat machine's
-  name goes after "Computer" on Computer pages. The path shortens in the middle
-  when it does not fit.
+  agent's text, so a markdown link's own words are dropped. On a Computer page
+  that follows a machine, the chat machine's name goes after "Computer"; a link
+  that names its own `?machine=` leaves the name out. Appearance and Apple
+  devices are only This computer's and never name a machine. The path shortens
+  in the middle when it does not fit.
 - **A lock** replaces the gear on protected settings (publishing, sign-ins,
   money, agent reach, the computer, data). Preferences are also the user's but
   draw a gear, so the lock keeps meaning something. The hover card says "Only
   you can change this" and why.
-- **The click** opens the card. A Computer page opens on the chat's machine
-  (`chatSettingsMachineId`: the chat's pin, else the tab's binding). A setting
+- **The click** opens the card. A Computer page opens on the machine the link
+  names, else the chat's machine (`chatSettingsMachineId`: the chat's pin, else
+  the tab's binding); This-computer-only pages never carry one. A setting
   this window cannot show (macOS only, hidden on the web client, no project)
   draws muted, and a click shows why instead of opening a page without it.
+- **The chip's colour** is the theme accent, so it reads as a button when
+  scanning a reply; on the user's own (accent-coloured) bubble it is white
+  glass instead (`index.css`).
 - **`ade://open/<place>`** draws a `place` chip for a page on the short list in
   `shared/openPlaces.ts`. Open-only: nothing on the list starts or changes
   anything, and the protocol handler refuses `open` links from outside ADE.

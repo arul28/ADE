@@ -12,7 +12,7 @@
 
 import { chipDisplayLabel } from "../../../desktop/src/shared/chips";
 import { buildDeeplink, parseDeeplink } from "../../../desktop/src/shared/deeplinks";
-import { settingAgentAccess } from "../../../desktop/src/shared/settingsAgentAccess";
+import { settingIsProtected } from "../../../desktop/src/shared/settingsAgentAccess";
 import {
   buildThreadEntityLookup,
   EMPTY_THREAD_ENTITY_LOOKUP,
@@ -120,8 +120,7 @@ export function tuiRunForThreadEntity(entity: ThreadEntity, now: number = Date.n
   if (source.origin === "deeplink" && source.target.kind === "settings") {
     // A setting opens through the desktop app. The label is the manifest's
     // path; a protected one says only the user can change it.
-    const access = settingAgentAccess(source.target.entryId);
-    const locked = access.agent === "owner-only" && access.reason !== "preference";
+    const locked = settingIsProtected(source.target.entryId);
     return { text: `${locked ? "[locked] " : ""}${chipDisplayLabel(chip)}`, color: SETTING_COLOR, link: true, href: source.url };
   }
   if (source.origin === "deeplink" && source.target.kind === "open") {

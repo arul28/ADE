@@ -37,7 +37,7 @@ import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { openPlaceById } from "./openPlaces";
-import { settingsEntryById, settingsEntryLabelPath } from "./settingsManifest";
+import { settingsEntryById, settingsEntryLabel } from "./settingsManifest";
 import { getModelById, resolveProviderGroupForModel } from "./modelRegistry";
 import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
@@ -339,7 +339,7 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       // chat machine's name to a Computer page.
       const entry = settingsEntryById(target.entryId);
       if (!entry) return { kind: "ade_link", token: url, label: `ADE · settings/${target.entryId}`, source };
-      return { kind: "setting", token: url, label: settingsEntryLabelPath(entry).join(" › "), source };
+      return { kind: "setting", token: url, label: settingsEntryLabel(entry), source };
     }
     case "open": {
       const place = openPlaceById(target.place);
