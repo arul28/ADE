@@ -23,7 +23,6 @@ import type {
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
-  PERSONAL_CHAT_CATALOG_SCOPE,
   getSharedRuntimeCatalog,
   isPersonalChatCatalogScopeKey,
   clearRuntimeCatalogScopeDescriptors,
@@ -473,6 +472,7 @@ export function descriptorsFromAgentChatModelCatalog(
               : base.cursorCliVariants?.length
                 ? { cursorCliVariants: base.cursorCliVariants }
                 : {}),
+            ...(model.cursorMaxModeOnly ?? base.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
             ...(model.openCodeFast ? { openCodeFast: model.openCodeFast } : {}),
             // Copilot reports its context tiers and window sizes per model.
             ...(model.supportedContextTiers?.length ? { supportedContextTiers: model.supportedContextTiers } : {}),
