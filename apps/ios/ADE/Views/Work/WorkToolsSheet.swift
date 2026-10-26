@@ -134,7 +134,13 @@ struct WorkToolsSheet: View {
     .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
-    .onDisappear { sendPendingTabClosesNow() }
+    .onDisappear { sendPendingTabClosesNow(laneId: laneId) }
+    .onChange(of: laneId) { previousLaneId, _ in
+      // Closes waiting on the old lane go out for that lane; its hidden rows
+      // must not hide a tab in the new one.
+      sendPendingTabClosesNow(laneId: previousLaneId)
+      closedTabIds = []
+    }
     #if DEBUG
     .onChange(of: loaded) { _, isLoaded in
       guard isLoaded, let id = previewPendingCloseTabId,
@@ -381,11 +387,12 @@ struct WorkToolsSheet: View {
     guard pendingTabCloses[tab.id] == nil else { return }
     ADEHaptics.light()
     let tabId = tab.id
+    let laneId = laneId
     pendingTabCloses[tabId] = Task { @MainActor in
       try? await Task.sleep(for: undoWindow)
       guard !Task.isCancelled else { return }
       pendingTabCloses[tabId] = nil
-      await sendTabClose(tabId)
+      await sendTabClose(tabId, laneId: laneId)
     }
   }
 
@@ -395,31 +402,32 @@ struct WorkToolsSheet: View {
     ADEHaptics.light()
   }
 
-  private func sendTabClose(_ tabId: String) async {
+  private func sendTabClose(_ tabId: String, laneId: String) async {
     closedTabIds.insert(tabId)
     #if DEBUG
     if previewAllowsTabClose { return }
     #endif
     do {
       try await syncService.closeWorkToolsBrowserTab(laneId: laneId, tabId: tabId)
-      await refresh()
+      if laneId == self.laneId { await refresh() }
     } catch {
+      guard laneId == self.laneId else { return }
       // The tab is still open on the desktop: show it again, and say why.
       closedTabIds.remove(tabId)
       tabCloseError = error.localizedDescription
     }
   }
 
-  /// The sheet is going away with closes still waiting: the user asked for
+  /// The sheet is going away (or moving to another lane) with closes still
+  /// waiting for `laneId`: the user asked for
   /// them and did not undo, so they go out now rather than being dropped.
   /// Nothing is left on screen to report a failure on; the tab simply stays
   /// open on the desktop and in the list next time.
-  private func sendPendingTabClosesNow() {
+  private func sendPendingTabClosesNow(laneId: String) {
     let tabIds = Array(pendingTabCloses.keys)
     guard !tabIds.isEmpty else { return }
     for task in pendingTabCloses.values { task.cancel() }
     pendingTabCloses = [:]
-    let laneId = laneId
     let syncService = syncService
     Task { @MainActor in
       for tabId in tabIds {
