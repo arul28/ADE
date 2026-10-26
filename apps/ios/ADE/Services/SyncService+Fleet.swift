@@ -33,6 +33,9 @@ struct SyncRemoteMachineChat: Hashable {
 /// (file reads by artifact id) still reach the right machine.
 enum SyncFleetTaskRoute {
   @TaskLocal static var chat: SyncRemoteMachineChat?
+  /// The project of a chat on the focused machine that is not its active
+  /// project, so its artifact reads name that project.
+  @TaskLocal static var project: String?
 }
 
 struct SyncFleetCommandRoute {

@@ -2028,7 +2028,8 @@ struct WorkChatSessionView: View {
         syncServiceReference.service?.fetchComputerUseArtifact(id: id)
       },
       content: artifactContent,
-      load: onLoadArtifact
+      load: onLoadArtifact,
+      refresh: onRefreshArtifacts
     )
   }
 
