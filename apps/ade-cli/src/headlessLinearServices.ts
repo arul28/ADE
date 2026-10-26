@@ -113,6 +113,7 @@ import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/
 import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  GITHUB_STATUS_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -1922,7 +1923,7 @@ export function createHeadlessGitHubService(
       !forceRefresh
       && cachedStatus
       && cachedStatusBinding === binding
-      && now - cachedAt < 30_000
+      && now - cachedAt < GITHUB_STATUS_CACHE_TTL_MS
     ) {
       const cachedReadCandidate = cachedStatus.authSource === "none"
         ? null

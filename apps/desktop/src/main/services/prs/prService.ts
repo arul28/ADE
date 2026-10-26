@@ -6954,6 +6954,18 @@ export function createPrService({
    */
   const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
   const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
+  /**
+   * Settled check results of the PR's older commits. Only the head commit's
+   * checks move in practice, yet every open read check-runs for each of up to
+   * 30 commits (28 requests for one 28-commit PR). A settled result (success,
+   * failure, or nothing ran) is kept for 30 minutes; a pending one is read
+   * again, and the head commit is always read.
+   */
+  const SETTLED_COMMIT_CHECKS_TTL_MS = 30 * 60_000;
+  const SETTLED_COMMIT_CHECKS_MAX_ENTRIES = 2_000;
+  const settledCommitChecks = new Map<string, { status: "success" | "failure" | "none"; at: number }>();
+  const settledCommitChecksKey = (repo: GitHubRepoRef, sha: string): string =>
+    `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}|${sha}`;
   const getCommitsSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrCommit[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prId = String(coords.githubPrNumber);
@@ -6993,12 +7005,26 @@ export function createPrService({
     const results = await mapConcurrent(
       baseCommits,
       COMMIT_CHECK_STATUS_CONCURRENCY,
-      async (commit): Promise<"success" | "failure" | "pending" | "none"> => {
+      async (commit, index): Promise<"success" | "failure" | "pending" | "none"> => {
         if (!commit.sha) return "none";
+        const isHead = index === baseCommits.length - 1;
+        const key = settledCommitChecksKey(repo, commit.sha);
+        const settled = isHead ? undefined : settledCommitChecks.get(key);
+        if (settled && Date.now() - settled.at < SETTLED_COMMIT_CHECKS_TTL_MS) return settled.status;
         if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
         try {
           const runs = await fetchCheckRuns(repo, commit.sha);
-          return aggregateCommitCheckStatus(runs);
+          const status = aggregateCommitCheckStatus(runs);
+          if (status !== "pending") {
+            settledCommitChecks.delete(key);
+            settledCommitChecks.set(key, { status, at: Date.now() });
+            while (settledCommitChecks.size > SETTLED_COMMIT_CHECKS_MAX_ENTRIES) {
+              const oldest = settledCommitChecks.keys().next();
+              if (oldest.done) break;
+              settledCommitChecks.delete(oldest.value);
+            }
+          }
+          return status;
         } catch (err) {
           logger.warn("prs.commit_check_runs_failed", {
             prId,

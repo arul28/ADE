@@ -33,6 +33,7 @@ import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghC
 import { createExpiringPromiseCache } from "../../../shared/expiringPromiseCache";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  GITHUB_STATUS_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -1872,7 +1873,7 @@ export function createGithubService({
     }
 
     const now = Date.now();
-    if (cachedStatus && now - cachedAt < 30_000 && cachedStatus.tokenStored) {
+    if (cachedStatus && now - cachedAt < GITHUB_STATUS_CACHE_TTL_MS && cachedStatus.tokenStored) {
       const repoChanged =
         (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
         (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
