@@ -221,6 +221,46 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
+  it("passes over a recent project whose folder is gone, and hosts without one when none is left", async () => {
+    const { registry, first, second } = createRegistry();
+    const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
+      projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
+    };
+    file.projects = file.projects.map((project) => ({
+      ...project,
+      lastOpenedAt: project.projectId === first.projectId ? 2_000 : 1_000,
+      addedAt: project.projectId === first.projectId ? 2_000 : 1_000,
+    }));
+    fs.writeFileSync(registry.path, JSON.stringify(file, null, 2));
+    // The newest project's folder went with a restart (a scratch project in /tmp).
+    fs.rmSync(first.rootPath, { recursive: true, force: true });
+    const syncRuntime = {
+      enabled: true,
+      hostStartupEnabled: true,
+      hostDiscoveryEnabled: true,
+      forceHostRole: false,
+      runtimeKind: "daemon" as const,
+    };
+
+    const scopeRegistry = new ProjectScopeRegistry(registry, { syncRuntime });
+    const skipped: string[] = [];
+    const scope = await scopeRegistry.resolveActiveSyncHost((record) => skipped.push(record.projectId));
+
+    expect(scope?.registryProjectId).toBe(second.projectId);
+    expect(skipped).toEqual([first.projectId]);
+    expect(createAdeRuntimeMock.mock.calls.map((call) => call[0]?.projectRoot)).toEqual([second.rootPath]);
+    await scopeRegistry.disposeAll();
+
+    // With every recent folder gone there is no project to host with: null, so
+    // the caller hosts machine-level sync instead of retrying a missing folder.
+    fs.rmSync(second.rootPath, { recursive: true, force: true });
+    createAdeRuntimeMock.mockClear();
+    const emptyRegistry = new ProjectScopeRegistry(registry, { syncRuntime });
+    await expect(emptyRegistry.resolveActiveSyncHost()).resolves.toBeNull();
+    expect(createAdeRuntimeMock).not.toHaveBeenCalled();
+    await emptyRegistry.disposeAll();
+  });
+
   it("switches the daemon sync host without disposing active project scopes", async () => {
     const { registry, first, second } = createRegistry();
     const firstDispose = vi.fn();

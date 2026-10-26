@@ -737,7 +737,7 @@ describe("This Mac's slice resolves from the live connection snapshot", () => {
     await flush();
 
     expect(listSessions).toHaveBeenCalledWith(
-      { limit: 60, includeArchived: false },
+      { limit: 200, settledLimit: 40, includeArchived: false },
       expect.objectContaining({ key: "local:/Users/me/repo-a" }),
     );
     expect(result.current.foreignRows.some(
@@ -768,7 +768,7 @@ describe("This Mac's slice resolves from the live connection snapshot", () => {
     });
     await flush();
     expect(listSessions).toHaveBeenCalledWith(
-      { limit: 60, includeArchived: false },
+      { limit: 200, settledLimit: 40, includeArchived: false },
       expect.objectContaining({ key: "local:/Users/me/repo-a" }),
     );
 
@@ -787,11 +787,11 @@ describe("This Mac's slice resolves from the live connection snapshot", () => {
     await flush();
 
     expect(listSessions).not.toHaveBeenCalledWith(
-      { limit: 60, includeArchived: false },
+      { limit: 200, settledLimit: 40, includeArchived: false },
       expect.objectContaining({ key: "local:/Users/me/repo-b" }),
     );
     expect(listSessions).toHaveBeenCalledWith(
-      { limit: 60, includeArchived: false },
+      { limit: 200, settledLimit: 40, includeArchived: false },
       expect.objectContaining({ key: "local:/Users/me/repo-a" }),
     );
 
@@ -827,7 +827,7 @@ describe("This Mac's slice resolves from the live connection snapshot", () => {
 
     if (kept) {
       expect(listSessions).toHaveBeenCalledWith(
-        { limit: 60, includeArchived: false },
+        { limit: 200, settledLimit: 40, includeArchived: false },
         expect.objectContaining({ key: "local:/Users/me/repo-a" }),
       );
     } else {
@@ -1490,7 +1490,7 @@ describe("cross-machine refresh scheduling", () => {
       { includeArchived: false, includeStatus: true },
       localBinding,
     );
-    expect(listSessions).toHaveBeenCalledWith({ limit: 60, includeArchived: false }, localBinding);
+    expect(listSessions).toHaveBeenCalledWith({ limit: 200, settledLimit: 40, includeArchived: false }, localBinding);
     expect(useAppStore.getState().crossMachineLanesByMachineId[THIS_MACHINE_ID])
       .toMatchObject({
         machineId: THIS_MACHINE_ID,
