@@ -48,6 +48,10 @@ afterEach(() => {
  * unresolved fixture root would model something git never produces. Tests that
  * need a symlinked root build one explicitly.
  */
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 function makeTempRepoRoot(prefix: string): string {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
@@ -2353,7 +2357,7 @@ describe("laneService worktree reconcile", () => {
     const realBase = makeTempRepoRoot("ade-lane-symlink-real-");
     const linkHome = makeTempRepoRoot("ade-lane-symlink-link-");
     const linkBase = path.join(linkHome, "projects");
-    fs.symlinkSync(realBase, linkBase, "dir");
+    fs.symlinkSync(realBase, linkBase, DIRECTORY_LINK_TYPE);
 
     const realRoot = path.join(realBase, "repo");
     // Every path ADE is configured with goes through the symlink.
@@ -2716,7 +2720,7 @@ describe("laneService delete outside .ade/worktrees", () => {
     try {
       fs.mkdirSync(realDirectory, { recursive: true });
       fs.writeFileSync(path.join(realDirectory, "work.txt"), "user work\n", "utf8");
-      fs.symlinkSync(realDirectory, worktreePath, "dir");
+      fs.symlinkSync(realDirectory, worktreePath, DIRECTORY_LINK_TYPE);
       stubGitForDelete({ worktreePath });
 
       const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
@@ -3138,7 +3142,7 @@ describe("laneService symlinked project root path space", () => {
     const realBase = makeTempRepoRoot(`${prefix}real-`);
     const linkHome = makeTempRepoRoot(`${prefix}link-`);
     const linkBase = path.join(linkHome, "projects");
-    fs.symlinkSync(realBase, linkBase, "dir");
+    fs.symlinkSync(realBase, linkBase, DIRECTORY_LINK_TYPE);
 
     const realRoot = path.join(realBase, "repo");
     const linkRoot = path.join(linkBase, "repo");
@@ -3908,8 +3912,8 @@ describe("laneService rebaseStart", () => {
     const logs: string[] = [];
 
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
-      if (cwd.endsWith("/child")) return "sha-child";
+      if (path.basename(cwd) === "parent") return "sha-parent";
+      if (path.basename(cwd) === "child") return "sha-child";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -3968,7 +3972,7 @@ describe("laneService rebaseStart", () => {
 
     let rootHeadReads = 0;
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/root")) {
+      if (path.basename(cwd) === "root") {
         rootHeadReads += 1;
         return rootHeadReads === 1 ? "sha-root-before" : "sha-root-after";
       }
@@ -4037,7 +4041,7 @@ describe("laneService rebaseStart", () => {
 
     const rootHeadSequence = ["sha-root-before", "sha-root-after", "sha-root-after", "sha-root-before"];
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/root")) {
+      if (path.basename(cwd) === "root") {
         return rootHeadSequence.shift() ?? "sha-root-before";
       }
       return "sha-main";
@@ -4095,8 +4099,8 @@ describe("laneService rebaseStart", () => {
 
     let resolveRebase: ((value: { exitCode: number; stdout: string; stderr: string }) => void) | null = null;
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
-      if (cwd.endsWith("/child")) return "sha-child";
+      if (path.basename(cwd) === "parent") return "sha-parent";
+      if (path.basename(cwd) === "child") return "sha-child";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation((args: string[]) => {
@@ -4160,7 +4164,7 @@ describe("laneService rebaseStart", () => {
 
     let rootHeadReads = 0;
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/root")) {
+      if (path.basename(cwd) === "root") {
         rootHeadReads += 1;
         return rootHeadReads === 1 ? "sha-root-pre" : "sha-root-post";
       }
@@ -4222,7 +4226,7 @@ describe("laneService rebaseStart", () => {
 
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (path.basename(cwd) === "parent") return "sha-parent";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4278,7 +4282,7 @@ describe("laneService rebaseStart", () => {
 
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (path.basename(cwd) === "parent") return "sha-parent";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4340,8 +4344,8 @@ describe("laneService rebaseStart", () => {
 
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent-local";
-      if (cwd.endsWith("/main")) return "sha-main-local";
+      if (path.basename(cwd) === "parent") return "sha-parent-local";
+      if (path.basename(cwd) === "main") return "sha-main-local";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4390,8 +4394,8 @@ describe("laneService rebaseStart", () => {
     // lane-child has parent lane-parent (which is lane_type=worktree, not primary)
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent-head";
-      if (cwd.endsWith("/child")) return "sha-child-head";
+      if (path.basename(cwd) === "parent") return "sha-parent-head";
+      if (path.basename(cwd) === "child") return "sha-child-head";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4448,8 +4452,8 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     // Detached root lanes no longer consult the primary parent HEAD.
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
-      if (cwd.endsWith("/main")) return null;
+      if (path.basename(cwd) === "parent") return "sha-parent";
+      if (path.basename(cwd) === "main") return null;
       return null;
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4485,7 +4489,7 @@ describe("laneService rebaseStart", () => {
 
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (path.basename(cwd) === "parent") return "sha-parent";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4536,8 +4540,8 @@ describe("laneService rebaseStart", () => {
     const logs: string[] = [];
 
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
-      if (cwd.endsWith("/child")) return "sha-child";
+      if (path.basename(cwd) === "parent") return "sha-parent";
+      if (path.basename(cwd) === "child") return "sha-child";
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -4580,7 +4584,7 @@ describe("laneService rebaseStart", () => {
 
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/parent")) return "sha-parent";
+      if (path.basename(cwd) === "parent") return "sha-parent";
       return "sha-main";
     });
 
@@ -4639,7 +4643,7 @@ describe("laneService reparent", () => {
 
     let childHeadReads = 0;
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/child")) {
+      if (path.basename(cwd) === "child") {
         childHeadReads += 1;
         return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
       }
@@ -4707,7 +4711,7 @@ describe("laneService reparent", () => {
 
     let childHeadReads = 0;
     vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd.endsWith("/child")) {
+      if (path.basename(cwd) === "child") {
         childHeadReads += 1;
         return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
       }
