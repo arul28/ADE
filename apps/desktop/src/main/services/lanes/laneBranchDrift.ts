@@ -32,6 +32,8 @@ export type WorktreeStatusPorcelainV2 = {
    * with no upstream, or one whose ref is gone (git then omits `branch.ab`).
    */
   upstreamBehind: number | null;
+  /** HEAD's commit (`# branch.oid`); `null` before the first commit. */
+  headOid: string | null;
 };
 
 /**
@@ -51,6 +53,7 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
   let untracked = 0;
   let headBranchRef: string | null = null;
   let upstreamBehind: number | null = null;
+  let headOid: string | null = null;
   const nulDelimited = stdout.includes("\0");
   const records = stdout.split(nulDelimited ? "\0" : "\n");
   for (let index = 0; index < records.length; index += 1) {
@@ -58,6 +61,11 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
     const record = nulDelimited ? rawRecord : rawRecord.replace(/\r$/, "");
     if (!record) continue;
     if (record.startsWith("#")) {
+      const oid = /^# branch\.oid ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(record);
+      if (oid) {
+        headOid = oid[1]!;
+        continue;
+      }
       const aheadBehind = /^# branch\.ab \+\d+ -(\d+)$/.exec(record);
       if (aheadBehind) {
         upstreamBehind = Number(aheadBehind[1]);
@@ -91,7 +99,7 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
     if (stagedCode !== " " && stagedCode !== "." && stagedCode !== "?") staged += 1;
     if (unstagedCode !== " " && unstagedCode !== "." && unstagedCode !== "?") unstaged += 1;
   }
-  return { dirty, changedFileCount, staged, unstaged, untracked, headBranchRef, upstreamBehind };
+  return { dirty, changedFileCount, staged, unstaged, untracked, headBranchRef, upstreamBehind, headOid };
 }
 
 /**

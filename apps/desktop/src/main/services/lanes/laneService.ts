@@ -1178,6 +1178,81 @@ async function classifyDetectedLaneBranchDrift(
   return kind === "switched" ? drift : { ...drift, kind };
 }
 
+/**
+ * What a lane status refresh learned that cannot change for the same input.
+ * A phone reconnect asks for every lane's status with `lanes.refreshSnapshots`
+ * even when its answer turns out unchanged, and each lane spent five git
+ * processes on it (status, the HEAD commit's date, ahead/behind, the worktree
+ * root, the conflict check); for 20 lanes about 56 processes and 155 ms a call.
+ * The working tree itself is always read again: only answers keyed by a commit,
+ * a pair of commits, or a file's identity are kept.
+ */
+const laneHeadMetaByWorktree = new Map<string, { oid: string; date: string }>();
+const LANE_AHEAD_BEHIND_CACHE_MAX = 2_000;
+const laneAheadBehindByRange = new Map<string, string>();
+
+function rememberAheadBehind(rangeKey: string, stdout: string): void {
+  laneAheadBehindByRange.delete(rangeKey);
+  laneAheadBehindByRange.set(rangeKey, stdout);
+  if (laneAheadBehindByRange.size > LANE_AHEAD_BEHIND_CACHE_MAX) {
+    const oldest = laneAheadBehindByRange.keys().next().value;
+    if (oldest !== undefined) laneAheadBehindByRange.delete(oldest);
+  }
+}
+
+/**
+ * The commit a ref names, shared by every lane of the repository for the git
+ * read cache's short window (refs are repository-wide), or null when it does
+ * not resolve and the caller should keep its own fallbacks.
+ */
+async function resolveCommitOid(worktreePath: string, ref: string): Promise<string | null> {
+  const name = ref.trim();
+  if (!name || name.startsWith("-")) return null;
+  try {
+    const res = await runGitRepoCached(
+      ["rev-parse", "--verify", "--quiet", `${name}^{commit}`],
+      { cwd: worktreePath, timeoutMs: 8_000 },
+      { key: `lane-commit:${name}`, cacheClass: "volatile" },
+    );
+    const oid = res.exitCode === 0 ? res.stdout.trim() : "";
+    return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid) ? oid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `isExpectedGitWorktreeRoot` for the read path, answered again only when the
+ * folder or its `.git` entry is a different file than last time. Which
+ * repository owns a folder is decided by that `.git` entry, so a removed and
+ * re-created worktree, or a rewritten `.git` file, asks git again. Mutations
+ * keep calling the uncached check.
+ */
+const worktreeRootAnswers = new Map<string, { signature: string; isRoot: boolean }>();
+
+async function worktreeRootSignature(worktreePath: string): Promise<string | null> {
+  try {
+    const [dir, dotGit] = await Promise.all([
+      fs.promises.stat(worktreePath, { bigint: true }),
+      fs.promises.lstat(path.join(worktreePath, ".git"), { bigint: true }),
+    ]);
+    return `${dir.dev}:${dir.ino}|${dotGit.ino}:${dotGit.mtimeNs}:${dotGit.size}`;
+  } catch {
+    return null;
+  }
+}
+
+async function isExpectedGitWorktreeRootCached(worktreePath: string): Promise<boolean> {
+  if (!worktreePath) return false;
+  const signature = await worktreeRootSignature(worktreePath);
+  const known = worktreeRootAnswers.get(worktreePath);
+  if (signature && known?.signature === signature) return known.isRoot;
+  const isRoot = await isExpectedGitWorktreeRoot(worktreePath);
+  if (signature) worktreeRootAnswers.set(worktreePath, { signature, isRoot });
+  else worktreeRootAnswers.delete(worktreePath);
+  return isRoot;
+}
+
 async function computeLaneStatus(
   worktreePath: string,
   baseRef: string,
@@ -1187,7 +1262,7 @@ async function computeLaneStatus(
   // Callers that just proved the worktree root pass `worktreeRootVerified` so
   // the same `rev-parse --show-toplevel` is not spawned twice per lane. Every
   // other caller keeps the guard.
-  if (options.worktreeRootVerified !== true && !(await isExpectedGitWorktreeRoot(worktreePath))) {
+  if (options.worktreeRootVerified !== true && !(await isExpectedGitWorktreeRootCached(worktreePath))) {
     return cloneLaneStatus(DEFAULT_LANE_STATUS);
   }
 
@@ -1203,17 +1278,23 @@ async function computeLaneStatus(
     }
   };
   // One spawn for both metadata reads: `%H` identifies HEAD, `%T` is its tree,
-  // and `%cI` its commit date, split by NULs. A routine refresh therefore
-  // adds one process per lane, not two, on top of the ~6 it already costs.
-  const [dirtyRes, headMetaRes] = await Promise.all([
-    runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"], { cwd: worktreePath, timeoutMs: 8_000 }),
-    optionalGit(["log", "-1", "--format=%H%x00%T%x00%cI"], 8_000),
-  ]);
-  const headMeta = headMetaRes?.exitCode === 0
-    ? headMetaRes.stdout.split("\0")
-    : null;
-  const headOid = headMeta?.[0]?.trim() ?? "";
-  const lastCommitIso = headMeta?.[2]?.trim() ?? "";
+  // and `%cI` its commit date, split by NULs. A commit's date never changes, so
+  // once this worktree has an answer the status (whose `# branch.oid` names
+  // HEAD) decides whether HEAD moved, and the read runs only then. The first
+  // read of a worktree still runs both at once.
+  const statusPromise = runGit(
+    ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
+    { cwd: worktreePath, timeoutMs: 8_000 },
+  );
+  const readHeadMeta = async (): Promise<{ oid: string; date: string } | null> => {
+    const res = await optionalGit(["log", "-1", "--format=%H%x00%T%x00%cI"], 8_000);
+    if (res?.exitCode !== 0) return null;
+    const fields = res.stdout.split("\0");
+    return { oid: fields[0]?.trim() ?? "", date: fields[2]?.trim() ?? "" };
+  };
+  const previousHeadMeta = laneHeadMetaByWorktree.get(worktreePath) ?? null;
+  const headMetaPromise = previousHeadMeta ? null : readHeadMeta();
+  const dirtyRes = await statusPromise;
   const parsedStatus = dirtyRes?.exitCode === 0
     ? parseWorktreeStatusPorcelainV2(dirtyRes.stdout)
     : {
@@ -1224,7 +1305,17 @@ async function computeLaneStatus(
         untracked: 0,
         headBranchRef: null,
         upstreamBehind: null,
+        headOid: null,
       };
+  const headMeta = headMetaPromise
+    ? await headMetaPromise
+    : parsedStatus.headOid && previousHeadMeta?.oid === parsedStatus.headOid
+      ? previousHeadMeta
+      : await readHeadMeta();
+  if (headMeta?.oid) laneHeadMetaByWorktree.set(worktreePath, headMeta);
+  else laneHeadMetaByWorktree.delete(worktreePath);
+  const headOid = headMeta?.oid ?? "";
+  const lastCommitIso = headMeta?.date ?? "";
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
   // Renamed vs. missing only matters while the worktree is off its recorded
@@ -1240,12 +1331,29 @@ async function computeLaneStatus(
   const lastCommitAt = lastCommitIso || null;
   const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, headOid, options.trackedFileCountCache);
 
-  const countAgainst = (base: string) =>
-    runGit(["rev-list", "--left-right", "--count", `${base}...${branchRef}`], {
+  const countAgainst = (base: string, branch = branchRef) =>
+    runGit(["rev-list", "--left-right", "--count", `${base}...${branch}`], {
       cwd: worktreePath,
       timeoutMs: 8_000
     });
-  let countsRes = await countAgainst(baseRef);
+  // Ahead/behind depends only on the two commits. With HEAD on the lane's own
+  // branch, the status already named the branch's commit, and the base's
+  // resolves once per refresh for every lane on it, so a count already taken
+  // for the same pair is reused instead of walking history again.
+  const branchOid = parsedStatus.headOid
+    && headBranchRef
+    && normalizeBranchName(branchRef).trim() === headBranchRef
+    ? parsedStatus.headOid
+    : null;
+  const baseOid = branchOid ? await resolveCommitOid(worktreePath, baseRef) : null;
+  const rangeKey = baseOid && branchOid ? `${baseOid}...${branchOid}` : null;
+  const knownCounts = rangeKey ? laneAheadBehindByRange.get(rangeKey) ?? null : null;
+  let countsRes = knownCounts
+    ? { exitCode: 0, stdout: knownCounts, stderr: "" }
+    : rangeKey
+      ? await countAgainst(baseOid!, branchOid!)
+      : await countAgainst(baseRef);
+  if (rangeKey && !knownCounts && countsRes.exitCode === 0) rememberAheadBehind(rangeKey, countsRes.stdout);
   // A base that exists only as a remote-tracking branch (a clone that never
   // checked out `main`) does not resolve by its short name: git's lookup skips
   // `refs/remotes/origin/<name>`. Counting against nothing reported 0/0, which
@@ -3915,7 +4023,7 @@ export function createLaneService({
       const inFlight = worktreeAvailabilityInFlight.get(row.id);
       if (inFlight) return await inFlight;
       const probe = (async () => {
-        const available = await isExpectedGitWorktreeRoot(row.worktree_path);
+        const available = await isExpectedGitWorktreeRootCached(row.worktree_path);
         worktreeAvailabilityCache.set(row.id, available);
         return available;
       })();

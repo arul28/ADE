@@ -1466,3 +1466,26 @@ answer (the measurement brain's fake home has none; a locked or unreachable
 keychain does the same) that is 2 s every cycle. Stores are sealed with the
 machine key alone now, so a read asks the keychain only when the machine key
 does not open the store.
+
+Phone reconnect's lane refresh: `lanes.refreshSnapshots` with the phone's
+iOS arguments and its last signature (so every answer is `notModified`), 10
+timed calls on LAN after a reconnect, P0's measurement brain on the seeded
+project (20 lanes, 1,000 chats), two interleaved runs per side, load 10-11.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| `lanes.refreshSnapshots`, not modified, median per call | 161.5-165 ms | 90.5-93.5 ms | 130 ms |
+| Git processes per call | 54.9 | 15.8 | 25 |
+
+Per lane, a refresh re-ran five git processes whose answers cannot change
+without their input changing: HEAD's commit date (now keyed by the commit
+the status names), ahead/behind (keyed by the two commits), the worktree
+root (keyed by the folder's and its `.git` entry's identity), and the
+conflict check (`ls-files -u`, keyed by the index file's identity). Only
+`git status` runs every time, so edits, commits and base moves show at once.
+SQLite statements are now compiled once per connection and reused; before,
+compiling them was the largest single cost on the brain's main thread during
+these calls (628 ms of a 40 s profile). The rest is the chat list the
+snapshot builds (per-row lookups in `agentChatService.listSessions`, chat
+state files) and the 500-row session list: about 44 ms of main-thread time
+per call.

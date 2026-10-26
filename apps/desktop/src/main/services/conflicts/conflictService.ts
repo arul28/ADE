@@ -1370,10 +1370,35 @@ export function createConflictService({
     };
   };
 
+  /**
+   * Unmerged entries live only in the index, so the answer holds until the
+   * index file is replaced (git writes it by rename): one stat instead of one
+   * `ls-files -u` per lane on every assessment, which a phone reconnect asks for.
+   */
+  const activeConflictByWorktree = new Map<string, { signature: string; active: boolean }>();
+  const indexSignature = async (worktreePath: string): Promise<string | null> => {
+    try {
+      const indexPath = await runGitRepoCached(
+        ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        { cwd: worktreePath, timeoutMs: 8_000 },
+        { key: `index-path:${worktreePath}`, cacheClass: "stable" },
+      );
+      if (indexPath.exitCode !== 0 || !indexPath.stdout.trim()) return null;
+      const stat = await fs.promises.stat(indexPath.stdout.trim(), { bigint: true });
+      return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
+    } catch {
+      return null;
+    }
+  };
   const hasActiveConflict = async (lane: LaneSummary): Promise<boolean> => {
+    const signature = await indexSignature(lane.worktreePath);
+    const known = activeConflictByWorktree.get(lane.worktreePath);
+    if (signature && known?.signature === signature) return known.active;
     const res = await runGit(["ls-files", "-u"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
     if (res.exitCode !== 0) return false;
-    return res.stdout.trim().length > 0;
+    const active = res.stdout.trim().length > 0;
+    if (signature) activeConflictByWorktree.set(lane.worktreePath, { signature, active });
+    return active;
   };
 
   /**

@@ -3,7 +3,7 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
-import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
 import { codedError, isCodedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
@@ -547,6 +547,7 @@ function closeDatabase(db: DatabaseSyncType): void {
     deferredDatabaseClosures.add(db);
     return;
   }
+  statementCaches.delete(db);
   try {
     db.exec("select crsql_finalize()");
   } catch {
@@ -594,9 +595,43 @@ function toDbValue(value: SqlValue | SyncScalar, index?: number): string | numbe
   throw new Error(`Unsupported database value${suffix}: ${describeUnsupportedDbValue(value)}`);
 }
 
+/**
+ * Compiled statements, kept per connection and reused. Every query used to
+ * compile its SQL again; on a phone reconnect's lane refresh that was 14 ms of
+ * the brain's main thread per call (most of it the chat list's per-row
+ * lookups). A reused statement still passes the database identity guard first,
+ * as `prepare` does, and SQLite recompiles one itself after a schema change.
+ * Bounded, least recently used out, so SQL built with a varying `in (…)` list
+ * cannot grow it without limit; the cache goes with the connection.
+ */
+const STATEMENT_CACHE_MAX = 256;
+const statementCaches = new WeakMap<DatabaseSyncType, Map<string, StatementSync>>();
+
+function preparedStatement(db: DatabaseSyncType, sql: string): StatementSync {
+  let cache = statementCaches.get(db);
+  if (!cache) {
+    cache = new Map();
+    statementCaches.set(db, cache);
+  }
+  const cached = cache.get(sql);
+  if (cached) {
+    databasePathGuards.get(db)?.();
+    cache.delete(sql);
+    cache.set(sql, cached);
+    return cached;
+  }
+  const statement = db.prepare(sql);
+  cache.set(sql, statement);
+  if (cache.size > STATEMENT_CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  return statement;
+}
+
 function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
   try {
-    return db.prepare(sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
+    return preparedStatement(db, sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
@@ -607,7 +642,7 @@ function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue 
 
 function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T | null {
   try {
-    return (db.prepare(sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
+    return (preparedStatement(db, sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
@@ -618,7 +653,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
 
 function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T[] {
   try {
-    return db.prepare(sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
+    return preparedStatement(db, sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
     const statement = sql.replace(/\s+/g, " ").trim();
