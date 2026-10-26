@@ -1622,27 +1622,50 @@ export function createPrService({
    * comes from the chat that was just linked, never from the caller. Family
    * members may sit on other lanes; a spawn tree is one piece of work.
    */
-  const linkPrToChatFamily = (linkArgs: Parameters<typeof linkPrToChatSession>[0]): boolean => {
-    if (!linkPrToChatSession(linkArgs)) return false;
+  const linkPrToChatFamily = (
+    linkArgs: Parameters<typeof linkPrToChatSession>[0],
+    options: { emit?: boolean } = {},
+  ): { ok: boolean; addedFamilySessionIds: string[] } => {
+    if (!linkPrToChatSession(linkArgs)) return { ok: false, addedFamilySessionIds: [] };
+    const prId = linkArgs.prId;
     const sessionId = resolveCanonicalChatSessionId(String(linkArgs.sessionId ?? "")) ?? "";
     let relatives: string[] = [];
     try {
       relatives = sessionId ? agentChatService?.getChatFamilySessionIds?.(sessionId) ?? [] : [];
     } catch (error) {
-      logger.warn("prs.chat_family_lookup_failed", { prId: linkArgs.prId, sessionId, error: getErrorMessage(error) });
+      logger.warn("prs.chat_family_lookup_failed", { prId, sessionId, error: getErrorMessage(error) });
     }
-    let linkedRelative = false;
+    /**
+     * Whether this chat already had the edge, read the same way
+     * `linkPrToChatSession` does. A caller that rolls a partial link back may
+     * only remove what this call created; an unreadable answer counts as
+     * present, so a rollback cannot delete someone else's edge.
+     */
+    const alreadyLinked = (relativeId: string): boolean => {
+      try {
+        return Boolean(db.get(
+          `select 1 as present from pull_request_chat_sessions
+            where project_id = ? and pr_id = ? and session_id = ? limit 1`,
+          [projectId, prId, relativeId],
+        ));
+      } catch (error) {
+        logger.warn("prs.chat_family_edge_read_failed", { prId, sessionId: relativeId, error: getErrorMessage(error) });
+        return true;
+      }
+    };
+    const addedFamilySessionIds: string[] = [];
     for (const relativeId of relatives) {
       // A chat that unlinked this PR keeps it unlinked.
-      if (hasChatSessionDismissal(linkArgs.prId, relativeId)) continue;
-      if (linkPrToChatSession({ prId: linkArgs.prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true })) {
-        linkedRelative = true;
+      if (hasChatSessionDismissal(prId, relativeId)) continue;
+      const existed = alreadyLinked(relativeId);
+      if (linkPrToChatSession({ prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true }) && !existed) {
+        addedFamilySessionIds.push(relativeId);
       }
     }
     // The relatives' lists changed even when this PR's own summary did not, so
     // a caller that relies on its own refresh to emit would leave them stale.
-    if (linkedRelative) emitPrsUpdated();
-    return true;
+    if (options.emit !== false && addedFamilySessionIds.length > 0) emitPrsUpdated();
+    return { ok: true, addedFamilySessionIds };
   };
   const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
   const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
@@ -12537,7 +12560,7 @@ export function createPrService({
         laneId: pr.lane_id,
         sessionId: args.sessionId,
         allowCrossLane: args.allowCrossLane === true,
-      });
+      }).ok;
       if (ok) emitPrsUpdated();
       return { ok };
     },
@@ -12655,7 +12678,7 @@ export function createPrService({
           throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
         }
         // An explicit watch is an explicit link, even over an earlier unlink.
-        if (linkPrToChatFamily({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+        if (linkPrToChatFamily({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true }).ok) {
           emitPrsUpdated();
         }
         record = chatWatchStore.arm({
@@ -12707,14 +12730,15 @@ export function createPrService({
           .map((sibling) => sibling.prId),
       );
       const linkedIds: string[] = [];
+      const linkedFamilyEdges: Array<{ prId: string; sessionId: string }> = [];
       for (const sibling of unclaimed) {
-        const ok = linkPrToChatSession({
+        const result = linkPrToChatFamily({
           prId: sibling.prId,
           laneId: sibling.laneId,
           sessionId: offer.sessionId,
           allowCrossLane: true,
-        });
-        if (!ok) {
+        }, { emit: false });
+        if (!result.ok) {
           for (const prId of linkedIds) {
             unlinkPrFromChatSession({
               prId,
@@ -12722,9 +12746,17 @@ export function createPrService({
               dismiss: restoreDismissals.has(prId),
             });
           }
+          // Family edges are new rows, never a restored unlink, so they go
+          // without a tombstone.
+          for (const edge of linkedFamilyEdges) {
+            unlinkPrFromChatSession({ ...edge, dismiss: false });
+          }
           return { ok: false, linked: 0 };
         }
         linkedIds.push(sibling.prId);
+        for (const sessionId of result.addedFamilySessionIds) {
+          linkedFamilyEdges.push({ prId: sibling.prId, sessionId });
+        }
       }
       if (linkedIds.length > 0) emitPrsUpdated();
       return { ok: true, linked: linkedIds.length };
