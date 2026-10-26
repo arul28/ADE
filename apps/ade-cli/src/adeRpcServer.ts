@@ -3406,6 +3406,30 @@ function scopeTerminalTargetArgs(
   return scopedArgs;
 }
 
+/**
+ * A watch wakes the chat that armed it, so an agent arms one only for its own
+ * chat, on a terminal it may already read, or (with `command`) in a lane it
+ * may open terminals in.
+ */
+function scopeTerminalWatchArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = scopeTerminalChatArgs(runtime, session, method, terminalArgs);
+  const terminalId = asOptionalTrimmedString(scopedArgs.terminalId);
+  const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
+  if (terminalId || ptyId) {
+    ensurePtyTargetAuthorized(runtime, session, method, {
+      ...(terminalId ? { sessionId: terminalId } : {}),
+      ...(ptyId ? { ptyId } : {}),
+    });
+  }
+  // An agent's own watch is armed by the agent, whatever it claims.
+  return { ...scopedArgs, armedBy: "agent" };
+}
+
 function scopeTerminalAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3425,6 +3449,13 @@ function scopeTerminalAdeActionArgs(
     case "resize":
     case "signal":
       return scopeTerminalTargetArgs(runtime, session, method, terminalArgs);
+    case "watch":
+      return scopeTerminalWatchArgs(runtime, session, method, terminalArgs);
+    case "unwatch":
+    case "listWatches":
+      // Only the caller's own chat's watches: a watch id or terminal narrows
+      // within it, never past it.
+      return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
     default:
       ptyAccessDenied(method);
   }

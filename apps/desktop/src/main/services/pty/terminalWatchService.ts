@@ -737,7 +737,9 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
         throw new Error("terminal.unwatch requires a watch id, or the chat (and optionally the terminal) to stop.");
       }
       const targets = [...watches.values()].filter((watch) => {
-        if (watchId) return watch.id === watchId;
+        // Every given field must match, so a chat-scoped caller's id never
+        // reaches another chat's watch.
+        if (watchId && watch.id !== watchId) return false;
         if (chatSessionId && watch.chatSessionId !== chatSessionId) return false;
         if (terminalId && watch.terminalId !== terminalId) return false;
         return true;

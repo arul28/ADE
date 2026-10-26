@@ -20,9 +20,9 @@ import { listeningPidsOnPort, readProcessChatSessionIds } from "./devServerListe
  *   `ADE_CHAT_SESSION_ID` in its own environment; every process the agent
  *   starts inherits it, even after it is re-parented. Windows cannot read
  *   another process's environment, so there the chat must have reported the
- *   server (its own command printed the address) and the listener must have
- *   been running since before that report, which rules out a port re-used by
- *   a newer process.
+ *   server (its own command printed the address), the listener must run
+ *   under this runtime, and it must have been running since before that
+ *   report, which rules out a port re-used by a newer process.
  * - What must never be hit: this runtime, every process above it (the
  *   desktop app that launched it), and the first two levels below it (the
  *   agent CLIs, the PTY host, the terminal shells and agent CLIs it runs). A
@@ -292,9 +292,14 @@ export async function stopChatDevServer(input: {
     const record = input.record ?? null;
     const reportedAt = record ? Date.parse(record.detectedAt) : Number.NaN;
     const reportedByChat = record?.source.sessionId === chatSessionId && record.port === port && Number.isFinite(reportedAt);
+    // A report is only the chat printing an address, which it also does for a
+    // server it merely called. So the listener must also run under this
+    // runtime (an agent or terminal ADE started), never something started
+    // outside ADE.
+    const underRuntime = new Set(descendantsOf(process.pid, children));
     for (const pid of listeners) {
       const startedMs = table.get(pid)?.startedMs ?? null;
-      if (!reportedByChat || startedMs == null || startedMs > reportedAt + WINDOWS_DETECTION_SLACK_MS) {
+      if (!reportedByChat || !underRuntime.has(pid) || startedMs == null || startedMs > reportedAt + WINDOWS_DETECTION_SLACK_MS) {
         return refuse("not_owned", `Port ${port} is held by something this chat did not start.`);
       }
     }
