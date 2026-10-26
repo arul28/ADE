@@ -228,6 +228,16 @@ export type PendingInputQuestion = {
   impact?: string | null;
 };
 
+/** Decision values accepted by the runtime's respondToInput action. */
+export type PendingInputDecision = "accept" | "accept_for_session" | "decline" | "cancel";
+
+/** Answer payload for one pending question or plan request. */
+export type PendingInputResponse = {
+  answers?: Record<string, string | string[]>;
+  decision?: PendingInputDecision;
+  responseText?: string | null;
+};
+
 /** One message waiting in the SDK steer queue. */
 export type QueuedMessage = {
   id: string;
@@ -594,7 +604,7 @@ export interface AdeThread {
   /** Outstanding requests, so a host re-rendering after a reload restores cards. */
   pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
   /** Answer a question or plan request. Older clients render those cards read-only. */
-  respond?(requestId: string, answers: Record<string, string | string[]>): Promise<void>;
+  respond?(requestId: string, response: PendingInputResponse): Promise<void>;
   /** Optional steer queue operations. */
   queue?: ThreadQueue;
   /** Available provider slash commands, when the runtime exposes them. */

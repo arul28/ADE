@@ -179,6 +179,8 @@ export type {
   ProviderStatus,
   QueuedMessage,
   PendingInputOption,
+  PendingInputDecision,
+  PendingInputResponse,
   PendingInputQuestion,
   SignInHandle,
   SignInUpdate,

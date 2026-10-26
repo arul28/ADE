@@ -25,6 +25,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ModelDescriptor,
+  PendingInputResponse,
   SlashCommand,
   ProviderStatus,
   SendInput,
@@ -190,7 +191,7 @@ export type ThreadState = {
   /** Whether the open thread has `retry` and `editLast` (an SDK >= 0.4 thread does). */
   canRetry: boolean;
   /** Answer pending questions and plan approvals when `thread.respond` exists. */
-  respond: (requestId: string, answers: Record<string, string | string[]>) => Promise<void>;
+  respond: (requestId: string, response: PendingInputResponse) => Promise<void>;
   canRespond: boolean;
   /** Slash commands; null means not yet loaded, undefined means unsupported. */
   slashCommands: readonly SlashCommand[] | null | undefined;
@@ -658,10 +659,10 @@ export function useAdeThread(
     return await target.pendingApprovals();
   }, []);
 
-  const respond = useCallback(async (requestId: string, answers: Record<string, string | string[]>) => {
+  const respond = useCallback(async (requestId: string, response: PendingInputResponse) => {
     const target = threadRef.current;
     if (typeof target?.respond !== "function") return;
-    await target.respond(requestId, answers);
+    await target.respond(requestId, response);
   }, []);
 
   const reloadSlashCommands = useCallback(async () => {

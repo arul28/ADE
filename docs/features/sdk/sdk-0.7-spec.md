@@ -116,8 +116,10 @@ tell the user. `=machine` (or unset, for older SDKs) keeps today's behaviour.
   (preset id). Existing `permissions` presets/policy keep working.
   Validated against `providers.capabilities` when the runtime reports it.
 - `AdeThread` additions:
-  - `respond(requestId, answers)` — questions, structured questions,
-    plan approvals (`respondToInput`). `pendingApprovals()` returns these as
+  - `respond(requestId, response)` — questions, structured questions,
+    plan approvals (`respondToInput` `{ answers?, decision?, responseText? }`).
+    Plan review sends `decision: "accept"` or `"decline"`; question answers
+    are keyed by question id. `pendingApprovals()` returns these as
     actionable, not read-only, when the runtime serves the action.
   - `queue` — `list()`, `cancel(id)`, `edit(id, text)`, `move(id, index)`,
     `dispatch(id)`, `cancelDispatched(id)`, `restore()`;

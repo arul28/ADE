@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 
-import type { PendingInputOption, PendingInputQuestion } from "../sdkTypes";
+import type { PendingInputOption, PendingInputQuestion, PendingInputResponse } from "../sdkTypes";
 import { readRecord, type ApprovalRow } from "./transcriptRows";
 
 export type PendingInputRespond = (
   requestId: string,
-  answers: Record<string, string | string[]>,
+  response: PendingInputResponse,
 ) => void | Promise<void>;
 
 export type PendingInputCardProps = {
@@ -86,12 +86,12 @@ export function PendingInputCard({ row, onRespond }: PendingInputCardProps) {
       })
     : Boolean((notes.response ?? "").trim()) || request.canProceedWithoutAnswer === true;
 
-  const respond = async (answers: Record<string, string | string[]>) => {
+  const respond = async (response: PendingInputResponse) => {
     if (!onRespond || !canRespond) return;
     setBusy(true);
     setFailure(null);
     try {
-      await onRespond(request.requestId, answers);
+      await onRespond(request.requestId, response);
       setPicks({});
       setNotes({});
       setSubmitted(true);
@@ -113,10 +113,13 @@ export function PendingInputCard({ row, onRespond }: PendingInputCardProps) {
         else if (values.length > 1) answers[question.id] = values;
       }
     } else {
-      const response = (notes.response ?? "").trim();
-      if (response) answers.response = response;
+      const responseText = (notes.response ?? "").trim();
+      if (responseText) {
+        void respond({ responseText });
+        return;
+      }
     }
-    void respond(answers);
+    void respond({ answers });
   };
 
   const title = isPlan ? "Plan ready for review" : request.title;
@@ -216,8 +219,8 @@ export function PendingInputCard({ row, onRespond }: PendingInputCardProps) {
         <div className="adechat-approval-actions">
           {isPlan ? (
             <>
-              <button className="adechat-button" data-variant="primary" type="button" disabled={!canRespond} onClick={() => void respond(planAnswer(request, true))}>Approve plan</button>
-              <button className="adechat-button" type="button" disabled={!canRespond} onClick={() => void respond(planAnswer(request, false))}>Keep planning</button>
+              <button className="adechat-button" data-variant="primary" type="button" disabled={!canRespond} onClick={() => void respond({ decision: "accept" })}>Approve plan</button>
+              <button className="adechat-button" type="button" disabled={!canRespond} onClick={() => void respond({ decision: "decline" })}>Keep planning</button>
             </>
           ) : (
             <button className="adechat-button" data-variant="primary" type="button" disabled={!canRespond || !hasAnswer} onClick={submitAnswers}>{busy ? "Sending…" : "Send answer"}</button>
@@ -228,14 +231,4 @@ export function PendingInputCard({ row, onRespond }: PendingInputCardProps) {
       {failure ? <p className="adechat-approval-error" role="alert">Could not send that answer: {failure}</p> : null}
     </section>
   );
-}
-
-function planAnswer(request: PendingInputShape, approve: boolean): Record<string, string> {
-  const question = request.questions[0];
-  const options = question?.options?.length ? question.options : request.options;
-  const option = options.find((candidate) => {
-    const text = `${candidate.value} ${candidate.label}`.toLowerCase();
-    return approve ? /approve|implement|accept|proceed/.test(text) : /reject|keep planning|revise|decline/.test(text);
-  });
-  return { [question?.id ?? "plan_decision"]: option?.value ?? (approve ? "approve" : "reject") };
 }

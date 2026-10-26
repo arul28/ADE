@@ -137,7 +137,7 @@ The card is keyboard reachable and never takes focus from the composer.
 
 Pass `approvals.render` to replace the card entirely; it receives the request and a `respond(decision)` callback.
 
-An approval is read-only when the thread does not expose `approve`; the card explains that the host cannot answer it instead of showing buttons that throw. Questions, structured questions and plan approvals use a separate input card and `thread.respond(requestId, answers)`. It stays read-only when the client has no `respond` method. Model-selection requests remain read-only here.
+An approval is read-only when the thread does not expose `approve`; the card explains that the host cannot answer it instead of showing buttons that throw. Questions, structured questions and plan approvals use a separate input card and `thread.respond(requestId, response)`, where `response` has the runtime's `answers`, `decision` and `responseText` fields. It stays read-only when the client has no `respond` method. Model-selection requests remain read-only here.
 
 After a reload, `<AdeChat>` calls `thread.pendingApprovals()` once on open and restores a card for every outstanding request the transcript no longer carries. A restored card sorts into the transcript at the instant it was read, not at the end, so it sits where the conversation actually is.
 
@@ -147,10 +147,10 @@ A turn ends a card when `done` arrives, or a `status` of `completed`, `failed` o
 
 ## Questions and plan review
 
-Question cards render each question, its choices and any allowed freeform answer. Multi-select questions return a `string[]`; single-choice or freeform answers return a string keyed by question id. Secret questions use a password field. Submitting keeps the card in place, and a failed response leaves it available to retry. Plan review sends the provider's approve or keep-planning option through the same answer map.
+Question cards render each question, its choices and any allowed freeform answer. Multi-select questions return a `string[]`; answers are keyed by question id. Secret questions use a password field. Submitting keeps the card in place, and a failed response leaves it available to retry. Plan review sends `decision: "accept"` to approve or `decision: "decline"` to keep planning; it does not infer decisions from option labels. Unstructured freeform responses use `responseText`.
 
 ```ts
-await thread.respond(requestId, { project_scope: ["UI", "tests"], timeline: "One week" });
+await thread.respond(requestId, { answers: { project_scope: ["UI", "tests"], timeline: "One week" } });
 ```
 
 ## Queued messages and usage limits

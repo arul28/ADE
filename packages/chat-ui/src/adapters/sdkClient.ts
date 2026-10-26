@@ -52,6 +52,7 @@ import type {
   ModelDescriptor,
   ProviderStatus,
   ProviderCapabilities,
+  PendingInputResponse,
   SendInput,
   SlashCommand,
   ThreadQueue,
@@ -187,7 +188,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      */
     approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
     pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
-    respond?(requestId: string, answers: Record<string, string | string[]>): Promise<void>;
+    respond?(requestId: string, response: PendingInputResponse): Promise<void>;
     queue?: ThreadQueue;
     slashCommands?(): Promise<readonly SlashCommand[]>;
     usageLimit?: {
@@ -579,7 +580,7 @@ class AdaptedThread implements AdeThread {
   ) => Promise<void>;
 
   readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
-  readonly respond?: (requestId: string, answers: Record<string, string | string[]>) => Promise<void>;
+  readonly respond?: (requestId: string, response: PendingInputResponse) => Promise<void>;
   readonly queue?: ThreadQueue;
   readonly slashCommands?: () => Promise<readonly SlashCommand[]>;
   readonly usageLimit?: {
@@ -612,7 +613,7 @@ class AdaptedThread implements AdeThread {
       this.pendingApprovals = () => inner.pendingApprovals!();
     }
     if (inner.respond) {
-      this.respond = (requestId, answers) => inner.respond!(requestId, answers);
+      this.respond = (requestId, response) => inner.respond!(requestId, response);
     }
     if (inner.queue) {
       const queue = inner.queue;

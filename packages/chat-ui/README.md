@@ -197,7 +197,10 @@ cosmetic bug — the buttons go read-only while the runtime still waits:
 | `reject` | Reject | refuse, and let the model hear why |
 
 Questions, structured questions and plan approvals use an input card backed by
-the optional `thread.respond(requestId, answers)` method. Without it, those
+the optional `thread.respond(requestId, response)` method. `response` can carry
+question `answers`, a `decision`, or `responseText`. Plan buttons send
+`decision: "accept"` or `decision: "decline"`; question answers are keyed by
+question id. Without `respond`, those
 cards stay read-only with a reason. Model-selection requests stay read-only.
 Approval cards without `thread.approve` are also read-only; neither card type
 offers an action the client cannot perform.
@@ -212,7 +215,7 @@ show an error and retry rather than presenting a false empty list.
 
 Structured answers are keyed by question id. Single choices and freeform input
 use a string; multi-select uses a string array. Secret questions use a password
-field. Plan decisions are sent as the provider's plan-choice answer.
+field. Unstructured freeform responses use `responseText`.
 
 The standalone `<AccountList>`, `<SignInCard>`, `<ApiKeyForm>`,
 `<UsageMeter>` and `<AccountSwitcher>` components are also available. Account
