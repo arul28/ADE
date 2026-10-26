@@ -761,6 +761,9 @@ struct WorkChatMessageBubble: View, Equatable {
 func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   switch chip.origin {
   case .link(let link):
+    // A setting or a desktop page is changed in ADE on a computer; the pill
+    // names where, and a tap here would have nowhere to land.
+    if link.kind == .setting || link.kind == .place { return nil }
     return URL(string: link.url)
   case .model, .permission:
     // A model or permission chip names a setting, not a place.

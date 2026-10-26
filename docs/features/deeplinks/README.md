@@ -298,6 +298,8 @@ Send-to-Mac:
 | `ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]` | `{ kind: "branch", repoOwner, repoName, branch, prNumber? }` | Cross-machine. Renderer routes to the lane that already owns the branch; otherwise it opens a create/import modal. PR-backed links use PR preflight, branch-only links fetch the remote branch and import it as a local lane. If no ADE project is open, the modal asks the user to open the matching project first. |
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
 | `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
+| `ade://settings/<entry-id>[?machine=<id>]` | `{ kind: "settings", entryId, machineId? }` | One card in Settings, by its id in `shared/settingsManifest.ts`; https form `type=settings&id=`. Navigates only. `machine` picks a Computer page's machine; one this window does not know opens This computer's page. An id this build does not know draws a generic ADE link. |
+| `ade://open/<place>` | `{ kind: "open", place }` | A page from `shared/openPlaces.ts` (PRs, Lanes, History, Connections…). No https form, and the protocol handler refuses it: it runs only from a click on its chip in a chat. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the
 TUI builders, and the web `/open` handler agree on what counts as

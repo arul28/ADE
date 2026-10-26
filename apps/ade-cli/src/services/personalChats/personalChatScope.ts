@@ -757,6 +757,18 @@ export class PersonalChatScope {
         result = { ok: true, sessionId };
         break;
       }
+      // `ade chat ask --clear` for a personal chat: the same retraction the
+      // project chat surface offers, fenced to the marker this chat raised.
+      case "clearAsk": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        const row = runtime.sessionService.get(sessionId);
+        const raisedByAgent = Boolean(row?.attentionRequestedAt && row.attentionSource === "agent_explicit");
+        const cleared = raisedByAgent
+          && runtime.sessionService.clearAttentionRequest(sessionId, "agent_explicit");
+        result = { ok: true, sessionId, cleared };
+        break;
+      }
     }
     return { action, result };
   }

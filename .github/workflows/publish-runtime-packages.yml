@@ -74,11 +74,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Upgrade npm for trusted publishing
-        # Node 22 bundles npm 10.x; OIDC needs >= 11.5.1. Harmless on the token
+        # OIDC needs npm >= 11.5.1, whatever Node bundles. Harmless on the token
         # path, so it runs unconditionally rather than being another branch to
         # get wrong.
         run: npm install -g npm@latest && npm --version
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Finalize the Sentry release
         continue-on-error: true

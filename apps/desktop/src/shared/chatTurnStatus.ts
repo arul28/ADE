@@ -24,6 +24,11 @@ export type ChatTurnStatusAsk = {
   title: string;
   description?: string;
   stranded: boolean;
+  /**
+   * Only the user can answer this card (a real-input lease, a consent, a
+   * secret). An agent cannot answer or decline it: wait, or tell the user.
+   */
+  userOnly?: boolean;
 };
 
 export type ChatTurnStatusSubagent = {
@@ -79,6 +84,7 @@ export type DeriveChatTurnStatusInput = {
   awaitingInput?: boolean;
   pendingTitle?: string | null;
   pendingDescription?: string | null;
+  pendingUserOnly?: boolean;
   queuedMessageCount?: number;
   currentTool?: ChatTurnStatusTool | null;
   subagents?: ChatTurnStatusSubagent[];
@@ -138,6 +144,7 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
           title: input.pendingTitle?.trim() || "awaiting input",
           ...(input.pendingDescription?.trim() ? { description: input.pendingDescription.trim() } : {}),
           stranded,
+          ...(input.pendingUserOnly ? { userOnly: true } : {}),
         }
       : null,
     subagents: input.subagents ?? [],
@@ -220,6 +227,9 @@ export function formatChatTurnStatus(
   if (status.ask) {
     const askDetail = status.ask.description?.trim() || status.ask.title;
     lines.push(chatTurnStatusRow("ask", askDetail));
+    if (status.ask.userOnly) {
+      lines.push("  only the user can answer this; an agent cannot. Wait for them, or tell them.");
+    }
   }
 
   if (status.cliSession) {

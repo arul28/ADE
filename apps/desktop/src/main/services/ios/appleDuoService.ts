@@ -30,6 +30,7 @@ import {
 import {
   appleDuoPanelOrientation,
   appleDuoPhysicalOrientation,
+  appleDuoPictureShape,
   appleDuoScreenName,
   appleOrientationFamily,
   isAppleDeviceOrientation,
@@ -120,6 +121,18 @@ export function parseHelperPosture(payload: Record<string, unknown>): AppleDevic
   };
 }
 
+/**
+ * The inner panel's picture after a fold to a preset: laptop holds the phone
+ * on its side, so the picture runs tall; book and open hold it upright, so it
+ * runs wide. Cover poses and raw angles keep however the phone was held, so
+ * there is nothing to expect and the settle waits for two equal reads.
+ */
+const POSE_INNER_PICTURE_SHAPE: Partial<Record<AppleDevicePose, "tall" | "wide">> = {
+  laptop: "tall",
+  book: "wide",
+  open: "wide",
+};
+
 /** The panel a fold to this pose or angle lands on, when it is known. */
 function expectedScreenFor(target: { pose?: AppleDevicePose | null; angle?: number | null }): { angle: number; screenId: number | null } | null {
   if (target.pose) return APPLE_DEVICE_POSE_TARGETS[target.pose];
@@ -175,11 +188,31 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     });
     const applied = payload.applied === true;
     const expected = expectedScreenFor(target);
+    const expectedShape = target.pose ? POSE_INNER_PICTURE_SHAPE[target.pose] ?? null : null;
+    /*
+     * Settled is the panel AND the picture on it. Book, laptop and open all
+     * light the inner panel, so between them the panel test passed on the
+     * first read while the picture was still turning, and `fold` printed the
+     * old shape ("wide" for a tall laptop). With a known shape the read must
+     * show it (or the guest must not say); otherwise two equal reads in a row.
+     */
+    const settled = (current: AppleDevicePosture, previous: AppleDevicePosture | null): boolean => {
+      if (expected?.screenId != null && current.activeScreenId !== expected.screenId) return false;
+      const shape = appleDuoPictureShape(current);
+      if (expectedShape && appleDuoScreenName(current.activeScreenId) === "inner") {
+        return shape === null || shape === expectedShape;
+      }
+      return previous !== null
+        && previous.activeScreenId === current.activeScreenId
+        && previous.displayOrientation === current.displayOrientation;
+    };
     await sleep(FOLD_FIRST_READ_MS);
+    let previous: AppleDevicePosture | null = null;
     let posture = await readPosture(deviceUdid);
     const deadline = Date.now() + settleMs;
-    while (applied && expected?.screenId != null && posture.activeScreenId !== expected.screenId && Date.now() < deadline) {
+    while (applied && posture.supported && !settled(posture, previous) && Date.now() < deadline) {
       await sleep(200);
+      previous = posture;
       posture = await readPosture(deviceUdid);
     }
     return { applied, posture };

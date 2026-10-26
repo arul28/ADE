@@ -114,6 +114,18 @@ the directory first:
    that exact Git worktree root. If the directory is missing, or a stale
    path under the repo now resolves to the primary checkout, ADE treats
    the lane as stale instead of reading the primary worktree's status.
+   The check (`git/worktreeState.ts`) counts as unsaved work: an
+   uncommitted or untracked file (whatever `status.showUntrackedFiles` says,
+   because `git worktree remove` would delete it), a changed submodule, files
+   in an uninitialized submodule's folder, and a submodule commit that no
+   remote-tracking branch has (a tag does not count: it may never have been
+   pushed, and it is deleted with the worktree). Git keeps a linked worktree's submodule
+   repositories inside that worktree's admin directory, so removing the
+   worktree removes those commits too. A submodule with no remote, nested four
+   or more levels down, or that ADE cannot read also stops the delete.
+   Without force the delete stops with the reason and "Enable force delete
+   after confirming warnings.". Archive-and-reclaim runs the same check and
+   asks for `forceDirty` instead.
 3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.
@@ -146,7 +158,11 @@ the directory first:
    if Git refuses while still registering the worktree, that is the delete
    failure — unless Git unregistered it and then failed, in which case the
    folder is no longer a worktree and is offered through
-   `DeleteLaneResult.leftoverWorktree` instead.
+   `DeleteLaneResult.leftoverWorktree` instead. Git refuses to remove a
+   worktree with initialized submodules unless forced; because step 2 already
+   checked them, ADE then runs `git worktree remove --force` once (git runs in
+   the C locale so the refusal matches on any language) before any manual
+   cleanup.
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.

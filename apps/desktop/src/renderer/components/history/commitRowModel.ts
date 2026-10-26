@@ -165,14 +165,6 @@ export function shortWhen(iso: string, now = Date.now()): string {
   return date.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", year: "numeric" });
 }
 
-/** "owner/name" from a GitHub remote URL. */
-export function githubRepoFromRemote(remoteUrl: string | null | undefined): { owner: string; name: string } | null {
-  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(
-    String(remoteUrl ?? "").trim(),
-  );
-  return match ? { owner: match[1]!, name: match[2]! } : null;
-}
-
 /** One chat or agent CLI session, as `laneHistorySessionsFrom` gives it. */
 export type CommitSessionCandidate = {
   sessionId: string;

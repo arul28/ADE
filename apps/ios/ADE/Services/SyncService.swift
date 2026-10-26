@@ -11256,6 +11256,7 @@ final class SyncService: ObservableObject {
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
     database.fetchComputerUseArtifacts(ownerKind: ownerKind, ownerId: ownerId)
+      .filter { !workProofIsExcludedFromLists($0) }
   }
 
   /// A proof record by id from the replicated project database, whatever chat filed it.
@@ -23790,11 +23791,15 @@ final class SyncService: ObservableObject {
       return try await route.connection.fileRequest(action: action, args: route.args, projectId: route.projectId)
     }
     // A file read made on behalf of a chat on another machine (proof
-    // artifacts) goes to that machine. See `SyncFleetTaskRoute`.
+    // artifacts) goes to that machine, in the chat's project: without the
+    // project the host answered from whatever project it had active, which
+    // does not hold the file. See `SyncFleetTaskRoute`.
     if let remote = SyncFleetTaskRoute.chat,
        let route = try fleetRouteForTaskChat(remote) {
-      return try await route.connection.fileRequest(action: action, args: args)
+      return try await route.connection.fileRequest(action: action, args: args, projectId: route.projectId)
     }
+    // The chat's machine became the focused one: still the chat's project.
+    let targetProjectId = targetProjectId ?? SyncFleetTaskRoute.project ?? SyncFleetTaskRoute.chat?.projectId
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: Self.fileRequestOfflineErrorCode, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }

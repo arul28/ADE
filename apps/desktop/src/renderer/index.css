@@ -3399,6 +3399,18 @@ button, [role="button"] {
     0 10px 26px -22px rgba(0, 0, 0, 0.52);
 }
 
+/* A chip takes the theme accent; on the accent-coloured bubble that tint is
+   lost, so there it is white glass instead. */
+.ade-chat-message-card-user [data-chip-kind] {
+  border-color: rgba(255, 255, 255, 0.34);
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+.ade-chat-message-card-user [data-chip-kind][role="button"]:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  background-color: rgba(255, 255, 255, 0.26);
+}
+
 .ade-chat-message-card-assistant {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 96%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
@@ -5371,7 +5383,7 @@ button, [role="button"] {
   color: transparent;
 }
 
-.ade-ultrathink-switch {
+.ade-picker-switch {
   position: relative;
   width: 28px;
   height: 16px;
@@ -5381,7 +5393,7 @@ button, [role="button"] {
   transition: background-color 160ms ease;
 }
 
-.ade-ultrathink-switch::after {
+.ade-picker-switch::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -5393,11 +5405,15 @@ button, [role="button"] {
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease;
 }
 
-.ade-ultrathink-switch[data-on="true"] {
+.ade-picker-switch[data-tone="ultrathink"][data-on="true"] {
   background: linear-gradient(120deg, #f87171, #facc15, #4ade80, #60a5fa, #c084fc);
 }
 
-.ade-ultrathink-switch[data-on="true"]::after {
+.ade-picker-switch[data-tone="daybreak"][data-on="true"] {
+  background: linear-gradient(120deg, #f97316, #fbbf24);
+}
+
+.ade-picker-switch[data-on="true"]::after {
   transform: translateX(12px);
   background: #fff;
 }

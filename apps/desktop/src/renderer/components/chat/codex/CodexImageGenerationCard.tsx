@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { ArrowSquareOut, FileImage, Image as ImageIcon, XCircle } from "@phosphor-icons/react";
 import type { AgentChatEvent } from "../../../../shared/types";
+import { inlineBase64ImageDataUrl } from "../../../../shared/codexImageGeneration";
 import { ChatStatusGlyph } from "../chatStatusVisuals";
 import { cn } from "../../ui/cn";
 import { chatRunsOnThisComputer, useChatRuntimeScope } from "../ChatRuntimeScope";
@@ -41,8 +42,13 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
   const isRunning = event.status === "running";
   const isFailed = event.status === "failed";
   const result = event.result ?? null;
-  const previewSrc = isHttpOrDataUrl(result) ? result : null;
-  const savedPathRaw = event.savedPath ?? (!isHttpOrDataUrl(result) ? result : null);
+  const inlinePreview = inlineBase64ImageDataUrl(result);
+  const previewSrc = isHttpOrDataUrl(result) ? result : inlinePreview;
+  const savedPathRaw = event.savedPath ?? (!isHttpOrDataUrl(result) && !inlinePreview ? result : null);
+  const inputImagePaths = event.inputImagePaths ?? [];
+  // Codex 0.164+ uploads the image to the OpenAI account and may send only that
+  // reference when it could not save a local copy.
+  const storedOnlyInAccount = !previewSrc && !savedPathRaw && Boolean(event.fileId) && !isFailed;
   const savedPath = stripFileUrlPrefix(savedPathRaw);
   const prompt = (event.prompt ?? "").trim();
   const revised = (event.revisedPrompt ?? "").trim();
@@ -113,6 +119,19 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
                 {basename(savedPath)}
               </span>
             </div>
+          ) : storedOnlyInAccount ? (
+            <p className="mt-2 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
+              Codex kept this image in your OpenAI account and saved no copy on this computer.
+            </p>
+          ) : null}
+
+          {inputImagePaths.length ? (
+            <p
+              className="mt-2 truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55"
+              title={inputImagePaths.join("\n")}
+            >
+              Edited from {inputImagePaths.map(basename).join(", ")}
+            </p>
           ) : null}
 
           {savedPath && savedPathOpensHere ? (

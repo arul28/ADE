@@ -172,7 +172,7 @@ export function buildAdeSessionActivityGuidance(args: {
     // OpenCode shell (one shared server) has no ADE_CHAT_SCOPE to route by.
     ...(personal
       ? [
-        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`.`,
+        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`. If you asked and then kept working anyway, take the hand down with \`${cliCommand} chat ask --clear${scopeFlag} --session ${safeSessionId}\`.`,
       ]
       : []),
     `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,
@@ -231,7 +231,7 @@ export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 export const ADE_CLI_SESSION_SCREEN_RULES = [
   "Screens and proof: every `ade` command works from this terminal.",
   "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
-  "- Pick the surface: a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS or SwiftUI app is `ade apple`; any other desktop app is this lane's own screen, `ade mac-desktop` (`ade screen` on Windows).",
+  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade mac-desktop` (`ade screen` on Windows), and you stop it when you finish.",
   "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
@@ -270,7 +270,7 @@ export function buildAdeBootstrapGuidance(
 ): string {
   return [
     "## ADE",
-    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state; use `ade help <command>` instead of guessing.",
+    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
     "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
     `Skills: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
@@ -283,7 +283,7 @@ export function buildAdeBootstrapGuidance(
     // it saved to /tmp left the user a chip saying "Outside this project".
     "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
     // The distinction agents get wrong: a wake is you doing work later, a
     // draft send is the user's message arriving later. Naming both here keeps

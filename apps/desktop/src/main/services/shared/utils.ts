@@ -12,6 +12,7 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
 import { writeFileAtomic } from "../state/durableFile";
 
 // ── Type guards ─────────────────────────────────────────────────────
@@ -380,11 +381,46 @@ export async function whichCommand(command: string): Promise<string | null> {
 
 // ── Git helpers ─────────────────────────────────────────────────────
 
+/**
+ * Paths from `git diff --name-only -z` or `git show --name-only -z`. The `-z`
+ * form keeps a name with spaces, quotes or non-ASCII characters exactly as it
+ * is; without it, git prints such a name C-quoted (`"caf\303\251.txt"`).
+ */
 export function parseDiffNameOnly(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  return stdout.split("\0").filter((name) => name.length > 0);
+}
+
+/** Distinct paths from `git diff --name-only -z`, sorted for display. */
+export function parseDiffNameOnlySorted(stdout: string): string[] {
+  return Array.from(new Set(parseDiffNameOnly(stdout))).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The records of `git diff --numstat -z`, with the counts as git printed them
+ * (`-` for a binary file). A record is `adds\tdels\tpath\0`, except a rename or
+ * copy, which writes `adds\tdels\t\0source\0destination\0`; the empty path is
+ * the signal that two more fields follow, and the destination is the path.
+ */
+export function parseNumstatRecordsZ(stdout: string): Array<{ addRaw: string; delRaw: string; path: string }> {
+  const tokens = stdout.split("\0");
+  const records: Array<{ addRaw: string; delRaw: string; path: string }> = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    const firstTab = token.indexOf("\t");
+    if (firstTab < 0) continue;
+    const secondTab = token.indexOf("\t", firstTab + 1);
+    if (secondTab < 0) continue;
+    let filePath = token.slice(secondTab + 1);
+    if (!filePath) {
+      const source = tokens[index + 1] ?? "";
+      const destination = tokens[index + 2] ?? "";
+      index += 2;
+      filePath = destination || source;
+    }
+    if (!filePath) continue;
+    records.push({ addRaw: token.slice(0, firstTab), delRaw: token.slice(firstTab + 1, secondTab), path: filePath });
+  }
+  return records;
 }
 
 // ── Safe JSON parsing ───────────────────────────────────────────────
@@ -1209,19 +1245,9 @@ export function hasEnvRefToken(value: string): boolean {
  */
 export function redactSecrets(text: string, replacement: string = "[REDACTED]"): string {
   if (!text) return text;
-  return text
+  return redactSecretTokens(text, replacement)
     // Bearer tokens
     .replace(/\bbearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement)
-    // OpenAI / Anthropic-style keys
-    .replace(/\bsk-[A-Za-z0-9]{12,}\b/g, replacement)
-    // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
-    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, replacement)
-    // Slack tokens
-    .replace(/\bxox[baprs]-[A-Za-z0-9\-]{10,}\b/g, replacement)
-    // AWS access keys
-    .replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, replacement)
-    // GitHub fine-grained PATs (github_pat_...)
-    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, replacement)
     // JSON-style sensitive keys: "apiKey":"...", "token":"...", "secret":"...", etc.
     .replace(/"(api[_-]?key|secret|token|password|authorization)"\s*:\s*"[^"]{4,}"/gi, `"$1":"${replacement}"`)
     // Generic high-entropy hex/base64 secrets assigned to common key names
@@ -1236,9 +1262,7 @@ export function looksSensitiveValue(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed.length) return false;
   if (/^bearer\s+/i.test(trimmed)) return true;
-  if (/^sk-[a-z0-9]{12,}/i.test(trimmed)) return true;
-  if (/^gh[pousr]_[a-z0-9]{20,}/i.test(trimmed)) return true;
-  if (/^xox[baprs]-[a-z0-9-]{10,}/i.test(trimmed)) return true;
+  if (containsSecretToken(trimmed)) return true;
   if (/api[_-]?key|secret|token|password/i.test(trimmed)) return true;
   return false;
 }

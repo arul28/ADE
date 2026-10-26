@@ -1,6 +1,7 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
+import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
@@ -180,7 +181,10 @@ import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
-import { createProjectHealthService } from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
+import {
+  createProjectHealthService,
+  createProjectHealthTurnStateReader,
+} from "../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
 import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
@@ -667,6 +671,10 @@ function fixElectronShellPath(): void {
 
 // Must run before any service or child process is created.
 fixElectronShellPath();
+// Main's own fetch/https: a proxy the environment names, and the OS's trusted
+// CAs (read off the main thread). Electron's net.fetch already follows the OS.
+configureOutboundProxyFromEnv(process.env, getMachineMainLogger());
+void trustSystemCertificates(getMachineMainLogger());
 
 let adeCliAutoInstallScheduled = false;
 
@@ -5644,6 +5652,7 @@ app.whenReady().then(async () => {
       db,
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
+      readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

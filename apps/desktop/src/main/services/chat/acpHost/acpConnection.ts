@@ -48,6 +48,7 @@ import {
 } from "./acpProtocolTypes";
 import type { AcpDialect, AcpSpawnPlan } from "./acpHostTypes";
 import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
+import { redactProcessOutput } from "../../../utils/redaction";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -180,17 +181,21 @@ type ReverseRequestRegistration = {
 };
 
 const STDERR_TAIL_LIMIT = 4_000;
+/**
+ * The longest unfinished stderr line kept for whole-line redaction. A longer
+ * one (a progress bar redrawn with `\r`) is dropped through its next newline:
+ * a fragment cut from it could hold half a secret.
+ */
+const STDERR_LINE_LIMIT = 16_000;
 
 /**
- * OAuth query values never reach a log line or an error message. Antigravity
- * prints its Google sign-in URL (with `state`) on stderr; a callback URL would
- * carry the `code`.
+ * OAuth query values and secrets never reach a log line or an error message.
+ * Antigravity prints its Google sign-in URL (with `state`) on stderr; a
+ * callback URL would carry the `code`; an agent that fails to start may print
+ * its environment or config, API keys included.
  */
 export function redactAcpDiagnosticText(text: string): string {
-  return text.replace(
-    /([?&](?:code|state|access_token|refresh_token|id_token|client_secret)=)[^&\s"']+/gi,
-    "$1<redacted>",
-  );
+  return redactProcessOutput(text);
 }
 
 /** Split a byte stream into complete lines. Holds the partial tail. */
@@ -443,7 +448,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     try {
       parsed = JSON.parse(trimmed);
     } catch {
-      logEvent("warn", "agent_chat.acp_stdout_unparsable", { text: trimmed.slice(0, 400) });
+      logEvent("warn", "agent_chat.acp_stdout_unparsable", { text: redactAcpDiagnosticText(trimmed.slice(0, 400)) });
       return;
     }
     const frame = normalizeAcpRpcFrame(parsed);
@@ -453,21 +458,55 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
 
   child.stdout?.on("data", readStdoutLine);
   const readStderrLine = createLineSplitter((line) => emitDiagnosticLine(line, "stderr"));
-  child.stderr?.on("data", (chunk: Buffer | string) => {
-    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+  /**
+   * Stderr is redacted a whole line at a time: a secret split across two
+   * chunks (`?state` then `=value`) is matched only once both halves arrive.
+   * The exit reports the unfinished last line (redacted) in its tail; the log
+   * gets that line once stderr closes, since stderr can still deliver its
+   * rest after `exit`.
+   */
+  let stderrPartial = "";
+  let droppingStderrLine = false;
+  const appendStderr = (text: string) => {
     const safe = redactAcpDiagnosticText(text);
     stderrTail = `${stderrTail}${safe}`.slice(-STDERR_TAIL_LIMIT);
     const trimmed = safe.trim();
     if (trimmed.length) logEvent("warn", "agent_chat.acp_stderr", { text: trimmed.slice(0, 1_000) });
-    if (diagnosticLineHandlers.size) readStderrLine(text);
+  };
+  const flushStderrPartial = () => {
+    if (stderrPartial) appendStderr(stderrPartial);
+    stderrPartial = "";
+  };
+  const stderrTailWithPartial = () =>
+    stderrPartial ? `${stderrTail}${redactAcpDiagnosticText(stderrPartial)}`.slice(-STDERR_TAIL_LIMIT) : stderrTail;
+  child.stderr?.once("close", flushStderrPartial);
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    let text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    if (diagnosticLineHandlers.size) readStderrLine(chunk);
+    if (droppingStderrLine) {
+      const newline = text.indexOf("\n");
+      if (newline < 0) return;
+      text = text.slice(newline + 1);
+      droppingStderrLine = false;
+    }
+    text = `${stderrPartial}${text}`;
+    const end = text.lastIndexOf("\n") + 1;
+    stderrPartial = text.slice(end);
+    if (end > 0) appendStderr(text.slice(0, end));
+    if (stderrPartial.length > STDERR_LINE_LIMIT) {
+      logEvent("warn", "agent_chat.acp_stderr_line_dropped", { length: stderrPartial.length });
+      stderrPartial = "";
+      droppingStderrLine = true;
+    }
   });
   child.on("error", (error) => {
     logEvent("error", "agent_chat.acp_process_error", { error: error.message });
+    flushStderrPartial();
     settleExit({ code: null, signal: null, stderrTail: `${stderrTail}\n${error.message}`.trim() });
   });
   child.on("exit", (code, signal) => {
     logEvent("info", "agent_chat.acp_process_exit", { code, signal });
-    settleExit({ code, signal, stderrTail });
+    settleExit({ code, signal, stderrTail: stderrTailWithPartial() });
   });
 
   const connection: AcpConnection = {
@@ -482,7 +521,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       initializeResult = value;
     },
     isAlive: () => !disposed && !exited,
-    readStderrTail: () => stderrTail,
+    readStderrTail: stderrTailWithPartial,
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {

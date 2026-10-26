@@ -1,3 +1,4 @@
+import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -104,7 +105,8 @@ function readGitOriginUrl(rootPath: string): string | null {
   });
   if (result.status !== 0) return null;
   const value = result.stdout.trim();
-  return value.length ? value : null;
+  // The identity form: an SSH alias of GitHub becomes `github.com`.
+  return canonicalGitOriginUrl(value.length ? value : null);
 }
 
 function ensureProjectAdeDir(rootPath: string): void {
@@ -187,6 +189,16 @@ function coerceRecord(
   };
 }
 
+/**
+ * A record with its origin in identity form. Records written before ADE
+ * resolved SSH aliases hold the alias form. This runs on reads that callers
+ * see, never inside the registry lock: the ssh lookup can take a moment.
+ */
+function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
+  const gitOriginUrl = canonicalGitOriginUrl(record.gitOriginUrl);
+  return gitOriginUrl === record.gitOriginUrl ? record : { ...record, gitOriginUrl };
+}
+
 export class ProjectRegistry {
   private readonly layout: MachineAdeLayout;
   private readonly legacyRecentProjectRoots: Set<string>;
@@ -215,7 +227,7 @@ export class ProjectRegistry {
   }
 
   list(): ProjectRecord[] {
-    return this.read().projects;
+    return this.read().projects.map(withCanonicalOrigin);
   }
 
   listRecent(): ProjectRecord[] {
@@ -268,7 +280,7 @@ export class ProjectRegistry {
     this.recordDatabaseIfPresent(projectId, normalized);
     // Outside the lock: it starts git, which can take seconds.
     const gitOriginUrl = known?.gitOriginUrl ?? readGitOriginUrl(normalized);
-    return this.mutate("add", { projectId, rootPath: normalized }, (file) => {
+    return withCanonicalOrigin(this.mutate("add", { projectId, rootPath: normalized }, (file) => {
       const now = Date.now();
       const existingIndex = file.projects.findIndex(matches);
       const existing = existingIndex >= 0 ? file.projects[existingIndex] : null;
@@ -292,7 +304,7 @@ export class ProjectRegistry {
         file.projects.push(next);
       }
       return { file, result: next };
-    });
+    }));
   }
 
   setCatalogVisibilityByRootPath(
@@ -307,9 +319,9 @@ export class ProjectRegistry {
       current.catalogVisibility === catalogVisibility &&
       current.registrationSource === registrationSource
     ) {
-      return current;
+      return withCanonicalOrigin(current);
     }
-    return this.mutate("set_visibility", { rootPath: normalized, catalogVisibility }, (file) => {
+    const updated = this.mutate("set_visibility", { rootPath: normalized, catalogVisibility }, (file) => {
       const index = file.projects.findIndex((record) => record.rootPath === normalized);
       if (index < 0) return { file: null, result: null };
       const next: ProjectRecord = {
@@ -320,6 +332,7 @@ export class ProjectRegistry {
       file.projects[index] = next;
       return { file, result: next };
     });
+    return updated ? withCanonicalOrigin(updated) : null;
   }
 
   remove(projectId: ProjectId): boolean {
@@ -341,7 +354,7 @@ export class ProjectRegistry {
       return { file, result: touched };
     });
     this.recordDatabaseIfPresent(projectId, next.rootPath);
-    return next;
+    return withCanonicalOrigin(next);
   }
 
   /**
@@ -442,7 +455,7 @@ export class ProjectRegistry {
       delete aliases[newId];
       return true;
     });
-    return next;
+    return withCanonicalOrigin(next);
   }
 
   /** The current id of a project that was moved, given an id it had before. */
@@ -502,16 +515,26 @@ export class ProjectRegistry {
       || (fs.existsSync(this.databaseIdentityPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
   }
 
+  /**
+   * Why a project whose data is missing cannot open, in the words every surface
+   * uses: its folder is gone, or only its `.ade` data is. `commandHints` adds
+   * the command-line way to start fresh, for a person at a terminal.
+   */
+  projectDataMissingMessage(record: ProjectRecord, options: { commandHints: boolean }): string {
+    const adeDir = path.join(record.rootPath, ".ade");
+    if (!fs.existsSync(record.rootPath)) {
+      return `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`;
+    }
+    const restore = `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh`;
+    return options.commandHints
+      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${JSON.stringify(record.rootPath)}\`. ADE has not created a replacement.`
+      : `${restore}.`;
+  }
+
   /** Check before creating directories or opening SQLite on any local entry point. */
   assertProjectDataAvailable(record: ProjectRecord | null): void {
     if (!record || !this.isProjectDataMissing(record)) return;
-    const adeDir = path.join(record.rootPath, ".ade");
-    throw codedError(
-      fs.existsSync(record.rootPath)
-        ? `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${record.rootPath}\`. ADE has not created a replacement.`
-        : `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`,
-      "project_data_missing",
-    );
+    throw codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing");
   }
 
   private read(): ProjectRegistryFile {

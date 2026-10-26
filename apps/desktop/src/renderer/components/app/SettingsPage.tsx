@@ -52,6 +52,7 @@ import {
   type SettingsTab,
   SETTINGS_GROUPS,
   groupScopeHint,
+  isMachineSelectableSettingsTab,
   isMachineSettingsTab,
   isProjectSettingsTab,
   isThisComputerOnlyTab,
@@ -385,7 +386,7 @@ export function SettingsPage({
     // The machine travels with Machines pages only. Account and Project pages
     // have no machine, and a stale one in the URL would mislead the next link.
     // Appearance describes this computer's own screen, so it never carries one.
-    const targetMachine = isMachineSettingsTab(next) && !isThisComputerOnlyTab(next)
+    const targetMachine = isMachineSelectableSettingsTab(next)
       ? (machineId ?? nextParams.get("machine"))
       : null;
     if (targetMachine && targetMachine !== THIS_MACHINE_ID) nextParams.set("machine", targetMachine);

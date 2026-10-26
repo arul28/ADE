@@ -44,7 +44,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/chat/acpHost/` (`acpConnection.ts`, `acpSession.ts`, `acpSessionPool.ts`, `acpRuntimeCoordinator.ts`, `acpEventTranslator.ts`, `acpProtocolTypes.ts`, `acpMcpServers.ts`, `acpDialects/*`, `fixtures/*`), `apps/desktop/src/shared/acpProviderMetadata.ts` | The shared Agent Client Protocol host for Qwen, Kimi, Grok, Devin and Antigravity (Google's `agy_acp_server`; see [antigravity-provider.md](antigravity-provider.md)). Copilot runs on its own SDK worker (see [copilot-sdk-provider.md](copilot-sdk-provider.md)). One host speaks ACP v1 over stdio to ADE's own pinned copy of each CLI (downloaded on demand into the [tools cache](../onboarding-and-settings/agent-tools-cache.md), never the user's install); each dialect declares the quirks its CLI needs, and the handshake decides which methods are used. `acpProtocolTypes.ts` mirrors the protocol schema in-repo (the SDK is not a dependency) and tolerates unknown update kinds, tool kinds and statuses. `fixtures/` holds the captured `initialize` handshakes the dialect tests pin. `acpProviderMetadata.ts` is the one owner of each provider's label, login command and config-home name; there is no install source. Spec: [acp-providers-spec.md](acp-providers-spec.md). |
 | `apps/desktop/src/main/services/chat/museSdkHost.ts`, `museSdkEventMapper.ts`, `museSessionSupport.ts`, `apps/desktop/src/main/services/ai/museAuth.ts`, `museExecutable.ts`, `museSettingsService.ts`, `apps/desktop/src/main/services/usage/museLiveQuota.ts`, `apps/desktop/src/shared/museSettings.ts` | Muse Code's runtime over the Muse Session Protocol (MSP). `museSdkHost.ts` owns one pinned `muse serve` process per chat and drives the SDK's `Connection` over ADE's own `DuplexTransport` (ADE spawns the child so it can end the whole tree, shells and MCP servers included, on every platform) and routes notifications by `sessionId`; `museSdkEventMapper.ts` maps the item stream and per-turn token usage into ADE chat events; `museSessionSupport.ts` is the pure half (turn input, MCP servers, approval/question cards, reasoning effort, subagent controls); `museAuth.ts` reads Muse's own credential file and `museExecutable.ts` resolves or installs the pinned binary (via `apps/ade-cli/src/services/tools/muse.ts`); `museSettingsService.ts` owns a per-page-visit Settings host; `museLiveQuota.ts` holds the latest MSP subscription reading the header meter publishes. See [agent tools cache](../onboarding-and-settings/agent-tools-cache.md#muse-a-direct-file-pin). |
 | `apps/desktop/src/main/services/chat/sessionNaming.ts` | Canonical home for everything the naming callers share — automatic lane identity, chat auto-title, explicit session-metadata regeneration, and the legacy lane-name suggestion — because each used to carry its own hand-copied chain that had already drifted. Owns the three system prompts and the lane-identity JSON schema, `MAX_NAMING_WORDS` (six words, handed to the model as a **guideline**: an over-long answer is clamped, never rejected, because a clamped real name beats a slug), `isProviderLevelNamingFailure` (a missing/unusable CLI, auth, quota, a plan usage limit or HTTP 429, or an account that cannot run the model — including the "model is not supported when using X with a Y account" 400; it deliberately excludes "not supported for/on/by", which describes one model lacking a capability and must still retry a sibling), `buildNamingModelCandidates` / `buildSessionIntelligenceModelCandidates` (exactly one model: the cheap helper for a Claude, Codex or Cursor chat, the chat's own model for every other provider, so a chat's content never goes to another vendor; for chat auto-titles an empty candidate list still uses the deterministic name and does not skip naming), and `runNamingAcrossProviders` (walks the candidates up to three attempts; a provider-level failure condemns every remaining model behind that provider, `run` returning null means "answered unusably" and the next candidate still gets a turn, and `shouldStop` abandons the chain when the user renames mid-flight). Session-metadata JSON parsing ignores extra keys and extracts fenced objects, so a Cursor Grok annotation does not discard a usable title. |
-| `apps/desktop/src/main/services/chat/sessionMetadataService.ts` | Explicit title / lane-name / status-line regeneration in one JSON call. Gathers only the sources the requested fields need: status-only sends lane/chat identity plus the last assistant paragraphs (no transcript, sibling threads, or git); title-only sends this thread's transcript; lane-name sends sibling threads plus git vs remote/base. Walks the same session-intelligence candidate chain, with every call running as the chat's own provider account. When the list is empty or every model misses, it applies nothing: the current title, lane name and status line stay, every requested field lands in `skipped`, and `generationError` names the cause (the last model failure, such as `Claude failed: You've hit your weekly limit … (HTTP 429)`, `The AI returned no usable names.`, or `No AI model is available to generate names.`). The Work menu shows it as `Generate name failed: <reason>`. It never substitutes a name guessed from the transcript: the transcript excerpt starts with ADE's own `…(earlier omitted)` clip marker and mid-sentence words, and an earlier fallback stamped exactly those onto the title and lane. |
+| `apps/desktop/src/main/services/chat/sessionMetadataService.ts` | Explicit title / lane-name / status-line regeneration in one JSON call. Gathers only the sources the requested fields need: status-only sends lane/chat identity plus the last assistant paragraphs (no transcript, sibling threads, or git); title-only sends this thread's transcript; lane-name sends sibling threads plus git vs remote/base. Walks the same session-intelligence candidate chain, with every call running as the chat's own provider account. When the list is empty or every model misses, it applies nothing: the current title, lane name and status line stay, every requested field lands in `skipped`, and `generationError` names the cause (the last model failure, such as `Claude failed: You've hit your weekly limit … (HTTP 429)`, `The AI returned no usable names.`, or `No AI model is available to generate names.`). The Work menu shows it as `Generate name failed: <reason>`. It never substitutes a name guessed from the transcript: the transcript excerpt starts with ADE's own `…(earlier omitted)` clip marker and mid-sentence words, and an earlier fallback stamped exactly those onto the title and lane. When the helper produces no names on a Codex 0.164+ chat, it falls back to asking the chat's own thread (`thread/sample`, `codexThreadSample.ts`), which already holds the whole conversation; it sends the lane's other threads and git work as extra context and parses the answer through the same JSON reader. A sample the chat moved past changes nothing. |
 | `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts` | The single statement of who a spawned child chat is currently working for, so the policy is written and tested in one place instead of inline in `reportChildSpawnEnded`. Wake vs quiet is the child's persisted `spawnKind` (`subagent` always wakes; `peer` never does). `isHumanChildMessage` / `countHumanChildMessagesForTurn` / `formatHumanChildMessageAnnotation` name how many human messages landed in a finished turn so the next subagent wake can say `The user also sent N message(s) to this chat.` Parent dispatches, scheduled wakes, relays, host continuations, and any orchestration origin are not human messages. `HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS` / `stripHostAuthoredMessageProvenance` export the same key list to every untrusted entry point (the ADE RPC edge, the automation action bridge) so provenance is always what the host observed, never what a caller asserted. |
 | `apps/desktop/src/main/services/chat/chatMentionService.ts` | Composer @-mention service (chats / lanes / terminals / pull requests / account machines / MCP servers), created inside `agentChatService` with injected roster/transcript/PTY/PR/account deps. Owns the keystroke-rate `chat.listMentionSuggestions` action (daemon-routed, read-only; also a viewer-allowed sync remote command for iOS): one shared 1.5 s-TTL roster cache with a single in-flight promise collapses a typing burst into one sessions/lanes/terminals read, kinds are read in parallel and per-source failures degrade only their own candidate pool. PR rows are the local `prs.listAll` open/draft rows (no GitHub call), titled `#<n> <title>` and carrying `{ number, state, checks }` for the menu. Machine rows come from the account machine directory and account Activity read **inside the brain** (`accountMachineMentions` deps wired by the host — `main.ts` on desktop, `bootstrap.ts` in the CLI), never through the CTO-only `account.listMachines` / `attention.getSnapshot` actions; that network read has its own 30 s menu cache and a 4 s timeout, and a menu query waits at most 800 ms for a cold read (the rows join on the next keystroke once it lands), online machines sort first, and this computer's row says "this machine". MCP rows come from the chat brain's cached registry and include on/off or expired-sign-in status and transport. Tool names and the last runtime error are kept in a bounded in-memory status cache; errors are redacted against caller MCP secrets before reuse in suggestions and cards. The registry read never returns secrets. A leading kind word (`pr`, `mac`/`machine`, `mcp`/`server`, `chat`, `lane`, `term`) narrows the result to one kind; an empty query returns each kind's most recent rows (capped per kind) so clients can show sections; any other query is one mixed best-match list (caps from `shared/chatMentions.ts`). Also owns send-time expansion: `applyChatMentionExpansion` rewrites send/steer args so the provider receives `<ade-mention>` pointer blocks (identity attributes, a ≤1 KB CRLF-normalized neutralized preview, and literal `ade chat read` / `ade lanes show` / `ade terminal read` / `ade search` commands — double-quoted-only so they paste into sh, PowerShell, and cmd) while `displayText` keeps the user's literal chips. Idempotence uses a module-private Symbol marker (structured clone strips it, so nothing over IPC/sync can pre-mark), the single expansion owner on the steer side is `steerWithOptions`, and slash-command prompt rewrites re-attach blocks via `carryChatMentionBlocks`. Lane details never derive git state from `lane.status` (lanes are listed without a status probe and the unprobed default is indistinguishable from clean). A `@pr:` block is **status only** from the local row (number, repo, state, review, checks + reason, ± lines, conflicts, behind-base, head/base, lane, URL, last sync) and names `ade prs show|checks|comments <id> --text`. A `@mcp:` block is a bounded pointer to a registry server on the chat's machine, with its configured state, transport, up to 32 reported tool names, and the redacted last error when available; it does not attach tools or authorize calls. Clicking the chip opens this computer's account-scoped MCP Settings page focused on that server; it does not select the chat's machine. A `@mac:` block is a snapshot read fresh at send time (`shared/accountMachineSnapshot.ts`): name, platform, presence/last seen, sleep state, and the projects, lanes and up to five recent chats (latest activity lines) the machine published to Activity — the directory row's `inventory` carries only provider/preset counts, so nothing else is claimed. It says the agent may only READ from that machine unless the user explicitly asks, and names `ade machines show <key> --text`. A signed-out, expired, or unreachable directory renders the unresolved block with that reason, never an error. Fires the content-free `onMentionsExpanded` analytics hook once per send that actually gained blocks. |
 | `apps/desktop/src/shared/chatMentions.ts` | Pure, surface-agnostic mention grammar shared by desktop, TUI, web preview mock, and iOS (mirrored in `WorkChatMentionDetector`): `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<prId>` / `@mac:<machineId>` / `@mcp:<serverName>` token parsing derived from one prefix table. Ids fit `[A-Za-z0-9._-]+`: a PR id is the ADE row id (a UUID), and a machine id is its directory machine key (32 hex chars), falling back to the device id and then a deterministic `x.`+hex encoding (`machineMentionId`). `parseChatMentionKindFilter` is the shared `@pr` / `@mac` / `@chat` / `@lane` / `@term` / `@mcp` menu filter (`CHAT_MENTION_KINDS` is the canonical kind order), word-boundary matching so emails never match, `renderChatMentionBlock` (attribute escaping + preview truncation on line boundaries + neutralization of forged `<ade-mention>` tags and block headers so another session's transcript text cannot inject fake pointer blocks), `rankChatMentionSuggestions` (exact > prefix > substring > subsequence, recency tie-break, deterministic id tie-break — kind is not a sort key), and per-message caps (16 mixed menu rows, 12 expansions, 1024-char previews). Types live in `shared/types/chatMentions.ts`. |
@@ -56,7 +56,9 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/jev/jevService.ts`, `jevTally.ts`, `jevZenCredential.ts`; `shared/jevSettings.ts` | The Jev decision helper (see [Jev decisions](#jev-decisions)): the route chain (free, Zen credit, ADE bonus) with a breaker per route, the per-day tally (`jevTally.ts`), the OpenCode Zen sign-in reader for the Zen credit route (`jevZenCredential.ts`), and which Smart decisions switch gates each feature (`jevSettings.ts`). |
 | `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev-backed chat checks: the awaiting-own-work marker set at turn end, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, never on the ADE bonus; a switched-off setting hides this machine's verdicts within a minute). |
 | `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check's request (last 40 lines, each capped at 200 characters, 4 KB in all, run through `redactSecrets`) and verdict; `ptyService.ts` decides when to ask and raises the `cli_prompt` hand. |
-| `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | ADE's next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`). After a completed turn with no open card, no subagent parent and no running background work, one helper call (fresh OS temp dir, 15s, fails quiet) returns `{suggestion}`, sanitized to one line of at most 120 characters; it is emitted as the live-only `prompt_suggestion` event only if no user message or turn start came first. `sanitizePromptSuggestion` also collapses native Claude suggestions to one line. See [Next prompt suggestions](#next-prompt-suggestions). |
+| `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | ADE's next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`). After a completed turn with no open card, no subagent parent and no running background work, one helper call (fresh OS temp dir, 15s, fails quiet) returns `{suggestion}`, sanitized to one line of at most 120 characters; it is emitted as the live-only `prompt_suggestion` event only if no user message or turn start came first. `sanitizePromptSuggestion` also collapses native Claude suggestions to one line. Codex chats read their own switch (`ai.chat.codexPromptSuggestionsEnabled`) and, when the helper throws or has no model, fall back to `sampleThread` (`codexThreadSample.ts`) only if no user message or turn start intervened; a helper that answers, even with no suggestion, ends the work. See [Next prompt suggestions](#next-prompt-suggestions). |
+| `apps/desktop/src/main/services/chat/codexThreadSample.ts` | Codex `thread/sample` (experimental, 0.164+): one model answer on a hidden, ephemeral fork of an idle chat's own thread, so the model already holds the conversation and the source thread is untouched. The prompt is cut to Codex's 4,000-byte cap (whole request, clipped context, never half a surrogate pair), a sample runs one at a time per chat, and one 429 pauses that account's sampling for its Retry-After (default 60 s, capped at 10 min) because samples spend the same per-turn limit as real turns. Outcomes are `answered` / `stale` (the thread moved on, drop it) / `unsupported` (older server, method not found) / `failed`; every outcome is logged as `agent_chat.codex_thread_sample`. Used only as the fallback after the cheap helper fails (see `nextPromptSuggestion.ts`, `sessionMetadataService.ts`), never as the first try. |
+| `apps/desktop/src/shared/codexDaybreak.ts`, `apps/desktop/src/shared/codexImageGeneration.ts` | Codex 0.164 catalogue and result shapes. `codexDaybreak.ts` reads `availableAccessPrograms.cyber` from `model/list` and decides whether Daybreak may be offered for this model and signed-in account (`codexDaybreakProgram`, `readCodexCyberAccessPrograms`); the switch lives in the reasoning-effort picker and the choice travels as `AgentChatSession.codexDaybreak`. `codexImageGeneration.ts` recognizes an image-generation result that has no inline bytes (an OpenAI attachment `fileId`, the `inputImagePaths` an edit read) so the card never claims an image it cannot show. |
 | `apps/desktop/src/main/services/chat/parentWakeBatcher.ts` | `createParentWakeBatcher`: holds an idle parent's wake while a sibling subagent is still running (up to `PARENT_WAKE_BATCH_HOLD_MS`, 15 s), so children that finish together wake it once; a busy parent takes each result inline at once. Each child's promise settles with its batch's delivery, and batched children's completion rows are written only after the wake landed. See [Spawn types and completion reporting](#spawn-types-and-completion-reporting). |
 | `apps/desktop/src/main/services/chat/chatLaunchDefaults.ts` | Machine launch defaults: the last model and permission/effort config a person chose, stored at `<ADE home>/chat-launch-defaults.json` and served by `chat.getLaunchDefaults` to every client. Only a person's top-level Work chat writes it; agents, the CTO, spawned and automation chats never do. See [Agent Routing](agent-routing.md#machine-launch-defaults). |
 | `apps/desktop/src/shared/steerOrder.ts`, `apps/desktop/src/renderer/components/chat/usePendingSteerReorder.ts` | Queued-message reordering. `moveSteerId` / `applySteerOrder` are the shared order helpers the service (`moveSteer`, the `queue_reordered` event) and the renderer use; `usePendingSteerReorder` is the composer's drag and keyboard (↑/↓/Home/End) reorder with an optimistic order held until the host confirms. Codex and OpenCode keep their own queues and are not reorderable (`queuedSteersCanReorder`). See [Composer and UI](composer-and-ui.md). |
@@ -1443,7 +1445,11 @@ come):
   without the action is polled every 2 s as before. Matching is
   `chatWaitTargetMatches` in `shared/chatWait.ts`, shared by both sides. A
   chat another live brain runs never matches through this brain (see
-  [One brain per chat](#one-brain-per-chat)).
+  [One brain per chat](#one-brain-per-chat)). A wait for `idle`, `active` or
+  `terminal` on a chat that waits on a card only the user can answer
+  (`chatWaitsOnUser`: the summary's `pendingInputUserOnly`) stops at once: the
+  long-poll answers `waitingOnUser`, and the CLI exits 1 with
+  `error: "waiting_on_user"` instead of spending its timeout in silence.
 - **Durable waits** (`chat.armWait`, `ade chat wait <ids…> --async [--any]`,
   the CTO tool `waitForChats`) return at once. When all (or any) of the target
   chats reach the state, ADE wakes the caller with one line per chat (title,
@@ -1454,6 +1460,16 @@ come):
   persist in the project database (`agent-chat:waiters:v1`), re-arm on start,
   and re-check on each target's events with a 15 s backstop. Checks run one at
   a time, so a waiter fires once, and one cancelled mid-check never fires.
+  While a waiter is armed, a target that waits on a user-only card is reported
+  to its caller once per card (`userWaitsNoticed`, persisted with the waiter)
+  and the waiter stays armed. That holds for a wait that wakes its caller and
+  for `ade chat send <B> --after <A>`: the sender hears that the queued prompt
+  has not been sent yet, provided it runs on the same brain as A (the brain
+  that checks the wait) — a cross-machine sender is not woken, and its prompt
+  still goes when the card is answered. A caller's own subagent is skipped
+  there, because the subagent relay already told it (`callerToldOfUserWait`).
+  This is how a coordinator that waits on a peer hears it: a peer never wakes
+  its parent.
   A session-bound agent's wake wait can only wake that agent's own chat.
   `main/services/chat/chatWaitRegistry.ts` owns all of this.
   `chat.listWaits` / `ade chat waits` and `chat.cancelWait` /
@@ -1484,8 +1500,21 @@ conversation, so the next message starts a fresh process that resumes the same
 provider thread and picks up skills, plugins, MCP servers, and project
 instructions added since the chat started. Entry points: the session
 right-click menu, the command palette (for the chat in front of you),
-`ade chat restart <session> [--stop]`, the `chat.restartSession` action, and
-the sync remote command of the same name.
+`ade chat restart [<session>] [--stop | --after-turn]`, the
+`chat.restartSession` action, and the sync remote command of the same name.
+
+An agent restarts its own chat with a bare `ade chat restart` (the session
+defaults to `$ADE_CHAT_SESSION_ID`). That call always sends `afterTurn`, never
+`stopFirst`: stopping the turn would cut off the command call itself. With
+`afterTurn` during a turn, the action records `restartAfterTurn` on the managed
+session, posts "The agent session restarts when this turn ends", and returns
+`scheduled: true`. The restart runs at the next turn end that leaves the chat
+idle; a
+queued message that starts the next turn first keeps it waiting for that turn.
+A session-bound agent can aim `restartSession` only at its own chat
+(`SCOPED_CHAT_ACTIONS` in `adeRpcServer.ts`). The hook lives in
+`setSessionIdle`, which every turn end passes through, with the `done` event
+as a backstop.
 
 `restartSession` tears the runtime down with the `restart` reason, which keeps
 the provider resume pointer the way an idle eviction does (Claude session id,
@@ -3625,9 +3654,35 @@ written by `describePendingInputForAgent` (`shared/pendingInputCommand.ts`, also
 what `ade chat pending --text` prints). Once per child item (in memory); the
 card stays in the child so the person can still answer it there. Not relayed:
 approvals and permission prompts (an agent approving its child's tool call
-would grant itself access), secret questions, user-only consent cards, peers,
-and parents that are not a chat in this service (a CLI terminal, another
-project or machine). `ade chat respond` lists the chat's inputs through
+would grant itself access), secret questions, user-only consent cards, a
+peer's questions (they are the user's), and parents that are not a chat in
+this service (a CLI terminal, another project or machine).
+
+A secret question or a user-only consent card (`isUserOnlyConsentCard`: the
+real-input lease, the shared-desktop consent, MCP app calls, project secret
+requests) is not relayed as a question, but `relayChildAwaitingUserToParent`
+tells the parent that the child waits on the user (`hostContinuation.reason:
+"subagent_awaiting_user"`), so a coordinator does not read the silence as
+"stuck" and start a second chat for the same work. Unlike a question, this
+notice also reaches a parent in another project or on another machine: it goes
+through the brain's external parent router as an `ExternalParentWake` with
+`notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a
+message, not a completion, so the parent's card for the child stays open. A
+peer's parent gets the same fact as one quiet line (`awaitingUserQuietNotice`),
+locally or from another machine, and is not woken, as for the peer's finished
+turns. Across machines the notice goes only to a brain whose `ade/initialize`
+advertises `externalWakeNotices`: an older brain would read it as a finished
+turn, so the agent machine bridge drops it there (`agent_cross_machine.wake_notice_skipped`)
+and that parent hears of the child only when its turn ends, as before. The chat summary carries `pendingInputUserOnly` and
+`chat.getTurnStatus` carries `ask.userOnly` for the same cards, which `ade chat
+status` prints as "only the user can answer this".
+
+A scheduled wake does not fire while a card is open (`shouldDefer` checks
+`hasLivePendingInput`): firing would be refused and close the row as "Not
+delivered". The real-input lease card itself is withdrawn after
+`MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s, inside the caller's 180 s budget for
+`mac_desktop.requestInputLease`), so an unanswered card cannot outlive the
+agent that asked and block the chat for hours. `ade chat respond` lists the chat's inputs through
 `chat.listPendingInputs` and answers through `chat.respondToInput`; a send to a
 chat with an open card is refused with a message that names both commands.
 
@@ -3947,6 +4002,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude SDK runtime for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
 | `ade.agentChat.getContextUsage` | invoke | Claude-only: return the SDK control-channel context usage breakdown (`AgentChatContextUsage`) for the `/context` panel. Categories are classified by `kind` (`used` / `free` / `buffer` / `deferred`), never by the display name `"free"`. The harness also performs this authoritative read after initialization, each settled turn, and compact completion; streamed estimates remain the responsive in-turn signal. |
+| `ade.agentChat.getClaudeUsage` | invoke | Claude-only: Claude Code's structured `/usage` report through the SDK `get_usage` control request (no typed method; `sendClaudeControlRequest` in `claudeSdkCompat.ts`), normalized by `shared/claudeUsageReport.ts`: session cost and per-model tokens, plan limit windows, and, unless `skipBehaviors`, the local-transcript scan of what is using the plan with Claude's recommendations and `fix` messages. Typing `/usage` in a desktop or web Claude chat opens `ClaudeUsageSheet` (a right-side `Dialog`) instead of sending; the sheet asks with `skipBehaviors` first so limits paint before the scan. Fix applies a `/effort <level>` line through the chat's own effort control (`planClaudeUsageFix`) and sends the rest, queued behind a running turn. Routed with the chat's runtime pin, a `chat` read action, and the `chat.getClaudeUsage` sync command. `ade code` (the TUI) does not intercept `/usage`; it reaches Claude as its text command. |
 | `ade.agentChat.rewindFiles` | invoke | Dry-run and apply provider-backed file rewind for a selected user message. Claude uses SDK file checkpoints and leaves conversation history untouched; `skippedLinks` reports linked paths the SDK could not restore and produces a visible notice rather than silently claiming a complete rewind. Codex restores ADE's git-tracked file plan and moves the app-server thread back — `thread/fork` before the selected turn on servers >= 0.145.0, or `thread/rollback` (latest user message only) on pre-0.156 servers when fork is unavailable or the turn id cannot be resolved; 0.156 removed rollback. The renderer dry-run opens the same confirmation dialog with message context, aggregate stats, per-file rows, and lazy diff previews. |
 | `ade.agentChat.claudePlugins.list` / `.reload` | invoke | Claude-only: enumerate discovered Claude plugins and force a plugin reload. Backs Claude `/plugin`. |
 | `ade.agentChat.codexPlugins.list` | invoke | Codex: `plugin/reconcile` then `plugin/list`. Settings and TUI `/plugin` show installed/enabled plugins only (bundled / local / already-installed remote). Fail-open on missing runtime or `-32601`. No marketplace and no toggle. |
@@ -4829,10 +4885,12 @@ config service):
 - `ai.chat.claudePluginUiEnabled` -- draw what Claude Code mods show (status
   lines, toasts, a band above the prompt, panes) in ADE chat. Defaults to
   **false**. The mods' hooks run either way. See [Claude mod UI](#claude-mod-ui).
-- `ai.chat.promptSuggestionsEnabled` -- suggest the next prompt for providers
-  without a native suggestion (Settings › Chat › Next prompt). Defaults to
-  **false**. Per project and per machine, read on the machine that runs the
-  chat. See [Next prompt suggestions](#next-prompt-suggestions).
+- `ai.chat.codexPromptSuggestionsEnabled` -- suggest the next prompt in Codex
+  chats (Settings › Chat › Next prompt). Defaults to **true**. Per project and
+  per machine, read on the machine that runs the chat.
+- `ai.chat.promptSuggestionsEnabled` -- the same for every other provider
+  without a native suggestion. Defaults to **false**. See
+  [Next prompt suggestions](#next-prompt-suggestions).
 - `ai.chat.smartDecisionsEnabled` -- "Smart decisions (Jev)" in Settings ›
   Chat (`SmartDecisionsSection.tsx`). Jev needs no sign-in: OpenCode's free
   Jev answers first and the ADE bonus after it (see
@@ -4930,12 +4988,22 @@ in with the caret at the end; **Esc** hides it until the next turn.
 - **Claude Code** sends its own (`promptSuggestions` on the SDK query). Claude
   holds it back on a chat's first turn, in plan mode, and near plan usage
   limits. ADE never adds one for a Claude chat.
-- **Every other provider** gets one from ADE when
-  `ai.chat.promptSuggestionsEnabled` is on (`chat/nextPromptSuggestion.ts`):
-  after a completed turn with no open card, no subagent parent and no running
-  background work, one call on the model that names the chat (Luna for Codex,
-  Composer for Cursor, otherwise the chat's own model) at its lowest effort,
-  from a scratch folder, capped at 120 characters.
+- **Every other provider** gets one from ADE (`chat/nextPromptSuggestion.ts`):
+  Codex chats unless `ai.chat.codexPromptSuggestionsEnabled` is false, the
+  rest when `ai.chat.promptSuggestionsEnabled` is on. After a completed turn
+  with no open card, no subagent parent and no running background work, one
+  call on the model that names the chat (Luna for Codex, Composer for Cursor,
+  otherwise the chat's own model) at its lowest effort, from a scratch folder,
+  capped at 120 characters.
+- **Codex fallback:** when that helper call fails or has no model to run on, a
+  Codex chat on Codex 0.164+
+  asks its own thread instead (`thread/sample`, `chat/codexThreadSample.ts`).
+  The sample runs on the chat's own model with its whole context, so it costs
+  far more than the helper (measured about 16x on a short chat) and is never
+  the first try. It is skipped for Fast chats, while a turn runs, and for an
+  account Codex rate-limited recently (helper or sample), for that 429's
+  Retry-After. The same fallback names a Codex chat after its first run and
+  answers Regenerate names when the helper fails.
 - Both go out as the live-only `prompt_suggestion` event and are never saved
   to the transcript. A user message or a new turn before ADE's answer arrives
   drops it.

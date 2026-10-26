@@ -44,7 +44,7 @@ fs.cpSync(spotifyPageSource, path.join(outputDir, "page-spotify"), { recursive: 
 
 exitIfCachedHelper(outputPath);
 
-// macOS 12, ADE's own minimum: the host must launch there to say that Apple
+// macOS 12, below ADE's own minimum (13): the host must launch wherever ADE does to say that Apple
 // Music needs macOS 14 (it reports `unsupported_os`). Keep this in step with
 // `platforms:` in native/ADEMusicHostMac/Package.swift.
 buildUniversalSwiftProduct({

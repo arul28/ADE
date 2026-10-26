@@ -5,17 +5,18 @@ import path from "node:path";
 
 import type { HomeClipboardEntry, HomeClipboardImage, HomeClipboardState } from "../../../shared/types/homeWidgets";
 import { looksLikeSecret } from "../../../shared/secretText";
+import type { Logger as FullLogger } from "../logging/logger";
 
 /**
  * Clipboard history for the home page's Clipboard widget.
  *
- * Polls `clipboard.readText()` and `availableFormats()` once a second while
- * the watch is on (the widget is in the active home layout and not paused or
- * hidden). Both are tens of microseconds; a slow read (a huge copy) backs the
- * poll off. An image is read (≈5 ms for a 1440p screenshot) only when it
- * changed: the PNG copy apps put beside it is compared first (≈0.03 ms), and
- * an image with no PNG copy (Print Screen) is re-read at most every few
- * seconds.
+ * Polls the clipboard's text and flavor list once a second while the watch
+ * is on (the widget is in the active home layout and not paused or hidden).
+ * Both are cheap; a slow read (a huge copy) backs the poll off, and a poll
+ * never starts while the last one is still reading. Electron's clipboard
+ * decodes a picture on every read and cannot hand back the raw PNG copy, so an
+ * image is re-read at once when the flavors change and otherwise at most every
+ * few seconds (≈5 ms for a 1440p screenshot).
  *
  * Privacy: copies a password manager marks as concealed and copies that look
  * like secrets are never kept. With "Keep after restart" off nothing is on
@@ -36,18 +37,18 @@ export type HomeClipboardImageRead = {
 };
 
 export type HomeWidgetsClipboard = {
-  readText: () => string;
-  writeText: (text: string) => void;
-  readBuffer: (format: string) => Buffer;
-  /** Whether a format is on the clipboard at all, even with no data (Electron's `clipboard.has`). */
-  has?: (format: string) => boolean;
-  availableFormats?: () => string[];
+  readText: () => Promise<string>;
+  writeText: (text: string) => Promise<void>;
+  /** A raw platform format's bytes; empty when it is absent. */
+  readBuffer: (format: string) => Promise<Buffer>;
+  /** Every flavor on the clipboard: MIME types, and raw platform formats under their own names. */
+  availableFormats: () => Promise<string[]>;
   /** Null when the clipboard has no image (or it is empty). */
-  readImage?: () => HomeClipboardImageRead | null;
-  writeImage?: (png: Buffer) => boolean;
+  readImage?: () => Promise<HomeClipboardImageRead | null>;
+  writeImage?: (png: Buffer) => Promise<boolean>;
 };
 
-type Logger = { warn: (event: string, data?: Record<string, unknown>) => void };
+type Logger = Pick<FullLogger, "warn">;
 
 const CLIPBOARD_MAX_ENTRIES = 50;
 const CLIPBOARD_MAX_CHARS = 20_000;
@@ -62,14 +63,11 @@ const CLIPBOARD_THUMB_PX = 320;
 /** How long added copies wait before the kept history is written (a burst of copies is one write). */
 const CLIPBOARD_WRITE_DEBOUNCE_MS = 1_500;
 /**
- * An image with no PNG copy beside it (Print Screen) can only be compared by
- * reading it (~7 ms for 1440p): re-read 3 s after a change, backing off to
- * every 12 s while it stays the same.
+ * An image can only be compared by reading it (~7 ms for 1440p): re-read 3 s
+ * after a change, backing off to every 12 s while it stays the same.
  */
 const CLIPBOARD_IMAGE_REREAD_MS = 3_000;
 const CLIPBOARD_IMAGE_REREAD_MAX_MS = 12_000;
-/** The PNG format apps put beside a bitmap: Windows' registered "PNG", macOS' UTI. */
-const PNG_CLIPBOARD_FORMAT: Partial<Record<NodeJS.Platform, string>> = { win32: "PNG", darwin: "public.png" };
 
 /**
  * Formats a password manager puts on the clipboard to say "do not record
@@ -86,28 +84,44 @@ const CONCEALED_MARKER_FORMATS: Partial<Record<NodeJS.Platform, string[]>> = {
 /** Windows' `CanIncludeInClipboardHistory` is a DWORD: present and 0 means "keep out"; 1 means allowed. */
 const WINDOWS_HISTORY_DWORD_FORMAT = "CanIncludeInClipboardHistory";
 
-/** True when a password manager marked what is on the clipboard as not to be recorded. */
-export function isConcealedClipboard(clipboard: HomeWidgetsClipboard, platform: NodeJS.Platform): boolean {
-  for (const format of CONCEALED_MARKER_FORMATS[platform] ?? []) {
+/**
+ * True when a password manager marked what is on the clipboard as not to be
+ * recorded. `formats` is the flavor list the same poll read. On Windows the
+ * `CanIncludeInClipboardHistory` value is read when the copy is checked, so a
+ * password manager that replaces the clipboard in between reads as allowed.
+ */
+export async function isConcealedClipboard(
+  clipboard: HomeWidgetsClipboard,
+  formats: readonly string[],
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  if ((CONCEALED_MARKER_FORMATS[platform] ?? []).some((format) => formats.includes(format))) return true;
+  if (platform === "win32" && formats.includes(WINDOWS_HISTORY_DWORD_FORMAT)) {
     try {
-      if (clipboard.has) {
-        if (clipboard.has(format)) return true;
-      } else if (clipboard.readBuffer(format)?.length > 0) {
-        return true;
-      }
-    } catch {
-      // A format the platform cannot name is simply absent.
-    }
-  }
-  if (platform === "win32") {
-    try {
-      const buffer = clipboard.readBuffer(WINDOWS_HISTORY_DWORD_FORMAT);
+      const buffer = await clipboard.readBuffer(WINDOWS_HISTORY_DWORD_FORMAT);
       if (buffer && buffer.length >= 4 && buffer.readUInt32LE(0) === 0) return true;
     } catch {
       // Absent.
     }
   }
   return false;
+}
+
+/** One run of the clipboard watch (from a start to the next start or stop). */
+type ClipboardWatch = {
+  /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
+  lastSeen: string | null;
+  /** The flavor list the last poll saw, joined. */
+  formats: string;
+  /** A poll is still awaiting the clipboard; the next tick skips rather than overlapping it. */
+  polling: boolean;
+  /** When the picture was last read, and how long until the next look. */
+  imageReadAt: number;
+  imageRereadWait: number;
+};
+
+function newClipboardWatch(): ClipboardWatch {
+  return { lastSeen: null, formats: "", polling: false, imageReadAt: 0, imageRereadWait: CLIPBOARD_IMAGE_REREAD_MS };
 }
 
 export function createClipboardHistory(deps: {
@@ -122,18 +136,16 @@ export function createClipboardHistory(deps: {
   const settingsPath = path.join(dir, "settings.json");
   const historyPath = path.join(dir, "clipboard-history.json");
   const imagesDir = path.join(dir, "clipboard-images");
-  const pngFormat = PNG_CLIPBOARD_FORMAT[platform] ?? null;
 
   let clipboardEnabled = false;
   let clipboardPersist = false;
   let entries: HomeClipboardEntry[] = [];
   let skippedSecrets = 0;
-  /** What the last poll saw: "t:<text>", "i:<image key>" or "" for nothing. Null before the first poll. */
-  let lastSeen: string | null = null;
-  let lastFormats = "";
-  /** When an image with no PNG copy was last read, and how long until the next look. */
-  let lastImageReadAt = 0;
-  let imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
+  /**
+   * The watch the polls belong to, replaced on every start and stop: a poll
+   * that outlives its watch sees it is no longer `watch` and drops what it read.
+   */
+  let watch: ClipboardWatch = newClipboardWatch();
   /** Full PNGs of image entries, by hash. A kept history reads the rest from disk on copy. */
   const fullImages = new Map<string, Buffer>();
   let pollTimer: NodeJS.Timeout | null = null;
@@ -219,8 +231,6 @@ export function createClipboardHistory(deps: {
     }
   };
 
-  const isConcealed = () => isConcealedClipboard(deps.clipboard, platform);
-
   /**
    * Puts `entry` first and drops what is over the caps: 50 entries, and at
    * most 30 pictures and 50 MB of full images (the oldest pictures go first).
@@ -242,22 +252,6 @@ export function createClipboardHistory(deps: {
     if (clipboardPersist) scheduleHistoryWrite();
   };
 
-  /** A cheap identity for the PNG copy on the clipboard: its length and a hash of its two ends. */
-  const pngProbe = (): { key: string; png: Buffer } | null => {
-    if (!pngFormat) return null;
-    let png: Buffer;
-    try {
-      png = deps.clipboard.readBuffer(pngFormat);
-    } catch {
-      return null;
-    }
-    if (!png || png.length < 8) return null;
-    const edge = 64 * 1024;
-    const hash = createHash("sha1").update(png.subarray(0, edge));
-    if (png.length > edge) hash.update(png.subarray(Math.max(edge, png.length - edge)));
-    return { key: `png:${png.length}:${hash.digest("hex")}`, png };
-  };
-
   /** A cheap identity for pixels: their size and 512 samples spread over the bitmap. */
   const pixelSample = (bitmap: Buffer, width: number, height: number) => {
     const hash = createHash("sha1").update(`${width}x${height}:`);
@@ -269,13 +263,13 @@ export function createClipboardHistory(deps: {
   const pixelHash = (read: HomeClipboardImageRead) =>
     createHash("sha1").update(`${read.width}x${read.height}:`).update(read.bitmap()).digest("hex");
 
-  const recordImage = (read: HomeClipboardImageRead, hash: string, pngCopy: Buffer | null) => {
+  const recordImage = (read: HomeClipboardImageRead, hash: string) => {
     const existing = entries.findIndex((entry) => entry.image?.hash === hash);
     if (existing >= 0) {
       pushEntry({ ...entries[existing]!, copiedAt: Date.now() }, existing);
       return;
     }
-    const full = pngCopy ?? read.png();
+    const full = read.png();
     // One picture bigger than the whole budget is not kept.
     if (full.length === 0 || full.length > CLIPBOARD_IMAGE_BYTES_CAP) return;
     const thumb = read.thumbnail(CLIPBOARD_THUMB_PX);
@@ -290,11 +284,11 @@ export function createClipboardHistory(deps: {
     pushEntry({ id: randomUUID(), text: "", image, copiedAt: Date.now(), length: 0 }, -1);
   };
 
-  const recordText = (text: string) => {
+  const recordText = (text: string, concealed: boolean) => {
     // Only what would be kept is scanned: a copy can be megabytes, and the
     // scan runs on the main thread.
     const kept = text.slice(0, CLIPBOARD_MAX_CHARS);
-    if (isConcealed() || looksLikeSecret(kept)) {
+    if (concealed || looksLikeSecret(kept)) {
       skippedSecrets += 1;
       announce();
       return;
@@ -306,23 +300,37 @@ export function createClipboardHistory(deps: {
     pushEntry(entry, existing);
   };
 
-  const poll = () => {
+  const poll = async () => {
+    const mine = watch;
+    if (mine.polling) return;
+    mine.polling = true;
+    try {
+      await pollOnce(mine);
+    } catch (error) {
+      deps.logger?.warn("home.clipboard.poll_failed", { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      mine.polling = false;
+    }
+  };
+
+  /** One look at the clipboard. `mine.lastSeen` moves only while `mine` is still the live watch. */
+  const pollOnce = async (mine: ClipboardWatch) => {
     const started = performance.now();
     let text: string;
     let formats: string[];
     try {
-      text = deps.clipboard.readText() ?? "";
-      formats = deps.clipboard.availableFormats?.() ?? [];
+      [text, formats] = await Promise.all([deps.clipboard.readText(), deps.clipboard.availableFormats()]);
     } catch {
       return;
     }
+    if (mine !== watch) return;
     const elapsed = performance.now() - started;
     const nextInterval = elapsed > CLIPBOARD_SLOW_READ_MS ? CLIPBOARD_SLOW_POLL_MS : CLIPBOARD_POLL_MS;
     if (nextInterval !== pollInterval) restartPoll(nextInterval);
     const formatKey = formats.join("|");
-    const formatsChanged = formatKey !== lastFormats;
-    lastFormats = formatKey;
-    const first = lastSeen == null;
+    const formatsChanged = formatKey !== mine.formats;
+    mine.formats = formatKey;
+    const first = mine.lastSeen == null;
     // The first read is what was on the clipboard before ADE looked; it is
     // recorded only when the history is empty, so a relaunch does not re-add it.
     const skipFirst = first && entries.length > 0;
@@ -331,70 +339,71 @@ export function createClipboardHistory(deps: {
     const imageOnly = !text.trim() && deps.clipboard.readImage != null && formats.some((format) => format.startsWith("image/"));
     if (!imageOnly) {
       const seen = text.trim() ? `t:${text}` : "";
-      if (seen === lastSeen) return;
-      lastSeen = seen;
-      if (seen && !skipFirst) recordText(text);
+      if (seen === mine.lastSeen) return;
+      if (!seen || skipFirst) {
+        mine.lastSeen = seen;
+        return;
+      }
+      const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
+      if (mine !== watch) return;
+      mine.lastSeen = seen;
+      recordText(text, concealed);
       return;
     }
 
-    // An image. With a PNG copy beside it, compare that (cheap) and read the picture only when it changed.
-    const probe = pngProbe();
-    if (probe) {
-      const seen = `i:${probe.key}`;
-      if (seen === lastSeen) return;
-      lastSeen = seen;
-      if (skipFirst) return;
-    } else {
-      // No PNG copy (Print Screen, Paint): re-read the picture now and then, at once when the formats changed.
-      if (!first && !formatsChanged && lastSeen?.startsWith("i:") && Date.now() - lastImageReadAt < imageRereadWait) return;
-    }
+    // An image: re-read the picture now and then, at once when the formats changed.
+    if (!first && !formatsChanged && mine.lastSeen?.startsWith("i:") && Date.now() - mine.imageReadAt < mine.imageRereadWait) return;
     let read: HomeClipboardImageRead | null = null;
     try {
-      read = deps.clipboard.readImage?.() ?? null;
+      read = (await deps.clipboard.readImage?.()) ?? null;
     } catch {
       read = null;
     }
-    lastImageReadAt = Date.now();
+    if (mine !== watch) return;
+    mine.imageReadAt = Date.now();
     if (!read) {
-      if (!probe) lastSeen = "";
+      mine.lastSeen = "";
       return;
     }
-    if (!probe) {
-      const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
-      if (seen === lastSeen) {
-        imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, imageRereadWait * 2);
-        return;
-      }
-      imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
-      lastSeen = seen;
-      if (skipFirst) return;
+    const seen = `i:bmp:${pixelSample(read.bitmap(), read.width, read.height)}`;
+    if (seen === mine.lastSeen) {
+      mine.imageRereadWait = Math.min(CLIPBOARD_IMAGE_REREAD_MAX_MS, mine.imageRereadWait * 2);
+      return;
     }
-    if (isConcealed()) {
+    mine.imageRereadWait = CLIPBOARD_IMAGE_REREAD_MS;
+    if (skipFirst) {
+      mine.lastSeen = seen;
+      return;
+    }
+    const concealed = await isConcealedClipboard(deps.clipboard, formats, platform);
+    if (mine !== watch) return;
+    mine.lastSeen = seen;
+    if (concealed) {
       skippedSecrets += 1;
       announce();
       return;
     }
-    recordImage(read, pixelHash(read), probe?.png ?? null);
+    recordImage(read, pixelHash(read));
   };
 
   function restartPoll(interval: number) {
     if (pollTimer) clearInterval(pollTimer);
     pollInterval = interval;
-    pollTimer = setInterval(poll, interval);
+    pollTimer = setInterval(() => void poll(), interval);
     pollTimer.unref?.();
   }
 
   const startPolling = () => {
     if (pollTimer) return;
-    lastSeen = null;
+    watch = newClipboardWatch();
     restartPoll(CLIPBOARD_POLL_MS);
-    poll();
+    void poll();
   };
 
   const stopPolling = () => {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
-    lastSeen = null;
+    watch = newClipboardWatch();
   };
 
   /**
@@ -505,12 +514,12 @@ export function createClipboardHistory(deps: {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry) return false;
       if (!entry.image) {
-        deps.clipboard.writeText(entry.text);
+        await deps.clipboard.writeText(entry.text);
         return true;
       }
       const full = fullImages.get(entry.image.hash)
         ?? await fs.readFile(imageFile(entry.image.hash)).catch(() => null);
-      return Boolean(full && deps.clipboard.writeImage?.(full));
+      return Boolean(full && await deps.clipboard.writeImage?.(full));
     },
     dispose: () => {
       stopPolling();

@@ -11,6 +11,21 @@ import {
 } from "./accountMigrationRunner";
 import type { AdeAccountStatus } from "../../../shared/types/account";
 
+// `ssh -G` is the process boundary of SSH alias resolution: this config maps
+// `github.com-work` to GitHub, like a two-account ~/.ssh/config.
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawnSync: ((command: string, args: string[], options: unknown) => {
+      if (command !== "ssh") return (actual.spawnSync as (...a: unknown[]) => unknown)(command, args, options);
+      const host = args[args.length - 1];
+      const hostname = host === "github.com-work" ? "github.com" : host;
+      return { status: 0, stdout: `user git\nhostname ${hostname}\nport 22\n`, stderr: "", signal: null, error: undefined };
+    }) as typeof actual.spawnSync,
+  };
+});
+
 function signedInStatus(userId: string): AdeAccountStatus {
   return { signedIn: true, userId, email: null, name: null, expiresAt: null };
 }
@@ -401,5 +416,99 @@ describe("runAccountMigration", () => {
     expect(runner.start()).toBe(true);
     await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledWith(false));
     expect(runner.start()).toBe(true);
+  });
+  it("copies an SSH-alias repository's account rows to its GitHub key once, and keeps what the GitHub key holds", async () => {
+    const receiptDir = makeReceiptDir();
+    const projectRoot = path.join(receiptDir, "aliased");
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, ".git", "config"),
+      `[remote "origin"]\n\turl = git@github.com-work:Acme/Shop.git\n`,
+    );
+    const legacy = "repo:github.com-work/acme/shop";
+    const current = "repo:github.com/acme/shop";
+    type Item = { scope: string; kind: string; key: string; value: string | null; updatedAt: string; deleted?: boolean };
+    const vaultRows = new Map<string, Item>();
+    const putItem = (item: Item) => vaultRows.set(`${item.scope}|${item.kind}|${item.key}`, item);
+    putItem({ scope: legacy, kind: "project_secret", key: "ONLY_OLD", value: "old-value", updatedAt: "1" });
+    putItem({ scope: legacy, kind: "project_secret", key: "BOTH", value: "old-both", updatedAt: "1" });
+    putItem({ scope: legacy, kind: "project_secret", key: "DELETED_NEW", value: "old-deleted", updatedAt: "1" });
+    putItem({ scope: current, kind: "project_secret", key: "BOTH", value: "new-both", updatedAt: "2" });
+    putItem({ scope: current, kind: "project_secret", key: "DELETED_NEW", value: null, updatedAt: "2", deleted: true });
+    const settingRows = new Map<string, { scope: string; key: string; value: unknown; updatedAt?: string }>([
+      [`${legacy}|ctx.fact`, { scope: legacy, key: "ctx.fact", value: "old fact" }],
+      [`${legacy}|cto.homeMachine`, { scope: legacy, key: "cto.homeMachine", value: "old-home" }],
+      [`${current}|cto.homeMachine`, { scope: current, key: "cto.homeMachine", value: "new-home" }],
+      [`${legacy}|mcp.off`, { scope: legacy, key: "mcp.off", value: ["old-server"], updatedAt: "2026-01-01T00:00:00.000Z" }],
+      [`${legacy}|ctx.recreated`, { scope: legacy, key: "ctx.recreated", value: "set again", updatedAt: "2026-03-01T00:00:00.000Z" }],
+    ]);
+    // Deleted under the new key on another machine: an older row stays deleted,
+    // a row an older ADE wrote after the deletion still copies.
+    const deletedSettingKeys = new Map([[current, [
+      { key: "mcp.off", updatedAt: "2026-02-01T00:00:00.000Z" },
+      { key: "ctx.recreated", updatedAt: "2026-02-01T00:00:00.000Z" },
+    ]]]);
+    const vaultSet = vi.fn(async (
+      scope: string,
+      kind: string,
+      key: string,
+      value: string,
+      _options?: { expectedAccountUserId?: string },
+    ) => {
+      putItem({ scope, kind, key, value, updatedAt: "3" });
+      return { ok: true as const, value: null };
+    });
+    const settingsSet = vi.fn(async (scope: string, key: string, value: unknown) => {
+      settingRows.set(`${scope}|${key}`, { scope, key, value });
+      return { ok: true as const, value: null };
+    });
+    const onMigrationSettled = vi.fn();
+    const runner = createAccountMigrationRunner({
+      accountBridge: { status: () => signedInStatus("user-a") },
+      accountVaultBridge: {
+        list: vi.fn(async (scope?: string | null) => ({
+          ok: true as const,
+          value: [...vaultRows.values()].filter((item) => item.scope === scope).map((item) => ({ ...item, value: null })),
+        })),
+        get: vi.fn(async (scope: string, kind: string, key: string) => ({
+          ok: true as const,
+          value: vaultRows.get(`${scope}|${kind}|${key}`)?.value ?? null,
+        })),
+        set: vaultSet,
+        sync: vi.fn(async () => ({ ok: true as const, value: "ready" as const })),
+      },
+      accountSettingsBridge: {
+        list: vi.fn(async (scope: string) => ({
+          ok: true as const,
+          value: [...settingRows.values()].filter((row) => row.scope === scope),
+        })),
+        set: settingsSet,
+        deletedKeys: vi.fn(async (scope: string) => ({ ok: true as const, value: deletedSettingKeys.get(scope) ?? [] })),
+        syncStatus: vi.fn(async () => ({ ok: true as const, value: "ready" as const })),
+      },
+      getContexts: () => [{ project: { rootPath: projectRoot } }],
+      getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
+      getReceiptDir: () => receiptDir,
+      getAccountMigrationGeneration: () => 0,
+      onMigrationSettled,
+    });
+
+    runner.start();
+    await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledTimes(1));
+    expect(vaultRows.get(`${current}|project_secret|ONLY_OLD`)?.value).toBe("old-value");
+    expect(vaultRows.get(`${current}|project_secret|BOTH`)?.value).toBe("new-both");
+    expect(vaultRows.get(`${current}|project_secret|DELETED_NEW`)?.deleted).toBe(true);
+    expect(vaultRows.get(`${legacy}|project_secret|ONLY_OLD`)?.value).toBe("old-value");
+    expect(settingRows.get(`${current}|ctx.fact`)?.value).toBe("old fact");
+    expect(settingRows.get(`${current}|cto.homeMachine`)?.value).toBe("new-home");
+    expect(settingRows.has(`${current}|mcp.off`)).toBe(false);
+    expect(settingRows.get(`${current}|ctx.recreated`)?.value).toBe("set again");
+    expect(vaultSet.mock.calls.map((call) => call[4])).toEqual([{ expectedAccountUserId: "user-a" }]);
+
+    // The receipt makes it once per project: a second run copies nothing.
+    runner.start();
+    await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledTimes(2));
+    expect(vaultSet).toHaveBeenCalledTimes(1);
+    expect(settingsSet).toHaveBeenCalledTimes(2);
   });
 });

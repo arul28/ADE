@@ -1,7 +1,10 @@
 import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
-import { getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
-import { detectConflictKind, parseNameOnly } from "./gitConflictState";
+import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { runGitPushOrThrow } from "./gitPushFailure";
+import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { detectConflictKind } from "./gitConflictState";
+import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -45,7 +48,8 @@ import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import { isRecord, safeJsonParse } from "../shared/utils";
+import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 type LaneInfo = {
   baseRef: string;
@@ -70,6 +74,12 @@ type CachedReadEntry<T> = {
 };
 
 type GitOriginRemoteSummary = {
+  /**
+   * Origin's URL without credentials. An SSH alias whose ssh config points at
+   * GitHub (`git@github.com-work:org/repo`) comes back with `github.com` as
+   * its host, because callers use this URL to name the GitHub repository and
+   * only this machine can read its ssh config.
+   */
   remoteUrl: string | null;
   branch: string | null;
 };
@@ -510,22 +520,24 @@ export function createGitOperationsService({
   const maybeFetchAndSync = async (lane: LaneInfo, mode: GitSyncMode, baseRef: string): Promise<void> => {
     const dirty = await isWorktreeDirty(lane.worktreePath);
     if (dirty) {
-      throw new Error("Lane has uncommitted changes. Commit or stash before sync.");
+      throw new AdeExpectedError("Lane has uncommitted changes. Commit or stash before sync.", "user");
     }
 
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    // Sync runs on the default 30 s action budget, so its fetch keeps the
+    // short Fetch-button bound.
+    await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);
       if (!gitDir) return false;
       const kind = detectConflictKind(gitDir);
       if (kind !== expected) return false;
-      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+      const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
         cwd: lane.worktreePath,
         timeoutMs: 10_000
       });
       if (unmergedRes.exitCode !== 0) return false;
-      return parseNameOnly(unmergedRes.stdout).length > 0;
+      return parseDiffNameOnlySorted(unmergedRes.stdout).length > 0;
     };
 
     if (mode === "rebase") {
@@ -1156,14 +1168,11 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
-      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha, "--"], {
+      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", "-z", sha, "--"], {
         cwd: lane.worktreePath,
         timeoutMs: 12_000
       });
-      return res
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
+      return parseDiffNameOnly(res);
     },
 
     async getCommitMessage(args: GitGetCommitMessageArgs): Promise<string> {
@@ -1379,7 +1388,7 @@ export function createGitOperationsService({
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitOrThrow(["fetch", "--prune"], {
+          await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,
@@ -1421,7 +1430,7 @@ export function createGitOperationsService({
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
           }
         });
         return action;
@@ -1496,18 +1505,9 @@ export function createGitOperationsService({
             timeoutMs: 10_000
           });
 
-          if (upstreamRes.exitCode === 0) {
-            const cmd = ["push"];
-            if (forceWithLease) cmd.push("--force-with-lease");
-            await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
-            return;
-          }
-
-          const cmd = ["push", "-u", "origin", lane.branchRef];
-          if (forceWithLease) {
-            cmd.push("--force-with-lease");
-          }
-          await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          const cmd = upstreamRes.exitCode === 0 ? ["push"] : ["push", "-u", "origin", lane.branchRef];
+          if (forceWithLease) cmd.push("--force-with-lease");
+          await runGitPushOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: lane.branchRef });
         }
       });
       return action;
@@ -1522,11 +1522,11 @@ export function createGitOperationsService({
         const gitDir = await getAbsoluteGitDir(lane.worktreePath);
         const kind = gitDir ? detectConflictKind(gitDir) : null;
 
-        const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
           cwd: lane.worktreePath,
           timeoutMs: 10_000
         });
-        const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
+        const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
         const inProgress = kind != null;
 
         return {
@@ -1732,14 +1732,17 @@ export function createGitOperationsService({
         runGitRepoCached(
           ["remote", "get-url", "origin"],
           { cwd: lane.worktreePath, timeoutMs: 8_000 },
-          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "stable" },
+          // Volatile: people repoint origin in a terminal, which no ADE
+          // command sees, so a long cache would keep the old repository.
+          { key: `remote-url:${lane.worktreePath}:origin`, cacheClass: "volatile" },
         ).catch(() => null),
         lane.branchRef?.trim()
           ? Promise.resolve(null)
-          : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+          : runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
       ]);
       const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
-      const remoteUrl = ((): string | null => {
+      const githubAliasUrl = rawRemote ? await resolveGithubSshAliasUrl(rawRemote) : null;
+      const remoteUrl = githubAliasUrl ?? ((): string | null => {
         if (!rawRemote) return rawRemote;
         try {
           const parsed = new URL(rawRemote);
@@ -1755,7 +1758,7 @@ export function createGitOperationsService({
       })();
       let branch = lane.branchRef?.trim() || null;
       if (!branch && branchRes?.exitCode === 0) {
-        const out = branchRes.stdout.trim();
+        const out = branchNameFromHeadRef(branchRes.stdout);
         branch = out && out !== "HEAD" ? out : null;
       }
       return { remoteUrl, branch };

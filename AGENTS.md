@@ -46,8 +46,12 @@ reopen it when you need to look again: each such save rebuilds main and
 relaunches the window, which jumps to the front over whatever the user is
 doing. Renderer-only edits hot-reload in place.
 When you finish, stop the app's process group and confirm its brain exited.
-Use Node 22 (`node -v`; an older `node` first on PATH fails the CLI build on
-`node:sqlite`). The full rules, and why each one exists:
+Memory: run one dev app per agent, only while you use it. Before you start a
+dev app, brain, simulator or build, check `memory_pressure | tail -1` and wait
+while free memory is under ~30%. A dev app an agent starts opens no DevTools
+window (attach over CDP; `ADE_OPEN_DEVTOOLS=1` opts back in).
+Use Node 24, the version in `.nvmrc` (`node -v`; an older `node` first on PATH
+fails the CLI build on `node:sqlite`). The full rules, and why each one exists:
 `docs/development/local-development.md` ("If you are an agent, start it
 detached").
 

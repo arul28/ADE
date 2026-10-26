@@ -9,7 +9,9 @@ import {
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
   isSecretBearingAdeAction,
+  userSettingWrite,
 } from "./actionPolicy";
+import { settingsEntryById } from "../../../shared/settingsManifest";
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
@@ -85,8 +87,31 @@ describe("isAllowedAdeAction", () => {
       expect(isAllowedAdeAction("account_vault", action)).toBe(true);
       expect(isCtoOnlyAdeAction("account_vault", action)).toBe(false);
     }
-    // Settings carry no credentials and stay agent-writable end to end.
-    expect(isCtoOnlyAdeAction("account_settings", "set")).toBe(false);
+    // Account settings are the user's preferences (`shared/settingsAgentAccess.ts`):
+    // an agent reads them but never changes them.
+    for (const action of ["set", "remove"]) expect(isCtoOnlyAdeAction("account_settings", action)).toBe(true);
+    for (const action of ["list", "get", "sync"]) expect(isCtoOnlyAdeAction("account_settings", action)).toBe(false);
+    // Provider sign-ins are the user's too: an agent may see and use an account, not add or re-point one.
+    for (const action of ["create", "remove", "signOut", "setDefault", "loginStart"]) {
+      expect(isCtoOnlyAdeAction("provider_instances", action)).toBe(true);
+    }
+    for (const action of ["list", "loginStatus", "loginCommand"]) expect(isCtoOnlyAdeAction("provider_instances", action)).toBe(false);
+    // A config save can rewrite owner-only keys; only the RPC path checks them key by key.
+    expect(isAllowedAdeAction("project_config", "save")).toBe(true);
+    expect(isAutomationAllowedAdeAction("project_config", "save")).toBe(false);
+  });
+
+  it("refuses every user-setting write to agents and links each to a Settings card that exists", () => {
+    const writes = Object.entries(ADE_ACTION_ALLOWLIST).flatMap(([domain, actions]) =>
+      (actions ?? []).map((action) => ({ domain: domain as AdeActionDomain, action, write: userSettingWrite(domain as AdeActionDomain, action) })))
+      .filter((entry) => entry.write);
+    expect(writes.length).toBeGreaterThan(20);
+    for (const { domain, action, write } of writes) {
+      expect(isCtoOnlyAdeAction(domain, action), `${domain}.${action}`).toBe(true);
+      if (write!.entryId) expect(settingsEntryById(write!.entryId), `${domain}.${action} -> ${write!.entryId}`).not.toBeNull();
+    }
+    expect(userSettingWrite("project_config", "setPrTranscriptGists")).toEqual({ entryId: "lanes-git.pr-chat-transcripts" });
+    expect(userSettingWrite("keep_awake", "getSnapshot")).toBeNull();
   });
 
   it("exposes caller lifecycle writes through the runtime session surface", () => {

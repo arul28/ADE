@@ -27,6 +27,11 @@ enum VirtualDisplayIdentity {
     /// `macDesktop.ts` produces the same prefix; the two must not drift.
     static let namePrefix = "ADE · "
 
+    /// True for a display any ADE helper made, this one or another.
+    static func isADEDisplay(_ displayId: CGDirectDisplayID) -> Bool {
+        CGDisplayVendorNumber(displayId) == vendorID
+    }
+
     /// A stable per-lane serial, so two runs of the same lane look like the same
     /// monitor to anything that remembers monitors.
     static func serial(forLane laneId: String) -> UInt32 {
@@ -69,6 +74,14 @@ final class VirtualDisplayHost {
     private var placementTopology: [DisplayTopologyEntry]?
     private var placementAttempts = 0
     private var placementFailureLogged = false
+    /// Reconnecting a cut-off real display moves the user's own screen, so it
+    /// gets the same three tries, counted per cut-off rather than per
+    /// arrangement: the move itself changes the arrangement, and a window
+    /// server that keeps undoing it must not be fought forever. Re-armed by a
+    /// pass that finds nothing cut off, or a new set of real displays.
+    private var reconnectDisplaySet: [CGDirectDisplayID]?
+    private var reconnectAttempts = 0
+    private var reconnectFailureLogged = false
 
     /// Why the private API could not be used, once something has tried.
     private(set) var unavailableReason: String?
@@ -173,6 +186,12 @@ final class VirtualDisplayHost {
     /// is scoped to this login session; it never changes the saved arrangement.
     /// A stubborn window server gets three attempts per stable display topology,
     /// then the pointer fence remains the safety net until a display changes.
+    ///
+    /// A real display that is reachable only through a lane display (an AirPlay
+    /// or new monitor macOS put beside one) is first moved flush against the
+    /// user's other screens, in the same session-only configuration. Moving only
+    /// the lane displays away would leave it floating, and macOS closes the gap
+    /// by pulling a lane display back next to it.
     func repositionVirtualDisplays() {
         lock.lock()
         defer { lock.unlock() }
@@ -184,7 +203,7 @@ final class VirtualDisplayHost {
 
         let active = Self.activeDisplays()
         let topology = active.map { display in
-            let isADE = CGDisplayVendorNumber(display.id) == VirtualDisplayIdentity.vendorID
+            let isADE = VirtualDisplayIdentity.isADEDisplay(display.id)
             let mode = CGDisplayCopyDisplayMode(display.id)
             return DisplayTopologyEntry(
                 displayId: display.id,
@@ -202,45 +221,59 @@ final class VirtualDisplayHost {
             placementFailureLogged = false
         }
 
-        let realFrames = active
-            .filter { CGDisplayVendorNumber($0.id) != VirtualDisplayIdentity.vendorID }
-            .map(\.frame)
+        let layout = DisplayLayout.current()
         let managedIds = Set(managed.map(\.displayId))
-        let otherLaneFrames = active
-            .filter {
-                CGDisplayVendorNumber($0.id) == VirtualDisplayIdentity.vendorID
-                    && !managedIds.contains($0.id)
-            }
+        let otherLaneFrames = layout.lanes
+            .filter { !managedIds.contains($0.id) }
             .map(\.frame)
-        guard let planned = Geometry.cornerChainPlacements(
+        let reconnect = reconnectedRealDisplays(layout, obstacleDisplayFrames: otherLaneFrames)
+        let realFrames = reconnect.frames
+        let realMoves = reconnect.moves
+        // A cut-off real display is moved even when the lane chain cannot be:
+        // the person reaching their own screen matters more than the corner.
+        let planned = Geometry.cornerChainPlacements(
             realDisplayFrames: realFrames,
             laneDisplayTemplates: managed.map(\.placement),
             obstacleDisplayFrames: otherLaneFrames,
             requiresIntegralOrigins: true
-        ) else {
-            if !placementFailureLogged {
-                placementFailureLogged = true
-                log("no safe integral corner chain is available for the current displays; the pointer fence remains active")
-            }
-            return
+        )
+        if planned == nil, !placementFailureLogged {
+            placementFailureLogged = true
+            log("no safe integral corner chain is available for the current displays; the pointer fence remains active")
         }
-
-        let targets = Array(zip(managed, planned))
-        guard targets.contains(where: { $0.0.placement.origin != $0.1.origin }) else { return }
-        guard placementAttempts < Self.maximumPlacementAttempts else {
+        var targets = planned.map { Array(zip(managed, $0)) } ?? []
+        if !targets.contains(where: { $0.0.placement.origin != $0.1.origin }) {
+            targets = []
+        } else if placementAttempts >= Self.maximumPlacementAttempts {
             if !placementFailureLogged {
                 placementFailureLogged = true
                 log("macOS did not keep the lane displays at corner-only positions after \(Self.maximumPlacementAttempts) attempts; the pointer fence remains active")
             }
-            return
+            targets = []
+        } else {
+            placementAttempts += 1
         }
-        placementAttempts += 1
+        guard !realMoves.isEmpty || !targets.isEmpty else { return }
 
         var configuration: CGDisplayConfigRef?
         let begin = CGBeginDisplayConfiguration(&configuration)
         guard begin == .success, let configuration else {
             log("could not begin a session-only display placement (CGError \(begin.rawValue))")
             return
+        }
+
+        for move in realMoves {
+            let status = CGConfigureDisplayOrigin(
+                configuration,
+                move.displayId,
+                Int32(move.origin.x),
+                Int32(move.origin.y)
+            )
+            guard status == .success else {
+                CGCancelDisplayConfiguration(configuration)
+                log("macOS refused to move display \(move.displayId) next to the user's other screens (CGError \(status.rawValue))")
+                return
+            }
         }
 
         for (handle, target) in targets {
@@ -262,19 +295,70 @@ final class VirtualDisplayHost {
             log("macOS refused the session-only corner placement (CGError \(complete.rawValue))")
             return
         }
+        if !realMoves.isEmpty {
+            reconnectAttempts += 1
+            log("\(reconnect.names) could be reached only through a lane display; moved it beside the user's other screens for this session (attempt \(reconnectAttempts)/\(Self.maximumPlacementAttempts))")
+        }
 
         let didKeepPlan = targets.allSatisfy { handle, target in
             let actual = CGDisplayBounds(handle.displayId)
             return actual.origin == target.origin
                 && actual.width == target.width
                 && actual.height == target.height
-        }
+        } && realMoves.allSatisfy { CGDisplayBounds($0.displayId).origin == $0.origin }
         if !didKeepPlan {
-            log("macOS rearranged a lane display after placement attempt \(placementAttempts)/\(Self.maximumPlacementAttempts)")
+            log("macOS did not keep the planned display positions after placement attempt \(placementAttempts)/\(Self.maximumPlacementAttempts)")
         } else {
             placementAttempts = 0
             placementFailureLogged = false
         }
+    }
+
+    /// The real display frames to plan against, and the real displays to move
+    /// so none of them is reachable only through a lane display. Planning
+    /// only: the attempt is counted once the window server accepts it. Called with
+    /// `lock` held.
+    private func reconnectedRealDisplays(
+        _ layout: DisplayLayout,
+        obstacleDisplayFrames: [CGRect]
+    ) -> (frames: [CGRect], moves: [(displayId: CGDirectDisplayID, origin: CGPoint)], names: String) {
+        let frames = layout.real.map(\.frame)
+        let displaySet = layout.real.map(\.id).sorted()
+        if displaySet != reconnectDisplaySet {
+            reconnectDisplaySet = displaySet
+            reconnectAttempts = 0
+            reconnectFailureLogged = false
+        }
+        guard let mainIndex = layout.mainIndex else { return (frames, [], "") }
+        let cutOff = Geometry.cutOffRealDisplays(realDisplayFrames: frames, mainIndex: mainIndex)
+        guard !cutOff.isEmpty else {
+            // A pass with nothing cut off proves the last repair held, so a
+            // later cut-off gets its own three tries. Re-armed here, not when
+            // the move is applied: a window server that undoes the move a beat
+            // later never produces this pass and still runs out of attempts.
+            reconnectAttempts = 0
+            reconnectFailureLogged = false
+            return (frames, [], "")
+        }
+
+        let names = cutOff.map { "display \(layout.real[$0].id)" }.joined(separator: ", ")
+        guard reconnectAttempts < Self.maximumPlacementAttempts,
+              let reconnected = Geometry.reconnectedRealDisplayFrames(
+                  realDisplayFrames: frames,
+                  mainIndex: mainIndex,
+                  obstacleDisplayFrames: obstacleDisplayFrames
+              )
+        else {
+            if !reconnectFailureLogged {
+                reconnectFailureLogged = true
+                log("\(names) can be reached only through a lane display and could not be moved beside the user's other screens; the pointer fence lets the pointer cross the lane displays on the way")
+            }
+            return (frames, [], names)
+        }
+        let moves = zip(layout.real, reconnected)
+            .filter { $0.0.frame.origin != $0.1.origin }
+            .map { (displayId: $0.0.id, origin: $0.1.origin) }
+        return (reconnected, moves, names)
     }
 
     private static func activeDisplays() -> [(id: CGDirectDisplayID, frame: CGRect)] {

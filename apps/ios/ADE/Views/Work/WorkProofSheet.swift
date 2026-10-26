@@ -566,7 +566,8 @@ struct WorkProofViewer: View {
           WorkProofPage(
             artifact: artifact,
             content: artifactContent[artifact.id],
-            onPlay: { Task { await onLoadArtifact(artifact, .play) } }
+            onPlay: { Task { await onLoadArtifact(artifact, .play) } },
+            onRetry: { Task { await onLoadArtifact(artifact, .retry) } }
           )
             .tag(artifact.id)
             .task(id: artifact.id) {
@@ -613,6 +614,7 @@ private struct WorkProofPage: View {
   let artifact: ComputerUseArtifactSummary
   let content: WorkLoadedArtifactContent?
   let onPlay: () -> Void
+  let onRetry: () -> Void
 
   var body: some View {
     ZStack {
@@ -638,7 +640,12 @@ private struct WorkProofPage: View {
             .padding(16)
         }
       case .error(let message):
-        errorMessage(message)
+        VStack(spacing: 12) {
+          errorMessage(message)
+          Button("Retry", action: onRetry)
+            .buttonStyle(.bordered)
+            .tint(Color.white)
+        }
       case .none:
         ProgressView()
           .tint(Color.white)

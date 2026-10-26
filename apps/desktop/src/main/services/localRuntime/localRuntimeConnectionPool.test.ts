@@ -49,7 +49,9 @@ import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+  localRuntimeSourceCliStartupConnectMaxMs,
 } from "./localRuntimeTimeoutPolicy";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 type RawPendingRequest = {
   resolve: (value: unknown) => void;
@@ -186,14 +188,10 @@ function withTsxNodeOptions(value: string | undefined, loaderPath: string): stri
   return existing ? `${existing} --import ${loaderUrl}` : `--import ${loaderUrl}`;
 }
 
-// Mirrors LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS in the timeout policy: a cold Windows
-// runtime start (process spawn + tsx transform + SQLite init) is genuinely
-// slower than on macOS/Linux, so production already waits 30s there against 10s
-// elsewhere. The readiness budget below is a ceiling, not a sleep — a healthy
-// daemon is reachable in a few seconds on every platform — so widening it on
-// Windows only removes a false failure under load without slowing the suite or
-// relaxing a single assertion.
-const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+// The brain this suite spawns runs from source, like the pool's own spawn, so
+// it gets the source-CLI allowance. A ceiling, not a sleep: a healthy brain is
+// reachable in a few seconds; a loaded CI runner on Node 24 can need 15.
+const RUNTIME_SOCKET_READY_TIMEOUT_MS = localRuntimeSourceCliStartupConnectMaxMs(process.platform);
 
 async function waitForRuntimeSocket(
   socketPath: string,
@@ -2408,7 +2406,7 @@ describe("local runtime connection pool", () => {
       expect.objectContaining({
         arguments: expect.objectContaining({ domain: "lane", action: "delete" }),
       }),
-      { timeoutMs: 4 * 60_000 },
+      { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS },
     );
 
     resolveCall({ domain: "lane", action: "delete", result: null, statusHints: {} });

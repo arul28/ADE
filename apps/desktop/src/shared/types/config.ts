@@ -2103,6 +2103,13 @@ export type AiChatConfig = {
    */
   promptSuggestionsEnabled?: boolean;
   /**
+   * The same suggestion for Codex chats, which Codex does not suggest itself.
+   * On unless set to false: one call on the cheap helper (Luna) per finished
+   * turn. Separate from `promptSuggestionsEnabled` so Codex can be on while
+   * the other providers stay off.
+   */
+  codexPromptSuggestionsEnabled?: boolean;
+  /**
    * "Smart decisions (Jev)": let ADE ask the Jev decision model small
    * questions (did a turn end on a question?) before its built-in rules. On
    * unless set to false. OpenCode's free Jev needs no sign-in; the ADE bonus

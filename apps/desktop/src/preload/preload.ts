@@ -416,6 +416,8 @@ import type {
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
+  CancelLaneGitWriteResult,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -715,6 +717,8 @@ import type {
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
@@ -6846,8 +6850,9 @@ const adeBridge = {
     },
     previewBranchSwitch: async (
       args: LaneBranchSwitchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneBranchSwitchPreview> =>
-      callProjectRuntimeActionOr("lane", "previewBranchSwitch", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "previewBranchSwitch", { args }, () =>
         ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
       ),
     switchBranch: async (
@@ -6971,14 +6976,27 @@ const adeBridge = {
       }
       clearGitReadCaches();
     },
-    cancelDelete: async (args: {
-      laneId: string;
-    }): Promise<{ cancelled: boolean; reason?: string }> =>
-      callProjectRuntimeActionOr(
+    cancelDelete: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ cancelled: boolean; reason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "cancelDelete",
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+      ),
+    cancelGitWrite: async (
+      args: CancelLaneGitWriteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CancelLaneGitWriteResult> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "lane",
+        "cancelGitWrite",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCancelGitWrite, args),
       ),
     listDeleteProgress: async (): Promise<LaneDeleteProgress[]> =>
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
@@ -8881,6 +8899,13 @@ const adeBridge = {
     ): Promise<AgentChatContextUsage | null> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "getContextUsage", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
+      ),
+    getClaudeUsage: async (
+      args: AgentChatClaudeUsageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ClaudeUsageReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getClaudeUsage", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetClaudeUsage, args),
       ),
     rewindFiles: async (
       args: AgentChatRewindFilesArgs,

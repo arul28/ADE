@@ -27,7 +27,7 @@ import type {
   ProjectSecretSummary,
   ProjectSecretValueResult,
 } from "../../../shared/types/projectSecrets";
-import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProjectSummary";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import {
   describeVaultFailure,
@@ -233,6 +233,17 @@ export function createProjectSecretService(projectRoot: string, options: Project
     return hasAccountVault() ? "account" : "device";
   };
 
+  /**
+   * The scopes a write goes to. A checkout whose origin is an SSH alias of
+   * GitHub reads `repo:github.com/...`, but an older ADE on another machine
+   * still reads the alias key (`repo:github.com-work/...`). Writing both keeps
+   * a rotated or revoked secret reaching those machines too.
+   */
+  const vaultWriteScopes = (accountScope: string): string[] => {
+    const aliasScope = accountRepoScopeKey(readGitConfigOriginUrl(projectRoot));
+    return aliasScope && aliasScope !== accountScope ? [accountScope, aliasScope] : [accountScope];
+  };
+
   const syncSecretToVault = (
     name: string,
     value: string,
@@ -240,30 +251,34 @@ export function createProjectSecretService(projectRoot: string, options: Project
     accountScope = getAccountScope(),
   ): void => {
     if (storage !== "account" || !accountScope) return;
-    fireAndForgetVaultWrite(
-      {
-        getAccountVault: options.getAccountVault,
-        logger: options.logger,
-        logEvent: "project_secret.account_vault_sync_failed",
-        context: { name },
-      },
-      "set",
-      (vault) => vault.set(accountScope, "project_secret", name, value),
-    );
+    for (const scope of vaultWriteScopes(accountScope)) {
+      fireAndForgetVaultWrite(
+        {
+          getAccountVault: options.getAccountVault,
+          logger: options.logger,
+          logEvent: "project_secret.account_vault_sync_failed",
+          context: { name },
+        },
+        "set",
+        (vault) => vault.set(scope, "project_secret", name, value),
+      );
+    }
   };
 
   const removeSecretFromVault = (name: string, storage: ProjectSecretStorage, accountScope = getAccountScope()): void => {
     if (storage !== "account" || !accountScope) return;
-    fireAndForgetVaultWrite(
-      {
-        getAccountVault: options.getAccountVault,
-        logger: options.logger,
-        logEvent: "project_secret.account_vault_sync_failed",
-        context: { name },
-      },
-      "remove",
-      (vault) => vault.remove(accountScope, "project_secret", name),
-    );
+    for (const scope of vaultWriteScopes(accountScope)) {
+      fireAndForgetVaultWrite(
+        {
+          getAccountVault: options.getAccountVault,
+          logger: options.logger,
+          logEvent: "project_secret.account_vault_sync_failed",
+          context: { name },
+        },
+        "remove",
+        (vault) => vault.remove(scope, "project_secret", name),
+      );
+    }
   };
 
   const readIndex = (): ProjectSecretIndex => {

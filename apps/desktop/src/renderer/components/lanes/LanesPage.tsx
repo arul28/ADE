@@ -1148,6 +1148,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLaneContextMenu({ laneId, x: event.clientX, y: event.clientY });
   }, [foreignRowByKey, multiSelectedLaneIds]);
 
+  // Sent to the lane's own machine, which refuses once the folder is gone.
+  const handleStopDelete = useCallback((rowKey: string) => {
+    const foreignRow = foreignRowByKeyRef.current.get(rowKey);
+    const laneId = foreignRow ? foreignRow.lane.id : rowKey;
+    const laneName = foreignRow?.lane.name ?? lanesByIdRef.current?.get(rowKey)?.name ?? rowKey;
+    const showRefusal = (message: string) => showToast({
+      title: `Could not stop deleting ${laneName}`,
+      message,
+      tone: "error",
+    });
+    void window.ade.lanes.cancelDelete({ laneId }, foreignRow?.pin ?? null)
+      .then((result) => {
+        if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
+      })
+      .catch((error: unknown) => showRefusal(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error))));
+  }, [foreignRowByKeyRef]);
+
   // The overview's "…" button opens the same menu, just under the button.
   const openLaneMenuAt = useCallback((laneId: string, anchor: DOMRect) => {
     setLaneContextMenu({ laneId, x: anchor.left, y: anchor.bottom + 4 });
@@ -2288,6 +2305,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       agentsByLaneId={agentsByLaneId}
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}
+      onStopDelete={handleStopDelete}
       creatingLaneIds={creatingLaneIds}
       pendingCreatingIssues={pendingCreatingIssues}
       pulsingLaneId={pulsingLaneId}

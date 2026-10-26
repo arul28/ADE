@@ -39,6 +39,12 @@ export type ReasoningEffortPickerProps = {
    * that stacks on any level. Omitted for providers that do not read it.
    */
   ultrathink?: { active: boolean; onChange: (active: boolean) => void } | null;
+  /**
+   * Codex Daybreak (broader access for authorized cybersecurity work), shown
+   * under the levels only for a model the signed-in account may use it on.
+   * It is a chat setting, not a level, so it stacks on any effort.
+   */
+  daybreak?: { active: boolean; onChange: (active: boolean) => void } | null;
   copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
   copilotAutoTierPending?: boolean;
@@ -222,6 +228,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   catalogScopeKey,
   catalogRevision = 0,
   ultrathink,
+  daybreak,
   copilotAutoTier,
   onCopilotAutoTierChange,
   copilotAutoTierPending = false,
@@ -701,26 +708,24 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
               </p>
             ) : null}
             {ultrathink ? (
-              <>
-                <div className="mx-0.5 mt-2.5 h-px bg-fg/[0.06]" />
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={ultrathink.active}
-                  disabled={disabled}
-                  data-reasoning-ultrathink-switch="true"
-                  onClick={() => ultrathink.onChange(!ultrathink.active)}
-                  className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/25"
-                >
-                  <span className="flex min-w-0 flex-col gap-1">
-                    <span className="ade-ultrathink-text self-start font-sans text-[12px] font-semibold leading-none">Ultrathink</span>
-                    <span className="font-sans text-[10px] leading-4 text-muted-fg/60">
-                      Asks Claude to reason extra hard on this message only.
-                    </span>
-                  </span>
-                  <span aria-hidden className="ade-ultrathink-switch" data-on={ultrathink.active ? "true" : "false"} />
-                </button>
-              </>
+              <PickerSwitchRow
+                tone="ultrathink"
+                label="Ultrathink"
+                labelClassName="ade-ultrathink-text"
+                description="Asks Claude to reason extra hard on this message only."
+                control={ultrathink}
+                disabled={disabled}
+              />
+            ) : null}
+            {daybreak ? (
+              <PickerSwitchRow
+                tone="daybreak"
+                label="Daybreak"
+                labelClassName="text-fg/85"
+                description="Broader access for authorized cybersecurity work in this chat."
+                control={daybreak}
+                disabled={disabled}
+              />
             ) : null}
           </div>
         </Popover.Content>
@@ -728,6 +733,48 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     </Popover.Root>
   );
 });
+
+/**
+ * An on/off row under the effort levels (Claude's Ultrathink, Codex's
+ * Daybreak): a setting that stacks on any level rather than being one.
+ * `data-reasoning-<tone>-switch` lets tests and tooling find each row.
+ */
+function PickerSwitchRow({
+  tone,
+  label,
+  labelClassName,
+  description,
+  control,
+  disabled,
+}: {
+  tone: "ultrathink" | "daybreak";
+  label: string;
+  labelClassName: string;
+  description: string;
+  control: { active: boolean; onChange: (active: boolean) => void };
+  disabled: boolean;
+}) {
+  return (
+    <>
+      <div className="mx-0.5 mt-2.5 h-px bg-fg/[0.06]" />
+      <button
+        type="button"
+        role="switch"
+        aria-checked={control.active}
+        disabled={disabled}
+        {...{ [`data-reasoning-${tone}-switch`]: "true" }}
+        onClick={() => control.onChange(!control.active)}
+        className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/25"
+      >
+        <span className="flex min-w-0 flex-col gap-1">
+          <span className={`${labelClassName} self-start font-sans text-[12px] font-semibold leading-none`}>{label}</span>
+          <span className="font-sans text-[10px] leading-4 text-muted-fg/60">{description}</span>
+        </span>
+        <span aria-hidden className="ade-picker-switch" data-tone={tone} data-on={control.active ? "true" : "false"} />
+      </button>
+    </>
+  );
+}
 
 type TriggerProps = {
   label: string;

@@ -22,6 +22,8 @@ import {
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
+import { openPlaceById } from "../../../shared/openPlaces";
+import { settingsRouteFor } from "../../../shared/settingsManifest";
 
 // A base only used to give relative paths a parseable origin; never emitted.
 const DUMMY_ORIGIN = "https://web-shell.invalid";
@@ -91,6 +93,14 @@ export function targetToWebPath(target: DeeplinkTarget): string {
       params.set("linearIssue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
       return withQuery("/work", params);
+    case "settings":
+      // The web client has one machine (the bound one), so `machineId` has
+      // no page to pick here; an unknown id opens Settings itself.
+      return settingsRouteFor(target.entryId);
+    case "open": {
+      const place = openPlaceById(target.place);
+      return place?.target.kind === "route" ? place.target.route : "/work";
+    }
   }
 }
 

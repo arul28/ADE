@@ -111,6 +111,10 @@ struct WorkSmartLink: Equatable {
     case mcp
     /// An `[Image #k]` attachment token: the k-th image the message carries.
     case image
+    /// One card in the desktop's Settings (`ade://settings/<id>`).
+    case setting
+    /// A desktop page from the open list (`ade://open/<place>`).
+    case place
 
     /// Single-cell glyphs, matching `CHIP_GLYPH` on the desktop.
     var glyph: String {
@@ -137,6 +141,8 @@ struct WorkSmartLink: Equatable {
       case .machine: return "▢"
       case .mcp: return "⚙"
       case .image: return "🖼"
+      case .setting: return "⚙"
+      case .place: return "↪"
       }
     }
 
@@ -166,6 +172,8 @@ struct WorkSmartLink: Equatable {
       case .machine: return "desktopcomputer"
       case .mcp: return "point.3.connected.trianglepath.dotted"
       case .image: return "photo"
+      case .setting: return "gearshape"
+      case .place: return "arrow.right.circle"
       }
     }
   }
@@ -284,6 +292,12 @@ struct WorkSmartLink: Equatable {
       return segments.count >= 5 && segments[3].lowercased() == "branch" ? .branch : nil
     case "linear-issue":
       return segments.count == 2 && isLinearIdentifier(segments[1]) ? .linearIssue : nil
+    // Only ids this build's catalog knows: an unknown one stays a generic ADE
+    // link, exactly as on the desktop.
+    case "settings":
+      return segments.count == 2 && WorkSettingsCatalog.settings[segments[1].lowercased()] != nil ? .setting : nil
+    case "open":
+      return segments.count == 2 && WorkSettingsCatalog.places[segments[1].lowercased()] != nil ? .place : nil
     default:
       return nil
     }
@@ -317,6 +331,8 @@ struct WorkSmartLink: Equatable {
     case .artifact: return "Artifact \(shortId(segments[1]))"
     case .branch: return segments[4...].joined(separator: "/")
     case .linearIssue: return segments[1].uppercased()
+    case .setting: return WorkSettingsCatalog.settings[segments[1].lowercased()]?.path
+    case .place: return WorkSettingsCatalog.places[segments[1].lowercased()]
     default:
       return nil
     }

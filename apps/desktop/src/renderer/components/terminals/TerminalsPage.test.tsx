@@ -488,10 +488,6 @@ vi.mock("./SessionContextMenu", () => ({
       session: TerminalSessionSummary,
       binding?: OpenProjectBinding | null,
     ) => void;
-    onSettle: (
-      session: TerminalSessionSummary,
-      binding?: OpenProjectBinding | null,
-    ) => void;
     onOpenChatHandoff: (
       session: TerminalSessionSummary,
       intent: "local" | "remote",
@@ -517,12 +513,6 @@ vi.mock("./SessionContextMenu", () => ({
           onClick={() => props.onDeleteChat(session, props.menu?.binding)}
         >
           context delete chat {session.id}
-        </button>
-        <button
-          type="button"
-          onClick={() => props.onSettle(session, props.menu?.binding)}
-        >
-          context settle {session.id}
         </button>
         <button
           type="button"
@@ -2340,49 +2330,6 @@ describe("TerminalsPage chat session activation", () => {
       expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-studio" }, binding);
       expect(crossMachineMocks.cancelOptimistic).toHaveBeenCalledWith(binding, "chat-studio");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-studio");
-    });
-  });
-
-  it("delegates pending-input dismissal and settlement to one backend operation", async () => {
-    const pendingChat = workMocks.makeTerminalSession(
-      "chat-pending",
-      "lane-primary",
-      "codex-chat",
-      {
-        ptyId: null,
-        runtimeState: "waiting-input",
-        pendingInputItemId: "pending-1",
-      },
-    );
-    const settle = vi.fn().mockResolvedValue(undefined);
-
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: {
-        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
-        sessions: { settle },
-      },
-    });
-    workMocks.currentWork = {
-      ...workMocks.baseWork,
-      sessions: [pendingChat],
-      visibleSessions: [pendingChat],
-      runningFiltered: [],
-      awaitingInputFiltered: [pendingChat],
-      runningSessions: [pendingChat],
-      filtered: [pendingChat],
-      sessionsGroupedByLane: new Map([["lane-primary", [pendingChat]]]),
-      closingPtyIds: new Set<string>(),
-    };
-
-    render(<TerminalsPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "context menu chat-pending" }));
-    fireEvent.click(await screen.findByRole("button", { name: "context settle chat-pending" }));
-
-    await waitFor(() => {
-      expect(settle).toHaveBeenCalledWith("chat-pending", {
-        dismissPendingInput: true,
-      });
     });
   });
 

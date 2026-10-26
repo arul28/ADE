@@ -89,11 +89,24 @@ says `extra: true`, so a lost row is re-adopted as an extra, never as the lane's
 own device. They are reached only by name: `--device <udid|name>` on any command
 an agent may send runs that command on the extra (booted first, and its use
 noted for idle power-off); without `--device` everything still drives the lane's
-own device, and the pane never streams an extra. The cleanup pass treats them as
+own device, and the pane never streams an extra. `boot --device <udid>` boots one
+and answers `Booted` only after `simctl` lists it so, after `bootstatus`. The
+cleanup pass treats them as
 held, idle power-off turns them off like any ADE device, and the lane's end
 (archive or delete) deletes them with the lane's own. `device-delete --device
 <udid>` deletes one now. The picker lists them with the held devices, never as
 free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
+
+An extra never streams, records, launches a build or runs tests: those are the
+lane's device. `ade apple device-promote --device <udid|name>`
+(`ios_simulator.devicePromote`) makes an extra the lane's own device, keeping
+what is installed and signed in on it, for the case where the extra already has
+the build. The swap runs in the lane's lifecycle queue and is refused with
+`APPLE_LANE_DEVICE_BUSY` while the old device is streaming, recording, running
+tests or a launch, or while another chat holds the lane's lease. The old device
+is kept: an ADE device becomes an extra in the promoted one's slot, and an
+attached simulator is detached back to the user. Every path that refuses an
+extra prints the promote verb it should have used.
 
 ### Runtimes and Xcode
 
@@ -237,6 +250,17 @@ person may be driving a device in its window, which leaves no trace ADE can
 read. The power-off names the udid the pass checked. Attached devices are never
 powered off by the timer.
 
+The pass also records WHY it powered a device off, in
+`<device dir>/ade-powered-off` (`at`, `reason` — `idle` or a Clean up — and the
+idle minutes). The next command that boots the device, `ade apple status` and
+`device-list` then say so: `ADE powered iPad Air 11 off after 31 min idle at
+10:12; the next --device command boots it again.` without it, an agent found its
+device off and blamed its own last command. The record is cleared when ADE boots
+the device again and ignored while `simctl` lists it Booted; a record from an
+earlier day carries its date. Every call that names an extra counts as use,
+reads included (`--device` on `screenshot`, `snapshot`, `tap`, …), so the timer
+cannot power off a device an agent is reading.
+
 ### Tests
 
 `ade apple test` (`runTests`) runs `xcodebuild test` on the lane's device with
@@ -245,7 +269,10 @@ bundle under `.ade/cache/ios-simulator/test-results` (the newest three kept).
 Output streams to `.ade/cache/ios-simulator/test-logs/<stamp>.log`. One run at a
 time per ADE runtime (`APPLE_TEST_RUN_BUSY`), claimed before the device boots. A failing test resolves with
 `passed: false`, the failing lines and the log path. Default timeout 30 minutes,
-at most 2 hours.
+at most 2 hours. `testsExecuted`, `testsFailed` and `testsSkipped` come from the
+run-wide `Executed N tests, with K tests skipped and M failures` line — the one
+under `Test Suite 'All tests'`/`'Selected tests'`, not the last per-suite line,
+which is why a 1,273-test run no longer reported the 48 of its last suite.
 
 The verbs that end a lane's hold on its device live in
 `laneDeviceLifecycle.ts`. Each one tears down the recording, the stream, the
@@ -418,6 +445,13 @@ it. The rail's
 orientation control shows how the phone is held (CoreDevice names the
 device's orientation, the control the interface's, so the landscapes swap).
 The posture watcher also reports a change of the live panel's turn.
+
+A fold to a preset settles on the panel AND the picture: book, laptop and open
+all light the inner panel, so a panel-only check returned while the picture was
+still turning and printed the old shape (`fold` said wide for a tall laptop).
+`fold` now waits for the expected shape (`laptop` tall, `book`/`open` wide), or
+for two equal reads on a pose whose hold it cannot predict (cover poses and raw
+angles), and it never waits past the settle deadline.
 
 The orientation names are how the PHONE is held, so on the inner display they
 read backwards to anyone who means the picture: held portrait (open, book) the
@@ -656,6 +690,7 @@ and `--bitrate-kbps` survive on `stream-start`.
 ```bash
 ade --socket apple device-create [--runtime <r>] [--device-type <t>] [--from <simulator>] [--name <name>] --text
 ade --socket apple device-attach --simulator <udid|name> --text
+ade --socket apple device-promote --device <udid|name> [--ignore-ownership] --text
 ade --socket apple device-list [--installed] [--runtimes] [--disk] [--lane <lane-id>] --text
 ade --socket apple device-delete [--force] --text
 ade --socket apple device-cleanup [--power-off-idle] --text
@@ -732,8 +767,14 @@ that was not granted (`acquired no`) exits 1, so `lease --wait N && <work>`
 never runs the work without it.
 
 `type --submit` presses Return after the text, so a search or form submits.
-With `--submit` and no text, it presses Return alone. `key` presses one named
-key: `return` (alias `enter`) or `tab`. Both send the key through `typeText`.
+With `--submit` and no text, it presses Return alone. `key` presses one real key
+through the helper's HID keyboard (`pressKey`), held with `--cmd`, `--shift`,
+`--alt` or `--ctrl`: `return` (alias `enter`), `escape` (`esc`), `delete`
+(`backspace`), `forward-delete`, `tab`, `space`, `up`, `down`, `left`, `right`,
+`home`, `end`, `page-up`, `page-down`, or one letter or digit (`key f --cmd`).
+Every modifier is released even when the press fails, so the device never keeps
+⌘ held. `typeText` only spells characters, which is why arrows and shortcuts
+needed this path.
 
 `frame` grabs a decoded stream frame and fails with
 `APPLE_STREAM_NOT_RUNNING` when no stream is running. `screenshot` does not
@@ -835,7 +876,7 @@ forwarded.
 | `start` | `deviceStart` | `--udid`, `--runtime`, `--device-type`, `--create`, `--lane` |
 | `stop` (`device-stop`, `power-off`, `poweroff`) | `deviceStop` | `--udid/--device`, `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
 | `type` (`text`) | `typeText` | positional text or `--value`, `--submit`, `--device` |
-| `key` | `typeText` | positional `return\|enter\|tab`, `--device` |
+| `key` | `pressKey` | positional key (named, or one letter/digit), `--cmd`/`--shift`/`--alt`/`--ctrl`, `--device` |
 | `show` (`reveal`) | show request (not an `ios_simulator` action) | `--floating`, `--session` |
 | `open-device` (`open-sim`, `boot`) | `openDevice` | `--device/--udid`, `--lane`, `--chat-session`, `--no-window`, `--force` |
 | `close-device` (`close-sim`) | `closeDevice` | `--device`, `--chat-session`, `--force`, `--ignore-ownership`, `--shutdown` |
@@ -901,7 +942,18 @@ One backend: the helper encodes H.264 from the simulator's IOSurface
 framebuffer. `stream-start` takes `--fps`, `--scale-factor`, and
 `--bitrate-kbps`. It does not take `--backend`. `getStreamStatus` reports
 shape, fps, and bitrate with `url` and `token` null; only `stream-start`
-returns those.
+returns those. It also lifts the transport's point size to the top as
+`pointWidth`/`pointHeight` (`screen points` in `--text`), the plane `tap`,
+`drag` and `swipe` take; both are null while no stream runs, so `stream-start`
+first. A snapshot taken while a stream runs scales its elements from that point
+size (both axes must agree), which is how the Duo's inner panel reads @3x
+instead of the @2x the element-frame guess picked. With no stream it reads the
+device type's own scale: `simctl list devicetypes -j` names the profile bundle,
+and its `Contents/Resources/capabilities.plist` lists each display's `scale`
+(`deviceTypeScreenScale`; the iPhone Duo's two integrated panels are both @3x).
+A screenshot is in the device's native pixels, so that scale holds; it is read
+once per device. The element-frame guess is left for a profile that names no
+scale, or whose screens disagree.
 
 A viewer that is not visible stops its stream. A stall of ~3s shows
 Reconnect. First frame timeout is 5s.
@@ -1031,6 +1083,14 @@ result reports `matchCount`.
 | `pos:` | Tree path | Nothing |
 
 Read a `pos:` ref as a warning. Ask for an accessibility identifier.
+
+The snapshot's label column prints a real label bare; an element without one
+shows `#name` for its accessibility identifier, `component:name`, or
+`value:text`, and a line above the table says so when any row uses one. A
+`--label` that no element carries still matches an exact identifier, and the
+result's `note` says which flag to use next time. A miss names the field the
+closest match was found in and the flag that queries it (`The closest is the
+identifier "BackButton"; query it with --identifier "BackButton".`).
 
 Snapshot and inspect are served by the helper's accessibility tree, with the
 DEBUG ADE Inspector kit as a source overlay. See [inspector.md](./inspector.md).

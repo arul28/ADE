@@ -86,6 +86,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
   AgentChatDroidPermissionMode,
   AgentChatGetSummaryArgs,
   AgentChatGetTurnFileDiffArgs,
@@ -1206,6 +1207,13 @@ function parseAgentChatContextUsageArgs(value: Record<string, unknown>): AgentCh
   return parseSessionIdArgs(value, "chat.getContextUsage");
 }
 
+function parseAgentChatClaudeUsageArgs(value: Record<string, unknown>): AgentChatClaudeUsageArgs {
+  return {
+    ...parseSessionIdArgs(value, "chat.getClaudeUsage"),
+    ...(value.skipBehaviors === true ? { skipBehaviors: true } : {}),
+  };
+}
+
 function parseAgentChatRewindFilesArgs(value: Record<string, unknown>): AgentChatRewindFilesArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.rewindFiles requires sessionId."),
@@ -1887,6 +1895,7 @@ const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
   return {
     name: requireString(value.name, "lanes.create requires name."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
@@ -1950,6 +1959,7 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
   return {
     name: requireString(value.name, "lanes.createChild requires name."),
     parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
     ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
@@ -1968,6 +1978,7 @@ function parseCreateLaneFromUnstagedArgs(value: Record<string, unknown>): Create
 function parseImportBranchArgs(value: Record<string, unknown>): ImportBranchLaneArgs {
   return {
     branchRef: requireString(value.branchRef, "lanes.importBranch requires branchRef."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.name) ? { name: asTrimmedString(value.name)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
@@ -3668,6 +3679,7 @@ function parseGitCheckoutBranchArgs(value: Record<string, unknown>): GitCheckout
   return {
     laneId: requireString(value.laneId, "git.checkoutBranch requires laneId."),
     branchName: requireString(value.branchName, "git.checkoutBranch requires branchName."),
+    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.mode) ? { mode: value.mode as GitCheckoutBranchArgs["mode"] } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(asTrimmedString(value.baseRef) ? { baseRef: asTrimmedString(value.baseRef)! } : {}),
@@ -4707,6 +4719,13 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  // A stop is only worth anything now, so neither is queued.
+  register("lanes.cancelDelete", { viewerAllowed: true }, async (payload) =>
+    args.laneService.cancelDelete(requireString(payload.laneId, "lanes.cancelDelete requires laneId.")));
+  register("lanes.cancelGitWrite", { viewerAllowed: true }, async (payload) =>
+    args.laneService.cancelGitWrite({
+      operationId: requireString(payload.operationId, "lanes.cancelGitWrite requires operationId."),
+    }));
   register("lanes.deleteLeftoverWorktree", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.deleteLeftoverWorktree(
       requireString(payload.laneId, "lanes.deleteLeftoverWorktree requires laneId."),
@@ -5452,6 +5471,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
       parseAgentChatContextUsageArgs(payload),
     ));
+  register("chat.getClaudeUsage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getClaudeUsage(
+      parseAgentChatClaudeUsageArgs(payload),
+    ));
   register("chat.rewindFiles", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").rewindFiles(
       parseAgentChatRewindFilesArgs(payload),
@@ -5832,6 +5855,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .restartSession({
         sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
         ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+        ...(payload.afterTurn === true ? { afterTurn: true } : {}),
       });
     return { ...result, ok: true };
   });

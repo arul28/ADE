@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adeCliShimDirName,
   publishServedRuntimeSocket,
+  renderAdeCliGitBashShim,
   renderAdeCliShim,
   resolveAdeCliShimBrain,
 } from "./adeCliShim";
@@ -91,6 +92,33 @@ describe("renderAdeCliShim", () => {
       brain: { socketPath: "C:\\bad\"path", adeHome: null },
       platform: "win32",
     })).toBe("@echo off\r\nsetlocal\r\n\"C:\\ade\\ade.exe\" %*\r\n");
+  });
+
+  it("writes the Git Bash shim a Windows brain needs, keeping the arguments whole", () => {
+    // Git Bash finds a bare `ade` only as an extensionless script, and cmd.exe
+    // (which `ade.cmd` runs through) ends a command at its first line feed, so
+    // every multi-line --prompt or --text arrived cut. This script skips cmd
+    // and hands the arguments over untouched.
+    const body = renderAdeCliGitBashShim({
+      entryPath: "C:\\ADE\\resources\\ade-cli\\cli.cjs",
+      execPath: "C:\\ADE\\ADE.exe",
+      brain: { socketPath: "\\\\.\\pipe\\ade-runtime-alpha-1234", adeHome: "C:\\Users\\a\\.ade-alpha" },
+      nodeModulePaths: ["C:\\ADE\\resources\\app.asar\\node_modules"],
+    });
+    expect(body).toBe([
+      "#!/bin/sh",
+      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
+      "  ADE_HOME='C:\\Users\\a\\.ade-alpha'; export ADE_HOME",
+      "  ADE_RUNTIME_SOCKET_PATH='\\\\.\\pipe\\ade-runtime-alpha-1234'; export ADE_RUNTIME_SOCKET_PATH",
+      "fi",
+      "NODE_PATH='C:/ADE/resources/app.asar/node_modules'${NODE_PATH:+;$NODE_PATH}; export NODE_PATH",
+      "ELECTRON_RUN_AS_NODE=1 exec 'C:/ADE/ADE.exe' 'C:/ADE/resources/ade-cli/cli.cjs' \"$@\"",
+      "",
+    ].join("\n"));
+    // The named pipe keeps its backslashes (a forward-slashed pipe does not
+    // open); the executable and module paths are the ones Git Bash runs.
+    expect(body).toContain("'\\\\.\\pipe\\ade-runtime-alpha-1234'");
+    expect(body).toContain("'C:/ADE/ADE.exe'");
   });
 
   it("gives two brains that share one CLI entry separate shim directories", () => {

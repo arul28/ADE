@@ -127,6 +127,7 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
     recoverCodexTurn: unavailable("Codex turn recovery"),
     generateAutoLaneIdentity: unavailable("Lane naming"),
     getContextUsage: unavailable("/context"),
+    getClaudeUsage: unavailable("/usage"),
     dismissPendingInput: unavailable("Dismissing a question"),
     parallelLaunchState: { get: unavailable("Parallel launch"), set: unavailable("Parallel launch") },
     codex: {

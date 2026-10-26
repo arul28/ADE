@@ -35,6 +35,10 @@ const HEADLESS_ACCOUNT_VAULT_UNAVAILABLE_MESSAGE =
   "The account vault is unavailable in this runtime.";
 const HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE =
   "The account vault rejected the write because account ownership changed.";
+const HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE =
+  "Account settings are unavailable in this runtime.";
+const HEADLESS_ACCOUNT_SETTINGS_REJECTED_MESSAGE =
+  "The account settings store rejected the write because account ownership changed.";
 
 export type AccountRuntimeLifecycleOptions = {
   enabled: boolean;
@@ -211,6 +215,33 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     ? createAccountMigrationRunner({
       accountBridge: { status: () => options.accountAuthService.getStatus() },
       accountVaultBridge,
+      accountSettingsBridge: {
+        async list(scope) {
+          const store = accountSettingsStore;
+          return store
+            ? { ok: true, value: store.list(scope) }
+            : { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+        },
+        async set(scope, key, value, writeOptions) {
+          const store = accountSettingsStore;
+          if (!store) return { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+          return store.set(scope, key, value, writeOptions)
+            ? { ok: true, value: null }
+            : { ok: false, rejected: true, message: HEADLESS_ACCOUNT_SETTINGS_REJECTED_MESSAGE };
+        },
+        async deletedKeys(scope) {
+          const store = accountSettingsStore;
+          return store
+            ? { ok: true, value: store.deletedKeys(scope) }
+            : { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+        },
+        async syncStatus() {
+          const store = accountSettingsStore;
+          return store
+            ? { ok: true, value: await store.sync() }
+            : { ok: false, unavailable: true, message: HEADLESS_ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE };
+        },
+      },
       getContexts: options.getContexts,
       getLogger: () => options.logger,
       getReceiptDir: () => options.receiptDir,

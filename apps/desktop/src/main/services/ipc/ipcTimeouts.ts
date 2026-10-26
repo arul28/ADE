@@ -3,6 +3,7 @@ import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
+  longRunningLocalRuntimeActionTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
@@ -59,6 +60,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     createChild: IPC.lanesCreateChild,
     createFromUnstaged: IPC.lanesCreateFromUnstaged,
     importBranch: IPC.lanesImportBranch,
+    switchBranch: IPC.lanesSwitchBranch,
+    unarchive: IPC.lanesUnarchive,
+    archiveAndReclaim: IPC.lanesArchiveAndReclaim,
     archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
     initEnv: IPC.lanesInitEnv,
@@ -100,6 +104,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   // whichever runtime answers it.
   pr: {
     land: IPC.prsLand,
+    createLaneFromPrBranch: IPC.prsCreateLaneFromPrBranch,
   },
   // A remote runtime runs the same ledger worker as a local one, so the Usage
   // page's Refresh needs the same budget whichever runtime answers it.
@@ -123,7 +128,12 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
   const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
-  return channel ? ipcInvokeTimeoutMs(channel) : null;
+  if (channel) return ipcInvokeTimeoutMs(channel);
+  // An action with a long budget and no IPC twin (chat.cancelLaunch, say) gets
+  // the same renderer budget on a remote machine as on this one.
+  return longRunningLocalRuntimeActionTimeoutMs(`${request.domain}.${request.action}`) === null
+    ? null
+    : localRuntimeActionIpcTimeoutMs(request.domain, request.action);
 }
 
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
@@ -211,13 +221,31 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeEnsurePortForward:
     case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
-    case IPC.lanesCreate:
-    case IPC.lanesCreateChild:
-    case IPC.lanesCreateFromUnstaged:
-    case IPC.lanesImportBranch:
     case IPC.lanesArchive:
-    case IPC.lanesDelete:
       return 4 * 60_000;
+    // Checkout, `worktree add` and `worktree remove`; see
+    // LANE_GIT_WRITE_ACTION_TIMEOUT_MS.
+    case IPC.lanesCreate:
+      return localRuntimeActionIpcTimeoutMs("lane", "create");
+    case IPC.lanesCreateChild:
+      return localRuntimeActionIpcTimeoutMs("lane", "createChild");
+    case IPC.lanesCreateFromUnstaged:
+      return localRuntimeActionIpcTimeoutMs("lane", "createFromUnstaged");
+    case IPC.lanesImportBranch:
+      return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
+    case IPC.lanesSwitchBranch:
+      return localRuntimeActionIpcTimeoutMs("lane", "switchBranch");
+    // The lane branch picker's switch: the same checkout as lane.switchBranch.
+    case IPC.gitCheckoutBranch:
+      return localRuntimeActionIpcTimeoutMs("git", "checkoutBranch");
+    case IPC.lanesUnarchive:
+      return localRuntimeActionIpcTimeoutMs("lane", "unarchive");
+    case IPC.lanesArchiveAndReclaim:
+      return localRuntimeActionIpcTimeoutMs("lane", "archiveAndReclaim");
+    case IPC.lanesDelete:
+      return localRuntimeActionIpcTimeoutMs("lane", "delete");
+    case IPC.prsCreateLaneFromPrBranch:
+      return localRuntimeActionIpcTimeoutMs("pr", "createLaneFromPrBranch");
     // A lane template's installs and setup script; see LANE_ENV_SETUP_TIMEOUT_MS.
     case IPC.lanesInitEnv:
     case IPC.lanesApplyTemplate:
@@ -361,7 +389,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // Direct-channel twins of actions the local runtime map already gives a
     // longer budget; without these the same work timed out at 30s whenever a
     // project was not runtime-backed.
-    case IPC.lanesUnarchive:
     case IPC.agentChatSuggestLaneName:
     case IPC.agentChatGenerateAutoLaneIdentity:
       return 150_000;
@@ -375,9 +402,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.appListOnboardingProjectChats:
       return 40_000;
     case IPC.archiveRestore:
-      return 10 * 60_000;
+      return localRuntimeActionIpcTimeoutMs("archive", "restore");
     case IPC.archiveDelete:
-      return 15 * 60_000;
+      return localRuntimeActionIpcTimeoutMs("archive", "delete");
     // Streams up to 50 MB to a paired host over HTTP. The upload client's own
     // budget is 5 minutes, so on the 30s default the renderer reported a
     // failure — and dropped the pending attachment chip — for an upload that

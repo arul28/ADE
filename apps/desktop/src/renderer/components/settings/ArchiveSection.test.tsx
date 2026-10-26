@@ -83,7 +83,14 @@ describe("ArchiveSection delete batching", () => {
     const items = [laneItem("lane-dirty", "Busy lane")];
     const deleteMock = installArchiveMock(items, async ({ items: refs, force }) => {
       if (!force) {
-        return { done: [], failed: [{ kind: "lane", id: refs[0]!.id, error: "Lane 'lane-dirty' has uncommitted changes." }] };
+        return {
+          done: [],
+          failed: [{
+            kind: "lane",
+            id: refs[0]!.id,
+            error: "Lane has uncommitted changes. Enable force delete after confirming warnings.",
+          }],
+        };
       }
       return { done: refs, failed: [] };
     });

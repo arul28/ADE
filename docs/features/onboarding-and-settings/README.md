@@ -675,6 +675,25 @@ Renderer — settings:
   `browser.linkOpenMode` and `browser.autoOpenDevServer` into the
   project's `.ade/local.yaml`; see
   [Configuration schema](configuration-schema.md).
+- `apps/desktop/src/shared/settingsManifest.ts` — the registry's data and
+  pure helpers, in `shared/` so the CLI (`ade settings find`) and chat chips
+  read the same entries. `renderer/components/settings/settingsManifest.ts`
+  re-exports it and adds what depends on the renderer (platform, web client,
+  standalone Settings).
+- `apps/desktop/src/shared/settingsAgentAccess.ts` — the two lists: settings
+  an agent may change (the setup of the work: lanes, lane templates, agent
+  notes, secrets) and settings only the user changes (publishing, sign-ins,
+  money, agent reach, the computer, deleting data, preferences). A setting
+  not listed is the user's. The refusals live in the brain:
+  `ADE_ACTION_CTO_ONLY` for the writes (`USER_SETTING_WRITES` in
+  `actionPolicy.ts` lists them with the card each refusal links to), and
+  `ownerOnlyProjectConfigChange`, which refuses an agent's
+  `project_config.save` whose `local` layer would change or drop any config key
+  outside the work setup (`AGENT_EDITABLE_PROJECT_CONFIG_KEYS`). Automation
+  steps may not run `project_config.save` at all. The user's own terminal keeps
+  these commands (`ade settings …`, `ade providers accounts add|remove|default`
+  connect as the operator role; an agent's shell is clamped back to agent). An
+  agent can still hand-edit `.ade/local.yaml`; that gap is known.
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
   `keywords`, `tab`, `anchor`, `scope`, `web`, `group`, and an optional
@@ -746,7 +765,14 @@ Renderer — settings:
   account-scoped but one-value-per-computer — the Apple device options — keeps
   the account-wide scope and carries the device in the key
   (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`) so another machine
-  skips it while this brain can read it. See
+  skips it while this brain can read it. An `account-repo` key is
+  `repo:<host>/<owner>/<repo>` from the canonical origin
+  (`readGitOriginUrl`): the machine that owns the checkout resolves an SSH
+  alias of GitHub (`git@github.com-work:org/repo`) through `ssh -G`
+  (`github/githubSshAlias.ts`), so every checkout of one repository shares a
+  key. The `repo_scope_alias` account migration copies a project's secrets and
+  settings from the alias key an older ADE used, once per project; a row
+  already under the new key wins, and the old rows stay. See
   [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
   window backdrop, configured under Settings → This computer → Appearance →

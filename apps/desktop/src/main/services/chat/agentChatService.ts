@@ -1,3 +1,4 @@
+import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
@@ -103,6 +104,7 @@ import {
   normalizeClaudeInterruptReceipt,
   normalizeClaudeRewindSkippedLinks,
   normalizeClaudeSdkSessionMessageModel,
+  sendClaudeControlRequest,
 } from "./claudeSdkCompat";
 import {
   createClaudeStructuredActivityState,
@@ -164,6 +166,8 @@ import {
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
+import { codexImageGenerationRefFields, looksLikeInlineBase64Image } from "../../../shared/codexImageGeneration";
+import { codexDaybreakProgram, readCodexCyberAccessPrograms, type CodexAccessProgram, type CodexDaybreakProgram } from "../../../shared/codexDaybreak";
 import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import {
   SIDE_CHAT_READ_ONLY_MESSAGE,
@@ -193,7 +197,14 @@ import {
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
   codexServerSupportsForkBeforeTurn,
+  codexServerSupportsThreadSample,
 } from "./codexAppServerFeatures";
+import {
+  buildCodexSamplePrompt,
+  createCodexThreadSampler,
+  type CodexSampleOutcome,
+  type CodexSamplePurpose,
+} from "./codexThreadSample";
 import {
   CODEX_MEMORY_RESET_RECEIPT,
   parseCodexMemorySlashCommand,
@@ -484,6 +495,7 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
@@ -513,6 +525,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
+import { redactGitOutput } from "../../utils/redaction";
 import type {
   AgentChatApprovalDecision,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -890,7 +903,6 @@ import {
   landHandoffGitBundle,
   packHandoffGitBundle,
   readHandoffWorkingTreeSha,
-  githubExtraHeaderGitEnv,
   validateHandoffGitBundle,
 } from "./handoffGitBundle";
 import {
@@ -1126,7 +1138,7 @@ import {
   type BackgroundLossWake,
   type RestartCancelledWork,
 } from "../../../shared/chatAutoResume";
-import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
+import { isUsageLimitFailureText, isUsageLimitTurn, parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
@@ -1143,6 +1155,11 @@ import {
   type UserAuthoredClassifierInput,
 } from "../../../shared/claudeClassifierContext";
 import { normalizeClaudeContextUsage as normalizeStructuredClaudeContextUsage } from "../../../shared/claudeContextUsage";
+import {
+  normalizeClaudeUsageReport,
+  type AgentChatClaudeUsageArgs,
+  type ClaudeUsageReport,
+} from "../../../shared/claudeUsageReport";
 import {
   claudeModelSwitchAdditionalContext,
   claudeModelSwitchDividerMessage,
@@ -1236,6 +1253,7 @@ import {
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
+import { gitRemoteIdentity, isSameGitRepository, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
@@ -2180,6 +2198,8 @@ type PersistedChatState = {
   fastMode?: boolean;
   /** "ultrafast" when Fast asks for Codex's Ultrafast tier; absent is plain Fast. */
   fastTier?: "ultrafast";
+  /** Codex: Daybreak is on for this chat (`shared/codexDaybreak.ts`). */
+  codexDaybreak?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Retained until Cursor accepts a cloud create/follow-up, including across restarts. */
   cursorCloudPendingRequest?: PersistedCursorCloudPendingRequest | null;
@@ -2637,6 +2657,8 @@ type PendingRpc = {
 
 type CodexRequestOptions = {
   timeoutMs?: number | null;
+  /** Called with the JSON-RPC id before the request is written (`thread/sample/cancel` needs it). */
+  onRequestId?: (id: number) => void;
 };
 
 function isCodexRequestTimeoutError(error: unknown): boolean {
@@ -2714,6 +2736,14 @@ type CodexRuntime = {
    */
   skillCatalogSettle: Promise<void> | null;
   serverVersion: CodexServerVersion | null;
+  /**
+   * This app-server's `model/list` access programs per model id, read the
+   * first time a Daybreak turn needs them. The app-server runs as the chat's
+   * own account, so these are that account's grants (`shared/codexDaybreak.ts`).
+   */
+  cyberProgramsByModel?: Promise<Map<string, CodexAccessProgram[]>> | null;
+  /** When that read last failed: it is not retried for a minute, so a Daybreak turn never waits on it twice. */
+  cyberProgramsReadFailedAt?: number;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
   killTimer: NodeJS.Timeout | null;
@@ -5131,6 +5161,11 @@ type EpochDirective =
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 type ManagedChatSession = {
+  /**
+   * The provider turn id of the chat's latest `done`, whatever its status.
+   * Codex `thread/sample` must name it (`codexThreadSample.ts`).
+   */
+  lastFinishedTurnId?: string | null;
   session: AgentChatSession;
   transcriptPath: string;
   /** Bytes in this chat's dedicated transcript (on disk at load, plus lines queued since). */
@@ -5238,6 +5273,12 @@ type ManagedChatSession = {
    * just stopped.
    */
   stoppedByParentStopAt?: number;
+  /**
+   * A restart asked for with `afterTurn` while a turn ran (an agent restarting
+   * its own chat). Runs at the next turn end that leaves the chat idle; in
+   * memory only, since a process that dies restarts the chat anyway.
+   */
+  restartAfterTurn?: boolean;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
@@ -5390,6 +5431,8 @@ type ManagedChatSession = {
   continuitySummaryInFlight: boolean;
   /** Completed CTO turns since the last background memory pass. */
   ctoTurnsSinceMemoryCheckpoint?: number;
+  /** When the last background memory pass started (epoch ms), for the age trigger. */
+  ctoLastMemoryCheckpointAt?: number;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -5802,6 +5845,8 @@ const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CODEX_REQUEST_TIMEOUT_MS = 30_000;
+/** A `thread/sample` for a name. Codex itself stops at 30 s; ADE gives up sooner so naming does not hang. */
+const CODEX_SAMPLE_NAMING_TIMEOUT_MS = 20_000;
 /**
  * How long a Codex app-server keeps a thread loaded after its chat
  * unsubscribed (Codex's default is 30 minutes). Zero: a chat leaving a shared
@@ -6069,6 +6114,8 @@ const QUIET_CODEX_NOTIFICATION_METHODS = new Set([
   "item/commandExecution/terminalInteraction",
   "remoteControl/status/changed",
   "thread/archived",
+  // Codex 0.164 sends its durable read receipt after every turn; ADE keeps its own unread state.
+  "thread/readState/changed",
   "thread/started",
   "thread/tokenUsage/updated",
   "turn/diff/updated",
@@ -6087,7 +6134,7 @@ const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effor
 
 function codexModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
-  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "defaultReasoningEffort" | "serviceTiers">>,
+  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "defaultReasoningEffort" | "serviceTiers" | "cyberAccessPrograms">>,
 ): AgentChatModelInfo {
   const advertisedReasoningEfforts = overrides?.reasoningEfforts ?? (descriptor.reasoningTiers?.length
     ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
@@ -6106,6 +6153,7 @@ function codexModelInfoFromDescriptor(
       : descriptor.serviceTiers?.length
         ? { serviceTiers: descriptor.serviceTiers }
         : {}),
+    ...(overrides?.cyberAccessPrograms !== undefined ? { cyberAccessPrograms: overrides.cyberAccessPrograms } : {}),
     modelId: descriptor.id,
     family: descriptor.family,
     supportsReasoning: descriptor.capabilities.reasoning,
@@ -6383,6 +6431,13 @@ function codexDescriptorOffersUltrafast(
     if (tiers) return tiers.some((tier) => tier.trim().toLowerCase() === "ultrafast");
   }
   return null;
+}
+
+/** True when this Codex chat's turns run on a faster (dearer) tier than standard. */
+function codexSessionRunsFastTier(session: AgentChatSession): boolean {
+  if (codexServiceTierArgs(session).serviceTier) return true;
+  const reported = session.codexServiceTier?.trim().toLowerCase();
+  return Boolean(reported && reported !== "default" && reported !== "standard" && reported !== "auto");
 }
 
 function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier | null } {
@@ -10291,9 +10346,9 @@ function buildSpawnSelfReportGuidance(
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
   const selfReportCommandGuidance = [
-    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Keep report text out of the command source.",
-    "In Bash/zsh, put it in a quoted here-doc (`summary=$(cat <<'REPORT_END' ... REPORT_END)`) using an end marker absent from the report, then run `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text \"$summary\"`.",
-    "In PowerShell, pass it as a single-quoted string and double each embedded apostrophe (`'` becomes `''`), then run `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text '<escaped report>'`; `$()` and backticks stay literal inside the single quotes.",
+    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
+    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text-file $f`.",
   ].join(" ");
   if (session.spawnKind === "subagent") {
     return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
@@ -11263,6 +11318,18 @@ export function listMachineProviderAccountChatLoad(): Map<string, ProviderAccoun
     }
   }
   return merged;
+}
+
+/**
+ * The quiet line a peer's parent gets when the peer waits on a card only the
+ * user can answer. No wake, the same as for the peer's finished turns.
+ */
+function awaitingUserQuietNotice(childTitle: string, summary: string): Extract<AgentChatEvent, { type: "system_notice" }> {
+  return {
+    type: "system_notice",
+    noticeKind: "info",
+    message: `"${childTitle}": ${summary}`,
+  };
 }
 
 export function createAgentChatService(args: {
@@ -13241,6 +13308,120 @@ export function createAgentChatService(args: {
     decide: jevDecide ?? null,
     setAwaitingOwnWork: awaitingOwnWork.set,
   });
+  /**
+   * One answer from a Codex chat's own thread (`thread/sample`, see
+   * `codexThreadSample.ts`). Only a fallback: callers ask the cheap helper
+   * first, because a sample runs on the chat's own model with all its context.
+   * Never rejects.
+   */
+  const codexThreadSampler = createCodexThreadSampler({ logger, isTimeoutError: isCodexRequestTimeoutError });
+  /** The account a chat's helper and samples bill, as `sessionProviderAccount` resolves it (preset home first). */
+  const codexSampleAccountKey = (managed: ManagedChatSession): string => {
+    const env = sessionProviderAccount(managed)?.env;
+    return env ? `codex:${stableStringify(env)}` : "codex:default";
+  };
+  const runCodexThreadSample = (
+    managed: ManagedChatSession,
+    args: { turnId: string; prompt: string; timeoutMs: number; purpose: CodexSamplePurpose; helperError?: string | null },
+  ): Promise<CodexSampleOutcome> => codexThreadSampler.sample({
+    ...args,
+    sessionId: managed.session.id,
+    accountKey: codexSampleAccountKey(managed),
+    prepare: () => {
+      if (managed.deleted) return { kind: "stale", reason: "chat is gone" };
+      const runtime = managed.runtime;
+      const threadId = managed.session.threadId?.trim();
+      if (managed.session.provider !== "codex" || runtime?.kind !== "codex" || !threadId) {
+        return { kind: "unsupported", reason: "no live Codex thread" };
+      }
+      if (!codexServerSupportsThreadSample(runtime.serverVersion)) {
+        return { kind: "unsupported", reason: "Codex app-server older than 0.164" };
+      }
+      // The fork runs at the chat's speed, and a background call never pays
+      // Fast rates (`backgroundUtilityModel.ts`).
+      if (codexSessionRunsFastTier(managed.session)) {
+        return { kind: "unsupported", reason: "chat runs on a fast service tier" };
+      }
+      if (runtime.activeTurnId || runtime.awaitingTurnStart) {
+        return { kind: "stale", reason: "a turn is running" };
+      }
+      return {
+        threadId,
+        request: (method, params, options) => runtime.request(method, params, options),
+        effort: backgroundUtilityReasoningEffort(resolveSessionModelDescriptor(managed.session)),
+        isCurrent: () => managed.runtime === runtime,
+      };
+    },
+  });
+  /**
+   * The Daybreak program this Codex turn asks for: only when the chat has it
+   * on and its model offers one to the chat's account. Off sends nothing, so
+   * OpenAI keeps its automatic treatment. Codex applies the program per turn;
+   * a message Codex starts from its own queue (`thread/queue/add`) cannot
+   * carry it and runs with the thread's saved `daybreakEnabled` choice.
+   */
+  const codexDaybreakTurnArgs = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<{ cyberAccessProgram?: CodexDaybreakProgram }> => {
+    if (managed.session.provider !== "codex" || managed.session.codexDaybreak !== true) return {};
+    if (!runtime.cyberProgramsByModel && Date.now() - (runtime.cyberProgramsReadFailedAt ?? 0) < 60_000) return {};
+    runtime.cyberProgramsByModel ??= (async () => {
+      const byModel = new Map<string, CodexAccessProgram[]>();
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const response: { data?: unknown[]; nextCursor?: string | null } = await runtime.request(
+          "model/list",
+          cursor ? { cursor, includeHidden: true } : { includeHidden: true },
+          { timeoutMs: 10_000 },
+        );
+        for (const row of response?.data ?? []) {
+          const programs = readCodexCyberAccessPrograms(row);
+          if (!programs) continue;
+          for (const key of [(row as { id?: unknown }).id, (row as { model?: unknown }).model]) {
+            if (typeof key === "string" && key.trim()) byModel.set(key.trim(), programs);
+          }
+        }
+        cursor = typeof response?.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+        if (!cursor) break;
+      }
+      return byModel;
+    })().catch((error) => {
+      // Ask again later rather than keep a failed read.
+      runtime.cyberProgramsByModel = null;
+      runtime.cyberProgramsReadFailedAt = Date.now();
+      logger.warn("agent_chat.codex_daybreak_catalog_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return new Map<string, CodexAccessProgram[]>();
+    });
+    const byModel = await runtime.cyberProgramsByModel;
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    for (const key of [descriptor?.providerModelId, descriptor?.id, managed.session.modelId, managed.session.model]) {
+      const programs = key ? byModel.get(key.trim()) : undefined;
+      if (!programs) continue;
+      const program = codexDaybreakProgram(programs);
+      if (program) return { cyberAccessProgram: program };
+      break;
+    }
+    logger.info("agent_chat.codex_daybreak_unavailable", {
+      sessionId: managed.session.id,
+      model: managed.session.model,
+    });
+    return {};
+  };
+
+  /** A sample about the chat's latest finished turn; "unsupported" before its first one. */
+  const sampleAfterLatestTurn = (
+    managed: ManagedChatSession,
+    args: { prompt: string; purpose: CodexSamplePurpose; helperError?: string | null },
+  ): Promise<CodexSampleOutcome> => {
+    const turnId = managed.lastFinishedTurnId?.trim();
+    if (!turnId) return Promise.resolve({ kind: "unsupported", reason: "no finished turn yet" });
+    return runCodexThreadSample(managed, { ...args, turnId, timeoutMs: CODEX_SAMPLE_NAMING_TIMEOUT_MS });
+  };
+
   // ADE's next-prompt suggestion for providers without a native one. Runs on
   // the same single model that names the chat: the vendor's cheap helper
   // (Luna, Composer), or the chat's own model, at that model's lowest effort.
@@ -13264,6 +13445,11 @@ export function createAgentChatService(args: {
         taskType: "session_summary",
         providerAccount: sessionProviderAccount(managed),
       });
+    },
+    sampleThread: ({ sessionId, turnId, prompt, timeoutMs, helperError }) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return Promise.resolve({ kind: "unsupported", reason: "chat is gone" });
+      return runCodexThreadSample(managed, { turnId, prompt, timeoutMs, purpose: "prompt_suggestion", helperError });
     },
     emitSuggestion: (sessionId, suggestion, turnId) => {
       // Straight to the live stream: a suggestion is not chat activity, so it
@@ -16512,7 +16698,33 @@ export function createAgentChatService(args: {
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
+  /**
+   * What a scheduled job's row says about the turn it started. A turn that
+   * ended at the usage limit did not do the job; its last text ("You've hit
+   * your session limit") read as the job's result under a "completed" row.
+   * The chat's own auto-resume continues the interrupted turn after the reset,
+   * which is what the row now says.
+   */
+  const scheduledTurnOutcome = (
+    managed: ManagedChatSession,
+    done: Extract<AgentChatEvent, { type: "done" }>,
+  ): string | undefined => {
+    const preview = managed.preview?.trim() || undefined;
+    const limited = isUsageLimitTurn(done, managed.usageLimitResume?.turnId)
+      || (done.status === "failed" && isUsageLimitFailureText(preview));
+    if (!limited) return preview;
+    return `Stopped at the usage limit before the job ran${preview ? ` (${clipText(preview, 120)})` : ""}. `
+      + "ADE continues the chat when the limit resets.";
+  };
+
   const CTO_MEMORY_CHECKPOINT_TURNS = 6;
+  /**
+   * A CTO that runs on scheduled wakes takes one turn every half hour, so six
+   * turns was three hours: long enough for the thread state to name a check
+   * that ran hours ago. A thread state older than this is refreshed on the
+   * next settled turn, whatever the count.
+   */
+  const CTO_MEMORY_CHECKPOINT_MAX_AGE_MS = 45 * 60_000;
 
   /** What the person typed, not the wrapper ADE sent: the memory pass reads this. */
   const collectCaptureEntries = (managed: ManagedChatSession): ContinuityCaptureEntry[] =>
@@ -16744,6 +16956,36 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * True when the durable thread state is older than
+   * `CTO_MEMORY_CHECKPOINT_MAX_AGE_MS` and no checkpoint started within that
+   * window either (a pass that fails keeps the old text, and must not then
+   * run again on every turn).
+   */
+  const ctoThreadStateIsStale = (managed: ManagedChatSession): boolean => {
+    if (!ctoMemoryService) return false;
+    const nowMs = Date.now();
+    if (managed.ctoLastMemoryCheckpointAt != null && nowMs - managed.ctoLastMemoryCheckpointAt < CTO_MEMORY_CHECKPOINT_MAX_AGE_MS) {
+      return false;
+    }
+    let updatedAt: string | null = null;
+    try {
+      updatedAt = ctoMemoryService.threadStateUpdatedAt();
+    } catch (error) {
+      // The memory store is unreadable. The age trigger is the only thing
+      // lost (the turn count still runs it), so the turn goes on; say so.
+      logger.warn("agent_chat.cto_thread_state_age_unreadable", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+    // Never written: the turn count decides, as before.
+    if (!Number.isFinite(epoch)) return false;
+    return nowMs - epoch >= CTO_MEMORY_CHECKPOINT_MAX_AGE_MS;
+  };
+
+  /**
    * Count a settled CTO turn toward the next memory checkpoint.
    *
    * Compaction alone is too rare to be the memory schedule: a long thread on a
@@ -16753,11 +16995,12 @@ export function createAgentChatService(args: {
    */
   const noteCtoTurnForMemoryCheckpoint = (managed: ManagedChatSession): void => {
     const count = (managed.ctoTurnsSinceMemoryCheckpoint ?? 0) + 1;
-    if (count < CTO_MEMORY_CHECKPOINT_TURNS) {
+    if (count < CTO_MEMORY_CHECKPOINT_TURNS && !ctoThreadStateIsStale(managed)) {
       managed.ctoTurnsSinceMemoryCheckpoint = count;
       return;
     }
     managed.ctoTurnsSinceMemoryCheckpoint = 0;
+    managed.ctoLastMemoryCheckpointAt = Date.now();
     void maybeRefreshIdentityContinuitySummary(managed, "checkpoint").catch((error) => {
       logger.warn("agent_chat.cto_memory_checkpoint_failed", {
         sessionId: managed.session.id,
@@ -17763,9 +18006,17 @@ export function createAgentChatService(args: {
 
     const laneName = sessionService.get(managed.session.id)?.laneName ?? "Current lane";
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
-    const titleContext = [
+    // What any title call needs. The helper also gets the request and the
+    // outcome; a thread sample already holds both.
+    const sharedTitleContext = [
       `Lane: ${laneName}`,
       ...(managed.autoTitleInheritedContext ?? []),
+      hasCustomChatSessionTitle(currentTitle, managed.session.provider)
+        ? `Current title: ${String(currentTitle).trim()}`
+        : null,
+    ].filter((line): line is string => Boolean(line && line.trim().length));
+    const titleContext = [
+      ...sharedTitleContext,
       `Model: ${getModelById(managed.session.modelId ?? "")?.displayName ?? managed.session.model}`,
       `Primary request: ${seed}`,
       args.summary?.trim().length
@@ -17773,9 +18024,6 @@ export function createAgentChatService(args: {
         : managed.preview?.trim().length
           ? `Latest output: ${managed.preview.trim()}`
           : null,
-      hasCustomChatSessionTitle(currentTitle, managed.session.provider)
-        ? `Current title: ${String(currentTitle).trim()}`
-        : null,
     ].filter((line): line is string => Boolean(line && line.trim().length));
 
     managed.autoTitleInFlight = true;
@@ -17783,7 +18031,7 @@ export function createAgentChatService(args: {
       // A model that answers unusably (a rejected or empty title) returns null
       // so the next candidate still gets a turn — a working model beats a slug.
       // An empty candidate list is a no-op walk and falls through to deterministic.
-      const { result: adopted, attemptCount } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      const { result: adopted, attemptCount, lastFailure } = await runNamingAcrossProviders<string>(candidateModelIds, {
           shouldStop: () => sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted,
           run: async (descriptor) => {
             const result = await runSessionIntelligencePrompt({
@@ -17825,6 +18073,37 @@ export function createAgentChatService(args: {
         managed.autoTitleStage = stage;
         if (stage === "initial") armAutoTitleRefine(managed);
         return;
+      }
+
+      // Every helper model failed. After the first run, a Codex chat can still
+      // ask its own thread, which knows the whole conversation. It runs on the
+      // chat's model with all its context, far dearer than the helper, so it
+      // only stands in for a failed helper, before the word-based title.
+      if (args.mode === "refine") {
+        const sample = await sampleAfterLatestTurn(managed, {
+          prompt: buildCodexSamplePrompt(
+            [AUTO_TITLE_SYSTEM_PROMPT, autoTitleInstruction(args.mode, Boolean(managed.autoTitleInheritedContext?.length))].join("\n\n"),
+            sharedTitleContext.join("\n"),
+          ),
+          purpose: "session_title",
+          helperError: lastFailure?.error ?? null,
+        });
+        const sampledTitle = sample.kind === "answered" && sample.text?.trim()
+          && !sessionIsManuallyNamed(managed) && !managed.runtimeTitleAdopted && !managed.deleted
+          ? setManagedSessionTitle(managed, sample.text)
+          : null;
+        if (sampledTitle) {
+          logger.info("agent_chat.auto_title_generated", {
+            sessionId: managed.session.id,
+            mode: args.mode,
+            changed: sampledTitle.trim() !== String(titleAfterWait ?? "").trim(),
+            attemptCount: attemptCount + 1,
+            source: "thread_sample",
+          });
+          managed.autoTitleStage = stage;
+          return;
+        }
+        if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted || managed.deleted) return;
       }
 
       // Every model failed. A chat with a real user prompt must never sit on its
@@ -17939,6 +18218,11 @@ export function createAgentChatService(args: {
           uncommitted: uncommitted?.exitCode === 0 ? uncommitted.stdout : null,
         };
       },
+      sampleThread: (managed, prompt, helperError) => sampleAfterLatestTurn(managed, {
+        prompt,
+        purpose: "session_metadata",
+        helperError,
+      }),
       runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }, managed) => runSessionIntelligencePrompt({
         cwd,
         modelId,
@@ -19621,6 +19905,7 @@ export function createAgentChatService(args: {
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
       ...(managed.session.fastMode === true && managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+      ...(managed.session.provider === "codex" && managed.session.codexDaybreak === true ? { codexDaybreak: true } : {}),
       ...(managed.session.cursorCloudServiceTier !== undefined
         ? { cursorCloudServiceTier: managed.session.cursorCloudServiceTier }
         : prevPersisted?.cursorCloudServiceTier !== undefined
@@ -21229,6 +21514,12 @@ export function createAgentChatService(args: {
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
+    // Every turn end passes here, including the ones that emit no `done`
+    // (a failed dispatch, a stop while the turn was still opening), so a
+    // restart the turn asked for (`afterTurn`) can never be left armed for a
+    // later turn. The `done` event schedules it too, for a runtime still
+    // mid-turn when the idle mark lands.
+    if (managed.restartAfterTurn) runRestartAfterTurn(managed);
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
@@ -22172,6 +22463,7 @@ export function createAgentChatService(args: {
         ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
         ...(typeof managed.session.fastMode === "boolean" ? { fastMode: managed.session.fastMode } : {}),
         ...(managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+        ...(managed.session.codexDaybreak === true ? { codexDaybreak: true } : {}),
         ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
         ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
@@ -22937,7 +23229,12 @@ export function createAgentChatService(args: {
         completed: event.status === "completed",
         isSubagentWithParent: managed.session.spawnKind === "subagent"
           && Boolean(managed.session.orchestrationParentSessionId?.trim()),
-        isEnabled: () => projectConfigService.get().effective.ai?.chat?.promptSuggestionsEnabled === true,
+        isEnabled: () => {
+          const chatConfig = projectConfigService.get().effective.ai?.chat;
+          return managed.session.provider === "codex"
+            ? chatConfig?.codexPromptSuggestionsEnabled !== false
+            : chatConfig?.promptSuggestionsEnabled === true;
+        },
         backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
         nativeSuggestions: managed.session.provider === "claude",
         entries: managed.recentConversationEntries,
@@ -23566,8 +23863,10 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
+      if (event.turnId) managed.lastFinishedTurnId = event.turnId;
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
+      if (managed.restartAfterTurn) runRestartAfterTurn(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -23837,7 +24136,7 @@ export function createAgentChatService(args: {
           "record_turn_finished",
           scheduledWorkScheduler.recordTurnFinished(
             normalizedEvent.turnId,
-            managed.preview?.trim() || undefined,
+            scheduledTurnOutcome(managed, normalizedEvent),
           ),
         );
       }
@@ -27949,6 +28248,7 @@ export function createAgentChatService(args: {
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
         ...(persisted?.fastMode === true && persisted.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+        ...(persisted?.provider === "codex" && persisted.codexDaybreak === true ? { codexDaybreak: true } : {}),
         ...(persisted?.cursorCloudServiceTier !== undefined
           ? { cursorCloudServiceTier: persisted.cursorCloudServiceTier }
           : {}),
@@ -29163,6 +29463,9 @@ export function createAgentChatService(args: {
       });
 
       input.push(...await buildCodexAttachmentInputItems(resolvedAttachments));
+      // Before the turn-start window: a catalog read here must not widen the
+      // span in which a queued `turn/started` is taken as this turn.
+      const daybreakArgs = await codexDaybreakTurnArgs(managed, runtime);
       runtime.awaitingTurnStart = true;
       runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
       result = await runtime.request<{ turn?: { id?: string } }>("turn/start", {
@@ -29175,6 +29478,7 @@ export function createAgentChatService(args: {
             }
           : {}),
         ...codexServiceTierArgs(managed.session),
+        ...daybreakArgs,
         ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
@@ -41530,6 +41834,8 @@ export function createAgentChatService(args: {
       const looksLikeLocalPath = (value: string | null): boolean => {
         if (!value) return false;
         if (isRemoteOrDataUri(value)) return false;
+        // Inline base64 is not a path, even when it starts with "/" (a JPEG's `/9j/`).
+        if (looksLikeInlineBase64Image(value)) return false;
         return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("~");
       };
       const savedPath = looksLikeLocalPath(localPathField)
@@ -41545,6 +41851,7 @@ export function createAgentChatService(args: {
         revisedPrompt: stringOrNull(item.revisedPrompt ?? item.revised_prompt),
         result,
         savedPath,
+        ...codexImageGenerationRefFields(item),
         status,
       });
       return;
@@ -43735,6 +44042,7 @@ export function createAgentChatService(args: {
           method,
           ...(params !== undefined ? { params } : {})
         };
+        options?.onRequestId?.(id);
 
         if (!proc.stdin.writable) {
           throw new Error("Codex app-server stdin is not writable.");
@@ -44172,6 +44480,7 @@ export function createAgentChatService(args: {
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
       ...(dynamicTools.length ? { dynamicTools } : {}),
+      ...(managed.session.codexDaybreak === true ? { daybreakEnabled: true } : {}),
       experimentalRawEvents: false,
       ...(codexServerSupportsPaginatedHistory(runtime.serverVersion)
         ? { historyMode: "paginated" as const }
@@ -46900,6 +47209,7 @@ export function createAgentChatService(args: {
             row.additionalSpeedTiers,
             row.serviceTiers,
           );
+          const cyberAccessPrograms = readCodexCyberAccessPrograms(row);
 
           return {
             id,
@@ -46908,7 +47218,8 @@ export function createAgentChatService(args: {
             isDefault,
             reasoningEfforts: normalizedEfforts,
             ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
-            ...(serviceTiers ? { serviceTiers } : {})
+            ...(serviceTiers ? { serviceTiers } : {}),
+            ...(cyberAccessPrograms ? { cyberAccessPrograms } : {}),
           } satisfies AgentChatModelInfo;
         })
         .filter((entry): entry is AgentChatModelInfo => entry != null);
@@ -46938,6 +47249,7 @@ export function createAgentChatService(args: {
                 : undefined,
               defaultReasoningEffort: appServerEntry?.defaultReasoningEffort,
               serviceTiers: appServerEntry?.serviceTiers,
+              cyberAccessPrograms: appServerEntry?.cyberAccessPrograms,
             });
           });
 
@@ -47660,9 +47972,13 @@ export function createAgentChatService(args: {
    *
    * Only questions travel. Approvals and permission prompts stay the person's:
    * an agent approving its child's tool call would be granting itself access.
-   * Secret questions and user-only consent cards stay too. A peer reports to
-   * nobody, and a parent that is not a chat here (a CLI terminal, another
-   * project or machine) has no agent this service can message.
+   * Secret questions and user-only consent cards stay too, but the parent is
+   * told the child waits on the user (`relayChildAwaitingUserToParent`), so it
+   * does not read the silence as "stuck" and start a second chat for the same
+   * work. A peer gets that fact as a quiet line, as it gets its finished
+   * turns, and no question: a peer's questions are the user's. A parent that
+   * is not a chat here (a CLI terminal, another project or machine) has no
+   * agent this service can message a question to.
    */
   const relayedChildQuestionKeys = new Set<string>();
   const relayChildQuestionToParent = (
@@ -47671,24 +47987,34 @@ export function createAgentChatService(args: {
   ): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === child.session.id) return;
-    if (child.session.spawnKind !== "subagent") return;
+    const spawnKind = child.session.spawnKind;
+    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
     const detail = event.detail && typeof event.detail === "object" && !Array.isArray(event.detail)
       ? event.detail as Record<string, unknown>
       : null;
     const request = detail?.request as PendingInputRequest | undefined;
     if (!request || typeof request !== "object" || !Array.isArray(request.questions)) return;
     if (request.blocking === false || !pendingInputIsAnswerable(request)) return;
-    if (request.questions.some((question) => question.isSecret)) return;
-    if (isUserOnlyConsentCard(request.providerMetadata ?? null)) return;
     const itemId = event.itemId?.trim() || pendingInputRequestItemId(request);
     const key = `${child.session.id}:${itemId}`;
     if (relayedChildQuestionKeys.has(key)) return;
-    if (!parentChatStillExists(parentSessionId)) return;
-    relayedChildQuestionKeys.add(key);
-    if (relayedChildQuestionKeys.size > 512) {
-      const [oldest] = relayedChildQuestionKeys;
-      if (oldest) relayedChildQuestionKeys.delete(oldest);
+    const rememberRelayed = (): void => {
+      relayedChildQuestionKeys.add(key);
+      if (relayedChildQuestionKeys.size > 512) {
+        const [oldest] = relayedChildQuestionKeys;
+        if (oldest) relayedChildQuestionKeys.delete(oldest);
+      }
+    };
+    if (
+      request.questions.some((question) => question.isSecret)
+      || isUserOnlyConsentCard(request.providerMetadata ?? null)
+    ) {
+      if (relayChildAwaitingUserToParent(child, parentSessionId, request, itemId, spawnKind)) rememberRelayed();
+      return;
     }
+    if (spawnKind !== "subagent") return;
+    if (!parentChatStillExists(parentSessionId)) return;
+    rememberRelayed();
     const childTitle = sessionService.get(child.session.id)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const text = [
@@ -47718,6 +48044,101 @@ export function createAgentChatService(args: {
         itemId,
         error: error instanceof Error ? error.message : String(error),
       }));
+  };
+
+  /**
+   * The child waits on a card only the user can answer: a real-input lease, a
+   * consent, a secret. The parent cannot answer it, so it gets the fact, not
+   * the question: who waits, on what, and not to start a second chat for the
+   * same work. The card itself stays in the child for the user.
+   *
+   * Unlike a question, this also reaches a parent in another project or on
+   * another machine, through the brain's router (`notice: "awaiting_user"`):
+   * a coordinator there can only poll otherwise, and a poll that sees a quiet
+   * child reads it as stuck. A peer's parent gets a quiet line and is not
+   * woken, the same as for the peer's finished turns. True when the notice
+   * went out (or was queued).
+   */
+  const relayChildAwaitingUserToParent = (
+    child: ManagedChatSession,
+    parentSessionId: string,
+    request: PendingInputRequest,
+    itemId: string,
+    spawnKind: "subagent" | "peer",
+  ): boolean => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    const what = request.questions.some((question) => question.isSecret)
+      ? "a secret only the user can enter"
+      : (request.title?.trim() || request.questions[0]?.question?.trim() || "a permission only the user can give");
+    const summary = `Waiting on the user: ${what}. It has not finished; it continues when the user answers in that chat.`;
+    const text = [
+      `Your ${spawnKind === "peer" ? "chat" : "subagent"} "${childTitle}" (${child.session.id}) is waiting on the user: ${what}.`,
+      `Only the user can answer this card; an agent cannot answer or decline it. The ${spawnKind === "peer" ? "chat" : "subagent"} stops until they do.`,
+      "Do not start another chat for the same work. Tell the user if it is urgent, then carry on with other work.",
+    ].join(" ");
+    if (parentChatStillExists(parentSessionId)) {
+      if (spawnKind === "peer") {
+        try {
+          // The quiet line is written into the parent's transcript, so it must
+          // not do that behind a live brain that runs the parent.
+          assertChatRuntimeOwnedHere(parentSessionId, "deliver an awaiting-user notice");
+          emitChatEvent(ensureManagedSession(parentSessionId), awaitingUserQuietNotice(childTitle, summary));
+          return true;
+        } catch (error) {
+          // A parent row that exists but cannot be rehydrated is not a reason
+          // to fail the child's card; the next event may still reach it.
+          logger.warn("agent_chat.peer_awaiting_user_notice_failed", {
+            parentSessionId,
+            childSessionId: child.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+      }
+      void messageSession({
+        sessionId: parentSessionId,
+        kind: "wake",
+        text,
+        // ADE wrote this, not the person: it must not clear the parent's "Needs you".
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then(() => logger.info("agent_chat.subagent_awaiting_user_relayed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+        }))
+        .catch((error) => logger.warn("agent_chat.subagent_awaiting_user_relay_failed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return true;
+    }
+    const router = getExternalParentRouter();
+    if (!router) return false;
+    const childTurnId = `awaiting-user:${itemId}`;
+    return router.route({
+      parentSessionId,
+      childSessionId: child.session.id,
+      childTitle,
+      childProvider: child.session.provider,
+      spawnKind,
+      resultStatus: "completed",
+      summary,
+      spawnCompletion: {
+        childSessionId: child.session.id,
+        childTitle,
+        spawnKind,
+        childTurnId,
+        status: "completed",
+        summary,
+      },
+      wakeText: text,
+      childProjectRoot: projectRoot,
+      notice: "awaiting_user",
+    });
   };
 
   const reportChildSpawnEnded = (
@@ -47876,6 +48297,44 @@ export function createAgentChatService(args: {
     wake: Omit<ExternalParentWake, "childProjectRoot">,
   ): Promise<ExternalWakeDeliveryResult> => {
     if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // Not a finished turn: a child elsewhere waits on its user. A message, no
+    // completion, so the parent's card for the child stays open. A peer's
+    // parent gets the quiet line and is not woken.
+    if (wake.notice === "awaiting_user") {
+      if (wake.spawnKind === "peer") {
+        try {
+          // As above: never write into a chat another live brain runs.
+          assertChatRuntimeOwnedHere(wake.parentSessionId, "deliver an awaiting-user notice");
+          emitChatEvent(
+            ensureManagedSession(wake.parentSessionId),
+            awaitingUserQuietNotice(wake.childTitle, wake.summary),
+          );
+          return Promise.resolve("delivered");
+        } catch (error) {
+          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
+            parentSessionId: wake.parentSessionId,
+            childSessionId: wake.childSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return Promise.resolve("failed");
+        }
+      }
+      return messageSession({
+        sessionId: wake.parentSessionId,
+        kind: "wake",
+        text: wake.wakeText,
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then((): ExternalWakeDeliveryResult => "delivered")
+        .catch((error): ExternalWakeDeliveryResult => {
+          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
+            parentSessionId: wake.parentSessionId,
+            childSessionId: wake.childSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return isMissingParentError(error, wake.parentSessionId) ? "parent_gone" : "failed";
+        });
+    }
     // The same turn already being delivered answers nothing; let the outbox
     // try again rather than wait on a callback that never comes.
     const inFlightKey = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
@@ -48183,6 +48642,7 @@ export function createAgentChatService(args: {
     fastMode: requestedFastModeArg,
     fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
+    codexDaybreak: requestedCodexDaybreak,
     devinCloud: requestedDevinCloud,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode: requestedInteractionMode,
@@ -48854,6 +49314,7 @@ export function createAgentChatService(args: {
             && codexDescriptorOffersUltrafast(resolvedDescriptor) !== false
             ? { fastTier: "ultrafast" as const }
             : {}),
+          ...(effectiveProvider === "codex" && requestedCodexDaybreak === true ? { codexDaybreak: true } : {}),
           ...(initialCursorCloudServiceTier !== undefined
             ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
             : {}),
@@ -49498,6 +49959,8 @@ export function createAgentChatService(args: {
       reasoningEffort: targetReasoningEffort,
       fastMode: handoffFastMode,
       ...(handoffFastTier ? { fastTier: handoffFastTier } : {}),
+      // An access choice, like the sandbox below, so it follows the work.
+      ...(targetProvider === "codex" && managed.session.codexDaybreak === true ? { codexDaybreak: true } : {}),
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -50070,12 +50533,12 @@ export function createAgentChatService(args: {
     if (!normalizeGitRemoteIdentity(originUrl) || originUrl.length > 2_048 || originUrl.includes("\0")) {
       throw new Error("The project's origin URL is not portable.");
     }
-    const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+    const remote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
     });
     if (remote.exitCode !== 0) {
-      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${remote.stderr.trim()}`.trim());
+      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
     }
     // A never-pushed branch is fine with changes: its base commits come from
     // origin's history or the bundle.
@@ -50593,6 +51056,7 @@ export function createAgentChatService(args: {
         ...(targetReasoningEffort !== undefined ? { reasoningEffort: targetReasoningEffort } : {}),
         ...(targetFastMode !== undefined ? { fastMode: targetFastMode } : {}),
         ...(targetFastTier ? { fastTier: targetFastTier } : {}),
+        ...((args.codexDaybreak ?? managed.session.codexDaybreak) === true ? { codexDaybreak: true } : {}),
         ...(targetClaudePermissionMode ? { claudePermissionMode: targetClaudePermissionMode } : {}),
         ...(targetCodexApprovalPolicy ? { codexApprovalPolicy: targetCodexApprovalPolicy } : {}),
         ...(targetCodexSandbox ? { codexSandbox: targetCodexSandbox } : {}),
@@ -50681,7 +51145,9 @@ export function createAgentChatService(args: {
     if (
       current.branchRef !== args.capsule.source.branchRef
       || current.headSha !== args.capsule.source.headSha
-      || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(args.capsule.source.originUrl)
+      // Both origins are this machine's (the capsule was built here), so both
+      // resolve aliases locally.
+      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(args.capsule.source.originUrl)
     ) {
       throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
@@ -50818,7 +51284,7 @@ export function createAgentChatService(args: {
         env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
-        blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
+        blockingErrors.push(`The destination cannot read origin: ${redactGitOutput(remote.stderr.trim()) || "check Git credentials and network access."}`);
       } else {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
         if (!remoteBranchHeadSha) {
@@ -50840,7 +51306,7 @@ export function createAgentChatService(args: {
             },
           );
           if (fetch.exitCode !== 0) {
-            blockingErrors.push(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+            blockingErrors.push(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
           } else {
             const fetchedHead = await runGit(["rev-parse", `refs/remotes/origin/${branchRef}`], {
               cwd: projectRoot,
@@ -51040,7 +51506,7 @@ export function createAgentChatService(args: {
     );
     if (fetch.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`,
       );
     }
     const fetchedHead = await requireGitOutput(
@@ -51079,7 +51545,7 @@ export function createAgentChatService(args: {
     });
     if (status.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${status.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${redactGitOutput(status.stderr.trim()) || "unknown Git error"}`,
       );
     }
     if (status.stdout.trim()) {
@@ -51110,7 +51576,7 @@ export function createAgentChatService(args: {
     }
     if (ancestor.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${ancestor.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${redactGitOutput(ancestor.stderr.trim()) || "unknown Git error"}`,
       );
     }
 
@@ -51120,7 +51586,7 @@ export function createAgentChatService(args: {
     });
     if (merge.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${merge.stderr.trim() || "git merge --ff-only failed"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${redactGitOutput(merge.stderr.trim()) || "git merge --ff-only failed"}`,
       );
     }
     const head = await requireGitOutput(
@@ -51457,7 +51923,7 @@ export function createAgentChatService(args: {
       projectRoot,
       "The destination project does not have an origin remote.",
     );
-    if (normalizeGitRemoteIdentity(origin) !== normalizeGitRemoteIdentity(capsule.source.originUrl)) {
+    if (!isSameGitRepository(origin, capsule.source.originUrl)) {
       throw new Error("The destination project points at a different Git repository than the source handoff.");
     }
     const branchRef = await requireGitBranch(runGit, capsule.source.branchRef, projectRoot);
@@ -51506,7 +51972,7 @@ export function createAgentChatService(args: {
           env: await destinationGitEnv(),
         });
         if (fetch.exitCode !== 0) {
-          throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+          throw new Error(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
         }
         const fetchedHead = await requireGitOutput(
           runGit,
@@ -51612,6 +52078,7 @@ export function createAgentChatService(args: {
           && targetProvider === "codex" && codexDescriptorOffersUltrafast(targetDescriptor) !== false
           ? { fastTier: "ultrafast" as const }
           : {}),
+        ...(targetProvider === "codex" && capsule.target.codexDaybreak === true ? { codexDaybreak: true } : {}),
         claudePermissionMode: capsule.target.claudePermissionMode,
         codexApprovalPolicy: capsule.target.codexApprovalPolicy,
         codexSandbox: capsule.target.codexSandbox,
@@ -56730,7 +57197,9 @@ export function createAgentChatService(args: {
       });
       if (result.exitCode !== 0) return null;
       const url = result.stdout.trim();
-      return url.length > 0 ? url : null;
+      if (!url.length) return null;
+      // The cloud clones by the github.com URL; an SSH alias only exists here.
+      return (await resolveGithubSshAliasUrl(url)) ?? url;
     } catch {
       return null;
     }
@@ -57587,7 +58056,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    const fetch = await runGit(["fetch", "origin", branchName], {
+    const fetch = await runGitWithGithubAuthFallback(["fetch", "origin", branchName], {
       cwd: worktree,
       timeoutMs: 60_000,
     });
@@ -57597,7 +58066,7 @@ export function createAgentChatService(args: {
         agentId,
         laneId,
         branchName,
-        error: fetch.stderr.trim() || "unknown Git error",
+        error: redactGitOutput(fetch.stderr.trim()) || "unknown Git error",
       });
     } else {
       logger.info("agent_chat.cursor_cloud_branch_fetched", {
@@ -61903,6 +62372,19 @@ export function createAgentChatService(args: {
       if (result.reason === "queue_full") {
         throw new Error("The Claude steer queue is full; the message was not queued.");
       }
+      // A person-authored delivery clears the lifecycle markers (settled /
+      // attention / turn-failure) here too. `messageSession` is how the CLI
+      // (`ade chat send`), the phone, the hosted web client and drafts reach a
+      // chat, and none of them pass through `steerUserMessage` — so before this,
+      // a message the person sent from any of those landed without taking down
+      // the hand it was answering. Host-authored deliveries (scheduled wake,
+      // subagent report, peer relay) stay excluded by the predicate, exactly as
+      // on the composer paths.
+      if (messageClearsAttentionMarkers(metadata)) {
+        managed.turnFailureMarked = false;
+        sessionService.clearTurnStartMarkers(sessionId);
+        resetSessionActivity(sessionId);
+      }
       return {
         sessionId,
         kind: normalizedKind,
@@ -62839,6 +63321,32 @@ export function createAgentChatService(args: {
     return { cancelled: true };
   };
 
+  const sessionTurnRunning = (managed: ManagedChatSession): boolean =>
+    runtimeMidTurn(managed) || managed.session.status === "active";
+
+  /**
+   * Run a restart deferred by `afterTurn`, once the turn's `done` has settled.
+   * A queued message that already started the next turn keeps it waiting for
+   * that turn's end; a chat deleted meanwhile drops it.
+   */
+  const runRestartAfterTurn = (managed: ManagedChatSession): void => {
+    setTimeout(() => {
+      if (!managed.restartAfterTurn) return;
+      if (managed.deleted) {
+        managed.restartAfterTurn = false;
+        return;
+      }
+      if (sessionTurnRunning(managed)) return;
+      void restartSession({ sessionId: managed.session.id }).catch((error) => {
+        managed.restartAfterTurn = false;
+        logger.warn("agent_chat.session_restart_after_turn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 0);
+  };
+
   /**
    * Restart the agent session: stop the provider process, keep the
    * conversation. The next message starts a fresh process that resumes the
@@ -62850,13 +63358,29 @@ export function createAgentChatService(args: {
   const restartSession = async ({
     sessionId,
     stopFirst = false,
+    afterTurn = false,
   }: AgentChatRestartSessionArgs): Promise<AgentChatRestartSessionResult> => {
     const managed = ensureManagedSession(sessionId);
     if (managed.deleted) throw new Error("This chat was deleted.");
-    const midTurn = runtimeMidTurn(managed) || managed.session.status === "active";
+    const midTurn = sessionTurnRunning(managed);
+    if (midTurn && afterTurn && !stopFirst) {
+      // The turn that asked (usually the agent itself, through `ade chat
+      // restart`) finishes first; `runRestartAfterTurn` picks it up at the end.
+      if (!managed.restartAfterTurn) {
+        managed.restartAfterTurn = true;
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "The agent session restarts when this turn ends. The conversation is kept.",
+        });
+      }
+      logger.info("agent_chat.session_restart_scheduled", { sessionId, provider: managed.session.provider });
+      return { sessionId, restarted: false, stoppedTurn: false, backgroundJobsStopped: 0, scheduled: true };
+    }
     if (midTurn && !stopFirst) {
       throw turnInFlightError("A turn is running. Stop it first, or restart with stopFirst to stop it now.");
     }
+    managed.restartAfterTurn = false;
     if (midTurn) await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
     const backgroundJobsStopped = totalBackgroundWork(runtimeBackgroundWork(managed.runtime ?? null));
     const hadRuntime = Boolean(managed.runtime);
@@ -64815,6 +65339,9 @@ export function createAgentChatService(args: {
       // Absent on an older host, which cannot enforce it; clients treat absence
       // as allowed rather than locking a control the host would accept.
       fastModeAllowed: fastModeAllowed(),
+      ...((liveSession ? liveSession.provider === "codex" && liveSession.codexDaybreak : persisted?.provider === "codex" && persisted.codexDaybreak) === true
+        ? { codexDaybreak: true }
+        : {}),
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
       ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
@@ -64994,6 +65521,9 @@ export function createAgentChatService(args: {
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
+      ...(pendingInputItemId && isUserOnlyPendingInput({ sessionId: row.id, itemId: pendingInputItemId })
+        ? { pendingInputUserOnly: true }
+        : {}),
       ...(hasLiveSteeringInput(liveManaged) ? { steeringInput: true } : {}),
       // Live-only, exactly like `steeringInput`: never persisted, never paired
       // with `awaitingInput` / `pendingInputItemId`.
@@ -65299,6 +65829,23 @@ export function createAgentChatService(args: {
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
+    // A subagent tells its own parent (`relayChildAwaitingUserToParent`), so a
+    // waiter would repeat it. A peer's relay is a quiet line that does not
+    // wake, so the waiter is how its parent hears it while asleep and must
+    // still speak. `pendingInputUserOnly` only exists for a chat this brain
+    // manages (see `isUserOnlyPendingInput`), so `managedSessions` is the whole
+    // set the relay can have told.
+    callerToldOfUserWait: (targetSessionId, callerSessionId) => {
+      const target = managedSessions.get(targetSessionId);
+      return target?.session.spawnKind === "subagent"
+        && target.session.orchestrationParentSessionId?.trim() === callerSessionId;
+    },
+    // A queued send's wait runs on the brain that owns the chat it sends to,
+    // which may not be its caller's; only a caller this brain runs can be told.
+    callerIsLiveHere: (sessionId) => {
+      const session = managedSessions.get(sessionId);
+      return Boolean(session && !session.deleted);
+    },
   });
   chatWaits = chatWaitRegistry;
   chatWaitRegistry.start();
@@ -65375,6 +65922,7 @@ export function createAgentChatService(args: {
       awaitingInput: summary.awaitingInput === true,
       pendingTitle: pending?.title ?? null,
       pendingDescription: pending?.description ?? null,
+      pendingUserOnly: summary.pendingInputUserOnly === true || isUserOnlyConsentCard(pending?.providerMetadata ?? null),
       queuedMessageCount,
       // Watch-only monitors never make a chat "waiting": nobody waits on them.
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
@@ -67453,6 +68001,34 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Take down a hand this chat raised itself (`ade chat ask --clear`).
+   *
+   * `ade chat ask` writes a marker, not a blocking card, so an agent that asks
+   * and then gets new instructions (a coordinator steer, a peer report, its own
+   * decision) keeps working with the hand still up. The row then says "Needs
+   * you" for the rest of the run about a question nobody is waiting on, and the
+   * only thing that could clear it was a message from the person.
+   *
+   * Only `agent_explicit` is cleared. A hand the person raised, the turn-end
+   * inference, and a provider card all belong to someone else; an open card
+   * keeps the row loud through `pendingInputItemId` even if this had cleared.
+   *
+   * Returns whether a marker was actually taken down, so the CLI can say
+   * "nothing raised" rather than implying it changed something.
+   */
+  const clearAsk = (sessionId: string): { cleared: boolean } => {
+    const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmed) return { cleared: false };
+    const row = sessionService.get(trimmed);
+    if (!row?.attentionRequestedAt || row.attentionSource !== "agent_explicit") {
+      return { cleared: false };
+    }
+    const cleared = sessionService.clearAttentionRequest(trimmed, "agent_explicit");
+    if (cleared) emitTransientChatEnvelope(trimmed, { type: "session_meta_updated" });
+    return { cleared };
+  };
+
+  /**
    * Throw a non-blocking card away without answering it.
    *
    * The right to dismiss is a property the PROVIDER grants — `dismissible` on
@@ -67818,6 +68394,7 @@ export function createAgentChatService(args: {
           ...(d.aliases?.length ? { aliases: d.aliases } : {}),
           ...(d.cursorAvailability ? { cursorAvailability: d.cursorAvailability } : {}),
           ...(d.cursorCliVariants?.length ? { cursorCliVariants: d.cursorCliVariants } : {}),
+          ...(d.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
         }));
       } catch {
         return [];
@@ -68276,8 +68853,10 @@ export function createAgentChatService(args: {
             : descriptor.serviceTiers?.length
               ? { serviceTiers: descriptor.serviceTiers }
               : {}),
+          ...(info.cyberAccessPrograms !== undefined ? { cyberAccessPrograms: info.cyberAccessPrograms } : {}),
           ...(info.cursorAvailability ? { cursorAvailability: info.cursorAvailability } : descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
           ...(info.cursorCliVariants?.length ? { cursorCliVariants: info.cursorCliVariants } : descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
+          ...(info.cursorMaxModeOnly ?? descriptor.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
         };
         descriptors.push(patched);
         const providerKey = provider === "pi" ? patched.piProviderId ?? patched.family : patched.family;
@@ -68464,6 +69043,9 @@ export function createAgentChatService(args: {
                   : descriptor.serviceTiers?.length
                     ? { serviceTiers: descriptor.serviceTiers }
                     : {}),
+                ...(entry?.info.cyberAccessPrograms !== undefined
+                  ? { cyberAccessPrograms: entry.info.cyberAccessPrograms }
+                  : {}),
                 color: descriptor.color,
                 ...(entry?.info.cursorAvailability
                   ? { cursorAvailability: entry.info.cursorAvailability }
@@ -68475,6 +69057,7 @@ export function createAgentChatService(args: {
                   : descriptor.cursorCliVariants?.length
                     ? { cursorCliVariants: descriptor.cursorCliVariants }
                     : {}),
+                ...(entry?.info.cursorMaxModeOnly ?? descriptor.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
                 ...(descriptor.openCodeFast ? { openCodeFast: descriptor.openCodeFast } : {}),
                 ...(runtimeProvider === "copilot" ? {
                   supportedContextTiers: descriptor.supportedContextTiers ?? entry?.info.supportedContextTiers ?? [],
@@ -69475,6 +70058,7 @@ export function createAgentChatService(args: {
     fastMode: requestedFastModeArg,
     fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
+    codexDaybreak: requestedCodexDaybreak,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode,
     claudePermissionMode,
@@ -70227,6 +70811,24 @@ export function createAgentChatService(args: {
       } else {
         delete managed.session.fastMode;
         delete managed.session.fastTier;
+      }
+    }
+    // Daybreak is Codex-only: a chat that leaves Codex drops it.
+    if (managed.session.provider !== "codex") delete managed.session.codexDaybreak;
+    if (requestedCodexDaybreak !== undefined && managed.session.provider === "codex") {
+      const enabled = requestedCodexDaybreak === true;
+      if (enabled) managed.session.codexDaybreak = true;
+      else delete managed.session.codexDaybreak;
+      // Saved on the thread too, where Codex keeps it for its own app. Best
+      // effort: the next turn reads ADE's field either way.
+      const daybreakRuntime = managed.runtime;
+      const daybreakThreadId = managed.session.threadId;
+      if (daybreakRuntime?.kind === "codex" && daybreakThreadId) {
+        void daybreakRuntime.request("thread/metadata/update", { threadId: daybreakThreadId, daybreakEnabled: enabled }, { timeoutMs: 10_000 })
+          .catch((error) => logger.warn("agent_chat.codex_daybreak_save_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          }));
       }
     }
     // Only an update that names the tier changes it. Clients that know Fast
@@ -71349,6 +71951,7 @@ export function createAgentChatService(args: {
               revisedPrompt: typeof item.revisedPrompt === "string" ? item.revisedPrompt : null,
               result: typeof item.result === "string" ? item.result : null,
               savedPath: typeof item.savedPath === "string" ? item.savedPath : null,
+              ...codexImageGenerationRefFields(item),
               ...(turnId ? { turnId } : {}),
             },
             "system",
@@ -72283,6 +72886,22 @@ export function createAgentChatService(args: {
         turnId: managed.runtime?.activeTurnId ?? undefined,
       });
       return usage;
+    };
+
+    /**
+     * `/usage` in a Claude chat: the structured twin of Claude Code's own
+     * usage dialog (session cost, plan limits, what is using them). Read-only;
+     * the chat's sheet renders it and adds nothing to the transcript.
+     */
+    const getClaudeUsage = async ({ sessionId, skipBehaviors }: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+      const managed = ensureManagedSession(sessionId);
+      const sessionQuery = await getClaudeControlQuery(managed, "/usage");
+      const call = sendClaudeControlRequest(sessionQuery, {
+        subtype: "get_usage",
+        ...(skipBehaviors ? { skip_behaviors: true } : {}),
+      });
+      if (!call) throw new Error("This Claude SDK build cannot report usage.");
+      return normalizeClaudeUsageReport((await call)?.response);
     };
 
   /**
@@ -73423,6 +74042,9 @@ export function createAgentChatService(args: {
       // retry at the next boundary instead, regardless of which runtime or API
       // created it.
       if (liveManaged?.session.status === "active") return true;
+      // An open card refuses every new turn. Firing now would close the row as
+      // "Not delivered" and lose the wake; keep it armed until the card closes.
+      if (hasLivePendingInput(liveManaged)) return true;
       return schedule.provider === "claude"
         && liveRuntime?.query != null
         && liveRuntime.busy;
@@ -74198,6 +74820,7 @@ export function createAgentChatService(args: {
     isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
+    clearAsk,
     getMcpApp: mcpApps.get,
     mcpAppRequest: mcpApps.request,
     listMcpAppGrants,
@@ -74219,6 +74842,7 @@ export function createAgentChatService(args: {
     getSubagentTranscript,
     killDroidWorker,
     getContextUsage,
+    getClaudeUsage,
     rewindFiles,
     rerunLastTurn,
     codexFuzzyFileSearch,

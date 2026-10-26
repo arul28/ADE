@@ -307,6 +307,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         ref: buildElementRef(outcome.selected),
         element: outcome.selected,
         matchCount: outcome.matches.length,
+        ...(outcome.note ? { note: outcome.note } : {}),
       },
       reason: null,
       snapshot,
@@ -779,7 +780,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         action: "assert",
         match,
         matchCount: match?.matchCount ?? 0,
-        message: match ? describeElement(match.element) : reason,
+        message: match ? [describeElement(match.element), match.note].filter(Boolean).join(" ") : reason,
         waitedMs: null,
         effect: READ_ONLY_EFFECT,
       };
@@ -812,7 +813,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         action: "tap",
         match,
         matchCount: match.matchCount,
-        message: null,
+        message: match.note ?? null,
         waitedMs: null,
         effect: APPLE_ACTION_EFFECT,
       };
@@ -848,7 +849,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         action: "fill",
         match,
         matchCount: match.matchCount,
-        message: null,
+        message: match.note ?? null,
         waitedMs: null,
         effect: APPLE_ACTION_EFFECT,
       };
@@ -879,7 +880,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
             action: "wait",
             match: wantGone ? null : match,
             matchCount: match?.matchCount ?? 0,
-            message: null,
+            message: wantGone ? null : match?.note ?? null,
             waitedMs,
             effect: READ_ONLY_EFFECT,
           };
@@ -911,7 +912,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         action: "assert",
         match,
         matchCount: match?.matchCount ?? 0,
-        message: match ? null : reason,
+        message: match ? match.note ?? null : reason,
         waitedMs: null,
         effect: READ_ONLY_EFFECT,
       };

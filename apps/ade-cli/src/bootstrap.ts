@@ -85,7 +85,10 @@ import { createRebaseSuggestionService } from "../../desktop/src/main/services/l
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
-import { createProjectHealthService } from "./services/projects/projectHealth/projectHealthService";
+import {
+  createProjectHealthService,
+  createProjectHealthTurnStateReader,
+} from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
@@ -324,6 +327,7 @@ import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
   adeCliShimDirName,
   packagedCliNodeModulePaths,
+  renderAdeCliGitBashShim,
   renderAdeCliShim,
   resolveAdeCliShimBrain,
   type AdeCliShimBrain,
@@ -606,16 +610,35 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: str
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
+    const nodeModulePaths = packagedCliNodeModulePaths(entryPath);
     const body = renderAdeCliShim({
       entryPath,
       execPath: process.execPath,
       brain,
-      nodeModulePaths: packagedCliNodeModulePaths(entryPath),
+      nodeModulePaths,
     });
     if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
       fs.writeFileSync(shimPath, body, "utf8");
     }
     if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
+    if (process.platform === "win32") {
+      // Git Bash runs `ade` only as an extensionless script. ADE_CLI_PATH
+      // stays `ade.cmd`, which PowerShell and cmd.exe run.
+      const gitBashShimPath = path.join(shimDir, "ade");
+      const gitBashBody = renderAdeCliGitBashShim({
+        entryPath,
+        execPath: process.execPath,
+        brain,
+        nodeModulePaths,
+      });
+      try {
+        if (!fs.existsSync(gitBashShimPath) || fs.readFileSync(gitBashShimPath, "utf8") !== gitBashBody) {
+          fs.writeFileSync(gitBashShimPath, gitBashBody, "utf8");
+        }
+      } catch {
+        // Best effort: PowerShell and cmd.exe still have `ade.cmd`.
+      }
+    }
     return { dir: shimDir, path: shimPath };
   } catch {
     return null;
@@ -3443,6 +3466,7 @@ export async function createAdeRuntime(args: {
       db,
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
+      readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

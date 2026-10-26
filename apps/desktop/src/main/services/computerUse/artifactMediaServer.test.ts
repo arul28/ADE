@@ -279,6 +279,34 @@ describe("artifact media server, paired computer", () => {
     }
   });
 
+  it("pulls a picture once and serves every later showing, ranges included, from memory", async () => {
+    const PICTURE = "/remote/target-1/project-1/.ade/artifacts/computer-use/shot.png";
+    const bytes = patterned(2 * REMOTE_ARTIFACT_CHUNK_BYTES + 500_000);
+    const machine = fakeMachine(bytes);
+    reader = machine;
+
+    // An answer and the proof drawer ask for the same picture at once.
+    const [answer, drawer] = await Promise.all([
+      send(origin, `/${TOKEN}${PICTURE}`),
+      send(origin, `/${TOKEN}${PICTURE}`),
+    ]);
+    const callsForOnePull = Math.ceil(bytes.length / REMOTE_ARTIFACT_CHUNK_BYTES);
+    expect(machine).toHaveBeenCalledTimes(callsForOnePull);
+    for (const reply of [answer, drawer]) {
+      expect(reply.status).toBe(200);
+      expect(reply.headers["content-type"]).toBe("image/png");
+      expect(reply.body.equals(bytes)).toBe(true);
+    }
+
+    // Shown again later, and read by range: no further round trip.
+    const again = await send(origin, `/${TOKEN}${PICTURE}`);
+    const slice = await send(origin, `/${TOKEN}${PICTURE}`, { headers: { Range: "bytes=10-19" } });
+    expect(again.body.equals(bytes)).toBe(true);
+    expect(slice.status).toBe(206);
+    expect(slice.body.equals(bytes.subarray(10, 20))).toBe(true);
+    expect(machine).toHaveBeenCalledTimes(callsForOnePull);
+  });
+
   it("serves suffix ranges, HEAD, 200, and 416 like a local file", async () => {
     const bytes = patterned(5000);
     reader = fakeMachine(bytes);

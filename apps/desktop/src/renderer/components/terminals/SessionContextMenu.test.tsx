@@ -104,7 +104,7 @@ function renderMenu(
   session: TerminalSessionSummary,
   {
     onSetChatTag = vi.fn(),
-    onSettle = vi.fn(),
+    onChangeStatus = vi.fn(),
     binding,
     laneActions,
     onRegenerateMetadata,
@@ -112,7 +112,7 @@ function renderMenu(
     onOpenChatHandoff = vi.fn(),
   }: {
     onSetChatTag?: ReturnType<typeof vi.fn>;
-    onSettle?: ReturnType<typeof vi.fn>;
+    onChangeStatus?: ReturnType<typeof vi.fn>;
     binding?: OpenProjectBinding | null;
     laneActions?: SessionContextMenuLaneActions | null;
     onRegenerateMetadata?: ReturnType<typeof vi.fn>;
@@ -141,7 +141,7 @@ function renderMenu(
         onRename={onRename}
         onRegenerateMetadata={onRegenerateMetadata}
         onSetChatTag={onSetChatTag}
-        onSettle={onSettle}
+        onChangeStatus={onChangeStatus}
         onOpenChatHandoff={onOpenChatHandoff}
       />
     </MemoryRouter>,
@@ -149,7 +149,7 @@ function renderMenu(
   return {
     onClose,
     onSetChatTag,
-    onSettle,
+    onChangeStatus,
     onCopySessionId,
     onCopySessionDeepLink,
     onGoToLane,
@@ -163,6 +163,14 @@ function renderMenu(
 function openSubmenuByHover(trigger: Element) {
   hover(trigger);
   act(() => { vi.advanceTimersByTime(SUBMENU_OPEN_DELAY_MS + 10); });
+}
+
+/**
+ * Opens Change status through the keyboard path, which does not wait out the
+ * hover intent delay — so it works in tests that keep real timers.
+ */
+function openStatusMenu() {
+  fireEvent.keyDown(screen.getByTestId("session-menu-change-status"), { key: "ArrowRight" });
 }
 
 describe("SessionContextMenu Claude tags", () => {
@@ -345,9 +353,11 @@ describe("SessionContextMenu lane section", () => {
 
   it("puts a glanceable icon on every top-level action", () => {
     renderMenu(makeSession());
-    for (const name of ["Rename", "Go to lane", "Snooze…", "Delete chat"]) {
+    for (const name of ["Rename", "Go to lane", "Delete chat"]) {
       expect(screen.getByRole("button", { name }).querySelector("[data-menu-icon]")).toBeTruthy();
     }
+    expect(screen.getByTestId("session-menu-change-status").querySelector("[data-menu-icon]"))
+      .toBeTruthy();
   });
 
   it("omits the lane section for a row whose lane still has a divider", () => {
@@ -364,7 +374,7 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("waits out the intent delay instead of firing on a pass-over", () => {
     renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
 
     hover(trigger);
     act(() => { vi.advanceTimersByTime(SUBMENU_OPEN_DELAY_MS - 40); });
@@ -377,7 +387,7 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("cancels the pending open when the pointer leaves before the delay", () => {
     renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
 
     hover(trigger);
     act(() => { vi.advanceTimersByTime(SUBMENU_OPEN_DELAY_MS - 40); });
@@ -389,7 +399,7 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("stays open while the pointer travels diagonally from the row to the panel", () => {
     renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
     openSubmenuByHover(trigger);
     const panel = screen.getByRole("button", { name: /^In 1 hour/ }).closest("[role=menu]")!;
 
@@ -405,7 +415,7 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("closes once the pointer has left both the row and the panel", () => {
     renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
     openSubmenuByHover(trigger);
     const panel = screen.getByRole("button", { name: /^In 1 hour/ }).closest("[role=menu]")!;
 
@@ -417,16 +427,18 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("opens on ArrowRight and closes on Escape without dismissing the parent menu", () => {
     const { onClose } = renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
 
     fireEvent.keyDown(trigger, { key: "ArrowRight" });
-    const first = screen.getByRole("button", { name: /^In 1 hour/ });
+    // Working is first but disabled for this idle row, so focus lands on the
+    // first enabled entry.
+    const first = screen.getByTestId("session-menu-status-needs_you");
     expect(first).toBeTruthy();
     // Keyboard opens move focus into the panel; pointer opens deliberately do not.
     expect(document.activeElement).toBe(first);
 
     fireEvent.keyDown(first, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: /^In 1 hour/ })).toBeNull();
+    expect(screen.queryByTestId("session-menu-status-needs_you")).toBeNull();
     expect(document.activeElement).toBe(trigger);
     // Escape belongs to the submenu it closed, not to the menu behind it.
     expect(onClose).not.toHaveBeenCalled();
@@ -434,14 +446,14 @@ describe("SessionContextMenu submenu interaction", () => {
 
   it("moves focus between panel rows with the arrow keys", () => {
     renderMenu(makeSession());
-    fireEvent.keyDown(screen.getByRole("button", { name: "Snooze…" }), { key: "ArrowRight" });
-    const rows = screen.getAllByRole("button").filter((button) =>
-      button.closest("[role=menu]") !== null);
+    fireEvent.keyDown(screen.getByTestId("session-menu-change-status"), { key: "ArrowRight" });
+    const first = screen.getByTestId("session-menu-status-needs_you");
+    expect(document.activeElement).toBe(first);
 
-    fireEvent.keyDown(rows[0]!, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(rows[1]);
-    fireEvent.keyDown(rows[1]!, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(rows[0]);
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(screen.getByTestId("session-menu-status-done"));
+    fireEvent.keyDown(screen.getByTestId("session-menu-status-done"), { key: "ArrowUp" });
+    expect(document.activeElement).toBe(first);
   });
 });
 
@@ -466,7 +478,7 @@ describe("SessionContextMenu grouped actions", () => {
     const session = makeSession();
     const { onGoToLane } = renderMenu(session);
 
-    for (const name of ["Rename", "Go to lane", "Snooze…", "Delete chat"]) {
+    for (const name of ["Rename", "Go to lane", "Delete chat"]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
     fireEvent.click(screen.getByRole("button", { name: "Go to lane" }));
@@ -557,7 +569,7 @@ describe("SessionContextMenu grouped actions", () => {
     // re-opening after the boundary has to produce the later list.
     vi.setSystemTime(new Date("2026-07-30T09:00:00"));
     renderMenu(makeSession());
-    const trigger = screen.getByRole("button", { name: "Snooze…" });
+    const trigger = screen.getByTestId("session-menu-change-status");
 
     openSubmenuByHover(trigger);
     expect(screen.queryByRole("button", { name: /^This evening/ })).toBeTruthy();
@@ -572,31 +584,45 @@ describe("SessionContextMenu grouped actions", () => {
 });
 
 describe("SessionContextMenu settle safety", () => {
-  it("offers Dismiss & settle when a chat is waiting on input", () => {
-    const session = makeSession({
+  it("refuses Done over a live provider card and names what is blocking", () => {
+    renderMenu(makeSession({
       runtimeState: "waiting-input",
       pendingInputItemId: "pending-1",
-    });
-    const { onSettle } = renderMenu(session);
+    }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
-    expect(onSettle).toHaveBeenCalledWith(session, null);
+    openStatusMenu();
+    const done = screen.getByTestId("session-menu-status-done");
+    expect(done).toHaveProperty("disabled", true);
+    expect(done.getAttribute("title")).toBe("Answer the open question first");
   });
 
-  it("does not infer dismissible input from a provider runtime marker", () => {
+  it("lets an agent ask be dismissed by settling, because a settle clears the marker", () => {
+    const session = makeSession({
+      runtimeState: "waiting-input",
+      pendingInputItemId: null,
+      attentionRequestedAt: "2026-07-23T12:00:00.000Z",
+      attentionMessage: "Review this result?",
+    });
+    const { onChangeStatus } = renderMenu(session);
+
+    openStatusMenu();
+    fireEvent.click(screen.getByTestId("session-menu-status-done"));
+    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", null);
+  });
+
+  it("does not infer a provider card from a runtime marker", () => {
     renderMenu(makeSession({
       toolType: "codex-chat",
       runtimeState: "waiting-input",
       pendingInputItemId: null,
     }));
-    expect(screen.queryByRole("button", { name: "Dismiss & settle" })).toBeNull();
+
+    openStatusMenu();
+    expect(screen.getByTestId("session-menu-status-done")).toHaveProperty("disabled", false);
   });
 
-  it("passes the owning machine binding directly to deferred lifecycle actions", () => {
-    const session = makeSession({
-      runtimeState: "waiting-input",
-      pendingInputItemId: "pending-1",
-    });
+  it("passes the owning machine binding directly to the status write", () => {
+    const session = makeSession({ runtimeState: "idle" });
     const binding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:studio:ade",
@@ -607,36 +633,12 @@ describe("SessionContextMenu settle safety", () => {
       runtimeName: "Studio",
       hostname: "studio.local",
     };
-    const onSettle = vi.fn();
-    renderMenu(session, { onSettle, binding });
+    const onChangeStatus = vi.fn();
+    renderMenu(session, { onChangeStatus, binding });
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
-
-    expect(onSettle).toHaveBeenCalledWith(session, binding);
-  });
-
-  it("allows an explicit agent ask to settle because settling clears the marker", () => {
-    renderMenu(makeSession({
-      runtimeState: "waiting-input",
-      pendingInputItemId: null,
-      attentionRequestedAt: "2026-07-23T12:00:00.000Z",
-      attentionMessage: "Review this result?",
-    }));
-
-    expect(screen.getByRole("button", { name: "Dismiss & settle" })).toBeTruthy();
-  });
-
-  it("does not infer a native CLI prompt from the runtime marker", () => {
-    const onSettle = vi.fn();
-    renderMenu(makeSession({
-      toolType: "codex",
-      runtimeState: "waiting-input",
-      pendingInputItemId: null,
-      attentionRequestedAt: null,
-    }), { onSettle });
-
-    expect(screen.queryByRole("button", { name: "Resolve input to settle" })).toBeNull();
-    expect(onSettle).not.toHaveBeenCalled();
+    openStatusMenu();
+    fireEvent.click(screen.getByTestId("session-menu-status-done"));
+    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", binding);
   });
 });
 
@@ -669,10 +671,12 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
     });
     renderMenu(session);
 
+    openStatusMenu();
     fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
     await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("chat-1"));
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
 
+    openStatusMenu();
     fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
     await waitFor(() => {
       expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
@@ -682,7 +686,7 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
   it("expands Snooze into concrete durations and sends an ISO deadline", async () => {
     renderMenu(makeSession());
 
-    fireEvent.click(screen.getByRole("button", { name: "Snooze…" }));
+    openStatusMenu();
     // Prefix match on the label: presets may carry a locale-formatted time
     // alongside it, which an exact accessible name would make brittle.
     fireEvent.click(screen.getByRole("button", { name: /^In 1 hour/ }));
@@ -699,7 +703,7 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
       snoozedAt: new Date(Date.now() - 60_000).toISOString(),
     }));
 
-    expect(screen.queryByRole("button", { name: "Snooze…" })).toBeNull();
+    openStatusMenu();
     fireEvent.click(screen.getByRole("button", { name: /Wake now/ }));
 
     await waitFor(() => {

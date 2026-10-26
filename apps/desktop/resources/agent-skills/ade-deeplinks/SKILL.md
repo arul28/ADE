@@ -51,6 +51,26 @@ branch as a lane if the receiver does not have it yet. **Linear-issue links are
 portable** — they open ADE's Linear pane for the issue and show setup if the
 active project has not connected Linear.
 
+## Settings and pages in a chat reply
+
+When the user asks where something is in ADE ("how do I manage my
+providers?"), run `ade settings find <words>` and put the link it prints in
+your reply:
+
+```
+ade://settings/<entry-id>     # one card in Settings; the chat shows it as a chip
+ade://open/<page>             # an ADE page (prs, lanes, history, connections…)
+```
+
+- The chip's label comes from ADE's own settings list, not from your text,
+  and a click opens the card; a page for one computer opens on the chat's
+  machine.
+- `ade://open/...` works only when the user clicks it in a chat; ADE ignores
+  it from anywhere else.
+- `find` marks settings only the user can change (publishing, sign-ins,
+  money, the computer itself, preferences). ADE refuses an agent's change to
+  them. Say that the user changes it, and give the link.
+
 ## When to use which form
 
 | Need                                                          | Use                                  |

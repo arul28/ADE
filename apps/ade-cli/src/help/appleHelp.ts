@@ -409,15 +409,19 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   key: `${ADE_BANNER}
   iOS Simulator: key
 
-  Presses one named key on the simulator keyboard.
+  Presses one key as a hardware keyboard would, with modifiers held around it.
 
     $ "$ADE_CLI_PATH" apple key return --text
-    $ "$ADE_CLI_PATH" apple key tab --text
+    $ "$ADE_CLI_PATH" apple key escape --text
+    $ "$ADE_CLI_PATH" apple key right --cmd --text
+    $ "$ADE_CLI_PATH" apple key f --cmd --text
 
-  Keys: return (alias enter), tab.
-  To type text and then press Return, use: apple type "<text>" --submit.
+  Keys: return (enter), escape (esc), delete (backspace), forward-delete, tab,
+  space, up, down, left, right, home, end, page-up, page-down, or one letter
+  or digit. To type text and then press Return, use: apple type "<text>" --submit.
 
   Flags:
+    --cmd, --shift, --alt, --ctrl  Hold these while the key is pressed.
     --device, --udid <id>  Simulator device.
 `,
   "open-device": `${ADE_BANNER}
@@ -1009,6 +1013,27 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --ignore-ownership     Detach without the owner check. Ask first.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to detach.
+`,
+  "device-promote": `${ADE_BANNER}
+  Apple device: device-promote
+
+  Makes one of the lane's extra devices (device-create --extra) the lane's own
+  device: the one that streams, records, launches builds and runs tests. What
+  is installed and signed in on it stays. The old lane device stays installed:
+  an ADE device becomes an extra in its place, an attached simulator is
+  detached back to the user.
+
+  Refused (APPLE_LANE_DEVICE_BUSY) while the old device streams, records, runs
+  tests or a launch, or another chat holds the lane's lease; and while another
+  chat drives the lane's device, like stop.
+
+    $ ade --socket apple device-promote --device <udid|name> --text
+
+  Flags:
+    --device, --udid <id>  The extra device to promote (udid or name).
+    --ignore-ownership     Promote even while another chat drives the lane's device. Ask first.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --lane, --lane-id <id> Lane whose devices to swap.
 `,
   "device-delete": `${ADE_BANNER}
   Apple device: device-delete

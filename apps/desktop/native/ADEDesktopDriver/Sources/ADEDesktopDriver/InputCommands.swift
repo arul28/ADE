@@ -171,7 +171,7 @@ extension DriverRuntime {
             if let resolved = try? resolve(payload: payload) {
                 pid = resolved.1.pid
                 resolvedIndex = .int(resolved.1.index)
-            } else if let first = windows.listWindows(laneId: laneId).first {
+            } else if let first = Self.keyTarget(in: windows.listWindows(laneId: laneId)) {
                 pid = first.pid
             } else {
                 throw DriverError(
@@ -299,7 +299,12 @@ extension DriverRuntime {
         var cachedHitCandidates: [WindowHitCandidate]?
         func hitCandidates() -> [WindowHitCandidate] {
             if let cachedHitCandidates { return cachedHitCandidates }
-            let fresh = windows.listWindows(laneId: laneId).map {
+            // A modal panel first, newest first: a keystroke goes where a
+            // person's would, into the panel that blocks its app.
+            let lane = windows.listWindows(laneId: laneId)
+            let ordered = lane.filter { $0.layer >= WindowLayerPolicy.modalPanel }.reversed()
+                + lane.filter { $0.layer < WindowLayerPolicy.modalPanel }
+            let fresh = ordered.map {
                 WindowHitCandidate(pid: $0.pid, frame: $0.frame, minimized: $0.minimized)
             }
             cachedHitCandidates = fresh
@@ -541,6 +546,16 @@ extension DriverRuntime {
         ]
     }
 
+    /// Where a key with no target goes: an app-modal panel or alert when one
+    /// is up on the lane, because that is where a person's keys would go and
+    /// the app ignores its other windows until it closes; else the lane's
+    /// first window.
+    static func keyTarget(in laneWindows: [DesktopWindow]) -> DesktopWindow? {
+        let visible = laneWindows.filter { !$0.minimized }
+        return visible.last { $0.layer >= WindowLayerPolicy.modalPanel }
+            ?? laneWindows.first
+    }
+
     /// The frontmost lane window under `point` (see
     /// `WindowHitTest.backgroundCandidates`), with no policy applied.
     private func backgroundHit(
@@ -597,7 +612,7 @@ extension DriverRuntime {
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [lane] }
         return [lane] + ids.prefix(Int(count))
-            .filter { CGDisplayVendorNumber($0) == VirtualDisplayIdentity.vendorID }
+            .filter { VirtualDisplayIdentity.isADEDisplay($0) }
             .map { CGDisplayBounds($0) }
     }
 

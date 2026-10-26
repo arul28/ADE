@@ -51,6 +51,8 @@ export type LaneSidebarListProps = {
   agentsByLaneId: ReadonlyMap<string, LaneAgent[]>;
   lanePrTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
   deleteProgressByLaneId: Record<string, LaneDeleteProgress>;
+  /** Stops a running delete, by row key. */
+  onStopDelete?: (laneId: string) => void;
   creatingLaneIds: ReadonlySet<string>;
   pendingCreatingIssues: CreatingIssuePlaceholder[];
   pulsingLaneId: string | null;
@@ -101,6 +103,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     agentsByLaneId,
     lanePrTagsByLaneId,
     deleteProgressByLaneId,
+    onStopDelete,
     creatingLaneIds,
     pendingCreatingIssues,
     pulsingLaneId,
@@ -165,6 +168,11 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         rebaseSuggestion={snapshot?.rebaseSuggestion ?? null}
         autoRebaseStatus={snapshot?.autoRebaseStatus ?? null}
         deleteStatusLabel={deleting ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        // Another machine's delete has no progress feed here, so its row
+        // always offers Stop and that machine says whether it still can.
+        onStopDelete={deleting && onStopDelete && (deleteProgress?.cancellable || foreignLaneIds?.has(laneId))
+          ? () => onStopDelete(laneId)
+          : null}
         creating={!deleting && creatingLaneIds.has(laneId)}
         parentHint={row.parentHint ?? null}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}

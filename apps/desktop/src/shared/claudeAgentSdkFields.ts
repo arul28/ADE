@@ -101,7 +101,7 @@ const MAX_RESULT_RESOURCE_LINKS = 50;
  * MCP `resource_link` items in a tool result, as structured links.
  *
  * Two shapes, one per provider, both measured live on 2026-09-28 (Codex re-measured 2026-10-05):
- * - Codex (app-server 0.156.1 through 0.162.1) hands over the MCP `CallToolResult` itself, so
+ * - Codex (app-server 0.156.1 through 0.164.0) hands over the MCP `CallToolResult` itself, so
  *   the links are `{ type: "resource_link", uri, … }` items in `content`.
  * - Claude (Agent SDK 0.3.280) turns each link into a `[Resource link: …]` text
  *   block in the model-facing content, and keeps the structured list on the

@@ -1,3 +1,4 @@
+import { looksLikeInlineBase64Image } from "./codexImageGeneration";
 import type { AgentChatEvent } from "./types/chat";
 
 /**
@@ -352,7 +353,10 @@ export const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEven
   }
 
   if (event.type === "codex_image_generation") {
-    const resultBytes = inlineImageDataUrlBytes(event.result);
+    // Codex's inline `result` is bare base64 without a `data:` prefix (0.164
+    // still sends it when the attachment upload fails).
+    const resultBytes = inlineImageDataUrlBytes(event.result)
+      ?? (event.result && looksLikeInlineBase64Image(event.result) ? utf8Bytes(event.result) : null);
     const savedPathIsInline = inlineImageDataUrlBytes(event.savedPath) != null;
     if (resultBytes != null && resultBytes > STORED_INLINE_IMAGE_DATA_URL_MAX_BYTES) {
       return {

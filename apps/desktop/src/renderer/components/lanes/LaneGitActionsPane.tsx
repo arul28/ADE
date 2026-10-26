@@ -1225,9 +1225,12 @@ export function LaneGitActionsPane({
     }
   }, [autoRebaseStatusSnapshot]);
 
+  // Only git's own `[rejected] … (non-fast-forward)` / `(fetch first)` refusal
+  // means the remote history moved. Every refused push also prints "failed to
+  // push some refs", including hook, branch-rule and credential refusals, where
+  // a force push cannot help and the host's message already says why.
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
-    const lower = rawMessage.toLowerCase();
-    return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
+    return /non-fast-forward|\(fetch first\)/i.test(rawMessage);
   }, []);
 
   const formatActionError = useCallback((actionName: string, rawMessage: string): string => {

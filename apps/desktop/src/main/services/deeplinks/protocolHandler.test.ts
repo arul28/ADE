@@ -247,6 +247,24 @@ describe("handleDeeplinkUrl", () => {
     );
   });
 
+  it("refuses page links from outside ADE but opens settings links on their machine", () => {
+    const dispatch = vi.fn();
+    const log = vi.fn();
+    // A page link runs only from a click in a chat; a web page or `ade open` must not drive ADE.
+    handleDeeplinkUrl("ade://open/prs", "test", dispatch, log);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("deeplink.refused", expect.objectContaining({ source: "test" }));
+
+    handleDeeplinkUrl("ade://settings/agents.providers?machine=studio-1", "test", dispatch, log);
+    handleDeeplinkUrl("https://ade-app.dev/open?type=settings&id=mcp.servers", "test", dispatch, log);
+    expect(dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      target: { kind: "settings", entryId: "agents.providers", machineId: "studio-1" },
+    }));
+    expect(dispatch).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      target: expect.objectContaining({ kind: "settings", entryId: "mcp.servers" }),
+    }));
+  });
+
   it("dispatches https mirror URLs", () => {
     const dispatch = vi.fn();
     handleDeeplinkUrl(

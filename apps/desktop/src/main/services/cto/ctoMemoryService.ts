@@ -151,6 +151,18 @@ function truncateKeepTail(body: string, maxChars: number): string {
   return `…(older content truncated)\n${body.slice(body.length - maxChars)}`;
 }
 
+/** "12 min ago", "3 h ago", "2 days ago"; null for a missing or unreadable time. */
+function describeThreadStateAge(updatedAt: string | null, nowMs = Date.now()): string | null {
+  const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  if (!Number.isFinite(epoch)) return null;
+  const minutes = Math.max(0, Math.round((nowMs - epoch) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 90) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
 /** Keep the leading content (head) when a body exceeds the cap. */
 function truncateKeepHead(body: string, maxChars: number): string {
   if (body.length <= maxChars) return body;
@@ -1056,9 +1068,16 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
     const threadState = readThreadState().trim();
     if (threadState.length) {
+      // A summary a few turns behind reads as current unless it says how old
+      // it is ("next check 7:01", hours after 7:01). Live project state is
+      // read fresh every turn and wins where the two disagree.
+      const age = describeThreadStateAge(threadStateUpdatedAt());
       sections.push({
         title: "Thread state",
-        body: truncateKeepHead(threadState, THREAD_STATE_INJECT_MAX_CHARS),
+        body: [
+          ...(age ? [`(Written ${age}. Where it disagrees with Live project state, the live state is right.)`] : []),
+          truncateKeepHead(threadState, THREAD_STATE_INJECT_MAX_CHARS),
+        ].join("\n"),
       });
     }
     const daily = readRecentDailyEntries(2, DAILY_INJECT_MAX_CHARS).trim();
@@ -1145,6 +1164,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     readRecentDailyEntries,
     listFactsForLane,
     writeThreadState,
+    threadStateUpdatedAt,
     appendDailyEntry,
     appendTurnJournal,
     searchMemory,

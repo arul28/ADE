@@ -29,6 +29,13 @@ import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
  */
 
 export const APPLE_DEVICE_ACTIVITY_FILE = "ade-last-activity" as const;
+/**
+ * When and why ADE last powered the device off, as JSON, beside the activity
+ * file. A simulator that was simply found Shutdown said nothing about who shut
+ * it; this is what lets the next command (and `status`, `device-list`) say
+ * "ADE did, after 30 min idle". Cleared when ADE boots the device again.
+ */
+export const APPLE_DEVICE_POWER_OFF_FILE = "ade-powered-off" as const;
 const DEFAULT_IDLE_MS = 30 * 60_000;
 const IDLE_TICK_MS = 5 * 60_000;
 const CLEANUP_FIRST_MS = 60_000;
@@ -48,6 +55,54 @@ export function appleIdlePowerOffMs(env: NodeJS.ProcessEnv = process.env): numbe
   const minutes = Number(raw);
   if (!Number.isFinite(minutes) || minutes < 0) return DEFAULT_IDLE_MS;
   return minutes * 60_000;
+}
+
+/** What `APPLE_DEVICE_POWER_OFF_FILE` holds. */
+export type AppleDevicePowerOffRecord = {
+  /** ISO time of the power-off. */
+  at: string;
+  /** `idle`: the idle timer. `cleanup`: a Clean up the user or an agent asked for. */
+  reason: "idle" | "cleanup";
+  /** How long the device had been idle, in whole minutes. */
+  idleMinutes: number;
+};
+
+/** Parse a power-off record, or null for anything malformed. */
+export function parseDevicePowerOffRecord(raw: string): AppleDevicePowerOffRecord | null {
+  try {
+    const value = JSON.parse(raw) as Partial<AppleDevicePowerOffRecord> | null;
+    if (!value || typeof value.at !== "string" || !Number.isFinite(Date.parse(value.at))) return null;
+    const reason = value.reason === "cleanup" ? "cleanup" : "idle";
+    const idleMinutes = typeof value.idleMinutes === "number" && Number.isFinite(value.idleMinutes)
+      ? Math.max(0, Math.round(value.idleMinutes))
+      : 0;
+    return { at: value.at, reason, idleMinutes };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One sentence on why a device is off: "ADE powered iPad Air 11 off after
+ * 31 min idle at 10:12; the next --device command boots it again." `next` is
+ * what boots it again, which differs for the lane's device and an extra.
+ */
+export function describeDevicePowerOff(
+  record: AppleDevicePowerOffRecord,
+  deviceName: string,
+  next: string,
+  nowMs: number = Date.now(),
+): string {
+  const at = new Date(record.at);
+  const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  // A device can stay off for days, so "at 10:12" alone would read as today.
+  const when = at.toDateString() === new Date(nowMs).toDateString()
+    ? `at ${clock}`
+    : `on ${at.getMonth() + 1}/${at.getDate()} at ${clock}`;
+  const why = record.reason === "cleanup"
+    ? "in a Clean up"
+    : `after ${record.idleMinutes} min idle`;
+  return `ADE powered ${deviceName || "this simulator"} off ${why} ${when}; ${next}`;
 }
 
 /** Simulator.app is running: `ps` shows its main executable. */
@@ -109,6 +164,38 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       fs.writeFileSync(activityFile(udid), new Date(at).toISOString(), "utf8");
     } catch (error) {
       deps.logger.debug("apple.device_activity_touch_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const powerOffFile = (udid: string) => path.join(root(), udid, APPLE_DEVICE_POWER_OFF_FILE);
+
+  /** Why ADE last powered this device off, or null when it did not (or booted it since). */
+  const readPowerOff = (udid: string): AppleDevicePowerOffRecord | null => {
+    try {
+      return parseDevicePowerOffRecord(fs.readFileSync(powerOffFile(udid), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+
+  /** ADE booted the device again: the old power-off is no longer the news. Never throws. */
+  const clearPowerOff = (udid: string): void => {
+    try {
+      fs.rmSync(powerOffFile(udid), { force: true });
+    } catch {
+      // A leftover record only adds a stale sentence to an off device.
+    }
+  };
+
+  const writePowerOff = (udid: string, record: AppleDevicePowerOffRecord): void => {
+    try {
+      if (!fs.existsSync(path.join(root(), udid))) return;
+      fs.writeFileSync(powerOffFile(udid), JSON.stringify(record), "utf8");
+    } catch (error) {
+      deps.logger.debug("apple.device_power_off_record_failed", {
         udid,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -177,10 +264,17 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       try {
         await deps.powerOffDevice(device);
         poweredOff.push({ udid: device.udid, name: device.name });
+        const idleMinutes = Math.round((now() - last) / 60_000);
+        writePowerOff(device.udid, {
+          at: new Date(now()).toISOString(),
+          reason: options.force ? "cleanup" : "idle",
+          idleMinutes,
+        });
         deps.logger.info("apple.lane_device_idle_powered_off", {
           laneId: device.laneId,
           udid: device.udid,
-          idleMinutes: Math.round((now() - last) / 60_000),
+          extra: device.extra === true,
+          idleMinutes,
         });
       } catch (error) {
         deps.logger.warn("apple.lane_device_idle_power_off_failed", {
@@ -247,7 +341,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     }
   };
 
-  return { touch, runIdlePass, runCleanup, start, stop };
+  return { touch, readPowerOff, clearPowerOff, runIdlePass, runCleanup, start, stop };
 }
 
 export type LaneDeviceMaintenance = ReturnType<typeof createLaneDeviceMaintenance>;

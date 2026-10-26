@@ -87,6 +87,7 @@ extension DriverRuntime {
         collect(displays.refreshMovedPlacements())
         displays.repositionVirtualDisplays()
         collect(displays.refreshMovedPlacements())
+        pointerFence.refreshRoutes()
 
         for laneId in order {
             guard let move = changedByLane[laneId] else { continue }

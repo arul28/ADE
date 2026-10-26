@@ -33,13 +33,13 @@ vi.mock("electron", () => ({
     getAllWindows: () => electron.windows,
   },
   clipboard: {
-    readText: () => electron.clipboardText,
-    writeText: (text: string) => { electron.clipboardText = text; },
-    readBuffer: () => Buffer.alloc(0),
-    has: () => false,
-    availableFormats: () => ["text/plain"],
-    readImage: () => ({ isEmpty: () => true }),
-    writeImage: () => undefined,
+    readText: async () => electron.clipboardText,
+    writeText: async (text: string) => { electron.clipboardText = text; },
+    read: async () => [{ types: ["text/plain"], getType: async () => new Blob([electron.clipboardText]) }],
+    write: async () => undefined,
+  },
+  ClipboardItem: class {
+    constructor(readonly items: Record<string, unknown>) {}
   },
   dialog: { showSaveDialog: async () => ({ canceled: true }) },
   nativeImage: { createFromBuffer: () => ({ isEmpty: () => true }) },

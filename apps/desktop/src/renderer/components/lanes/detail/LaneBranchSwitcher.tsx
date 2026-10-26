@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, Check, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
-import type { LaneBranchActiveWorkItem, LaneSummary } from "../../../../shared/types";
+import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
+import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
@@ -55,10 +56,16 @@ export function LaneBranchSwitcher({
   lane,
   primaryLane,
   active,
+  pin = null,
+  machineId = null,
 }: {
   lane: LaneSummary;
   primaryLane: LaneSummary | null;
   active: boolean;
+  /** The lane's machine when it is not the tab's. Lists, switches and stops go there. */
+  pin?: OpenProjectBinding | null;
+  /** That machine's id, so its lane list refreshes after a switch. */
+  machineId?: string | null;
 }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [open, setOpen] = useState(false);
@@ -72,6 +79,12 @@ export function LaneBranchSwitcher({
   const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
   const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<PendingBranchSwitch | null>(null);
+  /** The checkout in flight, so Stop can cancel it; null once stop is asked. */
+  const [switchOperationId, setSwitchOperationId] = useState<string | null>(null);
+  const inFlightSwitchRef = useRef<string | null>(null);
+  // Read through a ref so a rebuilt pin with the same key changes nothing.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -93,12 +106,12 @@ export function LaneBranchSwitcher({
     if (!active || !open) return;
     let cancelled = false;
     setBranchesLoading(true);
-    window.ade.git.listBranches({ laneId: lane.id })
+    window.ade.git.listBranches({ laneId: lane.id }, pinRef.current)
       .then((result) => { if (!cancelled) setBranches(result); })
       .catch(() => { if (!cancelled) setBranches([]); })
       .finally(() => { if (!cancelled) setBranchesLoading(false); });
     return () => { cancelled = true; };
-  }, [active, open, lane.id]);
+  }, [active, open, lane.id, pin?.key]);
 
   // Someone switched branches outside ADE: bring the lane list up to date.
   useEffect(() => {
@@ -178,7 +191,7 @@ export function LaneBranchSwitcher({
           mode,
           startPoint: request.startPoint,
           baseRef: request.baseRef,
-        });
+        }, pinRef.current);
         if (preview.duplicateLaneId) {
           throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
         }
@@ -190,16 +203,27 @@ export function LaneBranchSwitcher({
           return;
         }
       }
-      await window.ade.git.checkoutBranch({
-        laneId: lane.id,
-        branchName,
-        mode,
-        startPoint: request.startPoint,
-        baseRef: request.baseRef,
-        acknowledgeActiveWork: request.acknowledgeActiveWork,
-      });
+      const operationId = crypto.randomUUID();
+      inFlightSwitchRef.current = operationId;
+      setSwitchOperationId(operationId);
+      try {
+        await window.ade.git.checkoutBranch({
+          laneId: lane.id,
+          branchName,
+          mode,
+          startPoint: request.startPoint,
+          baseRef: request.baseRef,
+          acknowledgeActiveWork: request.acknowledgeActiveWork,
+          operationId,
+        }, pinRef.current);
+      } finally {
+        inFlightSwitchRef.current = null;
+        setSwitchOperationId(null);
+      }
       await refreshLanes();
-      setBranches(await window.ade.git.listBranches({ laneId: lane.id }));
+      // Another machine has no change feed here; ask the shared union to re-read it.
+      if (pinRef.current && machineId) requestCrossMachineLanesForMachine(machineId);
+      setBranches(await window.ade.git.listBranches({ laneId: lane.id }, pinRef.current));
       setPendingSwitch(null);
       setNewBranchName("");
       succeeded = true;
@@ -210,7 +234,19 @@ export function LaneBranchSwitcher({
       setBusy(false);
       if (succeeded) setOpen(false);
     }
-  }, [lane, refreshLanes]);
+  }, [lane, machineId, refreshLanes]);
+
+  const stopSwitch = useCallback((operationId: string) => {
+    setSwitchOperationId(null);
+    void window.ade.lanes.cancelGitWrite({ operationId }, pinRef.current)
+      .then((result) => {
+        // Git had not started: offer Stop again while the switch lasts.
+        if (!result?.cancelled && inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);
+      })
+      .catch(() => {
+        if (inFlightSwitchRef.current === operationId) setSwitchOperationId(operationId);
+      });
+  }, []);
 
   const branchRow = (branch: LaneBranchOption, kind: "local" | "remote") => {
     const owned = Boolean(branch.ownedByLaneId);
@@ -262,6 +298,18 @@ export function LaneBranchSwitcher({
         <span className="truncate">{laneBranchLabel(lane.branchRef)}</span>
         <CaretDown size={10} className="shrink-0 opacity-60" />
       </button>
+      {switchOperationId ? (
+        <button
+          type="button"
+          className="ml-1 shrink-0 rounded px-1.5 text-[11px] transition-colors hover:bg-[color-mix(in_srgb,var(--color-fg)_6%,transparent)]"
+          style={{ color: COLORS.textMuted }}
+          onClick={() => stopSwitch(switchOperationId)}
+          title="Stop the branch switch. Files from both branches may stay in the lane folder."
+          data-testid="lane-branch-switch-stop"
+        >
+          Stop
+        </button>
+      ) : null}
       {error && !open ? (
         <span className="ml-2 inline-flex min-w-0 items-center gap-1 text-[11px]" style={{ color: COLORS.danger }} title={error}>
           <span className="truncate">{error}</span>

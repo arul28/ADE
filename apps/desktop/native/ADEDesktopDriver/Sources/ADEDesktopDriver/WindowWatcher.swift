@@ -36,6 +36,7 @@ extension WindowControl {
         newWindows.unwatch(pid: pid)
         lock.lock()
         defer { lock.unlock() }
+        offLaneWindows = offLaneWindows.filter { $0.value.pid != pid }
         if let observer = observers.removeValue(forKey: pid) {
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
@@ -104,6 +105,7 @@ extension WindowControl {
                 continue
             }
             let current = listWindows(pid: pid)
+            pruneOffLane(pid: pid, current: current)
             let unowned = Set(current.filter { $0.laneId == nil }.map(\.id))
             let candidates = newWindows.candidates(
                 pid: pid,
@@ -156,9 +158,13 @@ extension WindowControl {
                         case .retryLater(let isFirst):
                             if isFirst {
                                 log("window \(windowId) of pid \(pid) is still not ready; the lane launched it, so it keeps retrying on a slower schedule")
+                                noteOffLane(laneId: laneId, windowId: windowId, in: current, reason: "it does not answer accessibility yet; ADE keeps trying")
                             }
                         case .giveUp:
                             log("window \(windowId) of pid \(pid) never became ready; leaving it where it is")
+                            // An attached sheet lands here too: it is part of
+                            // its parent window, not a window ADE can move.
+                            noteOffLane(laneId: laneId, windowId: windowId, in: current, reason: "it never answered accessibility, or it is a sheet attached to a window there")
                         }
                     } else {
                         newWindows.noteFailed(pid: pid, windowId: windowId)
@@ -177,6 +183,7 @@ extension WindowControl {
                             )
                         )
                         log("could not park new window \(windowId) of pid \(pid): \(error)")
+                        noteOffLane(laneId: laneId, windowId: windowId, in: current, reason: (error as? DriverError)?.message ?? "\(error)")
                     }
                 }
             }
@@ -256,6 +263,56 @@ extension WindowControl {
         for laneId in touchedLanes {
             emitWindowsChanged(laneId: laneId)
         }
+    }
+
+    /// Records a new window the sweep could not move, when it really sits off
+    /// every lane display. A window parked somewhere ADE draws is not news.
+    private func noteOffLane(laneId: String, windowId: CGWindowID, in current: [DesktopWindow], reason: String) {
+        guard let window = current.first(where: { $0.id == windowId }),
+              !window.minimized,
+              !isOnLaneDisplay(window.frame)
+        else { return }
+        lock.lock()
+        let isNew = offLaneWindows[windowId] == nil
+        offLaneWindows[windowId] = OffLaneWindow(
+            laneId: laneId,
+            pid: window.pid,
+            appName: window.appName,
+            title: window.title,
+            reason: reason
+        )
+        lock.unlock()
+        if isNew {
+            log("window \(windowId) of \(window.appName) stays on the user's display: \(reason)")
+            emitWindowsChanged(laneId: laneId)
+        }
+    }
+
+    /// Drops the off-lane notes of one app that are no longer true: the
+    /// window ended, a lane took it, or it reached a lane display.
+    private func pruneOffLane(pid: pid_t, current: [DesktopWindow]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard offLaneWindows.values.contains(where: { $0.pid == pid }) else { return }
+        let live = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for (windowId, note) in offLaneWindows where note.pid == pid {
+            let window = live[windowId]
+            let stillOffLane = window.map { $0.laneId == nil && !$0.minimized && !isOnLaneDisplay($0.frame) } ?? false
+            if !stillOffLane {
+                offLaneWindows.removeValue(forKey: windowId)
+            }
+        }
+    }
+
+    /// The `observe` warnings for one lane: its apps' windows that sit on the
+    /// user's display because the watcher could not move them.
+    func offLaneWarnings(laneId: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return offLaneWindows
+            .filter { $0.value.laneId == laneId }
+            .sorted { $0.key < $1.key }
+            .map { $0.value.warning(windowId: $0.key) }
     }
 
     func dispose() {

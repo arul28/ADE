@@ -590,7 +590,7 @@ ade chat restore-queue personal-session-id recovery-id --personal
 ade chat note --personal --session personal-session-id "Drafting the email"   # also ask / activity <value|clear>; from inside a personal chat (ADE_CHAT_SCOPE=personal) the flags are implied
 ade chat create --personal --provider codex --model openai/gpt-5.5 --arg personalProfile=embedded   # SDK-host surface instead of the assistant default
 ade chat interrupt <session> --stop-children                 # also stop the chats it spawned
-ade chat restart <session> [--stop]                          # fresh provider process, conversation kept
+ade chat restart [<session>] [--stop | --after-turn]         # fresh provider process, conversation kept; no session = your own chat, once this turn ends
 ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
 ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
 ade chat wait --background --job <id>                        # wake me when my background job ends
@@ -672,6 +672,9 @@ ade chat resume-now session-id --text                        # alias `resume`: s
 ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
+ade chat message session-id --kind auto --text-file - <<'EOF'  # long or multi-line text from a file or stdin; also --text-file on send, steer and side, and --prompt-file/--kickoff-file on create. On Windows `ade.cmd` cuts an argument at its first line break, so never pass multi-line text as an argument
+status/context
+EOF
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
 ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude and Cursor take both; a Cursor cloud run declines inline and stages)
@@ -679,6 +682,7 @@ ade chat note "testing desktop auth fallback"               # update Work status
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade chat pending session-id --text                         # questions/approvals the chat is blocked on, with options and the respond command
 ade chat respond session-id --option 2                     # answer its pending question (--text, --answer <q>=<v>, --item <id>; --approve/--deny for approvals)
+ade chat archive session-id                                # hide a chat from lists; `ade chat unarchive session-id` brings it back (chat.archiveSession)
 ade chat activity testing                                  # set one fixed detail: planning|implementing|testing|reviewing|debugging|monitoring; `clear` removes it; add --session <id> to target explicitly
 ade session show session-id --text                          # status/activity detail + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade --role cto session move session-id --to done             # file the row under a Work-board column: needs-you|working|done ('needs_you' spelling also accepted)
@@ -760,10 +764,11 @@ ade --socket apple start --text                                    # --udid <id>
 ade --socket apple stop --text                                     # power the lane's device off; `shutdown` only ends the chat's session
 ade --socket apple device-list --installed --text                  # also: device-create --from <id>, device-attach --simulator <id>
 ade --socket apple device-detach --text                            # give up the lane's device; the simulator stays installed
+ade --socket apple device-promote --device <udid|name> --text       # make one of the lane's extra devices the lane's own (the old one becomes an extra)
 ade --socket apple device-delete --text                            # delete a clone; --force detaches an attached device instead
                                                                    # all three refuse another chat's device; --ignore-ownership passes (stop and device-detach also take --force)
 ade --socket apple type "reddit" --submit --text                   # --submit presses Return after the text
-ade --socket apple key return --text                               # named keys: return (alias enter), tab
+ade --socket apple key return --text                               # one real key press: named keys, arrows, or a letter; --cmd/--shift/--alt/--ctrl
 ade --socket apple record-start --text                             # record-stop --keep|--discard, record-list, record-delete --id <id>
 ade apple show --text                                              # put the device on the user's screen; --floating for the floating player
 # iPhone Duo and runtimes.

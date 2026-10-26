@@ -76,6 +76,9 @@ export async function uploadRemoteAttachment(args: {
       url,
       {
         method: "POST",
+        // The route is the paired machine's own address (a LAN or tailnet
+        // host, never the relay), which a company proxy cannot reach.
+        agent: false,
         headers: {
           Authorization: `Bearer ${args.ticket.ticket}`,
           "Content-Type": "application/octet-stream",

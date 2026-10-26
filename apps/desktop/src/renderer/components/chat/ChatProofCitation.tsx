@@ -160,7 +160,7 @@ function CitedProofMedia({
   fallback?: React.ReactNode;
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
-  const { containerRef, preview, loading, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
+  const { containerRef, preview, loading, failed, explanation, onMediaError, retry } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
   );
@@ -186,7 +186,7 @@ function CitedProofMedia({
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
-        <span className="block"><ProofPreviewFailureNotice failureText={failureText} /></span>
+        <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={retry} /></span>
       ) : preview && image ? (
         <button
           type="button"

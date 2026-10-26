@@ -1195,6 +1195,29 @@ Fields:
   `writeViewerLogin` (see [Timeline comment identity](#timeline-comment-identity)).
   When the write source is `none` or does not match the read source,
   `writeViewerLogin` is `null` and the timeline hides Edit / Add reaction.
+- `gitTransport` — optional (older runtimes omit it): whether `git push` to the
+  project's https GitHub origin can sign in. A separate leg from the ladder
+  above, which covers API calls only: git signs in with this machine's own
+  credential (keychain, gh's helper). ADE's remote git commands (lane push,
+  fetch, pull and sync, lane create's upstream push, the pushes and
+  `ls-remote` checks inside `prs.create` and rebases, publish, cloud agents,
+  automations) run through `runGitWithGithubAuthFallback`
+  (`services/git/gitTransportAuth.ts`). Git's own sign-in goes first; on a
+  sign-in failure or a 403 the same command runs with ADE's write credential as
+  an `http.extraheader` in git's config environment (never persisted, never on
+  the command line), and after a sign-in failure the next ten minutes go
+  straight to ADE's credential (git's own is tried again if that one is
+  refused). The reader is process-wide: each GitHub service registers one with
+  `setGitTransportTokenReader`, since GitHub credentials belong to the machine.
+  Only an https GitHub push URL takes the fallback; SSH and other hosts run
+  plain git. No askpass helper or Git Credential Manager window can open from
+  it. The state comes from the last real command or a dry-run push of HEAD
+  (`--no-verify`, nothing sent), cached ten minutes while healthy and two while
+  broken, re-checked at once when a credential appears, and a status read waits
+  at most four seconds on it. `state: "auth_failed"` means no credential could
+  sign in; a 403 on a repository the account cannot write is not reported as
+  one. It raises the **Git can't sign in to GitHub** banner, the Settings card's
+  **Pushes with** fact and its **Connected · can't push** chip.
 - `credentialStates`, `credentialFallback` — optional per-source availability,
   capabilities, active roles, cooldown/failure state, and the active read
   fallback transition. Different sources that resolve to the same token are

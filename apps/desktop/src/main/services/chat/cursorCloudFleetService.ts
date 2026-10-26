@@ -1,3 +1,4 @@
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type {
@@ -11,6 +12,8 @@ import type {
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
 import type { createLaneService } from "../lanes/laneService";
+import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
+import { redactGitOutput } from "../../utils/redaction";
 
 export type CursorCloudIngressStatusLike = {
   state: CursorCloudFleetRelayState;
@@ -136,7 +139,9 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
         cwd: projectRoot,
         timeoutMs: 8_000,
       });
-      const url = result.exitCode === 0 ? result.stdout.trim() : "";
+      const rawUrl = result.exitCode === 0 ? result.stdout.trim() : "";
+      // Cursor names repositories by their github.com URL, not an SSH alias.
+      const url = (await resolveGithubSshAliasUrl(rawUrl)) ?? rawUrl;
       const key = repoMatchKey(url);
       originCache = { key, at: Date.now() };
       return key;
@@ -483,12 +488,12 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
 
     await assertCleanWorktree(lane.worktreePath, lane.name);
 
-    const fetchResult = await runGit(["fetch", "origin", safeBranch], {
+    const fetchResult = await runGitWithGithubAuthFallback(["fetch", "origin", safeBranch], {
       cwd: lane.worktreePath,
       timeoutMs: 120_000,
     });
     if (fetchResult.exitCode !== 0) {
-      throw new Error(`Fetching '${safeBranch}' failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim()}`);
+      throw new Error(`Fetching '${safeBranch}' failed: ${redactGitOutput(fetchResult.stderr.trim() || fetchResult.stdout.trim())}`);
     }
     const mergeResult = await runGit(["merge", "--no-edit", "FETCH_HEAD"], {
       cwd: lane.worktreePath,

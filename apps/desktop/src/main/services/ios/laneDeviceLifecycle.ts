@@ -2,6 +2,8 @@ import type {
   AppleDeviceDeleteArgs,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceDetachArgs,
+  AppleDevicePromoteArgs,
+  AppleDevicePromoteResult,
   AppleLaneDevice,
   IosSimulatorEventPayload,
   IosSimulatorShutdownArgs,
@@ -9,6 +11,8 @@ import type {
 } from "../../../shared/types";
 import type { IosDeviceHub } from "./iosDeviceHub";
 import { AppleDeviceAttachedNotDeletableError } from "./appleDeviceErrors";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { APPLE_LANE_DEVICE_BUSY_CODE, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
 
 /**
@@ -57,6 +61,14 @@ export type LaneDeviceLifecycleDeps<R extends LifecycleLaneRuntime> = {
   stopDeviceRecording: (udid: string, reason: "device-off" | "released") => Promise<void>;
   invalidateStatus: (runtime: R) => void;
   invalidateDeviceList: () => void;
+  /**
+   * What the lane's device is busy with right now, as a phrase ("streaming
+   * to the pane", "recording"), or null when nothing would break if it
+   * stopped being the lane's device. `chatSessionId` is the caller: its own
+   * lease is not a reason to refuse it. The Apple service always passes it;
+   * without it only the stream is checked.
+   */
+  laneDeviceBusyReason?: (runtime: R, device: AppleLaneDevice, chatSessionId: string | null) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
@@ -220,6 +232,86 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   };
 
   /**
+   * One of the lane's extra devices becomes the lane's own device.
+   *
+   * An extra cannot stream, record, launch a build or run tests; this is the
+   * way to show the user a device that already has the build and the
+   * sign-in, without making a new one. In the lane's queue, so a start or
+   * stop cannot interleave. Refused while the old device is in use, before
+   * anything changes. The old device stays installed: an ADE device becomes
+   * an extra in the promoted one's slot (the extra limit is unchanged, and
+   * the cleanup pass would delete a detached ADE device), and an attached
+   * simulator is detached back to the user.
+   */
+  const devicePromote = async (promoteArgs: AppleDevicePromoteArgs): Promise<AppleDevicePromoteResult> => {
+    deps.assertDarwin();
+    const runtime = deps.requireLaneScope(promoteArgs);
+    const wanted = promoteArgs.device?.trim();
+    if (!wanted) {
+      throw new AdeExpectedError("device-promote needs --device <udid|name> of one of this lane's extra devices.", "user");
+    }
+    return deps.serializeDeviceLifecycle(runtime, async () => {
+      const current = deps.laneDevices.get(runtime.key);
+      const extra = deps.laneDevices.findExtra(runtime.key, wanted);
+      if (!extra) {
+        // Already the lane's device: the state the caller asked for.
+        if (current && (current.udid === wanted || current.name.toLowerCase() === wanted.toLowerCase())) {
+          return { device: current, previous: null, previousKeptAs: null };
+        }
+        throw new AdeExpectedError(
+          `${wanted} is not one of this lane's extra devices. ade apple device-list --text lists the lane's devices.`,
+          "user",
+        );
+      }
+      if (current) {
+        const busy = deps.laneDeviceBusyReason
+          ? deps.laneDeviceBusyReason(runtime, current, promoteArgs.chatSessionId ?? null)
+          : runtime.streamStatus.running && runtime.streamStatus.deviceUdid === current.udid
+            ? "streaming its live view"
+            : null;
+        if (busy) {
+          throw new AdeExpectedError(
+            `${APPLE_LANE_DEVICE_BUSY_CODE}: the lane's device ${current.name} is ${busy}, so it cannot hand over to `
+            + `${extra.name} now. Finish or stop that first (stream-stop, record-stop, or wait for the test or the lease), `
+            + "then run device-promote again.",
+            "user",
+          );
+        }
+        deps.assertSessionOwner(runtime, {
+          chatSessionId: promoteArgs.chatSessionId,
+          ignoreOwnership: promoteArgs.ignoreOwnership,
+        });
+      }
+      let previousKeptAs: AppleDevicePromoteResult["previousKeptAs"] = null;
+      if (current && !isAdeOwnedLaneDevice(current.origin)) {
+        // The user's simulator: it goes back to them, still installed.
+        await detachStep(runtime, promoteArgs.agentCaller);
+        previousKeptAs = "detached";
+      } else if (current) {
+        // The claim, the hub session and anything else on the old device go;
+        // its power is left alone, and it stays the lane's as an extra.
+        await releaseLaneHold(current);
+        previousKeptAs = "extra";
+      }
+      const swapped = deps.laneDevices.promoteExtra({ laneId: runtime.key, udid: extra.udid });
+      if (!swapped) {
+        throw new AdeExpectedError(`${extra.name} stopped being one of this lane's extra devices. Run device-list and try again.`, "user");
+      }
+      deps.invalidateDeviceList();
+      deps.invalidateStatus(runtime);
+      deps.emit({ type: "apple.device.state", laneId: runtime.key, udid: swapped.device.udid, phase: "released" });
+      deps.logger.info("apple.lane_device_promoted", {
+        laneId: runtime.key,
+        udid: swapped.device.udid,
+        previousUdid: current?.udid ?? null,
+        previousKeptAs,
+        by: promoteArgs.agentCaller === true ? "agent" : "user",
+      });
+      return { device: swapped.device, previous: current ?? null, previousKeptAs };
+    });
+  };
+
+  /**
    * Stop every stream and hub device session reading a device no lane holds.
    *
    * `resolveRuntime` can hand an un-laned caller a runtime for any simulator,
@@ -275,5 +367,5 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     deps.invalidateStatus(runtime);
   };
 
-  return { releaseLaneHold, releaseUnlanedHolds, deviceDetach, deviceDelete, deviceDeleteInstalled };
+  return { releaseLaneHold, releaseUnlanedHolds, deviceDetach, devicePromote, deviceDelete, deviceDeleteInstalled };
 }

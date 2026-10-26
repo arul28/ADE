@@ -16,7 +16,16 @@ import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
 import { AppleRenderHost } from "../apple/AppleRenderHost";
-import { ACCOUNT_SETTINGS_ROUTE, isMachineScopedSettingsRoute, resolveSettingsTab } from "../settings/settingsManifest";
+import {
+  ACCOUNT_SETTINGS_ROUTE,
+  isMachineScopedSettingsRoute,
+  isMachineSelectableSettingsTab,
+  resolveSettingsTab,
+  settingsEntryById,
+} from "../settings/settingsManifest";
+import { openPlaceById } from "../../../shared/openPlaces";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
@@ -1370,13 +1379,32 @@ function AppNavigationBridge() {
       // settings tab — and land on a specific card — without
       // taking a `useNavigate` dependency. Unknown tabs fall back to the
       // settings root rather than 404-ing to General.
-      const tab = resolveSettingsTab(target.tab ?? null);
-      const anchor = target.anchor?.trim();
+      // A settings chip or `ade://settings/<id>` names a manifest entry, which
+      // owns its tab and anchor. A Computer page also names its machine, so a
+      // chip in a chat on another machine opens that machine's page; a machine
+      // this window does not know lands on This computer (SettingsPage).
+      const entry = target.entryId ? settingsEntryById(target.entryId) : null;
+      const tab = entry?.tab ?? resolveSettingsTab(target.tab ?? null);
+      const anchor = entry?.anchor ?? target.anchor?.trim();
+      const params = new URLSearchParams();
+      if (tab) params.set("tab", tab);
+      const machineId = target.machineId?.trim();
+      if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
+      const search = params.toString();
       navigate({
         pathname: "/settings",
-        search: tab ? `?tab=${tab}` : "",
+        search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "open-place") {
+      // Only a chat chip sends this (the protocol handler refuses `open`).
+      const place = openPlaceById(target.place);
+      if (!place) return false;
+      if (place.target.kind === "connections") openConnectionsPanel(place.target.tab);
+      else navigate(place.target.route);
       return true;
     }
 
