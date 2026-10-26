@@ -121,6 +121,8 @@ type PreviewState = {
   loading: boolean;
   loaded: boolean;
   failure: ArtifactPreviewFailure | null;
+  /** The read threw (IPC, a file held open) rather than finding nothing. */
+  readThrew: boolean;
 };
 
 const EMPTY_PREVIEW: PreviewState = {
@@ -129,6 +131,7 @@ const EMPTY_PREVIEW: PreviewState = {
   loading: false,
   loaded: false,
   failure: null,
+  readThrew: false,
 };
 
 /** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
@@ -159,7 +162,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   const projectId = remote?.projectId ?? null;
   const remoteRoot = remote?.rootPath ?? null;
   const remoteOffline = scope.isRemote && !scope.online;
-  const { preview, source, loading, loaded, failure } = state;
+  const { preview, source, loading, loaded, failure, readThrew } = state;
 
   useEffect(() => {
     const node = containerRef.current;
@@ -223,6 +226,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
             failure: !dataUrl && streamRefused && scope.isRemote ? "unsent" : s.failure,
             loading: false,
             loaded: true,
+            readThrew: false,
           }));
         })
         .catch(() => {
@@ -233,6 +237,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
             failure: scope.isRemote ? "unsent" : s.failure,
             loading: false,
             loaded: true,
+            readThrew: true,
           }));
         });
     };
@@ -328,13 +333,13 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     failed,
     explanation,
     onMediaError,
-    // Retry only where something outside this read can change: a paired
-    // machine that was slow, away or did not send, or a player that refused
+    // Retry only where another try can differ: a paired machine that was
+    // slow, away or did not send, a read that threw, or a player that refused
     // what arrived. This computer's own read finding nothing will again.
     retry: failed
       && !isBrokenArtifact(artifact)
       && !externalArtifactUrl(artifact.uri)
-      && (failure !== null || !allowLocalArtifactProtocol)
+      && (failure !== null || readThrew || !allowLocalArtifactProtocol)
       ? retry
       : null,
   };

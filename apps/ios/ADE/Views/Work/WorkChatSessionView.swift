@@ -1518,8 +1518,13 @@ struct WorkChatSessionView: View {
   var transcriptContentRevision: Int {
     var hasher = Hasher()
     hasher.combine(artifactContentRenderSignature)
-    // An answer's proof citation shows once its artifact is in the list.
+    // An answer's proof citation shows once its artifact is in the list, or
+    // once the chat's host has named a cited proof the list does not hold.
     hasher.combine(artifactsRenderSignature)
+    for id in citedProofArtifacts.keys.sorted() {
+      hasher.combine(id)
+      hasher.combine(citedProofArtifacts[id]?.uri)
+    }
     hasher.combine(maxUserBubbleWidth ?? 0)
     hasher.combine(chatSummaryContext.provider)
     hasher.combine(chatSummaryContext.usageLimitResume != nil)

@@ -2084,6 +2084,11 @@ function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionS
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
+  // A machine that drops may come back on another build (an upgrade restarts
+  // its brain), so its page is asked for in full again on the next read.
+  for (const connection of runtime.connections) {
+    if (connection.state !== "connected") runtime.legacySessionPageMachineIds.delete(connection.target.id);
+  }
   applyReachability();
   // A machine that just appeared has no rows at all, so its first read has to be
   // the full one or it renders statusless until the cadence comes round. A

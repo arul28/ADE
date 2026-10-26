@@ -2740,16 +2740,25 @@ struct WorkSessionDestinationView: View {
   /// replica cannot know), any other chat re-reads its list (throttled).
   @MainActor
   func resolveMissingProof(_ artifactId: String) async {
-    guard askedMissingProofIds.insert(artifactId).inserted else { return }
+    guard !askedMissingProofIds.contains(artifactId) else { return }
     guard isRemoteOnlyChat, !personalChat else {
+      askedMissingProofIds.insert(artifactId)
       await refreshArtifacts(force: false)
       return
     }
-    guard let found = try? await syncService.fetchRemoteChatComputerUseArtifact(
-      sessionId: sessionId,
-      artifactId: artifactId
-    ) else { return }
-    citedProofArtifacts[artifactId] = found
+    // Remembered only once the host answered: a phone offline, a timeout or a
+    // row scrolled away asks again the next time the citation shows.
+    askedMissingProofIds.insert(artifactId)
+    do {
+      if let found = try await syncService.fetchRemoteChatComputerUseArtifact(
+        sessionId: sessionId,
+        artifactId: artifactId
+      ) {
+        citedProofArtifacts[artifactId] = found
+      }
+    } catch {
+      askedMissingProofIds.remove(artifactId)
+    }
   }
 
   @MainActor
