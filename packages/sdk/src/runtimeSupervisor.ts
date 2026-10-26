@@ -290,6 +290,7 @@ export class RuntimeSupervisor {
       adeDefaultRole: internal.adeDefaultRole ?? DEFAULT_ADE_ROLE,
       useMachineLogin: options.useMachineLogin === true,
       hostToken,
+      ...(options.env ? { env: options.env } : {}),
     });
     return { connection: started.connection, sidecar: started, hostToken };
   }

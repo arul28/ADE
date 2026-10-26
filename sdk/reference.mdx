@@ -175,7 +175,7 @@ secret-valued fields.
 | `state` | `running` \| `verifying` \| `succeeded` \| `failed` \| `cancelled` \| `expired` |
 | `loginId`, `instanceId`, `provider` | The sign-in and provider account being authenticated. |
 | `url`, `deviceCode`, `awaitingCode` | Optional browser/device login details and whether a code is requested. |
-| `output`, `email`, `message` | Progress output and provider feedback. |
+| `email`, `message` | The signed-in email, and the provider's message when a sign-in fails. |
 | `startedAt`, `endedAt` | ISO timestamps; `endedAt` is present after completion. |
 
 ## `ProviderCapabilities` {#providercapabilities}
@@ -366,7 +366,7 @@ type DoctorReport = {
 
 `AdeError` with `code`:
 
-`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `invalid_output` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported`
+`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `invalid_output` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported` · `sign_in_failed`
 
 `turn_in_flight` (SDK 0.4) is every refusal that exists only because a turn is running: `setModel` or a reasoning `update` without `{ force: true }`, and a runtime action that must wait for the turn to end. Nothing changed; wait for the turn to finish, or call `interrupt()`, then call again. Before 0.4 these used `invalid_option`.
 
@@ -376,7 +376,9 @@ A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRo
 
 `runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
 
-`invalid_output` is thrown by `client.run()` after the structured response fails JSON parsing or schema validation twice. `InvalidOutputError.rawText` contains the last model response.
+`invalid_output` is thrown by `client.run()` after the structured response fails JSON parsing or schema validation twice. `InvalidOutputError.rawText` contains the last model response. `client.run()` rejects with `rpc_timeout` when a turn outlasts `timeoutMs` (default 10 minutes), and with `unsupported` when the turn asks for an approval or an answer, which a one-shot run cannot give.
+
+`sign_in_failed` rejects a sign-in handle's `done` when the sign-in failed, was cancelled, or expired; the handle's last status names which.
 
 `approve()` throws `approval_not_found` when the item is already settled. `unauthorized` comes from an Electron bridge whose `authorize` hook refused the call.
 

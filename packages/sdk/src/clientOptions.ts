@@ -125,6 +125,15 @@ export type CreateAdeChatOptions = {
    */
   useMachineLogin?: boolean;
   /**
+   * The environment the runtime starts with. Defaults to this process's
+   * environment. `useMachineLogin: false` isolates the providers' sign-in
+   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
+   * users must run only on their own logins and keys. The host's own `ADE_*`
+   * variables are always removed.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
    * Resolve a host-vault credential id to a secret for one thread session.
    * The value is pushed to the runtime for the live session and never saved
    * in the SDK thread record.

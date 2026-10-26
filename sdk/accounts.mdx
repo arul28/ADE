@@ -26,6 +26,12 @@ const client = await createAdeChat({
 per-provider `logins.perProvider` map (`isolated`, `shared`, or `unknown`).
 Check this before describing which credentials a thread can use.
 
+Isolation covers the providers' sign-in folders. It does not cover API keys in
+your app's own environment: the runtime inherits your process environment, so
+an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `CURSOR_API_KEY` set there is still
+visible to it. Pass an `env` to `createAdeChat` without them if
+your users should only ever run on their own logins and keys.
+
 ## Provider accounts
 
 ```ts
