@@ -3171,7 +3171,19 @@ export function createLaneService({
    * volume). Comparing the two spellings directly makes every git-reported path
    * look foreign, so the whole worktree reconcile is done in realpath space.
    */
-  const canonicalPath = (value: string): string => stablePathThroughExistingAncestor(value);
+  // While one lane list reconciles worktrees, each path is resolved once: the
+  // reconcile resolves every row and every git worktree twice, all
+  // synchronously. The pass ends with the reconcile, so no answer outlives it.
+  let canonicalPathPass: Map<string, string> | null = null;
+  const canonicalPath = (value: string): string => {
+    if (!canonicalPathPass) return stablePathThroughExistingAncestor(value);
+    let resolved = canonicalPathPass.get(value);
+    if (resolved === undefined) {
+      resolved = stablePathThroughExistingAncestor(value);
+      canonicalPathPass.set(value, resolved);
+    }
+    return resolved;
+  };
 
   // Resolved once: a service instance's roots cannot change identity, and the
   // reconcile compares against them on the `lanes.list` hot path.
@@ -4142,8 +4154,13 @@ export function createLaneService({
       // fails, neither runs — reaping on a failed listing would delete every
       // lane in the project.
       const gitWorktrees = await listGitWorktrees();
-      await recoverManagedWorktreeRows(gitWorktrees);
-      removeVanishedWorktreeLanes(gitWorktrees, await resolveWorktreeOwnershipScope());
+      canonicalPathPass = new Map();
+      try {
+        await recoverManagedWorktreeRows(gitWorktrees);
+        removeVanishedWorktreeLanes(gitWorktrees, await resolveWorktreeOwnershipScope());
+      } finally {
+        canonicalPathPass = null;
+      }
     } catch (err) {
       logger.warn("laneService.reconcileWorktreeLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
