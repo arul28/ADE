@@ -55,11 +55,10 @@ export type ApprovalRequest = {
   /**
    * The finer-grained kind.
    *
-   * `"approval"` and `"permissions"` are answerable with `approve()`. The other
-   * kinds — `"question"`, `"structured_question"`, `"plan_approval"`,
-   * `"model_selection"` — want prose or a choice that this surface cannot
-   * carry, so render them read-only rather than offering Allow and Reject for
-   * something that wants a sentence.
+   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
+   * `respond()` for `"question"` and `"structured_question"` requests, with
+   * answers keyed by question id, and for `"plan_approval"` with an explicit
+   * decision. A runtime may leave other request kinds read-only.
    */
   requestKind?: PendingInputKind;
   /** Human-readable and provider-supplied. Safe to render. */
@@ -69,6 +68,10 @@ export type ApprovalRequest = {
   detail?: unknown;
   /** Which provider raised it. */
   provider: AdeProvider;
+  /** The original prompts for requests answered through `respond()`. */
+  questions?: PendingInputRequest["questions"];
+  /** False when the runtime cannot answer this request through the SDK. */
+  answerable?: boolean;
 };
 
 /**
@@ -191,6 +194,8 @@ export function approvalFromPendingInput(
   const turnId = readString(request.turnId ?? undefined) ?? observed?.turnId;
   const logicalItemId = observed?.logicalItemId;
   const detail = request.providerMetadata ?? observed?.detail;
+  const answerable = isApprovalShaped(readPendingInputKind(request.kind)) || request.kind === "question" ||
+    request.kind === "structured_question" || request.kind === "plan_approval";
   return {
     itemId,
     ...(logicalItemId ? { logicalItemId } : {}),
@@ -203,6 +208,8 @@ export function approvalFromPendingInput(
     description,
     ...(turnId ? { turnId } : {}),
     ...(detail !== undefined ? { detail } : {}),
+    ...(Array.isArray(request.questions) && request.questions.length > 0 ? { questions: request.questions } : {}),
+    answerable,
     // `isSupportedProvider` is a type guard, so `request.source` is already
     // narrowed to `AdeProvider` in this branch.
     provider: isSupportedProvider(request.source) ? request.source : threadProvider,

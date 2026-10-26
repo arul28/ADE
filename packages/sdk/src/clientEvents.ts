@@ -44,10 +44,12 @@ export type AdeClientEventMap = {
    * runtime (ADE desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
+  /** A provider turn stopped because its current account reached a usage limit. */
+  usageLimit: import("./types.js").UsageLimitEvent;
 };
 
 /** Every client-level event name, once. See {@link AdeClientEventMap}. */
-export const ADE_CLIENT_EVENTS = ["exit", "transport", "restart", "threadLifecycle"] as const satisfies ReadonlyArray<
+export const ADE_CLIENT_EVENTS = ["exit", "transport", "restart", "threadLifecycle", "usageLimit"] as const satisfies ReadonlyArray<
   keyof AdeClientEventMap
 >;
 

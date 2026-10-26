@@ -39,6 +39,8 @@ export type SidecarOptions = {
    * see the note on the handshake identity in client.ts.
    */
   adeDefaultRole?: string;
+  /** Whether the runtime may use the embedding machine's provider logins. */
+  useMachineLogin?: boolean;
 };
 
 export type Sidecar = {
@@ -208,6 +210,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     env = process.env,
     startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
     adeDefaultRole = DEFAULT_ADE_ROLE,
+    useMachineLogin = false,
   } = options;
 
   await prepareEndpoint(socketPath);
@@ -237,6 +240,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     // privilege from this, so leaving it to the ambient environment would make
     // the SDK's effective permissions depend on the shell it was launched from.
     ADE_DEFAULT_ROLE: adeDefaultRole,
+    ADE_EMBEDDED_PROVIDER_LOGINS: useMachineLogin ? "machine" : "isolated",
   };
 
   const args = ["runtime", "run", "--socket", socketPath, "--profile", "embedded"];

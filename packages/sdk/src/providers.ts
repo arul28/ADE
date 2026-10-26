@@ -3,6 +3,7 @@ import type {
   ModelCatalogEntry,
   ProviderStatus,
   ProviderStatusRpcResult,
+  ProviderCapabilities,
 } from "./types.js";
 
 /** Options for `pickDefaultModel` and `client.models.defaultModel`. */
@@ -171,6 +172,35 @@ function readNullableString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
+const PERMISSION_MODES = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
+
+function readProviderCapabilities(value: unknown): ProviderCapabilities | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (!Array.isArray(row.permissionModes) || !Array.isArray(row.reasoningEfforts)) return undefined;
+  const signIn = row.signIn;
+  const mcp = row.mcp;
+  if (
+    typeof row.fastMode !== "boolean" ||
+    typeof row.multipleAccounts !== "boolean" ||
+    typeof row.apiKeys !== "boolean" ||
+    typeof row.presets !== "boolean" ||
+    (signIn !== "cli-login" && signIn !== "device-code" && signIn !== "api-key" && signIn !== "none") ||
+    (mcp !== "full" && mcp !== "partial" && mcp !== "none")
+  ) return undefined;
+  return {
+    permissionModes: row.permissionModes.filter((mode): mode is ProviderCapabilities["permissionModes"][number] =>
+      typeof mode === "string" && PERMISSION_MODES.has(mode)),
+    reasoningEfforts: row.reasoningEfforts.filter((effort): effort is string => typeof effort === "string"),
+    fastMode: row.fastMode,
+    multipleAccounts: row.multipleAccounts,
+    signIn,
+    apiKeys: row.apiKeys,
+    presets: row.presets,
+    mcp,
+  };
+}
+
 /**
  * Combines the probe with the catalog derivation.
  *
@@ -192,6 +222,7 @@ export function mergeProviderStatus(
   for (const [key, entry] of Object.entries(probed.providers)) {
     if (!entry || typeof entry !== "object") continue;
     const catalog = derived[key];
+    const capabilities = readProviderCapabilities(entry.capabilities);
     merged[key] = {
       provider: typeof entry.provider === "string" && entry.provider ? entry.provider : key,
       displayName:
@@ -216,6 +247,8 @@ export function mergeProviderStatus(
       source: "probed",
       checkedAt: typeof entry.checkedAt === "string" && entry.checkedAt ? entry.checkedAt : probedAt,
       ...(entry.detail !== undefined ? { detail: readNullableString(entry.detail) } : {}),
+      ...(capabilities ? { capabilities } : {}),
+      ...(entry.isolation === "isolated" || entry.isolation === "shared" ? { isolation: entry.isolation } : {}),
     };
   }
   return merged;
@@ -243,6 +276,8 @@ export function providerStatusFingerprint(status: Record<string, ProviderStatus>
         entry.version ?? "",
         entry.binaryPath ?? "",
         entry.source,
+        JSON.stringify(entry.capabilities ?? null),
+        entry.isolation ?? "",
       ].join(":");
     })
     .join("|");

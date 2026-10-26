@@ -153,6 +153,7 @@
             "icon": "book",
             "pages": [
               "sdk/threads",
+              "sdk/accounts",
               "sdk/mcp",
               "sdk/permissions",
               "sdk/chat-ui",

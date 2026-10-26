@@ -87,6 +87,8 @@ export type PersonalChatCapabilities = {
   deferredMcpUpdates?: boolean;
 };
 
+export type RuntimeActionCapabilities = { actions: string[] };
+
 export type AdeInitializeResult = {
   runtimeInfo?: {
     version?: string | null;
@@ -103,9 +105,13 @@ export type AdeInitializeResult = {
      */
     providers?: {
       status?: boolean;
+      capabilities?: boolean;
       /** How long the runtime caches a probe. Reported for documentation. */
       cacheTtlMs?: number;
     };
+    providerAccounts?: RuntimeActionCapabilities;
+    credentials?: RuntimeActionCapabilities;
+    presets?: RuntimeActionCapabilities;
     [key: string]: unknown;
   };
   [key: string]: unknown;

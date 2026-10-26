@@ -310,6 +310,8 @@ export function permissionArgs(
         permissionMode: "full-auto",
         musePermissionMode: "allowAll",
       };
+    default:
+      return { permissionMode: "full-auto" };
   }
 }
 
@@ -321,6 +323,12 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
   "opencode",
   "pi",
   "muse",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "antigravity",
 ];
 
 /**
@@ -329,5 +337,8 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
  * Exported from the package root since SDK 0.4.
  */
 export function isSupportedProvider(value: string): value is AdeProvider {
-  return (SUPPORTED_PROVIDERS as readonly string[]).includes(value);
+  // `AdeProvider` is open to provider ids newer than this SDK. This helper
+  // rejects only an empty id; callers that open threads also check the live
+  // runtime catalog. `SUPPORTED_PROVIDERS` remains the autocomplete list.
+  return typeof value === "string" && value.trim().length > 0;
 }

@@ -153,6 +153,11 @@ export class RuntimeSupervisor {
     return this.bound.sidecar;
   }
 
+  get loginMode(): "isolated" | "machine" | "attached" {
+    if (!this.bound.sidecar) return "attached";
+    return this.deps.options.useMachineLogin === true ? "machine" : "isolated";
+  }
+
   get initialize(): AdeInitializeResult {
     return this.handshaken.initialize;
   }
@@ -265,6 +270,7 @@ export class RuntimeSupervisor {
       logger,
       ...(internal.startupTimeoutMs ? { startupTimeoutMs: internal.startupTimeoutMs } : {}),
       adeDefaultRole: internal.adeDefaultRole ?? DEFAULT_ADE_ROLE,
+      useMachineLogin: options.useMachineLogin === true,
     });
     return { connection: started.connection, sidecar: started };
   }
