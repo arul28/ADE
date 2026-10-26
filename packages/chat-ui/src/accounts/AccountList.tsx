@@ -40,7 +40,7 @@ export function AccountList({ client, accounts: supplied, onSelect, className }:
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const run = async (action: () => void | Promise<void>) => {
+  const run = async (action: () => unknown) => {
     if (busy) return;
     setBusy(true);
     setError(null);

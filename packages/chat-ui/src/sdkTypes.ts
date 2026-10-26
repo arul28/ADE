@@ -365,10 +365,10 @@ export type SlashCommand = {
 export type AccountManagement = {
   list?(provider?: ProviderId): Promise<readonly AccountInfo[]>;
   add?(provider: ProviderId, options?: { label?: string }): Promise<AccountInfo>;
-  remove?(id: string): Promise<void>;
+  remove?(id: string): Promise<unknown>;
   rename?(id: string, label: string): Promise<AccountInfo | void>;
-  setDefault?(id: string): Promise<void>;
-  signOut?(id: string): Promise<void>;
+  setDefault?(id: string): Promise<unknown>;
+  signOut?(id: string): Promise<unknown>;
   refresh?(): Promise<readonly AccountInfo[]>;
   signIn?(id: string, options?: { deviceAuth?: boolean }): Promise<SignInHandle>;
 };
