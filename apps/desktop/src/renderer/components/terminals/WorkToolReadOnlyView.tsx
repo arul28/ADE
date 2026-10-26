@@ -10,7 +10,7 @@ import {
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
 import { H264StreamView } from "../chat/H264StreamView";
-import { isWebCodecsAvailable, type H264PushSource, type H264StreamStatus } from "../chat/h264StreamPlayer";
+import { isWebCodecsAvailable, type H264StreamStatus } from "../chat/h264StreamPlayer";
 import {
   MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
   MacDesktopTakeoverCursor,
@@ -24,8 +24,14 @@ import {
 } from "../chat/useMacDesktopRealInput";
 import { cn } from "../ui/cn";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
-import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import {
+  createMacDesktopStreamSource,
+  macDesktopWebApi,
+  randomMacDesktopSubscriptionId,
+} from "../chat/macDesktopWebStream";
+
+export { createMacDesktopStreamSource } from "../chat/macDesktopWebStream";
 
 /**
  * The browser and App Control panes, as seen from a surface that cannot run
@@ -325,113 +331,6 @@ function AppControlSummary({ state }: { state: WorkToolsLaneState }): JSX.Elemen
   );
 }
 
-/** The web namespace is optional on every surface; read it defensively. */
-function macDesktopWebApi(): Partial<MacDesktopWebApi> | null {
-  // Through `unknown` on purpose: on the desktop this slot is the Electron IPC
-  // namespace, whose `renewLease` takes a `holderId` where the web one takes a
-  // token. This component only mounts on the web client (see
-  // `isReadOnlyWorkTool`), but the type of `window.ade` is the desktop surface.
-  const api = window.ade?.macDesktop as unknown as Partial<MacDesktopWebApi> | undefined;
-  return api ?? null;
-}
-
-function randomSubscriptionId(laneId: string): string {
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `macdesk-${laneId}-${suffix}`;
-}
-
-function decodeBase64Bytes(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-/**
- * A push-fed record source over the web `macDesktop` namespace. One
- * subscription per source instance; abandoning the source unsubscribes.
- *
- * Records keep the host's sequence numbers: the host skips frames under
- * backpressure and always resumes at a keyframe, and the player's gate uses
- * the gap to hold P-frames whose reference was skipped.
- */
-export function createMacDesktopStreamSource(args: {
-  api: Partial<MacDesktopWebApi>;
-  laneId: string;
-  subscriptionId: string;
-  viewerLabel: string;
-}): H264PushSource {
-  const { api, laneId, subscriptionId, viewerLabel } = args;
-  return {
-    kind: "push",
-    subscribe(handlers) {
-      let closed = false;
-      const offRecord = api.onStreamRecord?.((record) => {
-        if (closed || record.subscriptionId !== subscriptionId) return;
-        if (record.kind === "config") {
-          try {
-            const config = JSON.parse(new TextDecoder().decode(decodeBase64Bytes(record.data))) as {
-              codec?: unknown;
-              width?: unknown;
-              height?: unknown;
-              annexB?: unknown;
-            };
-            if (typeof config.codec !== "string" || !config.codec) {
-              handlers.onError("The video stream sent no codec.");
-              return;
-            }
-            handlers.onRecord({
-              kind: "config",
-              codec: config.codec,
-              width: typeof config.width === "number" ? config.width : null,
-              height: typeof config.height === "number" ? config.height : null,
-              annexB: config.annexB !== false,
-            });
-          } catch {
-            handlers.onError("The video stream sent an unreadable configuration.");
-          }
-          return;
-        }
-        handlers.onRecord({
-          kind: "access-unit",
-          keyframe: record.keyframe,
-          seq: record.seq,
-          bytes: decodeBase64Bytes(record.data),
-        });
-      }) ?? (() => {});
-      const offEnded = api.onStreamEnded?.((ended) => {
-        if (closed || ended.subscriptionId !== subscriptionId) return;
-        if (ended.reason === "error") {
-          handlers.onError(ended.message ?? "The desktop stream failed.");
-        } else {
-          handlers.onEnd();
-        }
-      }) ?? (() => {});
-      void Promise.resolve(api.streamSubscribe?.({ laneId, subscriptionId, viewerLabel }))
-        .then((result) => {
-          if (closed || !api.streamSubscribe) return;
-          if (!result) handlers.onError("The live desktop view is not available on this host.");
-        })
-        .catch((error: unknown) => {
-          if (closed) return;
-          handlers.onError(error instanceof Error ? error.message : String(error));
-        });
-      return () => {
-        closed = true;
-        offRecord();
-        offEnded();
-        void Promise.resolve(api.streamUnsubscribe?.({ subscriptionId })).catch(() => {
-          // A dead socket already released the subscription host-side.
-        });
-      };
-    },
-  };
-}
-
 /**
  * The lane's private macOS screen in the hosted web client: the live picture
  * when the host and this browser can play it, the last still frame otherwise,
@@ -542,7 +441,7 @@ function MacDesktopPanel({
 
   const streamKey = `${pageVisible ? "shown" : "hidden"}:${connected ? "on" : "off"}:${retryNonce}`;
   const subscriptionId = useMemo(
-    () => randomSubscriptionId(laneId),
+    () => randomMacDesktopSubscriptionId(laneId),
     // A reconnect or a manual retry is a new subscription; the old one was
     // released by the server with the socket or by our own unsubscribe.
     // eslint-disable-next-line react-hooks/exhaustive-deps

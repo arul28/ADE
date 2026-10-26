@@ -41,6 +41,8 @@ import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
+import { isWebCodecsAvailable } from "../chat/h264StreamPlayer";
+import { macDesktopWebApi } from "../chat/macDesktopWebStream";
 
 /**
  * One component per Work tool, keyed by tool id.
@@ -541,15 +543,29 @@ function WorkAppControlTool({
 }
 
 /**
+ * Whether the hosted web client can show the full lane-screen pane.
+ *
+ * The host has to serve the live stream, takeover and the window and capture
+ * commands (`supportsFullPane`), and this browser has to decode H.264. A host
+ * from before those commands, or a browser without WebCodecs, keeps the
+ * watch-only pane, which still starts, stops, watches and takes control.
+ * A synchronous read of the connection's hello; the pin picks the machine.
+ */
+function webClientHasFullDesktopPane(runtimePin: WorkToolPanelProps["runtimePin"]): boolean {
+  if (!isWebCodecsAvailable()) return false;
+  return macDesktopWebApi()?.supportsFullPane?.(runtimePin ?? undefined) === true;
+}
+
+/**
  * The lane's private macOS screen.
  *
- * Read-only on the hosted web client in the one sense that matters: no
- * takeover and no real input, because there is no way to hold the input lease
- * over a sync socket. It still plays the live picture when the host advertises
- * `macDesktopStream`, and it can start or stop the lane's display. Everywhere
- * else — including a Windows or Linux desktop watching a Mac-hosted lane —
- * this is the full panel: the display lives on the runtime host, so the
- * viewer's own platform never enters into it.
+ * On the hosted web client this is the same full panel when the host serves
+ * it (`webClientHasFullDesktopPane`): the picture over the sync push stream,
+ * takeover and real input through the web lease, and the window and capture
+ * controls through their sync commands. An older host gets the watch-only
+ * pane. Everywhere else — including a Windows or Linux desktop watching a
+ * Mac-hosted lane — this is the full panel: the display lives on the runtime
+ * host, so the viewer's own platform never enters into it.
  */
 function WorkMacDesktopTool({
   laneId,
@@ -561,7 +577,7 @@ function WorkMacDesktopTool({
   const mountScope = useWorkToolMountScope(runtimePin);
   // `ade mac-desktop show` answers "shown" only once this is on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
-  if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
+  if (isReadOnlyWorkTool("mac-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
     return (
       <div ref={mountRef} className="contents">
         <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
@@ -588,7 +604,7 @@ function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(
     laneId ? workSurfaceKey("windows-desktop", mountScope, laneId) : null,
   );
-  if (isReadOnlyWorkTool("windows-desktop", toolContext)) {
+  if (isReadOnlyWorkTool("windows-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
     return (
       <div ref={mountRef} className="contents">
         <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} />

@@ -33,6 +33,7 @@ import type {
   MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
+  MacDesktopRecordingStatus,
   MacDesktopScrollArgs,
   MacDesktopStatus,
   MacDesktopTypeArgs,
@@ -2277,12 +2278,22 @@ export type SyncMacDesktopInputCall =
   | { kind: "drag"; args: MacDesktopDragArgs }
   | { kind: "releaseInput"; args: MacDesktopReleaseInputArgs };
 
+/** A recording's status as a sync client may read it: no host file path. */
+export type SyncMacDesktopRecordingState = Omit<MacDesktopRecordingStatus, "filePath"> & { filePath: null };
+
 /**
  * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is
  * already token-free (the stream is a summary); this only pins the recording
  * to null, because its `filePath` is host state no read-only client can use.
+ *
+ * `recordingState` is that recording without its path, for the hosted web
+ * client's full pane, whose Record button has to know whether one is running.
+ * Optional: an older host sends none, which reads as not recording.
  */
-export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
+export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & {
+  recording: null;
+  recordingState?: SyncMacDesktopRecordingState | null;
+};
 
 // ---------------------------------------------------------------------------
 // App Control live frames over the sync socket
@@ -3033,6 +3044,18 @@ export type SyncRemoteCommandAction =
   | "macDesktop.returnControl"
   | "macDesktop.renewLease"
   | "macDesktop.input"
+  // The rest of the full Work-tools pane on the hosted web client: the window
+  // list and its claim / release / close, Add app, and the
+  // pane's captures. Controller-only like the takeover calls above; a host
+  // without them keeps the web client on its watch-only pane.
+  | "macDesktop.listWindows"
+  | "macDesktop.open"
+  | "macDesktop.claimWindow"
+  | "macDesktop.releaseWindow"
+  | "macDesktop.closeWindow"
+  | "macDesktop.screenshot"
+  | "macDesktop.startRecording"
+  | "macDesktop.stopRecording"
   // App Control live view. All three are read-only and viewer-allowed. Frames
   // and the end notice are pushed back on `appControl.streamFrame` /
   // `appControl.streamEnded` envelopes.

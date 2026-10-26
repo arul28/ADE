@@ -159,7 +159,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId,
     lastObservation, videoHost, attachCanvasSlot, attachSurface, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, takeoverBlocked, permissionCheck, confirmStop,
-    setConfirmStop, restartingCapture, restartCapture,
+    setConfirmStop, restartingCapture, restartCapture, canRecheckPermissions, hostScreenIsLocal,
     connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById, openApp, closeWindowById,
@@ -400,7 +400,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
     : null;
   // Moving a window to the user's screen needs a local host and a seat that can move it.
-  const canMoveWindows = Boolean(status?.hostIsLocal) && windowsMovable;
+  const canMoveWindows = hostScreenIsLocal && windowsMovable;
   const presentAction = macDesktopPresentAction({
     hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
@@ -805,14 +805,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 Details
               </button>
             ) : null}
-            <button
-              type="button"
-              data-testid={`mac-desktop-restart-capture${suffix}`}
-              className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
-              onClick={() => void restartCapture()}
-            >
-              Restart capture
-            </button>
+            {canRecheckPermissions ? (
+              <button
+                type="button"
+                data-testid={`mac-desktop-restart-capture${suffix}`}
+                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => void restartCapture()}
+              >
+                Restart capture
+              </button>
+            ) : null}
             {stopped ? null : (
               <button
                 type="button"
@@ -1001,10 +1003,10 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
 
       {/* The decoder, mounted once and never moved in the React tree. Its host
           node is what travels between the pane and the overlay. */}
-      {videoHost && live.url
+      {videoHost && live.source
         ? createPortal(
             <H264StreamView
-              source={{ kind: "http", url: live.url }}
+              source={live.source}
               reconnectNonce={live.reconnectNonce}
               onStatus={live.onStatus}
               onDimensions={live.onDimensions}
