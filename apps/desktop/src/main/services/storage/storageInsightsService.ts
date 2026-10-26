@@ -1704,6 +1704,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   /** For the deleted-chats reminder: one directory listing and a few header reads, no full scan. */
   const deletedLaneChatsSummary = (): Promise<DeletedLaneChatsSummary> => deletedLanes.summary();
 
+  /**
+   * For the lane view: build output the idle-lane cleanup removed from this
+   * lane that is still gone, or null. Reads one lane's records, no scan.
+   */
+  const laneBuildOutputRemoved = async (laneId: string): Promise<StorageItem["buildOutputRemoved"] | null> => {
+    const lane = options.db.get<LaneRow>(
+      "select id, name, worktree_path, archived_at, created_at, lane_type, is_edit_protected from lanes where id = ?",
+      [laneId],
+    );
+    if (!lane || lane.archived_at) return null;
+    return await buildOutput.describeLane(lane);
+  };
+
   const collectIosDerivedData = async (): Promise<StorageCleanupTarget[]> => {
     const stat = await lstatOrNull(iosDerivedDataDir);
     if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return [];
@@ -1957,6 +1970,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     compressNow,
     runMaintenanceNow,
     deletedLaneChatsSummary,
+    laneBuildOutputRemoved,
     runLifecycleScanNow: runLifecycleScan,
     dispose,
   };

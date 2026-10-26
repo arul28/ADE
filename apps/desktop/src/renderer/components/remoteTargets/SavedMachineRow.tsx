@@ -340,7 +340,9 @@ export function SavedMachineRow({
               >
                 <Plugs size={15} />
               </button>
-            ) : section !== "unavailable" ? (
+            ) : null}
+            {/* Connected, Test also asks the machine itself whether other devices can reach it. */}
+            {section !== "unavailable" ? (
               <button
                 type="button"
                 aria-label="Test"
@@ -464,7 +466,11 @@ export function SavedMachineRow({
 
       {testOpen ? (
         <div id={`remote-target-test-${target.id}`}>
-          <ConnectionDoctorPanel machineId={target.id} machineName={target.name?.trim() || target.hostname} />
+          <ConnectionDoctorPanel
+            machineId={target.id}
+            machineName={target.name?.trim() || target.hostname}
+            connected={Boolean(row.connected)}
+          />
         </div>
       ) : null}
 

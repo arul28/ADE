@@ -5947,6 +5947,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
+      laneBuildOutputRemoved: async () => ({ at: new Date(Date.now() - 9 * 86_400_000).toISOString(), bytes: 1.3 * 1024 ** 3, folders: ["node_modules", "apps/web/.next"] }),
       deletedLaneChatsSummary: resolved({ chatCount: 813, bytes: 528 * 1024 * 1024, directory: `${MOCK_PROJECT.rootPath}/.ade/transcripts/chat` }),
       runMaintenanceNow: resolved({
         startedAt: now,
@@ -6047,6 +6048,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStateEvent: noop,
     },
     remoteRuntime: {
+      checkReachability: async (_id: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return {
+          checkedAt: new Date().toISOString(),
+          tone: "success" as const,
+          title: "Your other devices can reach Studio Mac.",
+          checks: [
+            { id: "listener" as const, label: "ADE on Studio Mac", state: "ok" as const, detail: "Accepting connections on port 8787." },
+            { id: "relay" as const, label: "Relay", state: "ok" as const, detail: "Connected, and a test connection through it came back." },
+            { id: "tailnet" as const, label: "Tailscale", state: "ok" as const, detail: "Devices on your tailnet can reach Studio Mac." },
+          ],
+        };
+      },
       runDoctor: async (id: string) => (id === "mock-windows"
         ? {
             checks: [

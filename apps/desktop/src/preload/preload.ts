@@ -168,6 +168,7 @@ import type {
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
+  StorageItem,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -4937,6 +4938,13 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "deletedLaneChatsSummary", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageDeletedLaneChatsSummary),
       ),
+    laneBuildOutputRemoved: async (
+      laneId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<StorageItem["buildOutputRemoved"] | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "storage", "laneBuildOutputRemoved", { args: { laneId } }, () =>
+        ipcRenderer.invoke(IPC.storageLaneBuildOutputRemoved, { laneId }),
+      ),
     cleanupPreview: async (
       targets: StorageCleanupTarget[],
       pin?: OpenProjectBinding | null,
@@ -5293,6 +5301,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.remoteRuntimeGetLocalPairingInfo),
     runDoctor: async (id: string): Promise<RemoteRuntimeDoctorResult> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRunDoctor, { id }),
+    checkReachability: async (id: string): Promise<HostReachabilityReport> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCheckReachability, { id }),
     saveTarget: async (
       input: RemoteRuntimeTargetInput,
     ): Promise<RemoteRuntimeTarget> =>

@@ -23,16 +23,21 @@ const TONE_COLOR: Record<HostReachabilityReport["tone"], string> = {
 };
 
 /**
- * "Can my other devices reach this computer?", asked of this computer's own
+ * "Can my other devices reach this computer?", asked of that computer's own
  * brain: is ADE listening, is the relay connected and does a test connection
  * through it come back, is Tailscale up or routing through an exit node that
- * blocks the relay, did ADE freeze here. Each part says what to do.
+ * blocks the relay, did ADE freeze there. Each part says what to do.
  *
- * Only for the computer you are sitting at; the web client has no such check
- * and renders nothing.
+ * Without `check` it asks the computer you are sitting at; a connected remote
+ * machine passes its own call. The web client has neither and renders nothing.
  */
-export function HostReachabilityCheck() {
-  const check = window.ade?.sync?.checkLocalReachability;
+export function HostReachabilityCheck({
+  check = window.ade?.sync?.checkLocalReachability,
+  prompt = "Can your other devices reach this computer?",
+}: {
+  check?: (() => Promise<HostReachabilityReport>) | undefined;
+  prompt?: string;
+} = {}) {
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<HostReachabilityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +71,7 @@ export function HostReachabilityCheck() {
         <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>
           {report
             ? <span style={{ color: TONE_COLOR[report.tone] }}>{report.title}</span>
-            : "Can your other devices reach this computer?"}
+            : prompt}
         </span>
         <button
           type="button"

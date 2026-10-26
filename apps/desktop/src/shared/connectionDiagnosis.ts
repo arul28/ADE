@@ -342,6 +342,29 @@ export function diagnoseHostReachability(
   return { checkedAt: now.toISOString(), tone, title, checks };
 }
 
+/**
+ * The host writes its report about "this computer". Read from another
+ * machine, that would point at the wrong one, so name the machine instead.
+ */
+export function describeReportForMachine(
+  report: HostReachabilityReport,
+  machineName: string | null | undefined,
+): HostReachabilityReport {
+  const name = machineName?.trim() || "that machine";
+  const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+  const rename = (text: string) => text.replace(/\bthis computer\b/g, name).replace(/\bThis computer\b/g, capitalized);
+  return {
+    ...report,
+    title: rename(report.title),
+    checks: report.checks.map((check) => ({
+      ...check,
+      label: rename(check.label),
+      detail: rename(check.detail),
+      ...(check.fix ? { fix: rename(check.fix) } : {}),
+    })),
+  };
+}
+
 /** Parse what we need from `tailscale status --json`. Tolerates any shape. */
 export function readTailscaleStatus(payload: unknown): {
   backendState: string | null;

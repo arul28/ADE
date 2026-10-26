@@ -121,6 +121,8 @@ type LaneRowLike = {
   is_edit_protected: number;
 };
 
+type LaneBuildOutputRemoved = NonNullable<StorageItem["buildOutputRemoved"]>;
+
 type LiveWorkCounts = { activeChatCount: number; activePtyCount: number; activeWatcherCount: number };
 
 export type LaneBuildOutputSweeperOptions = {
@@ -856,5 +858,44 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     };
   };
 
-  return { sweep, describe };
+  /**
+   * The lane view's notice: what the latest cleanup removed from this one
+   * lane that has not come back yet. One indexed read and a stat per folder,
+   * so opening a lane never waits on a storage scan.
+   */
+  const describeLane = async (lane: LaneRowLike): Promise<LaneBuildOutputRemoved | null> => {
+    const projectId = projectIdOrNull();
+    if (!projectId) return null;
+    const rows = options.db.all<{
+      run_id: string;
+      folder: string;
+      bytes: number;
+      partial: number;
+      error: string | null;
+      removed_at: string;
+    }>(
+      `select run_id, folder, bytes, partial, error, removed_at
+         from local_lane_build_output_cleanups
+        where project_id = ? and lane_id = ?
+        order by removed_at desc`,
+      [projectId, lane.id],
+    );
+    const latestRun = rows[0]?.run_id;
+    if (!latestRun) return null;
+    const removedAt = rows[0]!.removed_at;
+    if (Date.now() - Date.parse(removedAt) > NOTE_MAX_AGE_MS) return null;
+    let bytes = 0;
+    let partial = false;
+    const missing: string[] = [];
+    for (const row of rows) {
+      if (row.run_id !== latestRun || row.error) continue;
+      bytes += Math.max(0, row.bytes);
+      if (row.partial) partial = true;
+      if (!(await lstatOrNull(gitRelToAbs(lane.worktree_path, row.folder)))) missing.push(row.folder);
+    }
+    if (missing.length === 0) return null;
+    return { at: removedAt, bytes, ...(partial ? { partial: true } : {}), folders: missing };
+  };
+
+  return { sweep, describe, describeLane };
 }

@@ -1082,6 +1082,7 @@ import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport 
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
+  StorageItem,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -4433,6 +4434,16 @@ export function registerIpc({
   ipcMain.handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.deletedLaneChatsSummary();
+  });
+
+  ipcMain.handle(IPC.storageLaneBuildOutputRemoved, async (
+    _event,
+    arg: { laneId?: string },
+  ): Promise<StorageItem["buildOutputRemoved"] | null> => {
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    if (!laneId) return null;
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return await service.laneBuildOutputRemoved(laneId);
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (

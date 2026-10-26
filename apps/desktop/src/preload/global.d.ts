@@ -1364,6 +1364,10 @@ declare global {
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
         deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
+        laneBuildOutputRemoved?: (
+          laneId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types/storage").StorageItem["buildOutputRemoved"] | null>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
@@ -1528,6 +1532,7 @@ declare global {
         ) => Promise<RemoteRuntimePairWithMachineResult>;
         getLocalPairingInfo: () => Promise<RemoteRuntimeLocalPairingInfo>;
         runDoctor: (id: string) => Promise<RemoteRuntimeDoctorResult>;
+        checkReachability?: (id: string) => Promise<import("../shared/connectionDiagnosis").HostReachabilityReport>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;

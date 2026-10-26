@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CheckCircle, CircleNotch, XCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeDoctorFailure,
   RemoteRuntimeDoctorResult,
 } from "../../../shared/types";
+import { HostReachabilityCheck } from "./HostReachabilityCheck";
 import { HostStallNote } from "./HostStallNote";
 
 const wrapStyle: CSSProperties = {
@@ -80,6 +81,11 @@ type ConnectionDoctorPanelProps = {
   machineId: string;
   /** For the freeze note ("Studio froze for 12s"). */
   machineName?: string | null;
+  /**
+   * The machine is connected, so it can also be asked from its own side
+   * whether other devices can reach it (relay, Tailscale, exit node, freezes).
+   */
+  connected?: boolean;
 };
 
 /**
@@ -87,7 +93,12 @@ type ConnectionDoctorPanelProps = {
  * each candidate route with a pass/fail, latency, and error text — so "Test"
  * answers "why can't I connect" without leaving the panel.
  */
-export function ConnectionDoctorPanel({ machineId, machineName = null }: ConnectionDoctorPanelProps) {
+export function ConnectionDoctorPanel({ machineId, machineName = null, connected = false }: ConnectionDoctorPanelProps) {
+  const remoteCheck = window.ade?.remoteRuntime?.checkReachability;
+  const checkRemote = useCallback(
+    () => remoteCheck!(machineId),
+    [remoteCheck, machineId],
+  );
   const [checks, setChecks] = useState<RemoteRuntimeDoctorCheck[] | null>(null);
   const [result, setResult] = useState<RemoteRuntimeDoctorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -217,6 +228,16 @@ export function ConnectionDoctorPanel({ machineId, machineName = null }: Connect
             </div>
           ))
         : null}
+
+      {connected && typeof remoteCheck === "function" ? (
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}>
+          <HostReachabilityCheck
+            key={machineId}
+            check={checkRemote}
+            prompt={`Ask ${machineName?.trim() || "this machine"} whether your other devices can reach it.`}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

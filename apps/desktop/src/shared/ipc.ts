@@ -32,6 +32,7 @@ export const IPC = {
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",
   storageDeletedLaneChatsSummary: "ade.storage.deletedLaneChatsSummary",
+  storageLaneBuildOutputRemoved: "ade.storage.laneBuildOutputRemoved",
   archiveList: "ade.archive.list",
   archiveSummary: "ade.archive.summary",
   archiveRestore: "ade.archive.restore",
@@ -212,6 +213,7 @@ export const IPC = {
   remoteRuntimeGetLocalPairingInfo:
     "ade.remoteRuntime.getLocalPairingInfo",
   remoteRuntimeRunDoctor: "ade.remoteRuntime.runDoctor",
+  remoteRuntimeCheckReachability: "ade.remoteRuntime.checkReachability",
   remoteRuntimeGetConnectionSnapshot: "ade.remoteRuntime.getConnectionSnapshot",
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",
