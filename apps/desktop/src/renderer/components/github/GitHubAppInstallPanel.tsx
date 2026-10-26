@@ -128,7 +128,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
           if (opts.retryAfterAuthorization) {
             setDeviceMessage(
               latestStatus && isGithubRepoAccessPending(latestStatus)
-                ? "GitHub authorization is complete. Repository access is still warming up; use Recheck again in a moment."
+                ? "GitHub authorization is complete. Repository access is still warming up; use Check again in a moment."
                 : null,
             );
           }
@@ -345,7 +345,14 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         </button>
       </>
     ) : (
-      <button type="button" style={quietButtonStyle} onClick={() => setDisconnectArmed(true)}>
+      // In Settings it is an outlined danger button in the same action column
+      // as the repo row's buttons; onboarding keeps the quiet inline control.
+      <button
+        type="button"
+        style={compact ? quietButtonStyle : undefined}
+        {...(compact ? {} : { className: "ade-modern-btn", "data-tone": "danger" })}
+        onClick={() => setDisconnectArmed(true)}
+      >
         Disconnect
       </button>
     )
@@ -360,7 +367,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       disabled={loading}
     >
       <ArrowClockwise size={12} weight="bold" style={loading ? SPIN_STYLE : undefined} />
-      {loading ? "Checking" : "Recheck"}
+      {loading ? "Checking" : "Check again"}
     </button>
   );
   const installButton = (
@@ -624,7 +631,7 @@ function repoView(
         pill: { tone: "neutral", color: COLORS.textMuted, label: "Couldn't verify" },
         subtext: error?.trim()
           ? error
-          : "ADE couldn't confirm the app status for this repo. Recheck in a moment.",
+          : "ADE couldn't confirm the app status for this repo. Check again in a moment.",
       };
   }
 }

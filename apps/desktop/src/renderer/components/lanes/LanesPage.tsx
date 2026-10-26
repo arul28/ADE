@@ -362,7 +362,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const createBusyRef = useRef(false);
   const canCreateLane = Boolean(activeProjectRoot);
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
-  const [deleteForce, setDeleteForce] = useState(true);
+  const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
@@ -1501,7 +1501,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageInitialTab(initialTab);
     setManagedLaneIds(manageable);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [bulkActionableLaneIds, foreignRowByKey]);
@@ -1750,7 +1750,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!lane || lane.laneType === "primary" || deletingLaneIds.has(targetId)) return;
     setManagedLaneIds([targetId]);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
     setPulsingLaneId(targetId);
@@ -2074,7 +2074,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageInitialTab(null);
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [deletingLaneIds, foreignRowByKeyRef, selectLane]);
@@ -2096,7 +2096,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (machineBlockedReason(row) || row.lane.laneType === "primary") return;
     setManageInitialTab(initialTab);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setForeignManageKey(row.key);
   }, []);

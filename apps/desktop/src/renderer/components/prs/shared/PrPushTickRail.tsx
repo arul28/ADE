@@ -28,7 +28,9 @@ export function PrPushTickRail({
     // Screen rect difference, written as layout px in the absolute wrapper.
     setHover({ tick, top: wrapper && wrapperRef.current ? (own.top - wrapper.top) / cssZoomOf(wrapperRef.current) : 0 });
   };
-  if (ticks.length === 0) return null;
+  // One push leaves nothing to jump between: a lone tick read as an unlabelled
+  // "–" pill beside the thread.
+  if (ticks.length < 2) return null;
   return (
     // The tooltip lives outside the scrolling list, which would clip it.
     // A solid pill over the thread's scrollbar: the ticks sit on it, so the

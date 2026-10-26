@@ -151,7 +151,7 @@ export function AdeTipsDialog({
               Things worth <em>knowing</em>
             </h2>
             <p className="ade-tips-lede">
-              Nothing here is required. Try it takes you to the spot and points at it.
+              Optional. &ldquo;Try it&rdquo; jumps to the spot.
             </p>
             <TipCardsSwitch />
           </div>

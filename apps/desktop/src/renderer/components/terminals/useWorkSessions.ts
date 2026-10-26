@@ -1,4 +1,5 @@
 import { reconcileRowsById } from "../../lib/stableIdentity";
+import { useProjectSidebarHeld } from "../app/projectSidebar/ProjectSidebarSlot";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { setSessionsPinned as setSessionsPinnedAction } from "./sessionLifecycleActions";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -432,14 +433,14 @@ export function buildWorkBoardModel(args: {
     waitingReasonBySessionId.set(session.id, "snoozed");
     waiting.push(session);
   }
+  // A running row is Working — the same word its own status slot and the list
+  // show. A lane PR that is mid-CI or in review no longer parks it in Waiting
+  // (the board said "Waiting" while the card said "Working 4m"); the reason
+  // rides along as the card's footer note instead.
   for (const session of args.runningFiltered) {
+    working.push(session);
     const reason = args.laneWaitingReason(session.laneId);
-    if (!reason) {
-      working.push(session);
-      continue;
-    }
-    waitingReasonBySessionId.set(session.id, reason);
-    waiting.push(session);
+    if (reason) waitingReasonBySessionId.set(session.id, reason);
   }
   // A finished chat that will start again on its own is not Done yet.
   for (const session of args.restingFiltered) {
@@ -1966,6 +1967,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const isInitialLoad = !hasLoadedOnceRef.current;
     refresh({ showLoading: isInitialLoad, force: isInitialLoad }).catch(() => {});
   }, [isWorkRoute, projectRoot, projectStateKey, refresh]);
+
+  // Held under CTO or History, the list is on screen in the sidebar even though
+  // Work is not: load it once, or it reads "No sessions" when the app opens
+  // straight onto CTO.
+  const sidebarHeld = useProjectSidebarHeld();
+  useEffect(() => {
+    if (!projectRoot || !projectStateKey || isWorkRoute || !sidebarHeld) return;
+    if (hasLoadedOnceRef.current) return;
+    refresh({ showLoading: true, force: true }).catch(() => {});
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, sidebarHeld]);
 
   useEffect(() => {
     if (isWorkRoute) return;

@@ -35,7 +35,8 @@ function Sep() {
  * edge; the menu then opens down and to the left and stays inside the
  * overview column instead of covering the Git pane.
  */
-const LANE_MENU_WIDTH = 340;
+// The lane menu's own width (LaneContextMenu minWidth plus room), so its right edge meets the button.
+const LANE_MENU_WIDTH = 210;
 
 /** The hosted web client zooms <body>; Electron zooms the whole frame (factor 1). */
 const TONE_COLOR: Record<LaneStatusTone, string> = {

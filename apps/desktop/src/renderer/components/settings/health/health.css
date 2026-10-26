@@ -185,3 +185,7 @@
 .ade-health-quiet { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--kit-text-2); }
 .ade-health-quiet > svg { color: var(--kit-ok); }
 .ade-health-hbar[data-compact="true"] { grid-template-columns: minmax(0, 130px) minmax(0, 1fr) 44px; }
+
+/* Storage legend: two columns under the bar, with room between them so a
+   label never runs into the next column's values. */
+.ade-health-split .usage-split-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 64px; }

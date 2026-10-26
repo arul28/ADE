@@ -454,16 +454,17 @@
   gap: 6px;
   margin-left: auto;
   padding: 4px 10px 4px 7px;
-  border: 1px solid transparent;
+  /* One ghost-button look on every tile; hover only brightens it. */
+  border: 1px solid color-mix(in srgb, #8b5cf6 24%, transparent);
   border-radius: 999px;
   background: transparent;
-  color: var(--kit-text-3);
+  color: var(--kit-text-2, var(--color-fg));
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  opacity: 0.7;
+  opacity: 0.85;
   transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .ade-tips-try::after {

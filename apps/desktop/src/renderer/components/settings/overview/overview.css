@@ -18,26 +18,27 @@
   overflow: hidden;
 }
 .ade-attn-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 112px 112px 26px;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 6px 8px 6px 14px;
+  column-gap: 12px;
+  min-height: 48px;
+  padding: 7px 8px 7px 14px;
 }
 .ade-attn-row + .ade-attn-row { border-top: 1px solid var(--kit-rule); }
-.ade-attn-row > .kit-dot { flex: none; }
 .ade-attn-row[data-severity="note"] > .kit-dot { background: var(--kit-text-3); }
-.ade-attn-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
-.ade-attn-title { font-size: 12.5px; font-weight: 500; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 70%; }
-.ade-attn-detail { font-size: 12px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ade-attn-where { flex: none; }
-.ade-attn-row > .ade-modern-btn { flex: none; }
-.ade-attn-open { flex: none; width: 26px; height: 26px; color: var(--kit-text-3); }
+.ade-attn-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-attn-title { font-size: 12.5px; font-weight: 500; color: var(--color-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-attn-detail { font-size: 11.5px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-attn-where-col { display: flex; justify-content: flex-end; min-width: 0; }
+.ade-attn-fix-col { display: flex; justify-content: flex-end; min-width: 0; }
+.ade-attn-row > .ade-st-shimmer { grid-column: 1 / -1; }
+.ade-attn-open { width: 26px; height: 26px; color: var(--kit-text-3); }
 .ade-attn-open:hover { color: var(--color-fg); }
 
 @container settings-column (max-width: 620px) {
-  .ade-attn-detail { display: none; }
-  .ade-attn-title { max-width: none; flex: 1; }
+  .ade-attn-row { grid-template-columns: 8px minmax(0, 1fr) auto auto 26px; }
+  .ade-attn-where-col { display: none; }
 }
 
 /* ── At a glance ────────────────────────────────────────────────────────── */

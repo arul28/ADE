@@ -21,7 +21,7 @@ const MB = 1024 * 1024;
 /**
  * Computer → ADE service, top section: how the background service on this
  * computer is doing. Reads only the service diagnostics (no storage scan, no
- * project check), once on open and again on Read again.
+ * project check), once on open and again on Check again.
  */
 export function ServiceStatusSection() {
   const { pin, isThisMachine } = useSettingsMachineScope();
@@ -90,7 +90,7 @@ export function HealthService({ data }: { data: HealthData }) {
         actions={(
           <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={refreshing} onClick={() => void refresh()}>
             <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
-            {refreshing ? "Reading" : "Read again"}
+            {refreshing ? "Checking" : "Check again"}
           </button>
         )}
       >

@@ -406,6 +406,11 @@ type PrDetailPaneProps = {
   mergeBlockedReason?: string | null;
   /** The chat's other pull requests; the header shows a switcher when set. */
   prSwitcher?: PrSwitcher | null;
+  /**
+   * Whether the Merge card opens by itself on a new PR. On in the PRs tab; a
+   * chat's PR view passes false so the card only opens from its bubble.
+   */
+  autoOpenMergeCard?: boolean;
 };
 
 export type PrDetailRuntime = {
@@ -442,6 +447,7 @@ export function PrDetailPane({
   laneMachineChip = null,
   mergeBlockedReason = null,
   prSwitcher = null,
+  autoOpenMergeCard = true,
 }: PrDetailPaneProps) {
   // The machine every call below targets: `[]` is the tab machine's unpinned
   // call; `[pin]` sends it to the lane's owner.
@@ -1576,6 +1582,7 @@ export function PrDetailPane({
         {activeTab === "overview" && (
           <TimelineRailsOverview
             ref={timelineRailsRef}
+            autoOpenMergeCard={autoOpenMergeCard}
             pr={pr}
             detail={detail}
             status={status}

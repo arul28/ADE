@@ -65,6 +65,7 @@ import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedaction";
 import { cn } from "../ui/cn";
+import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { toLayoutPx } from "../../lib/webZoom";
@@ -2641,6 +2642,43 @@ function isCompactCommandMessage(
     && isManualCompactCommand(event.text);
 }
 
+/**
+ * "N chats finished": one line. Wide enough, the titles ride along and
+ * truncate; narrow, only the count shows. Either way the count opens the
+ * full list, one chat per line.
+ */
+function SpawnCompletionGroupLine({ count, inline, items }: { count: number; inline: React.ReactNode; items: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div
+      className="@container min-w-0 max-w-[var(--chat-content-width,52rem)] font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
+      data-testid="spawn-completed-line"
+      data-spawn-completed-group=""
+      data-open={open ? "true" : undefined}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-sm transition-colors hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+        >
+          <CheckCircle size={11} className="shrink-0 text-fg/30" aria-hidden />
+          {count} chats finished
+          {open ? <CaretDown size={9} className="shrink-0 text-fg/30" aria-hidden /> : <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden />}
+        </button>
+        {open ? null : (
+          <span className="hidden min-w-0 flex-nowrap items-center gap-x-1.5 overflow-hidden @[34rem]:flex">
+            {inline}
+            {count > 3 ? <span className="shrink-0 text-fg/35">+{count - 3}</span> : null}
+          </span>
+        )}
+      </div>
+      {open ? <div className="mt-0.5 flex min-w-0 flex-col items-start gap-0.5 pl-[17px]">{items}</div> : null}
+    </div>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
@@ -2778,26 +2816,36 @@ function renderEvent(
 
   /* ── Spawn-completion header ── */
   if (event.type === "spawn_wake_divider") {
-    const summary = event.summary?.trim();
+    // One line: who came back, how it ended, and the first line of what it
+    // said. The wake message the agent read is the same news, so its bubble
+    // is not drawn (see the user_message branch below).
+    const firstLine = event.summary?.split("\n")[0]?.trim() ?? "";
+    // A failed or stopped turn's summary is its status ("Turn failed."); do
+    // not print it twice.
+    const summary = event.status === "completed" && !/^(Subagent|Chat) turn finished\.$/.test(firstLine) ? firstLine : "";
+    const StatusIcon = event.status === "completed" ? CheckCircle : event.status === "failed" ? XCircle : Circle;
+    const statusLabel = event.status === "completed" ? "done" : event.status === "failed" ? "failed" : "stopped";
+    const statusTone = event.status === "completed" ? "text-emerald-300/85" : event.status === "failed" ? "text-red-300/85" : "text-fg/45";
     return (
-      <div className="my-3 flex flex-col gap-1" data-spawn-wake-child={event.childSessionId}>
-        <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-violet-200/70">
-          <span className="h-px flex-1 bg-violet-300/[0.1]" />
-          <span className="inline-flex shrink-0 items-center gap-1.5">
-            <Robot size={11} weight="duotone" className="text-violet-300/75" aria-hidden />
-            Subagent returned{event.childMachineName ? ` · on ${event.childMachineName}` : ""}
-          </span>
-          <span className="h-px flex-1 bg-violet-300/[0.1]" />
-        </div>
+      <div className="my-3 flex items-center gap-2" data-spawn-wake-child={event.childSessionId}>
+        <span className="h-px w-4 shrink-0 bg-violet-300/[0.12]" />
         <button
           type="button"
           onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
-          className="mx-auto inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-full border border-violet-300/18 bg-violet-400/[0.06] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/70 transition-colors hover:border-violet-300/30 hover:text-fg/90"
-          title="Open the spawned chat"
+          className="group inline-flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:bg-fg/[0.05] hover:text-fg/80"
+          title={`Open ${event.spawnKind === "peer" ? "peer chat" : "subagent"} "${event.childTitle}"`}
         >
-          <span className="min-w-0 truncate">{summary || `"${event.childTitle}" finished`}</span>
-          <span className="inline-flex shrink-0 items-center gap-0.5 text-violet-200/70">open<CaretRight size={10} weight="bold" aria-hidden /></span>
+          <Robot size={12} weight="duotone" className="shrink-0 text-violet-300/80" aria-hidden />
+          <span className="max-w-[16rem] shrink-0 truncate font-medium text-fg/80">{event.childTitle}</span>
+          <span className={cn("inline-flex shrink-0 items-center gap-1", statusTone)}>
+            <StatusIcon size={11} weight="fill" aria-hidden />
+            {statusLabel}
+          </span>
+          {event.childMachineName ? <span className="shrink-0 text-fg/40">· {event.childMachineName}</span> : null}
+          {summary ? <span data-chat-find-text="" className="min-w-0 truncate text-fg/45">· {summary}</span> : null}
+          <CaretRight size={10} weight="bold" className="shrink-0 text-fg/35 group-hover:text-fg/60" aria-hidden />
         </button>
+        <span className="h-px min-w-4 flex-1 bg-violet-300/[0.12]" />
       </div>
     );
   }
@@ -2812,6 +2860,13 @@ function renderEvent(
      that they never wrote. */
   // One decision for what a user-message row shows (`userMessageBody.ts`);
   // find (⌘F) searches the same text.
+  // A subagent's report: the spawn_wake_divider row above it already says who
+  // came back and what it said. The agent still reads this message; the user
+  // does not need it twice.
+  const spawnCompletion = event.type === "user_message" ? event.metadata?.spawnCompletion : undefined;
+  if (spawnCompletion?.childSessionId?.trim() && (spawnCompletion.spawnKind === "subagent" || spawnCompletion.spawnKind === "peer")) {
+    return null;
+  }
   const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
   if (userBody?.kind === "board-move") {
     const boardMove = userBody.move;
@@ -3653,9 +3708,17 @@ function renderEvent(
           type="button"
           disabled={!entry.notice.childSessionId}
           onClick={() => openSpawnedChat(entry.notice.childSessionId, null, entry.notice.childMachineName)}
-          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
-          title={entry.notice.childSessionId ? "Open the chat" : undefined}
+          className={cn(
+            "inline-flex min-w-0 items-center gap-1 rounded-sm text-left transition-colors enabled:hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20",
+            single ? "max-w-full" : "max-w-[16rem]",
+          )}
+          title={entry.notice.childSessionId ? `Open "${entry.notice.childTitle}"` : undefined}
         >
+          {entry.notice.childSessionId ? (
+            <span className="inline-flex shrink-0 items-center" aria-hidden>
+              <ChatSubagentGlyph id={entry.notice.childSessionId} color={chatSubagentColor(entry.notice.childSessionId)} size={13} />
+            </span>
+          ) : null}
           <span className="min-w-0 truncate">{label}</span>
           {entry.notice.childMachineName ? (
             <span className="shrink-0 text-fg/30">· on {entry.notice.childMachineName}</span>
@@ -3666,26 +3729,33 @@ function renderEvent(
           {entry.notice.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>
       );
+      if (single) {
+        return (
+          <div
+            className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
+            data-testid="spawn-completed-line"
+          >
+            <CheckCircle size={11} className="shrink-0 text-fg/30" aria-hidden />
+            {chip(single, spawnCompletedNoticeMessage(single.notice.childTitle))}
+          </div>
+        );
+      }
       return (
-        <div
-          className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-start gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-[1.6] text-fg/45"
-          data-testid="spawn-completed-line"
-        >
-          <CheckCircle size={11} className="mt-[0.3em] shrink-0 text-fg/30" aria-hidden />
-          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
-            {single ? chip(single, spawnCompletedNoticeMessage(single.notice.childTitle)) : (
-              <>
-                <span className="shrink-0">{entries.length} chats finished their turns:</span>
-                {entries.map((entry, index) => (
-                  <React.Fragment key={entry.key}>
-                    {index > 0 ? <span aria-hidden className="text-fg/25">·</span> : null}
-                    {chip(entry, entry.notice.childTitle)}
-                  </React.Fragment>
-                ))}
-              </>
-            )}
-          </span>
-        </div>
+        <SpawnCompletionGroupLine
+          count={entries.length}
+          inline={entries.slice(0, 3).map((entry, index) => (
+            <React.Fragment key={entry.key}>
+              {index > 0 ? <span aria-hidden className="shrink-0 text-fg/25">·</span> : null}
+              {chip(entry, entry.notice.childTitle)}
+            </React.Fragment>
+          ))}
+          items={entries.map((entry, index) => (
+            <React.Fragment key={entry.key}>
+              {index > 0 ? <span aria-hidden className="shrink-0 text-fg/25 [[data-open=true]_&]:hidden">·</span> : null}
+              {chip(entry, entry.notice.childTitle)}
+            </React.Fragment>
+          ))}
+        />
       );
     }
     // ── Host sleep ──
@@ -4675,7 +4745,14 @@ function DoneTurnDivider({
       {turnSources?.length && event.turnId ? (
         <TurnSourcesChip turnId={event.turnId} sources={turnSources} onOpen={onOpenTurnSources} />
       ) : null}
-      {assistantTurnCopyText?.trim() ? (
+    </span>
+  );
+
+  // Copy and Fork show on hover. They sit after the token counts, so their
+  // empty space never opens a gap in the middle of the line.
+  const hoverActions = assistantTurnCopyText?.trim() || (onForkFromTurn && event.turnId) ? (
+    <span className="inline-flex shrink-0 items-center gap-2">
+        {assistantTurnCopyText?.trim() ? (
         <MessageCopyButton
           value={assistantTurnCopyText}
           label="Copy turn"
@@ -4697,7 +4774,7 @@ function DoneTurnDivider({
         </button>
       ) : null}
     </span>
-  );
+  ) : null;
 
   return (
     <div className="group/turnend my-4 min-w-0">
@@ -4731,6 +4808,7 @@ function DoneTurnDivider({
             ) : null}
           </span>
         ) : null}
+        actions={hoverActions}
         checkpointFiles={checkpointFiles}
         checkpointDetail={checkpointDetail}
       />
@@ -4853,8 +4931,9 @@ function TurnFoldRow({
   const detailFileEntries = checkpointSummary ? EMPTY_WORK_LOG_ENTRIES : fileEntries;
   return (
     <div className="min-w-0" data-testid="turn-fold-row">
-      {/* One line at every width: the counts truncate, the proof link never does. */}
-      <div className="flex min-w-0 max-w-full items-center">
+      {/* One line at every width. A narrow row keeps each count's icon and
+          number and drops its word ("4 tools" -> "4"), never half a word. */}
+      <div className="@container flex min-w-0 max-w-full items-center">
       <button
         type="button"
         aria-expanded={open}
@@ -4869,7 +4948,8 @@ function TurnFoldRow({
             <span key={count.key} className={cn("inline-flex min-w-0 items-center gap-1", count.tone)} data-testid={`turn-fold-count-${count.key}`}>
               <span className="shrink-0 text-fg/25" aria-hidden>{" · "}</span>
               {count.icon}
-              <span className="truncate">{count.text}</span>
+              <span className="shrink-0">{count.text.split(" ")[0]}</span>
+              <span className="hidden shrink-0 @[30rem]:inline">{count.text.split(" ").slice(1).join(" ")}</span>
             </span>
           ))}
         </span>

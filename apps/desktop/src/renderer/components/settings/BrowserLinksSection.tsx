@@ -71,12 +71,7 @@ export function BrowserLinksSection() {
       group="Links"
       anchor="link-open-mode"
       title="Open links"
-      hint={
-        <>
-          Where a link clicked inside ADE opens. {modifierKeyLabel}-click always uses your system
-          browser; Shift-click always uses ADE&apos;s, which stays signed in across chats.
-        </>
-      }
+      hint={<>Clicks open where you pick below. {modifierKeyLabel}-click: system browser. Shift-click: ADE.</>}
       actions={<SavedFlash state={flash.state} />}
     >
       <div role="radiogroup" aria-label="Open links" className="ade-modern-choices" style={{ opacity: busy ? 0.7 : 1 }}>

@@ -969,7 +969,7 @@ function InlineRow({ icon, children }: { icon: ReactNode; children: ReactNode })
         color: COLORS.textSecondary,
       }}
     >
-      <span style={{ color: COLORS.textMuted }}>{icon}</span>
+      <span className="shrink-0" style={{ color: COLORS.textMuted }}>{icon}</span>
       <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
     </div>
   );
@@ -978,7 +978,7 @@ function InlineRow({ icon, children }: { icon: ReactNode; children: ReactNode })
 function Timestamp({ ts }: { ts: string }) {
   return (
     <span
-      className="ml-auto text-[10px]"
+      className="ml-auto shrink-0 whitespace-nowrap text-[10px]"
       style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
     >
       {relativeWhen(ts)}
@@ -1020,7 +1020,7 @@ function reviewStateLabel(state: string): string {
 // Past-tense summary used for the compact (bodyless) review row, matching
 // GitHub's "X approved these changes" / "X reviewed" timeline lines.
 function reviewActionLabel(state: string): string {
-  if (state === "approved") return "approved these changes";
+  if (state === "approved") return "approved";
   if (state === "changes_requested") return "requested changes";
   if (state === "dismissed") return "dismissed their review";
   return "reviewed";
@@ -1054,8 +1054,9 @@ function PrReviewCard({
     return (
       <InlineRow icon={reviewStateIcon(state)}>
         <PrUserAvatar user={{ login: author ?? "reviewer", avatarUrl: avatarUrl ?? null }} size={18} />
-        <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{author ?? "reviewer"}</span>
-        <span style={{ color: COLORS.textSecondary }}>{reviewActionLabel(state)}</span>
+        {/* One line: the login gives way first, the action and time stay whole. */}
+        <span className="min-w-0 truncate" style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{author ?? "reviewer"}</span>
+        <span className="shrink-0" style={{ color: COLORS.textSecondary }}>{reviewActionLabel(state)}</span>
         <Timestamp ts={timestamp} />
       </InlineRow>
     );

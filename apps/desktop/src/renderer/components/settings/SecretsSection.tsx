@@ -513,7 +513,7 @@ export function SecretsSection() {
             data-mono="true"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="STRIPE_API_KEY"
+            placeholder="MY_API_KEY"
             aria-label="Secret name"
             autoCapitalize="off"
             autoCorrect="off"

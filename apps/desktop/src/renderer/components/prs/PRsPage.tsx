@@ -137,6 +137,7 @@ function PRsPageInner({ active }: { active: boolean }) {
   const hasProjectSidebar = useHasProjectSidebar();
   const [listHost, setListHost] = React.useState<HTMLElement | null>(null);
   const lastRouteLocationKeyRef = React.useRef<string | null>(null);
+  const lastAppliedSelectionKeyRef = React.useRef<string | null>(null);
   const [selectedPrTarget, setSelectedPrTarget] = React.useState<PrRouteSelectionTarget | null>(() => {
     try {
       return prRouteSelectionTarget(parsePrsRouteState({
@@ -241,7 +242,12 @@ function PRsPageInner({ active }: { active: boolean }) {
           routeItemId: routeState.laneId,
         });
 
-        setActiveTab(resolved.activeTab);
+        // Only a new location moves the surface. This effect also re-runs when
+        // the PR list or workflow data reloads, and switching surfaces is what
+        // triggers that reload: re-applying the not-yet-updated URL then put
+        // the previous surface back, and the two bounced forever (Workflows
+        // never stayed selected).
+        if (locationChanged) setActiveTab(resolved.activeTab);
 
         if (!resolved.isWorkflowRoute) {
           const routeTarget = prRouteSelectionTarget(routeState);
@@ -261,7 +267,14 @@ function PRsPageInner({ active }: { active: boolean }) {
           )
             ? routeState.prId
             : null;
-          if (hasExplicitPrSelection || locationChanged) {
+          // Re-applied only when the URL or what it resolves to changes (the
+          // ADE row arriving after load). A plain reload of the PR list must
+          // not put the URL's previous PR back over a row the user just picked
+          // (the list then highlighted one PR while the detail showed another).
+          const selectionKey = `${locationKey}|${localRouteId ?? prNumberMatch ?? ""}`;
+          const selectionChanged = lastAppliedSelectionKeyRef.current !== selectionKey;
+          lastAppliedSelectionKeyRef.current = selectionKey;
+          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
             // A coordinate route is still valid without an ADE row. Keep the
             // route target alive, but only hand a local id to PrsContext once
             // that row is actually present.
@@ -270,10 +283,10 @@ function PRsPageInner({ active }: { active: boolean }) {
               prRouteTargetsEqual(previous, routeTarget) ? previous : routeTarget
             ));
           }
-          if (hasExplicitPrSelection || locationChanged || routeState.detailTab) {
+          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
             setSelectedDetailTab(routeState.detailTab);
           }
-          if (hasExplicitPrSelection || locationChanged || routeState.githubSort) {
+          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
             setGithubSort(routeState.githubSort);
           }
         } else {

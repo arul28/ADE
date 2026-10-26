@@ -121,10 +121,13 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
 
   if (items.length === 0) {
     return (
-      <div className="ade-welcome-empty">
-        {availability?.state === "signed_out"
-          ? "Nothing running on this machine. Sign in to include your other machines."
-          : "Nothing running right now."}
+      // Centred and muted, like every other empty card.
+      <div className="ade-home-empty">
+        <span>
+          {availability?.state === "signed_out"
+            ? "Nothing running here · sign in to see other machines"
+            : "Nothing running right now"}
+        </span>
       </div>
     );
   }

@@ -208,8 +208,9 @@ function devicePresenceTitle(devicesOpen: NonNullable<LaneSummary["devicesOpen"]
 
 /**
  * One lane in the sidebar list, drawn like a lane card in the Work list.
- * Line one: the lane glyph and name in the lane's color, then live agents and
- * the time since anything happened. Line two, muted: branch, PR, git hints.
+ * Line one: the lane glyph and name in the lane's color, then live agents, the
+ * PR chip and the time since anything happened. Line two, muted, only when it
+ * has something: a branch that differs from the name, git hints, chips.
  */
 export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSidebarRowProps) {
   const {
@@ -241,6 +242,14 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const deleting = deleteStatusLabel != null;
   const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
+  // The branch is context; when it only repeats the lane name it is noise.
+  const showBranch = Boolean(branch) && branch !== lane.name;
+  const hasRebaseMark = autoRebaseStatus?.state === "rebaseConflict"
+    || autoRebaseStatus?.state === "rebaseFailed"
+    || (rebaseSuggestion != null && lane.laneType !== "primary");
+  // Nothing left for line two: the row is one line rather than an empty band.
+  const secondLineEmpty = !deleting && !creating && !parentHint && !showBranch && !hasRebaseMark
+    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !machineChip;
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
   // The lane color lives on the name only, as in the Work list.
@@ -335,6 +344,9 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               needsYouReason={needsYouReason}
               onOpenAgent={onOpenAgent}
             />
+            {/* The PR chip rides on line 1 beside the time, so a lane whose only
+                extra is its PR keeps the same one-line height as its neighbours. */}
+            {prs && prs.length > 0 ? <LaneSidebarPrChip prs={prs} onOpenPr={onOpenPr} /> : null}
             {lastActivityAt ? (
               <span className="shrink-0 text-[11px] tabular-nums leading-4 text-muted-fg/60">
                 {relativeTimeCompact(lastActivityAt)}
@@ -344,6 +356,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         )}
       </div>
 
+      {secondLineEmpty ? null : (
       <div className="flex h-4 min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-fg/70">
         {deleting ? (
           <>
@@ -376,10 +389,12 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 ↳ {parentHint}
               </span>
             ) : null}
-            <span className="flex min-w-0 shrink items-center gap-1" title={branch}>
-              <BranchIcon size={11} className="opacity-60" />
-              <span className="min-w-0 truncate">{branch}</span>
-            </span>
+            {showBranch ? (
+              <span className="flex min-w-0 shrink items-center gap-1" title={branch}>
+                <BranchIcon size={11} className="opacity-60" />
+                <span className="min-w-0 truncate">{branch}</span>
+              </span>
+            ) : null}
             <span className="min-w-0 flex-1" />
             <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} foreign={foreign} />
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
@@ -392,11 +407,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 {devicesOpen.length > 1 ? devicesOpen.length : null}
               </span>
             ) : null}
-            {prs && prs.length > 0 ? <LaneSidebarPrChip prs={prs} onOpenPr={onOpenPr} /> : null}
             {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>
+      )}
     </div>
   );
 });

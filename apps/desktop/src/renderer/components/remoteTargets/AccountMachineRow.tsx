@@ -290,6 +290,11 @@ export function AccountMachineRow({
                 <PencilSimple size={15} />
               </button>
             ) : null}
+            {!renaming ? (
+              // The saved-machine rows end in [edit][delete]; this empty delete
+              // slot keeps every row's pencil in the same column (gap 6 vs 2).
+              <span aria-hidden style={{ width: 24, flexShrink: 0, order: 2 }} />
+            ) : null}
             {machine.customName && !renaming ? (
               <button
                 type="button"

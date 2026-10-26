@@ -101,7 +101,7 @@ export const WORK_SURFACE_HEADER_ACTION_BASE =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 
 export const WORK_SURFACE_HEADER_ACTION_IDLE =
-  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
+  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/70 hover:border-fg/[0.10] hover:text-fg/85 disabled:opacity-40 disabled:hover:text-muted-fg/70";
 
 /** Canonical 32px title rail shared by chat and CLI work surfaces. */
 export const WORK_SURFACE_HEADER_CLASS = "ade-work-surface-header flex h-8 items-center px-2";

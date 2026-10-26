@@ -8,11 +8,11 @@
 .ade-nt-columns {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 44px;
+  gap: 36px;
 }
-.ade-nt-col { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-nt-col { display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 @container modernpage (min-width: 900px) {
-  .ade-nt-columns { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 44px 32px; }
+  .ade-nt-columns { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 36px 32px; }
 }
 
 .ade-nt-note {
@@ -30,7 +30,7 @@
 .ade-nt-note + .ade-nt-note { margin-top: -32px; }
 
 .ade-nt-summary { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--kit-text-3); }
-.ade-nt-summary b { font-family: var(--font-mono); font-weight: 500; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+.ade-nt-summary b { font-weight: 500; color: var(--kit-text-2); font-variant-numeric: tabular-nums; }
 
 /* ── event matrix ───────────────────────────────────────────────────── */
 
@@ -44,7 +44,7 @@
 }
 
 .ade-nt-matrix {
-  --nt-col: 76px;
+  --nt-col: 66px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -65,7 +65,7 @@
   padding: 0 8px 0 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
 }
-.ade-nt-mhead .kit-eyebrow { text-align: center; letter-spacing: 0.16em; }
+.ade-nt-mhead .kit-eyebrow { text-align: center; letter-spacing: 0.08em; }
 .ade-nt-mhead .kit-eyebrow:first-child { text-align: left; color: var(--kit-text-2); letter-spacing: 0.22em; }
 .ade-nt-mrow {
   min-height: 52px;

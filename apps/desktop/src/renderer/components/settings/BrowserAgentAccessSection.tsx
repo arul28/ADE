@@ -57,7 +57,7 @@ export function BrowserAgentAccessSection() {
       group="ADE browser"
       anchor="browser-agent-access"
       title={BROWSER_AGENT_ACCESS_TITLE}
-      hint="The ADE browser keeps one signed-in profile for this computer. An agent that uses it can act as you on any site you are logged in to."
+      hint="An agent using it can act as you on any site you are signed in to."
     >
       <ModernRows>
         <ModernRow

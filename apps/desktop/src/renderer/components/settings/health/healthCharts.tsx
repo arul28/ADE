@@ -39,7 +39,7 @@ export function StackedBreakdown({ series, ariaLabel }: { series: ChartSeries[];
   const total = series.reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
   if (series.length === 0 || total <= 0) return null;
   return (
-    <div className="usage-split" role="group" aria-label={ariaLabel}>
+    <div className="usage-split ade-health-split" role="group" aria-label={ariaLabel}>
       <div
         className="usage-split-bar ade-health-bar"
         role="img"
@@ -121,18 +121,20 @@ export function FreeSpaceMeter({
   totalBytes: number;
   level: "warn" | "crit" | undefined;
 }) {
-  const usedPct = totalBytes > 0 ? Math.min(100, Math.max(0, ((totalBytes - freeBytes) / totalBytes) * 100)) : 0;
+  // Every label beside this meter names free space ("68 GB free"), so the
+  // fill is the free share: a short amber bar reads as "running out".
+  const freePct = totalBytes > 0 ? Math.min(100, Math.max(0, (freeBytes / totalBytes) * 100)) : 0;
   return (
     <div
       className="kit-meter"
       data-level={level}
       role="meter"
-      aria-label="Disk used"
+      aria-label="Disk free"
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={Math.round(usedPct)}
+      aria-valuenow={Math.round(freePct)}
     >
-      <span style={{ width: `${usedPct}%` }} />
+      <span style={{ width: `${freePct}%` }} />
     </div>
   );
 }

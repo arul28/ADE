@@ -307,10 +307,15 @@ export default function ContributionSkyline({
         <dl className="ade-skyline-stats" data-count={statCount}>
           {statBlocks.slice(0, statCount || 4).map((block, index) => (
             <div key={block.label} className="ade-skyline-stat" data-lead={index === 0 || undefined}>
-              <dt className="kit-eyebrow" title={block.label}>{side && index > 0 ? block.short : block.label}</dt>
+              {/* Same labels, case and order as the 3D view's corner stats. */}
+              <dt title={block.label}>{block.label}</dt>
               <dd>
                 <span className="ade-skyline-stat-value kit-num">{block.value}</span>
-                <span className="ade-skyline-stat-unit">{block.unit}</span>
+                {/* Beside the side column's small values only day counts keep a
+                    unit; "37 contributions" wrapped there, and the label says it. */}
+                {side && index > 0 && block.unit !== "day" && block.unit !== "days" ? null : (
+                  <span className="ade-skyline-stat-unit">{block.unit}</span>
+                )}
               </dd>
             </div>
           ))}
@@ -328,7 +333,7 @@ export default function ContributionSkyline({
         {corners ? (
           <>
             <div ref={cornerRef} className="ade-skyline-corner" data-at="side" aria-hidden={!is3d} data-shown={is3d || undefined} style={{ transitionDelay: is3d ? `${Math.round(duration * 0.55)}ms` : "0ms" }}>
-              {(stageBox.height >= 300 ? [0, 2, 3, 1] : [0, 1, 2]).map((index) => (
+              {(stageBox.height >= 300 ? [0, 1, 2, 3] : [0, 1, 2]).map((index) => (
                 <CornerStat key={statBlocks[index]!.label} block={statBlocks[index]!} size={sideSize} />
               ))}
             </div>

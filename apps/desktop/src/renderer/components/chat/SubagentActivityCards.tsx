@@ -68,11 +68,12 @@ function SubagentCardGlyph({ agentKey, status }: { agentKey: string; status: Sub
           aria-label={badge.label}
           role="img"
           className={cn(
-            "absolute -bottom-1 -right-1 flex h-[14px] w-[14px] items-center justify-center rounded-full ring-2 ring-[color:var(--color-bg,#0c0b10)]",
+            "absolute -bottom-1 -right-1 flex items-center justify-center rounded-full ring-2 ring-[color:var(--color-bg,#0c0b10)]",
+            status === "failed" ? "h-[16px] w-[16px]" : "h-[14px] w-[14px]",
             badge.className,
           )}
         >
-          <badge.Icon size={8} weight="bold" aria-hidden />
+          <badge.Icon size={status === "failed" ? 10 : 8} weight="bold" aria-hidden />
         </span>
       ) : null}
     </span>
@@ -99,7 +100,7 @@ const SUBAGENT_STATUS_BADGE: Record<Exclude<SubagentCardStatus, "running">, {
  * unknown/unresolved session. Renders nothing for a blank provider so a card
  * never grows an empty mark.
  */
-function SubagentProviderMark({ provider }: { provider?: string | null }) {
+function SubagentProviderMark({ provider, size = 20 }: { provider?: string | null; size?: number }) {
   const normalized = provider?.trim();
   if (!normalized) return null;
   return (
@@ -108,7 +109,7 @@ function SubagentProviderMark({ provider }: { provider?: string | null }) {
       data-subagent-provider={normalized}
       title={providerDisplayLabel(normalized, normalized)}
     >
-      <ToolLogo toolType={chatToolTypeForProvider(normalized)} size={20} className="block shrink-0 opacity-75" />
+      <ToolLogo toolType={chatToolTypeForProvider(normalized)} size={size} className="block shrink-0 opacity-75" />
     </span>
   );
 }
@@ -123,7 +124,6 @@ export const SUBAGENT_CARD_CHROME = "rounded-[calc(var(--chat-radius-card)-6px)]
 
 export const CARD_META_TEXT = "font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums";
 /** The card's status word and its one overview line. */
-const SUBAGENT_STATUS_WORD_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]";
 const SUBAGENT_OVERVIEW_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*11/14)]";
 
 /**
@@ -220,6 +220,9 @@ function SubagentCardFrame({
       ) : (
         <SubagentCardGlyph agentKey={agentKey} status={status} />
       )}
+      {/* Line 1 is the name, edge to edge. Line 2 is who runs it and what it
+          is doing, then the controls. State lives on the glyph (spinning ring,
+          check, cross), so no status word competes with the name. */}
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-baseline gap-2">
           <span
@@ -237,45 +240,44 @@ function SubagentCardFrame({
               workflow
             </span>
           ) : null}
-          {/* Only the states the glyph badge cannot say on its own: a spinner
-              reads as "still going" and a red cross as "this one broke"; a
-              settled success keeps the name's width instead. */}
-          {status === "running" || status === "failed" ? (
-            <span className={cn("shrink-0", SUBAGENT_STATUS_WORD_TEXT, SUBAGENT_STATUS_WORD_TONE[status])}>
-              {statusWord}
-            </span>
-          ) : null}
+          <span className="sr-only">{statusWord}</span>
         </div>
-        {overview ? (
-          <div
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+          <SubagentProviderMark provider={provider} size={14} />
+          <span
             className={cn(
-              "mt-0.5 min-w-0 truncate",
+              "min-w-0 flex-1 truncate",
               SUBAGENT_OVERVIEW_TEXT,
               overviewTone === "crit" ? "text-rose-200/85" : "text-fg/50",
             )}
             data-subagent-overview
           >
-            {overview}
-          </div>
-        ) : null}
-      </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        {/* A narrow card drops the counts (they stay in the hover title), so
-            the agent's name is never squeezed to nothing. */}
-        {metrics ? <span className={cn("hidden whitespace-nowrap text-fg/40 @[19rem]:inline", CARD_META_TEXT)}>{metrics}</span> : null}
-        <SubagentProviderMark provider={provider} />
-        {action}
-        {open ? (
-          <button
-            type="button"
-            onClick={open}
-            aria-label={openLabel}
-            title={openTitle}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg/35 transition-colors hover:bg-fg/[0.06] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--chat-accent)]"
-          >
-            <CaretRight size={12} weight="bold" aria-hidden />
-          </button>
-        ) : null}
+            {overview ?? ""}
+          </span>
+          {metrics ? (
+            <span
+              className={cn(
+                "hidden shrink-0 whitespace-nowrap @[17rem]:inline",
+                CARD_META_TEXT,
+                status === "failed" ? "text-rose-300/85" : "text-fg/40",
+              )}
+            >
+              {metrics}
+            </span>
+          ) : null}
+          {action}
+          {open ? (
+            <button
+              type="button"
+              onClick={open}
+              aria-label={openLabel}
+              title={openTitle}
+              className="-my-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-fg/35 transition-colors hover:bg-fg/[0.06] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--chat-accent)]"
+            >
+              <CaretRight size={11} weight="bold" aria-hidden />
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -378,7 +380,7 @@ export function SubagentSpawnCard({
         if (!taskId) return;
         onStop(taskId);
       }}
-      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/40 transition-colors hover:bg-rose-500/10 hover:text-rose-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/40"
+      className="-my-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-fg/40 transition-colors hover:bg-rose-500/10 hover:text-rose-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-rose-400/40"
     >
       <Square size={10} weight="fill" aria-hidden />
     </button>

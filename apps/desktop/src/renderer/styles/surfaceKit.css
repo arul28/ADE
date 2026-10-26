@@ -329,3 +329,40 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-input:focus { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
 .kit-input:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent); outline-offset: 1px; }
 .kit-input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--kit-crit) 60%, transparent); }
+
+/* ── Keyboard focus: one visible ring everywhere ─────────────────────────
+   A 2px accent ring with a 2px offset on any control reached by keyboard.
+   `:where()` keeps it at zero specificity, so a control that draws its own
+   focus treatment (an inset ring, a fill) keeps it; everything else that
+   used to show nothing on Tab now shows this. */
+:where(button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"], [role="radio"], [role="option"], [role="switch"]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+/* The Work sidebar's List / Board toggle sets `outline: none` on its items. */
+.ade-work-segmented .ade-work-segmented-item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+/* Selected is a step stronger than hover, so hovering the other half never
+   makes the active view ambiguous: hover is a faint fill, selected a fill,
+   a hairline edge and the accent on its glyph. */
+.ade-work-segmented .ade-work-segmented-item[data-active="true"] {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-fg) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+
+/* The prompt box shows it has the caret: its whole edge takes the accent,
+   not just a hairline inside it. An outline, so a provider glow (inline
+   box-shadow) is left alone. */
+[data-chat-composer-mode]:has(:is(textarea, [contenteditable="true"]):focus) {
+  outline: 1.5px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  outline-offset: 0;
+}
+
+/* The drafts button holds its slot while empty so icons never jump as you
+   type; in a narrow composer that slot is worth more as room for labels. */
+@container chat-composer (max-width: 560px) {
+  [data-composer-drafts-idle] { display: none; }
+}

@@ -219,7 +219,7 @@ export function runBoardColumn(phase: AttentionPhase): WorkBoardColumn {
  */
 export function rosterBoardColumn(
   status: SyncRosterChatStatus,
-  lanePrWaitingReason: "ci" | "review" | null,
+  _lanePrWaitingReason: "ci" | "review" | null,
   nextWakeAt: string | null = null,
   nowMs: number = Date.now(),
 ): { boardColumn: WorkBoardColumn; waitingReason: WorkBoardWaitingReason | null } {
@@ -228,9 +228,10 @@ export function rosterBoardColumn(
     case "failed":
       return { boardColumn: "needs_you", waitingReason: null };
     case "running":
-      return lanePrWaitingReason
-        ? { boardColumn: "waiting", waitingReason: lanePrWaitingReason }
-        : { boardColumn: "working", waitingReason: null };
+      // A live turn is Working, whatever its lane's PR is doing — the same
+      // rule as the desktop Work board. A PR in CI or review no longer parks
+      // a running chat in Waiting.
+      return { boardColumn: "working", waitingReason: null };
     case "idle":
       return scheduledWakeState(nextWakeAt, nowMs) === "pending"
         ? { boardColumn: "waiting", waitingReason: "scheduled" }

@@ -789,7 +789,7 @@ enum ActivityPreviewData {
       item("c1", title: "Should I force-push the rebase?", phase: .needsYou, column: "needs_you", minutesAgo: 2),
       item("c2", title: "Credential store hardening", phase: .failed, column: "needs_you", minutesAgo: 9),
       item("c3", title: "Explore sync transport", phase: .running, column: "working", minutesAgo: 1),
-      item("c4", title: "Fix the sync retry", phase: .running, column: "waiting", reason: "ci", minutesAgo: 3),
+      item("c4", title: "Fix the sync retry", phase: .running, column: "working", minutesAgo: 3),
       item("c5", title: "Rewrite the pairing guide", phase: .stale, tier: "idle", column: "waiting", reason: "snoozed", minutesAgo: 30),
       item("c6", title: "Release notes for 1.4", phase: .completed, tier: "idle", column: "done", minutesAgo: 120),
       item("c7", title: "Widget freshness tag", phase: .completed, tier: "idle", column: "done", minutesAgo: 600),

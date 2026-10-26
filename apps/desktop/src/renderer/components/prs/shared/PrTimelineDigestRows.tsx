@@ -321,7 +321,8 @@ export function PushDivider({
       {push.commitCount > 1 ? <span className="shrink-0">· {push.commitCount} commits</span> : null}
       {push.forcePushed ? <span className="shrink-0">· force-pushed</span> : null}
       <span className="shrink-0">· {relativeWhen(push.at)}</span>
-      <span aria-hidden className="h-px min-w-6 flex-1" style={{ background: COLORS.borderMuted }} />
+      {/* The rule only fills spare width; it never takes it from the subject. */}
+      <span aria-hidden className="h-px min-w-0 flex-1" style={{ background: COLORS.borderMuted }} />
     </div>
   );
 }

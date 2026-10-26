@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Trash } from "@phosphor-icons/react";
 import { useLatestCallback } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
@@ -696,9 +697,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
       const confirmed = await confirmDialog({
-        title: `Delete "${label}"?`,
-        message: "This permanently removes the saved chat history from ADE.",
-        confirmLabel: "Delete",
+        title: "Delete chat?",
+        // The chat's own title on one truncated line; the hint stays one line too.
+        message: (
+          <>
+            <span className="line-clamp-2 break-words font-medium text-fg/80" title={label}>{label}</span>
+            <span className="block whitespace-nowrap">Its saved history is removed for good.</span>
+          </>
+        ),
+        icon: <Trash size={16} weight="duotone" />,
+        confirmLabel: "Delete chat",
+        // Wide enough that a typical long chat title shows in full.
+        size: "md",
         destructive: true,
       });
       if (!confirmed) return;

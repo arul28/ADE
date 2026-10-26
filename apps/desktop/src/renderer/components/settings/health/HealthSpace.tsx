@@ -202,7 +202,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
               data-variant="ghost"
             >
               <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
-              {refreshing ? "Measuring" : "Measure again"}
+              {refreshing ? "Checking" : "Check again"}
             </button>
             {canCleanUp ? (
               <button
@@ -269,7 +269,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 <span className="ade-modern-stat-value">
                   <span className="kit-stat kit-num">{formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)}</span>
                 </span>
-                <span className="ade-modern-stat-sub">This project&apos;s lanes, chats, proof, caches and database, plus ADE&apos;s temporary files on this machine</span>
+                <span className="ade-modern-stat-sub" title="This project's lanes, chats, proof, caches and database, plus ADE's temporary files on this machine">Lanes, chats, proof, caches and database.</span>
               </div>
               <div className="ade-modern-stat">
                 <span className="kit-eyebrow">Database</span>
@@ -323,9 +323,10 @@ export function HealthSpace({ data }: { data: HealthData }) {
             )) : (
               <div className="ade-health-plan-row"><span className="ade-modern-muted">No files need removing right now.</span></div>
             )}
+            {/* The total sits right under the rows it adds up. */}
             {plan.rows.length > 0 ? (
               <div className="ade-health-plan-row" data-total="true">
-                <span>Files removed</span>
+                <span>Files to remove</span>
                 <span className="kit-num">{plan.partial ? "≥ " : ""}{formatBytes(plan.estimatedBytes)}</span>
               </div>
             ) : null}
@@ -345,7 +346,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
             onClick={() => setDetailsOpen((value) => !value)}
           >
             <CaretDown size={12} weight="bold" className="ade-health-caret" data-open={detailsOpen || undefined} />
-            Details: lane folders, leftovers and what each kind of data holds
+            Storage details
           </button>
           {detailsOpen ? (
             <div className="ade-modern-sections" style={{ gap: 28 }}>
