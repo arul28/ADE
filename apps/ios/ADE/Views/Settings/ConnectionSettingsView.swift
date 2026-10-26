@@ -477,6 +477,7 @@ struct SettingsConnectionSnapshot: Equatable {
   var canPairWithPin = false
   var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
   var hostCompatibilityMissingActions: [String] = []
+  var hostStallNotice: SyncHostStallNotice?
 }
 
 struct SettingsPairingSnapshot: Equatable {
@@ -624,7 +625,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         accountConnectStageLabel: syncService.accountConnectStageLabel,
         canPairWithPin: syncService.accountPairingPinFallbackHost != nil,
         hostCompatibilityMode: syncService.hostCompatibilityMode,
-        hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions
+        hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions,
+        hostStallNotice: syncService.hostStallNotice
       )
     )
 

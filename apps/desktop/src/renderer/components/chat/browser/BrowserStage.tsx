@@ -406,11 +406,21 @@ export function BrowserStage({
                     What is left is what the launchpad is actually for: the
                     addresses this machine already has.
                   */
-                  <>
-                    {launchpadGroups.map((group) => (
-                      <LaunchpadGroup key={group.key} group={group} />
-                    ))}
-                  </>
+                  launchpadGroups.length > 0 ? (
+                    <>
+                      {launchpadGroups.map((group) => (
+                        <LaunchpadGroup key={group.key} group={group} />
+                      ))}
+                    </>
+                  ) : (
+                    // Nothing running on this machine to offer yet: say where
+                    // to type, so a blank pane never reads as broken.
+                    <div data-testid="browser-launchpad-empty" className="flex flex-col items-center gap-1.5 text-center">
+                      <Globe size={22} weight="light" className="text-muted-fg/45" aria-hidden />
+                      <div className="text-[13px] font-medium text-fg/80">No page open</div>
+                      <div className="whitespace-nowrap text-[11.5px] text-muted-fg/65">Type a URL or a localhost port above.</div>
+                    </div>
+                  )
                 ) : (
                   <div className="flex flex-col gap-1.5 text-center">
                     <div className="text-[13px] font-medium text-fg/80">ADE browser unavailable</div>

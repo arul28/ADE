@@ -79,7 +79,7 @@ import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
-import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncBrowserTabCloser, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
@@ -184,6 +184,8 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** The desktop browser bridge, for `workTools.closeBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabCloser | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
   /** Webhook automations for remote surfaces (read-only). */
@@ -990,6 +992,7 @@ export function createSyncService(args: SyncServiceArgs) {
     getJiraService: args.getJiraService,
     getExternalSessionsService: args.getExternalSessionsService,
     workToolsStateService: args.workToolsStateService,
+    builtInBrowserService: args.builtInBrowserService ?? null,
     // `computerUse.listArtifacts` registers only with a broker. Without it no
     // host answered it, so phones and the web client could not list the proof
     // of a chat in a project the phone had not opened.
@@ -1212,6 +1215,7 @@ export function createSyncService(args: SyncServiceArgs) {
       // without `workTools.*`, which is a mobile capability disappearing with no
       // error anywhere.
       workToolsStateService: args.workToolsStateService,
+      builtInBrowserService: args.builtInBrowserService ?? null,
       macDesktopService,
       getWebhookAutomations: args.getWebhookAutomations,
       macDesktopSyncStream,

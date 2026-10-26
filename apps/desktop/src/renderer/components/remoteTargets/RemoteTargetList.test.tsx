@@ -469,7 +469,9 @@ describe("RemoteTargetList", () => {
         manual: true,
       }),
     );
-    expect(screen.getByText(/Not connected · last seen/)).toBeTruthy();
+    // The hollow dot and the section already say "not connected", so the line
+    // only carries when the machine was last seen.
+    expect(screen.getByText(/^Last seen /)).toBeTruthy();
   });
 
   it("locks only the connecting row, and Cancel ends that attempt without an error", async () => {

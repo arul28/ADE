@@ -1,4 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
+import { PaneTooltip } from "../ui/PaneTooltip";
+import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
 import { createPortal } from "react-dom";
 import { Moon } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
@@ -92,14 +94,17 @@ export function SessionSnoozeControl({
 
   return (
     <>
+      {/* A drawn tooltip, not a native title: the row's own detail card stays
+          away while the pointer is on this action. */}
+      <PaneTooltip label={title} side="bottom" disabled={anchor != null} className="self-stretch">
       <button
+        {...rowHoverSuppressProps}
         ref={buttonRef}
         type="button"
         data-testid="session-snooze-button"
         aria-label={label}
         aria-haspopup={snoozed ? undefined : "menu"}
         aria-expanded={snoozed ? undefined : anchor != null}
-        title={title}
         className={cn(
           "inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md bg-transparent text-muted-fg/70 transition-colors",
           // Same hover pill as `SESSION_ACTION_BUTTON_CLASS` in
@@ -120,6 +125,7 @@ export function SessionSnoozeControl({
       >
         <Moon size={compact ? 11 : 13} weight={snoozed ? "fill" : "regular"} aria-hidden />
       </button>
+      </PaneTooltip>
 
       {/* Portalled: the menu must outlive the row's hover state. Rendered in
           place it would sit inside the status slot's opacity/position swap and

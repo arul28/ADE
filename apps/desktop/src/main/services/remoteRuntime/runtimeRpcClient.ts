@@ -95,6 +95,7 @@ export class RuntimeRpcClient {
   private readonly notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
   private readonly disconnectCallbacks = new Set<(error: Error) => void>();
   private closedError: Error | null = null;
+  private lastInboundAtMs: number | null = null;
 
   constructor(
     private readonly transport: RuntimeRpcTransport,
@@ -223,8 +224,18 @@ export class RuntimeRpcClient {
     return this.closedError != null;
   }
 
+  /**
+   * When the other end last sent anything (a reply, a notification), or null
+   * before it ever has. Bytes arriving prove the connection carries traffic,
+   * however long one particular reply is taking.
+   */
+  lastInboundAt(): number | null {
+    return this.lastInboundAtMs;
+  }
+
   private onData(chunk: string): void {
     if (this.closedError) return;
+    this.lastInboundAtMs = Date.now();
     if (this.oversizedLine) {
       // An oversized line is being discarded as it streams. Drop chunks until
       // its terminating newline, then resume normal parsing on the remainder.

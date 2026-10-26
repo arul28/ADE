@@ -1,6 +1,6 @@
 /*
  * Settings › Appearance. Choices on the left, a sticky live preview on the
- * right. One rhythm: 44px between sections, 14px from a heading to its
+ * right. One rhythm: 36px between sections, 14px from a heading to its
  * options, 12px between options. Every colour is a theme token.
  */
 
@@ -27,7 +27,7 @@
   container: apmain / inline-size;
   display: flex;
   flex-direction: column;
-  gap: 44px;
+  gap: 36px;
   min-width: 0;
 }
 

@@ -580,7 +580,7 @@ export function HomeWidgetGrid({
             onClick={() => setEditing(true)}
           >
             <EyeSlash size={12} aria-hidden />
-            <span>{hidden.length} hidden — enlarge the window or edit</span>
+            <span>{hidden.length} hidden · <u className="ade-home-hidden-link">Edit layout</u></span>
           </button>
         ) : null}
       </div>

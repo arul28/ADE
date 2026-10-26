@@ -1615,6 +1615,58 @@ export function createPrService({
   const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
   const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
   const linkPrToChatSession = chatLinks.linkPrToChatSession;
+  /**
+   * Link a PR to a chat and then to every chat in its spawn tree, so the
+   * chat that started a subagent shows the PR the subagent opened (and the
+   * other way round). The family only follows a link that was allowed: it
+   * comes from the chat that was just linked, never from the caller. Family
+   * members may sit on other lanes; a spawn tree is one piece of work.
+   */
+  const linkPrToChatFamily = (
+    linkArgs: Parameters<typeof linkPrToChatSession>[0],
+    options: { emit?: boolean } = {},
+  ): { ok: boolean; addedFamilySessionIds: string[] } => {
+    if (!linkPrToChatSession(linkArgs)) return { ok: false, addedFamilySessionIds: [] };
+    const prId = linkArgs.prId;
+    const sessionId = resolveCanonicalChatSessionId(String(linkArgs.sessionId ?? "")) ?? "";
+    let relatives: string[] = [];
+    try {
+      relatives = sessionId ? agentChatService?.getChatFamilySessionIds?.(sessionId) ?? [] : [];
+    } catch (error) {
+      logger.warn("prs.chat_family_lookup_failed", { prId, sessionId, error: getErrorMessage(error) });
+    }
+    /**
+     * Whether this chat already had the edge, read the same way
+     * `linkPrToChatSession` does. A caller that rolls a partial link back may
+     * only remove what this call created; an unreadable answer counts as
+     * present, so a rollback cannot delete someone else's edge.
+     */
+    const alreadyLinked = (relativeId: string): boolean => {
+      try {
+        return Boolean(db.get(
+          `select 1 as present from pull_request_chat_sessions
+            where project_id = ? and pr_id = ? and session_id = ? limit 1`,
+          [projectId, prId, relativeId],
+        ));
+      } catch (error) {
+        logger.warn("prs.chat_family_edge_read_failed", { prId, sessionId: relativeId, error: getErrorMessage(error) });
+        return true;
+      }
+    };
+    const addedFamilySessionIds: string[] = [];
+    for (const relativeId of relatives) {
+      // A chat that unlinked this PR keeps it unlinked.
+      if (hasChatSessionDismissal(prId, relativeId)) continue;
+      const existed = alreadyLinked(relativeId);
+      if (linkPrToChatSession({ prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true }) && !existed) {
+        addedFamilySessionIds.push(relativeId);
+      }
+    }
+    // The relatives' lists changed even when this PR's own summary did not, so
+    // a caller that relies on its own refresh to emit would leave them stale.
+    if (options.emit !== false && addedFamilySessionIds.length > 0) emitPrsUpdated();
+    return { ok: true, addedFamilySessionIds };
+  };
   const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
   const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
   const pendingAgentStackAttaches = chatLinks.pendingAgentStackAttaches;
@@ -3263,7 +3315,7 @@ export function createPrService({
       return;
     }
     for (const session of sessions) {
-      linkPrToChatSession({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
+      linkPrToChatFamily({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
     }
   };
 
@@ -7619,7 +7671,7 @@ export function createPrService({
     // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
     // internal parent-chat stack attach, not an arbitrary agent-supplied
     // session id on create.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId });
     if (args.source === "agent") {
       chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
       attachNewStackLayerToParentChats({ prId, laneId: lane.id });
@@ -7774,7 +7826,7 @@ export function createPrService({
     // Edges from other lanes survive: one PR can legitimately be referenced by
     // several chats. Cross-lane links are allowed for GitHub stack members or
     // an explicit pick.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     if (headMatchesLane) {
       await publishLinearPrCardsForLane({
@@ -12503,14 +12555,40 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return { ok: false };
-      const ok = linkPrToChatSession({
+      const ok = linkPrToChatFamily({
         prId: pr.id,
         laneId: pr.lane_id,
         sessionId: args.sessionId,
         allowCrossLane: args.allowCrossLane === true,
-      });
+      }).ok;
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * A chat spawned by another chat shows the open PRs its parent has. An
+     * internal seam for agentChatService's spawn path, not a renderer action.
+     */
+    linkChatToParentPrs(args: { sessionId: string; parentSessionId: string }): void {
+      let rows: Array<{ id: string; lane_id: string }> = [];
+      try {
+        rows = db.all<{ id: string; lane_id: string }>(
+          `select pr.id, pr.lane_id
+             from pull_request_chat_sessions pcs
+             join pull_requests pr on pr.id = pcs.pr_id and pr.project_id = pcs.project_id
+            where pcs.project_id = ? and pcs.session_id = ?
+              and pr.${LIVE_PR_ROWS} and pr.state in ('open', 'draft')`,
+          [projectId, args.parentSessionId],
+        );
+      } catch (error) {
+        logger.warn("prs.parent_chat_prs_read_failed", { sessionId: args.sessionId, error: getErrorMessage(error) });
+        return;
+      }
+      let linked = false;
+      for (const row of rows) {
+        if (linkPrToChatSession({ prId: row.id, laneId: row.lane_id, sessionId: args.sessionId, allowCrossLane: true })) linked = true;
+      }
+      if (linked) emitPrsUpdated();
     },
 
     /**
@@ -12600,7 +12678,7 @@ export function createPrService({
           throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
         }
         // An explicit watch is an explicit link, even over an earlier unlink.
-        if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+        if (linkPrToChatFamily({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true }).ok) {
           emitPrsUpdated();
         }
         record = chatWatchStore.arm({
@@ -12652,14 +12730,15 @@ export function createPrService({
           .map((sibling) => sibling.prId),
       );
       const linkedIds: string[] = [];
+      const linkedFamilyEdges: Array<{ prId: string; sessionId: string }> = [];
       for (const sibling of unclaimed) {
-        const ok = linkPrToChatSession({
+        const result = linkPrToChatFamily({
           prId: sibling.prId,
           laneId: sibling.laneId,
           sessionId: offer.sessionId,
           allowCrossLane: true,
-        });
-        if (!ok) {
+        }, { emit: false });
+        if (!result.ok) {
           for (const prId of linkedIds) {
             unlinkPrFromChatSession({
               prId,
@@ -12667,9 +12746,17 @@ export function createPrService({
               dismiss: restoreDismissals.has(prId),
             });
           }
+          // Family edges are new rows, never a restored unlink, so they go
+          // without a tombstone.
+          for (const edge of linkedFamilyEdges) {
+            unlinkPrFromChatSession({ ...edge, dismiss: false });
+          }
           return { ok: false, linked: 0 };
         }
         linkedIds.push(sibling.prId);
+        for (const sessionId of result.addedFamilySessionIds) {
+          linkedFamilyEdges.push({ prId: sibling.prId, sessionId });
+        }
       }
       if (linkedIds.length > 0) emitPrsUpdated();
       return { ok: true, linked: linkedIds.length };

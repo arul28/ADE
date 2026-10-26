@@ -235,6 +235,7 @@ import { hydrateBrowserTabChipsInEditor, insertBrowserTabChip } from "./composer
 import type { ChatThreadComment } from "../../../shared/threadComments";
 import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
 import { countCommentsForNextSend } from "./threadCommentsStore";
+import { PaneTooltip } from "../ui/PaneTooltip";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { VoiceDictationButton } from "./VoiceDictationButton";
@@ -897,10 +898,7 @@ function buildSlashCommands(
 
 // Clipped when it gives up width, so its label never runs over the next chip.
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0 overflow-hidden";
-// The model name is the priority control: it keeps a readable floor and only
-// shrinks after the permission/fast labels collapse and the reasoning picker
-// has given up its width.
-const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
+const COMPOSER_MODEL_TRIGGER = "ade-chat-composer-model-trigger max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 
 /**
  * Which machine this chat is executing on, next to the model and thinking-level
@@ -1451,11 +1449,11 @@ function ComposerOverflowMenu({
 
 
 const CLAUDE_MODE_OPTIONS: Array<PermissionModePickerOption<AgentChatClaudePermissionMode>> = [
-  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green", icon: "manual" },
-  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you.", tone: "amber", icon: "auto" },
-  { value: "acceptEdits", label: "Accept edits", triggerLabel: "Edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "amber", icon: "edit" },
-  { value: "plan", label: "Plan mode", triggerLabel: "Plan", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple", icon: "plan" },
-  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat.", tone: "red", icon: "full" },
+  { value: "default", label: "Manual", detail: "Asks before edits, Bash and risky tools.", tone: "green", icon: "manual" },
+  { value: "auto", label: "Auto", detail: "A safety model approves each tool call.", tone: "amber", icon: "auto" },
+  { value: "acceptEdits", label: "Accept edits", triggerLabel: "Edits", detail: "Edits auto-approved; risky actions still ask.", tone: "amber", icon: "edit" },
+  { value: "plan", label: "Plan mode", triggerLabel: "Plan", detail: "Read-only: analyze and plan.", tone: "purple", icon: "plan" },
+  { value: "bypassPermissions", label: "Bypass", detail: "Never asks for permission in this chat.", tone: "red", icon: "full" },
 ];
 
 
@@ -1532,7 +1530,7 @@ const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, P
   allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
 };
 const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
-  { value: "plan", label: "Plan", detail: "Read-only Muse turns for planning, with ADE's plan guidance.", tone: "purple", icon: "plan" },
+  { value: "plan", label: "Plan", detail: "Read-only planning with ADE's guidance.", tone: "purple", icon: "plan" },
   ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
 ];
 
@@ -1934,7 +1932,11 @@ function ActiveTurnSendButton({
             onClick={() => setMenuOpen((current) => !current)}
             className={cn(
               "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all",
-              "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white",
+              // With nothing to send the caret matches its dim send half: a
+              // bright white dropdown would outshine Stop, the one live action.
+              enabled
+                ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
+                : "border-fg/[0.06] bg-fg/[0.06] text-muted-fg/55 hover:bg-fg/[0.10] hover:text-fg/80",
             )}
           >
             <CaretDown
@@ -2058,7 +2060,7 @@ function ActiveTurnStopButton({
             aria-description={selectedCopy.label}
             onClick={onStop}
           >
-            {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+            <Square size={9} weight="fill" />
           </button>
         </SmartTooltip>
         {/* Off while the menu is open: it would sit on top of the menu's last rows. */}
@@ -2392,6 +2394,7 @@ function AgentChatComposerImpl({
   appControlContextItems = [],
   builtInBrowserContextItems = [],
   modelSelectionLocked = false,
+  effortSelectionLocked,
   modelPickerOpenRequestKey,
   onModelPickerOpenRequestHandled,
   permissionModeLocked = false,
@@ -2640,6 +2643,8 @@ function AgentChatComposerImpl({
   builtInBrowserContextItems?: BuiltInBrowserContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
+  /** Effort's own lock; defaults to the model lock. A running turn locks the model, not effort. */
+  effortSelectionLocked?: boolean;
   modelPickerOpenRequestKey?: number;
   onModelPickerOpenRequestHandled?: () => void;
   permissionModeLocked?: boolean;
@@ -6127,8 +6132,8 @@ function AgentChatComposerImpl({
       const options: PermissionModePickerOption<"plan" | "ask" | "assisted" | "auto-edit" | "full-auto">[] = [
         { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
         { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
-        { value: "assisted", label: "Assisted", detail: "Copilot reviews each tool call with a safety model and approves the safe ones; asks you for the rest.", tone: "purple", icon: "agent" },
-        { value: "auto-edit", label: "Auto-edit", detail: "Automatically approve file changes in the workspace.", tone: "amber", icon: "edit" },
+        { value: "assisted", label: "Assisted", detail: "Approves safe calls; asks you for the rest.", tone: "purple", icon: "agent" },
+        { value: "auto-edit", label: "Auto-edit", detail: "Approves file changes in the workspace.", tone: "amber", icon: "edit" },
         { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
       ];
       return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={options} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
@@ -8405,6 +8410,12 @@ function AgentChatComposerImpl({
             ) : null}
             {!hideModelControls && !parallelChatMode && !fixedModelLabel ? (
               <>
+                <PaneTooltip
+                  label="Model is locked while a turn runs"
+                  side="top"
+                  disabled={!(modelSelectionLocked && turnActive)}
+                  className="min-w-0 shrink [&_button:disabled]:pointer-events-none"
+                >
                 <ModelPicker
                   value={modelId}
                   emptyLabel={modelEmptyLabel}
@@ -8441,12 +8452,13 @@ function AgentChatComposerImpl({
                   copilotContextTier={copilotContextTier}
                   {...(onCopilotContextTierChange ? { onCopilotContextTierChange } : {})}
                 />
+                </PaneTooltip>
                 <ReasoningEffortPicker
                   modelId={modelId}
                   reasoningEffort={reasoningEffort}
                   squeezed={modelHint.chip != null}
                   onChange={handleReasoningEffortPickerChange}
-                  disabled={modelSelectionLocked}
+                  disabled={effortSelectionLocked ?? modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                   catalogScopeKey={modelCatalogScopeKey}

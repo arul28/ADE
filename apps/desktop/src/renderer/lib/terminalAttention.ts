@@ -257,7 +257,7 @@ export function sessionStatusDisplay(
   context: { subagentBusy?: boolean } = {},
 ): SessionStatusPresentation | null {
   const state = sessionCanonicalUiState(session);
-  return sessionStatusPresentation(state.phase, overlay, {
+  const presentation = sessionStatusPresentation(state.phase, overlay, {
     chatActivityMode: session.chatActivityMode,
     activityStatus: session.activityStatus,
     currentTurnStartedAt: session.currentTurnStartedAt,
@@ -268,6 +268,17 @@ export function sessionStatusDisplay(
     nowMs: session.nowMs,
     usageLimitResume: session.usageLimitResume ?? null,
   });
+  // A plain shell has no agent turn, so "Working" with a spinner would lie.
+  // It is simply open: a quiet neutral word, no elapsed clock.
+  if (
+    presentation
+    && session.toolType === "shell"
+    && presentation.glyph === "working"
+    && !presentation.activityDetail
+  ) {
+    return { label: "Running", tone: "neutral", glyph: null, showsElapsed: false, prominent: false };
+  }
+  return presentation;
 }
 
 /**
@@ -283,6 +294,7 @@ export function sessionStalledPresentation(
 ): SessionStatusPresentation | null {
   // The cheap timestamp check first: most rows have no live turn at all, and
   // this runs for every sidebar row on every render.
+  if (session.toolType === "shell") return null;
   if (sessionTurnStallMs(session, nowMs) === null) return null;
   const state = sessionCanonicalUiState(session);
   if (state.phase !== "running" || (state.liveness && state.liveness !== "turn")) return null;

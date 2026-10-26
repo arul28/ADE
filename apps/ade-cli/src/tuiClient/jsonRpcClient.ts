@@ -1,6 +1,7 @@
 import net from "node:net";
 import { parseRpcUrlAuthToken, withRpcAuthParam } from "../rpcAuth";
 import { markExpectedFromWire } from "../../../desktop/src/shared/expectedError";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../desktop/src/shared/rpcLiveness";
 
 type PendingRequest = {
   method: string;
@@ -36,8 +37,13 @@ export class JsonRpcResponseError extends Error {
   }
 }
 
+/** A request that got no reply in time; any other rejection is a reply. */
+class RpcRequestTimeoutError extends Error {}
+
 export class JsonRpcClient {
   private nextId = 1;
+  private lastInboundAt: number | null = null;
+  private probing = false;
   private readonly buffer = new RpcByteQueue();
   private pendingContentLength: number | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -109,10 +115,13 @@ export class JsonRpcClient {
     };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (!this.pending.has(pendingKey)) return;
-        this.failConnection(
-          new Error(`ADE RPC socket timed out waiting for method ${method} (${timeoutMs}ms).`),
-        );
+        const pending = this.pending.get(pendingKey);
+        if (!pending) return;
+        // Only this request gives up: a busy brain is not a dead socket, and
+        // closing it failed every other request in flight.
+        this.pending.delete(pendingKey);
+        pending.reject(new RpcRequestTimeoutError(`ADE RPC socket timed out waiting for method ${method} (${timeoutMs}ms).`));
+        this.closeIfUnresponsive();
       }, timeoutMs);
       this.pending.set(pendingKey, {
         method,
@@ -128,6 +137,27 @@ export class JsonRpcClient {
         reject(error);
       });
     });
+  }
+
+  /**
+   * After a request timed out: the socket is kept while the brain still sends
+   * anything, or answers a `ping`. A brain that is gone does neither.
+   */
+  private closeIfUnresponsive(): void {
+    if (this.closed || this.probing) return;
+    if (hasRecentTraffic(this.lastInboundAt)) return;
+    this.probing = true;
+    void this.request("ping", undefined, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS }).then(
+      () => {
+        this.probing = false;
+      },
+      (error: unknown) => {
+        this.probing = false;
+        // An error reply (an older brain without `ping`) is still a reply.
+        if (this.closed || !(error instanceof RpcRequestTimeoutError)) return;
+        this.failConnection(new Error(`ADE RPC socket stopped answering (no reply to ping in ${RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`));
+      },
+    );
   }
 
   close(): void {
@@ -191,6 +221,7 @@ export class JsonRpcClient {
 
   private handleData(chunk: Buffer | string): void {
     if (this.closed) return;
+    this.lastInboundAt = Date.now();
     this.buffer.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
     while (true) {
       let next: string | null;

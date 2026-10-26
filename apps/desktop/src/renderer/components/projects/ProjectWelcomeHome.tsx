@@ -430,7 +430,8 @@ const PR_BUCKET: Record<PrBucket, { order: number; label: string; tone?: "ok" | 
   failing: { order: 0, label: "Checks failing", tone: "crit" },
   changes: { order: 1, label: "Changes asked", tone: "warn" },
   review: { order: 2, label: "In review", tone: "warn" },
-  pending: { order: 3, label: "Checks running" },
+  // Running is waiting, not done: amber, never the green of Ready/Open.
+  pending: { order: 3, label: "Checks running", tone: "warn" },
   ready: { order: 4, label: "Ready", tone: "ok" },
   open: { order: 5, label: "Open" },
   draft: { order: 6, label: "Draft" },
@@ -655,7 +656,9 @@ export function PullRequestsCard({
   }, [open]);
   return (
     <section className="kit-card ade-home-card ade-home-prs" aria-label="Pull requests">
-      <WelcomeCardHead icon={GitPullRequest} title="Pull requests" count={open.length > 0 ? open.length : null} action={onOpenPrs ? { label: "PRs", onClick: onOpenPrs } : null}>
+      {/* The count is the rows the card lists (open plus merged this week), so
+          it always equals the rows shown plus "N more". */}
+      <WelcomeCardHead icon={GitPullRequest} title="Pull requests" count={open.length + recent.length > 0 ? open.length + recent.length : null} action={onOpenPrs ? { label: "PRs", onClick: onOpenPrs } : null}>
         {projectName ? <span className="ade-home-card-scope">{projectName}</span> : null}
       </WelcomeCardHead>
       <div className="kit-card-body ade-home-prs-body" data-flush="true">

@@ -3,6 +3,7 @@ import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import { describeReportForMachine, type HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import type {
@@ -1071,6 +1072,38 @@ export function registerRuntimeBridge({
         id,
         discovered,
       );
+    },
+  );
+
+  // "Can my other devices reach that computer?", asked of the connected
+  // machine's own brain: the same check as the This computer card, run there.
+  ipcMain.handle(
+    IPC.remoteRuntimeCheckReachability,
+    async (_event, arg: { id?: string }): Promise<HostReachabilityReport> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("This machine isn't saved on this computer anymore.");
+      const connected = remoteConnectionService.snapshot().connections
+        .some((connection) => connection.target.id === target.id && connection.state === "connected");
+      if (!connected) {
+        throw new Error("Connect to this machine first, or use Test to see why it can't be reached.");
+      }
+      try {
+        const report = await remoteConnectionService.callMachineMethod<HostReachabilityReport>(
+          target.id,
+          "sync.checkReachability",
+          {},
+          // The relay self-probe on that machine can take ~12 s; a replay would run it twice.
+          { timeoutMs: 30_000, retryOnConnectionError: false },
+        );
+        return describeReportForMachine(report, target.name?.trim() || target.hostname);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/method not found|-32601/i.test(message)) {
+          throw new Error("That machine runs an older ADE that can't check itself. Update it, then check again.");
+        }
+        throw error;
+      }
     },
   );
 

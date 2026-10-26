@@ -1,15 +1,9 @@
-import type { ReactNode } from "react";
-import { CheckCircle, Desktop, GitBranch, Hourglass } from "@phosphor-icons/react";
+import { useState, type ReactNode } from "react";
+import { Check, CheckCircle, CircleNotch, Desktop, GitBranch, Hourglass } from "@phosphor-icons/react";
 import type { AgentChatCrossMachineHandoffMachineOption } from "../../../shared/types";
 import { BlockedReasons, type BlockedActionReason } from "../shared/BlockedAction";
 import { cn } from "../ui/cn";
-import { Banner } from "../ui/notice/Banner";
-import {
-  CheckRow,
-  repoReadinessClass,
-  repoReadinessLabel,
-  type HandoffMode,
-} from "./crossMachineHandoffPresentation";
+import type { HandoffMode } from "./crossMachineHandoffPresentation";
 
 export function machineAvailable(machine: AgentChatCrossMachineHandoffMachineOption): boolean {
   return machine.online && !machine.unavailableReason;
@@ -70,181 +64,206 @@ export function CrossMachineHandoffChooseStage({
   continuationPrompt: string;
   onContinuationPromptChange: (next: string) => void;
 }) {
+  const [noteFocused, setNoteFocused] = useState(false);
+  const noteExpanded = noteFocused || continuationPrompt.includes("\n") || continuationPrompt.length > 70;
+  const ready = optionsLoaded && continueBlockers.length === 0;
+  const modeHint = !sourceProviderSupportsFork
+    ? `${providerLabel} can't fork history; it sends a brief.`
+    : mode === "fork"
+      ? "Sends the full history; oldest turns may drop to fit."
+      : "Sends a short summary to start from.";
   return (
-    <div className="space-y-5">
-      <div>
-        <div className="inline-flex w-full rounded-lg border border-fg/[0.07] bg-fg/[0.02] p-0.5">
-          {([
-            { value: "fork" as const, label: "Fork", disabled: !sourceProviderSupportsFork },
-            { value: "brief" as const, label: "Brief", disabled: false },
-          ]).map(({ value, label, disabled }) => {
-            const active = mode === value;
-            return (
-              <button
-                key={value}
-                type="button"
-                disabled={disabled}
-                aria-pressed={active}
-                onClick={() => onSwitchMode(value)}
-                className={cn(
-                  "flex-1 rounded-md px-3 py-1.5 font-sans text-[11px] font-semibold transition-colors",
-                  active ? "bg-sky-400/[0.14] text-sky-50 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.28)]" : "text-fg/52 hover:text-fg/78",
-                  disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-1.5 text-[10px] leading-4 text-fg/46">
-          {!sourceProviderSupportsFork
-            ? `${providerLabel} can't fork chat history — send a brief instead.`
-            : mode === "fork"
-              ? "Sends the full history so the new chat picks up exactly where this one left off."
-              : "Sends a short summary; the new chat starts fresh from it."}
-        </div>
-      </div>
-      <div className="grid gap-5 md:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-      <div className="space-y-3">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Get this machine ready</div>
-          <div className="mt-1 text-[11px] leading-4 text-fg/48">Commit and push your work, or bring it along with the move.</div>
-        </div>
+    <div className="space-y-3.5">
+      {/* Status: one line when ready, one row per blocker otherwise. */}
+      <div className="space-y-1.5" data-testid="handoff-status">
         {loading && !optionsLoaded ? (
-          <CheckRow label="Checking this chat" detail="Branch, changes and machines" state="pending" />
-        ) : optionsLoaded && continueBlockers.length === 0 ? (
-          <CheckRow
-            label="Ready to move"
-            detail={includeChanges
-              ? `Your ${changesLabel ?? "uncommitted work"} travels with this move`
-              : "Nothing here blocks the move"}
-            state="ok"
-          />
+          <StatusLine icon={<CircleNotch size={13} className="animate-spin text-fg/45" />} text="Checking this chat…" />
+        ) : ready && !includeChanges && !queueOnly ? (
+          <StatusLine icon={<span className="kit-dot" data-state="ok" aria-hidden />} text="Ready to move" />
         ) : null}
-        {/* Every blocker renders here and only here. */}
-        <BlockedReasons
-          reasons={loading && !optionsLoaded ? [] : continueBlockers}
-          {...(continueBlockers.length > 1
-            ? { heading: `${continueBlockers.length} things to fix first` }
-            : {})}
-        />
+        <BlockedReasons variant="rows" reasons={loading && !optionsLoaded ? [] : continueBlockers} />
         {includeChanges ? (
-          <Banner
-            layout="inline"
+          <StatusLine
             testId="handoff-bring-changes"
-            model={{
-              id: "handoff-bring-changes",
-              tone: "accent",
-              icon: <GitBranch size={13} weight="bold" />,
-              title: changesLabel ? `Bringing ${changesLabel} along` : "Bringing your uncommitted work along",
-              detail: ".env and other ignored files stay here.",
-              actions: [{ label: "Leave them here", variant: "link", onClick: onLeaveChangesHere }],
-            }}
+            icon={<GitBranch size={13} weight="bold" className="text-sky-300/80" />}
+            text={changesLabel ? `Bringing ${changesLabel} along` : "Bringing your uncommitted work along"}
+            muted=".env stays here"
+            actions={<LinkButton onClick={onLeaveChangesHere}>Leave them here</LinkButton>}
           />
         ) : null}
         {queueOnly ? (
-          <Banner
-            layout="inline"
+          <StatusLine
             testId="handoff-when-turn-ends"
-            model={{
-              id: "handoff-when-turn-ends",
-              tone: "info",
-              icon: <Hourglass size={13} weight="bold" />,
-              title: "Moves when this turn ends",
-              detail: queuedCloneApproved
-                ? `ADE checks everything again then, and clones the repository on ${selectedMachineName ?? "that machine"}.`
-                : "ADE checks everything again then. A new message from you keeps it here.",
-              actions: [
-                { label: "Stop current response", variant: "secondary", disabled: busy, onClick: () => void onStopTurn() },
-                { label: "Don't wait", variant: "link", onClick: onDontWait },
-              ],
-            }}
+            icon={<Hourglass size={13} weight="bold" className="text-sky-300/80" />}
+            text="Moves when this turn ends"
+            muted={queuedCloneApproved ? `then clones on ${selectedMachineName ?? "that machine"}` : null}
+            actions={(
+              <>
+                <LinkButton disabled={busy} onClick={() => void onStopTurn()}>Stop response</LinkButton>
+                <LinkButton onClick={onDontWait}>Don&rsquo;t wait</LinkButton>
+              </>
+            )}
           />
         ) : null}
       </div>
 
-      <div className="space-y-3">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/38">Choose a machine</div>
-          <div className="mt-1 text-[11px] leading-4 text-fg/48">Your other ADE machines appear here.</div>
+      <FormRow label="Send">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="inline-flex shrink-0 rounded-md border border-fg/[0.08] bg-fg/[0.025] p-0.5">
+            {([
+              { value: "fork" as const, label: "Fork", disabled: !sourceProviderSupportsFork },
+              { value: "brief" as const, label: "Brief", disabled: false },
+            ]).map(({ value, label, disabled }) => {
+              const active = mode === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={disabled}
+                  aria-pressed={active}
+                  onClick={() => onSwitchMode(value)}
+                  className={cn(
+                    "h-6 rounded-[5px] px-3.5 font-sans text-[11px] font-semibold transition-colors",
+                    active ? "bg-sky-400/[0.16] text-sky-50 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.26)]" : "text-fg/52 hover:text-fg/80",
+                    disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="min-w-0 truncate whitespace-nowrap text-[10.5px] text-fg/45">{modeHint}</span>
         </div>
-        <div className="space-y-2">
-          {machines.map((machine) => {
-            const available = machineAvailable(machine);
-            const selected = selectedMachineKey === machine.machineKey;
-            const readiness = machine.hasRepository === true
-              ? "present"
-              : machine.hasRepository === false
-                ? "absent"
-                : undefined;
-            const readinessLabel = repoReadinessLabel(readiness);
-            return (
-              <button
-                key={machine.machineKey}
-                type="button"
-                disabled={!available}
-                onClick={() => onSelectMachine(machine.machineKey)}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55",
-                  selected
-                    ? "border-sky-300/26 bg-sky-400/[0.09]"
-                    : "border-fg/[0.065] bg-fg/[0.025] hover:bg-fg/[0.045]",
-                )}
-              >
-                <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg", selected ? "bg-sky-300/12 text-sky-200" : "bg-fg/[0.04] text-fg/48")}>
-                  <Desktop size={17} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[11px] font-semibold text-fg/82">{machine.name}</div>
-                  <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-fg/42">
+      </FormRow>
+
+      <FormRow label="Move to" alignTop>
+        {optionsLoaded && machines.length === 0 ? (
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-dashed border-fg/[0.1] px-3 text-[11px] text-fg/50">
+            <Desktop size={14} className="shrink-0 text-fg/35" />
+            <span className="whitespace-nowrap">No other ADE machines on this account yet</span>
+          </div>
+        ) : (
+          <div aria-label="Machine" className="overflow-hidden rounded-lg border border-fg/[0.07] bg-fg/[0.02]">
+            {machines.map((machine, index) => {
+              const available = machineAvailable(machine);
+              const selected = selectedMachineKey === machine.machineKey;
+              const needsClone = available && machine.hasRepository === false;
+              return (
+                <button
+                  key={machine.machineKey}
+                  type="button"
+                  aria-pressed={selected}
+                  disabled={!available}
+                  onClick={() => onSelectMachine(machine.machineKey)}
+                  className={cn(
+                    "flex h-9 w-full items-center gap-2.5 px-3 text-left transition-colors disabled:cursor-not-allowed",
+                    index > 0 && "border-t border-fg/[0.05]",
+                    selected ? "bg-sky-400/[0.09]" : available ? "hover:bg-fg/[0.04]" : "",
+                  )}
+                >
+                  <Desktop size={15} className={cn("shrink-0", selected ? "text-sky-200" : available ? "text-fg/55" : "text-fg/25")} />
+                  <span className={cn("min-w-0 truncate text-[11.5px] font-medium", available ? "text-fg/85" : "text-fg/38")}>{machine.name}</span>
+                  {needsClone ? (
+                    <span className="shrink-0 whitespace-nowrap rounded border border-amber-300/20 bg-amber-400/[0.07] px-1.5 text-[9.5px] font-medium leading-4 text-amber-200/75">
+                      Will clone repo
+                    </span>
+                  ) : available && machine.hasRepository === true ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-emerald-300/60">
+                      <Check size={10} weight="bold" aria-hidden />
+                      Repo ready
+                    </span>
+                  ) : null}
+                  <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[10.5px] text-fg/42">
                     {available ? (
                       <>
                         <span className="kit-dot" data-state="ok" aria-hidden />
                         Online
-                        {readinessLabel ? (
-                          <>
-                            <span className="text-fg/22">·</span>
-                            <span className={repoReadinessClass(readiness)}>{readinessLabel}</span>
-                          </>
-                        ) : null}
                       </>
                     ) : (
-                      <span>{machine.unavailableReason ?? "Offline"}</span>
+                      <span className="text-fg/32">{machine.unavailableReason ?? "Offline"}</span>
                     )}
-                  </div>
-                </div>
-                {selected ? <CheckCircle size={16} weight="fill" className="text-sky-200" /> : null}
-              </button>
-            );
-          })}
-          {optionsLoaded && machines.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-fg/[0.09] px-4 py-6 text-center">
-              <Desktop size={22} className="mx-auto text-fg/28" />
-              <div className="mt-2 text-[11px] font-semibold text-fg/62">No other machines on this account</div>
-              <div className="mt-1 text-[10px] leading-4 text-fg/40">
-                Sign in to ADE on another computer with this account, then reopen this setup.
-              </div>
-            </div>
-          ) : null}
-        </div>
-        {newChatControls}
-        <label className="block">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">Note for the new chat</span>
-          <textarea
-            value={continuationPrompt}
-            onChange={(event) => onContinuationPromptChange(event.target.value)}
-            maxLength={4000}
-            rows={4}
-            placeholder={mode === "fork"
-              ? "Optional. Tell the new chat what to do next; otherwise it just keeps going from the full history."
-              : "Optional. Tell the new chat what to do next; otherwise it just continues from the summary."}
-            className="mt-1.5 min-h-[82px] w-full resize-y rounded-lg border border-fg/[0.075] bg-black/20 px-3 py-2 text-[11px] leading-4 text-fg/78 outline-none placeholder:text-fg/28 focus:border-sky-300/25"
-          />
-          <span className="mt-1 block text-right text-[9px] text-fg/28">{continuationPrompt.length} / 4,000</span>
-        </label>
-      </div>
-      </div>
+                  </span>
+                  <span className="grid w-4 shrink-0 place-items-center">
+                    {selected ? <CheckCircle size={15} weight="fill" className="text-sky-200" /> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </FormRow>
+
+      {newChatControls ? <FormRow label="New chat">{newChatControls}</FormRow> : null}
+
+      <FormRow label="Note" alignTop={noteExpanded}>
+        <textarea
+          aria-label="Note for the new chat"
+          value={continuationPrompt}
+          onChange={(event) => onContinuationPromptChange(event.target.value)}
+          onFocus={() => setNoteFocused(true)}
+          onBlur={() => setNoteFocused(false)}
+          maxLength={4000}
+          rows={noteExpanded ? 4 : 1}
+          placeholder="Optional: what should the new chat do next?"
+          className={cn(
+            "block w-full resize-none rounded-md border border-fg/[0.08] bg-black/20 px-2.5 text-[11px] text-fg/80 outline-none placeholder:text-fg/30 focus:border-sky-300/25",
+            noteExpanded ? "min-h-[72px] py-1.5 leading-4" : "h-8 overflow-hidden whitespace-nowrap py-[7px] leading-4",
+          )}
+        />
+        {continuationPrompt.length > 3500 ? (
+          <span className="mt-1 block text-right text-[9.5px] text-fg/35">{continuationPrompt.length} / 4,000</span>
+        ) : null}
+      </FormRow>
     </div>
+  );
+}
+
+/** A labelled form row: a fixed label column, then the control. */
+function FormRow({ label, alignTop = false, children }: { label: string; alignTop?: boolean; children: ReactNode }) {
+  return (
+    <div className={cn("grid grid-cols-[72px_minmax(0,1fr)] gap-3", alignTop ? "items-start" : "items-center")}>
+      <span className={cn("whitespace-nowrap text-[11px] font-medium text-fg/48", alignTop && "pt-[9px]")}>{label}</span>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+function StatusLine({
+  icon,
+  text,
+  muted,
+  actions,
+  testId,
+}: {
+  icon: ReactNode;
+  text: string;
+  muted?: string | null;
+  actions?: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="flex min-h-9 items-center gap-2 rounded-lg border border-fg/[0.06] bg-fg/[0.025] px-2.5 py-1"
+    >
+      <span className="grid w-[13px] shrink-0 place-items-center">{icon}</span>
+      <span className="shrink-0 whitespace-nowrap text-[11px] font-semibold text-fg/82">{text}</span>
+      {muted ? <span className="min-w-0 truncate whitespace-nowrap text-[10.5px] text-fg/42">{muted}</span> : null}
+      {actions ? <span className="ml-auto flex shrink-0 items-center gap-3">{actions}</span> : null}
+    </div>
+  );
+}
+
+function LinkButton({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="whitespace-nowrap text-[10.5px] font-semibold text-sky-200/80 transition-colors hover:text-sky-100 disabled:opacity-40"
+    >
+      {children}
+    </button>
   );
 }

@@ -249,7 +249,7 @@ export function CommitDetailPanel({
 
   if (!resolvedCommit || !laneId) {
     return (
-      <div className="flex flex-1 items-center justify-center text-[12.5px] text-muted-fg/50" data-testid="commit-detail-empty">
+      <div className="flex flex-1 items-center justify-center text-[12.5px] text-muted-fg/70" data-testid="commit-detail-empty">
         No commit selected
       </div>
     );
@@ -375,7 +375,14 @@ export function CommitDetailPanel({
 
           <div className="flex flex-wrap items-center gap-1.5">
             {onOpenChanges ? (
-              <button type="button" className={BUTTON} onClick={() => onOpenChanges(resolvedCommit)} title="Open the changes (Enter)">
+              <button
+                type="button"
+                className={BUTTON}
+                // A commit with no file changes has nothing to open.
+                disabled={files != null && files.length === 0}
+                onClick={() => onOpenChanges(resolvedCommit)}
+                title={files != null && files.length === 0 ? "No file changes in this commit" : "Open the changes (Enter)"}
+              >
                 <FileText size={13} aria-hidden />
                 Changes
               </button>

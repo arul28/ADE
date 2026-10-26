@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ArrowRight, CaretDown } from "@phosphor-icons/react";
 
 import type { AttentionItem } from "../../../shared/types";
@@ -181,6 +181,27 @@ function ActivityColumnChips({
   );
 }
 
+/** How long placeholders may stand in for a first snapshot that has not come. */
+const FIRST_SNAPSHOT_GRACE_MS = 4000;
+
+/**
+ * True while `loading` has lasted under the grace period. A machine that never
+ * reports would otherwise leave the placeholders up forever; after the grace
+ * the list shows its calm empty state instead.
+ */
+function useLoadingWithGrace(loading: boolean): boolean {
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    if (!loading) {
+      setExpired(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setExpired(true), FIRST_SNAPSHOT_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
+  return loading && !expired;
+}
+
 function SessionsList({
   size,
   sections,
@@ -221,8 +242,9 @@ function SessionsList({
   const { visibleRows, hiddenCount, nextCount, showMore } = useProgressiveRows(orderedRows);
   const visibleIds = useMemo(() => new Set(visibleRows.map((item) => item.id)), [visibleRows]);
   const total = sections.reduce((count, section) => count + section.items.length, 0);
+  const showPlaceholders = useLoadingWithGrace(loading);
 
-  if (total === 0 && loading) {
+  if (total === 0 && showPlaceholders) {
     // Placeholders, not an all-clear: claiming nothing is running before the
     // first snapshot lands is a lie the user would act on.
     return <>{Array.from({ length: 4 }, (_, index) => <ActivityCardSkeleton key={index} />)}</>;

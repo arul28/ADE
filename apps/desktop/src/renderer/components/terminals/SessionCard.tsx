@@ -1166,7 +1166,9 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       value: machineName,
     });
   }
-  if (branchName) {
+  // The branch earns a row only when it says something the lane name does not:
+  // "t3f-chat / t3f-chat" was the same word twice.
+  if (branchName && branchDisplayLabel(branchName) !== (lane?.name ?? session.laneName)) {
     hoverRows.push({
       id: "branch",
       icon: <BranchIcon size={13} className="text-muted-fg/60" />,
@@ -1237,11 +1239,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           size={12}
         />
       ),
+      // "From <parent>": only the parent's title truncates, never the label.
       value: (
         <span>
-          Spawned by{" "}
+          <span className="text-muted-fg/60">From </span>
           <span className="text-fg/90">{parentSessionTitle ?? "another chat"}</span>
-          <span className="text-muted-fg/50"> — open</span>
         </span>
       ),
       onActivate: () => navigateToSpawnedChat(session.orchestrationParentSessionId, null),
@@ -1365,7 +1367,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
          (it is what a settled row already uses), so suppression needs no new
          branch inside the slot — and the hover action cluster, which is a
          separate layer, keeps working exactly as it does on a list row. */
-      presentation={suppressStatusLabel && !presentation?.activityDetail ? null : presentation}
+      /* A failure keeps its word even on a board card: the column (Needs you)
+         says "your move", only the card can say it is because the turn failed. */
+      presentation={
+        suppressStatusLabel && !presentation?.activityDetail && presentation?.glyph !== "failed"
+          ? null
+          : presentation
+      }
       /* Deliberately not `sessionActivityInstant`: the slot's stamp answers
          "when did this finish", so a still-running row shows how long it has
          been going rather than how long since its last token. */

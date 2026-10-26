@@ -6899,7 +6899,8 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     const localView = await screen.findByTestId("handoff-local");
-    expect(within(localView).getByText(/A turn is running — wait for it to finish/i)).toBeTruthy();
+    expect(within(localView).getByText("A turn is running")).toBeTruthy();
+    expect(within(localView).getByText("You can hand off when it ends.")).toBeTruthy();
   });
   it("opens the local handoff view from a queued context-menu intent", async () => {
     const session = buildSession("session-1", { status: "idle" });
@@ -6972,10 +6973,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(/GPT-5\.5/i);
-    fireEvent.change(await screen.findByLabelText("Extra instructions"), {
+    fireEvent.change(await screen.findByLabelText("Note for the new chat"), {
       target: { value: "Prioritize the drawer regression before broad cleanup." },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -7019,7 +7020,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(/GPT-5\.5/i);
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       const jobs = Object.values(useAppStore.getState().handoffLaunchJobsByScope).flat();
@@ -7075,10 +7076,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
-    const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
-    expect(within(permissionSelect).getByRole("option", { name: "Auto" })).toBeTruthy();
-    fireEvent.change(permissionSelect, { target: { value: "plan" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    // Permissions are a picker, not a native select: open it and pick a mode.
+    fireEvent.click(await screen.findByRole("button", { name: "Claude permission mode for handoff" }));
+    expect(screen.getByRole("option", { name: "Auto" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: "Plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -7183,9 +7185,10 @@ describe("AgentChatPane submit recovery", () => {
     expect(briefTab.getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByText(/can.t fork chat history/i)).toBeNull();
     // Both caveats belong here: Cursor's same-provider fork is ADE-side context
-    // seeding, and any other model gets the verbatim transcript replay.
-    expect(screen.getByText(/Cursor threads can.t be resumed twice/i)).toBeTruthy();
-    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
+    // seeding, and any other model gets the verbatim transcript replay. Both
+    // live in the mode hint's tooltip, one line of prose at a time.
+    const modeHint = screen.getByTitle(/Cursor threads can.t be resumed twice/i);
+    expect(modeHint.getAttribute("title")).toMatch(/full transcript replayed/i);
     expect(await screen.findByRole("button", { name: "Fork chat" })).toBeTruthy();
   });
 
@@ -7219,8 +7222,8 @@ describe("AgentChatPane submit recovery", () => {
     // The cross-family path is disclosed as a verbatim replay, truncated only
     // when the transcript exceeds the target model's context window or
     // provider input limit.
-    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
-    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window or provider input limit/i)).toBeTruthy();
+    const replayHint = screen.getByTitle(/replays the full transcript/i);
+    expect(replayHint.getAttribute("title")).toMatch(/Oldest turns drop only if it exceeds the model.s context/i);
 
     fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
 
@@ -7259,7 +7262,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(within(localView).getByRole("button", { name: /^Brief$/ }));
     expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -7281,7 +7284,7 @@ describe("AgentChatPane submit recovery", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     const localView = await screen.findByTestId("handoff-local");
     // The pane's own error line sits behind the form, so the failure has to be
@@ -7374,7 +7377,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
     fireEvent.click(await screen.findByText("Auto-create lane"));
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }), null);
@@ -7532,7 +7535,7 @@ describe("AgentChatPane submit recovery", () => {
     openChatHandoff(session.sessionId, "remote");
 
     expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
-    expect(await screen.findByText("No other machines on this account")).toBeTruthy();
+    expect(await screen.findByText("No other ADE machines on this account yet")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Mac Studio/ })).toBeNull();
   });
 
@@ -7589,7 +7592,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
     fireEvent.click(await screen.findByText("Auto-create lane"));
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith(
@@ -7628,7 +7631,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
     fireEvent.click(await screen.findByText("second lane"));
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -13690,7 +13693,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start from brief" }));
     await waitFor(() => expect(mocks.handoff).toHaveBeenCalledWith(
       expect.objectContaining({ sourceSessionId: "chat-on-b", mode: "brief" }),
       machineB,

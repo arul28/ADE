@@ -138,7 +138,8 @@ export function laneSurfaceTint(
       background: `color-mix(in srgb, ${c} 8%, color-mix(in srgb, var(--color-fg) 3.5%, transparent))`,
       border: `1px solid color-mix(in srgb, ${c} 14%, color-mix(in srgb, var(--color-fg) 5%, transparent))`,
       borderLeftAccent: `2px solid color-mix(in srgb, ${c} 40%, transparent)`,
-      text: `color-mix(in srgb, ${c} 52%, var(--color-muted-fg))`,
+      // toneText first, so a pale lane colour deepens on light pages before it softens.
+      text: `color-mix(in srgb, ${toneText(c)} 52%, var(--color-muted-fg))`,
     };
   }
   const p = alpha != null && Number.isFinite(alpha)

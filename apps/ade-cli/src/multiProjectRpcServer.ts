@@ -1,8 +1,9 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -243,8 +244,8 @@ export type MachinePowerTransitionOutcome = {
  */
 export type ProviderStatusService = {
   status(args?: { refresh?: boolean }): Promise<ProviderStatusReport>;
-  /** Advertised on `ade/initialize` so an SDK can feature-detect before calling. */
-  capabilities(): { status: true; cacheTtlMs: number };
+  /** Advertised on initialize and runtime/info so clients can feature-detect. */
+  capabilities(): { status: true; capabilities: true; cacheTtlMs: number };
 };
 
 /**
@@ -261,6 +262,10 @@ export type ProviderStatusService = {
  */
 export { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 
+const PROVIDER_ACCOUNT_ACTIONS = ["list", "create", "remove", "signOut", "rename", "setDefault", "refresh", "loginStart", "loginStatus", "loginSubmitCode", "loginCancel"] as const;
+const CREDENTIAL_ACTIONS = ["list", "store", "remove", "verify"] as const;
+const PRESET_ACTIONS = ["list", "create", "update", "remove"] as const;
+
 /**
  * The real detector, loaded on first call.
  *
@@ -269,14 +274,21 @@ export { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai
  * module is a JSON-RPC error on one method rather than a runtime that will not
  * boot.
  */
-export function createProviderStatusService(): ProviderStatusService {
+export function createProviderStatusService(options: {
+  runtimeProfile?: "full" | "chat" | "embedded";
+  adeHome?: string;
+} = {}): ProviderStatusService {
   return {
-    capabilities: () => ({ status: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS }),
+    capabilities: () => ({ status: true, capabilities: true, cacheTtlMs: PROVIDER_STATUS_CACHE_TTL_MS }),
     async status(args) {
       const { probeProviderStatuses } = await import(
         "../../desktop/src/main/services/ai/providerStatusProbe"
       );
-      return await probeProviderStatuses({ refresh: args?.refresh === true });
+      return await probeProviderStatuses({
+        refresh: args?.refresh === true,
+        runtimeProfile: options.runtimeProfile,
+        adeHome: options.adeHome,
+      });
     },
   };
 }
@@ -311,7 +323,16 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  /** Profile of the outer runtime, used to trust the sole embedded host. */
+  runtimeProfile?: "full" | "chat" | "embedded";
+  /**
+   * The secret the SDK host handed this embedded runtime at spawn. Only the
+   * connection that presents it in `ade/initialize` may manage provider
+   * accounts, credentials and presets. Null outside the embedded profile, and
+   * for an embedded runtime started without one (then nobody may).
+   */
+  embeddedHostToken?: string | null;
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -481,6 +502,9 @@ const RUNTIME_METHODS = new Set([
   "notify.send",
   "providers.status",
   "personalChats.call",
+  "providerAccounts.call",
+  "credentials.call",
+  "presets.call",
   "personalChats.streamEvents",
   "personalChats.subscribeEvents",
   "personalChats.unsubscribeEvents",
@@ -509,6 +533,7 @@ const RUNTIME_METHODS = new Set([
   "sync.switchHost",
   "sync.getStatus",
   "sync.runSelfProbe",
+  "sync.checkReachability",
   "sync.refreshDiscovery",
   "sync.listDevices",
   "sync.updateLocalDevice",
@@ -1168,6 +1193,13 @@ export function createMultiProjectRpcRequestHandler(
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const providerStatus = options.providerStatus ?? createProviderStatusService();
+  const sdkCapabilities = () => ({
+    personalChats: personalChatScope.capabilities(),
+    providers: providerStatus.capabilities(),
+    providerAccounts: { actions: [...PROVIDER_ACCOUNT_ACTIONS] },
+    credentials: { actions: [...CREDENTIAL_ACTIONS] },
+    presets: { actions: [...PRESET_ACTIONS] },
+  });
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   /**
    * Project handlers for callers on another machine, keyed by project and the
@@ -1228,6 +1260,24 @@ export function createMultiProjectRpcRequestHandler(
     isRecord(initializedParams) && isRecord(initializedParams.identity)
       ? initializedParams.identity
       : null;
+  /**
+   * Whether this connection is the SDK host that spawned this embedded
+   * runtime. Reaching the socket is not enough: the runtime's own agents get an
+   * `ade` CLI pointed at it, and a prompt-injected agent must not be able to
+   * sign the end user's accounts out or read their key list. The host proves
+   * itself with the per-spawn secret it put in our environment (which the
+   * runtime removed before starting anything that could inherit it).
+   */
+  const callerIsEmbeddedHost = (): boolean => {
+    const expected = options.runtimeProfile === "embedded" ? options.embeddedHostToken ?? null : null;
+    const offered = isRecord(initializedParams) && typeof initializedParams.embeddedHostToken === "string"
+      ? initializedParams.embeddedHostToken
+      : null;
+    if (!expected || !offered) return false;
+    const a = Buffer.from(expected, "utf8");
+    const b = Buffer.from(offered, "utf8");
+    return a.length === b.length && timingSafeEqual(a, b);
+  };
   const callerRole = () => {
     const identityRecord = callerIdentity();
     return resolveSessionBoundRole({
@@ -2089,11 +2139,7 @@ export function createMultiProjectRpcRequestHandler(
             listMyGitHubRepos: true,
             setIcon: true,
           },
-          personalChats: personalChatScope.capabilities(),
-          // An older runtime omits this key entirely, which is the SDK's cue to
-          // fall back to deriving provider status from the model catalog and
-          // to say `source: "derived"` instead of claiming a probe.
-          providers: providerStatus.capabilities(),
+          ...sdkCapabilities(),
           account: true,
         },
       };
@@ -2150,6 +2196,7 @@ export function createMultiProjectRpcRequestHandler(
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,
+        capabilities: sdkCapabilities(),
       };
     }
 
@@ -2735,6 +2782,40 @@ export function createMultiProjectRpcRequestHandler(
       return await providerStatus.status({ refresh: params.refresh === true });
     }
 
+    if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {
+      const action = typeof params.action === "string" ? params.action.trim() : "";
+      if (!action) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires action.`);
+      }
+      const allowed = options.runtimeProfile === "embedded"
+        ? callerIsEmbeddedHost()
+        : callerHasRoleAtLeast(callerRole(), "cto");
+      if (!allowed) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          options.runtimeProfile === "embedded"
+            ? `${method} is only for the app that started this runtime.`
+            : `${method} '${action}' requires elevated role.`,
+        );
+      }
+      if (method === "providerAccounts.call") {
+        if (typeof personalChatScope.providerAccountsCall !== "function") {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Provider account management is unavailable.");
+        }
+        return await personalChatScope.providerAccountsCall(action, params.args);
+      }
+      if (method === "credentials.call") {
+        if (typeof personalChatScope.credentialsCall !== "function") {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Credential management is unavailable.");
+        }
+        return await personalChatScope.credentialsCall(action, params.args);
+      }
+      if (typeof personalChatScope.presetsCall !== "function") {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Harness preset management is unavailable.");
+      }
+      return await personalChatScope.presetsCall(action, params.args);
+    }
+
     if (method === "personalChats.call") {
       return await personalChatScope.call(params.action, params.args);
     }
@@ -3104,6 +3185,21 @@ export function createMultiProjectRpcRequestHandler(
         };
       }
       return await syncService.runSelfProbe();
+    }
+
+    if (method === "sync.checkReachability") {
+      // Status and self-probe from one host: the project that holds the
+      // machine's listener and relay, so their facts describe the same thing.
+      const hostScope = await scopeRegistry.resolveActiveSyncHost();
+      const hostSyncService = hostScope?.runtime.syncService ?? null;
+      const syncService = hostSyncService ?? await resolveRecoverySyncService(params);
+      return await checkHostReachability({
+        getStatus: async () => syncService
+          ? await syncService.getStatus({ includeTransferReadiness: false })
+          : getMachineOnlySyncStatus(),
+        runSelfProbe: hostSyncService ? () => hostSyncService.runSelfProbe() : null,
+        accountSignedIn: accountAuthService.getStatus().signedIn === true,
+      });
     }
 
     if (method === "sync.refreshDiscovery") {

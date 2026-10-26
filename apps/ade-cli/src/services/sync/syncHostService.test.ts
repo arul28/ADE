@@ -6535,6 +6535,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        // Closing a browser tab changes the desktop: the owner's phone only.
+        "workTools.closeBrowserTab",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
@@ -6584,6 +6586,7 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        "workTools.closeBrowserTab",
         "chat.mcpAppRequest",
       ]);
 

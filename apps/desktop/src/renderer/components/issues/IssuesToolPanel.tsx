@@ -39,6 +39,14 @@ import { jiraIssueToContextAttachment, useJiraIssuePeek } from "./jiraIssueStore
  * page reveals this tool, and this panel takes the request — immediately when
  * it is mounted, or on mount when the reveal is what mounted it.
  */
+/** Ghost buttons: secondary to nothing, but plainly buttons, not captions. */
+const BROWSE_BUTTON_CLASS = [
+  "inline-flex h-8 shrink-0 items-center rounded-[8px] border border-fg/[0.12] bg-fg/[0.03] px-3",
+  "font-sans text-[12px] font-medium text-fg/80 transition-colors duration-[120ms] ease-out",
+  "hover:border-fg/[0.20] hover:bg-fg/[0.07] hover:text-fg",
+  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+].join(" ");
+
 export function IssuesToolPanel({
   laneId,
   onAttachToChat,
@@ -69,11 +77,11 @@ export function IssuesToolPanel({
       <WorkToolEmptyLine
         title="Issue links you click in chat open here"
         action={(
-          <div className="flex items-center gap-3">
-            <button type="button" className="kit-card-head-action !ml-0" onClick={() => requestLinearPaneOpen()}>
+          <div className="flex items-center gap-2">
+            <button type="button" className={BROWSE_BUTTON_CLASS} onClick={() => requestLinearPaneOpen()}>
               Browse Linear
             </button>
-            <button type="button" className="kit-card-head-action !ml-0" onClick={() => requestJiraIssuesPaneOpen()}>
+            <button type="button" className={BROWSE_BUTTON_CLASS} onClick={() => requestJiraIssuesPaneOpen()}>
               Browse Jira
             </button>
           </div>

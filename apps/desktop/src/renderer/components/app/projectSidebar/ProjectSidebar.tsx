@@ -1,6 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, GearSix } from "@phosphor-icons/react";
+import { GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
@@ -30,8 +30,9 @@ export { projectSidebarTabForPath };
 
 /**
  * `heldRoute` is set while CTO or History is open: the page you came from,
- * which still owns the sidebar list. Its tab stays selected, and the footer
- * shows a Back chip that returns to it.
+ * which still owns the sidebar list. Its tab stays selected beside the active
+ * footer item, and the held tab or opening a chat from the held Work list
+ * returns to it.
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
@@ -60,6 +61,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   // The tab a click asked for, shown before the route commits. The tab strip
   // starts its animation on the click, and the new page mounts after it.
   const [pendingTab, setPendingTab] = useState<string | null>(null);
+  // Under CTO or History the tab whose list fills the sidebar (Work, Lanes)
+  // stays selected, so the list below it keeps its label.
   const shownTab = pendingTab ?? heldTab ?? activeTab;
   useEffect(() => {
     setPendingTab(null);
@@ -90,6 +93,28 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
     },
     [goTo, heldRoute, heldTab, projectRoot],
   );
+
+  // The held Work list stays live under CTO: opening a chat from it (the row
+  // selects it in the held page) also brings that page back on screen, so the
+  // click is never swallowed by the overlay. Native listener, because the list
+  // is portalled in and React bubbles portal events to its owner, not here.
+  const [bodyElement, setBodyElement] = useState<HTMLDivElement | null>(null);
+  const setBodyRef = useCallback((node: HTMLDivElement | null) => {
+    setBodyElement(node);
+    setSlotTarget(node);
+  }, [setSlotTarget]);
+  useEffect(() => {
+    if (!bodyElement || !heldRoute || heldTab !== "/work") return;
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const row = target?.closest("[data-session-row], [data-session-row-action]");
+      if (!row || target?.closest("[aria-haspopup], [role='menu'], [role='menuitem'], input, textarea")) return;
+      void navigate(heldRoute.split(/[?#]/, 1)[0] || "/work");
+    };
+    bodyElement.addEventListener("click", onClick);
+    return () => bodyElement.removeEventListener("click", onClick);
+  }, [bodyElement, heldRoute, heldTab, navigate]);
 
   const openSettings = useCallback(() => {
     // The cog is a toggle: from Settings it returns to where you were.
@@ -155,71 +180,60 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
         })}
       </nav>
 
-      <div ref={setSlotTarget} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
+      <div ref={setBodyRef} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
 
       {starPillSlotActive ? <StarRepoPill /> : null}
 
       <div className="ade-project-sidebar-footer shrink-0">
-        {heldRoute ? (
-          // Over CTO or History the whole row is one way back to where you were.
+        {visibleProjectSidebarTabs(PROJECT_SIDEBAR_FOOTER_TABS).map((item) => {
+          const active = activeTab === item.to;
+          const waiting = item.to === "/cto" && ctoAwaitingInput;
+
+          return (
+            <button
+              key={item.to}
+              type="button"
+              className="ade-project-sidebar-footer-item"
+              data-active={active ? "true" : undefined}
+              aria-current={active ? "page" : undefined}
+              title={waiting ? "The CTO is waiting on you" : undefined}
+              // Pressing the open item keeps it open (CTO stays on its thread);
+              // the held tab above, or a chat in its list, leads back.
+              {...pressActivation(() => {
+                if (active) return;
+                openTab(item.to);
+              })}
+            >
+              <span className="relative inline-flex shrink-0">
+                <item.icon size={15} weight={active ? "fill" : "regular"} />
+                {waiting ? (
+                  <span className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning" />
+                ) : null}
+              </span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+        {/* Help: ADE Tips, "Show me around again", docs. */}
+        <HelpMenu
+          align="start"
+          side="above"
+          className="ade-project-sidebar-footer-item ade-project-sidebar-footer-help"
+          iconSize={15}
+        />
+        {settingsVisible ? (
           <button
             type="button"
-            className="ade-project-sidebar-footer-back"
-            {...pressActivation(() => {
-              // `navigate` can return a promise, and a press action returns its undo.
-              void navigate(heldRoute);
-            })}
+            className="ade-project-sidebar-footer-item ade-project-sidebar-footer-settings"
+            data-active={settingsActive ? "true" : undefined}
+            aria-current={settingsActive ? "page" : undefined}
+            aria-label="Settings"
+            title={settingsActive ? "Back" : "Settings"}
+            {...pressActivation(openSettings)}
           >
-            <ArrowLeft size={15} />
-            <span>Back</span>
+            <GearSix size={15} weight={settingsActive ? "fill" : "regular"} />
           </button>
-        ) : (
-          <>
-            {visibleProjectSidebarTabs(PROJECT_SIDEBAR_FOOTER_TABS).map((item) => {
-              const active = activeTab === item.to;
-              const waiting = item.to === "/cto" && ctoAwaitingInput;
-              return (
-                <button
-                  key={item.to}
-                  type="button"
-                  className="ade-project-sidebar-footer-item"
-                  data-active={active ? "true" : undefined}
-                  aria-current={active ? "page" : undefined}
-                  title={waiting ? "The CTO is waiting on you" : undefined}
-                  {...pressActivation(() => openTab(item.to))}
-                >
-                  <span className="relative inline-flex shrink-0">
-                    <item.icon size={15} weight={active ? "fill" : "regular"} />
-                    {waiting ? (
-                      <span className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning" />
-                    ) : null}
-                  </span>
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-            {/* Help: ADE Tips, "Show me around again", docs. */}
-            <HelpMenu
-              align="start"
-              side="above"
-              className="ade-project-sidebar-footer-item ade-project-sidebar-footer-help"
-              iconSize={15}
-            />
-            {settingsVisible ? (
-              <button
-                type="button"
-                className="ade-project-sidebar-footer-item ade-project-sidebar-footer-settings"
-                data-active={settingsActive ? "true" : undefined}
-                aria-current={settingsActive ? "page" : undefined}
-                aria-label="Settings"
-                title={settingsActive ? "Back" : "Settings"}
-                {...pressActivation(openSettings)}
-              >
-                <GearSix size={15} weight={settingsActive ? "fill" : "regular"} />
-              </button>
-            ) : null}
-          </>
-        )}
+        ) : null}
       </div>
 
       <ProjectSidebarResizeHandle />

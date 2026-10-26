@@ -3074,6 +3074,23 @@ desktop-only PR that adds a case cannot skip the Swift suite and break main.
 Hand-written twin tests prove today's parity and nothing about tomorrow's — two
 divergences had already been caught by review rather than by a failing test.
 
+#### Links and skill chips on a message's long-press
+
+A message block is one SwiftUI `Text`, which has no menu per link, so the
+block's existing long-press menu (Copy message, Open full response) gains a
+section listing that block's links (at most eight, read from the same
+attributed string the block draws, so a chat link is named by the chat's live
+title). Each opens to Open and Copy link; a skill chip opens to View
+instructions and Copy /name. `WorkMessageLinkMenuItems` builds the section
+only when the menu is drawn. Skill chips link to the in-app `ade-skill://`
+scheme: a tap opens `WorkSkillInstructionsSheet`, which reads the skill's
+SKILL.md from the chat's own machine with `chat.getSkillInstructions`
+(viewer-allowed, optional; the brain resolves it through `readAgentSkill`
+from the chat lane's worktree, then the user's and ADE's skill roots, and
+caps the body at 128 KB). A surface with no sheet, or a machine that does not
+advertise the action, keeps the chip a label and the menu offers Copy only.
+`-adePreviewScreen chat-links` and `skill-instructions` are the fixtures.
+
 ### Settled lifecycle and attention parity
 
 iOS mirrors `apps/desktop/src/shared/sessionCanonicalState.ts` in
@@ -3539,6 +3556,18 @@ behind the first keyframe and stays when the host reports `stream.idle` — the
 phone never polls a still while a session is mounted. The phone never calls
 `macDesktop.stop`. It calls `macDesktop.start` only from the Off card, and it
 sends pointer and keyboard input only after Take control.
+
+#### Closing a browser tab
+
+The Browser sheet's tab rows carry an × (and Close tab on their long-press)
+when the lane's machine advertises `workTools.closeBrowserTab` as callable
+from the phone. The host registers it controller-only and non-queueable, and
+closes only a tab that lane's pane shows; a tab already gone counts as
+closed. There is no confirmation: the row turns into "Closing “…”… Undo" for
+five seconds, and only then is the close sent, to the lane's own machine (the
+namespaced lane id routes it). Closing the sheet sends any close still
+waiting. A failure brings the row back with an alert. `-adePreviewScreen
+tools-close` and `tools-close-pending` are the fixtures.
 
 #### macOS chip, Off card, and full-screen viewer
 
@@ -4126,6 +4155,23 @@ instead of creating a poll loop. Pull-to-refresh and the explicit retry path
 bypass the window. Detail actions (merge / close / reopen / comment / edit)
 route through `SyncService.runDurablePrAction` so their spinners survive a tab
 switch + remount.
+
+#### Reactions, comment edits and live checks
+
+The Overview draws a reaction row under the description and under each
+conversation comment (`PrReactionBar`): one pill per reaction, the account's
+own tinted, and a + with GitHub's eight. An add shows at once and is taken
+back if `prs.reactToComment` fails. The host has no remove, so a reaction you
+gave is a reading, as on the desktop. The account's own comments (author ==
+the snapshot's `writeViewerLogin ?? viewerLogin`, kept per machine and
+project) get a pencil and an Edit comment long-press item that sends
+`prs.updateComment` (optional; the host checks the comment belongs to the PR
+and the account before it writes). While the PR is open on screen, the app is
+active, the link is up and any check is still running, the screen re-reads
+only its checks (`prs.getChecks`, or `prs.getChecksByGithub` for a PR with no
+row) every 45 s, every 120 s after ten minutes, and stops the moment CI
+settles, followed by one full reload. `-adePreviewScreen pr-conversation` is
+the fixture.
 
 ## Command policy from the runtime
 
@@ -4877,11 +4923,12 @@ the stats and shows update guidance.
   Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
   appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the
   generic `sonnet` alias resolves to Sonnet 5.5. The OpenAI picker
-  always promotes GPT-6 Astra, then GPT-5.6 Sol, Terra, Luna in that
-  order even when a host returns another order; Astra is the fallback default
+  always follows the Codex catalog order (GPT-6.1 Sol, GPT-6 Astra,
+  GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol, GPT-5.6 Luna) even when a
+  host returns another order; GPT-6.1 Sol is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
   tiers/defaults in their original order and falls back to Light / Medium /
-  High / Extra High / Max on Astra/Luna and through Ultra on Sol/Terra
+  High / Extra High / Max on the Lunas and through Ultra on Astra, the Sols and Terra
   (`low` for Astra/Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to

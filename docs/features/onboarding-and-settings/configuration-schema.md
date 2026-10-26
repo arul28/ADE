@@ -274,10 +274,17 @@ type LaneCleanupConfig = {
   maxActiveLanes?: number;
   cleanupIntervalHours?: number;
   autoArchiveAfterHours?: number;
-  autoDeleteArchivedAfterHours?: number;
-  deleteRemoteBranchOnCleanup?: boolean;
+  reclaimArchivedAfterHours?: number;
+  /** Remove build output from lanes idle this many days. Absent = 7; 0 = off. */
+  cleanBuildOutputAfterDays?: number;
+  autoDeleteArchivedAfterHours?: number; // deprecated: read as reclaimArchivedAfterHours
+  deleteRemoteBranchOnCleanup?: boolean; // deprecated: never deletes remote branches
 };
 ```
+
+`cleanBuildOutputAfterDays` is the one rule that is on without being set:
+a `local.yaml` with no value gets 7 days. See
+`docs/features/storage-and-recovery/README.md` ("Build output in idle lanes").
 
 Policy enforced by the lane cleanup service. UI lives in
 `StorageSection.tsx` (Project → Storage & cleanup → Rules), not

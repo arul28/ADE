@@ -170,10 +170,13 @@
             "icon": "book",
             "pages": [
               "sdk/threads",
+              "sdk/accounts",
               "sdk/mcp",
               "sdk/permissions",
               "sdk/chat-ui",
               "sdk/electron",
+              "sdk/server",
+              "sdk/testing",
               "sdk/runtime",
               "sdk/bundling"
             ]

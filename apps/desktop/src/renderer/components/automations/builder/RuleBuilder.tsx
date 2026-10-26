@@ -19,7 +19,6 @@ import type {
 } from "../../../../shared/types";
 import { isPullRequestTriggerType } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
-import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
 import { inputCls, sectionCls, textareaCls } from "../designTokens";
@@ -251,9 +250,10 @@ export function RuleBuilder({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Chip className="text-[9px]">{steps.length} step{steps.length === 1 ? "" : "s"}</Chip>
+            {/* A count, not a control: plain muted text, no border. */}
+            <span className="text-[11px] tabular-nums text-muted-fg">{steps.length} step{steps.length === 1 ? "" : "s"}</span>
             {onRunNow ? (
-              <Button size="sm" variant="outline" disabled={running || saving || !draft.id} onClick={onRunNow} title={draft.id ? "Run this rule now" : "Save first to run"}>
+              <Button size="sm" variant="outline" casing="sentence" disabled={running || saving || !draft.id} onClick={onRunNow} title={draft.id ? "Run this rule now" : "Save first to run"}>
                 <Play size={12} weight="fill" className={cn(running && "animate-pulse")} />
                 Run now
               </Button>
@@ -268,6 +268,7 @@ export function RuleBuilder({
             <Button
               size="sm"
               variant="primary"
+              casing="sentence"
               disabled={saving || Boolean(saveBlockedReason)}
               title={saveBlockedReason ?? undefined}
               onClick={onSave}

@@ -264,7 +264,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
       } else if (status?.autoMergeAllowed !== false) {
         stateItems.push({
           id: "auto-merge-on", label: "Enable auto-merge", icon: <GitMerge size={14} weight="duotone" />, tone: TONE.merge,
-          description: "GitHub merges it when every requirement passes",
+          description: "Merges once every requirement passes",
           disabled: busy === "auto-merge",
           onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: true, method: readLastMergeMethod(mergeMethod ?? "squash") }, ...onPin)),
         });
@@ -361,13 +361,9 @@ function renderItems(Parts: MenuParts, sections: PrMenuSection[]): React.ReactNo
 function ItemBody({ item }: { item: PrMenuItem }) {
   return (
     <>
-      <span className="mt-px inline-flex shrink-0 self-start" style={{ color: item.tone }}>{item.icon}</span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate" style={item.danger ? { color: COLORS.danger } : undefined}>{item.label}</span>
-        {item.description ? (
-          <span className="truncate text-[10.5px] text-muted-fg/70">{item.description}</span>
-        ) : null}
-      </span>
+      <span className="inline-flex shrink-0" style={{ color: item.tone }}>{item.icon}</span>
+      {/* One line per row, like every other menu; the description is the row's tooltip. */}
+      <span className="min-w-0 flex-1 whitespace-nowrap" style={item.danger ? { color: COLORS.danger } : undefined}>{item.label}</span>
       {item.hint ? <span className="shrink-0 font-mono text-[10px] text-muted-fg/60">{item.hint}</span> : null}
     </>
   );
@@ -377,7 +373,7 @@ function renderItem(Parts: MenuParts, item: PrMenuItem): React.ReactNode {
   if (item.submenu) {
     return (
       <Parts.Sub key={item.id}>
-        <Parts.SubTrigger className={MENU_ITEM_CLASS} data-testid={`pr-action-${item.id}`}>
+        <Parts.SubTrigger className={MENU_ITEM_CLASS} data-testid={`pr-action-${item.id}`} title={item.description}>
           <ItemBody item={item} />
           <CaretRight size={11} className="shrink-0 text-muted-fg/60" />
         </Parts.SubTrigger>
@@ -392,8 +388,9 @@ function renderItem(Parts: MenuParts, item: PrMenuItem): React.ReactNode {
   return (
     <Parts.Item
       key={item.id}
-      className={cn(MENU_ITEM_CLASS, "items-start")}
+      className={cn(MENU_ITEM_CLASS, "items-center")}
       disabled={item.disabled}
+      title={item.description}
       onSelect={() => item.onSelect?.()}
       data-testid={`pr-action-${item.id}`}
     >

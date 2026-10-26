@@ -292,7 +292,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  */
 const USAGE_SNAPSHOT_CACHE_VERSION = 6;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
+const machineAdeHome = process.env.ADE_HOME?.trim();
+const USAGE_SNAPSHOT_CACHE_PATH = path.join(
+  machineAdeHome ? path.resolve(machineAdeHome) : path.join(os.homedir(), ".ade"),
+  "cache",
+  "usage-snapshot.json",
+);
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
 const GITHUB_STATS_FAST_RESPONSE_TIMEOUT_MS = 2_500;
 let usageSnapshotCacheWriteTail: Promise<void> = Promise.resolve();

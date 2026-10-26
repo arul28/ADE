@@ -1,4 +1,5 @@
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
+import { readRecentHostStall } from "../runtime/hostStallRecord";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
@@ -292,6 +293,7 @@ import {
   evaluateRemoteCommandPolicy,
   remoteCommandArgsFingerprint,
   stableJsonKey,
+  type SyncBrowserTabCloser,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -1151,6 +1153,8 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabCloser | null;
   /**
    * The runtime's Mac Desktop service, when this host can hold a display.
    * Threaded for the same reason as `workToolsStateService`: the fallback
@@ -1657,6 +1661,7 @@ export function buildSyncHostHelloOkPayload(args: {
     ...args.localCommandDescriptors.map((entry) => entry.action),
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
+  const recentHostStall = readRecentHostStall();
   const payload: PairedRuntimeHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
@@ -1683,6 +1688,9 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.connectionTransport ? { connectionTransport: args.connectionTransport } : {}),
     ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
     ...(args.projectHost ? { projectHost: args.projectHost } : {}),
+    // Only while there is something to say: a device that reconnects after
+    // this machine froze learns why instead of blaming its network.
+    ...(recentHostStall ? { hostHealth: { lastStall: recentHostStall } } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,
@@ -2368,6 +2376,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    builtInBrowserService: args.builtInBrowserService ?? null,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,

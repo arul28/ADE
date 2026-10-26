@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import packagedAdeCliResourcesModule from "../../desktop/scripts/packaged-ade-cli-resources.cjs";
+import { EMBEDDED_EXCLUDED_PACKAGES } from "./build-runtime-npm-packages.mjs";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -208,6 +209,19 @@ for (const entryPath of bundledRuntimeEntryPaths) {
       `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("${museSdkRequire[2]}"); ` +
         "inline the ESM-only Muse SDK in tsup instead.",
     );
+  }
+  // The SDK's embedded runtime packages drop these from native/node_modules.
+  // A runtime entry that requires one would fail to start on an end user's
+  // machine, while still passing every smoke run on a machine that has this
+  // checkout's node_modules to fall back on.
+  for (const excluded of EMBEDDED_EXCLUDED_PACKAGES) {
+    if (entryContents.includes(`require("${excluded}")`) || entryContents.includes(`require('${excluded}')`)) {
+      throw new Error(
+        `[ade-cli:build] ${path.relative(packageRoot, entryPath)} requires ${excluded}, which the embedded ` +
+          "runtime npm packages leave out. Remove it from EMBEDDED_EXCLUDED_PACKAGES " +
+          "(scripts/build-runtime-npm-packages.mjs), or stop requiring it from the runtime.",
+      );
+    }
   }
 }
 

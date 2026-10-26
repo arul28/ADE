@@ -340,7 +340,8 @@ export function PrMergeCard({
       {step.kind === "merged" ? <PrShippedSummary pr={pr} /> : null}
 
       {primary || secondary || anyway.visible ? (
-        <div className="flex items-center gap-2">
+        // Labels never wrap: in a narrow pane a whole button moves to the next row.
+        <div className="flex flex-wrap items-center gap-1.5">
           {primary ? (
             <button
               type="button"
@@ -348,7 +349,7 @@ export function PrMergeCard({
               disabled={primary.busy || (primaryIsMerge && (actionBusy || Boolean(mergeBlockedReason)))}
               title={primaryIsMerge && mergeBlockedReason ? mergeBlockedReason : undefined}
               data-testid="pr-merge-card-primary"
-              className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold transition-opacity disabled:opacity-60"
+              className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[12.5px] font-semibold transition-opacity disabled:opacity-60"
               style={{
                 color: primaryIsMerge ? "#fff" : color,
                 background: primaryIsMerge ? MERGE_BUTTON_FILL : `color-mix(in srgb, ${color} 14%, transparent)`,
@@ -368,7 +369,7 @@ export function PrMergeCard({
               onClick={() => runAction(secondary.action)}
               disabled={secondary.busy}
               data-testid="pr-merge-card-secondary"
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-fg/[0.08]"
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2 text-[12px] font-medium hover:bg-fg/[0.08]"
               style={{ color: COLORS.textSecondary, background: COLORS.hoverBg, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
             >
               {secondary.busy ? <CircleNotch size={12} className="animate-spin" /> : null}
@@ -383,7 +384,7 @@ export function PrMergeCard({
               title={mergeBlockedReason ?? anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
               data-testid="pr-merge-anyway"
               data-bypass={anyway.bypass || undefined}
-              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-fg/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
+              className={`inline-flex h-8 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2 text-[12px] font-medium transition-colors hover:bg-fg/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
               style={{
                 color: anyway.bypass ? COLORS.danger : COLORS.textSecondary,
                 background: anyway.bypass ? `color-mix(in srgb, ${COLORS.danger} 12%, transparent)` : fgTint(6),

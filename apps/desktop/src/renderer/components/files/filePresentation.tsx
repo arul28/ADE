@@ -1,8 +1,9 @@
 import React from "react";
 import {
   BookOpenText,
+  BracketsCurly,
   FileZip as FileArchive,
-  FileCss as FileBraces,
+  FileCss,
   GearSix as FileCog,
   FileTs as FileCode2,
   FileImage,
@@ -78,7 +79,7 @@ export function getFileIcon(fileName: string): { icon: React.ComponentType<any>;
     return { icon: FileCode2, color: FILE_ICON_COLORS.code };
   }
   if (ext === ".json" || ext === ".jsonc") {
-    return { icon: FileBraces, color: FILE_ICON_COLORS.json };
+    return { icon: BracketsCurly, color: FILE_ICON_COLORS.json };
   }
   if (ext === ".yml" || ext === ".yaml" || ext === ".toml" || ext === ".ini") {
     return { icon: FileCog, color: FILE_ICON_COLORS.config };
@@ -87,7 +88,7 @@ export function getFileIcon(fileName: string): { icon: React.ComponentType<any>;
     return { icon: BookOpenText, color: FILE_ICON_COLORS.markdown };
   }
   if (ext === ".css" || ext === ".scss" || ext === ".sass" || ext === ".less") {
-    return { icon: FileCode2, color: FILE_ICON_COLORS.style };
+    return { icon: FileCss, color: FILE_ICON_COLORS.style };
   }
   if (ext === ".sh" || ext === ".bash" || ext === ".zsh" || ext === ".fish" || ext === ".ps1") {
     return { icon: TerminalSquare, color: FILE_ICON_COLORS.shell };

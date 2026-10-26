@@ -34,6 +34,8 @@ import type {
   AgentChatEventEnvelope,
   ApprovalKind,
   ApprovalRequest,
+  PendingInputOption,
+  PendingInputQuestion,
   ChatEventMcpSource,
   AgentChatResourceLink,
   ChatEventError,
@@ -99,6 +101,14 @@ export type ApprovalRow = {
   requestKind?: string;
   description: string;
   detail?: unknown;
+  requestId?: string;
+  title?: string | null;
+  source?: string;
+  questions?: PendingInputQuestion[];
+  options?: PendingInputOption[];
+  allowsFreeform?: boolean;
+  canProceedWithoutAnswer?: boolean;
+  providerMetadata?: Record<string, unknown>;
   turnId: string | null;
   state: ApprovalRowState;
 };
@@ -127,6 +137,82 @@ export function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function readPendingInputOptions(value: unknown): PendingInputOption[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((entry) => {
+    const record = readRecord(entry);
+    if (typeof record?.label !== "string" || typeof record.value !== "string") return [];
+    return [{
+      label: record.label,
+      value: record.value,
+      ...(typeof record.description === "string" ? { description: record.description } : {}),
+      ...(record.recommended === true ? { recommended: true } : {}),
+      ...(typeof record.preview === "string" ? { preview: record.preview } : {}),
+      ...(record.previewFormat === "markdown" || record.previewFormat === "html"
+        ? { previewFormat: record.previewFormat }
+        : {}),
+    }];
+  });
+}
+
+function readPendingInputQuestions(value: unknown): PendingInputQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((entry) => {
+    const record = readRecord(entry);
+    if (typeof record?.id !== "string" || typeof record.question !== "string") return [];
+    const options = readPendingInputOptions(record.options);
+    return [{
+      id: record.id,
+      question: record.question,
+      ...(typeof record.header === "string" ? { header: record.header } : {}),
+      ...(options ? { options } : {}),
+      ...(record.multiSelect === true ? { multiSelect: true } : {}),
+      ...(typeof record.allowsFreeform === "boolean" ? { allowsFreeform: record.allowsFreeform } : {}),
+      ...(record.isSecret === true ? { isSecret: true } : {}),
+      ...(typeof record.defaultAssumption === "string" || record.defaultAssumption === null
+        ? { defaultAssumption: record.defaultAssumption }
+        : {}),
+      ...(typeof record.impact === "string" || record.impact === null ? { impact: record.impact } : {}),
+    }];
+  });
+}
+
+/** Read the SDK's PendingInputRequest fields from either enriched events or their detail payload. */
+/**
+ * What an approval request is asking for: the top-level `requestKind` a
+ * current host sends, else the `detail.request.kind` older hosts sent (the
+ * same rule as ADE's `approvalRequestKind`). Without the fallback, an older
+ * host's questions and plan reviews render as Allow/Reject approvals.
+ */
+function approvalRequestKind(event: { requestKind?: string; detail?: unknown }): ApprovalRow["requestKind"] | undefined {
+  if (typeof event.requestKind === "string" && event.requestKind) return event.requestKind as ApprovalRow["requestKind"];
+  const kind = readRecord(readRecord(event.detail)?.request)?.kind;
+  return typeof kind === "string" && kind ? kind as ApprovalRow["requestKind"] : undefined;
+}
+
+function pendingInputFields(event: AgentChatEvent): Partial<ApprovalRow> {
+  const envelope = readRecord(event);
+  const detail = readRecord(envelope?.detail);
+  const request = readRecord(detail?.request) ?? readRecord(detail?.pendingInput) ?? detail;
+  const value = (key: string) => envelope?.[key] ?? request?.[key] ?? detail?.[key];
+  const fields: Partial<ApprovalRow> = {};
+  const requestId = value("requestId");
+  const title = value("title");
+  const source = value("source");
+  const questions = readPendingInputQuestions(value("questions"));
+  const options = readPendingInputOptions(value("options"));
+  const providerMetadata = readRecord(value("providerMetadata"));
+  if (typeof requestId === "string" && requestId) fields.requestId = requestId;
+  if (typeof title === "string" || title === null) fields.title = title;
+  if (typeof source === "string") fields.source = source;
+  if (questions) fields.questions = questions;
+  if (options) fields.options = options;
+  if (typeof value("allowsFreeform") === "boolean") fields.allowsFreeform = value("allowsFreeform") as boolean;
+  if (typeof value("canProceedWithoutAnswer") === "boolean") fields.canProceedWithoutAnswer = value("canProceedWithoutAnswer") as boolean;
+  if (providerMetadata) fields.providerMetadata = providerMetadata;
+  return fields;
 }
 
 export function eventHasPayload(value: unknown): boolean {
@@ -489,8 +575,10 @@ class RowCollapser {
         turnId: event.turnId ?? null,
         state: "pending",
       };
-      if (event.requestKind !== undefined) row.requestKind = event.requestKind;
+      const requestKind = approvalRequestKind(event);
+      if (requestKind !== undefined) row.requestKind = requestKind;
       if (event.detail !== undefined) row.detail = event.detail;
+      Object.assign(row, pendingInputFields(event));
 
       const held =
         this.orphanResolutions.get(event.itemId)
@@ -678,6 +766,14 @@ class RowCollapser {
       };
       if (request.requestKind !== undefined) row.requestKind = request.requestKind;
       if (request.detail !== undefined) row.detail = request.detail;
+      if (request.requestId !== undefined) row.requestId = request.requestId;
+      if (request.title !== undefined) row.title = request.title;
+      if (request.source !== undefined) row.source = request.source;
+      if (request.questions !== undefined) row.questions = request.questions;
+      if (request.options !== undefined) row.options = request.options;
+      if (request.allowsFreeform !== undefined) row.allowsFreeform = request.allowsFreeform;
+      if (request.canProceedWithoutAnswer !== undefined) row.canProceedWithoutAnswer = request.canProceedWithoutAnswer;
+      if (request.providerMetadata !== undefined) row.providerMetadata = request.providerMetadata;
       this.restoredIds.add(request.itemId);
       const index = this.insertByTimestamp({
         key: `approval:${request.itemId}`,

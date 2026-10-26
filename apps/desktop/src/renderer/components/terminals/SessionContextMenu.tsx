@@ -579,6 +579,10 @@ function SessionContextMenuPanel({
     </>
   );
 
+  // Tag writes need a live Claude SDK runtime (updateSession throws for ended
+  // sessions), so the item is only enabled while one runs.
+  const canSetTag = session.toolType === "claude-chat" && isRunning;
+
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
   const metadataActions = SESSION_METADATA_GENERATION_ACTIONS.filter((action) => {
@@ -605,7 +609,7 @@ function SessionContextMenuPanel({
               }}
             >
               <MenuRowIcon icon={PencilSimple} />
-              Rename…
+              Rename
             </button>
             <MenuSeparator />
           </>
@@ -696,7 +700,10 @@ function SessionContextMenuPanel({
         {renderIdentityContent()}
         {/* Tag writes need a live Claude SDK runtime (updateSession throws for
             ended sessions), so only offer the item while the session runs. */}
-        {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (
+        {/* Every chat row uses the same items in the same ORDER. An item that
+            does not apply right now is left out (a column of disabled rows only
+            made the menu taller), but nothing ever moves. */}
+        {!renaming && !tagging && canSetTag && onSetChatTag ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
@@ -707,7 +714,7 @@ function SessionContextMenuPanel({
             }}
           >
             <MenuRowIcon icon={Tag} />
-            Set tag…
+            Set tag
           </button>
         ) : null}
         {onTogglePinned ? (
@@ -786,7 +793,7 @@ function SessionContextMenuPanel({
             single place instead of split across the menu. */}
         {isChat ? (
           <MenuSubmenu
-            label="Hand off…"
+            label="Hand off"
             icon={<MenuRowIcon icon={ArrowBendUpRight} />}
             className={MENU_ITEM_CLASS}
             data-testid="session-menu-handoff"
@@ -801,7 +808,7 @@ function SessionContextMenuPanel({
               }}
             >
               <MenuRowIcon icon={GitFork} />
-              Local handoff
+              Local handoff…
             </button>
             <CrossMachineMoveSubmenu
               session={session}
@@ -842,19 +849,6 @@ function SessionContextMenuPanel({
           </MenuSubmenu>
         ) : null}
 
-        {isChat ? (
-          <button
-            type="button"
-            data-testid="session-menu-restart-agent"
-            className={MENU_ITEM_CLASS}
-            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
-            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
-          >
-            <MenuRowIcon icon={ArrowClockwise} />
-            Restart agent session
-          </button>
-        ) : null}
-
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button
             type="button"
@@ -887,48 +881,6 @@ function SessionContextMenuPanel({
           <MenuRowIcon icon={GitBranch} />
           Go to lane
         </button>
-        {onOpenSessionInWeb ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
-          >
-            <MenuRowIcon icon={Globe} />
-            Open in web
-          </button>
-        ) : null}
-
-        {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
-        <MenuSubmenu label="Copy" icon={<MenuRowIcon icon={Copy} />} className={MENU_ITEM_CLASS}>
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onCopySessionId(session.id); onClose(); }}
-          >
-            <MenuRowIcon icon={Hash} />
-            Session ID
-          </button>
-          {onCopySessionDeepLink ? (
-            <button
-              type="button"
-              className={MENU_ITEM_CLASS}
-              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
-            >
-              <MenuRowIcon icon={Link} />
-              Session deep link
-            </button>
-          ) : null}
-        </MenuSubmenu>
-
-        {openIn ? (
-          <OpenInSubmenu
-            rootPath={openIn.rootPath}
-            remote={openIn.remote}
-            onClose={onClose}
-            className={MENU_ITEM_CLASS}
-          />
-        ) : null}
-
         {/* Lane section — only on a singleton row, which has no lane divider to
             right-click. Appended to THIS menu rather than bound to a second
             gesture on some sub-region of the card: a hidden gesture nobody can
@@ -951,8 +903,64 @@ function SessionContextMenuPanel({
           />
         ) : null}
 
-        {/* ── Destructive, last and fenced off. ── */}
+        {openIn ? (
+          <OpenInSubmenu
+            rootPath={openIn.rootPath}
+            remote={openIn.remote}
+            onClose={onClose}
+            className={MENU_ITEM_CLASS}
+          />
+        ) : null}
+
+        {onOpenSessionInWeb ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
+          >
+            <MenuRowIcon icon={Globe} />
+            Open in web
+          </button>
+        ) : null}
+
+        <MenuSeparator />
+        {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
+        <MenuSubmenu label="Copy" icon={<MenuRowIcon icon={Copy} />} className={MENU_ITEM_CLASS}>
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onCopySessionId(session.id); onClose(); }}
+          >
+            <MenuRowIcon icon={Hash} />
+            Session ID
+          </button>
+          {onCopySessionDeepLink ? (
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
+            >
+              <MenuRowIcon icon={Link} />
+              Session deep link
+            </button>
+          ) : null}
+        </MenuSubmenu>
+
+        {/* ── Disruptive and destructive, last and fenced off. Restarting the
+            agent process sits here, not among the everyday lifecycle rows. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}
+        {isChat ? (
+          <button
+            type="button"
+            data-testid="session-menu-restart-agent"
+            className={MENU_ITEM_CLASS}
+            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
+            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Restart agent session
+          </button>
+        ) : null}
         {canStopRuntime ? (
           <button
             type="button"

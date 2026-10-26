@@ -25,6 +25,11 @@ import {
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { asObject, requiredString, type ObjectArgs } from "./rpcArgs";
+import { credentialStoreProviderForHarness } from "../../../../desktop/src/shared/harnessCredentialProviders";
+import { EmbeddedHostSettings } from "./embeddedHostSettings";
+import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import { isProviderInstanceProvider } from "../../../../desktop/src/shared/types/providerInstances";
 import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
 import { IMAGE_ATTACHMENT_MEDIA_TYPES } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -37,6 +42,13 @@ import {
   maxBase64EncodedLength,
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
+import { ACCOUNT_SCOPE_ALL } from "../../../../desktop/src/shared/accountSettingsScope";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../../desktop/src/shared/types/chat";
+import {
+  HARNESS_PRESETS_SETTING_KEY,
+  normalizeHarnessPreset,
+  normalizeHarnessPresetList,
+} from "../../../../desktop/src/shared/harnessPresets";
 
 /**
  * An embedder's message args, with every marker only ADE may author removed.
@@ -73,19 +85,6 @@ type PersonalChatScopeOptions = {
   runtimeProfile?: "chat" | "embedded";
 };
 
-type ObjectArgs = Record<string, unknown>;
-
-function asObject(value: unknown): ObjectArgs {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as ObjectArgs
-    : {};
-}
-
-function requiredString(value: unknown, label: string): string {
-  const normalized = typeof value === "string" ? value.trim() : "";
-  if (!normalized) throw new Error(`${label} is required.`);
-  return normalized;
-}
 
 function requiredBoolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
@@ -210,6 +209,7 @@ const DRAFT_SLASH_COMMANDS_TTL_MS = 15_000;
 
 export class PersonalChatScope {
   private runtimePromise: Promise<AdeRuntime> | null = null;
+  private readonly hostSettings = new EmbeddedHostSettings(() => this.getRuntime());
   private readonly personalTerminalSessions = new Map<string, string>();
   /**
    * A new draft's `/` menu, by provider and profile. Every draft pane asks on
@@ -231,6 +231,32 @@ export class PersonalChatScope {
       mcpToolFilters: true,
       deferredMcpUpdates: true,
     };
+  }
+
+  /**
+   * Hold a key the SDK host sent from its own vault for `credentialId`, in this
+   * runtime's memory only (`setHostApiCredential`).
+   */
+  private async acceptHostCredential(provider: string, credentialId: unknown, secret: unknown): Promise<void> {
+    if (typeof secret !== "string" || !secret.trim()) throw new Error("credentialSecret must be a non-empty string.");
+    const id = requiredString(credentialId, "credentialId (required with credentialSecret)");
+    if (!provider.trim()) throw new Error("credentialSecret needs the chat's provider.");
+    const { setHostApiCredential } = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
+    // Filed where a launch looks for it: under the harness's API vendor.
+    setHostApiCredential(credentialStoreProviderForHarness(provider), id, secret);
+  }
+
+  /** Provider accounts, credentials and presets: see `EmbeddedHostSettings`. */
+  providerAccountsCall(action: unknown, args: unknown): Promise<unknown> {
+    return this.hostSettings.providerAccounts(action, args);
+  }
+
+  credentialsCall(action: unknown, args: unknown): Promise<unknown> {
+    return this.hostSettings.credentials(action, args);
+  }
+
+  presetsCall(action: unknown, args: unknown): Promise<unknown> {
+    return this.hostSettings.presets(action, args);
   }
 
   /**
@@ -348,6 +374,50 @@ export class PersonalChatScope {
       case "create": {
         const provider = requiredString(args.provider, "provider") as AgentChatCreateArgs["provider"];
         const model = requiredString(args.model, "model");
+        if (args.instanceId !== undefined && args.instanceId !== null) {
+          const instanceId = requiredString(args.instanceId, "instanceId");
+          if (!isProviderInstanceProvider(provider)) {
+            throw new Error(`Provider '${provider}' does not support account instances.`);
+          }
+          const instance = getMachineProviderInstanceStore().get(instanceId);
+          if (!instance || instance.provider !== provider) {
+            throw new Error(`Provider account '${instanceId}' was not found for '${provider}'.`);
+          }
+        }
+        if (args.credentialSecret !== undefined) {
+          await this.acceptHostCredential(provider, args.credentialId, args.credentialSecret);
+        }
+        if (args.credentialId !== undefined && args.credentialId !== null) {
+          const credentialId = requiredString(args.credentialId, "credentialId");
+          const { getApiCredentialSummary } = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
+          // Keys are filed under the API vendor, not the harness: a Claude
+          // chat runs on an `anthropic` key, a Codex chat on an `openai` one.
+          const keyProvider = credentialStoreProviderForHarness(provider);
+          if (!getApiCredentialSummary(keyProvider, credentialId)) {
+            throw new Error(`Credential '${credentialId}' was not found for '${provider}' (keys for it are filed under '${keyProvider}').`);
+          }
+        }
+        if (args.presetId !== undefined && args.presetId !== null) {
+          const presetId = requiredString(args.presetId, "presetId");
+          const storedPresets = runtime.accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY);
+          const snapshot = normalizeHarnessPreset(args.presetSnapshot);
+          const stored = Array.isArray(storedPresets) && normalizeHarnessPresetList(storedPresets).some((preset) => preset.id === presetId);
+          if (!stored && snapshot?.id !== presetId) {
+            throw new Error(`Harness preset '${presetId}' was not found.`);
+          }
+        }
+        if (args.reasoningEffort !== undefined && args.reasoningEffort !== null) {
+          requiredString(args.reasoningEffort, "reasoningEffort");
+        }
+        if (args.fastMode !== undefined && typeof args.fastMode !== "boolean") {
+          throw new Error("fastMode must be a boolean.");
+        }
+        if (args.permissionMode !== undefined && args.permissionMode !== null) {
+          const permissionMode = requiredString(args.permissionMode, "permissionMode");
+          if (!(AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(permissionMode)) {
+            throw new Error(`Unsupported permissionMode '${permissionMode}'.`);
+          }
+        }
         const laneId = await this.getInternalLaneId(runtime);
         const kickoffText = typeof args.kickoffText === "string" ? args.kickoffText.trim() : "";
         // `requestedCwd` is validated here, at the boundary an external
@@ -377,6 +447,9 @@ export class PersonalChatScope {
           // Stamped only by the RPC server on an agent's or the CTO's call. A
           // caller-sent actor here would claim a launcher it does not have.
           runtimeActor: _runtimeActor,
+          // A host-vault key is held in memory by `acceptHostCredential`; it
+          // must never reach the session record, which is written to disk.
+          credentialSecret: _credentialSecret,
           ...forwarded
         } = args;
         // What this chat is for. An embedded runtime (an SDK host) is always
@@ -420,6 +493,11 @@ export class PersonalChatScope {
           laneId,
           provider,
           model,
+          ...(args.instanceId != null ? { instanceId: args.instanceId as string } : {}),
+          ...(args.credentialId != null ? { credentialId: args.credentialId as string } : {}),
+          ...(args.presetId != null ? { presetId: args.presetId as string } : {}),
+          ...(args.reasoningEffort != null ? { reasoningEffort: args.reasoningEffort as string } : {}),
+          ...(args.fastMode !== undefined ? { fastMode: args.fastMode as boolean } : {}),
           surface: "personal",
           personalProfile,
           // The assistant runs as a full chat (tool gate, approval cards, the
@@ -564,6 +642,15 @@ export class PersonalChatScope {
         result = await service.continueUsageLimitOnAlternate({ sessionId });
         break;
       }
+      case "switchAccount": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.switchAccount({
+          sessionId,
+          instanceId: requiredString(args.instanceId, "instanceId"),
+        });
+        break;
+      }
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
@@ -572,8 +659,16 @@ export class PersonalChatScope {
         // `requirePersonalSession` has just established, and validates them
         // exactly as create does. `runtimeActor` is dropped: only the RPC
         // server stamps it, so a caller-sent actor never reaches the service.
-        const { runtimeActor: _runtimeActor, ...updateArgs } = args;
-        await service.updateSession(updateArgs as never);
+        const { runtimeActor: _runtimeActor, credentialSecret, credentialId: _credentialId, ...updateArgs } = args;
+        if (credentialSecret !== undefined) {
+          // The SDK re-supplies a host-vault key on every open and resume,
+          // because this runtime keeps it in memory only.
+          const summary = await service.getSessionSummary(sessionId);
+          await this.acceptHostCredential(summary?.provider ?? "", args.credentialId, credentialSecret);
+        }
+        if (Object.keys(updateArgs).some((key) => key !== "sessionId")) {
+          await service.updateSession(updateArgs as never);
+        }
         // The same shape create returns. The summary already withholds header
         // values, so the reply never echoes back a credential the host sent.
         result = await service.getSessionSummary(sessionId);

@@ -7,10 +7,11 @@
  * belongs to the picture. Everything else — text, borders, status colours,
  * corners, fonts — stays the theme's. The accent's foreground, bright and deep
  * shades and its muted tint are left to the resolver, which derives them from
- * the new accent exactly as it does for any custom theme.
+ * the new accent exactly as it does for any custom theme. Only the plain Dark
+ * and Light themes take the picture's colours; a named theme keeps its own.
  */
 
-import { resolveTheme, type AdeTheme, type AdeThemePalette } from "../../shared/theme";
+import { resolveTheme, STYLESHEET_THEME_IDS, type AdeTheme, type AdeThemePalette } from "../../shared/theme";
 import { fromHsl, toHsl, type Rgb, type ScenePalette } from "./scenePalette";
 
 function hex([r, g, b]: Rgb): string {
@@ -39,6 +40,12 @@ function mixHex(base: string, tint: Rgb, amount: number): string {
 const ACCENT_DERIVED: (keyof AdeThemePalette)[] = ["accentFg", "accentBright", "accentDeep", "accentMuted", "separatorActive"];
 
 export function themeTintedByScene(theme: AdeTheme, scene: ScenePalette): AdeTheme {
+  // The picture recolours only the plain Dark and Light themes. A named theme
+  // (Terracotta, Synthwave, an imported one) is chosen for its colours, so it
+  // keeps its own accent and surfaces; the picture still owns the backdrop.
+  if (!(theme.source === "builtin" && STYLESHEET_THEME_IDS.includes(theme.id))) {
+    return theme.flair ? { ...theme, flair: { ...theme.flair, backdrop: "none" } } : theme;
+  }
   const resolved = resolveTheme(theme).palette;
   const isDark = theme.baseMode === "dark";
   // ramp[3] is the picture's leading colour at accent strength; its hue and

@@ -25,7 +25,7 @@ import type {
   SettingSourcesCapability,
 } from "./hostConfig.js";
 
-/** Chat providers ADE can drive. Kept closed at the SDK boundary on purpose. */
+/** Known provider ids for autocomplete; provider strings remain open for newer runtimes. */
 export type AdeProvider =
   | "claude"
   | "codex"
@@ -33,7 +33,14 @@ export type AdeProvider =
   | "droid"
   | "opencode"
   | "pi"
-  | "muse";
+  | "muse"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
+  | "devin"
+  | "antigravity"
+  | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
@@ -296,6 +303,10 @@ export type AgentChatEvent = {
  * `"acp"` covers all four ACP dialects, because the permission round trip is
  * one method there. `"ade"` is a request ADE staged itself.
  */
+/**
+ * Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
+ * Devin, Antigravity) all report `"acp"`, not their own name.
+ */
 export type PendingInputSource =
   | "claude"
   | "codex"
@@ -370,6 +381,132 @@ export type PendingInputRequest = {
   turnId?: string | null;
 };
 
+/** The stop modes personal-chat callers can request. */
+export type AgentChatStopMode =
+  | "stop_only"
+  | "stop_and_clear"
+  | "stop_and_background"
+  | "stop_and_clear_and_background"
+  | "stop_and_clear_and_children"
+  | "stop_everything_and_children";
+
+export type AgentChatInterruptArgs = { sessionId: string; mode?: AgentChatStopMode };
+export type AgentChatStopTaskArgs = { sessionId: string; taskId: string };
+export type AgentChatCancelSteerArgs = { sessionId: string; steerId: string; requireQueued?: boolean };
+export type AgentChatEditSteerArgs = { sessionId: string; steerId: string; text: string };
+export type AgentChatMoveSteerArgs = { sessionId: string; steerId: string; toIndex: number };
+export type AgentChatDispatchSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  mode: "inline" | "interrupt";
+};
+export type AgentChatCancelDispatchedSteerArgs = { sessionId: string; steerId: string };
+export type AgentChatRestoreCancelledQueueArgs = { sessionId: string; recoveryId: string };
+export type AgentChatRecoverTurnArgs = {
+  sessionId: string;
+  turnId: string;
+  action: "wait" | "nudge" | "retry_same_runtime" | "restart_resume";
+};
+export type AgentChatResolveUnprocessedMessageArgs = {
+  sessionId: string;
+  steerId: string;
+  action: "run_next" | "dismiss";
+};
+export type AgentChatRespondToInputArgs = {
+  sessionId: string;
+  itemId: string;
+  decision?: "accept" | "accept_for_session" | "decline" | "cancel";
+  answers?: Record<string, string | string[]>;
+  responseText?: string | null;
+};
+export type AgentChatResumeUsageLimitNowArgs = { sessionId: string };
+export type AgentChatContinueUsageLimitOnAlternateArgs = { sessionId: string };
+export type AgentChatSwitchAccountArgs = { sessionId: string; instanceId: string };
+export type AgentChatSlashCommand = {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  source: "sdk" | "local";
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  server?: string;
+};
+
+export type AgentChatInterruptResult = {
+  mode: AgentChatStopMode;
+  cancelledQueuedCount: number;
+  stoppedChildChatCount?: number;
+  recoveryId?: string;
+  recoveryExpiresAt?: string;
+};
+export type AgentChatStopTaskResult = {
+  sessionId: string;
+  taskId: string;
+  stopped: boolean;
+  reason?: string;
+};
+export type AgentChatRecoverTurnResult = {
+  action: AgentChatRecoverTurnArgs["action"];
+  turnId: string;
+  status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+export type AgentChatResolveUnprocessedMessageResult = {
+  steerId: string;
+  action: AgentChatResolveUnprocessedMessageArgs["action"];
+  status: "completed" | "already_completed";
+  replacementMessageId?: string;
+};
+export type AgentChatSwitchAccountResult =
+  | { ok: true; instanceId: string }
+  | { ok: false; reason: "busy" | "signed_out" | "failed"; message: string };
+export type AgentChatUsageLimitResult =
+  | { ok: true; turnId: string | null }
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: string; message: string };
+
+/** Runtime-derived controls available for a provider. */
+export type ProviderCapabilities = {
+  permissionModes: AgentChatPermissionMode[];
+  reasoningEfforts: string[];
+  fastMode: boolean;
+  multipleAccounts: boolean;
+  signIn: "cli-login" | "device-code" | "api-key" | "none";
+  apiKeys: boolean;
+  presets: boolean;
+  mcp: "full" | "partial" | "none";
+};
+
+/**
+ * A thread's usage-limit state, as the runtime publishes it on
+ * `session_meta_updated.usageLimitResume` (a copy of
+ * `AgentChatUsageLimitResume`). The runtime republishes the whole value on
+ * every transition and sends null when the limit clears.
+ */
+export type UsageLimitResume = {
+  state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
+  provider: AdeProvider;
+  /** When the resume prompt is sent (reset + buffer). Null when unknown. */
+  fireAt: string | null;
+  /** The reset the provider published. Null when unknown. */
+  resetAt: string | null;
+  /** Turn that hit the limit. */
+  turnId: string | null;
+  updatedAt: string;
+  /** Another signed-in account with room, chosen by the runtime. */
+  alternateAccount?: { instanceId: string; label: string } | null;
+  [key: string]: unknown;
+};
+
+/** The client `usageLimit` event: one thread's limit state changed. */
+export type UsageLimitEvent = {
+  /** Thread key; empty when the session is not one this client opened by key. */
+  key: string;
+  sessionId: string;
+  provider: AdeProvider;
+  /** The current state, or null when the limit cleared. */
+  status: UsageLimitResume | null;
+};
+
 /** Result of the `pendingInputs` action. */
 export type PendingInputsResult = {
   requests: PendingInputRequest[];
@@ -377,7 +514,26 @@ export type PendingInputsResult = {
 
 /** The narrowed members most consumers actually branch on. */
 export type KnownAgentChatEvent =
-  | { type: "user_message"; text: string; displayText?: string; messageId?: string; turnId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      displayText?: string;
+      messageId?: string;
+      turnId?: string;
+      steerId?: string;
+      deliveryState?: "queued" | "accepted" | "processed" | "unprocessed" | "delivered" | "inline" | "failed";
+      attachments?: AgentChatFileRef[];
+    }
+  | { type: "user_message_resolution"; steerId: string; action: "run_next" | "dismiss"; state: "completed"; replacementMessageId?: string }
+  | { type: "queue_reordered"; steerIds: string[] }
+  | {
+    type: "queue_recovery";
+    recoveryId: string;
+    state: "available" | "restored" | "expired";
+    messageCount: number;
+    /** On `restored`: the messages put back in the queue. */
+    restoredSteers?: Array<{ steerId: string; text: string; attachments?: AgentChatFileRef[] }>;
+  }
   | { type: "text"; text: string; messageId?: string; turnId?: string }
   | { type: "reasoning"; text?: string; turnId?: string }
   | { type: "tool_call"; tool: string; args: unknown; itemId: string; turnId?: string }
@@ -419,6 +575,20 @@ export type KnownAgentChatEvent =
     }
   | { type: "status"; [key: string]: unknown }
   | { type: "error"; [key: string]: unknown }
+  | {
+      type: "budget_exceeded";
+      budget: { maxCostUsd?: number; maxTokens?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+        complete?: boolean;
+        contextWindow?: number;
+        costUsd?: number;
+      };
+      turnId?: string;
+      resumed?: boolean;
+    }
   | { type: "done"; [key: string]: unknown };
 
 /** Event types the SDK routes to the `usage` channel of `AdeThread.on`. */
@@ -437,6 +607,7 @@ export const STATUS_EVENT_TYPES = [
   "session_meta_updated",
   "interrupt_receipt",
   "capabilities_changed",
+  "budget_exceeded",
 ] as const;
 
 /**
@@ -780,6 +951,10 @@ export type ProviderStatus = {
   checkedAt: string;
   /** Human-readable note from the probe, when it had one. */
   detail?: string | null;
+  /** Provider controls, present only when the runtime advertises them. */
+  capabilities?: ProviderCapabilities;
+  /** Config-home isolation used by this runtime, when it can report it. */
+  isolation?: "isolated" | "shared";
 };
 
 /**
@@ -811,6 +986,8 @@ export type ProviderStatusProbeRecord = {
   stale?: boolean;
   checkedAt?: string;
   detail?: string | null;
+  capabilities?: ProviderCapabilities;
+  isolation?: "isolated" | "shared";
 };
 
 /** Result of the `providers.status` machine RPC. */
@@ -932,6 +1109,10 @@ export type DoctorReport = {
     gapsRecovered: number;
   };
   providers: Record<string, ProviderStatus>;
+  logins: {
+    mode: "isolated" | "machine" | "attached";
+    perProvider: Record<string, "isolated" | "shared" | "unknown">;
+  };
   threads: { tracked: number; live: number };
   /** Most recent errors the client recorded, newest last. Capped. */
   recentErrors: Array<{ at: string; scope: string; message: string }>;

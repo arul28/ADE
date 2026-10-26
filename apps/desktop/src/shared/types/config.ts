@@ -220,6 +220,11 @@ export type LaneCleanupConfig = {
   autoArchiveAfterHours?: number;
   /** Mark archived lane files ready for review after this many hours. 0 = never. */
   reclaimArchivedAfterHours?: number;
+  /**
+   * Remove rebuildable build output (node_modules, dist, .next, ...) from lane
+   * worktrees idle this many days. Absent = 7 (on by default); 0 = off.
+   */
+  cleanBuildOutputAfterDays?: number;
   /** @deprecated Read as reclaimArchivedAfterHours for older local.yaml files. */
   autoDeleteArchivedAfterHours?: number;
   /** @deprecated Cleanup never deletes remote branches automatically. */

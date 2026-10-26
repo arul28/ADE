@@ -76,10 +76,10 @@ const TriggerButton = React.forwardRef<HTMLButtonElement, React.ComponentPropsWi
   value: React.ReactNode;
   muted?: boolean;
   active?: boolean;
-}>(function TriggerButton({ value, muted, active, ...rest }, ref) {
+}>(function TriggerButton({ value, muted: _muted, active, ...rest }, ref) {
   return (
     <button ref={ref} type="button" className={TRIGGER_CLASS} data-active={active ? "true" : undefined} {...rest}>
-      <span className={cn("min-w-0 flex-1 truncate", muted && "text-muted-fg/70")}>{value}</span>
+      <span className="min-w-0 flex-1 truncate">{value}</span>
       <CaretUpDown size={10} className="shrink-0 text-muted-fg/60" aria-hidden />
     </button>
   );

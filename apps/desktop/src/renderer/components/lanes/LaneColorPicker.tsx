@@ -8,6 +8,8 @@ type Props = {
   usedColors?: Set<string>;
   usedColorOwners?: Map<string, string>;
   swatchSize?: number;
+  /** Wrap the swatches after this many per row (narrow surfaces like a menu). */
+  maxPerRow?: number;
 };
 
 export function LaneColorPicker({
@@ -16,6 +18,7 @@ export function LaneColorPicker({
   usedColors,
   usedColorOwners,
   swatchSize = 22,
+  maxPerRow,
 }: Props) {
   const selected = value?.toLowerCase() ?? null;
 
@@ -29,6 +32,7 @@ export function LaneColorPicker({
         usedColorOwners={usedColorOwners}
         onChange={onChange}
         swatchSize={swatchSize}
+        maxPerRow={maxPerRow}
       />
       <SwatchGroup
         label="Classic"
@@ -38,6 +42,7 @@ export function LaneColorPicker({
         usedColorOwners={usedColorOwners}
         onChange={onChange}
         swatchSize={swatchSize}
+        maxPerRow={maxPerRow}
         trailing={<CustomSwatch value={value ?? null} onChange={onChange} swatchSize={swatchSize} />}
       />
     </div>
@@ -53,6 +58,7 @@ function SwatchGroup({
   onChange,
   swatchSize,
   trailing,
+  maxPerRow,
 }: {
   label: string;
   colors: readonly LaneColor[];
@@ -62,6 +68,7 @@ function SwatchGroup({
   onChange: (color: string) => void;
   swatchSize: number;
   trailing?: React.ReactNode;
+  maxPerRow?: number;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -76,7 +83,11 @@ function SwatchGroup({
       >
         {label}
       </span>
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div
+        className="flex flex-wrap items-center gap-1.5"
+        // gap-1.5 is 6px between swatches.
+        style={maxPerRow ? { maxWidth: maxPerRow * swatchSize + (maxPerRow - 1) * 6 } : undefined}
+      >
         {colors.map((entry) => {
           const isSelected = selected === entry.hex.toLowerCase();
           const isTaken = !isSelected && (usedColors?.has(entry.hex.toLowerCase()) ?? false);

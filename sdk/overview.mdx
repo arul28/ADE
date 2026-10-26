@@ -52,11 +52,25 @@ flowchart TB
 
 The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --socket <path> --profile embedded`, and exposes `threads.open(key)`. Reopening the same key after a restart continues the conversation. [`doctor()`](/sdk/reference#doctor) reports the SDK version, the runtime version, the socket, and provider auth.
 
-Provider logins are **not** stored under the sidecar home. Claude / Codex / Cursor credentials stay in those tools' own config homes. If the machine user can already run that provider in a terminal, the sidecar can too.
+SDK 0.7 uses isolated provider logins by default; set `useMachineLogin: true`
+to reuse the host machine's Claude or Codex login. `doctor()` reports the active
+login mode. See [Accounts](/sdk/accounts).
+
+## What's new in 0.7
+
+SDK 0.7 keeps the runtime range at `>=1.2.82 <2.0.0`; new runtime actions are
+feature-detected. It adds provider accounts and sign-in, secret-safe API
+credentials and endpoint presets, provider capability reports, per-thread
+account/credential/preset selection, usage-limit handling, and queue/recovery
+controls.
+
+- **BREAKING: login isolation is the default.** Machine logins are no longer reused implicitly. Set `useMachineLogin: true` to preserve SDK 0.6 behavior, or sign the user in under the app's isolated runtime.
+- **Host-owned secrets.** `resolveSecret(provider, credentialId)` sends a vault value only to the live runtime session; it is not written to the SDK thread store.
+- **Usage limits.** Pick `wait`, `failover` or `ask` and listen for `usageLimit` when the host needs to show a decision.
 
 ## What's new in 0.6
 
-`@ade-dev/sdk` 0.6.0 and `@ade-dev/chat-ui` 0.6.0 are the current versions (chat-ui's source is unchanged). SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0`, the same range as 0.5. On an older runtime, tool filters are refused before they are sent (they need `capabilities.personalChats.mcpToolFilters`), and a mid-turn `updateMcpServers` is refused with `turn_in_flight` instead of queued. The header refresh needs nothing new.
+SDK 0.6.0 supported runtime `>=1.2.82 <2.0.0`, the same range as 0.5. On an older runtime, tool filters are refused before they are sent (they need `capabilities.personalChats.mcpToolFilters`), and a mid-turn `updateMcpServers` is refused with `turn_in_flight` instead of queued. The header refresh needs nothing new.
 
 - **Tokens that expire during a chat.** `mcpHeaders` may be async, and it runs before every `send`, `retry` and `editLast`: a changed token is pushed before the turn, and `thread.refreshMcpHeaders()` pushes one on demand. See [Tokens that expire during a chat](/sdk/mcp#tokens-that-expire-during-a-chat).
 - **Per-server tool filters.** `allowedTools` / `disallowedTools` on an MCP server choose which of its tools reach the model. A filter the provider cannot enforce is refused, never dropped. See [Filtering a server's tools](/sdk/mcp#filtering-a-servers-tools).

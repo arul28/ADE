@@ -58,7 +58,11 @@ export type {
   ThreadUpdateResult,
   ThreadRerunResult,
   EditLastOptions,
+  ThreadQueueItem,
+  ThreadInterruptOptions,
+  ThreadRespondOptions,
 } from "./thread.js";
+export type { AccountInfo, AccountUsage, ApiCredentialInfo, SignInHandle, SignInStatus } from "./accounts.js";
 export { SUPPORTED_RUNTIME_RANGE, checkRuntimeCompatibility } from "./compatibility.js";
 export { parseToolIdentity, type ToolIdentity } from "./toolIdentity.js";
 export { inferAttachmentType } from "./attachments.js";
@@ -69,8 +73,10 @@ export {
   type ResolvePackagedRuntimeOptions,
 } from "./packagedRuntime.js";
 export { AdeError, type AdeErrorCode } from "./errors.js";
+export { InvalidOutputError, validateJsonSchema, type JsonSchema, type RunOptions } from "./run.js";
 export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
+export type { ThreadBudget, ThreadUsage } from "./usage.js";
 export { SUPPORTED_PROVIDERS, isSupportedProvider } from "./permissions.js";
 export { pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 
@@ -145,6 +151,9 @@ export type {
   ProviderStatus,
   ProviderStatusProbeRecord,
   ProviderStatusRpcResult,
+  ProviderCapabilities,
+  UsageLimitEvent,
+  UsageLimitResume,
   RuntimeCompatibility,
   SyntheticRuntimeLostStatusEvent,
   ThreadCapabilities,

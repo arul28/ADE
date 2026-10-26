@@ -61,20 +61,21 @@ describe("bundled model manifest", () => {
     expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
   });
 
-  it("orders the Codex rows with GPT-6.1 Sol ahead of Astra", () => {
+  it("orders the Codex rows with GPT-6.1 Sol, Astra, and Terra first", () => {
     const ids = listModelDescriptorsForProvider("codex").map((model) => model.id);
-    expect(ids.slice(0, 4)).toEqual([
+    expect(ids.slice(0, 5)).toEqual([
       "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
+      "openai/gpt-6.1-terra",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
     ]);
   });
 
-  it("makes Claude Opus 5.5 the app-wide and Claude default, keeping Astra for Codex", () => {
+  it("makes Claude Opus 5.5 the app-wide and Claude default, keeping GPT-6.1 Sol for Codex", () => {
     expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
     expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-opus-5-5");
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6-astra");
+    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6.1-sol");
     expect(listModelDescriptorsForProvider("claude")[0]?.id).toBe("anthropic/claude-fable-5-1");
   });
 });
@@ -254,19 +255,19 @@ describe("applyModelManifest", () => {
 describe("adoptHostModelManifest", () => {
   it("re-gates the same file for a host on a different ADE version", () => {
     const gated = manifest({
-      models: [{ id: "openai/gpt-5.6-terra", minAdeVersion: "1.3.0", fields: { deprecated: true } }],
+      models: [{ id: "openai/gpt-6-astra", minAdeVersion: "1.3.0", fields: { deprecated: true } }],
     });
     expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.2.90" })).toBe(true);
-    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBeFalsy();
+    expect(getModelById("openai/gpt-6-astra")?.deprecated).toBeFalsy();
     // Same updatedAt, newer host: the gate now opens.
     expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.3.1" })).toBe(true);
-    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBe(true);
+    expect(getModelById("openai/gpt-6-astra")?.deprecated).toBe(true);
     // Same file, same host version: nothing to do.
     expect(adoptHostModelManifest({ manifest: gated, adeVersion: "1.3.1" })).toBe(false);
     // Switching to a host with an older file still takes that host's view.
     const olderUngated = manifest({ updatedAt: "2029-01-01T00:00:00Z" });
     expect(adoptHostModelManifest({ manifest: olderUngated, adeVersion: "1.2.90" })).toBe(true);
-    expect(getModelById("openai/gpt-5.6-terra")?.deprecated).toBeFalsy();
+    expect(getModelById("openai/gpt-6-astra")?.deprecated).toBeFalsy();
   });
 
   it("adopts only a manifest newer than the active one", () => {

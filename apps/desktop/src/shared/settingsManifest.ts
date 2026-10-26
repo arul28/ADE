@@ -1172,6 +1172,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Cleanups",
   },
   {
+    id: "storage.lane-build-output",
+    label: "Clean build output from idle lanes",
+    keywords: ["node_modules", "dist", "build", "target", ".next", "build output", "idle", "disk space", "free space", "cleanup", "reinstall"],
+    tab: "storage",
+    anchor: "lane-build-output",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Cleanups",
+  },
+  {
     id: "storage.session-lifecycle",
     label: "Session lifecycle",
     keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],

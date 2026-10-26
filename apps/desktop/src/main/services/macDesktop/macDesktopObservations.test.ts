@@ -9,6 +9,10 @@ import {
   MAC_DESKTOP_OBSERVATION_CACHE_DIR,
   MAC_DESKTOP_OBSERVATION_RETENTION,
 } from "./macDesktopObservations";
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-obs-"));
@@ -142,7 +146,7 @@ describe("macDesktopObservations out paths", () => {
     // because the test's project root itself lives in the temp dir.
     const outside = fs.mkdtempSync(path.join(os.homedir(), "ade-outside-"));
     const link = path.join(os.tmpdir(), `ade-out-link-${Date.now()}`);
-    fs.symlinkSync(outside, link, "dir");
+    fs.symlinkSync(outside, link, DIRECTORY_LINK_TYPE);
     const store = createMacDesktopObservations({
       projectRoot,
       resolveLaneWorktreePath: () => worktree,
@@ -191,7 +195,7 @@ describe("macDesktopObservations out paths", () => {
     // test's temp dir, which is now allowed on purpose.
     const outside = fs.mkdtempSync(path.join(os.homedir(), "ade-outside-"));
     fs.mkdirSync(worktree, { recursive: true });
-    fs.symlinkSync(outside, path.join(worktree, "link"), "dir");
+    fs.symlinkSync(outside, path.join(worktree, "link"), DIRECTORY_LINK_TYPE);
     const store = createMacDesktopObservations({
       projectRoot,
       resolveLaneWorktreePath: () => worktree,
@@ -206,7 +210,8 @@ describe("macDesktopObservations out paths", () => {
     try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* best effort */ }
   });
 
-  it("refuses a leaf that is itself a symlink", async () => {
+  // A file symlink needs Developer Mode on Windows, and Mac Desktop is macOS only.
+  it.skipIf(process.platform === "win32")("refuses a leaf that is itself a symlink", async () => {
     const projectRoot = makeRoot();
     const worktree = path.join(projectRoot, "worktrees", "lane-1");
     const outside = path.join(projectRoot, "outside");

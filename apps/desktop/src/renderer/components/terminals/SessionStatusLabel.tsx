@@ -14,6 +14,8 @@ import {
   NotePencil,
   Moon,
   RocketLaunch,
+  SunHorizon,
+  XCircle,
 } from "@phosphor-icons/react";
 import {
   SESSION_TONE_TEXT_CLASS,
@@ -58,12 +60,15 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
       return <Circle size={9} weight="fill" aria-hidden className="shrink-0" />;
     case "stale":
       return <Clock size={13} weight="regular" aria-hidden className="shrink-0" />;
+    // Not the alarm clock: that is Waiting's mark, and the two sat in the same
+    // column in different colours meaning different things.
     case "woke":
-      return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
+      return <SunHorizon size={13} weight="regular" aria-hidden className="shrink-0" />;
     case "snoozed":
       return <Moon size={12} weight="fill" aria-hidden className="shrink-0" />;
-    // `failed` deliberately has no glyph — red plus the word is already the
-    // loudest thing on the row.
+    // Every status in the column leads with a glyph, so the words line up.
+    case "failed":
+      return <XCircle size={13} weight="bold" aria-hidden className="shrink-0" />;
     default:
       return null;
   }

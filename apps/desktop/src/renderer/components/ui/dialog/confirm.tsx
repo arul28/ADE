@@ -46,6 +46,8 @@ export type ConfirmDialogOptions = {
    * or whose owner unmounts.
    */
   signal?: AbortSignal;
+  /** Panel width. Default `sm`; `md` for a confirm that names long user content. */
+  size?: "sm" | "md";
 };
 
 export type ConfirmDialogCheckbox = {
@@ -330,7 +332,7 @@ function ConfirmDialogView({
       }}
       role="alertdialog"
       layer="nestedDialog"
-      size="sm"
+      size={options.size ?? "sm"}
       tone={tone}
       icon={icon || undefined}
       // A toned confirm wears the notice card's faint tone edge too.

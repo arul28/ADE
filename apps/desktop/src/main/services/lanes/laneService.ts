@@ -27,6 +27,7 @@ import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinR
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -55,6 +56,7 @@ import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
+import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
 import type {
   ArchiveAndReclaimLaneArgs,
@@ -340,7 +342,8 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-const WORKTREE_REMOVE_ATTEMPTS = 20;
+/** Each attempt's child already retries a held file for ~11 s (see removeTreeOffProcess). */
+const WORKTREE_REMOVE_ATTEMPTS = 3;
 const WORKTREE_REMOVE_RETRY_MS = 250;
 
 function isRetryableRemoveError(error: unknown): boolean {
@@ -352,14 +355,18 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Remove a worktree directory, recovering from read-only files and — on
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
- * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
- * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
- * Electron a plain `fs` rm fails on every `.asar` file in the tree.
+ * bounded schedule instead of failing the cleanup outright. Exported only for
+ * the Windows lock-retry regression test.
+ *
+ * Every attempt runs in a separate process (see removeTreeOffProcess): a lane
+ * folder can hold hundreds of thousands of files, and a removal that stopped
+ * at one held file can leave most of them, so even a retry here would stall
+ * every other file operation in this process.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+      await removeTreeOffProcess(targetPath);
       return;
     } catch (error) {
       if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
@@ -433,31 +440,12 @@ async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
   return fs.existsSync(path.resolve(checkoutPath, gitdir));
 }
 
+/**
+ * Bytes a reclaim would free: blocks on disk, each hard-linked file once and
+ * pnpm store clones left out, without following links (`diskUsage`).
+ */
 async function managedTreeBytes(targetPath: string): Promise<number> {
-  let total = 0;
-  const pending = [targetPath];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.lstat(current);
-    } catch {
-      continue;
-    }
-    if (stat.isSymbolicLink()) continue;
-    if (!stat.isDirectory()) {
-      total += Math.max(0, stat.size);
-      continue;
-    }
-    let names: string[];
-    try {
-      names = await fs.promises.readdir(current);
-    } catch {
-      continue;
-    }
-    for (const name of names) pending.push(path.join(current, name));
-  }
-  return total;
+  return (await measureTree(targetPath)).bytes;
 }
 
 async function hasSymlinkInManagedPath(rootPath: string, targetPath: string): Promise<boolean> {
@@ -5424,7 +5412,8 @@ export function createLaneService({
       projectRoot,
       store: db,
       run: runAppleCommand,
-      removeDirectory: (directory: string) => fs.promises.rm(directory, { recursive: true, force: true }),
+      // DerivedData runs to gigabytes; see removeTreeOffProcess.
+      removeDirectory: removeTreeOffProcess,
       removeRecordings: options.removeRecordings,
       derivedDataDirectories: options.worktreePath && !pathsEqual(path.resolve(options.worktreePath), path.resolve(projectRoot))
         ? [appleLaneDerivedDataPath(options.worktreePath)]
@@ -6897,7 +6886,7 @@ export function createLaneService({
             );
           } catch (cleanupError) {
             try {
-              nonAsarFs.rmSync(worktreePath, { recursive: true, force: true });
+              await removeWorktreeDirectoryWithRecovery(worktreePath);
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
                 await runGitWorktreeMutation(() =>
@@ -8941,7 +8930,7 @@ export function createLaneService({
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
-            await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+            await removeWorktreeDirectoryWithRecovery(targetPath);
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
           throw error;
@@ -9740,6 +9729,21 @@ export function createLaneService({
         activePtyCount,
         activeWatcherCount,
         envInitialized: false
+      };
+    },
+
+    /**
+     * What runs in the lane on this machine right now: open chats, live
+     * terminals (dev servers run in one) and file watchers. Cheap: no git, no
+     * disk. Null until the chat and terminal services are wired, so a caller
+     * deciding whether the lane is idle cannot mistake "not known yet" for 0.
+     */
+    getLiveWorkCounts(laneId: string): { activeChatCount: number; activePtyCount: number; activeWatcherCount: number } | null {
+      if (!teardownDeps?.ptyService || !teardownDeps.agentChatService) return null;
+      return {
+        activeChatCount: teardownDeps.agentChatService.countActiveForLane(laneId),
+        activePtyCount: teardownDeps.ptyService.countActiveForLane(laneId),
+        activeWatcherCount: teardownDeps.fileWatcherService?.countActiveForWorkspace(laneId) ?? 0,
       };
     },
 

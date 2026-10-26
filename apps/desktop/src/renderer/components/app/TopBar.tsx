@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { announceHostStall } from "../../lib/hostStallToast";
 import {
   AppWindow,
   ArrowLineRight,
@@ -805,6 +806,15 @@ export function TopBar({
       setRemoteSnapshot((current) =>
         current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
       );
+      // A machine that froze says so when it is reached again; once per freeze.
+      for (const connection of snapshot.connections) {
+        if (!connection.hostStall) continue;
+        announceHostStall({
+          stall: connection.hostStall,
+          machineKey: connection.target.id,
+          machineName: connection.target.name?.trim() || connection.target.hostname,
+        });
+      }
     },
     [],
   );

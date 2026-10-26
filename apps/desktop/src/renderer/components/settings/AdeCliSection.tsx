@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowsClockwise, CheckCircle, Info, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, Info, Warning } from "@phosphor-icons/react";
 import type { AdeCliStatus } from "../../../shared/types";
 import { rendererPlatformAttribute } from "../../lib/platform";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
@@ -104,8 +104,8 @@ export function AdeCliSection({ embedded = false }: Props) {
             disabled={loading || installing}
             onClick={() => void refresh()}
           >
-            <ArrowsClockwise size={13} weight="bold" />
-            Refresh
+            <ArrowClockwise size={13} />
+            Check again
           </button>
           <button
             type="button"

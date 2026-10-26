@@ -191,11 +191,11 @@ export function LaneList({
             <button
               type="button"
               className="ade-modern-btn"
-              data-variant="ghost"
               data-size="sm"
+              title="Stale lanes with nothing to lose. The others need a look first (Archive…)."
               onClick={() => setSelected(new Set(selectableStale.map((lane) => lane.laneId)))}
             >
-              Select {selectableStale.length} stale
+              Select {selectableStale.length} safe to archive
             </button>
           ) : null}
           {selected.size > 0 ? (
@@ -225,6 +225,16 @@ export function LaneList({
         </div>
       ) : (
         <ul className="ade-lanes-list" aria-label="Lanes">
+          {/* Column names for the right-hand values; visual only, each row's
+              cells already say what they are to a screen reader. */}
+          <li className="ade-lanes-headrow" aria-hidden>
+            <span />
+            <span>Lane</span>
+            <span>PR</span>
+            <span className="ade-lanes-when">Updated</span>
+            <span className="ade-lanes-size">Size</span>
+            <span />
+          </li>
           {visible.map((lane) => (
             <LaneRow
               key={lane.laneId}

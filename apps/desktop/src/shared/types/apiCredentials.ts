@@ -10,7 +10,8 @@ export type ApiCredentialSummary = {
   baseUrl?: string;
   protocol?: "openai-compatible" | "openai-responses" | "anthropic";
   models?: string[];
-  source: "store" | "env" | "config";
+  /** `host`: an SDK host's key, held in the runtime's memory for this run only. */
+  source: "store" | "env" | "config" | "host";
   createdAt: string;
   updatedAt: string;
   maskedTail?: string;

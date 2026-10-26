@@ -12,6 +12,8 @@ import {
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { getPrCiDotColor, getPrReviewDotColor } from "../prs/shared/prVisuals";
 import { LanePrHoverCard } from "../lanes/LanePrHoverCard";
+import { PaneTooltip } from "../ui/PaneTooltip";
+import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
 
 function StatusDot({ color, title }: { color: string; title?: string }) {
   return (
@@ -90,7 +92,11 @@ export function LanePrBadge({
     const color = lanePrStateColor(primaryPr.state);
     const label = lanePrStateLabel(primaryPr.state);
     return (
+      // Its own one-line tooltip, and the row's detail card stays away while
+      // the pointer is here: the chip opens the PR, not the chat.
+      <PaneTooltip label={`Open PR #${primaryPr.githubPrNumber}`} side="bottom">
       <span
+        {...rowHoverSuppressProps}
         role="button"
         tabIndex={0}
         onClick={openPill}
@@ -100,8 +106,7 @@ export function LanePrBadge({
             openPill(event);
           }
         }}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-fg/[0.09]"
-        title={`${prTitle(primaryPr)}${stackDescription}`}
+        className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:border-fg/25 hover:bg-fg/[0.10] hover:text-fg"
         aria-label={`Pull request #${primaryPr.githubPrNumber}, ${label}${stackDescription}`}
       >
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
@@ -109,6 +114,7 @@ export function LanePrBadge({
         <GitHubStackBadge stack={primaryPr.stack} compact bare />
         <span style={{ color }}>{label}</span>
       </span>
+      </PaneTooltip>
     );
   }
 

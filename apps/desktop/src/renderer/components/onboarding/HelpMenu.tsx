@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
-import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
+import { Question, ArrowSquareOut, BookOpen, Check, Compass, Lightbulb, Sparkle, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
@@ -94,47 +94,38 @@ export function HelpMenu({
         aria-label="Help"
         className={cn(MENU_SURFACE_CLASS, "ade-help-menu")}
         // The shared menu paint; the help rows keep their own type size.
-        style={{ minWidth: 268, fontSize: 12.5 }}
+        style={{ minWidth: 220, maxWidth: 280, fontSize: 12.5 }}
       >
-        <MenuItem onClick={handleOpenWhatsNew}>What's new</MenuItem>
-        <MenuItem onClick={handleOpenTips}>ADE Tips</MenuItem>
-        <MenuItem onClick={handleShowAround}>Show me around again</MenuItem>
-        <MenuItem onClick={handleOpenDocs}>
+        <MenuItem icon={Sparkle} onClick={handleOpenWhatsNew}>What's new</MenuItem>
+        <MenuItem icon={Lightbulb} onClick={handleOpenTips}>ADE Tips</MenuItem>
+        <MenuItem icon={Compass} onClick={handleShowAround}>Show me around again</MenuItem>
+        <MenuItem icon={BookOpen} onClick={handleOpenDocs}>
           <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
-          <ArrowSquareOut size={11} weight="regular" />
+          <ArrowSquareOut size={11} weight="regular" style={{ opacity: 0.55 }} />
         </MenuItem>
 
         <MenuDivider />
 
-        <SectionLabel>Help preferences</SectionLabel>
         <CheckboxItem
           checked={smartTooltipsEnabled}
           onToggle={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
-          label="Show detailed hover tooltips"
-          hint="Extra detail appears when you hover a button — what it does and what would happen."
+          label="Detailed tooltips"
+          hint="Hovering a button also explains what it does and what would happen."
         />
       </AnchoredMenu>
     </>
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        padding: "6px 10px 2px",
-        fontSize: 10.5,
-        opacity: 0.6,
-        textTransform: "uppercase",
-        letterSpacing: 0.5,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function MenuItem({
+  children,
+  onClick,
+  icon: Icon,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  icon: PhosphorIcon;
+}) {
   return (
     <button
       type="button"
@@ -144,9 +135,11 @@ function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: (
       style={{
         alignItems: "center",
         padding: "6px 10px",
-        gap: 6,
+        gap: 8,
+        whiteSpace: "nowrap",
       }}
     >
+      <Icon size={14} weight="duotone" style={{ flexShrink: 0, opacity: 0.55 }} />
       {children}
     </button>
   );
@@ -169,11 +162,13 @@ function CheckboxItem({
       role="menuitemcheckbox"
       aria-checked={checked}
       onClick={onToggle}
+      title={hint}
       className="ade-help-menu-item"
       style={{
-        alignItems: "flex-start",
+        alignItems: "center",
         gap: 8,
-        padding: "7px 10px",
+        padding: "6px 10px",
+        whiteSpace: "nowrap",
       }}
     >
       <span
@@ -184,7 +179,6 @@ function CheckboxItem({
           justifyContent: "center",
           width: 14,
           height: 14,
-          marginTop: 1,
           flex: "0 0 auto",
           borderRadius: 3,
           border: "1px solid rgba(255,255,255,0.24)",
@@ -194,22 +188,7 @@ function CheckboxItem({
       >
         {checked ? <Check size={10} weight="bold" /> : null}
       </span>
-      <span style={{ flex: 1 }}>
-        <span style={{ display: "block", fontSize: 12.5 }}>{label}</span>
-        {hint ? (
-          <span
-            style={{
-              display: "block",
-              marginTop: 2,
-              fontSize: 11,
-              lineHeight: 1.4,
-              color: "var(--color-muted-fg, #908FA0)",
-            }}
-          >
-            {hint}
-          </span>
-        ) : null}
-      </span>
+      <span style={{ flex: 1, textAlign: "left", fontSize: 12.5 }}>{label}</span>
     </button>
   );
 }

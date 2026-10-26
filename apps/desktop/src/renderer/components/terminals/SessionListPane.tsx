@@ -139,7 +139,7 @@ const EMPTY_LANE_IDS: string[] = [];
 const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   activity: "Recent",
   name: "Name",
-  created: "New",
+  created: "Newest",
   manual: "Manual",
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
@@ -278,6 +278,7 @@ type ForeignLaneEntry = {
   shelf: WorkLaneShelf | null;
   /** Rolled-up lane status for the header dot; null when nothing is live. */
   focusStatus: WorkLaneFocusStatus | null;
+  focusFailed: boolean;
 };
 
 /**
@@ -555,6 +556,7 @@ function StickyGroupHeader({
   dropIndicatorEdge = null,
   layoutDependency,
   laneStatus = null,
+  laneFailed = false,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -631,6 +633,8 @@ function StickyGroupHeader({
    * board column's accent. Null when every row is snoozed or settled.
    */
   laneStatus?: WorkLaneFocusStatus | null;
+  /** A chat in the lane failed: the collapsed dot turns red. */
+  laneFailed?: boolean;
 }) {
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
@@ -838,7 +842,8 @@ function StickyGroupHeader({
                   className="shrink-0 text-muted-fg/45"
                 />
               ) : null}
-              {isLane && laneStatus ? <LaneFocusStatusDot status={laneStatus} /> : null}
+              {/* Only a collapsed lane needs the summary; an open one shows its chats. */}
+              {isLane && collapsed && laneStatus ? <LaneFocusStatusDot status={laneStatus} failed={laneFailed} /> : null}
               {machineMarker}
               {prBadge}
               {headerAction}
@@ -1934,7 +1939,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (snoozedRows + settledRows === 0) return null;
       return settledRows > snoozedRows ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf, focusStatus: focus.status };
+    return { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf, focusStatus: focus.status, focusFailed: focus.failed };
   });
 
   // Foreign composite ids fold and return exactly like local lane ids: a
@@ -2580,9 +2585,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             foreignRow?.binding,
             foreignRow?.machineName,
             options?.laneActions,
-            openIn && !options?.laneActions
-              ? openIn
-              : null,
+            // Every row offers "Open in", singleton or grouped: one menu shape.
+            openIn ?? null,
             sessionLane?.laneType,
             boardUnion.waitingReasons.get(session.id) ?? null,
           );
@@ -3234,6 +3238,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
         layoutDependency={laneOrderSignature}
         laneStatus={laneFocusByLaneId.get(lane.id)?.status ?? null}
+        laneFailed={laneFocusByLaneId.get(lane.id)?.failed ?? false}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: list.filter((session) =>
@@ -3399,6 +3404,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : null}
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
         laneStatus={entry.focusStatus}
+        laneFailed={entry.focusFailed}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: quietTop.snoozed.length,
@@ -3965,8 +3971,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               data-testid="work-view-mode-toggle"
             >
               {([
-                { mode: "list" as const, label: "List", Icon: ListBullets, description: "Group sessions in the scrolling list." },
-                { mode: "board" as const, label: "Board", Icon: Kanban, description: "Lay sessions out as a board: Needs you, Working, Waiting, Done." },
+                { mode: "list" as const, label: "List", Icon: ListBullets, description: "One scrolling list." },
+                { mode: "board" as const, label: "Board", Icon: Kanban, description: "Columns by status." },
               ]).map(({ mode, label, Icon, description }) => (
                 <SmartTooltip key={mode} content={{ label, description }}>
                   <button
@@ -4202,11 +4208,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           </div>
         ) : !hasAnySessions && !hasForeignSessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
-            <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
-            <div className="text-[11px] font-medium text-fg/70">No sessions</div>
-            <div className="mt-1 text-[10px] text-muted-fg/40 leading-relaxed max-w-[180px]">
-              Start a new session above.
-            </div>
+            <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
+            <div className="text-[12px] font-medium text-fg/70">No chats yet</div>
+            <div className="mt-1 text-[11px] text-muted-fg/60">Start one from the prompt box</div>
           </div>
         ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
           <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">

@@ -75,10 +75,30 @@ function toolbarButton(on: boolean, extra?: React.CSSProperties): React.CSSPrope
     fontSize: 11,
     borderRadius: 6,
     color: on ? COLORS.accent : COLORS.textSecondary,
+    ...(on ? { border: `1px solid ${COLORS.accentBorder}`, background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
     whiteSpace: "nowrap",
     flexShrink: 0,
     ...extra,
   });
+}
+
+/** One option of the Split | Unified segmented control: selected = fill. */
+function segmentButton(on: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    height: 22,
+    padding: "0 8px",
+    fontSize: 11,
+    fontWeight: 500,
+    fontFamily: SANS_FONT,
+    borderRadius: 5,
+    border: "none",
+    whiteSpace: "nowrap",
+    cursor: "pointer",
+    color: on ? COLORS.textPrimary : COLORS.textSecondary,
+    background: on ? "color-mix(in srgb, var(--color-fg) 10%, transparent)" : "transparent",
+  };
 }
 
 function makeFileContents(path: string, contents: string, suffix: string): FileContents {
@@ -338,16 +358,26 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
           className="@container flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
           style={{ minHeight: compact ? 30 : 34, padding: compact ? "3px 6px" : "4px 8px", background: COLORS.recessedBg }}
         >
-          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(layout === "split")} onClick={() => setLayout("split")}>
-            Split
-          </button>
-          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(layout === "unified")} onClick={() => setLayout("unified")}>
-            Unified
-          </button>
-          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(overflow === "wrap")} onClick={() => setOverflow((value) => (value === "wrap" ? "scroll" : "wrap"))}>
+          {/* Split | Unified is one choice (a segmented control); Wrap, Lines
+              and Whitespace are independent toggles, set apart by a divider. */}
+          <div
+            role="radiogroup"
+            aria-label="Diff layout"
+            className="inline-flex shrink-0 items-center gap-px rounded-[7px] p-px"
+            style={{ border: `1px solid ${COLORS.outlineBorder}` }}
+          >
+            <button type="button" role="radio" aria-checked={layout === "split"} className={TOOLBAR_BUTTON_CLASS} style={segmentButton(layout === "split")} onClick={() => setLayout("split")}>
+              Split
+            </button>
+            <button type="button" role="radio" aria-checked={layout === "unified"} className={TOOLBAR_BUTTON_CLASS} style={segmentButton(layout === "unified")} onClick={() => setLayout("unified")}>
+              Unified
+            </button>
+          </div>
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-fg/[0.12]" />
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(overflow === "wrap")} aria-pressed={overflow === "wrap"} onClick={() => setOverflow((value) => (value === "wrap" ? "scroll" : "wrap"))}>
             Wrap
           </button>
-          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(lineNumbers)} onClick={() => setLineNumbers((value) => !value)}>
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(lineNumbers)} aria-pressed={lineNumbers} onClick={() => setLineNumbers((value) => !value)}>
             Lines
           </button>
           <button

@@ -228,7 +228,7 @@ export function NotificationsSection() {
                   title="Escalate to phone"
                   hint={
                     account.desktopFirstEnabled
-                      ? "How long an event waits on the desktop before your phone gets it too."
+                      ? "How long before your phone gets it too."
                       : "Turn on “Quiet while ADE is focused” to delay the phone."
                   }
                   control={

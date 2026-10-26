@@ -241,7 +241,7 @@ describe("createAgentChatService", () => {
       expect(startParams?.reasoning_effort).toBeUndefined();
     });
 
-    it("routes new Codex chats to GPT-6 Astra with its low default", async () => {
+    it("routes new Codex chats to GPT-6.1 Sol with its low default", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -250,8 +250,8 @@ describe("createAgentChatService", () => {
       });
 
       expect(session).toMatchObject({
-        model: "gpt-6-astra",
-        modelId: "openai/gpt-6-astra",
+        model: "gpt-6.1-sol",
+        modelId: "openai/gpt-6.1-sol",
         reasoningEffort: "low",
       });
       await service.sendMessage({ sessionId: session.id, text: "Reply only OK." });
@@ -261,12 +261,12 @@ describe("createAgentChatService", () => {
 
       const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       expect(threadStart?.params).toMatchObject({
-        model: "gpt-6-astra",
+        model: "gpt-6.1-sol",
         config: { model_reasoning_effort: "low" },
       });
       const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect(turnStart?.params).toMatchObject({
-        model: "gpt-6-astra",
+        model: "gpt-6.1-sol",
         effort: "low",
       });
     });

@@ -77,7 +77,8 @@ import {
   type MachineLane,
 } from "../../state/laneMachineRouting";
 import { useLanesPageMachines } from "./useLanesPageMachines";
-import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import {
@@ -361,7 +362,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const createBusyRef = useRef(false);
   const canCreateLane = Boolean(activeProjectRoot);
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
-  const [deleteForce, setDeleteForce] = useState(true);
+  const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
@@ -1500,7 +1501,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageInitialTab(initialTab);
     setManagedLaneIds(manageable);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [bulkActionableLaneIds, foreignRowByKey]);
@@ -1749,7 +1750,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!lane || lane.laneType === "primary" || deletingLaneIds.has(targetId)) return;
     setManagedLaneIds([targetId]);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
     setPulsingLaneId(targetId);
@@ -2073,7 +2074,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageInitialTab(null);
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [deletingLaneIds, foreignRowByKeyRef, selectLane]);
@@ -2095,7 +2096,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (machineBlockedReason(row) || row.lane.laneType === "primary") return;
     setManageInitialTab(initialTab);
     setLaneActionError(null);
-    setDeleteForce(true);
+    setDeleteForce(false);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setForeignManageKey(row.key);
   }, []);
@@ -2184,7 +2185,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .then(() => {
         clearForeignSelection(target.key);
       })
-      .catch((error) => {
+      .catch(async (error) => {
+        // The answer was lost, not the delete: the row stays "deleting" while
+        // that machine is checked, and a lane that left was deleted after all.
+        if (isRemoteOutcomeUnknownError(error) && await confirmForeignLaneDeleted(target.machineId, target.lane.id)) {
+          clearForeignSelection(target.key);
+          return;
+        }
         showToast({
           title: `Could not delete ${target.lane.name}`,
           message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),

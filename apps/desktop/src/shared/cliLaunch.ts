@@ -1080,13 +1080,14 @@ export type ProviderInstanceLaunchTarget = {
 export function providerInstanceLaunchEnv(
   provider: LaunchProfile,
   instance: ProviderInstanceLaunchTarget | null | undefined,
+  options: { allowDefaultConfigHome?: boolean } = {},
 ): Record<string, string> {
   if (!instance) return {};
   const configHome = instance.configHome?.trim();
   if (!configHome) return {};
   if (!isProviderInstanceProvider(provider) || provider !== instance.provider) return {};
   // The base identity inherits the environment; see `isBaseProviderInstance`.
-  if (isBaseProviderInstance(instance)) return {};
+  if (isBaseProviderInstance(instance) && options.allowDefaultConfigHome !== true) return {};
   return { [PROVIDER_INSTANCE_ENV_KEY[instance.provider]]: configHome };
 }
 

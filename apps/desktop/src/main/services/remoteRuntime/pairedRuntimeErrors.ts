@@ -170,15 +170,18 @@ export class RemoteConnectBackoffError extends Error {
  * The connection dropped while a call that may not run twice was in flight, so
  * ADE cannot say whether the machine ran it. `reconnected` says whether the
  * machine answered again right after: then it is reachable, and only this one
- * call's outcome is unknown.
+ * call's outcome is unknown. Null when another call dropped the connection and
+ * owns reconnecting it: this call cannot say how that went.
  */
 export class RemoteActionOutcomeUnknownError extends Error {
   readonly code = "REMOTE_ACTION_OUTCOME_UNKNOWN";
 
-  constructor(readonly reconnected: boolean) {
+  constructor(readonly reconnected: boolean | null) {
     super(
       "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-        (reconnected
+        (reconnected === null
+          ? "Check whether it finished on that machine before retrying it."
+          : reconnected
           ? "ADE reconnected to the machine; retry the action if it is still needed."
           : "ADE could not reconnect to the machine; check the destination before retrying the action."),
     );

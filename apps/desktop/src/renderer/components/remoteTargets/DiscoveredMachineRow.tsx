@@ -101,7 +101,7 @@ export function DiscoveredMachineRow({
       </div>
       {testOpen ? (
         <div id={`remote-discovered-test-${machine.id}`}>
-          <ConnectionDoctorPanel machineId={machine.id} />
+          <ConnectionDoctorPanel machineId={machine.id} machineName={machine.machineName} />
         </div>
       ) : null}
     </div>

@@ -818,7 +818,7 @@ export function CommitHistoryView({
           ))}
         </div>
       ) : rowCount === 0 && !matches ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-muted-fg">No commits yet</div>
+        <div className="flex flex-1 items-center justify-center text-[12.5px] text-muted-fg/70">No commits yet</div>
       ) : (
         <div
           ref={scrollRef}

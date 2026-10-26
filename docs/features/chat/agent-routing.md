@@ -205,19 +205,19 @@ forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
 The OpenAI section follows the Codex catalog's own order on every ADE model surface:
 
-1. `openai/gpt-6.1-sol` (`gpt-6.1-sol`) — 1,050,000 context; default effort `low`; `$2/$10`. Alias `sol`. Released builds get it from the model manifest.
-2. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
-3. `openai/gpt-6-sol` (`gpt-6-sol`) — 1,050,000 context; default effort `medium`; `$2/$10`.
-4. `openai/gpt-6-luna` (`gpt-6-luna`) — 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
-5. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
-6. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+1. `openai/gpt-6.1-sol` (`gpt-6.1-sol`) — default Codex model; 1,050,000 context; default effort `low`; `$2/$10`. Alias `sol`.
+2. `openai/gpt-6-astra` (`gpt-6-astra`) — 1,050,000 context; default effort `low`.
+3. `openai/gpt-6.1-terra` (`gpt-6.1-terra`) — 1,050,000 context; default effort `low`; `$1/$5`. Alias `terra`. Released builds get it from the model manifest.
+4. `openai/gpt-6-sol` (`gpt-6-sol`) — 1,050,000 context; default effort `medium`; `$2/$10`.
+5. `openai/gpt-6-luna` (`gpt-6-luna`) — 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
+6. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
 7. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
 8. `openai/gpt-5.5` (`gpt-5.5`) — legacy; still runs on a ChatGPT sign-in.
 
-Astra and both Lunas expose `low | medium | high | xhigh | max`; the Sols and
+Both Lunas expose `low | medium | high | xhigh | max`; Astra, the Sols and
 Terra expose `low | medium | high | xhigh | max | ultra`. Desktop, ADE Code,
-and iOS label those values Light, Medium, High, Extra High, Max, and (for the
-Sols/Terra) Ultra. Runtime app-server ladders retain their advertised order.
+and iOS label those values Light, Medium, High, Extra High, Max, and Ultra.
+Runtime app-server ladders retain their advertised order.
 `ultra` is the multi-agent tier and carries a usage warning.
 
 The picker shows only the Codex rows that the app server's `model/list`
@@ -226,7 +226,8 @@ so a registry row such as GPT-6.1 Sol appears on the next catalog refresh
 after the account gets access, with no ADE release. A ChatGPT sign-in can no
 longer run GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.3-Codex-Spark, or
 GPT-5.2; those rows are `deprecated` so persisted chats still resolve, but no
-picker offers them.
+picker offers them. GPT-5.6 Terra is `deprecated` the same way: Codex still
+lists it, but GPT-6.1 Terra replaced it.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle
