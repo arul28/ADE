@@ -205,7 +205,10 @@ async function copyInlinedPackageNotices(bundleRoot, packageName) {
   }
 
   await visit(sourceRoot);
-  if (copied === 0 || (expectedNoticePath && !(await exists(path.join(bundleRoot, ...expectedNoticePath.split("/"))))) {
+  const expectedNoticeMissing = expectedNoticePath
+    ? !(await exists(path.join(bundleRoot, ...expectedNoticePath.split("/"))))
+    : false;
+  if (copied === 0 || expectedNoticeMissing) {
     throw new Error(
       `[package-native-deps] inlined package ${packageName} has no required license notice at ` +
         `${expectedNoticePath ?? "a license/notice file"}. Refusing to publish bundled code without its notice.`,
@@ -266,10 +269,9 @@ async function copyBuiltTuiClient(bundleRoot) {
 }
 
 async function chmodRuntimeExecutables(bundleRoot, target) {
-  const executablePaths = [
-    path.join(bundleRoot, "node_modules", "@opencode", "cli", "bin", "opencode.exe"),
-    path.join(bundleRoot, "node_modules", "@opencode", `cli-${target}`, "bin", "opencode"),
-  ];
+  // Provider CLIs are fetched into the pinned tools cache, not launched from
+  // this archive. node-pty's macOS helper is the only copied executable here.
+  const executablePaths = [];
   if (target.startsWith("darwin-")) {
     executablePaths.push(path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper"));
   }

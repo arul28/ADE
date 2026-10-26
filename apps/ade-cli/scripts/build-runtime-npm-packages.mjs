@@ -70,7 +70,12 @@ export const EMBEDDED_EXCLUDED_PACKAGES = new Set([
 ]);
 
 const EMBEDDED_PROFILE = "embedded";
-const EMBEDDED_EXCLUDED_NATIVE_PATHS = ["native/tuiClient", "native/vendor/crsqlite"];
+const EMBEDDED_EXCLUDED_NATIVE_PATHS = [
+  "native/tuiClient",
+  "native/vendor/crsqlite",
+  "native/node_modules/@opencode/cli/bin/opencode",
+  "native/node_modules/@opencode/cli/bin/opencode.exe",
+];
 
 export function runtimePackageName(target) {
   return `@ade-dev/runtime-${target}`;
@@ -556,9 +561,23 @@ export const NPM_PACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
  * already written.
  */
 function defaultPackRunner(cwd) {
-  const invocation = resolveRunInvocation("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"]);
+  const localNpmCommand = process.platform === "win32"
+    ? path.join(path.dirname(process.execPath), "npm.cmd")
+    : "npm";
+  const command = process.platform === "win32" && fs.existsSync(localNpmCommand)
+    ? localNpmCommand
+    : "npm";
+  const invocation = resolveRunInvocation(command, ["pack", "--dry-run", "--json", "--ignore-scripts"]);
+  const env = { ...process.env };
+  // ADE shells inject NODE_PATH so its own CLI can find the installed brain's
+  // modules. npm's Windows shim uses Node's module resolution while locating
+  // its own prefix; carrying that path into a runtime package directory can
+  // redirect the shim to a package-local `node_modules/npm` that does not
+  // exist. npm pack needs no ADE runtime modules.
+  delete env.NODE_PATH;
   return execFileSync(invocation.command, invocation.args, {
     cwd,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: NPM_PACK_MAX_BUFFER_BYTES,
@@ -583,7 +602,8 @@ function defaultPackRunner(cwd) {
  * too — the launcher and at least one native module — which is what catches a
  * truncated or empty `ade-<target>.native.tar.gz`. The SDK package uses the
  * embedded profile, which does not ship the TUI or cr-sqlite; the verifier
- * checks that profile and the Droid SDK license notice explicitly.
+ * checks that profile, the duplicate OpenCode executable stays out, and the
+ * Droid SDK license notice remains explicitly.
  *
  * `LICENSE` and `README.md` are asserted here as well. They are NOT covered by
  * `scripts/check-package-licenses.mjs`, whatever an earlier version of this

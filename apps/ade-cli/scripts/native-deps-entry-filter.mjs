@@ -20,9 +20,9 @@ function targetParts(target) {
 // to deliver bytes the brain then ignores in favour of the pinned cache copy.
 //
 // Only the NATIVE PLATFORM SIBLINGS are listed here. The JS entry points --
-// @anthropic-ai/claude-agent-sdk (ADE calls query() on it in-process),
-// @openai/codex and @opencode/cli -- must keep shipping, so
-// this is an exact-name set rather than a prefix match: a prefix test on
+// @anthropic-ai/claude-agent-sdk (ADE calls query() on it in-process) and
+// @openai/codex -- must keep shipping, so this is an exact-name set rather
+// than a prefix match: a prefix test on
 // "@anthropic-ai/claude-agent-sdk" would swallow the SDK itself.
 //
 // Exported because the packaged DESKTOP app has to exclude exactly the same
@@ -161,9 +161,10 @@ export function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
   }
 
   // OpenCode itself is fetched at its pinned version into ADE's tools cache.
-  // Its bundled Windows shim is only a fallback for source checkouts and must
-  // not be duplicated into any runtime archive.
-  if (packageName === "@opencode/cli" && relative.toLowerCase() === "bin/opencode.exe") {
+  // The parent package's postinstall-copied binary is only a fallback for
+  // source checkouts; neither the Windows executable nor a POSIX binary may
+  // be duplicated into any runtime archive.
+  if (packageName === "@opencode/cli" && /^bin\/opencode(?:\.exe)?$/i.test(relative)) {
     return false;
   }
 

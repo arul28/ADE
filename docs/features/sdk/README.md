@@ -119,8 +119,39 @@ An embedder shipping a signed, notarized app cannot download an executable at fi
 
 | Package | Contents |
 |---|---|
-| `@ade-dev/runtime-<target>` | `bin/ade[.exe]` (mode 0755), `native/` = the extracted `<binary>.native.tar.gz`, `LICENSE`, `RUNTIME-EMBEDDING-EXCEPTION.md`, `README.md`. `os` + `cpu` set. |
+| `@ade-dev/runtime-<target>` | `bin/ade[.exe]` (mode 0755), the embedded-profile native dependency tree, `LICENSE`, `RUNTIME-EMBEDDING-EXCEPTION.md`, `README.md`. `os` + `cpu` set. |
 | `@ade-dev/runtime` | Meta package; lists the five as `optionalDependencies` pinned to the same version, so npm installs exactly one. |
+
+The npm package is for `--profile embedded`, so its native tree omits the TUI
+bundle and its UI-only packages, `@linear/sdk`, and `vendor/crsqlite` (sync is
+off in this profile). The ADE CLI's full runtime archive keeps those files for
+`ade code`, Linear, and sync. Both profiles keep `node-pty` for personal-chat
+terminal mentions and tracked CLI sessions. Runtime-fetched provider CLIs come
+from ADE's pinned tools cache; the archive does not carry the duplicate
+OpenCode executable. The Droid SDK code is already in the CLI bundle, so the
+native tree retains its license notice without copying the SDK package.
+
+Windows x64 size check on 2026-10-26, using the current `1.0.0-beta.1` build:
+
+| Artifact | Unpacked | Packed |
+|---|---:|---:|
+| Full CLI runtime (`bin/ade.exe` + extracted `native/`) | 191,403,602 B (191.404 MB) | — |
+| Full-runtime package equivalent, including the same 40,513 B package-root files | 191,444,115 B (191.444 MB) | — |
+| `@ade-dev/runtime-win32-x64` npm package | 167,499,075 B (167.499 MB) | 54,602,441 B (54.602 MB) |
+
+The embedded npm package is 23,945,040 B smaller than the same-build full
+runtime package equivalent. For context, the published 1.2.123 Windows x64
+package measured 470,531,926 B unpacked; the separate measurements below apply
+one change at a time to that older baseline and overlap, so they are not
+cumulative:
+
+| Trim applied alone | Before | After |
+|---|---:|---:|
+| Remove the duplicate OpenCode executable | 470,531,926 B | 257,589,710 B |
+| Remove node-pty PDBs and wrong-architecture ConPTY assets | 470,531,926 B | 440,710,926 B |
+| Remove declarations, docs, and examples | 470,531,926 B | 432,579,870 B |
+| Omit the copied Droid SDK package | 470,531,926 B | 453,152,184 B |
+| Omit TUI assets/dependencies, `@linear/sdk`, and cr-sqlite for embedded | 470,531,926 B | 436,986,971 B |
 
 - `runtimeRoot` is `<pkg>/native` (`ADE_RUNTIME_ROOT`); `nodeModulesPath` is `<pkg>/native/node_modules` (`ADE_RUNTIME_NODE_MODULES`). The binary dlopens out of the latter, so both must travel together.
 - `resolveBundledRuntime()` (`packages/sdk/src/bundledRuntime.ts`) resolves the package by `require.resolve("<name>/package.json")`. Missing package → `null`. Present but malformed → `AdeError("binary_not_found")` naming the missing path.
