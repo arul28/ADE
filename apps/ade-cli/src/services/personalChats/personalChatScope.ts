@@ -26,6 +26,7 @@ import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { asObject, requiredString, type ObjectArgs } from "./rpcArgs";
+import { credentialStoreProviderForHarness } from "../../../../desktop/src/shared/harnessCredentialProviders";
 import { EmbeddedHostSettings } from "./embeddedHostSettings";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
 import { isProviderInstanceProvider } from "../../../../desktop/src/shared/types/providerInstances";
@@ -232,6 +233,19 @@ export class PersonalChatScope {
     };
   }
 
+  /**
+   * Hold a key the SDK host sent from its own vault for `credentialId`, in this
+   * runtime's memory only (`setHostApiCredential`).
+   */
+  private async acceptHostCredential(provider: string, credentialId: unknown, secret: unknown): Promise<void> {
+    if (typeof secret !== "string" || !secret.trim()) throw new Error("credentialSecret must be a non-empty string.");
+    const id = requiredString(credentialId, "credentialId (required with credentialSecret)");
+    if (!provider.trim()) throw new Error("credentialSecret needs the chat's provider.");
+    const { setHostApiCredential } = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
+    // Filed where a launch looks for it: under the harness's API vendor.
+    setHostApiCredential(credentialStoreProviderForHarness(provider), id, secret);
+  }
+
   /** Provider accounts, credentials and presets: see `EmbeddedHostSettings`. */
   providerAccountsCall(action: unknown, args: unknown): Promise<unknown> {
     return this.hostSettings.providerAccounts(action, args);
@@ -370,11 +384,17 @@ export class PersonalChatScope {
             throw new Error(`Provider account '${instanceId}' was not found for '${provider}'.`);
           }
         }
+        if (args.credentialSecret !== undefined) {
+          await this.acceptHostCredential(provider, args.credentialId, args.credentialSecret);
+        }
         if (args.credentialId !== undefined && args.credentialId !== null) {
           const credentialId = requiredString(args.credentialId, "credentialId");
           const { getApiCredentialSummary } = await import("../../../../desktop/src/main/services/ai/apiKeyStore");
-          if (!getApiCredentialSummary(provider, credentialId)) {
-            throw new Error(`Credential '${credentialId}' was not found for '${provider}'.`);
+          // Keys are filed under the API vendor, not the harness: a Claude
+          // chat runs on an `anthropic` key, a Codex chat on an `openai` one.
+          const keyProvider = credentialStoreProviderForHarness(provider);
+          if (!getApiCredentialSummary(keyProvider, credentialId)) {
+            throw new Error(`Credential '${credentialId}' was not found for '${provider}' (keys for it are filed under '${keyProvider}').`);
           }
         }
         if (args.presetId !== undefined && args.presetId !== null) {
@@ -427,6 +447,9 @@ export class PersonalChatScope {
           // Stamped only by the RPC server on an agent's or the CTO's call. A
           // caller-sent actor here would claim a launcher it does not have.
           runtimeActor: _runtimeActor,
+          // A host-vault key is held in memory by `acceptHostCredential`; it
+          // must never reach the session record, which is written to disk.
+          credentialSecret: _credentialSecret,
           ...forwarded
         } = args;
         // What this chat is for. An embedded runtime (an SDK host) is always
@@ -636,8 +659,16 @@ export class PersonalChatScope {
         // `requirePersonalSession` has just established, and validates them
         // exactly as create does. `runtimeActor` is dropped: only the RPC
         // server stamps it, so a caller-sent actor never reaches the service.
-        const { runtimeActor: _runtimeActor, ...updateArgs } = args;
-        await service.updateSession(updateArgs as never);
+        const { runtimeActor: _runtimeActor, credentialSecret, credentialId: _credentialId, ...updateArgs } = args;
+        if (credentialSecret !== undefined) {
+          // The SDK re-supplies a host-vault key on every open and resume,
+          // because this runtime keeps it in memory only.
+          const summary = await service.getSessionSummary(sessionId);
+          await this.acceptHostCredential(summary?.provider ?? "", args.credentialId, credentialSecret);
+        }
+        if (Object.keys(updateArgs).some((key) => key !== "sessionId")) {
+          await service.updateSession(updateArgs as never);
+        }
         // The same shape create returns. The summary already withholds header
         // values, so the reply never echoes back a credential the host sent.
         result = await service.getSessionSummary(sessionId);

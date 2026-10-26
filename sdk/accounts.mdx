@@ -82,13 +82,19 @@ provider capabilities.
 
 ## Credentials and presets
 
-Credentials are stored by the runtime. `credentials.list()` returns summaries
-with labels, provider, source, timestamps and a masked tail; the API key value
-is never returned. Add a key explicitly when the user supplies it:
+Credentials are stored by the runtime, encrypted with the OS credential store
+(Keychain on macOS, DPAPI on Windows; on Linux, a file only this user can
+read). `credentials.list()` returns summaries with labels, provider, source,
+timestamps and a masked tail; the API key value is never returned.
+
+A key is filed under its **API vendor**, not the harness that uses it: a Claude
+thread runs on an `anthropic` key, Codex on `openai`, Kimi on `moonshotai`,
+Grok on `xai`. Other harnesses use their own name (`cursor`, `droid`, `pi`,
+`opencode`, `qwen`, `copilot`).
 
 ```ts
-const saved = await client.credentials.add({ provider: "codex", key, label: "Build key" });
-await client.credentials.verify("codex");
+const saved = await client.credentials.add({ provider: "openai", key, label: "Build key" });
+await client.credentials.verify("openai");
 await client.threads.open("build", {
   provider: "codex",
   model: "gpt-5-codex",
@@ -100,25 +106,33 @@ await client.threads.open("build", {
 presets use `client.presets.list()`, `add(input)`, `update(id, patch)`, and
 `remove(id)`. Preset results omit key material.
 
-When a credential is kept in the host's vault instead, pass its id to a thread
-and resolve it just for the live session:
+When a key lives in your own vault instead, pass its id to a thread and supply
+the value with `resolveSecret`:
 
 ```ts
 const client = await createAdeChat({
   home,
+  // Called with the thread's harness ("codex") and the credential id.
   resolveSecret: (provider, credentialId) => vault.get(provider, credentialId),
 });
 
 await client.threads.open("support", {
-  provider: "openai",
-  model: "gpt-5",
+  provider: "codex",
+  model: "gpt-5-codex",
   credential: "build-key",
 });
 ```
 
-The secret is pushed to the runtime for that session and is not saved in the
-SDK thread record. If the resolver has no value, open/resume reports a warning
-and the runtime's own credential behavior applies.
+The SDK pushes the value to the runtime on every open and resume. The runtime
+holds it in memory only, under the thread's API vendor, so it is never saved in
+the thread record, the runtime's key store or its account vault, and it is gone
+when the runtime exits. `credentials.list()` shows it with `source: "host"`. If
+`resolveSecret` returns nothing, the open fails with `invalid_option`.
+
+Two harnesses read keys only from a config file: Droid (`settings.json`) and
+OpenCode presets (`opencode.json`). For those, the runtime writes the key into a
+private launch folder under the SDK home while the thread runs, exactly as it
+does for a stored key.
 
 ## Accounts on a thread
 
