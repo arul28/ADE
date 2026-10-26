@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseCodexServerVersion } from "./agentChatService";
 import {
@@ -9,6 +12,7 @@ import {
   codexServerSupportsPaginatedHistory,
   codexServerSupportsThreadQueue,
   codexServerSupportsThreadRevert,
+  codexServerSupportsThreadSample,
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
 } from "./codexAppServerFeatures";
@@ -34,7 +38,18 @@ describe("codex app-server feature gates", () => {
   });
 
   it("pins the app-server version ADE ships", () => {
-    expect(PINNED_CODEX_APP_SERVER_VERSION).toBe("0.162.1");
+    // The gates below are written against the app-server ADE installs, so the
+    // declared pin and `ade-cli`'s Codex dependency must move together: when
+    // one is bumped alone, ADE sends or withholds RPCs the binary disagrees
+    // about. Read the real dependency instead of repeating its literal here.
+    const cliPackagePath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../../ade-cli/package.json",
+    );
+    const cliPackage = JSON.parse(fs.readFileSync(cliPackagePath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    expect(cliPackage.dependencies?.["@openai/codex"]).toBe(PINNED_CODEX_APP_SERVER_VERSION);
   });
 
   it("does not invent support when the user-agent is missing", () => {
@@ -50,5 +65,15 @@ describe("codex app-server feature gates", () => {
     expect(codexServerSupportsGoalMutationOrigin(parseCodexServerVersion("codex/0.162.0"))).toBe(true);
     expect(codexServerSupportsGoalMutationOrigin(parseCodexServerVersion("codex/0.162.1"))).toBe(true);
     expect(codexServerSupportsGoalMutationOrigin(null)).toBe(false);
+  });
+
+  it("gates `thread/sample` on 0.164, and on nothing older", () => {
+    // A server that predates the experimental method answers "method not
+    // found"; asking anyway turns every helper failure into a wasted round trip
+    // before the fallback gives up, so the gate has to hold exactly at 0.164.
+    expect(codexServerSupportsThreadSample(parseCodexServerVersion("codex/0.162.1"))).toBe(false);
+    expect(codexServerSupportsThreadSample(parseCodexServerVersion("codex/0.163.0"))).toBe(false);
+    expect(codexServerSupportsThreadSample(parseCodexServerVersion("codex/0.164.0"))).toBe(true);
+    expect(codexServerSupportsThreadSample(null)).toBe(false);
   });
 });

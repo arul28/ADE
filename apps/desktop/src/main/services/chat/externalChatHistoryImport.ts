@@ -8,6 +8,7 @@ import type {
   ExternalSessionProvider,
 } from "../../../shared/types";
 import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
+import { codexImageGenerationRefFields } from "../../../shared/codexImageGeneration";
 
 const DEFAULT_MAX_IMPORTED_EVENTS = 2000;
 export const MAX_IMPORT_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
@@ -572,6 +573,7 @@ function codexThreadItemToEvents(
         revisedPrompt: stringOrNull(item.revisedPrompt) ?? stringOrNull(item.revised_prompt),
         result: stringOrNull(item.result),
         savedPath: stringOrNull(item.savedPath) ?? stringOrNull(item.saved_path),
+        ...codexImageGenerationRefFields(item),
       })];
     }
     case "imageView":
