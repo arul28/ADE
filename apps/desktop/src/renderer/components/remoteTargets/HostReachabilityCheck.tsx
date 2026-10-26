@@ -3,36 +3,18 @@ import { CircleNotch } from "@phosphor-icons/react";
 import { outlineButton } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
 import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
-import { DiagnosisList, DiagnosisRow, DiagnosisSectionHead, type DiagnosisState } from "./DiagnosisRows";
+import { DiagnosisList, DiagnosisRow, DiagnosisSectionHead } from "./DiagnosisRows";
 import { helperTextStyle } from "./remoteTargetListStyles";
 
-const TONE_STATE: Record<HostReachabilityReport["tone"], DiagnosisState> = {
-  success: "ok",
-  warning: "warning",
-  danger: "failed",
-  info: "off",
-};
+type ReachabilityCheck = () => Promise<HostReachabilityReport>;
 
 /**
  * "Can my other devices reach this computer?", asked of that computer's own
  * brain: is ADE listening, is the relay connected and does a test connection
  * through it come back, is Tailscale up or routing through an exit node that
  * blocks the relay, did ADE freeze there. Each part says what to do.
- *
- * Without `check` it asks the computer you are sitting at; a connected remote
- * machine passes its own call. The web client has neither and renders nothing.
- * With `heading`, it is a section of a larger panel: the heading carries the
- * button and the panel's own verdict stands in for the report's title.
  */
-export function HostReachabilityCheck({
-  check = window.ade?.sync?.checkLocalReachability,
-  prompt = "Can your other devices reach this computer?",
-  heading,
-}: {
-  check?: (() => Promise<HostReachabilityReport>) | undefined;
-  prompt?: string;
-  heading?: string;
-} = {}) {
+function useReachabilityRun(check: ReachabilityCheck | undefined) {
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<HostReachabilityReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,13 +40,15 @@ export function HostReachabilityCheck({
     }
   }, [check]);
 
-  if (typeof check !== "function") return null;
+  return { running, report, error, run };
+}
 
-  const button = (
+function CheckButton({ running, ran, onClick }: { running: boolean; ran: boolean; onClick: () => void }) {
+  return (
     <button
       type="button"
       disabled={running}
-      onClick={() => void run()}
+      onClick={onClick}
       style={outlineButton({
         height: 24,
         padding: "0 10px",
@@ -76,55 +60,92 @@ export function HostReachabilityCheck({
       })}
     >
       {running ? <CircleNotch size={12} weight="bold" className="animate-spin" /> : null}
-      {running ? "Checking…" : report ? "Check again" : "Check"}
+      {running ? "Checking…" : ran ? "Check again" : "Check"}
     </button>
   );
+}
+
+function ReachabilityRows({ report }: { report: HostReachabilityReport }) {
+  return (
+    <DiagnosisList label="Reachability checks">
+      {report.checks.map((item) => (
+        <DiagnosisRow
+          key={item.id}
+          state={item.state}
+          label={item.label}
+          detail={item.detail}
+          fix={item.fix}
+          tooltip={item.fix ? `${item.detail}\n${item.fix}` : item.detail}
+        />
+      ))}
+    </DiagnosisList>
+  );
+}
+
+function ErrorLine({ error }: { error: string }) {
+  return <div role="status" style={{ ...helperTextStyle, color: "var(--kit-crit)" }}>{error}</div>;
+}
+
+/**
+ * The check on its own, for the computer you are sitting at. The web client
+ * has no such call and renders nothing.
+ */
+export function HostReachabilityCheck({
+  check = window.ade?.sync?.checkLocalReachability,
+  prompt = "Can your other devices reach this computer?",
+}: {
+  check?: ReachabilityCheck | undefined;
+  prompt?: string;
+} = {}) {
+  const { running, report, error, run } = useReachabilityRun(check);
+  if (typeof check !== "function") return null;
+  const button = <CheckButton running={running} ran={report !== null} onClick={() => void run()} />;
 
   return (
     <div data-host-reachability style={{ display: "grid", gap: 10, minWidth: 0 }}>
-      {heading ? (
-        <DiagnosisSectionHead label={heading} action={button} />
-      ) : (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>{report ? null : prompt}</span>
-          {report ? null : button}
-        </div>
-      )}
-
-      {heading && !report && !error ? (
-        <span style={helperTextStyle}>{prompt}</span>
-      ) : null}
-
-      {error ? (
-        <div role="status" style={{ ...helperTextStyle, color: "var(--kit-crit)" }}>{error}</div>
-      ) : null}
-
-      {report && !heading ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {report ? (
           <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "var(--color-fg)" }}>
             {report.title}
           </span>
-          {button}
-        </div>
-      ) : null}
+        ) : (
+          <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>{prompt}</span>
+        )}
+        {button}
+      </div>
+      {error ? <ErrorLine error={error} /> : null}
+      {report ? <ReachabilityRows report={report} /> : null}
+    </div>
+  );
+}
 
-      {report ? (
-        <DiagnosisList label="Reachability checks">
-          {report.checks.map((item) => (
-            <DiagnosisRow
-              key={item.id}
-              state={item.state}
-              label={item.label}
-              detail={item.detail}
-              fix={item.fix}
-              tooltip={item.fix ? `${item.detail}\n${item.fix}` : item.detail}
-            />
-          ))}
-        </DiagnosisList>
-      ) : null}
+/**
+ * The same check as a section of a larger panel (a connected machine's Test
+ * panel): the heading carries the button, and the report's title shows only
+ * when something needs doing, since the panel has its own verdict on top.
+ */
+export function HostReachabilitySection({
+  check,
+  heading,
+  prompt,
+}: {
+  check: ReachabilityCheck;
+  heading: string;
+  prompt: string;
+}) {
+  const { running, report, error, run } = useReachabilityRun(check);
 
-      {report && heading && report.tone !== "success" ? (
-        <span style={{ ...helperTextStyle, color: TONE_STATE[report.tone] === "failed" ? "var(--kit-crit)" : "var(--kit-text-2)" }}>
+  return (
+    <div data-host-reachability style={{ display: "grid", gap: 10, minWidth: 0 }}>
+      <DiagnosisSectionHead
+        label={heading}
+        action={<CheckButton running={running} ran={report !== null} onClick={() => void run()} />}
+      />
+      {!report && !error ? <span style={helperTextStyle}>{prompt}</span> : null}
+      {error ? <ErrorLine error={error} /> : null}
+      {report ? <ReachabilityRows report={report} /> : null}
+      {report && report.tone !== "success" ? (
+        <span style={{ ...helperTextStyle, color: report.tone === "danger" ? "var(--kit-crit)" : "var(--kit-text-2)" }}>
           {report.title}
         </span>
       ) : null}

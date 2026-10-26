@@ -126,12 +126,17 @@ function exitNodePhrase(name: string): string {
 const RELAY_FIREWALL_FIX =
   "Check this computer's internet connection. A VPN, proxy or firewall that blocks secure WebSockets to ADE's relay stops it too.";
 
-function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
-  const relay = facts.routeHealth.relay;
+/** The relay's fix when an exit node is on: it names the exit node itself. */
+function exitNodeRelayFix(facts: HostReachabilityFacts): string | null {
   const exitNode = facts.tailscale?.exitNodeName ?? null;
-  const exitNodeFix = exitNode !== null
+  return exitNode !== null
     ? `This computer sends its traffic through ${exitNodePhrase(exitNode)}. Turn the exit node off, or allow ADE's relay through it.`
     : null;
+}
+
+function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
+  const relay = facts.routeHealth.relay;
+  const exitNodeFix = exitNodeRelayFix(facts);
   if (!facts.accountSignedIn) {
     return {
       id: "relay",
@@ -282,14 +287,15 @@ export function diagnoseHostReachability(
   facts: HostReachabilityFacts,
   now: Date = new Date(),
 ): HostReachabilityReport {
+  const relayResult = relayCheck(facts);
   const checks: HostReachabilityCheck[] = [
     listenerCheck(facts.routeHealth.listener),
-    relayCheck(facts),
+    relayResult,
     tailnetCheck(facts),
   ];
   const exitNode = facts.tailscale?.exitNodeName ?? null;
   // A failed relay already names the exit node in its fix; say it once.
-  const relayBlamesExitNode = checks[1]?.state === "failed" && checks[1]?.fix?.includes("exit node") === true;
+  const relayBlamesExitNode = relayResult.state === "failed" && relayResult.fix === exitNodeRelayFix(facts);
   if (exitNode !== null && !relayBlamesExitNode) {
     checks.push({
       id: "exit_node",

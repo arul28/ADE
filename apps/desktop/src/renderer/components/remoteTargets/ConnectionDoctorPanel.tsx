@@ -14,17 +14,10 @@ import {
   DiagnosisVerdict,
   type DiagnosisState,
 } from "./DiagnosisRows";
-import { HostReachabilityCheck } from "./HostReachabilityCheck";
+import { HostReachabilitySection } from "./HostReachabilityCheck";
 import { HostStallNote } from "./HostStallNote";
 
-const wrapStyle: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: "14px 16px",
-  borderRadius: 10,
-  border: "1px solid var(--kit-panel-edge)",
-  background: "var(--kit-panel-bg)",
-};
+const wrapStyle: CSSProperties = { gap: 14, padding: "14px 16px" };
 
 function routeLabel(kind: RemoteRuntimeDoctorCheck["route"]): string {
   switch (kind) {
@@ -99,7 +92,6 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
     () => remoteCheck!(machineId),
     [remoteCheck, machineId],
   );
-  const [checks, setChecks] = useState<RemoteRuntimeDoctorCheck[] | null>(null);
   const [result, setResult] = useState<RemoteRuntimeDoctorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,13 +100,11 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setChecks(null);
     setResult(null);
     void (async () => {
       try {
         const next = await window.ade.remoteRuntime.runDoctor(machineId);
         if (cancelled) return;
-        setChecks(next.checks);
         setResult(next);
       } catch (err) {
         if (cancelled) return;
@@ -128,6 +118,7 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
     };
   }, [machineId]);
 
+  const checks = result?.checks ?? null;
   const sortedChecks = checks
     ? [...checks].sort((left, right) => Number(right.ok) - Number(left.ok))
     : [];
@@ -136,7 +127,7 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
     : sortedChecks.some((check) => check.ok) ? "ok" : "failed";
 
   return (
-    <div style={wrapStyle}>
+    <div className="kit-card" style={wrapStyle}>
       {loading ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--kit-text-2)", fontFamily: SANS_FONT, fontSize: 12.5 }}>
           <CircleNotch size={16} weight="bold" className="animate-spin" />
@@ -183,7 +174,7 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
 
       {connected && typeof remoteCheck === "function" ? (
         <div style={{ borderTop: "1px solid var(--kit-rule)", paddingTop: 12 }}>
-          <HostReachabilityCheck
+          <HostReachabilitySection
             key={machineId}
             check={checkRemote}
             heading={`On ${machineName?.trim() || "this machine"}`}

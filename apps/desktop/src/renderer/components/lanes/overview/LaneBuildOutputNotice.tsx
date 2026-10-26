@@ -11,12 +11,21 @@ type Removed = NonNullable<StorageItem["buildOutputRemoved"]>;
 /** While the notice shows: how often to look for the folders coming back. */
 const RECHECK_MS = 60_000;
 
+/** Folders named in the notice; the rest are counted. */
+const MAX_LISTED_FOLDERS = 3;
+
+function folderList(folders: string[]): string {
+  const listed = folders.slice(0, MAX_LISTED_FOLDERS).join(", ");
+  const more = folders.length - MAX_LISTED_FOLDERS;
+  return more > 0 ? `${listed} and ${more} more` : listed;
+}
+
 /** Dismissed for this app session, per cleanup, so a later cleanup shows again. */
 const dismissed = new Set<string>();
 
 /**
- * "Build output was removed 9d ago to free 1.3 GB: node_modules. Reinstall or
- * build before you run it."
+ * "Build output was removed 9d ago to free 1.3 GB", then which folders and
+ * "Reinstall or build before you run it."
  *
  * The idle-lane cleanup removes rebuildable folders from lanes nobody used
  * for a week. Coming back to such a lane, a missing node_modules otherwise
@@ -92,7 +101,8 @@ export function LaneBuildOutputNotice({
         id: `lane-build-output-notice:${laneId}`,
         tone: "info",
         icon: <Broom size={13} weight="bold" />,
-        title: `Build output was removed ${relativeWhen(removed.at)}${freed}: ${removed.folders.join(", ")}. Reinstall or build before you run it.`,
+        title: `Build output was removed ${relativeWhen(removed.at)}${freed}`,
+        detail: `${folderList(removed.folders)}. Reinstall or build before you run it.`,
         dismiss: {
           onDismiss: () => {
             dismissed.add(dismissKey);

@@ -97,6 +97,7 @@ enum WorkSettingsCatalog {
     "archive.items": Setting(path: "Project › Storage & cleanup › Archived lanes, chats, and shells", locked: true),
     "storage.cleanups": Setting(path: "Project › Storage & cleanup › Cleanup history", locked: true),
     "storage.lane-rules": Setting(path: "Project › Storage & cleanup › Archive idle lanes", locked: true),
+    "storage.lane-build-output": Setting(path: "Project › Storage & cleanup › Clean build output from idle lanes", locked: true),
     "storage.session-lifecycle": Setting(path: "Project › Storage & cleanup › Session lifecycle", locked: true),
     "storage.project-files": Setting(path: "Project › Storage & cleanup › Project files", locked: true),
     "lanes-git.new-lane-base": Setting(path: "Project › Lanes › New lane base", locked: false),

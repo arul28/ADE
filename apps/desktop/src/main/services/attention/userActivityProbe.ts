@@ -30,11 +30,14 @@ export function createUserActivityProbe(args: {
   onAway?: () => void;
   /** The person is back (unlock, wake). */
   onBack?: () => void;
+  /** A failed OS read; the read repeats every heartbeat, so it is reported once. */
+  onError?: (what: "subscribe" | "read", error: unknown) => void;
 }): UserActivityProbe {
   const monitor = args.powerMonitor;
   if (!monitor) return { read: () => null };
   let away = false;
   let idleClockMoved = false;
+  let readErrorReported = false;
   const leave = () => {
     if (away) return;
     away = true;
@@ -50,8 +53,9 @@ export function createUserActivityProbe(args: {
     monitor.on("lock-screen", leave);
     monitor.on("resume", back);
     monitor.on("unlock-screen", back);
-  } catch {
+  } catch (error) {
     // Without the events the clock still answers on the next heartbeat.
+    args.onError?.("subscribe", error);
   }
   return {
     read() {
@@ -65,7 +69,11 @@ export function createUserActivityProbe(args: {
         if (state === "active") return true;
         if (state === "idle" || state === "locked") return false;
         return null;
-      } catch {
+      } catch (error) {
+        if (!readErrorReported) {
+          readErrorReported = true;
+          args.onError?.("read", error);
+        }
         return null;
       }
     },

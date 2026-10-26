@@ -590,14 +590,23 @@ export class AttentionAccountCoordinator {
       appForeground: false,
       userActive: false,
       observedAt: new Date().toISOString(),
-    }).catch(() => {});
+    }).catch((error) => this.warnPresenceFailed("away", error));
   }
 
   /** Unlocked or awake again: refresh the last report with the live clock. */
   async reportUserBack(): Promise<void> {
     const last = this.lastPresence;
     if (!last) return;
-    await this.reportPresence({ ...last, observedAt: new Date().toISOString() }).catch(() => {});
+    await this.reportPresence({ ...last, observedAt: new Date().toISOString() })
+      .catch((error) => this.warnPresenceFailed("back", error));
+  }
+
+  /** Relay outages are already logged once by `sendPresence`; anything else lands here. */
+  private warnPresenceFailed(change: "away" | "back", error: unknown): void {
+    this.options.getLogger().warn("attention.presence_change_failed", {
+      change,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private async sendPresence(presence: Record<string, unknown>): Promise<void> {

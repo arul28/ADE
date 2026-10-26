@@ -317,6 +317,41 @@ async function listProcessWorkingDirs(): Promise<{ dirs: string[]; supported: bo
   });
 }
 
+/**
+ * Every mount point on this computer, so a folder with a disk mounted
+ * somewhere inside it is kept: removing it would reach into that disk. Linux
+ * also lists same-drive bind mounts, which the drive check cannot see. Null
+ * when the list could not be read (nothing is removed then). Windows mounts a
+ * volume into a folder as a reparse point, which Node treats as a link, and
+ * links are removed as links, never followed.
+ */
+async function listMountPoints(): Promise<string[] | null> {
+  if (process.platform === "win32") return [];
+  if (process.platform === "linux") {
+    try {
+      const text = await nonAsarFs.promises.readFile("/proc/self/mountinfo", "utf8");
+      return text.split("\n").map((line) => line.split(" ")[4]).filter((field): field is string => Boolean(field))
+        .map((field) => field.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(parseInt(octal, 8))));
+    } catch {
+      return null;
+    }
+  }
+  return await new Promise((resolve) => {
+    execFile("/sbin/mount", [], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        resolve(null);
+        return;
+      }
+      const points: string[] = [];
+      for (const line of String(stdout).split("\n")) {
+        const match = / on (\/.*) \([^()]*\)$/.exec(line);
+        if (match?.[1]) points.push(match[1]);
+      }
+      resolve(points);
+    });
+  });
+}
+
 function processInside(probe: { dirs: string[] }, roots: string[]): boolean {
   return probe.dirs.some((dir) => roots.some((root) => isSameOrWithin(root, dir)));
 }
@@ -658,6 +693,16 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         if (!("candidate" in check)) continue;
         const measureDeadline = Math.min(deadline, Date.now() + MEASURE_BUDGET_MS);
         const before = await measureTree(candidate.abs, { entryLimit: MEASURE_ENTRY_LIMIT, deadline: measureDeadline });
+        // Measuring can take minutes: look again right before removing. A
+        // chat, terminal or program may have started, or a disk been mounted.
+        const [processesNow, mounts] = await Promise.all([listProcessWorkingDirs(), listMountPoints()]);
+        if (!processesNow || !mounts) return skip("couldn't check for running programs or mounted disks");
+        if (processInside(processesNow, [worktree.root, worktree.realRoot])) return skip("a program is working in it");
+        const realAbs = gitRelToAbs(worktree.realRoot, candidate.rel);
+        if (mounts.some((mount) => isSameOrWithin(candidate.abs, mount) || isSameOrWithin(realAbs, mount))) continue;
+        // Last, with nothing awaited between it and the removal.
+        const busyNow = busyReason(lane.id);
+        if (busyNow) return skip(busyNow);
         try {
           await removeFolder(candidate.abs, Math.max(deadline, Date.now() + MEASURE_BUDGET_MS));
           record({ projectId, laneId: lane.id, runId, folder: candidate.rel, bytes: before.bytes, partial: before.truncated, error: null });

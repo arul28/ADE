@@ -2111,6 +2111,10 @@ export function registerIpc({
     powerMonitor,
     onAway: () => void attentionAccountCoordinator.reportUserAway(),
     onBack: () => void attentionAccountCoordinator.reportUserBack(),
+    onError: (what, error) => getCtx().logger.warn("attention.user_activity_probe_failed", {
+      what,
+      error: error instanceof Error ? error.message : String(error),
+    }),
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {

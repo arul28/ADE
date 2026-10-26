@@ -119,6 +119,7 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "archive.items",
     "storage.cleanups",
     "storage.lane-rules",
+    "storage.lane-build-output",
     "storage.session-lifecycle",
     "storage.project-files",
   ],

@@ -3122,7 +3122,11 @@ async function handlePresence(
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid presence" }, { status: 400 });
   const deviceId = requiredString(payload.deviceId, 128);
-  const observedAt = optionalIsoDate(payload.observedAt ?? new Date().toISOString());
+  const reportedAt = optionalIsoDate(payload.observedAt ?? new Date().toISOString());
+  // A device clock running ahead would keep its report "recent", and a
+  // `userActive` hold on, until the relay's clock caught up; never later than now.
+  const nowMs = Date.now();
+  const observedAt = reportedAt && Date.parse(reportedAt) > nowMs ? new Date(nowMs).toISOString() : reportedAt;
   const visibleItemIds = Array.isArray(payload.visibleItemIds)
     ? payload.visibleItemIds.map((value) => requiredString(value)).filter(Boolean).slice(0, 64)
     : [];
