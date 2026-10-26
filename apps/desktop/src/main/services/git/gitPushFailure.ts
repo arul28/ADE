@@ -1,5 +1,6 @@
 import { redactGitOutput } from "../../utils/redaction";
-import { formatGitExecutionError, gitCommandError, runGit, type GitRunOptions } from "./git";
+import { markExpected } from "../../../shared/expectedError";
+import { formatGitExecutionError, gitCommandError, GitTimeoutError, runGit, type GitRunOptions } from "./git";
 
 /**
  * Why a remote refused a `git push`, read from git's output.
@@ -151,6 +152,14 @@ export async function runGitPushOrThrow(
 ): Promise<void> {
   const { branch, ...runOpts } = opts;
   const res = await runGit(args, runOpts);
+  // Same as runGitOrThrow: a stop or a timeout is not a refusal by the remote.
+  if (res.cancelled) throw markExpected(new Error(runOpts.cancelMessage ?? "Git was cancelled."), "user");
+  if (res.timedOut) {
+    throw new GitTimeoutError(
+      runOpts.timeoutMessage ?? formatGitExecutionError(res.stderr.trim() || `git ${args.join(" ")} timed out`),
+      res.stalled === true,
+    );
+  }
   if (res.exitCode === 0) return;
   throw gitPushError(res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`, { branch });
 }

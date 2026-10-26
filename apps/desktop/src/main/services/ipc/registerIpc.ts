@@ -4863,6 +4863,7 @@ export function registerIpc({
       return authorizeRecentProjectRuntimeRoot({
         requestedRootPath,
         activeGitOriginUrl: activeOrigin,
+        activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
       });
     },
