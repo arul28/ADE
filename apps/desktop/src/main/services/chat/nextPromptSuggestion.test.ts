@@ -6,6 +6,7 @@ import {
   sanitizePromptSuggestion,
   type PromptSuggestionTurnFacts,
 } from "./nextPromptSuggestion";
+import type { CodexSampleOutcome } from "./codexThreadSample";
 
 const SESSION = "session-1";
 const TURN = "turn-1";
@@ -14,14 +15,27 @@ type PromptResult = { structuredOutput?: unknown; text?: string | null };
 
 /**
  * The generator with its process-facing dependencies faked. `runPrompt` hands
- * back a promise the test settles; `done` resolves on the generator's own
- * completion receipt (its log line), so a test waits on that and not on time.
+ * back a promise the test settles; so does the thread-sample fallback. `done`
+ * resolves on the generator's own completion receipt (its log line), so a test
+ * waits on that and not on time.
  */
 function harness() {
   let settle: (value: PromptResult) => void = () => {};
+  let fail: (error: unknown) => void = () => {};
   let resolveDone: () => void = () => {};
   const done = new Promise<void>((resolve) => { resolveDone = resolve; });
-  const runPrompt = vi.fn(() => new Promise<PromptResult>((resolve) => { settle = resolve; }));
+  const runPrompt = vi.fn(() => new Promise<PromptResult>((resolve, reject) => {
+    settle = resolve;
+    fail = reject;
+  }));
+  let settleSample: (value: CodexSampleOutcome) => void = () => {};
+  const sampleThread = vi.fn((_args: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    timeoutMs: number;
+    helperError: string | null;
+  }) => new Promise<CodexSampleOutcome>((resolve) => { settleSample = resolve; }));
   const emitSuggestion = vi.fn();
   const logger = {
     debug: vi.fn(),
@@ -34,6 +48,7 @@ function harness() {
   const generator = createNextPromptSuggestion({
     logger,
     runPrompt,
+    sampleThread,
     emitSuggestion,
     hasPendingInput: () => false,
   });
@@ -52,7 +67,17 @@ function harness() {
     isStillCurrent: () => true,
     ...overrides,
   });
-  return { generator, runPrompt, emitSuggestion, facts, done, settle: (value: PromptResult) => settle(value) };
+  return {
+    generator,
+    runPrompt,
+    sampleThread,
+    emitSuggestion,
+    facts,
+    done,
+    settle: (value: PromptResult) => settle(value),
+    fail: (error: unknown) => fail(error),
+    settleSample: (value: CodexSampleOutcome) => settleSample(value),
+  };
 }
 
 describe("nextPromptSuggestion", () => {
@@ -84,6 +109,38 @@ describe("nextPromptSuggestion", () => {
       run.generator.onTurnDone(run.facts(skipped));
       expect(run.runPrompt, JSON.stringify(Object.keys(skipped))).not.toHaveBeenCalled();
     }
+  });
+
+  it("asks the chat's own thread only after the helper fails, and drops its answer when the chat moved on", async () => {
+    // The helper failed and the chat's own thread answered: that answer is the
+    // suggestion, and it is the only call the expensive fallback made.
+    const failed = harness();
+    failed.generator.onTurnDone(failed.facts());
+    failed.fail(new Error("helper unavailable"));
+    await vi.waitFor(() => expect(failed.sampleThread).toHaveBeenCalledTimes(1));
+    expect(failed.sampleThread.mock.calls[0][0]).toMatchObject({ turnId: TURN, helperError: "helper unavailable" });
+    failed.settleSample({ kind: "answered", text: "\"Run the focused test.\"" });
+    await failed.done;
+    expect(failed.emitSuggestion).toHaveBeenCalledWith(SESSION, "Run the focused test.", TURN);
+
+    // A helper that answers, even with no suggestion, ends the work: the
+    // thread is never asked and nothing is shown.
+    const answered = harness();
+    answered.generator.onTurnDone(answered.facts());
+    answered.settle({ structuredOutput: { suggestion: "" } });
+    await answered.done;
+    expect(answered.sampleThread).not.toHaveBeenCalled();
+    expect(answered.emitSuggestion).not.toHaveBeenCalled();
+
+    // The user typed while the thread was answering: that answer is stale.
+    const movedOn = harness();
+    movedOn.generator.onTurnDone(movedOn.facts());
+    movedOn.fail(new Error("helper unavailable"));
+    await vi.waitFor(() => expect(movedOn.sampleThread).toHaveBeenCalledTimes(1));
+    movedOn.generator.onTurnActivity(SESSION);
+    movedOn.settleSample({ kind: "answered", text: "Commit it." });
+    await movedOn.done;
+    expect(movedOn.emitSuggestion).not.toHaveBeenCalled();
   });
 
   it.each([

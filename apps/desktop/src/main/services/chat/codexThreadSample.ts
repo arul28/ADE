@@ -233,7 +233,13 @@ export function createCodexThreadSampler(deps: {
       const prior = queueBySession.get(args.sessionId);
       const run = (prior ?? Promise.resolve<CodexSampleOutcome | undefined>(undefined))
         .then(() => runNow(args))
-        .catch((error): CodexSampleOutcome => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error) }));
+        .catch((error): CodexSampleOutcome => {
+          // `prepare()` runs outside `runNow`'s try: a gate that throws must
+          // still leave a line behind rather than a silently missing answer.
+          const reason = error instanceof Error ? error.message : String(error);
+          logger.warn("agent_chat.codex_thread_sample_failed", { sessionId: args.sessionId, error: reason });
+          return { kind: "failed", reason };
+        });
       queueBySession.set(args.sessionId, run);
       void run.then(() => {
         if (queueBySession.get(args.sessionId) === run) queueBySession.delete(args.sessionId);
