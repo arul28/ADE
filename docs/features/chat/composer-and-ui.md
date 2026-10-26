@@ -608,7 +608,8 @@ chat pane mount, which happens either way.
   when the host publishes another account with room, and continues *this* chat
   on that account: the provider thread is copied into that login and the same
   conversation resumes there. A chat whose thread cannot move continues in a
-  new chat in the same lane instead. The clock and the
+  new chat in the same lane instead, except after a compaction-only turn, which
+  reports the failure. The clock and the
   provider's own sentence are in the tooltip, and the chip disappears when the
   host clears the resume state.
   The `usageLimitResume` state, not the deprecated parked-until mirror, is the
