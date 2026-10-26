@@ -69,8 +69,10 @@ export {
   type ResolvePackagedRuntimeOptions,
 } from "./packagedRuntime.js";
 export { AdeError, type AdeErrorCode } from "./errors.js";
+export { InvalidOutputError, validateJsonSchema, type JsonSchema, type RunOptions } from "./run.js";
 export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
+export type { ThreadBudget, ThreadUsage } from "./usage.js";
 export { SUPPORTED_PROVIDERS, isSupportedProvider } from "./permissions.js";
 export { pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 

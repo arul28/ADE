@@ -11,8 +11,9 @@ import { probeRuntimeSignature, type RuntimeSignature } from "./runtimeSignature
 import { flattenCatalog, pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 import { createProviderStatusPublisher } from "./providerStatusPublisher.js";
 import { readRestartPolicy, resolveRuntimeBinary, RuntimeSupervisor } from "./runtimeSupervisor.js";
+import { runOnce, type RunOptions } from "./run.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
-import type { AdeThread, Thread } from "./thread.js";
+import { Thread, type AdeThread } from "./thread.js";
 import { createThreadOpener, isAbsentSessionError } from "./threadOpener.js";
 import { ThreadStore } from "./threadStore.js";
 import type {
@@ -152,6 +153,8 @@ export interface AdeChatClient {
   };
   doctor(): Promise<DoctorReport>;
   exportThread(key: string): Promise<string>;
+  /** Run a temporary thread and delete it after the final answer is received. */
+  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
   /**
    * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
    * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
@@ -399,7 +402,8 @@ export async function createAdeChat(
 
     const started = opener
       .open(trimmedKey, opts)
-      .then((thread) => {
+      .then(async (thread) => {
+        await thread.initializeUsage();
         liveSessions.set(trimmedKey, thread);
         return thread;
       })
@@ -641,6 +645,9 @@ export async function createAdeChat(
     },
 
     on: onClient,
+
+    run: <T = unknown>(prompt: string, options: RunOptions) =>
+      runOnce<T>({ threads: { open: openThread, delete: deleteThread } }, prompt, options),
 
     doctor: async () => {
       assertUsable();

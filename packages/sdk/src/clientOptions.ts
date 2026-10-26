@@ -15,6 +15,7 @@ import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js"
 import type { RuntimeDownloader } from "./download.js";
 import type { AdeProvider, AgentChatSettingSources, McpServerConfig } from "./types.js";
 import type { AdeThread } from "./thread.js";
+import type { ThreadBudget } from "./usage.js";
 
 export type CreateAdeChatOptions = {
   /** Isolated per-app ADE state root. Created if missing. */
@@ -184,6 +185,8 @@ export type InternalAdeChatOptions = CreateAdeChatOptions & {
 export type ThreadOpenOptions = {
   provider: AdeProvider;
   model: string;
+  /** Stop a turn when cumulative reported usage reaches either limit. */
+  budget?: ThreadBudget;
   /**
    * MCP servers to attach to this thread.
    *

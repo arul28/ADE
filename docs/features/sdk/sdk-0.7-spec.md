@@ -199,7 +199,12 @@ See §4.
 
 Measured baseline (npm, 1.2.123 / 0.6.0): `@ade-dev/runtime-darwin-arm64`
 251.8 MB unpacked; `@ade-dev/sdk` 2.7 MB; `@ade-dev/chat-ui` 1.3 MB.
-Plan filled in from the size research (section updated when it lands).
+
+SDK DX build measurement (Node 22, `npm pack --dry-run --json`): 1.095 MB
+unpacked / 290 kB packed with the new `server` and `testing` entries. A
+source-map-enabled measurement of this track was 3.38 MB / 889 kB, so published
+source maps are disabled to keep the package smaller. The runtime package and
+chat-ui are unchanged by this track.
 
 ---
 

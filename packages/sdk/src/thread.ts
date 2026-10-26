@@ -32,6 +32,7 @@ import {
 import { modelSelectionOf, type ModelSummaryFields } from "./modelSelection.js";
 import { isSupportedProvider } from "./permissions.js";
 import { summaryTurnActive, type PersonalChatsApi } from "./personalChats.js";
+import { budgetExceeded, ThreadUsageAccumulator, type ThreadBudget, type ThreadUsage } from "./usage.js";
 import {
   STATUS_EVENT_TYPES,
   USAGE_EVENT_TYPES,
@@ -394,6 +395,8 @@ export interface AdeThread {
    * thread prefer `historyPage`, which reads one bounded page at a time.
    */
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /** Token totals observed on this thread; cost is present only when reported by the provider. */
+  usage(): ThreadUsage;
   /**
    * One page of the durable transcript, for "load older" on scroll.
    *
@@ -479,6 +482,8 @@ export type ThreadHostConfig = {
   requestedSettingSources?: boolean;
   /** Whether the caller asked for a permission policy. See `requestedInstructions`. */
   requestedPermissionPolicy?: boolean;
+  /** Host-side cumulative cap; it never reaches the provider runtime. */
+  budget?: ThreadBudget;
   /**
    * Whether the CURRENT runtime advertises the `pendingInputs` action. False
    * makes `pendingApprovals()` fall back to the events this client observed,
@@ -535,6 +540,7 @@ export type ThreadRecordPatch = {
   title?: string | null;
   mcpServers?: Record<string, McpServerConfig>;
   attachmentRoots?: string[];
+  budget?: ThreadBudget;
   provider?: string;
   model?: string;
   modelId?: string;
@@ -589,6 +595,11 @@ export class Thread implements AdeThread {
   /** Replaced by `adoptSession`: a recreate resolves its services afresh. */
   private hostConfig: ThreadHostConfig;
   private warnedAboutHistoryPage = false;
+  private readonly usageTotals = new ThreadUsageAccumulator();
+  private usageInitialization: Promise<void> | null = null;
+  private usageInitializationError: Error | null = null;
+  private currentTurnId: string | null = null;
+  private budgetTripped = false;
 
   /** The provider this thread runs, kept in step with `setModel`. */
   private provider: AdeProvider;
@@ -646,7 +657,88 @@ export class Thread implements AdeThread {
       const event = envelope.event;
       if (!event || typeof event.type !== "string") return;
       this.approvals.handle(event);
+      this.observeUsage(envelope);
     });
+  }
+
+  /** Seed durable totals before the thread handle is returned to its caller. */
+  async initializeUsage(): Promise<void> {
+    if (this.usageInitializationError) {
+      this.usageInitialization = null;
+      this.usageInitializationError = null;
+    }
+    this.usageInitialization ??= this.history().then((events) => {
+      this.usageTotals.seed(events);
+      if (budgetExceeded(this.hostConfig.budget, this.usageSnapshot())) {
+        this.budgetTripped = true;
+        if (this.hostConfig.budget) {
+          this.hostConfig.emitSynthetic?.({
+            sessionId: this.id,
+            timestamp: new Date().toISOString(),
+            event: {
+              type: "budget_exceeded",
+              budget: this.hostConfig.budget,
+              usage: this.usageSnapshot(),
+              resumed: true,
+            },
+          });
+          void this.chats.interrupt(this.id).catch((error: unknown) => {
+            this.logger(`ade sdk: could not interrupt thread "${this.key}" after its budget was exceeded: ${String(error)}`);
+          });
+        }
+      }
+    }).catch((error: unknown) => {
+      this.usageInitializationError = error instanceof Error ? error : new Error(String(error));
+      this.logger(`ade sdk: could not load usage history for thread "${this.key}": ${this.usageInitializationError.message}`);
+    });
+    await this.usageInitialization;
+  }
+
+  private assertBudgetCanStartTurn(action: string): void {
+    if (this.hostConfig.budget && this.usageInitializationError) {
+      throw new AdeError(
+        "rpc_error",
+        `Cannot ${action} on thread "${this.key}" because its usage history could not be loaded; the budget cannot be enforced.`,
+        { cause: this.usageInitializationError },
+      );
+    }
+    if (this.budgetTripped) {
+      throw new AdeError("invalid_option", `Thread "${this.key}" has exceeded its usage budget and cannot ${action}.`);
+    }
+  }
+
+  private usageSnapshot(): ThreadUsage {
+    return { ...this.usageTotals.snapshot(), complete: !this.usageInitializationError };
+  }
+
+  private observeUsage(envelope: AgentChatEventEnvelope): void {
+    const event = envelope.event as Record<string, unknown>;
+    const type = event.type;
+    if (type === "status" && event.turnStatus === "started") {
+      this.currentTurnId = typeof event.turnId === "string" ? event.turnId : null;
+    }
+    this.usageTotals.observe(envelope);
+    const usage = this.usageSnapshot();
+    if (!this.budgetTripped && budgetExceeded(this.hostConfig.budget, usage)) {
+      this.budgetTripped = true;
+      const turnId = typeof event.turnId === "string" ? event.turnId : this.currentTurnId;
+      this.hostConfig.emitSynthetic?.({
+        sessionId: this.id,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "budget_exceeded",
+          budget: this.hostConfig.budget,
+          usage,
+          ...(turnId ? { turnId } : {}),
+        },
+      });
+      if (type !== "done" && type !== "status" && this.currentTurnId) {
+        void this.chats.interrupt(this.id).catch((error: unknown) => {
+          this.logger(`ade sdk: could not interrupt thread "${this.key}" after its budget was exceeded: ${String(error)}`);
+        });
+      }
+    }
+    if (type === "done" || (type === "status" && event.turnStatus !== "started")) this.currentTurnId = null;
   }
 
   /**
@@ -777,6 +869,8 @@ export class Thread implements AdeThread {
 
   async send(text: string, opts: SendOptions = {}): Promise<void> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("start another turn");
     if (!text.trim() && !(opts.attachments?.length)) {
       throw new AdeError("invalid_option", "send() needs text or at least one attachment.");
     }
@@ -792,6 +886,8 @@ export class Thread implements AdeThread {
 
   async steer(text: string, opts: SteerOptions = {}): Promise<void> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("accept another steer");
     const body = typeof text === "string" ? text : "";
     if (!body.trim() && !(opts.attachments?.length)) {
       throw new AdeError("invalid_option", "steer() needs text or at least one attachment.");
@@ -869,6 +965,8 @@ export class Thread implements AdeThread {
 
   private async rerunLastTurn(text: string | undefined, opts: EditLastOptions): Promise<ThreadRerunResult> {
     this.assertUsable();
+    await this.initializeUsage();
+    this.assertBudgetCanStartTurn("run another turn");
     const action = text === undefined ? "retry()" : "editLast()";
     if (this.provider !== "claude" && this.provider !== "codex") {
       throw new AdeError(
@@ -1190,6 +1288,10 @@ export class Thread implements AdeThread {
       ...(opts.limit != null ? { maxEvents: opts.limit } : {}),
     });
     return snapshot?.events ?? [];
+  }
+
+  usage(): ThreadUsage {
+    return this.usageSnapshot();
   }
 
   async historyPage(opts: HistoryPageOptions = {}): Promise<ThreadHistoryPage> {

@@ -49,6 +49,7 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
 | `models.onChange(cb)` | The whole catalog, each time a model's id, `isAvailable`, `connected` or `isDefault` changes. Not called on subscribe. Returns unsubscribe. SDK 0.4. |
 | `models.defaultModel({ available?, providers?, prefer? }?)` | The model a new thread should use, or `null`. See [`pickDefaultModel`](#pickdefaultmodel). SDK 0.4; `prefer` is SDK 0.5. |
+| `run(prompt, { provider, model, schema? })` | Run a temporary thread and delete it after completion. A schema response is parsed and validated, then retried once if invalid. See [One-shot runs](/sdk/testing#one-shot-runs). |
 | `doctor()` | Structured health check. |
 | `exportThread(key)` | Transcript as JSONL. |
 | `dispose()` | Stop the runtime. Idempotent. Ends in-flight turns without `error`/`done`. |
@@ -59,6 +60,7 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 |---|---|
 | `provider` | `claude` \| `codex` \| `cursor` \| `droid` \| `opencode` \| `pi` |
 | `model` | Catalog id (aliases resolved by the runtime). |
+| `budget` | `{ maxTokens?, maxCostUsd? }`. Cumulative per-thread limit; stored with the key and enforced only when the runtime/provider reports the corresponding usage. |
 | `permissions` | `"always-allow"` \| `"default"` \| `ThreadPermissionPolicy`. See [Permissions](/sdk/permissions). |
 | `instructions` | `string \| { mode: "append" \| "replace", text }`. A bare string means append. |
 | `cwd` | Absolute path the provider runs in. Created at mode `0755`. Defaults to `<home>/personal-chats/workspaces`. |
@@ -105,6 +107,7 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn; mid-turn the runtime queues them for the turn's end. Returns the `mcpCapability`. Needs runtime 1.2.81 or later. |
 | `refreshMcpHeaders()` | Re-resolve the thread's MCP header values through `mcpHeaders` and push them if they changed. `send`, `retry` and `editLast` already do this before each turn. |
 | `history({ limit }?)` | Envelopes in transcript order. |
+| `usage()` | Cumulative token totals, optional context window and provider-reported cost. `complete: false` means the SDK could not seed prior totals from transcript history. |
 | `historyPage({ beforeSequence?, limit? }?)` | One page: `{ events, hasMore, nextBeforeSequence }`. Omit `beforeSequence` for the newest page. |
 | `approve(itemId, decision, responseText?)` | Answer an approval. `"accept"` \| `"accept_always"` \| `"reject"`. Throws `approval_not_found` when it is already settled, and `invalid_option` for a question-shaped request. |
 | `pendingApprovals()` | Outstanding requests, so a reload can restore cards. |
@@ -286,7 +289,7 @@ type DoctorReport = {
 
 `AdeError` with `code`:
 
-`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported`
+`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `invalid_output` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported`
 
 `turn_in_flight` (SDK 0.4) is every refusal that exists only because a turn is running: `setModel` or a reasoning `update` without `{ force: true }`, and a runtime action that must wait for the turn to end. Nothing changed; wait for the turn to finish, or call `interrupt()`, then call again. Before 0.4 these used `invalid_option`.
 
@@ -295,6 +298,8 @@ type DoctorReport = {
 A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRoots` entry, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code. Prepare an `attachmentRoots` list with [`filterAttachmentRoots`](#attachment-root-helpers) to keep one bad entry from failing the open.
 
 `runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
+
+`invalid_output` is thrown by `client.run()` after the structured response fails JSON parsing or schema validation twice. `InvalidOutputError.rawText` contains the last model response.
 
 `approve()` throws `approval_not_found` when the item is already settled. `unauthorized` comes from an Electron bridge whose `authorize` hook refused the call.
 

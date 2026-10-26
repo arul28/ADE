@@ -115,6 +115,19 @@ export type AdeIpcInvokeResponse<T = unknown> =
   | { ok: true; value: T }
   | { ok: false; error: AdeIpcErrorPayload };
 
+/** Flatten errors for JSON transports while preserving SDK error codes. */
+export function serializeAdeError(error: unknown): AdeIpcErrorPayload {
+  const candidate = error && typeof error === "object"
+    ? (error as { name?: unknown; code?: unknown; message?: unknown })
+    : null;
+  return {
+    __adeError: true,
+    name: "AdeError",
+    code: candidate?.name === "AdeError" && typeof candidate.code === "string" ? candidate.code : "rpc_error",
+    message: typeof candidate?.message === "string" ? candidate.message : String(error),
+  };
+}
+
 /** A pushed envelope for one thread subscription. */
 export type AdeIpcThreadEvent = {
   kind: "thread";

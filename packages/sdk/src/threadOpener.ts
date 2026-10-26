@@ -37,6 +37,7 @@ import {
 import type { PersonalChatsApi } from "./personalChats.js";
 import { Thread, type ThreadRecordPatch } from "./thread.js";
 import type { ThreadRecord, ThreadStore } from "./threadStore.js";
+import { validateThreadBudget, type ThreadBudget } from "./usage.js";
 import { sameJson, threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
 import type {
   AdeProvider,
@@ -151,6 +152,7 @@ type BuildThreadInit = {
   title: string | null;
   model: ThreadModelSelection | null;
   policy: ThreadPermissionPolicy | undefined;
+  budget?: ThreadBudget;
 };
 
 export type ThreadOpener = ReturnType<typeof createThreadOpener>;
@@ -198,6 +200,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       requestedInstructions: init.requestedInstructions,
       requestedSettingSources: init.requestedSettingSources,
       requestedPermissionPolicy: init.requestedPermissionPolicy,
+      ...(init.budget ? { budget: init.budget } : {}),
       logger,
       title: init.title,
       model: init.model,
@@ -331,6 +334,11 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     opts: ThreadResumeOptions,
     comparison: { supplied: Record<string, unknown>; stored: Record<string, unknown> },
   ): Promise<Thread> => {
+    const budget = validateThreadBudget(record.budget ?? opts.budget);
+    if (!record.budget && budget) await persistThread(key)({ budget });
+    else if (record.budget && opts.budget && !sameJson(record.budget, opts.budget)) {
+      logger(`ade sdk: thread "${key}" ignored a different budget on resume; the stored budget remains in force`);
+    }
     await persistThread(key)({ title: summary.title ?? record.title ?? null });
     // A capability report is only meaningful for a thread that asked for one.
     // If this thread is on record as having requested nothing, ignore whatever
@@ -387,6 +395,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
         ...(record.modelId ? { modelId: record.modelId } : {}),
       }),
       policy: record.permissionPolicy,
+      ...(budget ? { budget } : {}),
     });
   };
 
@@ -398,7 +407,10 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
   const open = async (key: string, rawOpts: ThreadResumeOptions): Promise<Thread> => {
     // Validated once, before anything reaches the runtime: a bad root must
     // refuse the open before a resume pushes MCP servers or a create starts.
-    const opts = withValidatedAttachmentRoots(rawOpts, ctx.home);
+    const opts = {
+      ...withValidatedAttachmentRoots(rawOpts, ctx.home),
+      budget: validateThreadBudget(rawOpts.budget),
+    };
     // Provider/model are validated at the CREATE branch below, not here: a
     // durable key already recorded both, so reopening `"support"` after a
     // restart must not force the caller to remember how it was created.
@@ -498,6 +510,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     const permissionPreset = isPermissionPolicy(permissions) ? undefined : permissions;
     // Validated here so a bad value fails the open, not a timer later.
     readApprovalTimeoutMs(permissionPolicy);
+    const budget = validateThreadBudget(record?.budget ?? opts.budget);
 
     // `refresh.mcpServers` is the one field that replaces the record; the
     // record's servers carry header NAMES only, so their values come from the
@@ -616,6 +629,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(settingSources ? { settingSources } : {}),
       ...(permissionPolicy ? { permissionPolicy } : {}),
       ...(permissionPreset ? { permissionPreset } : {}),
+      ...(budget ? { budget } : {}),
     });
     const capability = normalizeMcpCapability(created.mcpCapability);
     const instructionsCapability = normalizeInstructionsCapability(
@@ -663,6 +677,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       title: created.title ?? title ?? null,
       model: modelSelectionOf(created, names, { provider, model }),
       policy: permissionPolicy,
+      ...(budget ? { budget } : {}),
     });
   };
 
