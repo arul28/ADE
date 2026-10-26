@@ -313,13 +313,16 @@ async function serveRemote(
     length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES)),
   }));
 
-  // Turns a failed read into the 502 the player shows. Null means it is sent.
+  // A failed read is the 502 the player shows.
+  const sendReadFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    sendText(res, 502, message || "The other computer did not send this file.");
+  };
   const readOrFail = async (offset: number, length: number) => {
     try {
       return await read(offset, length);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendText(res, 502, message || "The other computer did not send this file.");
+      sendReadFailure(error);
       return null;
     }
   };
@@ -345,8 +348,7 @@ async function serveRemote(
     try {
       pulled = await pull;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      sendText(res, 502, message || "The other computer did not send this file.");
+      sendReadFailure(error);
       return;
     }
     if (pulled.kind === "whole") {
