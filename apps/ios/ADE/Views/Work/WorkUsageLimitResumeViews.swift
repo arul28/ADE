@@ -219,7 +219,7 @@ struct WorkUsageLimitResumeSheet: View {
     .buttonStyle(.plain)
     .disabled(!controlsEnabled)
     .accessibilityLabel("Continue on \(label)")
-    .accessibilityHint("Starts a new chat on \(label) and continues the interrupted task there.")
+    .accessibilityHint("Moves this chat to \(label) and continues there; a chat whose thread cannot move continues in a new one.")
   }
 
   private var forkButton: some View {

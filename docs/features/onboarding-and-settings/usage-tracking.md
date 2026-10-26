@@ -92,9 +92,10 @@ most weekly room, so the chat is not moved onto an account that is also about
 to stop. If the thread cannot move — the chat has no provider thread yet, or
 the copy fails — ADE falls back to the usage-limit handoff: it starts a new
 chat on the other account in the same lane and sends the interrupted task
-there, and the original stops waiting to resume. With smart balance off, the same account is only an
-offer on the usage-limit pill (Continue on that account). A chat created by
-that handoff does not hop again on its own.
+there, and the original stops waiting to resume. With smart balance off, the
+same account is an offer on the usage-limit pill (Continue on that account),
+and pressing it runs the same in-place move. A chat created by that handoff
+does not hop again on its own.
 
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.

@@ -22423,9 +22423,9 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Starts the interrupted task on another account. The provider thread cannot
-   * move with it, so this is a new chat in the same lane, and the original
-   * stops waiting to resume.
+   * Starts the interrupted task on another account. This is the fallback for a
+   * chat whose thread cannot move: a new chat in the same lane, and the
+   * original stops waiting to resume.
    */
   const handOffUsageLimitChat = async (
     managed: ManagedChatSession,
@@ -22620,6 +22620,12 @@ export function createAgentChatService(args: {
     publishUsageLimitResumeArm(managed, turnId, alternateAccount);
   };
 
+  /**
+   * The pill's Continue on <account>: the same rescue Smart Balance runs, on a
+   * press. The chat and its provider thread move to the other login and the
+   * interrupted task continues there in this chat; only a thread that cannot
+   * move falls back to the new-chat handoff.
+   */
   const continueUsageLimitOnAlternate = async ({
     sessionId,
   }: { sessionId: string }): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
@@ -22645,7 +22651,63 @@ export function createAgentChatService(args: {
         message: "No other account has room for this chat.",
       };
     }
-    return handOffUsageLimitChat(managed, alternate);
+    if (usageLimitMoveInFlight.has(normalizedSessionId) || pendingUsageLimitMoves.has(normalizedSessionId)) {
+      return {
+        ok: false,
+        reason: "handoff_in_flight",
+        message: "ADE is already moving this chat to another account.",
+      };
+    }
+    // The thread file is copied, so a turn still writing it, or an open
+    // approval, has to settle first.
+    const blocked = resolveHandoffBlockedReason(managed);
+    if (blocked) return { ok: false, reason: "handoff_failed", message: blocked.message };
+    usageLimitMoveInFlight.add(normalizedSessionId);
+    try {
+      const moved = await moveUsageLimitChatInPlace(managed, alternate);
+      if (moved.ok) {
+        // A provider that reports the same limit twice must not move again.
+        const movedTurnId = lastTurnIdBySession.get(normalizedSessionId) ?? null;
+        if (movedTurnId) rememberBoundedId(usageLimitMovedTurnIds, movedTurnId, 256);
+        return { ok: true, sessionId: normalizedSessionId };
+      }
+      logger.warn("agent_chat.usage_limit_move_failed", {
+        sessionId: normalizedSessionId,
+        instanceId: alternate.instanceId,
+        error: moved.message,
+        trigger: "manual",
+      });
+      // A compaction-only turn carries no work to the other account, so a
+      // failed move reports instead of starting a chat that could only resend it.
+      const turnId = lastTurnIdBySession.get(normalizedSessionId) ?? null;
+      if (turnId && compactOnlyTurns.has(turnId)) {
+        return { ok: false, reason: "handoff_failed", message: moved.message };
+      }
+      return await handOffUsageLimitChat(managed, alternate);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.usage_limit_continue_failed", {
+        sessionId: normalizedSessionId,
+        instanceId: alternate.instanceId,
+        error: message,
+      });
+      // A move that landed before the continuation failed is not retried as a
+      // second chat: this chat is already on the other account.
+      if (resolveSessionInstance(managed)?.id === alternate.instanceId) {
+        return {
+          ok: false,
+          reason: "handoff_failed",
+          message: `This chat moved to ${alternate.label}, but the continuation turn did not start. Send a message to continue.`,
+        };
+      }
+      return {
+        ok: false,
+        reason: "handoff_failed",
+        message: `ADE couldn't continue on ${alternate.label}. ${message}`,
+      };
+    } finally {
+      usageLimitMoveInFlight.delete(normalizedSessionId);
+    }
   };
 
   /**

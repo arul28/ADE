@@ -58,7 +58,7 @@ export function UsageLimitChip({
       })
       .catch((error: unknown) => {
         if (token !== runTokenRef.current) return;
-        showToast({ tone: "error", title: "Couldn't change auto-resume", message: error instanceof Error ? error.message : String(error) });
+        showToast({ tone: "error", title: "Usage limit", message: error instanceof Error ? error.message : String(error) });
       })
       .finally(() => {
         if (token === runTokenRef.current) setBusy(false);
