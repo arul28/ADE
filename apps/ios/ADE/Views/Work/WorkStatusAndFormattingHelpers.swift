@@ -1885,7 +1885,7 @@ func toolDisplayName(_ tool: String) -> String {
   switch trimmed.lowercased() {
   case "image_generation": return "Image generation"
   case "image_view": return "Image viewed"
-  case "computer_use": return "Computer Use"
+  case "computer_use", "computeruse": return "Computer Use"
   case "mcp_event": return "MCP"
   case "sleep": return "Sleep"
   default: break
@@ -1997,7 +1997,23 @@ func workToolArgPreview(toolName: String, argsText: String?) -> String? {
       return stringValue("question")
     case "computer use", "computer_use":
       if let status = stringValue("status") { return "· \(status)" }
-      return nil
+      // Cursor Cloud's typed `computerUse` call: its description, else the actions it ran.
+      if let description = stringValue("description") { return description }
+      guard let actions = object["actions"] as? [[String: Any]] else { return nil }
+      let parts: [String] = actions.compactMap { action in
+        guard let type = action["type"] as? String, !type.isEmpty else { return nil }
+        if type == "type", let text = action["text"] as? String { return "type \"\(text.prefix(40))\"" }
+        if type == "key", let key = action["key"] as? String { return "key \(key)" }
+        if let at = action["coordinate"] as? [String: Any],
+           let x = at["x"] as? NSNumber, let y = at["y"] as? NSNumber {
+          return "\(type) (\(x), \(y))"
+        }
+        return type
+      }
+      guard !parts.isEmpty else { return nil }
+      return parts.count > 4
+        ? parts.prefix(4).joined(separator: " · ") + " · +\(parts.count - 4) more"
+        : parts.joined(separator: " · ")
     case "mcp", "mcp_event":
       let joined = [stringValue("server"), stringValue("event")]
         .compactMap { $0 }

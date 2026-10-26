@@ -648,6 +648,43 @@ describe("Cursor SDK event mapper", () => {
     ]);
   });
 
+  // Cursor sends no event when a background child finishes, so the launch
+  // result is the last ADE hears of it. Local Cursor would not run one in the
+  // background during validation, so this is the only check of that path.
+  it("files a background Cursor subagent under Background without calling its work finished", () => {
+    const events = mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "task-call-bg",
+      name: "task",
+      status: "completed",
+      args: { description: "Watch the build", prompt: "Report when CI is green" },
+      result: {
+        status: "success",
+        value: {
+          agentId: "child-agent-bg",
+          isBackground: true,
+          backgroundReason: "agentRequest",
+          transcriptPath: "/tmp/cursor/child-agent-bg.jsonl",
+        },
+      },
+    }, mapperMeta());
+
+    const types = events.map((event) => event.type);
+    expect(types.indexOf("subagent_started")).toBeGreaterThan(-1);
+    expect(types.indexOf("subagent_started")).toBeLessThan(types.indexOf("subagent_result"));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "subagent_started",
+      taskId: "task-call-bg",
+      agentId: "child-agent-bg",
+      background: true,
+    }));
+    const result = events.find((event) => event.type === "subagent_result");
+    expect(result).toMatchObject({ taskId: "task-call-bg", taskType: "background" });
+    const summary = (result as { summary: string }).summary;
+    expect(summary).not.toBe("Watch the build completed");
+    expect(summary).toContain("/tmp/cursor/child-agent-bg.jsonl");
+  });
+
   it("maps failed Cursor Task tool calls to failed subagent results", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "tool_call",

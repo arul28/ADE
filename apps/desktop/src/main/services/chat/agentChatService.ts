@@ -68104,6 +68104,7 @@ export function createAgentChatService(args: {
           ...(d.aliases?.length ? { aliases: d.aliases } : {}),
           ...(d.cursorAvailability ? { cursorAvailability: d.cursorAvailability } : {}),
           ...(d.cursorCliVariants?.length ? { cursorCliVariants: d.cursorCliVariants } : {}),
+          ...(d.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
         }));
       } catch {
         return [];
@@ -68564,6 +68565,7 @@ export function createAgentChatService(args: {
               : {}),
           ...(info.cursorAvailability ? { cursorAvailability: info.cursorAvailability } : descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
           ...(info.cursorCliVariants?.length ? { cursorCliVariants: info.cursorCliVariants } : descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
+          ...(info.cursorMaxModeOnly ?? descriptor.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
         };
         descriptors.push(patched);
         const providerKey = provider === "pi" ? patched.piProviderId ?? patched.family : patched.family;
@@ -68761,6 +68763,7 @@ export function createAgentChatService(args: {
                   : descriptor.cursorCliVariants?.length
                     ? { cursorCliVariants: descriptor.cursorCliVariants }
                     : {}),
+                ...(entry?.info.cursorMaxModeOnly ?? descriptor.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
                 ...(descriptor.openCodeFast ? { openCodeFast: descriptor.openCodeFast } : {}),
                 ...(runtimeProvider === "copilot" ? {
                   supportedContextTiers: descriptor.supportedContextTiers ?? entry?.info.supportedContextTiers ?? [],

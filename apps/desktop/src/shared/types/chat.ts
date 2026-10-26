@@ -3854,6 +3854,8 @@ export type AgentChatModelInfo = {
     reasoningEffort?: string;
     fastMode?: boolean;
   }>;
+  /** Cursor rows: every catalog variant only runs in max mode (see `ModelDescriptor.cursorMaxModeOnly`). */
+  cursorMaxModeOnly?: boolean;
   /** OpenCode rows: how Fast runs and which efforts it keeps (see `ModelDescriptor.openCodeFast`). */
   openCodeFast?: OpenCodeFastRoutes;
 };
