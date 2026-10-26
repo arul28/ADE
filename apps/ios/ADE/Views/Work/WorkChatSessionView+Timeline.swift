@@ -596,7 +596,8 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
       .frame(maxWidth: .infinity, alignment: .leading)
       .workAssistantMessageContextMenu(
         onCopy: onCopyMessage,
-        onOpenFullOutput: onOpenFullOutput
+        onOpenFullOutput: onOpenFullOutput,
+        linkTexts: model.block.kind.inlineTexts
       )
       .accessibilityElement(children: .contain)
       .adeInspectable(

@@ -2640,6 +2640,7 @@ export type SyncRemoteCommandAction =
   | "work.sendToSession"
   | "work.stopRuntime"
   | "chat.getSlashCommands"
+  | "chat.getSkillInstructions"
   | "chat.listMentionSuggestions"
   | "chat.resolveSmartLinkPreview"
   | "chat.resolveSmartLinkImage"
@@ -2973,6 +2974,7 @@ export type SyncRemoteCommandAction =
   | "prs.replyToReviewThread"
   | "prs.setReviewThreadResolved"
   | "prs.reactToComment"
+  | "prs.updateComment"
   | "prs.simulateIntegration"
   | "prs.commitIntegration"
   | "prs.listIntegrationWorkflows"
@@ -3001,6 +3003,7 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  | "workTools.closeBrowserTab"
   // Proof records for the hosted web client's citations and scene stills. Read-only;
   // the desktop reads the same list through its own IPC.
   | "computerUse.listArtifacts"

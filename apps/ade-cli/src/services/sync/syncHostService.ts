@@ -293,6 +293,7 @@ import {
   evaluateRemoteCommandPolicy,
   remoteCommandArgsFingerprint,
   stableJsonKey,
+  type SyncBrowserTabCloser,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -1152,6 +1153,8 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabCloser | null;
   /**
    * The runtime's Mac Desktop service, when this host can hold a display.
    * Threaded for the same reason as `workToolsStateService`: the fallback
@@ -2373,6 +2376,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    builtInBrowserService: args.builtInBrowserService ?? null,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     macDesktopService,
     macDesktopSyncStream,
