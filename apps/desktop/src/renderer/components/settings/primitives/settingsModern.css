@@ -1,12 +1,12 @@
 /*
  * Modern settings sections — the look Settings › Appearance introduced, shared
  * by every redesigned settings page: a short heading and hint over a visual
- * block (choice cards, row cards, option strips). One rhythm: 44px between
+ * block (choice cards, row cards, option strips). One rhythm: 36px between
  * sections, 14px from a heading to its block, 12px between items. Every colour
  * is a theme token.
  */
 
-.ade-modern-page { container: modernpage / inline-size; display: flex; flex-direction: column; gap: 44px; padding-bottom: 32px; min-width: 0; }
+.ade-modern-page { container: modernpage / inline-size; display: flex; flex-direction: column; gap: 36px; padding-bottom: 32px; min-width: 0; }
 
 .ade-modern-rows { display: flex; flex-direction: column; border-radius: var(--radius-lg); border: 1px solid var(--kit-panel-edge); background: var(--kit-panel-bg); overflow: hidden; }
 .ade-modern-rows > .ade-ap-rowcard { border: 0; border-radius: 0; background: transparent; }
@@ -15,13 +15,14 @@
 .ade-ap-section { display: flex; flex-direction: column; gap: 14px; min-width: 0; scroll-margin-top: 16px; }
 .ade-ap-head {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 .ade-ap-head h2 {
   margin: 0;
   font-size: 15px;
+  line-height: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--color-fg);
@@ -32,7 +33,9 @@
   line-height: 1.45;
   color: var(--color-muted-fg);
 }
-.ade-ap-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+/* Header actions and meta sit on the title line: a box exactly the heading's
+   line height, with everything centred in it (taller buttons overflow evenly). */
+.ade-ap-actions { display: flex; align-items: center; gap: 4px; flex: none; height: 20px; }
 .ade-ap-check { margin-left: auto; color: var(--color-fg); opacity: 0.85; flex: none; }
 .ade-ap-grid3 {
   display: grid;
@@ -225,7 +228,7 @@
 
 .ade-modern-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 /* Several modern sections returned by one component, at the page rhythm. */
-.ade-modern-sections { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-modern-sections { display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 
 /* ── shared modern fields (Providers, Integrations, Secrets); buttons are `.ade-modern-btn` above ── */
 

@@ -521,19 +521,23 @@
 }
 
 /* ── Rate-limit gauges ────────────────────────────────────────────────── */
-.usage-gauge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 12px; }
+/* Seven provider windows fit one row of the Settings › Usage card. */
+.usage-gauge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 8px; }
 .usage-gauge {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding: 12px 14px 12px;
+  padding: 10px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--kit-card-edge);
   background: var(--kit-panel-bg);
 }
 .usage-gauge-title { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
-.usage-gauge-title > .kit-eyebrow { min-width: 0; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
+/* Provider on the first line, its window (5-hour, OAuth apps) on its own line
+   under it, so neither is cut off on a narrow card. */
+.usage-gauge-title { flex-wrap: wrap; row-gap: 2px; }
+.usage-gauge-title > .kit-eyebrow { flex-basis: 100%; letter-spacing: 0.08em; }
 .usage-gauge-provider { font-size: 12px; font-weight: 500; color: var(--color-fg); }
 .usage-gauge-dial { position: relative; align-self: center; width: 104px; height: 92px; margin-top: 2px; }
 .usage-gauge-dial > svg { position: absolute; inset: 0 0 auto 0; }
@@ -558,8 +562,9 @@
   gap: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
   color: var(--kit-text-3);
 }
 .usage-gauge-cycle { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--kit-rule); }

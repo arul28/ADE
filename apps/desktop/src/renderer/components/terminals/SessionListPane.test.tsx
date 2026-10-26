@@ -1508,7 +1508,9 @@ describe("SessionListPane", () => {
           binding: expect.objectContaining({ hostname: "dev.example" }),
           machineId: "target-studio",
         }),
-        null,
+        // Every row offers "Open in", singleton or grouped: one menu shape, and
+        // here it points at the machine that owns the lane.
+        expect.objectContaining({ remote: expect.objectContaining({ hostname: "dev.example" }) }),
         "worktree",
         null, // not filed under Waiting
       );
@@ -2400,7 +2402,8 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       expect.objectContaining({ laneId: "lane-solo", laneName: "Solo lane" }),
-      null,
+      // Every row offers "Open in", singleton or grouped: one menu shape.
+      expect.objectContaining({ rootPath: soloLane.worktreePath }),
       "worktree",
       null, // not filed under Waiting
     );
@@ -2411,7 +2414,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
     };
     act(() => laneActions.open({ x: 40, y: 60 }));
     expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Manage lane" })).toBeTruthy();
   });
 
   it("leaves lane actions off a row whose lane still has a divider", () => {

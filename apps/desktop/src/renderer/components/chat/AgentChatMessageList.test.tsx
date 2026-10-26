@@ -121,6 +121,15 @@ function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   return match as HTMLButtonElement;
 }
 
+/**
+ * The fold row's readable label: its aria-label without the Show/Hide suffix.
+ * The visible row splits each count into a number and a word so a narrow row
+ * can drop the word; the accessible name is the full, spaced sentence.
+ */
+function foldAriaLabel(button: HTMLElement): string {
+  return (button.getAttribute("aria-label") ?? "").replace(/\. (Show|Hide) the work from this turn$/, "");
+}
+
 function LocationProbe() {
   const location = useLocation();
   return (
@@ -2003,10 +2012,12 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "parent-session" });
 
-    expect(screen.getByText("Subagent returned")).toBeTruthy();
+    // The line names the child and how it ended; it is not a "wake" sentence.
+    expect(screen.getByText("Review agent")).toBeTruthy();
+    expect(screen.getByText("done")).toBeTruthy();
     expect(screen.queryByText("ADE woke this chat")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Review complete.*open/i }));
+    fireEvent.click(screen.getByTitle(/Open subagent "Review agent"/));
     const navEvent = dispatchSpy.mock.calls
       .map(([evt]) => evt)
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
@@ -6599,7 +6610,7 @@ describe("AgentChatMessageList turn fold", () => {
         <AgentChatMessageList events={[...live, doneEvent()]} />
       </MemoryRouter>,
     );
-    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool");
+    expect(foldAriaLabel(foldButton())).toBe("Worked for 12s · 1 tool");
     expect(view.container.textContent).not.toContain("Checking the config first.");
     expect(view.container.textContent).not.toContain("Reading the error.");
     expect(view.container.textContent).toContain("The build is green again.");
@@ -6628,7 +6639,7 @@ describe("AgentChatMessageList turn fold", () => {
     // The user turn still folds; the internal turn's only hidden row would be
     // the receipt, so it does not fold and the receipt draws in place.
     expect(screen.getAllByTestId("turn-fold-row")).toHaveLength(1);
-    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool");
+    expect(foldAriaLabel(foldButton())).toBe("Worked for 12s · 1 tool");
     const text = view.container.textContent ?? "";
     expect(text).toContain("Task 3 complete.");
     expect(text).toContain("Turn details");
@@ -6649,7 +6660,7 @@ describe("AgentChatMessageList turn fold", () => {
       quick(200, { type: "text", text: "Done.", itemId: "t-2", turnId: "turn-1" }),
       quick(293, { type: "done", turnId: "turn-1", status: "completed" }),
     ]);
-    expect(foldButton().textContent).toBe("Worked for <1s");
+    expect(foldAriaLabel(foldButton())).toBe("Worked for <1s");
     const text = view.container.textContent ?? "";
     expect(text).toContain("ran <1s");
     expect(text).not.toMatch(/\d+ms/);
@@ -6718,7 +6729,7 @@ describe("AgentChatMessageList turn fold", () => {
 
   it("does not attribute an interrupted turn to the user", () => {
     renderMessageList([...turnEvents(), doneEvent("interrupted")]);
-    expect(foldButton().textContent).toBe("Stopped after 12s · 1 tool");
+    expect(foldAriaLabel(foldButton())).toBe("Stopped after 12s · 1 tool");
   });
 
   it("counts the turn's sources on the fold row and puts an openable chip on the turn-end line", () => {
@@ -6744,7 +6755,7 @@ describe("AgentChatMessageList turn fold", () => {
     renderMessageList([...events, doneEvent()], { onOpenTurnSources });
 
     const sources = screen.getByTestId("turn-fold-count-sources");
-    expect(sources.textContent).toBe(" · 2 sources");
+    expect(foldAriaLabel(foldButton())).toContain("· 2 sources");
     expect(sources.querySelector("svg")!.getAttribute("class")).toContain("text-cyan-300");
     const chip = screen.getByTestId("turn-sources-chip");
     expect(chip.textContent).toBe("VN2 sources");
@@ -6761,7 +6772,7 @@ describe("AgentChatMessageList turn fold", () => {
   it("puts a colored icon before each count on the fold row", () => {
     renderMessageList([...turnEvents(), doneEvent()]);
     const tools = screen.getByTestId("turn-fold-count-tools");
-    expect(tools.textContent).toBe(" · 1 tool");
+    expect(foldAriaLabel(foldButton())).toContain("· 1 tool");
     const icon = tools.querySelector("svg");
     expect(icon).toBeTruthy();
     expect(icon!.getAttribute("class")).toContain("text-sky-300");
@@ -6840,7 +6851,7 @@ describe("AgentChatMessageList turn fold", () => {
       ...events.slice(2),
       doneEvent(),
     ]);
-    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool · 2 jobs (1 failed)");
+    expect(foldAriaLabel(foldButton())).toBe("Worked for 12s · 1 tool · 2 jobs (1 failed)");
     const jobs = screen.getByTestId("turn-fold-count-jobs");
     expect(jobs.className).toContain("text-red-300");
     expect(jobs.querySelector("svg")!.getAttribute("class")).toContain("text-red-400");
@@ -6953,7 +6964,7 @@ describe("AgentChatMessageList turn fold", () => {
       { sessionId: "session-1", timestamp: at(4), event: { type: "text", text: "Survey complete.", itemId: "t-1", turnId: "turn-1" } },
       { sessionId: "session-1", timestamp: at(5), event: { type: "done", turnId: "turn-1", status: "completed" } },
     ]);
-    expect(foldButton().textContent).toBe("Worked for 5.0s · 1 subagent");
+    expect(foldAriaLabel(foldButton())).toBe("Worked for 5.0s · 1 subagent");
     const text = view.container.textContent ?? "";
     expect(text).toContain("Timeline inspected");
     expect(text).not.toContain("Waiting on the scout.");
@@ -7297,7 +7308,7 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
         env(11, { type: "status", turnStatus: "interrupted", turnId: "turn-1" }),
         env(12, { type: "done", turnId: "turn-1", status: "interrupted", usage: { inputTokens: 10, outputTokens: 5 } }),
       ], { sessionId: SESSION });
-      expect(foldButton().textContent).toMatch(/^Stopped after 12s/);
+      expect(foldAriaLabel(foldButton())).toMatch(/^Stopped after 12s/);
       expect(timelinePane().textContent).not.toContain("Checking the lockfile.");
     });
 
@@ -7306,7 +7317,7 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
         ...liveTurn(),
         env(12, { type: "done", turnId: "", status: "completed" }),
       ], { sessionId: SESSION });
-      expect(foldButton().textContent).toBe("Worked for 12s · 2 tools");
+      expect(foldAriaLabel(foldButton())).toBe("Worked for 12s · 2 tools");
       expect(screen.queryByRole("button", { name: /^Show .+ from this turn$/ })).toBeNull();
     });
   });

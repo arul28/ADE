@@ -186,8 +186,10 @@ describe("summarizeLaneFocus — the fold rule", () => {
   });
 
   it("rolls status up by priority and only folds when something is actually busy", () => {
+    // A live turn is Working whatever the lane's PR is doing; the wait is the
+    // row's note, not its column, exactly as the board files it.
     const waiting = focus({ sessions: [running("run")], laneWaiting: true });
-    expect(waiting.status).toBe("waiting");
+    expect(waiting.status).toBe("working");
     expect(waiting.folds).toBe(true);
 
     // Working outranks a Done row; Needs you outranks everything.
@@ -230,24 +232,26 @@ describe("summarizeLaneFocus — the fold rule", () => {
 describe("summarizeLaneFocus — scheduled wakes and busy subagents", () => {
   // The reported case: a /ship subagent parked on a CI-poll wake, its parent
   // idle. Both are still working from a person's point of view.
-  it.each<[string, Parameters<typeof focus>[0], { status: string | null; folds: boolean }]>([
+  it.each<[string, Parameters<typeof focus>[0], { status: string | null; folds: boolean; failed: boolean }]>([
     ["a chat parked on a wake still to come is Waiting and folds",
-      { sessions: [idleChat("poller", WAKE_AHEAD_ISO)] }, { status: "waiting", folds: true }],
+      { sessions: [idleChat("poller", WAKE_AHEAD_ISO)] }, { status: "waiting", folds: true, failed: false }],
     ["an unseen parent whose subagent is busy folds with it",
       { sessions: [idleChat("parent"), idleChat("child", WAKE_AHEAD_ISO)], nested: ["child"], busyParents: ["parent"] },
-      { status: "waiting", folds: true }],
+      { status: "waiting", folds: true, failed: false }],
     ["the same unseen parent with no busy subagent never folds: nothing is busy",
-      { sessions: [idleChat("parent"), idleChat("child")], nested: ["child"] }, { status: "done", folds: false }],
+      { sessions: [idleChat("parent"), idleChat("child")], nested: ["child"] }, { status: "done", folds: false, failed: false }],
     ["an overdue wake holds the lane out even after the user saw it",
       { sessions: [idleChat("poller", WAKE_OVERDUE_ISO), running("run")], seen: { poller: SEEN_ISO } },
-      { status: "working", folds: false }],
+      { status: "working", folds: false, failed: false }],
     ["a failed parent still holds the lane out, whatever its subagent is doing",
       { sessions: [session({ id: "parent", status: "failed", runtimeState: "exited", exitCode: 1 }), idleChat("child", WAKE_AHEAD_ISO)],
         nested: ["child"], busyParents: ["parent"] },
-      { status: "waiting", folds: false }],
+      // A failure files under Done, so the lane's tally still folds; the dot
+      // says it failed.
+      { status: "waiting", folds: false, failed: true }],
     ["an overdue wake on a nested subagent still holds the lane out",
       { sessions: [running("parent"), idleChat("child", WAKE_OVERDUE_ISO)], nested: ["child"] },
-      { status: "working", folds: false }],
+      { status: "working", folds: false, failed: false }],
   ])("%s", (_label, args, expected) => {
     expect(focus({ ...args, nowMs: NOW_MS })).toEqual(expected);
   });

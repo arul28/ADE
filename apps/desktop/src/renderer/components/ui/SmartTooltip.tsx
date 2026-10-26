@@ -122,6 +122,35 @@ export function SmartTooltip({
     hide();
   }, [clearHideTimer, hide, isTooltipFocusTarget]);
 
+  // A trigger that opens a menu turns its tooltip off while the menu is open
+  // (`forceEnabled={!menuOpen}`); one already showing must go too, or it sits
+  // on top of the menu it opened.
+  useEffect(() => {
+    if (enabled) return;
+    clearShowTimer();
+    clearHideTimer();
+    dismiss();
+  }, [enabled, clearShowTimer, clearHideTimer, dismiss]);
+
+  // Pressing the trigger acts on it; the hint has done its job. The press
+  // also focuses the trigger, so focus must not bring the hint back until the
+  // pointer has left.
+  const pressedRef = useRef(false);
+  const handlePointerDown = useCallback(() => {
+    pressedRef.current = true;
+    clearShowTimer();
+    clearHideTimer();
+    dismiss();
+  }, [clearShowTimer, clearHideTimer, dismiss]);
+  const handleMouseLeave = useCallback(() => {
+    pressedRef.current = false;
+    hide();
+  }, [hide]);
+  const handleFocus = useCallback(() => {
+    if (pressedRef.current) return;
+    show();
+  }, [show]);
+
   useEffect(
     () => () => {
       if (showTimerRef.current) clearTimeout(showTimerRef.current);
@@ -177,8 +206,9 @@ export function SmartTooltip({
         ref={triggerRef}
         className={wrapperClassName}
         onMouseEnter={show}
-        onMouseLeave={hide}
-        onFocus={show}
+        onMouseLeave={handleMouseLeave}
+        onPointerDownCapture={handlePointerDown}
+        onFocus={handleFocus}
         onBlur={handleBlur}
         style={{ display: "inline-flex", ...wrapperStyle }}
       >

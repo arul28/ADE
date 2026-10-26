@@ -836,7 +836,7 @@ const ModelPickerTrigger = memo(
               data-model-picker-fast-glyph="true"
             />
           ) : null}
-          <span className="min-w-0 truncate font-medium leading-none">{label}</span>
+          <span className={cn("min-w-0 truncate font-medium leading-none", compact && "ade-chat-composer-model-label")}>{label}</span>
           <CaretDown
             size={compact ? 9 : 10}
             weight="bold"

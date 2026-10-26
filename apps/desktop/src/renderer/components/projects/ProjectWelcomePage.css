@@ -193,8 +193,10 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   /* In the page's bottom padding (the same clamp as .ade-home), under the
      grid's last row: a small frosted pill, so it reads over any picture. */
   --home-pad-bottom: clamp(14px, 2.6cqh, 28px);
-  bottom: calc(2px - var(--home-pad-bottom));
-  height: min(20px, calc(var(--home-pad-bottom) - 3px));
+  /* Whole pill inside the page margin, never clipped by the window edge. */
+  --hidden-note-h: min(18px, calc(var(--home-pad-bottom) - 2px));
+  bottom: calc((var(--home-pad-bottom) - var(--hidden-note-h)) / 2 - var(--home-pad-bottom));
+  height: var(--hidden-note-h);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -214,6 +216,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   text-overflow: ellipsis;
 }
 .ade-home-hidden-note:hover { color: var(--color-fg); }
+.ade-home-hidden-link { text-decoration: none; color: var(--color-accent); }
 .ade-home-hidden-note > span { overflow: hidden; text-overflow: ellipsis; }
 /* Edit mode: the hidden widgets by name, each with its own remove. */
 .ade-home-hidden-note[data-editing] { cursor: default; padding-right: 4px; }
@@ -262,7 +265,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 /* Edit mode: tiles you can pick up. Content goes inert and dims a little;
    each tile wears its controls in a frosted pill. */
 .ade-home-grid[data-editing="true"] .ade-home-cell { cursor: grab; }
-.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card > :not(.kit-card-head) { opacity: 0.55; }
+.ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card > :not(.kit-card-head) { opacity: 0.8; }
 .ade-home-grid[data-editing="true"] .ade-home-widget-content > .kit-card {
   outline: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
   outline-offset: -1px;
@@ -302,6 +305,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   -webkit-backdrop-filter: blur(14px);
 }
 .ade-home-edit-chrome > * { pointer-events: auto; }
+/* A stacked card has no drag handle of its own (it moves with the card above);
+   its title keeps the same inset as every other card's. */
+.ade-home-edit-chrome[data-stacked] .ade-home-edit-name { padding-left: 34px; }
 .ade-home-edit-name {
   margin-right: auto;
   padding: 0 4px;
@@ -354,13 +360,10 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-edit-sizes > button:hover { color: var(--color-fg); background: var(--kit-hover); }
 .ade-home-edit-sizes > button[aria-checked="true"] { color: var(--color-accent-fg); background: var(--color-accent); }
 .ade-home-edit-sizes > button[data-squeezed] { box-shadow: inset 0 0 0 1px var(--kit-warn); }
-/* Size class names in full on a wide tile, S / M / L on a narrow one. */
+/* One size vocabulary on every card: S / M / L (the full name is the
+   tooltip, and the picker spells it out beside the same letter). */
 .ade-home-widget:not([data-stacked]) { container: tile / inline-size; }
-.ade-home-edit-size-short { display: none; }
-@container tile (max-width: 520px) {
-  .ade-home-edit-size-long { display: none; }
-  .ade-home-edit-size-short { display: inline; }
-}
+.ade-home-edit-size-long { display: none; }
 .ade-home-grid-empty {
   grid-column: 1 / -1;
   display: grid;
@@ -439,7 +442,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   min-height: 0;
 }
 .ade-home-activity-figure { margin-top: 6px; }
-.ade-home-activity-figure .kit-stat { font-size: clamp(24px, calc(2.4 * var(--home-cqw)), 32px); }
+.ade-home-activity-figure .kit-stat { font-size: clamp(24px, calc(2.4 * var(--home-cqw)), 32px); font-family: var(--font-mono); letter-spacing: -0.01em; }
 .ade-home-activity-unit { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--kit-text-3); }
 .ade-home-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin: 0; }
 .ade-home-facts > div { min-width: 0; }

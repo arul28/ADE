@@ -53,6 +53,11 @@ function noopSetSlot(): void {}
  */
 const ProjectSidebarHoldContext = createContext(false);
 
+/** True while this page is held under CTO or History, with its list still in the sidebar. */
+export function useProjectSidebarHeld(): boolean {
+  return useContext(ProjectSidebarHoldContext);
+}
+
 export function ProjectSidebarHold({ held, children }: { held: boolean; children: React.ReactNode }) {
   return <ProjectSidebarHoldContext.Provider value={held}>{children}</ProjectSidebarHoldContext.Provider>;
 }

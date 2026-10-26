@@ -17,6 +17,7 @@ export function LaneDialogShell({
   footer,
   scrollBody = true,
   bodyPadding = true,
+  preventAutoFocus = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -39,6 +40,8 @@ export function LaneDialogShell({
   scrollBody?: boolean;
   /** When false, the child draws edge to edge and owns its own padding. */
   bodyPadding?: boolean;
+  /** Focus the panel, not its first control (e.g. an icon button that would show a focus ring). */
+  preventAutoFocus?: boolean;
 }) {
   return (
     <Dialog
@@ -57,6 +60,7 @@ export function LaneDialogShell({
       dismissible={!busy}
       footer={footer}
       onCloseAutoFocus={onCloseAutoFocus}
+      preventAutoFocus={preventAutoFocus}
     >
       {children}
     </Dialog>

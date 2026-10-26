@@ -32,6 +32,7 @@ import {
   weekAlignment,
 } from "./ActivityHeatmap";
 import { USAGE_OVERLAY_CLASS } from "./usageDesign";
+import ContributionSkyline, { ContributionSkylineToggle, type ContributionDay } from "../ui/ContributionSkyline";
 import "./usageSurfaces.css";
 import { fgTint } from "../lanes/laneDesignTokens";
 
@@ -97,6 +98,45 @@ export function readActivityPersisted(): PersistedState {
   }
   return fallback;
 }
+
+// The home card's Activity view: the Home page's 3D contribution skyline, or
+// the flat heat map. Machine-local, like the rest of this module's state.
+const SKYLINE_VIEW_KEY = "ade.activity.module.skyline.v1";
+type SkylineView = "2d" | "3d";
+
+function readSkylineView(): SkylineView {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(SKYLINE_VIEW_KEY) === "2d" ? "2d" : "3d";
+  } catch {
+    return "3d";
+  }
+}
+
+function persistSkylineView(view: SkylineView): void {
+  try {
+    localStorage.setItem(SKYLINE_VIEW_KEY, view);
+  } catch {
+    // Best-effort, like the module's other preferences.
+  }
+}
+
+/** Days for the skyline: chats plus commits and PRs (git or GitHub, whichever saw more), as the Home widget counts them. */
+function skylineDays(daily: readonly AdeUsageDailyPoint[]): ContributionDay[] {
+  return daily.map((point) => {
+    const commits = Math.max(point.commits, point.githubCommits ?? 0);
+    const prs = Math.max(point.prs, point.githubPrs ?? 0);
+    const parts = [
+      point.sessions > 0 ? `${point.sessions} ${point.sessions === 1 ? "chat" : "chats"}` : null,
+      commits > 0 ? `${commits} ${commits === 1 ? "commit" : "commits"}` : null,
+      prs > 0 ? `${prs} ${prs === 1 ? "PR" : "PRs"}` : null,
+      point.totalTokens > 0 ? `${formatCompact(point.totalTokens)} tokens` : null,
+    ].filter(Boolean);
+    return { date: point.date, count: point.sessions + commits + prs, detail: parts.length > 0 ? parts.join(" · ") : undefined };
+  });
+}
+
+/** Skyline band height on the home card: tall enough for the isometric rise, still a strip under the prompt. */
+const SKYLINE_HEIGHT = 120;
 
 function persistActivityPatch(patch: Partial<PersistedState>): void {
   if (typeof localStorage === "undefined") return;
@@ -788,6 +828,11 @@ export function ActivityModule({
   const reduced = usePrefersReducedMotion();
   const palette = SERIES_PALETTE;
   const [tab, setTab] = useState<ActivityTab>(() => readActivityPersisted().tab);
+  const [skylineView, setSkylineView] = useState<SkylineView>(readSkylineView);
+  const changeSkylineView = useCallback((next: SkylineView) => {
+    setSkylineView(next);
+    persistSkylineView(next);
+  }, []);
   const slotRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const tooltip = useDayTooltip(cardRef);
@@ -861,6 +906,10 @@ export function ActivityModule({
   // The heatmap is the one view whose height is content-derived, so it opts out
   // of the reserved chart band the fixed-height bar charts still need.
   const heatmapView = tab === "activity" && stats != null && hasActivity;
+  // Only the new-chat card (`fillSlot`) offers the skyline; Settings keeps its heat map.
+  const skylineOffered = fillSlot && heatmapView;
+  const showSkyline = skylineOffered && skylineView === "3d";
+  const skyDays = useMemo(() => (skylineOffered ? skylineDays(daily) : []), [daily, skylineOffered]);
 
   let chart: React.ReactNode;
   const emptyShape = tab === "activity" ? "grid" : "bars";
@@ -870,6 +919,19 @@ export function ActivityModule({
     chart = <WarmEmpty height={chartHeight} shape={emptyShape} />;
   } else if (!hasActivity) {
     chart = <WarmEmpty height={chartHeight} shape={emptyShape} />;
+  } else if (showSkyline) {
+    chart = (
+      <div className="usage-activity-skyline" style={{ height: SKYLINE_HEIGHT }}>
+        <ContributionSkyline
+          data={skyDays}
+          view="3d"
+          showToggle={false}
+          showStats={false}
+          showLegend={false}
+          unit="contribution"
+        />
+      </div>
+    );
   } else if (tab === "activity") {
     chart = <ActivityHeatmap cells={heatmapCells} layout={heatmapLayout} reduced={reduced} tooltip={tooltip} showKey={!compactMode} gap={compactMode ? 2 : undefined} />;
   } else if (tab === "tokens") {
@@ -893,6 +955,9 @@ export function ActivityModule({
         <div className="usage-activity-head">
           <TabRow tab={tab} onTabChange={changeTab} />
           {compactMode && insight ? <InsightLine insight={insight} /> : null}
+          {skylineOffered ? (
+            <ContributionSkylineToggle className="usage-activity-view" view={skylineView} onChange={changeSkylineView} />
+          ) : null}
           {showRangeControl && onPresetChange ? (
             <RangeControl preset={preset} onPresetChange={onPresetChange} variant={variant} />
           ) : null}
@@ -933,7 +998,7 @@ export function ActivityModule({
           </span>
           {compactMode ? (
             stats && hasActivity ? (
-              tab === "activity" ? <HeatmapRampKey />
+              tab === "activity" ? (showSkyline ? null : <HeatmapRampKey />)
                 : tab === "tokens" ? <Legend items={tokenLegendItems(chartPoints, palette)} />
                   : tab === "code" ? <Legend items={codeLegendItems(chartPoints, palette)} />
                     : chip ? <FooterChip chip={chip} reduced={reduced} /> : null

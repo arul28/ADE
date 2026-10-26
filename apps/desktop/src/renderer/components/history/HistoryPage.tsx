@@ -199,6 +199,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     ? laneRouter.machine(focusLaneMachineId)?.machineName ?? "another machine"
     : null;
 
+  // Opened with no lane in the URL (the footer History button), History shows
+  // the lane the list beside it has selected, else the first lane, instead of
+  // a blank "Choose a lane" page next to a list that highlights one. The URL
+  // effect below only falls back when the URL changes, and an empty URL on
+  // first open never counts as a change.
+  useEffect(() => {
+    if (!active || focusLaneId || focusLaneMachineId || lanes.length === 0) return;
+    if (searchParams.get("laneId") || searchParams.get("commitSha")) return;
+    const fallback = (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null)
+      ?? lanes[0]?.id
+      ?? null;
+    if (fallback) setFocusLaneId(fallback);
+  }, [active, focusLaneId, focusLaneMachineId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
+
   // Hydrate store from URL (single effect to avoid sync loops)
   useEffect(() => {
     if (!active) return;

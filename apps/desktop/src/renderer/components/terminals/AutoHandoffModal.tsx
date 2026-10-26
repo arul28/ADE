@@ -306,6 +306,8 @@ export function staleAutoHandoffRuleIds(args: {
 
 /* ── UI ─────────────────────────────────────────────────────────────────── */
 
+/** A clickable word in the rule sentence: same height and type as the condition chips. */
+const SENTENCE_CHIP_CLASS = "inline-flex h-7 items-center gap-1 rounded-md border border-border/60 px-2 font-sans text-[11.5px] font-medium text-fg/88 transition-colors hover:border-border hover:bg-[color:color-mix(in_srgb,var(--color-fg)_4%,transparent)]";
 const FIELD_LABEL_CLASS = "text-[10px] font-medium uppercase tracking-[0.13em] text-muted-fg";
 
 export type AutoHandoffModalProps = {
@@ -459,7 +461,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
         if (!next) onClose();
       }}
       title="Auto handoff"
-      description={session.title}
+      description={<span className="block truncate whitespace-nowrap" title={session.title}>{session.title}</span>}
       icon={<ArrowsLeftRight size={16} weight="duotone" />}
       tone="accent"
       width={640}
@@ -483,7 +485,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
             onClick={() => { void save(false); }}
             className="font-semibold text-accent underline decoration-[color:color-mix(in_srgb,var(--color-accent)_40%,transparent)] underline-offset-2 hover:decoration-accent disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Make it a rule for all →
+            Apply to all chats →
           </button>
         </div>
       }
@@ -495,7 +497,8 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {/* The sentence. One card, read left to right, not a form grid. */}
           <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)] bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_8%,transparent),color-mix(in_srgb,var(--color-fg)_3%,transparent)_62%)] px-4 py-3.5">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] leading-6 text-fg/70">
+            {/* A size container, so the effort chip spells its level out. */}
+            <div className="@container flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] leading-6 text-fg/70">
               <span>When</span>
               {AUTO_HANDOFF_CONDITIONS.map((condition, index) => {
                 const active = form.conditions[condition.key];
@@ -530,7 +533,15 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                   the card's narrowest width. */}
               <span className="inline-flex items-center gap-2 whitespace-nowrap">
                 <span>then</span>
-                <span className="font-medium text-fg/88">{form.mode === "fork" ? "fork" : "brief"}</span>
+                <button
+                  type="button"
+                  aria-label={`Handoff mode: ${form.mode === "fork" ? "fork" : "brief"}`}
+                  onClick={() => setDetailsOpen(true)}
+                  className={SENTENCE_CHIP_CLASS}
+                >
+                  {form.mode === "fork" ? "fork" : "brief"}
+                  <CaretDown size={10} className="text-muted-fg/70" aria-hidden />
+                </button>
                 <span>in</span>
                 {/* The sentence states the destination; the controls for it live
                     in Details, so there is exactly one lane control on the card.
@@ -539,9 +550,10 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                   type="button"
                   aria-label={`Handoff lane: ${laneSentence}`}
                   onClick={() => setDetailsOpen(true)}
-                  className="font-medium text-fg/88 underline decoration-dotted decoration-border underline-offset-4 transition-colors hover:decoration-accent"
+                  className={SENTENCE_CHIP_CLASS}
                 >
-                  {laneSentence}
+                  <span className="max-w-[180px] truncate">{laneSentence}</span>
+                  <CaretDown size={10} className="text-muted-fg/70" aria-hidden />
                 </button>
               </span>
               <span className="inline-flex items-center gap-2 whitespace-nowrap">
@@ -575,13 +587,15 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                 travelled once the fork runs (`truncatedTurnCount` comes back
                 from `handoffSession`), so no count is promised up front. */}
             {form.mode === "fork" ? (
-              <p className="mt-2.5 text-[10.5px] leading-4 text-muted-fg">
-                This fork replays the whole conversation into {targetLabel}. Oldest turns drop only if the transcript
-                exceeds its context window or provider input limit.
+              <p
+                className="mt-2.5 truncate whitespace-nowrap text-[10.5px] leading-4 text-muted-fg"
+                title="Oldest turns drop only if the transcript exceeds the model's context window or input limit."
+              >
+                Replays the whole chat into {targetLabel}; oldest turns may drop to fit.
               </p>
             ) : (
-              <p className="mt-2.5 text-[10.5px] leading-4 text-muted-fg">
-                A brief summarizes this chat for {targetLabel} and starts it fresh.
+              <p className="mt-2.5 truncate whitespace-nowrap text-[10.5px] leading-4 text-muted-fg">
+                Summarizes this chat for {targetLabel} to start fresh.
               </p>
             )}
             {!conditionsChosen ? (
@@ -592,13 +606,21 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
           </div>
 
           <div className="mt-4">
-            <label htmlFor="auto-handoff-prompt" className={FIELD_LABEL_CLASS}>Prompt</label>
+            <div className="flex items-baseline justify-between gap-3">
+              <label htmlFor="auto-handoff-prompt" className={FIELD_LABEL_CLASS}>Prompt</label>
+              <span
+                className="whitespace-nowrap font-mono text-[10px] text-muted-fg/70"
+                title="{{trigger.session.modelId}}, {{trigger.session.provider}}, {{trigger.session.resetAt}} and the other {{trigger.session.*}} fields are filled in when it runs."
+              >
+                {"{{trigger.session.*}}"} fills in
+              </span>
+            </div>
             <textarea
               id="auto-handoff-prompt"
               value={form.prompt}
               rows={3}
               onChange={(event) => setForm((current) => ({ ...current, prompt: event.target.value }))}
-              placeholder="What the new chat should do first. {{trigger.session.modelId}}, {{trigger.session.provider}}, {{trigger.session.resetAt}} and the other {{trigger.session.*}} placeholders are filled in when it runs."
+              placeholder="What should the new chat do first?"
               className="mt-1.5 w-full resize-y rounded-lg border border-border/60 bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] px-3 py-2 text-[12px] leading-5 text-fg/88 outline-none placeholder:text-muted-fg/70 focus:border-accent"
             />
           </div>

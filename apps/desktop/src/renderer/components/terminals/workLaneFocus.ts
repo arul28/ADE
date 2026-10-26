@@ -49,6 +49,8 @@ export type WorkLaneFocusStatus = WorkBoardColumn;
 
 type WorkRowFocus = {
   status: WorkLaneFocusStatus;
+  /** The row's last turn failed (it files under Done, but the lane dot turns red). */
+  failed?: boolean;
   /** True when this row alone keeps its lane out of the Working shelf. */
   holdsOut: boolean;
   /**
@@ -106,8 +108,8 @@ function isWorkRowSeen(session: TerminalSessionSummary, seenAt: string | null | 
 /**
  * One row's place in its lane's focus, or null for a snoozed/settled row.
  *
- * `laneWaiting` is the lane's PR wait (CI running or a review requested). It
- * parks a running row in Waiting exactly as the board does.
+ * `laneWaiting` is the lane's PR wait (CI running or a review requested). A
+ * live turn stays Working regardless, exactly as the board files it.
  */
 function workRowFocus(args: {
   session: TerminalSessionSummary;
@@ -127,7 +129,9 @@ function workRowFocus(args: {
       // filed as running, but like a stale run it holds its lane out of the
       // fold, so the user sees it instead of trusting a dead "Working".
       if (sessionTurnStallMs(args.session, args.nowMs) !== null) return { status: "working", holdsOut: true };
-      return { status: args.laneWaiting ? "waiting" : "working", holdsOut: false };
+      // Working, as the row's own status says; a lane PR wait does not
+      // override a live turn (same rule as the board).
+      return { status: "working", holdsOut: false };
     case "stale":
       // Still filed as running, but a run that stopped producing output may be
       // stuck. Hiding it is the one way this mode could make things worse.
@@ -146,7 +150,7 @@ function workRowFocus(args: {
     case "failed":
       // A failure is an error nobody has acknowledged yet. It keeps its lane
       // open, and gets a tile, until the user has left it since it failed.
-      return { status: "done", holdsOut: !args.seen };
+      return { status: "done", holdsOut: !args.seen, failed: true };
     case "stopped":
     case "ended":
       // The turn is over by the user's own choice or the runtime's own exit.
@@ -260,6 +264,8 @@ export type WorkLaneFocus = {
   status: WorkLaneFocusStatus | null;
   /** Whether the lane belongs in the Working shelf (pins aside). */
   folds: boolean;
+  /** A live row in the lane failed; the collapsed lane's dot says so in red. */
+  failed: boolean;
 };
 
 export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
@@ -311,6 +317,7 @@ export function summarizeLaneFocus(args: {
   let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
   let busy = launching;
   let heldOut = false;
+  let failed = false;
   const lane = laneFocusRows(
     args.sessions,
     (session) => isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
@@ -327,10 +334,11 @@ export function summarizeLaneFocus(args: {
     if (!row) continue;
     if (deferredToBusyLauncher(session, row, lane.busyIds)) continue;
     if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
+    if (row.failed) failed = true;
     if (row.holdsOut) heldOut = true;
     else if (isBusyAgentRow(session, row)) busy += 1;
   }
-  return { status, folds: !heldOut && busy > 0 };
+  return { status, folds: !heldOut && busy > 0, failed };
 }
 
 /**

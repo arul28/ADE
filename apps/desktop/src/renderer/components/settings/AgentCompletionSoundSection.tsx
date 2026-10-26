@@ -60,7 +60,7 @@ export function AgentCompletionSoundSection({ extraRows }: { extraRows?: React.R
       group="Sound"
       anchor="agent-completion-sound"
       title="Sound"
-      hint="A chime when an agent finishes a turn. Back-to-back turns chime once."
+      hint="Plays when a turn ends; turns ending together chime once."
       actions={(
         <button
           type="button"

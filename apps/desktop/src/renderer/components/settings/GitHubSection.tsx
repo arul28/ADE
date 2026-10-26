@@ -4,7 +4,7 @@ import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types"
 import {
   CheckCircle,
   Warning,
-  ArrowsClockwise,
+  ArrowClockwise,
   ShieldCheck,
   LinkBreak,
   Key,
@@ -430,7 +430,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         actions={(
           <>
             <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={githubBusy} onClick={handleRefreshStatus}>
-              <ArrowsClockwise size={12} weight="bold" /> Refresh
+              <ArrowClockwise size={13} /> Check again
             </button>
             {githubStatus?.patTokenStored ? (
               <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleClearToken}>
@@ -578,7 +578,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           ) : null}
           <ModernRow
             title="Show GitHub issues in the top bar"
-            hint="On this computer. Appears when this project's repository has open issues. Issue links still open in the Issues tab and the issue sheet."
+            hint="Shows when this repo has open issues. On this computer."
             control={(
               <SettingsToggle
                 label="Show GitHub issues in the top bar"
@@ -661,7 +661,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                 <Key size={12} weight="bold" /> {githubBusy ? "Saving..." : "Save token"}
               </button>
               <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleRefreshStatus}>
-                <ArrowsClockwise size={12} weight="bold" /> Check status
+                <ArrowClockwise size={13} /> Check status
               </button>
             </div>
           </div>

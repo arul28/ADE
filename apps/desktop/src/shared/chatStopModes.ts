@@ -198,32 +198,32 @@ export function chatStopModeCopy(
     case "stop_only":
       return {
         label: "Turn only",
-        description: "Stop the active turn. Keep queued messages and background jobs.",
+        description: "Keeps the queue and background jobs.",
       };
     case "stop_and_clear":
       return {
         label: "Turn + queue",
-        description: "Stop the active turn and cancel queued messages. Background jobs keep running.",
+        description: "Also cancels queued messages.",
       };
     case "stop_and_background":
       return {
         label: `Turn + background (${jobs})`,
-        description: `Stop the active turn and stop ${jobs}. Keep queued messages.`,
+        description: `Also stops ${jobs}.`,
       };
     case "stop_and_clear_and_background":
       return {
         label: `Turn + queue + background (${jobs})`,
-        description: `Stop the active turn, cancel queued messages, and stop ${jobs}.`,
+        description: `Also cancels the queue and stops ${jobs}.`,
       };
     case "stop_and_clear_and_children":
       return {
         label: `Turn + queue + child chats (${n})`,
-        description: `Stop the active turn, cancel queued messages, and stop ${children} this chat started. Background jobs keep running.`,
+        description: `Also cancels the queue and stops ${children}.`,
       };
     case "stop_everything_and_children":
       return {
         label: `Everything + child chats (${n})`,
-        description: `Stop the turn, queued messages, ${jobs}, and ${children} this chat started.`,
+        description: `Also stops the queue, ${jobs} and ${children}.`,
       };
     default: {
       const exhaustive: never = mode;

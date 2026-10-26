@@ -634,6 +634,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                 mergeMethod="squash"
                 runtime={detailRuntime}
                 prSwitcher={prSwitcher}
+                autoOpenMergeCard={false}
                 onRefresh={async () => { await refresh({ live: true }); }}
                 onNavigate={(path) => navigate(path)}
               />

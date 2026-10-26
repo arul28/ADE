@@ -205,7 +205,7 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
               type="button"
               className="kit-icon-btn"
               aria-label={`Delete ${preset.name}`}
-              title={presets.length <= 1 ? "Your only layout" : "Delete"}
+              title={presets.length <= 1 ? "Your only layout can't be deleted" : "Delete"}
               disabled={presets.length <= 1}
               onClick={() => void remove(preset.id, preset.name)}
             >
@@ -217,8 +217,8 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
       <div className="ade-home-look-foot">
         <span>
           {full
-            ? `${HOME_LAYOUT_PRESETS_MAX} saved layouts is the most ADE keeps. Delete one to save another.`
-            : shortcut && presets.length > 1 ? `${shortcut} switches layouts.` : "Every change saves to the layout that is showing."}
+            ? `${HOME_LAYOUT_PRESETS_MAX} layouts max. Delete one first.`
+            : shortcut && presets.length > 1 ? `${shortcut} switches layouts.` : "Changes save automatically."}
         </span>
         <button
           type="button"

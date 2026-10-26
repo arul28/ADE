@@ -1,5 +1,6 @@
 import { Check, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { toneText } from "../lanes/laneDesignTokens";
 import { deriveSubagentCardName } from "../../../shared/chatSubagents";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
@@ -57,6 +58,8 @@ export function ChatSubagentGlyph({
   color,
   status,
   size = 18,
+  needsYou = false,
+  emphasis = false,
 }: {
   id: string;
   color: string;
@@ -66,8 +69,18 @@ export function ChatSubagentGlyph({
   status?: ChatSubagentSnapshot["status"];
   /** Overall glyph size in px (svg + wrapper). Defaults to 18. */
   size?: number;
+  /** Waiting on the user: a still amber ring replaces the running spinner. */
+  needsYou?: boolean;
+  /**
+   * The glyph is the row's only status mark (the actions pane): a bolder,
+   * faster running ring and larger check / x badges.
+   */
+  emphasis?: boolean;
 }) {
+  const badgeSize = emphasis ? 11 : 9;
   const cells = identiconCells(id);
+  // Pastel identity colours glow on dark pages; on light ones they deepen so the glyph stays visible.
+  const ink = toneText(color);
   const isRunning = status === "running";
   const dimmed = status === "completed" || status === "stopped";
   const cell = 4;
@@ -79,11 +92,25 @@ export function ChatSubagentGlyph({
       className="relative flex shrink-0 items-center justify-center"
       style={{ height: size, width: size }}
     >
-      {isRunning ? (
+      {needsYou ? (
         <span
           aria-hidden
-          className="absolute -inset-[2px] rounded-full border motion-safe:animate-spin [animation-duration:5s]"
-          style={{ borderColor: "transparent", borderTopColor: color, opacity: 0.7 }}
+          className="absolute -inset-[2px] rounded-full border border-amber-300/80"
+        />
+      ) : isRunning ? (
+        // Transform-only spin (compositor), off under reduced motion.
+        <span
+          aria-hidden
+          className={cn(
+            "absolute -inset-[2px] rounded-full motion-safe:animate-spin",
+            emphasis ? "border-[1.5px] [animation-duration:2.4s]" : "border [animation-duration:5s]",
+          )}
+          style={{
+            borderColor: "transparent",
+            borderTopColor: ink,
+            ...(emphasis ? { borderRightColor: ink } : null),
+            opacity: emphasis ? 0.85 : 0.7,
+          }}
         />
       ) : null}
       <svg
@@ -106,16 +133,16 @@ export function ChatSubagentGlyph({
               width={cell}
               height={cell}
               rx={1}
-              fill={color}
+              style={{ fill: ink }}
             />
           );
         })}
       </svg>
       {status === "completed" ? (
-        <Check aria-hidden size={9} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-emerald-300/90" />
+        <Check aria-hidden size={badgeSize} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-emerald-300/90" />
       ) : null}
       {status === "failed" ? (
-        <X aria-hidden size={9} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-rose-300/90" />
+        <X aria-hidden size={badgeSize} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-rose-300/90" />
       ) : null}
     </span>
   );

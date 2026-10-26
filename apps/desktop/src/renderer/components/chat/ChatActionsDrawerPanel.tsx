@@ -9,6 +9,12 @@ export type ChatActionsDrawerSection = {
    * dividers between siblings and gives each section its own region.
    */
   content: ReactNode;
+  /**
+   * Space priority. A section with `priority` keeps its whole content (up to
+   * {@link PRIORITY_FLOOR_PX}) when the drawer runs out of room, and the other
+   * sections shrink and scroll first.
+   */
+  priority?: boolean;
 };
 
 export const CHAT_ACTIONS_DRAWER_EMPTY_COPY =
@@ -19,6 +25,12 @@ export const CHAT_ACTIONS_DRAWER_EMPTY_COPY =
  * content, up to this. Enough for a header and two or three rows.
  */
 const SECTION_FLOOR_PX = 160;
+
+/** The floor of a priority section: enough for proof's controls and first row. */
+const PRIORITY_FLOOR_PX = 280;
+
+/** How much faster an ordinary section gives up height than a priority one. */
+const YIELD_SHRINK = 4;
 
 /**
  * One region per section. The region is as tall as its content until the
@@ -36,6 +48,8 @@ function DrawerSectionRegion({
   children,
   hidden,
   divided,
+  priority = false,
+  yieldToPriority = false,
   onEmptyChange,
 }: {
   children: ReactNode;
@@ -43,20 +57,37 @@ function DrawerSectionRegion({
   hidden: boolean;
   /** Draw the divider above: this is not the first section with content. */
   divided: boolean;
+  /** Keep more of this section when space runs out. */
+  priority?: boolean;
+  /** Another section has priority: shrink first. */
+  yieldToPriority?: boolean;
   onEmptyChange: (empty: boolean) => void;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const [floor, setFloor] = useState(0);
+  // More below: fade the region's bottom edge so a row cut by the next
+  // section reads as "scroll for more", not as a broken row.
+  const [moreBelow, setMoreBelow] = useState(false);
   const onEmptyChangeRef = useRef(onEmptyChange);
   onEmptyChangeRef.current = onEmptyChange;
+  const priorityRef = useRef(priority);
+  priorityRef.current = priority;
   useLayoutEffect(() => {
     const node = contentRef.current;
     if (!node) return;
     const measure = () => {
       // A section component that renders null leaves this wrapper empty.
       onEmptyChangeRef.current(node.childElementCount === 0);
-      setFloor(Math.min(node.offsetHeight, SECTION_FLOOR_PX));
+      setFloor(Math.min(node.offsetHeight, priorityRef.current ? PRIORITY_FLOOR_PX : SECTION_FLOOR_PX));
+      updateMoreBelow();
     };
+    const scroller = scrollRef.current;
+    const updateMoreBelow = () => {
+      if (!scroller) return;
+      setMoreBelow(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 2);
+    };
+    scroller?.addEventListener("scroll", updateMoreBelow, { passive: true });
     measure();
     // The child-list observer is what un-hides a section that gains content
     // after mount (tasks or proof arrive mid-chat); it must not depend on
@@ -64,13 +95,18 @@ function DrawerSectionRegion({
     const children = new MutationObserver(measure);
     children.observe(node, { childList: true });
     if (typeof ResizeObserver === "undefined") {
-      return () => children.disconnect();
+      return () => {
+        children.disconnect();
+        scroller?.removeEventListener("scroll", updateMoreBelow);
+      };
     }
     const resize = new ResizeObserver(measure);
     resize.observe(node);
+    if (scroller) resize.observe(scroller);
     return () => {
       resize.disconnect();
       children.disconnect();
+      scroller?.removeEventListener("scroll", updateMoreBelow);
     };
   }, []);
   return (
@@ -81,9 +117,16 @@ function DrawerSectionRegion({
         hidden && "hidden",
         divided && "border-t border-fg/[0.06]",
       )}
-      style={{ flexBasis: "auto", minHeight: floor }}
+      style={{ flexBasis: "auto", flexShrink: yieldToPriority ? YIELD_SHRINK : 1, minHeight: floor }}
     >
-      <div className="min-h-0 overflow-y-auto overscroll-contain">
+      <div
+        ref={scrollRef}
+        data-more-below={moreBelow ? "" : undefined}
+        className={cn(
+          "min-h-0 overflow-y-auto overscroll-contain",
+          moreBelow && "[mask-image:linear-gradient(to_bottom,black_calc(100%-20px),transparent)]",
+        )}
+      >
         <div ref={contentRef}>{children}</div>
       </div>
     </div>
@@ -125,6 +168,7 @@ export function ChatActionsDrawerPanel({
   }, []);
   const shown = present.filter((section) => !emptyKeys.has(section.key));
   const firstShownKey = shown[0]?.key ?? null;
+  const priorityShown = shown.some((section) => section.priority);
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
       {/* Sections shrink before this scrolls: it moves only when even their
@@ -137,6 +181,8 @@ export function ChatActionsDrawerPanel({
               key={section.key}
               hidden={emptyKeys.has(section.key)}
               divided={!emptyKeys.has(section.key) && section.key !== firstShownKey}
+              priority={section.priority === true}
+              yieldToPriority={priorityShown && section.priority !== true}
               onEmptyChange={(empty) => setSectionEmpty(section.key, empty)}
             >
               {section.content}

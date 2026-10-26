@@ -105,7 +105,7 @@ export function CtoHomeChooser({
         <p className="mt-4 text-[13px] leading-6 text-fg/80">
           {changing
             ? "The CTO runs on one machine. Every computer you sign in on talks to it there."
-            : "This project has one CTO, and it runs on one machine. Every computer you sign in on talks to it there, so pick the one that's usually on."}
+            : "Pick the computer that's usually on. Your other computers talk to it."}
         </p>
 
         {changing ? (
@@ -174,7 +174,7 @@ export function CtoHomeChooser({
             onClick={() => void confirm()}
             className="rounded-lg border border-fg/[0.12] bg-fg/[0.06] px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-fg/[0.1] disabled:cursor-default disabled:opacity-50"
           >
-            {saving ? "Saving…" : selected ? `Run the CTO on ${selected.machineName}` : "Pick a machine"}
+            {saving ? "Saving…" : selected ? (selected.isThisMachine ? "Run the CTO here" : `Run the CTO on ${selected.machineName}`) : "Pick a machine"}
           </button>
           {onCancel ? (
             <button

@@ -91,7 +91,7 @@ describe("LaneSidebarContextMenu single-lane actions", () => {
   it("acts on the right-clicked lane", () => {
     const props = renderSingleLaneMenu();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Manage Lane" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage lane" }));
 
     expect(props.onManage).toHaveBeenCalledWith("lane-1");
     expect(props.onClose).toHaveBeenCalled();

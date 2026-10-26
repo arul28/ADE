@@ -15,6 +15,8 @@ import {
   sessionStalledPresentation,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
+import { PaneTooltip } from "../ui/PaneTooltip";
+import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import {
@@ -147,10 +149,15 @@ export function SessionStatusSlot({
           label swallows every click aimed at Snooze/Settle. */}
       <span
         data-testid="session-status-label"
+        /* The status stays put on hover: the row actions slide in to its LEFT
+           (`order-first` below) instead of replacing it, so "Needs you" never
+           disappears under the pointer. Only the settle nudge, which carries
+           its own sentence, still takes the slot over. Compact rows keep the
+           swap — they have no width to spare. */
         className={cn(
           "pointer-events-none self-center whitespace-nowrap tabular-nums transition-opacity",
-          "group-focus-within/status-slot:absolute group-focus-within/status-slot:right-0 group-focus-within/status-slot:opacity-0",
-          "group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
+          compact && "group-focus-within/status-slot:absolute group-focus-within/status-slot:right-0 group-focus-within/status-slot:opacity-0",
+          compact && "group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
           (snoozeMenuOpen || showSettleNudge) && "absolute right-0 opacity-0",
           compact ? "text-[10px]" : "text-[11px]",
         )}
@@ -173,6 +180,7 @@ export function SessionStatusSlot({
             "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity",
             "focus-within:static focus-within:opacity-100",
             "group-hover/v2-row:static group-hover/v2-row:opacity-100",
+            !compact && "order-first mr-1",
             (snoozeMenuOpen || showSettleNudge) && "static opacity-100",
           )}
         >
@@ -184,10 +192,16 @@ export function SessionStatusSlot({
             onOpenChange={setSnoozeMenuOpen}
           />
           {canSettle ? (
+            <PaneTooltip
+              label={settled ? "Un-settle session" : "Settle session"}
+              side="bottom"
+              disabled={showSettleNudge}
+              className="self-stretch"
+            >
             <button
+              {...rowHoverSuppressProps}
               type="button"
               aria-label={showSettleNudge ? "Looks finished; settle session" : settled ? "Un-settle session" : "Settle session"}
-              title={showSettleNudge ? "Looks finished · Settle" : settled ? "Un-settle session" : "Settle session"}
               data-testid={showSettleNudge ? "session-settle-nudge" : "session-settle-button"}
               className={cn(showSettleNudge ? SETTLE_NUDGE_BUTTON_CLASS : SESSION_ACTION_BUTTON_CLASS, "-mr-1")}
               disabled={settlePending}
@@ -207,8 +221,9 @@ export function SessionStatusSlot({
               ) : (
                 <Check size={13} weight="bold" aria-hidden />
               )}
-              {showSettleNudge ? <span>Looks finished · Settle</span> : compact ? null : <span>{settled ? "Un-settle" : "Settle"}</span>}
+              {showSettleNudge ? <span>Looks finished · Settle</span> : null}
             </button>
+            </PaneTooltip>
           ) : null}
         </span>
       ) : null}

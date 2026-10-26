@@ -147,6 +147,8 @@ type Props = {
   onPrStateAction?: (action: PrStateAction) => Promise<void>;
   /** A file chip in the description: open that file's diff in the Files tab. */
   onOpenPrFile?: (path: string) => void;
+  /** Open the Merge card by itself on a new PR (the PRs tab). Off in a chat's PR view. */
+  autoOpenMergeCard?: boolean;
 };
 
 function shortenSha(sha: string): string {
@@ -530,6 +532,15 @@ export function buildTimelineEvents(args: {
       .filter((event): event is Extract<PrTimelineEvent, { type: "issue_comment" }> => event.type === "issue_comment")
       .map((event) => commentKey(event.commentId)),
   );
+  // Fallback for feeds whose ids share no node id: the same author, body and
+  // time is the same comment.
+  const commentFingerprint = (author: string | null | undefined, body: string | null | undefined, at: string | null | undefined) =>
+    `${author ?? ""}\u0000${(body ?? "").trim()}\u0000${Number.isFinite(Date.parse(at ?? "")) ? Math.floor(Date.parse(at ?? "") / 1000) : at ?? ""}`;
+  const seenCommentFingerprints = new Set(
+    events
+      .filter((event): event is Extract<PrTimelineEvent, { type: "issue_comment" }> => event.type === "issue_comment")
+      .map((event) => commentFingerprint(event.author, event.body, event.timestamp)),
+  );
   const seenReviewIds = new Set(
     events
       .filter((event): event is Extract<PrTimelineEvent, { type: "review" }> => event.type === "review")
@@ -539,7 +550,10 @@ export function buildTimelineEvents(args: {
     if (act.type === "comment") {
       const source = readActivityString(act, "source") ?? "issue";
       if (source !== "issue" || seenCommentIds.has(commentKey(act.id))) continue;
+      const fingerprint = commentFingerprint(act.author, act.body, act.timestamp);
+      if (seenCommentFingerprints.has(fingerprint)) continue;
       seenCommentIds.add(commentKey(act.id));
+      seenCommentFingerprints.add(fingerprint);
       events.push({
         id: `comment:${act.id}`,
         type: "issue_comment",
@@ -689,6 +703,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onReopen,
       onSubmitReview,
       onHandPrompt,
+      autoOpenMergeCard = true,
       onAddToChat,
       onPrStateAction,
       onOpenPrFile,
@@ -913,13 +928,26 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       fallback: { mergeConflicts: pr.mergeConflicts, behindBaseBy: pr.behindBaseBy, checksStatus: pr.checksStatus },
     }), [checkBuckets, openFindings.length, pr, reviews, status]);
 
-    const [dockOpen, setDockOpen] = useState<PrDockId | null>("merge");
+    // The Merge card opens by itself on the PRs tab ("what happens next" is
+    // what that page is for). In a chat's PR view it floats over a narrow
+    // thread, so there it opens only from its bubble.
+    const autoOpenMerge = autoOpenMergeCard;
+    const [dockOpen, setDockOpenState] = useState<PrDockId | null>(autoOpenMerge ? "merge" : null);
+    const dockTouchedRef = useRef(false);
+    const setDockOpen = useCallback((id: PrDockId | null) => {
+      dockTouchedRef.current = true;
+      setDockOpenState(id);
+    }, []);
     const [busyAction, setBusyAction] = useState<PrNextStepAction | null>(null);
     const [deleteArmed, setDeleteArmed] = useState(false);
     useEffect(() => {
-      setDockOpen("merge");
+      dockTouchedRef.current = false;
       setDeleteArmed(false);
     }, [pr.id]);
+    useEffect(() => {
+      if (dockTouchedRef.current) return;
+      setDockOpenState(autoOpenMerge ? "merge" : null);
+    }, [autoOpenMerge, pr.id]);
 
     const findingsPrompt = useCallback(
       () => buildPrChatPrompt("fix_findings", pr, { findings: openFindings }),
@@ -989,7 +1017,8 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           case "resolve_conflicts": return onHandPrompt ? "Resolve in chat" : "Resolve on GitHub";
           case "update_branch": return updateBranchBusy ? "Updating…" : "Update branch";
           case "fix_checks": return onHandPrompt ? "Fix in chat" : "Open checks";
-          case "rerun_checks": return "Re-run checks";
+          // Short: the card's headline already says which checks.
+          case "rerun_checks": return "Re-run";
           case "address_feedback": return "Address in chat";
           case "enable_auto_merge": return "Enable auto-merge";
           case "disable_auto_merge": return "Turn off auto-merge";
@@ -1164,7 +1193,9 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           style={{ background: COLORS.prSurface, containerType: "inline-size", containerName: "pr-overview" }}
           data-testid="pr-detail-timeline-rails"
         >
-          <div className="relative flex min-h-0 flex-1 flex-col" data-testid="pr-detail-thread-panel" style={{ paddingRight: 18 }}>
+          {/* Right gutter clears the dock's bubble column (36px at right 26px),
+              so the bubbles never sit on the thread's timestamps. */}
+          <div className="relative flex min-h-0 flex-1 flex-col" data-testid="pr-detail-thread-panel" style={{ paddingRight: 64 }}>
             <PrMarkdownEnvContext.Provider value={markdownEnv}>
             <PrTimeline
               ref={timelineRef}

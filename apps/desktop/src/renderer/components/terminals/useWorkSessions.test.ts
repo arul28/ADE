@@ -4222,7 +4222,7 @@ describe("buildWorkBoardModel", () => {
     );
   });
 
-  it("moves a running chat whose lane PR has CI pending into Waiting, not Working", () => {
+  it("keeps a running chat whose lane PR has CI pending in Working, with the wait as its note", () => {
     const ciRunning = makeSession("s-ci", "lane-ci");
     const plain = makeSession("s-plain", "lane-quiet");
 
@@ -4236,15 +4236,15 @@ describe("buildWorkBoardModel", () => {
       laneWaitingReason: (laneId) => (laneId === "lane-ci" ? "ci" : null),
     });
 
-    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-ci"]);
-    // Working is what is LEFT of running, which is what makes the partition
-    // true by construction rather than by two predicates agreeing.
-    expect(buckets.working.map((s) => s.id)).toEqual(["s-plain"]);
+    // The card's own status slot says Working, so the board files it there too;
+    // the lane's PR wait rides along as the row's note.
+    expect(buckets.working.map((s) => s.id)).toEqual(["s-ci", "s-plain"]);
+    expect(buckets.waiting).toEqual([]);
     expect(waitingReasonBySessionId.get("s-ci")).toBe("ci");
     expect(waitingReasonBySessionId.has("s-plain")).toBe(false);
   });
 
-  it("moves a running chat whose lane PR has a review requested into Waiting", () => {
+  it("keeps a running chat whose lane PR has a review requested in Working", () => {
     const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
       runningFiltered: [makeSession("s-review", "lane-review")],
       needsYouFiltered: [],
@@ -4255,8 +4255,8 @@ describe("buildWorkBoardModel", () => {
       laneWaitingReason: () => "review",
     });
 
-    expect(buckets.waiting.map((s) => s.id)).toEqual(["s-review"]);
-    expect(buckets.working).toEqual([]);
+    expect(buckets.working.map((s) => s.id)).toEqual(["s-review"]);
+    expect(buckets.waiting).toEqual([]);
     expect(waitingReasonBySessionId.get("s-review")).toBe("review");
   });
 

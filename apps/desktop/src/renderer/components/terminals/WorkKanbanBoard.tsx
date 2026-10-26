@@ -89,10 +89,10 @@ export const WORK_BOARD_COLUMNS: readonly BoardColumnSpec[] = [
   {
     key: "waiting",
     label: WORK_BOARD_COLUMN_LABEL.waiting,
-    emptyHint: "Nothing is snoozed, scheduled or waiting on CI.",
+    emptyHint: "Nothing is snoozed or scheduled.",
     accent: COLORS.textMuted,
     droppable: false,
-    hint: "Snoozed, waiting on a scheduled wake or a subagent, or on CI or review",
+    hint: "Snoozed, or waiting on a scheduled wake or a subagent",
   },
   {
     key: "done",

@@ -350,6 +350,12 @@ button.activity-hdr-freshness {
   transition: background-color 120ms ease, border-color 120ms ease;
 }
 
+.activity-hdr-open-all:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
 .activity-hdr-open-all:hover,
 .activity-hdr-open-all:focus-visible {
   background: color-mix(in srgb, var(--color-accent) 24%, transparent);

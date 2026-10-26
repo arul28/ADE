@@ -59,7 +59,7 @@
 .ade-skyline-stats[data-count="2"] { --cols: 2; }
 .ade-skyline-stats[data-count="3"] { --cols: 3; }
 .ade-skyline-stat { min-width: 0; }
-.ade-skyline-stat dt { margin-bottom: 3px; font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-skyline-stat dt { margin-bottom: 3px; font-size: 11px; color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ade-skyline-stat dd { margin: 0; display: flex; align-items: baseline; gap: 5px; min-width: 0; }
 .ade-skyline-stat-value { font-size: 17px; font-weight: 600; letter-spacing: -0.02em; color: var(--color-fg); }
 .ade-skyline-stat[data-lead] .ade-skyline-stat-value { color: var(--sky-lead); }

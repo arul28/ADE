@@ -167,7 +167,7 @@ export function AppearanceSection() {
           <ModernSection
             group="Theme"
             title="Theme"
-            hint="Colours, corners, depth and type for the whole app, the editor and the terminal."
+            hint="Colours, corners and type for the app, editor and terminal."
             actions={(
               <>
                 <SettingsSectionAction

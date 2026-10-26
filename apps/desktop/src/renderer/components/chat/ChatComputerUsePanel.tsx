@@ -38,6 +38,7 @@ import {
   proofArtifactPullRequest,
   type ProofDrawerFilter,
   type ProofDrawerFocus,
+  type ProofDrawerGroup,
   type ProofDrawerItem,
 } from "../../../shared/proofDrawerModel";
 import { Banner } from "../ui/notice/Banner";
@@ -406,7 +407,7 @@ function DrawerProofTile({
       ref={containerRef}
       data-chat-proof-artifact={artifact.id}
       className={cn(
-        "group/tile relative flex min-w-0 flex-col gap-1.5",
+        "group/tile relative flex min-w-0 flex-col gap-1",
         busy && "pointer-events-none opacity-45",
       )}
     >
@@ -438,7 +439,7 @@ function DrawerProofTile({
             </div>
           )
         ) : loading ? (
-          <div className="flex h-[74px] items-center justify-center text-muted-fg/30">
+          <div className="flex h-[50px] items-center justify-center text-muted-fg/30">
             <SpinnerGap size={15} className="animate-spin" aria-label="Loading proof preview" />
           </div>
         ) : preview && image ? (
@@ -452,7 +453,7 @@ function DrawerProofTile({
               src={preview}
               alt={artifact.title}
               onError={onMediaError}
-              className="block h-[74px] w-full object-cover"
+              className="block h-[50px] w-full object-cover"
             />
           </button>
         ) : preview && video ? (
@@ -460,12 +461,12 @@ function DrawerProofTile({
             artifact={artifact}
             preview={preview}
             badgeSize="sm"
-            className="h-[74px]"
+            className="h-[50px]"
             onOpen={() => setLightboxOpen(true)}
             onError={onMediaError}
           />
         ) : (
-          <div className="flex h-[74px] items-center justify-center text-muted-fg/28">
+          <div className="flex h-[50px] items-center justify-center text-muted-fg/28">
             <ArtifactKindIcon artifact={artifact} size={17} />
           </div>
         )}
@@ -519,9 +520,9 @@ function DrawerProofTile({
               {pullRequest.label}
             </button>
           ) : null}
-        </div>
-        <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
-          {relativeTime(artifact.createdAt)}
+          <span className="shrink-0 whitespace-nowrap font-mono text-[8.5px] leading-[14px] text-muted-fg/45">
+            {relativeTime(artifact.createdAt)}
+          </span>
         </div>
         <ProofProvenanceLines
           artifact={artifact}
@@ -549,6 +550,55 @@ function DrawerProofTile({
 }
 
 const EMPTY_EVENTS: readonly AgentChatEventEnvelope[] = [];
+
+/** Tile slots the rail shows before "+N more": one row of two. */
+const PROOF_RAIL_TILE_SLOTS = 2;
+
+/** A pair is two artifacts and fills a whole row; a single is one tile. */
+function proofItemSlots(item: ProofDrawerItem): number {
+  return item.kind === "pair" ? 2 : 1;
+}
+
+/**
+ * The first whole row of tiles, newest group first, and how many artifacts
+ * that leaves out. A pair takes a full row, so it never splits.
+ */
+function limitProofDrawerGroups(groups: ProofDrawerGroup[], slots: number): {
+  shownGroups: ProofDrawerGroup[];
+  hiddenProofCount: number;
+} {
+  let left = slots;
+  let hidden = 0;
+  const shownGroups: ProofDrawerGroup[] = [];
+  for (const group of groups) {
+    const take = (items: ProofDrawerItem[]) => items.filter((item) => {
+      if (left >= proofItemSlots(item)) {
+        left -= proofItemSlots(item);
+        return true;
+      }
+      hidden += proofItemSlots(item);
+      return false;
+    });
+    const inAnswer = take(group.inAnswer);
+    const other = take(group.other);
+    if (inAnswer.length || other.length) shownGroups.push({ ...group, inAnswer, other });
+  }
+  return { shownGroups, hiddenProofCount: hidden };
+}
+
+const SUBAGENT_WAKE_PROMPT = /^Your subagent "([^"]+)" finished a turn\b/;
+
+/**
+ * A proof group's title is the prompt of the turn that filed it. A turn woken
+ * by a subagent has the wake text as its prompt, so name the subagent instead
+ * of repeating the sentence.
+ */
+function proofGroupTitle(prompt: string | null | undefined): React.ReactNode {
+  const text = prompt?.trim();
+  if (!text) return "A turn";
+  const wake = SUBAGENT_WAKE_PROMPT.exec(text);
+  return wake ? <><span className="font-normal text-fg/45">Subagent · </span>{wake[1]}</> : text;
+}
 
 const MEDIA_FILTERS: ReadonlyArray<{ value: ProofDrawerFilter["media"]; label: string }> = [
   { value: "all", label: "All" },
@@ -621,11 +671,22 @@ export function ChatComputerUsePanel({
 
   const [filter, setFilter] = useState<ProofDrawerFilter>(EMPTY_PROOF_DRAWER_FILTER);
   const [collapsed, setCollapsed] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchShown = searchOpen || filter.query !== "";
   const groups = useMemo(
     () => buildProofDrawerGroups(artifacts, events, filter, focus),
     [artifacts, events, filter, focus],
   );
   const filtered = filter.query.trim() !== "" || filter.media !== "all" || filter.inAnswerOnly || focus !== null;
+  // The rail shows one whole row of tiles and a "+N more" line, so a tile is
+  // never cut mid-image by the section below. A filter or "+N more" shows all.
+  const [showAllProof, setShowAllProof] = useState(false);
+  const { shownGroups, hiddenProofCount } = useMemo(
+    () => (showAllProof || filtered
+      ? { shownGroups: groups, hiddenProofCount: 0 }
+      : limitProofDrawerGroups(groups, PROOF_RAIL_TILE_SLOTS)),
+    [filtered, groups, showAllProof],
+  );
 
   const brokenCount = useMemo(
     () => artifacts.filter((artifact) => isBrokenArtifact(artifact)).length,
@@ -708,7 +769,7 @@ export function ChatComputerUsePanel({
       {collapsed ? null : artifacts.length === 0 ? (
         <p className="px-4 pt-1 font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
       ) : (
-    <div className="flex min-w-0 flex-col gap-2.5 px-4 pt-1">
+    <div className="flex min-w-0 flex-col gap-2 px-4 pt-1">
 
       {brokenCount > 0 ? (
         <Banner
@@ -744,20 +805,8 @@ export function ChatComputerUsePanel({
             </button>
           </div>
         ) : null}
-        <div className="relative">
-          <MagnifyingGlass
-            size={12}
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50"
-          />
-          <input
-            value={filter.query}
-            onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))}
-            placeholder="Search proof"
-            aria-label="Search proof"
-            className={cn(INPUT_CLASS_NAME, "mt-0 h-7 pl-7 text-[11px]")}
-          />
-        </div>
+        {/* One row: the filters, then search behind its icon. The field
+            opens on click and stays open while it holds a query. */}
         <div className="flex min-w-0 items-center gap-1">
           {MEDIA_FILTERS.map((option) => (
             <button
@@ -766,7 +815,7 @@ export function ChatComputerUsePanel({
               aria-pressed={filter.media === option.value}
               onClick={() => setFilter((current) => ({ ...current, media: option.value }))}
               className={cn(
-                "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+                "whitespace-nowrap rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
                 filter.media === option.value
                   ? "bg-fg/[0.09] text-fg/85"
                   : "text-muted-fg/50 hover:bg-fg/[0.05] hover:text-fg/70",
@@ -781,7 +830,7 @@ export function ChatComputerUsePanel({
             aria-pressed={filter.inAnswerOnly}
             onClick={() => setFilter((current) => ({ ...current, inAnswerOnly: !current.inAnswerOnly }))}
             className={cn(
-              "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+              "whitespace-nowrap rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
               filter.inAnswerOnly
                 ? "bg-fg/[0.09] text-fg/85"
                 : "text-muted-fg/50 hover:bg-fg/[0.05] hover:text-fg/70",
@@ -789,7 +838,45 @@ export function ChatComputerUsePanel({
           >
             In answers
           </button>
+          <button
+            type="button"
+            aria-label="Show proof search"
+            aria-expanded={searchShown}
+            title="Search proof"
+            onClick={() => {
+              if (searchShown && filter.query === "") setSearchOpen(false);
+              else setSearchOpen(true);
+            }}
+            className={cn(
+              "ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors",
+              searchShown ? "bg-fg/[0.09] text-fg/80" : "text-muted-fg/50 hover:bg-fg/[0.05] hover:text-fg/70",
+            )}
+          >
+            <MagnifyingGlass size={11} weight="bold" aria-hidden />
+          </button>
         </div>
+        {searchShown ? (
+          <div className="relative">
+            <MagnifyingGlass
+              size={12}
+              aria-hidden
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50"
+            />
+            <input
+              autoFocus={searchOpen}
+              value={filter.query}
+              onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                setFilter((current) => ({ ...current, query: "" }));
+                setSearchOpen(false);
+              }}
+              placeholder="Search proof"
+              aria-label="Search proof"
+              className={cn(INPUT_CLASS_NAME, "mt-0 h-7 pl-7 text-[11px]")}
+            />
+          </div>
+        ) : null}
       </div>
 
       {groups.length === 0 ? (
@@ -798,25 +885,37 @@ export function ChatComputerUsePanel({
         </div>
       ) : null}
 
-      {groups.map((group) => (
-        <section key={group.key} data-proof-drawer-turn={group.turnId ?? "earlier"} className="flex min-w-0 flex-col gap-2 pt-1">
-          <div className="flex min-w-0 items-baseline gap-2">
+      {shownGroups.map((group, groupIndex) => (
+        <section key={group.key} data-proof-drawer-turn={group.turnId ?? "earlier"} className="flex min-w-0 flex-col gap-1.5">
+          <div className="flex min-w-0 items-center gap-2">
             <div
-              className="line-clamp-2 min-w-0 flex-1 font-sans text-[11px] font-medium leading-[15px] text-fg/78"
+              className="min-w-0 flex-1 truncate font-sans text-[11px] font-medium leading-[15px] text-fg/78"
               title={group.prompt ?? undefined}
             >
-              {group.turnId ? group.prompt ?? "A turn" : "Earlier in this chat"}
+              {group.turnId ? proofGroupTitle(group.prompt) : "Earlier in this chat"}
             </div>
-            <div className="shrink-0 font-mono text-[8.5px] text-muted-fg/34">{relativeTime(group.at)}</div>
+            <div className="shrink-0 whitespace-nowrap font-mono text-[8.5px] text-muted-fg/45">{relativeTime(group.at)}</div>
+            {/* The rail shows one whole row; the rest sit behind this. */}
+            {groupIndex === 0 && hiddenProofCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowAllProof(true)}
+                className="shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
+              >
+                +{hiddenProofCount} more
+              </button>
+            ) : null}
           </div>
-          <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
+          <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-2">
             {group.inAnswer.length > 0 && group.other.length > 0 ? <DrawerSectionLabel>In the answer</DrawerSectionLabel> : null}
             <DrawerItems
               items={group.inAnswer}
               tileProps={{ allowLocalArtifactProtocol, busyIds, onDelete: handleDelete, onRecover: handleRecover }}
             />
-            {group.other.length > 0 ? (
-              <DrawerSectionLabel>{group.inAnswer.length > 0 ? "Also filed" : "Not in an answer"}</DrawerSectionLabel>
+            {/* Label the split only when there is one: a group with nothing
+                in its answer needs no "not in an answer" eyebrow. */}
+            {group.other.length > 0 && group.inAnswer.length > 0 ? (
+              <DrawerSectionLabel>Also filed</DrawerSectionLabel>
             ) : null}
             <DrawerItems
               items={group.other}
@@ -825,6 +924,15 @@ export function ChatComputerUsePanel({
           </div>
         </section>
       ))}
+      {showAllProof && !filtered ? (
+        <button
+          type="button"
+          onClick={() => setShowAllProof(false)}
+          className="self-start whitespace-nowrap rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
+        >
+          Show less
+        </button>
+      ) : null}
     </div>
       )}
     </section>

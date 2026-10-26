@@ -1,6 +1,6 @@
 /*
  * Settings › Chat. Same language as Settings › Appearance: choices on the
- * left, a sticky live thread on the right. One rhythm: 44px between sections,
+ * left, a sticky live thread on the right. One rhythm: 36px between sections,
  * 14px from a heading to its block, 12px between options. Every colour is a
  * theme token; the runtime-colour cards borrow the runtime accents because
  * hue is the choice being made.
@@ -13,7 +13,7 @@
   .ade-cs-layout { grid-template-columns: minmax(0, 1fr) clamp(280px, 36%, 400px); align-items: start; }
 }
 
-.ade-cs-main { container: chatmain / inline-size; display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-cs-main { container: chatmain / inline-size; display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 
 /* On a narrow window the preview leads, capped so the choices stay reachable. */
 .ade-cs-aside { order: -1; display: flex; flex-direction: column; min-width: 0; scroll-margin-top: 16px; }

@@ -1,12 +1,12 @@
 /*
  * Settings › Apple devices, in the Settings › Appearance language: a short
- * heading over a visual block, 44px between sections, 14px from a heading to
+ * heading over a visual block, 36px between sections, 14px from a heading to
  * its block, 12px between items. Every colour is a theme token; the only
  * colour beyond neutrals is the accent on recording overlays (they are drawn
  * in the accent in real recordings too) and the meter's warn/crit status.
  */
 
-.ade-as { container: appleset / inline-size; display: flex; flex-direction: column; gap: 44px; padding-bottom: 32px; min-width: 0; }
+.ade-as { container: appleset / inline-size; display: flex; flex-direction: column; gap: 36px; padding-bottom: 32px; min-width: 0; }
 
 .ade-as-line { display: block; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--color-fg) 22%, transparent); flex: none; }
 

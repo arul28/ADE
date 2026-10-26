@@ -91,7 +91,8 @@
 }
 .ade-lanes-row + .ade-lanes-row { border-top: 1px solid var(--kit-rule); }
 .ade-lanes-row[data-stale="true"] { background: color-mix(in srgb, var(--kit-warn) 4%, transparent); }
-.ade-lanes-row-main {
+.ade-lanes-row-main,
+.ade-lanes-headrow {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) 96px 64px 72px 84px;
   align-items: center;
@@ -99,9 +100,21 @@
   min-height: 38px;
   padding: 4px 10px 4px 12px;
 }
+.ade-lanes-headrow {
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--kit-text-3);
+  border-bottom: 1px solid var(--kit-rule);
+}
+.ade-lanes-headrow > .ade-lanes-when, .ade-lanes-headrow > .ade-lanes-size { font-family: var(--font-sans); color: var(--kit-text-3); }
+.ade-lanes-headrow + .ade-lanes-row { border-top: 0; }
 .ade-lanes-check { display: inline-flex; align-items: center; justify-content: center; color: var(--kit-text-3); }
 .ade-lanes-check input { margin: 0; cursor: pointer; accent-color: var(--color-accent); }
-.ade-lanes-check input:disabled { cursor: not-allowed; opacity: 0.45; }
+/* A lane that cannot be bulk-selected says why on hover; its box is clearly off. */
+.ade-lanes-check input:disabled { cursor: not-allowed; opacity: 0.25; }
 .ade-lanes-row-toggle {
   display: flex;
   flex-wrap: wrap;
@@ -159,5 +172,6 @@
 
 @container modernpage (max-width: 620px) {
   .ade-lanes-row-main { grid-template-columns: 22px minmax(0, 1fr) 64px 84px; }
-  .ade-lanes-pr, .ade-lanes-when { display: none; }
+  .ade-lanes-headrow { grid-template-columns: 22px minmax(0, 1fr) 64px 84px; }
+  .ade-lanes-pr, .ade-lanes-when, .ade-lanes-headrow > :nth-child(3) { display: none; }
 }

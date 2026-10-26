@@ -1104,6 +1104,7 @@ export function ChatTurnWorkSummary({
   leading,
   tokenUsage,
   trailing,
+  actions,
   checkpointFiles = null,
   checkpointDetail = null,
   align = "end",
@@ -1120,6 +1121,8 @@ export function ChatTurnWorkSummary({
   tokenUsage?: TurnTokenUsage | null;
   /** Drawn after the usage on the same line (the turn's scheduled wake-ups). */
   trailing?: React.ReactNode;
+  /** Hover-only buttons (copy, fork): last on the line, with no separator. */
+  actions?: React.ReactNode;
   /**
    * Checkpoint diff for this turn. When the provider recorded one, it replaces
    * the entry-derived file list and sits on this same line.
@@ -1165,6 +1168,7 @@ export function ChatTurnWorkSummary({
             {tokens}
             {trailing && (leading || tokens) ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
             {trailing}
+            {actions}
           </div>
         ) : null}
         <div className={cn("flex shrink-0 items-center gap-3", align === "end" && "ml-auto")}>

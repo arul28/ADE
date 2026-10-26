@@ -4,7 +4,7 @@
  * status, through .kit-tag; every colour is a theme token.
  */
 
-.ade-pv-page { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-pv-page { display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 .ade-pv-detail { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
 .ade-pv-usage-toggle {
