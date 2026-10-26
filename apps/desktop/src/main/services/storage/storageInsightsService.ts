@@ -3,10 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 // Unpatched fs for the stat and readdir below: under Electron a stat of a
 // lane's `.asar` file would open the archive and read it as a folder.
 import { nonAsarFs } from "../shared/nonAsarFs";
-import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import type {
   DbBreakdownEntry,
   MaintenanceAction,

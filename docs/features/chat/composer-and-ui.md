@@ -605,7 +605,11 @@ chat pane mount, which happens either way.
   resumes in …` with **Cancel**, `auto-resume off` with **Resume in …**,
   `paused after 2 tries` with **Try again**, `resuming…`, or just the
   provider's name when it published no reset. **Continue on <account>** shows
-  when the host publishes another account with room. The clock and the
+  when the host publishes another account with room, and continues *this* chat
+  on that account: the provider thread is copied into that login and the same
+  conversation resumes there. A chat whose thread cannot move continues in a
+  new chat in the same lane instead, except after a compaction-only turn, which
+  reports the failure. The clock and the
   provider's own sentence are in the tooltip, and the chip disappears when the
   host clears the resume state.
   The `usageLimitResume` state, not the deprecated parked-until mirror, is the
