@@ -41,6 +41,8 @@ export type ProcessLocation = {
    * re-parented. Absent on Windows, which exposes no other process's env.
    */
   chatSessionId?: string | null;
+  /** The environment could not be read (ps failed): the next scan reads it again. */
+  chatSessionIdUnread?: boolean;
 };
 
 
@@ -183,6 +185,7 @@ export function chatSessionIdFromProcEnviron(text: string): string | null {
 export async function readProcessChatSessionIds(
   pids: readonly number[],
   platform: NodeJS.Platform = process.platform,
+  onError?: (error: unknown) => void,
 ): Promise<Map<number, string | null>> {
   const result = new Map<number, string | null>();
   const unique = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))];
@@ -207,8 +210,9 @@ export async function readProcessChatSessionIds(
       const pid = Number(match[1]);
       if (result.has(pid)) result.set(pid, chatSessionIdFromPsEnvironment(match[2] ?? ""));
     }
-  } catch {
+  } catch (error) {
     // ps failed: nothing is attributed, which only hides a server from its chat.
+    onError?.(error);
   }
   return result;
 }
@@ -321,20 +325,30 @@ export async function scanListeningProcesses(input: {
   const unknown: number[] = [];
   for (const pid of new Set(sockets.map((socket) => socket.pid))) {
     const known = input.knownLocations?.get(pid);
-    if (known) locations.set(pid, known);
+    if (known && !known.chatSessionIdUnread) locations.set(pid, known);
     else unknown.push(pid);
   }
   if (unknown.length > 0) {
-    // The chat tag is read once per new pid, beside its cwd; known pids keep theirs.
+    // The chat tag is read once per new pid, beside its cwd; known pids keep
+    // theirs. A process's environment never changes, so a tag read is final,
+    // unless the read itself failed: then the next scan asks again.
+    let tagReadFailed = false;
     const [cwdText, chatSessionIds] = await Promise.all([
       runText("lsof", ["-a", "-d", "cwd", "-F", "pn", "-p", unknown.join(",")], SCAN_TIMEOUT_MS)
         // A process that exited between the two queries has no cwd; it is
         // simply not attributed to a lane.
         .catch(() => ""),
-      readProcessChatSessionIds(unknown, platform),
+      readProcessChatSessionIds(unknown, platform, () => {
+        tagReadFailed = true;
+      }),
     ]);
     for (const [pid, cwd] of parseLsofCwds(cwdText)) {
-      locations.set(pid, { cwd, commandLine: null, chatSessionId: chatSessionIds.get(pid) ?? null });
+      locations.set(pid, {
+        cwd,
+        commandLine: null,
+        chatSessionId: chatSessionIds.get(pid) ?? null,
+        ...(tagReadFailed ? { chatSessionIdUnread: true } : {}),
+      });
     }
   }
   return { sockets, locations };
