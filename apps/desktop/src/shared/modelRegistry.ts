@@ -2,6 +2,7 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import type { CodexAccessProgram } from "./codexDaybreak";
 import bundledModelManifestJson from "./model-manifest.json";
 import { compareTextInsensitive } from "./formatting";
 import {
@@ -90,6 +91,8 @@ export type ModelDescriptor = {
   /** Provider-reported multiplier used for request-cost display when available. */
   billingMultiplier?: number;
   serviceTiers?: string[];
+  /** Codex runtime catalog only: access programs this account may ask for (`shared/codexDaybreak.ts`). */
+  cyberAccessPrograms?: CodexAccessProgram[];
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -107,6 +110,8 @@ export type ModelDescriptor = {
   cacheReadPricePer1M?: number;
   /** Curated cost tier for UI display. */
   costTier?: "low" | "medium" | "high" | "very_high";
+  /** Cursor: every catalog variant of this model only runs in max mode. */
+  cursorMaxModeOnly?: boolean;
   /** ADE-owned safety/tooling profile for local and experimental models. */
   harnessProfile?: LocalModelHarnessProfile;
   /** Source of runtime-discovered descriptors for debugging and UI hints. */
@@ -2769,6 +2774,7 @@ export function createDynamicCursorCliModelDescriptor(
     capabilities?: Partial<ModelCapabilities>;
     cursorAvailability?: CursorModelAvailability;
     cursorCliVariants?: CursorCliModelVariant[];
+    cursorMaxModeOnly?: boolean;
   },
 ): ModelDescriptor {
   const id = `cursor/${providerModelId}`;
@@ -2797,6 +2803,7 @@ export function createDynamicCursorCliModelDescriptor(
     ...(options?.aliases?.length ? { aliases: [...options.aliases] } : {}),
     ...(options?.cursorAvailability ? { cursorAvailability: { ...options.cursorAvailability } } : {}),
     ...(options?.cursorCliVariants?.length ? { cursorCliVariants: options.cursorCliVariants.map((variant) => ({ ...variant })) } : {}),
+    ...(options?.cursorMaxModeOnly ? { cursorMaxModeOnly: true } : {}),
     isCliWrapped: false,
   };
 }

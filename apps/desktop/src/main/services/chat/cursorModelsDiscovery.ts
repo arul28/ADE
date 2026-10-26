@@ -29,6 +29,8 @@ export type CursorModelVariant = {
   displayName: string;
   description?: string;
   isDefault?: boolean;
+  /** Set by Cursor (SDK 1.0.38+) on a variant that only runs in max mode. */
+  isMaxMode?: boolean;
 };
 export type CursorCliModelRow = {
   id: string;
@@ -555,11 +557,13 @@ function normalizeCursorModelVariants(value: unknown): CursorModelVariant[] | un
       ? record.description.trim()
       : undefined;
     const isDefault = record?.isDefault === true;
+    const isMaxMode = record?.isMaxMode === true;
     out.push({
       params,
       displayName,
       ...(description ? { description } : {}),
       ...(isDefault ? { isDefault } : {}),
+      ...(isMaxMode ? { isMaxMode } : {}),
     });
   }
   return out.length ? out : undefined;
@@ -1106,6 +1110,10 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
       ...(row.cliVariants?.length ? { cursorCliVariants: row.cliVariants } : {}),
+      // Every variant needs max mode, so any pick of this model runs (and bills) as max.
+      ...(row.variants?.length && row.variants.every((variant) => variant.isMaxMode === true)
+        ? { cursorMaxModeOnly: true }
+        : {}),
     };
     descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName, {
       ...descriptorOptions,

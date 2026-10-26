@@ -326,6 +326,7 @@ export function createSideChatService<
       reasoningEffort: parentSession.reasoningEffort ?? null,
       fastMode: parentSession.fastMode === true,
       ...(parentSession.fastMode === true && parentSession.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+      ...(parentSession.provider === "codex" && parentSession.codexDaybreak === true ? { codexDaybreak: true } : {}),
       ...(parentSession.copilotContextTier ? { copilotContextTier: parentSession.copilotContextTier } : {}),
       ...sideChatReadOnlySettings(parentSession.provider),
       surface: parentSession.surface,

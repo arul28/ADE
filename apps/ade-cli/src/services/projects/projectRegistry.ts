@@ -515,16 +515,26 @@ export class ProjectRegistry {
       || (fs.existsSync(this.databaseIdentityPath(record.projectId)) && !fs.existsSync(path.join(adeDir, "ade.db")));
   }
 
+  /**
+   * Why a project whose data is missing cannot open, in the words every surface
+   * uses: its folder is gone, or only its `.ade` data is. `commandHints` adds
+   * the command-line way to start fresh, for a person at a terminal.
+   */
+  projectDataMissingMessage(record: ProjectRecord, options: { commandHints: boolean }): string {
+    const adeDir = path.join(record.rootPath, ".ade");
+    if (!fs.existsSync(record.rootPath)) {
+      return `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`;
+    }
+    const restore = `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh`;
+    return options.commandHints
+      ? `${restore}, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${JSON.stringify(record.rootPath)}\`. ADE has not created a replacement.`
+      : `${restore}.`;
+  }
+
   /** Check before creating directories or opening SQLite on any local entry point. */
   assertProjectDataAvailable(record: ProjectRecord | null): void {
     if (!record || !this.isProjectDataMissing(record)) return;
-    const adeDir = path.join(record.rootPath, ".ade");
-    throw codedError(
-      fs.existsSync(record.rootPath)
-        ? `ADE's data for this project is missing from ${adeDir}. Open the project in the ADE app to restore it or start fresh, or put the .ade folder back from the Trash. To start fresh from the command line instead, run \`ade projects remove ${record.projectId}\` and then \`ade projects add ${record.rootPath}\`. ADE has not created a replacement.`
-        : `The project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`,
-      "project_data_missing",
-    );
+    throw codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing");
   }
 
   private read(): ProjectRegistryFile {

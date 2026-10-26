@@ -15,6 +15,7 @@ export type AcpToolKind =
   | "switch_mode"
   | "other";
 
+import type { CodexAccessProgram } from "../codexDaybreak";
 import type { HarnessPreset } from "../harnessPresets";
 import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
@@ -36,6 +37,7 @@ import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
+export type { AgentChatClaudeUsageArgs, ClaudeUsageReport } from "../claudeUsageReport";
 import type { CursorCloudServiceTier } from "./config";
 import type { ExternalSessionProvider } from "./externalSessions";
 
@@ -2286,6 +2288,10 @@ export type AgentChatEvent =
       result?: string | null;
       /** Local filesystem path if Codex saved the image to disk; null when the result is purely a URL/data URI. */
       savedPath?: string | null;
+      /** OpenAI attachment-store id (Codex 0.164+). Not viewable here; set when Codex sent no inline result. */
+      fileId?: string | null;
+      /** Local images an edit read, in order (Codex 0.164+). */
+      inputImagePaths?: string[];
       /** Metadata when a large inline data URI was omitted from durable history or mobile sync. */
       resultOriginalBytes?: number;
       resultOmittedBytes?: number;
@@ -3024,6 +3030,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /**
+   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
+   * cybersecurity work) on this chat's turns. Applied only where the model's
+   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
+   */
+  codexDaybreak?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -3268,6 +3280,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /** Codex only: Daybreak is on for this chat (`AgentChatSession.codexDaybreak`). */
+  codexDaybreak?: boolean;
   /** Collaboration mode accepted with the active Codex app-server turn/start. */
   codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
   /** True when a live Codex runtime confirms there is no accepted turn mode. */
@@ -3831,6 +3845,11 @@ export type AgentChatModelInfo = {
   reasoningEfforts?: Array<{ effort: string; description: string }>;
   defaultReasoningEffort?: string | null;
   serviceTiers?: string[];
+  /**
+   * Codex `model/list` `availableAccessPrograms.cyber` for the signed-in
+   * account (camelCase program names). Absent: the catalog said nothing.
+   */
+  cyberAccessPrograms?: CodexAccessProgram[];
   aliases?: string[];
   maxThinkingTokens?: number | null;
   // OpenCode-backed model metadata
@@ -3854,6 +3873,8 @@ export type AgentChatModelInfo = {
     reasoningEffort?: string;
     fastMode?: boolean;
   }>;
+  /** Cursor rows: every catalog variant only runs in max mode (see `ModelDescriptor.cursorMaxModeOnly`). */
+  cursorMaxModeOnly?: boolean;
   /** OpenCode rows: how Fast runs and which efforts it keeps (see `ModelDescriptor.openCodeFast`). */
   openCodeFast?: OpenCodeFastRoutes;
 };
@@ -4187,6 +4208,8 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /** Codex Daybreak; see `AgentChatSession.codexDaybreak`. */
+  codexDaybreak?: boolean;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
    * a Devin VM; `provider` must be `devin`.
@@ -4618,6 +4641,8 @@ export type AgentChatCrossMachineTargetConfig = {
   fastMode?: boolean;
   /** "ultrafast" asks for Codex Ultrafast when Fast is on; absent/null is plain Fast. */
   fastTier?: "ultrafast" | null;
+  /** Codex Daybreak (`AgentChatSession.codexDaybreak`); a destination that does not know it ignores it. */
+  codexDaybreak?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -5946,6 +5971,12 @@ export type AgentChatRestartSessionArgs = {
   sessionId: string;
   /** Stop a running turn first instead of refusing. */
   stopFirst?: boolean;
+  /**
+   * Restart once the running turn ends instead of refusing (or stopping it).
+   * How an agent restarts its own chat: the turn that asked finishes first.
+   * Restarts at once when no turn is running. Ignored with `stopFirst`.
+   */
+  afterTurn?: boolean;
 };
 
 export type AgentChatRestartSessionResult = {
@@ -5954,6 +5985,8 @@ export type AgentChatRestartSessionResult = {
   restarted: boolean;
   stoppedTurn: boolean;
   backgroundJobsStopped: number;
+  /** True when `afterTurn` deferred the restart to the end of the running turn. */
+  scheduled?: boolean;
 };
 
 export type AgentChatStopTaskArgs = {
@@ -6293,6 +6326,8 @@ export type AgentChatUpdateSessionArgs = {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /** Codex Daybreak; see `AgentChatSession.codexDaybreak`. */
+  codexDaybreak?: boolean;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;

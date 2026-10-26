@@ -31,6 +31,7 @@ import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type {
   AgentChatSession,
   LaneSummary,
+  ListSessionsArgs,
   OpenProjectBinding,
   PrSummary,
   RecentProjectSummary,
@@ -137,7 +138,26 @@ const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
  * page: a pile of archived shells once pushed a live chat past it, and opening
  * that chat from the Lanes tab found nothing.
  */
-const FOREIGN_SESSION_LIMIT = 60;
+const FOREIGN_SESSION_LIMIT = 200;
+/**
+ * Settled rows are capped on their own (`settledLimit`), so every chat still
+ * working on that machine fits the page. A newest-first page of 60 once dropped
+ * a long-running coordinator chat behind ~100 newer, settled agent chats, and it
+ * blinked in and out of the Work list. Older brains ignore the cap and return
+ * the plain newest page of `FOREIGN_SESSION_LIMIT`.
+ */
+const FOREIGN_SETTLED_SESSION_LIMIT = 40;
+const FOREIGN_SESSION_LIST_ARGS: ListSessionsArgs = {
+  limit: FOREIGN_SESSION_LIMIT,
+  settledLimit: FOREIGN_SETTLED_SESSION_LIMIT,
+  includeArchived: false,
+};
+/**
+ * The page a brain gets once it has shown it ignores `settledLimit` (more
+ * settled rows came back than the cap): the old 60, so an older brain is not
+ * asked for 200 summaries on every tick.
+ */
+const LEGACY_FOREIGN_SESSION_LIST_ARGS: ListSessionsArgs = { limit: 60, includeArchived: false };
 /** Match the local optimistic-session window while a foreign list catches up. */
 const FOREIGN_OPTIMISTIC_SESSION_TTL_MS = 2 * 60 * 1000;
 
@@ -1112,6 +1132,8 @@ type SyncRuntime = {
   pendingLaneReadDepth: LaneReadDepth;
   /** Lane ids a completed lane read did not explain, so we stop re-asking. */
   unresolvedLaneIdsByMachineId: Map<string, Set<string>>;
+  /** Machines whose brain ignored `settledLimit`; they get the legacy page. */
+  legacySessionPageMachineIds: Set<string>;
   /** `connectionsReadSignature` of the last snapshot that forced a read. */
   connectionsReadSignature: string | null;
 };
@@ -1160,6 +1182,7 @@ const runtime: SyncRuntime = {
   laneStatusReadAtMsByMachineId: new Map(),
   pendingLaneReadDepth: "identity",
   unresolvedLaneIdsByMachineId: new Map(),
+  legacySessionPageMachineIds: new Set(),
   connectionsReadSignature: null,
 };
 
@@ -1276,6 +1299,19 @@ export function decodeForeignSessions(result: unknown): TerminalSessionSummary[]
     }
   }
   return sessions;
+}
+
+function foreignSessionListArgs(machineId: string): ListSessionsArgs {
+  return runtime.legacySessionPageMachineIds.has(machineId)
+    ? LEGACY_FOREIGN_SESSION_LIST_ARGS
+    : FOREIGN_SESSION_LIST_ARGS;
+}
+
+function noteForeignSessionPage(machineId: string, sessions: readonly TerminalSessionSummary[]): void {
+  if (runtime.legacySessionPageMachineIds.has(machineId)) return;
+  let settled = 0;
+  for (const session of sessions) if (session.settledAt) settled += 1;
+  if (settled > FOREIGN_SETTLED_SESSION_LIMIT) runtime.legacySessionPageMachineIds.add(machineId);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -1475,7 +1511,7 @@ async function readMachine(
         callAction(targetId, projectId, {
           domain: "session",
           action: "list",
-          args: { limit: FOREIGN_SESSION_LIMIT, includeArchived: false },
+          args: foreignSessionListArgs(machineId),
         }),
         MACHINE_READ_TIMEOUT_MS,
         `session.list on ${machineName}`,
@@ -1486,6 +1522,7 @@ async function readMachine(
     // while this read was in flight, so its answer is about a different world.
     if (generation !== runtime.generation) return;
     const sessions = decodeForeignSessions(sessionResult.result);
+    noteForeignSessionPage(machineId, sessions);
     // A chat is rendered under its lane, so a chat launched on a lane this
     // machine has never reported would be invisible until the slow lane cadence
     // came round. Seeing one is the signal to pay for the lane read now.
@@ -1588,7 +1625,7 @@ async function readThisMachine(
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
-          { limit: FOREIGN_SESSION_LIMIT, includeArchived: false },
+          foreignSessionListArgs(THIS_MACHINE_ID),
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,
@@ -1597,6 +1634,7 @@ async function readThisMachine(
       lanesDue ? readPrs() : null,
     ]);
     if (generation !== runtime.generation) return;
+    noteForeignSessionPage(THIS_MACHINE_ID, sessions);
     const lanes = await resolveLaneCadence(
       THIS_MACHINE_ID,
       laneResult,
@@ -1990,6 +2028,7 @@ function applyReachability(): void {
       runtime.dropsByMachineId.delete(machineId);
       forgetLaneReads(machineId);
       runtime.unresolvedLaneIdsByMachineId.delete(machineId);
+      runtime.legacySessionPageMachineIds.delete(machineId);
     }
     store.dropCrossMachineLanes(forgotten);
   }
@@ -2020,6 +2059,7 @@ function resetMachineTracking(): void {
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();
   runtime.unresolvedLaneIdsByMachineId.clear();
+  runtime.legacySessionPageMachineIds.clear();
   runtime.connectionsReadSignature = null;
 }
 
@@ -2044,6 +2084,11 @@ function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionS
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
+  // A machine that drops may come back on another build (an upgrade restarts
+  // its brain), so its page is asked for in full again on the next read.
+  for (const connection of runtime.connections) {
+    if (connection.state !== "connected") runtime.legacySessionPageMachineIds.delete(connection.target.id);
+  }
   applyReachability();
   // A machine that just appeared has no rows at all, so its first read has to be
   // the full one or it renders statusless until the cadence comes round. A

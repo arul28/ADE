@@ -127,6 +127,16 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
   and your dev brain is still running,
   `npm run dev:desktop:attach -- --socket <your socket>` reopens just the
   window. Never leave the app open while you edit main-process code.
+- **Mind the machine's memory.** Run one dev app per agent, and only while you
+  use it. Before you start a dev app, a dev brain, a simulator or a build,
+  check `memory_pressure | tail -1` and wait while free memory is under ~30%:
+  many lanes' dev apps, brains and simulators at once once filled a Mac
+  Studio, and the installed ADE that hosts every agent kept crashing. A dev
+  app an agent starts from its shell (an ADE chat or run) opens no detached
+  DevTools window; attach over CDP instead, or set `ADE_OPEN_DEVTOOLS=1` to get
+  it. An App Control launch cannot be told from a person's, so put
+  `NO_DEVTOOLS=1` in its command. Run by hand, it still opens DevTools
+  unless `NO_DEVTOOLS=1` is set. View > Toggle DevTools works either way.
 - **Stop what you started, brain included.** Stop the dev app's process group
   (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
   `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;

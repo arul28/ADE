@@ -58,7 +58,7 @@ export type NpmTarballTargetPin = {
    * The npm *install directory* name — what consumers expect to find in a
    * `node_modules` tree. This is not always the published package name:
    * `@openai/codex-darwin-arm64` is an npm alias whose tarball is published
-   * under `@openai/codex` at version `0.162.1-darwin-arm64`.
+   * under `@openai/codex` at version `0.164.0-darwin-arm64`.
    */
   package: string;
   version: string;

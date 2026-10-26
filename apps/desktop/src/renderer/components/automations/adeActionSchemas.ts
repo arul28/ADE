@@ -1125,6 +1125,16 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
 		    description: "Return Claude context usage for a chat session.",
 		    params: [{ name: "sessionId", type: "string", required: true }],
 		  },
+		  {
+		    domain: "chat",
+		    action: "getClaudeUsage",
+		    label: "Get Claude usage",
+		    description: "Return Claude's usage report for a chat session: cost, plan limits, and what is using them.",
+		    params: [
+		      { name: "sessionId", type: "string", required: true },
+		      { name: "skipBehaviors", type: "boolean" },
+		    ],
+		  },
 	  {
 	    domain: "chat",
 	    action: "listClaudePlugins",
