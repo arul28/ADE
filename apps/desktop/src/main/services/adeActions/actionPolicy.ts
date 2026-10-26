@@ -55,7 +55,7 @@ const USER_SETTING_WRITES = {
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
-  pty: { actions: ["setDefaultShell"], entryId: "general.terminal-shell" },
+  pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
   analytics: { actions: ["setEnabled"], entryId: null },
   remote_mcp: { actions: ["setEnabled", "createToken", "updateConnection", "removeConnection"], entryId: "ade-mcp.server" },

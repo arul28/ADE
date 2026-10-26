@@ -368,7 +368,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
     // carries that machine's pin.
-    { entryIds: ["general.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
+    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },

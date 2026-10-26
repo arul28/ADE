@@ -441,7 +441,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE MCP",
   },
   {
-    id: "general.terminal-shell",
+    id: "behaviour.terminal-shell",
     label: "Default terminal shell",
     keywords: ["shell", "terminal", "zsh", "bash", "fish", "powershell", "pwsh", "cmd", "git bash", "default shell"],
     tab: "behaviour",
