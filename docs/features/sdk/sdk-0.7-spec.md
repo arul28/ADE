@@ -199,7 +199,26 @@ See §4.
 
 Measured baseline (npm, 1.2.123 / 0.6.0): `@ade-dev/runtime-darwin-arm64`
 251.8 MB unpacked; `@ade-dev/sdk` 2.7 MB; `@ade-dev/chat-ui` 1.3 MB.
-Plan filled in from the size research (section updated when it lands).
+Breakdown (unpacked MB): darwin-arm64 = bin 134.8 + native/node_modules 109.5
++ other native 7.4; win32-x64 = bin 109.1 + node_modules 353.7 + 7.6. The bin
+is a Node SEA (22 MB JS blob); the embedded profile gates behaviour but ships
+the full dependency graph.
+
+Plan, in order of savings:
+
+1. Stop shipping Windows `@opencode/cli/bin/opencode.exe` (212.9 MB): ADE
+   already fetches a pinned OpenCode into its tools cache.
+2. Windows `node-pty` PDBs and wrong-arch binaries (29.8 MB).
+3. Strip declarations, docs, examples and tests from copied packages
+   (up to ~37 MB, overlapping later steps). Licenses stay.
+4. Drop the copied `@factory/droid-sdk` if tsup already bundles it (17.4 MB).
+5. Embedded-only npm packages exclude the TUI bundle and UI packages,
+   `@linear/sdk` and cr-sqlite (~33.5 MB). The CLI installer keeps them.
+6. `@ade-dev/sdk` / `@ade-dev/chat-ui`: stop publishing sourcemaps
+   (66% / 62% of each package).
+
+Deferred: Cursor as an on-demand pack (36 MB) — a product trade (offline
+first use), not taken without a decision.
 
 ---
 
