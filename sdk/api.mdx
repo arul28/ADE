@@ -291,6 +291,12 @@ the path would point a signed app at a directory that is not there.
 export function runtimeSpawnEnv(runtimeRoot: string, base: NodeJS.ProcessEnv = process.env, nodeModulesPath?: string): NodeJS.ProcessEnv
 ````
 
+### `validateJsonSchema`
+
+````ts
+export function validateJsonSchema(value: unknown, schema: JsonSchema, path = "$", errors: string[] = []): string[]
+````
+
 ## Classes
 
 ### `AdeError`
@@ -305,6 +311,15 @@ export class AdeError extends Error {
 }
 ````
 
+### `InvalidOutputError`
+
+````ts
+export class InvalidOutputError extends AdeError {
+    readonly rawText: string;
+    constructor(rawText: string, reason: string);
+}
+````
+
 ## Constants
 
 ### `ADE_CLIENT_EVENTS`
@@ -312,7 +327,7 @@ export class AdeError extends Error {
 Every client-level event name, once. See AdeClientEventMap.
 
 ````ts
-export const ADE_CLIENT_EVENTS: readonly ["exit", "transport", "restart", "threadLifecycle"];
+export const ADE_CLIENT_EVENTS: readonly ["exit", "transport", "restart", "threadLifecycle", "usageLimit"];
 ````
 
 ### `APPROVAL_DECISIONS`

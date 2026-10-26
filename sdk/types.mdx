@@ -8,6 +8,43 @@ icon: "shapes"
 
 ## Types and interfaces
 
+### `AccountInfo`
+
+````ts
+export type AccountInfo = {
+  id: string;
+  provider: string;
+  label: string;
+  email?: string;
+  plan?: string;
+  signedIn: boolean;
+  isDefault: boolean;
+  loginBroken?: boolean;
+  accentColor?: string;
+  createdAt?: string;
+  usage?: AccountUsage;
+};
+````
+
+### `AccountUsage`
+
+````ts
+export type AccountUsage = {
+  state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error";
+  readAt: string | null;
+  note: string | null;
+  windows: Array<{
+    type: string;
+    label: string;
+    percentLeft: number;
+    resetsAt: string | null;
+    unlimited?: true;
+    countLeft?: number;
+    countTotal?: number;
+  }>;
+};
+````
+
 ### `AdeChatClient`
 
 RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
@@ -31,6 +68,9 @@ letting the consumer discover it as a response that stopped mid-sentence.
 
 ````ts
 export interface AdeChatClient {
+  accounts: AccountManagement["accounts"];
+  credentials: AccountManagement["credentials"];
+  presets: AccountManagement["presets"];
   providers: {
     /**
      * Per-provider install, auth and availability.
@@ -49,6 +89,8 @@ export interface AdeChatClient {
      */
     refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
+    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
+    capabilities(provider: string): Promise<ProviderCapabilities>;
   };
   models: {
     list(): Promise<ModelCatalogEntry[]>;
@@ -117,6 +159,8 @@ export interface AdeChatClient {
   };
   doctor(): Promise<DoctorReport>;
   exportThread(key: string): Promise<string>;
+  /** Run a temporary thread and delete it after the final answer is received. */
+  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
   /**
    * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
    * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
@@ -185,6 +229,8 @@ export type AdeClientEventMap = {
    * runtime (ADE desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
+  /** A provider turn stopped because its current account reached a usage limit. */
+  usageLimit: import("./types.js").UsageLimitEvent;
 };
 ````
 
@@ -249,12 +295,18 @@ export type AdeErrorCode =
    * changed. `retry` and `editLast` throw it for a provider other than Claude
    * or Codex, and for a runtime older than the `rerunLastTurn` action.
    */
-  | "unsupported";
+  | "unsupported"
+  | "invalid_output"
+  /**
+   * A provider sign-in ended without signing in: it failed, was cancelled, or
+   * expired. The handle's last status says which (`state`) and why (`message`).
+   */
+  | "sign_in_failed";
 ````
 
 ### `AdeProvider`
 
-Chat providers ADE can drive. Kept closed at the SDK boundary on purpose.
+Known provider ids for autocomplete; provider strings remain open for newer runtimes.
 
 ````ts
 export type AdeProvider =
@@ -264,7 +316,14 @@ export type AdeProvider =
   | "droid"
   | "opencode"
   | "pi"
-  | "muse";
+  | "muse"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
+  | "devin"
+  | "antigravity"
+  | (string & {});
 ````
 
 ### `AdeThread`
@@ -494,6 +553,8 @@ export interface AdeThread {
    * thread prefer `historyPage`, which reads one bounded page at a time.
    */
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /** Token totals observed on this thread; cost is present only when reported by the provider. */
+  usage(): ThreadUsage;
   /**
    * One page of the durable transcript, for "load older" on scroll.
    *
@@ -523,11 +584,9 @@ export interface AdeThread {
    * items silently, so without this check an answer to a dead card would look
    * like it worked.
    *
-   * Throws `invalid_option` for a request whose `requestKind` is one of the
-   * four that want prose or a choice rather than a verdict. Those are listed
-   * by `pendingApprovals()` and are meant to be rendered read-only. The kind
-   * is the runtime's own answer: an MCP elicitation that only asks "may this
-   * tool run?" arrives as `"approval"` and is answerable here.
+   * Use `respond()` for questions and plan approvals. This method accepts only
+   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
+   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
    *
    * `accept_always` settles this request and every later one the provider
    * considers the same, for the life of the session.
@@ -537,11 +596,39 @@ export interface AdeThread {
    * Every request this thread is currently blocked on.
    *
    * Call it after a reload to restore approval cards: the requests outlive the
-   * client that saw the events. Requests whose `requestKind` is not
-   * `"approval"` or `"permissions"` are included and cannot be answered with
-   * `approve()` — render those read-only.
+   * client that saw the events. The `answerable` field identifies whether the
+   * runtime supports a response for each request. Questions and plan approvals
+   * use `respond()` when that action is available; tool approvals use
+   * `approve()`.
    */
   pendingApprovals(): Promise<ApprovalRequest[]>;
+  /**
+   * Answer a question, structured question, or plan approval through the
+   * runtime's `respondToInput` action. Question answers are keyed by question
+   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
+   * SDK never infers it from option labels.
+   */
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  /** Mutable queued sends belonging to this thread. */
+  readonly queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  readonly usageLimit: {
+    resumeNow(): Promise<AgentChatUsageLimitResult>;
+    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
+  };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
   on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
 }
 ````
@@ -768,6 +855,24 @@ provider, and reports the answer on AgentChatSessionSummary.
 export type AgentChatSettingSources = "none" | "project" | "user" | "all";
 ````
 
+### `ApiCredentialInfo`
+
+````ts
+export type ApiCredentialInfo = {
+  provider: string;
+  credentialId: string;
+  label: string;
+  envVar?: string;
+  baseUrl?: string;
+  protocol?: "openai-compatible" | "openai-responses" | "anthropic";
+  models?: string[];
+  source: "store" | "env" | "config";
+  createdAt: string;
+  updatedAt: string;
+  maskedTail?: string;
+};
+````
+
 ### `ApprovalDecision`
 
 What a host can say about a pending approval.
@@ -791,11 +896,10 @@ export type ApprovalRequest = {
   /**
    * The finer-grained kind.
    *
-   * `"approval"` and `"permissions"` are answerable with `approve()`. The other
-   * kinds — `"question"`, `"structured_question"`, `"plan_approval"`,
-   * `"model_selection"` — want prose or a choice that this surface cannot
-   * carry, so render them read-only rather than offering Allow and Reject for
-   * something that wants a sentence.
+   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
+   * `respond()` for `"question"` and `"structured_question"` requests, with
+   * answers keyed by question id, and for `"plan_approval"` with an explicit
+   * decision. A runtime may leave other request kinds read-only.
    */
   requestKind?: PendingInputKind;
   /** Human-readable and provider-supplied. Safe to render. */
@@ -805,6 +909,10 @@ export type ApprovalRequest = {
   detail?: unknown;
   /** Which provider raised it. */
   provider: AdeProvider;
+  /** The original prompts for requests answered through `respond()`. */
+  questions?: PendingInputRequest["questions"];
+  /** False when the runtime cannot answer this request through the SDK. */
+  answerable?: boolean;
 };
 ````
 
@@ -994,6 +1102,29 @@ export type CreateAdeChatOptions = {
    * `"explicit"`. Ignored without `binaryPath`.
    */
   source?: "packaged";
+  /**
+   * Reuse the runtime host's provider logins. Defaults to false (isolated
+   * per-app logins). SDK 0.7 changes the default from machine logins; pass
+   * true to keep relying on the host machine's Claude/Codex login.
+   */
+  useMachineLogin?: boolean;
+  /**
+   * The environment the runtime starts with. Defaults to this process's
+   * environment. `useMachineLogin: false` isolates the providers' sign-in
+   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
+   * users must run only on their own logins and keys. The host's own `ADE_*`
+   * variables are always removed.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Resolve a host-vault credential id to a secret for one thread session.
+   * The value is pushed to the runtime for the live session and never saved
+   * in the SDK thread record.
+   */
+  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  /** Usage-limit behavior for new threads. Defaults to `wait`. */
+  onUsageLimit?: "failover" | "wait" | "ask";
 };
 ````
 
@@ -1132,6 +1263,10 @@ export type DoctorReport = {
     gapsRecovered: number;
   };
   providers: Record<string, ProviderStatus>;
+  logins: {
+    mode: "isolated" | "machine" | "attached";
+    perProvider: Record<string, "isolated" | "shared" | "unknown">;
+  };
   threads: { tracked: number; live: number };
   /** Most recent errors the client recorded, newest last. Capped. */
   recentErrors: Array<{ at: string; scope: string; message: string }>;
@@ -1241,13 +1376,51 @@ export type InstructionsCapability = HostConfigCapability & {
 };
 ````
 
+### `JsonSchema`
+
+````ts
+export type JsonSchema = {
+  type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  enum?: unknown[];
+  additionalProperties?: boolean | JsonSchema;
+  title?: string;
+  description?: string;
+  $schema?: string;
+  $id?: string;
+  default?: unknown;
+  examples?: unknown[];
+};
+````
+
 ### `KnownAgentChatEvent`
 
 The narrowed members most consumers actually branch on.
 
 ````ts
 export type KnownAgentChatEvent =
-  | { type: "user_message"; text: string; displayText?: string; messageId?: string; turnId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      displayText?: string;
+      messageId?: string;
+      turnId?: string;
+      steerId?: string;
+      deliveryState?: "queued" | "accepted" | "processed" | "unprocessed" | "delivered" | "inline" | "failed";
+      attachments?: AgentChatFileRef[];
+    }
+  | { type: "user_message_resolution"; steerId: string; action: "run_next" | "dismiss"; state: "completed"; replacementMessageId?: string }
+  | { type: "queue_reordered"; steerIds: string[] }
+  | {
+    type: "queue_recovery";
+    recoveryId: string;
+    state: "available" | "restored" | "expired";
+    messageCount: number;
+    /** On `restored`: the messages put back in the queue. */
+    restoredSteers?: Array<{ steerId: string; text: string; attachments?: AgentChatFileRef[] }>;
+  }
   | { type: "text"; text: string; messageId?: string; turnId?: string }
   | { type: "reasoning"; text?: string; turnId?: string }
   | { type: "tool_call"; tool: string; args: unknown; itemId: string; turnId?: string }
@@ -1289,6 +1462,20 @@ export type KnownAgentChatEvent =
     }
   | { type: "status"; [key: string]: unknown }
   | { type: "error"; [key: string]: unknown }
+  | {
+      type: "budget_exceeded";
+      budget: { maxCostUsd?: number; maxTokens?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+        complete?: boolean;
+        contextWindow?: number;
+        costUsd?: number;
+      };
+      turnId?: string;
+      resumed?: boolean;
+    }
   | { type: "done"; [key: string]: unknown };
 ````
 
@@ -1554,10 +1741,8 @@ export type PendingInputRequest = {
 
 ### `PendingInputSource`
 
-Which provider raised a pending input request.
-
-`"acp"` covers all four ACP dialects, because the permission round trip is
-one method there. `"ade"` is a request ADE staged itself.
+Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
+Devin, Antigravity) all report `"acp"`, not their own name.
 
 ````ts
 export type PendingInputSource =
@@ -1602,6 +1787,23 @@ export type PermissionPreset = "always-allow" | "default";
 export type ProbeRuntimeSignatureOptions = {
   platform?: NodeJS.Platform;
   spawn?: SignatureCommandRunner;
+};
+````
+
+### `ProviderCapabilities`
+
+Runtime-derived controls available for a provider.
+
+````ts
+export type ProviderCapabilities = {
+  permissionModes: AgentChatPermissionMode[];
+  reasoningEfforts: string[];
+  fastMode: boolean;
+  multipleAccounts: boolean;
+  signIn: "cli-login" | "device-code" | "api-key" | "none";
+  apiKeys: boolean;
+  presets: boolean;
+  mcp: "full" | "partial" | "none";
 };
 ````
 
@@ -1669,6 +1871,10 @@ export type ProviderStatus = {
   checkedAt: string;
   /** Human-readable note from the probe, when it had one. */
   detail?: string | null;
+  /** Provider controls, present only when the runtime advertises them. */
+  capabilities?: ProviderCapabilities;
+  /** Config-home isolation used by this runtime, when it can report it. */
+  isolation?: "isolated" | "shared";
 };
 ````
 
@@ -1703,6 +1909,8 @@ export type ProviderStatusProbeRecord = {
   stale?: boolean;
   checkedAt?: string;
   detail?: string | null;
+  capabilities?: ProviderCapabilities;
+  isolation?: "isolated" | "shared";
 };
 ````
 
@@ -1764,6 +1972,22 @@ export type ResolvePackagedRuntimeOptions = {
   platform?: NodeJS.Platform;
   /** Defaults to `process.arch`. The architecture the binary must be able to run. */
   arch?: string;
+};
+````
+
+### `RunOptions`
+
+````ts
+export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
+  provider: AdeProvider;
+  model: string;
+  schema?: JsonSchema;
+  budget?: ThreadBudget;
+  /**
+   * Longest one turn may take, in ms (default 10 minutes). On expiry the turn
+   * is interrupted and `run()` rejects with `rpc_timeout`.
+   */
+  timeoutMs?: number;
 };
 ````
 
@@ -1900,6 +2124,35 @@ export type SettingSourcesCapability = HostConfigCapability & {
 };
 ````
 
+### `SignInHandle`
+
+````ts
+export type SignInHandle = {
+  on(event: "update", listener: (status: SignInStatus) => void): () => void;
+  submitCode(code: string): Promise<void>;
+  cancel(): Promise<void>;
+  done: Promise<AccountInfo>;
+};
+````
+
+### `SignInStatus`
+
+````ts
+export type SignInStatus = {
+  loginId: string;
+  instanceId: string;
+  provider: string;
+  state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | "expired";
+  url: string | null;
+  awaitingCode: boolean;
+  deviceCode?: string;
+  email?: string;
+  message?: string;
+  startedAt: string;
+  endedAt?: string;
+};
+````
+
 ### `SteerOptions`
 
 Options for `steer`.
@@ -1937,6 +2190,17 @@ export type SyntheticRuntimeLostStatusEvent = {
   turnStatus: "failed";
   message: string;
   synthetic: true;
+};
+````
+
+### `ThreadBudget`
+
+A host-side limit for the usage observed on one thread.
+
+````ts
+export type ThreadBudget = {
+  maxCostUsd?: number;
+  maxTokens?: number;
 };
 ````
 
@@ -1993,6 +2257,17 @@ export type ThreadInstructions =
   | { mode: "append" | "replace"; text: string };
 ````
 
+### `ThreadInterruptOptions`
+
+````ts
+export type ThreadInterruptOptions = {
+  /** Keep queued messages, or remove them along with the active turn. */
+  queue?: "keep" | "drop";
+  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  mode?: AgentChatStopMode;
+};
+````
+
 ### `ThreadModelSelection`
 
 What a thread's model resolved to, as the runtime reports it.
@@ -2021,8 +2296,23 @@ export type ThreadModelSelection = {
 
 ````ts
 export type ThreadOpenOptions = {
-  provider: AdeProvider;
+  /** A provider id present in this runtime's model catalog. */
+  provider: AdeProvider | (string & {});
   model: string;
+  /** Stop a turn when cumulative reported usage reaches either limit. */
+  budget?: ThreadBudget;
+  /** Direct harness permission mode; validated against provider capabilities when available. */
+  permissionMode?: import("./types.js").AgentChatPermissionMode;
+  /** Reasoning tier, validated against provider capabilities when available. */
+  reasoningEffort?: string;
+  /** Fast mode, validated against provider capabilities when available. */
+  fastMode?: boolean;
+  /** Provider instance id. Create-only; persisted and reused when recreating this key. */
+  account?: string;
+  /** Runtime credential id. Create-only; persisted without its key value. */
+  credential?: string;
+  /** Harness preset id. Create-only; persisted and reused when recreating this key. */
+  preset?: string;
   /**
    * MCP servers to attach to this thread.
    *
@@ -2201,7 +2491,6 @@ export type ThreadOpenOptions = {
    * differs. See {@link ThreadResumeOptions}.
    */
   settingSources?: AgentChatSettingSources;
-  reasoningEffort?: string;
   title?: string;
   /** See {@link ThreadRefreshOptions}. */
   refresh?: ThreadRefreshOptions;
@@ -2270,6 +2559,18 @@ export type ThreadPermissionPolicy = {
    * refusing after N seconds breaks a long human review, so the host picks.
    */
   approvalTimeoutMs?: number;
+};
+````
+
+### `ThreadQueueItem`
+
+One message waiting in a thread's queue.
+
+````ts
+export type ThreadQueueItem = {
+  id: string;
+  text: string;
+  attachments?: AgentChatFileRef[];
 };
 ````
 
@@ -2349,6 +2650,17 @@ export type ThreadRerunResult = {
    */
   conversationRollback: "claude_fork" | "claude_new_session" | "codex_thread" | "not_delivered";
 };
+````
+
+### `ThreadRespondOptions`
+
+The response fields accepted by the runtime's `respondToInput` action.
+
+````ts
+export type ThreadRespondOptions = Pick<
+  AgentChatRespondToInputArgs,
+  "answers" | "decision" | "responseText"
+>;
 ````
 
 ### `ThreadResumeOptions`
@@ -2465,6 +2777,23 @@ export type ThreadUpdateResult = {
 };
 ````
 
+### `ThreadUsage`
+
+Usage totals observed or recovered from a thread's durable transcript.
+
+````ts
+export type ThreadUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** False when the SDK could not load part of the durable transcript. */
+  complete?: boolean;
+  contextWindow?: number;
+  /** Present only when the provider reports a dollar cost. */
+  costUsd?: number;
+};
+````
+
 ### `ToolIdentity`
 
 A tool name split into the server that owns it and the tool itself.
@@ -2482,4 +2811,43 @@ export type ToolIdentity = {
 
 ````ts
 export type Unsubscribe = () => void;
+````
+
+### `UsageLimitEvent`
+
+The client `usageLimit` event: one thread's limit state changed.
+
+````ts
+export type UsageLimitEvent = {
+  /** Thread key; empty when the session is not one this client opened by key. */
+  key: string;
+  sessionId: string;
+  provider: AdeProvider;
+  /** The current state, or null when the limit cleared. */
+  status: UsageLimitResume | null;
+};
+````
+
+### `UsageLimitResume`
+
+A thread's usage-limit state, as the runtime publishes it on
+`session_meta_updated.usageLimitResume` (a copy of
+`AgentChatUsageLimitResume`). The runtime republishes the whole value on
+every transition and sends null when the limit clears.
+
+````ts
+export type UsageLimitResume = {
+  state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
+  provider: AdeProvider;
+  /** When the resume prompt is sent (reset + buffer). Null when unknown. */
+  fireAt: string | null;
+  /** The reset the provider published. Null when unknown. */
+  resetAt: string | null;
+  /** Turn that hit the limit. */
+  turnId: string | null;
+  updatedAt: string;
+  /** Another signed-in account with room, chosen by the runtime. */
+  alternateAccount?: { instanceId: string; label: string } | null;
+  [key: string]: unknown;
+};
 ````

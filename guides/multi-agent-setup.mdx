@@ -6,8 +6,8 @@ icon: "users"
 
 The safest multi-agent setup is simple: one lane per task, one clear goal per agent, and a review pass before merge. Isolation is what keeps parallel agents from writing over each other — give each its own worktree and the collisions disappear.
 
-<Frame caption="Launch agents in the background and supervise them as they work.">
-  <img src="/media/features/agent-chat/launch-in-background.webp" alt="Launching agents in the background and supervising them" />
+<Frame caption="Several agents working at once, each reporting back into the parent.">
+  <img src="/assets/readme/machines.gif" alt="Several agents running in parallel in ADE" />
 </Frame>
 
 ## One lane per task
@@ -56,8 +56,6 @@ Parallel agents stay safe as long as their work doesn't overlap. Most collisions
 
 Grid view tiles full chats next to each other so you can run several agents in parallel — across lanes or against the same task — and watch them all at once.
 
-<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/gridViewDemo.mp4"></video>
-
 <CardGroup cols={3}>
   <Card title="One task, many models" icon="layer-group">
     Send the same prompt to Claude, Codex, and Cursor, then keep the best result.
@@ -73,14 +71,6 @@ Grid view tiles full chats next to each other so you can run several agents in p
 ### Send one prompt to several models
 
 Compose a prompt once and launch it across the models you pick. Each runs in its own tile with its own transcript, diff, and approval gate.
-
-<Frame caption="Pick the models to run, then launch them together from one prompt.">
-  <img src="/media/features/agent-chat/multi-model-prompt.webp" alt="Compose a prompt for multiple models at once" />
-</Frame>
-
-<Frame caption="Every run lands in its own tile — compare side by side.">
-  <img src="/media/features/agent-chat/grid-view.webp" alt="Grid view with multiple agents" />
-</Frame>
 
 Each tile is a full chat. Open one to read the transcript, inspect its diff in Files, or promote its work to a PR — and close the rest. Nothing is committed until you say so.
 

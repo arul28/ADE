@@ -20,17 +20,9 @@ Because work is isolated per lane, several agents can run in the same repository
 
 From an empty Work composer you can launch into an existing lane, or let ADE auto-create a worktree from your prompt. In a lane you can start either an **agent chat** (the streaming, tool-aware surface) or a provider **CLI session** (the provider's own terminal client) — both run scoped to the lane's worktree.
 
-<Frame caption="Start an agent chat or a provider CLI session in a lane.">
-  <img src="/media/features/agent-chat/chat-or-cli.webp" alt="Choose between an agent chat and a CLI session in a lane" />
-</Frame>
-
 ## Pick a provider and model per session
 
 ADE runs thirteen provider runtimes against the same lane. Pick the provider and model that fits the task when you start the session, and switch within the same family mid-session when you want a different model.
-
-<Frame caption="Pick the provider and model for the session.">
-  <img src="/media/features/agent-chat/model-selection.webp" alt="Provider and model picker for an agent chat" />
-</Frame>
 
 | Provider | Runtime |
 |----------|---------|
@@ -49,8 +41,6 @@ Add a provider key or subscription in **Settings** before its models appear in t
 ## Set a Codex goal
 
 Codex chats can keep an explicit goal on the session, so a long-running task has a visible objective while the transcript, tool calls, and follow-up prompts continue normally. Set, update, complete, or clear the goal from the chat UI when the work changes.
-
-<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/codex-goals.mp4"></video>
 
 ## Follow long-running work
 
@@ -84,12 +74,12 @@ Provider-native sessions can also be recovered into ADE when possible. Claude an
   </Tab>
   <Tab title="Terminal">
     <Frame caption="The same chat in ade code.">
-      <img src="/media/landing/showcase/agent-chat-tui.webp" alt="Agent chat in ade code" />
+      <img src="/assets/readme/terminal.webp" alt="Agent chat in ade code" />
     </Frame>
   </Tab>
   <Tab title="iOS">
     <Frame caption="Pick up the chat from your phone.">
-      <img src="/media/landing/showcase/agent-chat-mobile.webp" alt="Agent chat on the ADE iOS app" width="300" />
+      <img src="/assets/readme/phone.webp" alt="Agent chat on the ADE iOS app" width="300" />
     </Frame>
   </Tab>
 </Tabs>

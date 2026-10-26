@@ -26,10 +26,6 @@ Watch the full walkthrough on [YouTube](https://youtu.be/r3T8ePQyM6M).
 
 Because every lane is its own branch, opening a PR is one step. Pick the lane, confirm the base branch, and ADE creates the PR — from the lane, from a chat, or straight from the PRs tab. The draft title and body are prefilled from the lane's commits and diff, and ADE returns both the GitHub URL and an ADE deep link so an agent can drop both into its closeout note.
 
-<Frame caption="Create a PR from a lane — choose the base branch and ADE handles the rest.">
-  <img src="/media/features/pull-requests/make-new-pr.webp" alt="Create a new pull request from a lane" />
-</Frame>
-
 <Note>
 Branch names are validated before submission, so an invalid git ref fails in ADE with a clear message instead of an opaque GitHub API error.
 </Note>
@@ -38,26 +34,9 @@ Branch names are validated before submission, so an invalid git ref fails in ADE
 
 The detail view splits a PR into focused tabs — **Overview**, **Files**, **CI / Checks**, and **Activity** — and each one loads on its own, so a slow comments fetch never holds up the checks or files.
 
-<Frame caption="Files changed and CI checks for a PR.">
-  <img src="/media/features/pull-requests/files-and-ci-checks.webp" alt="Files changed and CI checks for a pull request" />
-</Frame>
-
 The Overview renders as a **Timeline + Rails** layout: a central event timeline (commits, comments, reviews, label changes, merges, deployments), a left rail with the commit list and push-time checks, and a right rail with merge readiness, reviewers, labels, and participants.
 
-<Frame caption="The PR review and comments view — threads, replies, and resolution inline.">
-  <img src="/media/features/pull-requests/review-tab.webp" alt="The PR review and comments view" />
-</Frame>
-
 You can reply to review threads, resolve them, react to comments, request reviewers, and submit your own review — approve, request changes, or comment — without leaving ADE.
-
-<Columns cols={2}>
-  <Frame caption="The PRs sidebar lists every PR in the repo with CI and review state.">
-    <img src="/media/features/pull-requests/prs-sidebar.webp" alt="The PRs tab sidebar" />
-  </Frame>
-  <Frame caption="Each PR's commits, grouped on the timeline.">
-    <img src="/media/features/pull-requests/commits-section.webp" alt="The commits section of a PR" />
-  </Frame>
-</Columns>
 
 The GitHub tab lists every PR in the repository — including ones opened outside ADE — with label filters, CI badges, review indicators, and the linked lane's color, so a glance correlates a PR with the lane that produced it.
 
@@ -111,10 +90,6 @@ For landing several PRs in sequence, a **merge queue** runs each one through an 
 ## Conflict simulation
 
 Before you hit Merge, ADE predicts whether the PR lands cleanly on its base by running `git merge-tree` locally — no actual merge required. A predicted conflict disables the merge button (unless you opt into bypass) and surfaces the conflicting files. The same engine powers integration (merge-plan) proposals and the Rebase view.
-
-<Frame caption="Rebase options when a lane is behind its PR target.">
-  <img src="/media/features/pull-requests/pr-sources.webp" alt="PR sources and rebase options" />
-</Frame>
 
 <Note>
 ADE uses your GitHub authentication. If PR data is missing, check GitHub access in Settings.

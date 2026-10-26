@@ -246,7 +246,10 @@
         "sdk/reference",
         "sdk/license",
         "sdk/api",
-        "sdk/types"
+        "sdk/types",
+        "sdk/accounts",
+        "sdk/server",
+        "sdk/testing"
       ]
     }
   ],

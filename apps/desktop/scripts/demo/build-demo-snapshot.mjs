@@ -268,6 +268,161 @@ const filesTree = Object.fromEntries(Object.entries(TREE).map(([parent, rows]) =
   rows.map(([name, type]) => ({ name, path: parent ? `${parent}/${name}` : name, type, changeStatus: null })),
 ]));
 
+/**
+ * File contents for the demo project, so the Files surface shows a real
+ * editor instead of the browser mock's placeholder. Keyed by path, then copied
+ * into every lane's workspace.
+ */
+const FILE_CONTENTS = {
+  "README.md": `# acme-shop
+
+Storefront and checkout for Acme.
+
+## Development
+
+\`\`\`bash
+npm install
+npm run dev      # storefront on :3000
+npm test         # unit tests
+\`\`\`
+
+## Layout
+
+- \`src/auth\` — sign-in, session, and post-login redirects
+- \`ios/Receipt\` — the receipt screen (SwiftUI)
+- \`AGENTS.md\` — notes for coding agents working in this repo
+`,
+  "AGENTS.md": `# Agent notes
+
+- Run \`npm test\` before proposing a commit.
+- Keep money in integer cents. Never use floats for totals.
+- The receipt screen is SwiftUI under \`ios/Receipt\`.
+- Prefer small, reviewable diffs; do not reformat unrelated files.
+`,
+  "package.json": `{
+  "name": "acme-shop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0"
+  }
+}
+`,
+  "tsconfig.json": `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src"]
+}
+`,
+  "src/auth/signIn.ts": `export type SignInResult =
+  | { ok: true; returnTo: string }
+  | { ok: false; reason: string };
+
+const SAFE_RETURN_TO = /^\\/(?!\\/)/;
+
+/** Sign in and return the path to land on afterwards. */
+export async function signIn(email: string, password: string): Promise<SignInResult> {
+  if (!email.includes("@")) return { ok: false, reason: "Enter a valid email address." };
+  if (password.length < 8) return { ok: false, reason: "Passwords are at least 8 characters." };
+
+  const response = await fetch("/api/sign-in", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!response.ok) return { ok: false, reason: "Email or password is incorrect." };
+
+  const body = (await response.json()) as { returnTo?: string };
+  const returnTo = body.returnTo && SAFE_RETURN_TO.test(body.returnTo) ? body.returnTo : "/account";
+  return { ok: true, returnTo };
+}
+`,
+  "src/auth/returnTo.ts": `const DEFAULT_TARGET = "/account";
+
+/**
+ * Keep only same-origin paths. A crafted \`next\` value must never send a
+ * freshly signed-in customer to another site.
+ */
+export function resolveReturnTo(next: string | null | undefined): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return DEFAULT_TARGET;
+  try {
+    const url = new URL(next, "https://shop.example.com");
+    return url.origin === "https://shop.example.com" ? url.pathname + url.search : DEFAULT_TARGET;
+  } catch {
+    return DEFAULT_TARGET;
+  }
+}
+`,
+  "ios/Receipt/ReceiptView.swift": `import SwiftUI
+
+struct ReceiptView: View {
+    let order: Order
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Receipt")
+                    .font(.largeTitle.bold())
+                Text(order.number)
+                    .font(.subheadline.monospaced())
+                    .foregroundStyle(.secondary)
+
+                ForEach(order.lines) { line in
+                    HStack {
+                        Text(line.title)
+                        Spacer()
+                        Text(line.total, format: .currency(code: order.currency))
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("Order \\(order.number)")
+    }
+}
+`,
+  "ios/Receipt/useOrder.swift": `import Foundation
+
+@MainActor
+final class OrderStore: ObservableObject {
+    @Published private(set) var order: Order?
+    @Published private(set) var isLoading = false
+
+    func load(number: String) async {
+        isLoading = true
+        defer { isLoading = false }
+        order = try? await OrderAPI.shared.order(number: number)
+    }
+}
+`,
+};
+
+const filesContents = Object.fromEntries(
+  Object.entries(FILE_CONTENTS).map(([path, content]) => [
+    path,
+    { content, encoding: "utf-8", size: content.length, languageId: undefined },
+  ])
+);
+
+
 const snapshot = {
   version: 2,
   demo: true,
@@ -285,7 +440,7 @@ const snapshot = {
   chatTranscripts: Object.fromEntries(chats.map((c) => [c.session.id, { path: `${ROOT}/${c.session.transcriptPath}`, events: c.events }])),
   automations: [],
   filesTreeByWorkspace: Object.fromEntries(lanes.map((l) => [l.id, filesTree])),
-  filesContentsByWorkspace: {},
+  filesContentsByWorkspace: Object.fromEntries(lanes.map((l) => [l.id, filesContents])),
   stripInlineDemo: true,
 };
 
