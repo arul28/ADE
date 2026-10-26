@@ -538,6 +538,12 @@ function pruneEmbeddedRuntime(nativeDir) {
   }
 
   const manifestPath = path.join(nativeDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(
+      `${nativeDir}: the native archive has no manifest.json, so the embedded package cannot be built from it. ` +
+        "Rebuild the archive with package-native-deps.mjs, which writes one.",
+    );
+  }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   manifest.profile = EMBEDDED_PROFILE;
   manifest.packages = (manifest.packages ?? []).filter((packageName) => !isEmbeddedExcludedPackage(packageName));

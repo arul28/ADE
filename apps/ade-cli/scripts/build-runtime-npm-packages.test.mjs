@@ -115,6 +115,21 @@ function writeFakeArtifacts(dir, target) {
   }
 }
 
+/**
+ * The two files every real native archive carries since the embedded profile:
+ * `manifest.json` (written by package-native-deps.mjs) and the license notice
+ * for the Droid SDK, which is bundled into the executable instead of copied.
+ */
+function writeArchiveMetadata(staging, target, packages) {
+  const noticeDir = path.join(staging, "third-party-notices", "@factory", "droid-sdk");
+  fs.mkdirSync(noticeDir, { recursive: true });
+  fs.writeFileSync(path.join(noticeDir, "LICENSE"), "Droid SDK license\n");
+  fs.writeFileSync(
+    path.join(staging, "manifest.json"),
+    `${JSON.stringify({ target, createdAt: "2026-01-01T00:00:00.000Z", packages, inlinedPackages: ["@factory/droid-sdk"] }, null, 2)}\n`,
+  );
+}
+
 function withTempDirs(run) {
   const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "ade-artifacts-"));
   const out = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-packages-"));
@@ -320,6 +335,7 @@ function writeArtifactsWithIgnoredNativeModule(dir, target) {
     fs.writeFileSync(path.join(pkg, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(pkg, ".gitignore"), "*.node\n");
     fs.writeFileSync(path.join(pkg, "crsqlite.node"), "ELF");
+    writeArchiveMetadata(staging, target, ["x"]);
     execFileSync("tar", ["-czf", path.join(dir, archiveAsset), "-C", staging, "."], {
       windowsHide: true,
     });
@@ -397,9 +413,8 @@ test("rejects full-profile files from embedded runtime tarballs", () => {
       license: "L",
       exception: "EXCEPTION TEXT",
     });
-    const crsqlite = path.join(packageDir, "native", "vendor", "crsqlite", "linux-x64", "crsqlite.so");
-    fs.mkdirSync(path.dirname(crsqlite), { recursive: true });
-    fs.writeFileSync(crsqlite, "unexpected full-profile asset");
+    // On disk the build pruned it; only npm's listing still carries it, which
+    // is the case this check exists for (a packing rule that resurrects it).
     assert.throws(
       () =>
         verifyPackedRuntimeFiles({
@@ -437,6 +452,7 @@ function writeArtifactsWithEmptyNodeModules(dir, target) {
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-native-empty-"));
   try {
     fs.mkdirSync(path.join(staging, "node_modules"), { recursive: true });
+    writeArchiveMetadata(staging, target, []);
     execFileSync("tar", ["-czf", path.join(dir, archiveAsset), "-C", staging, "."], {
       windowsHide: true,
     });
@@ -557,6 +573,10 @@ test("rejects full-profile native assets that remain on disk", () => {
       license: "L",
       exception: "EXCEPTION TEXT",
     });
+    const crsqlite = path.join(packageDir, "native", "vendor", "crsqlite", "linux-x64", "crsqlite.so");
+    fs.mkdirSync(path.dirname(crsqlite), { recursive: true });
+    fs.writeFileSync(crsqlite, "unexpected full-profile asset");
+    // npm would pack it too; the on-disk check is the one that names it first.
     assert.throws(
       () =>
         verifyPackedRuntimeFiles({

@@ -180,6 +180,18 @@ function readPendingInputQuestions(value: unknown): PendingInputQuestion[] | und
 }
 
 /** Read the SDK's PendingInputRequest fields from either enriched events or their detail payload. */
+/**
+ * What an approval request is asking for: the top-level `requestKind` a
+ * current host sends, else the `detail.request.kind` older hosts sent (the
+ * same rule as ADE's `approvalRequestKind`). Without the fallback, an older
+ * host's questions and plan reviews render as Allow/Reject approvals.
+ */
+function approvalRequestKind(event: { requestKind?: string; detail?: unknown }): ApprovalRow["requestKind"] | undefined {
+  if (typeof event.requestKind === "string" && event.requestKind) return event.requestKind as ApprovalRow["requestKind"];
+  const kind = readRecord(readRecord(event.detail)?.request)?.kind;
+  return typeof kind === "string" && kind ? kind as ApprovalRow["requestKind"] : undefined;
+}
+
 function pendingInputFields(event: AgentChatEvent): Partial<ApprovalRow> {
   const envelope = readRecord(event);
   const detail = readRecord(envelope?.detail);
@@ -563,7 +575,8 @@ class RowCollapser {
         turnId: event.turnId ?? null,
         state: "pending",
       };
-      if (event.requestKind !== undefined) row.requestKind = event.requestKind;
+      const requestKind = approvalRequestKind(event);
+      if (requestKind !== undefined) row.requestKind = requestKind;
       if (event.detail !== undefined) row.detail = event.detail;
       Object.assign(row, pendingInputFields(event));
 

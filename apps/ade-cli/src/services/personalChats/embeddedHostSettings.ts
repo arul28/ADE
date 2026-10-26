@@ -59,6 +59,30 @@ export class EmbeddedHostSettings {
       const provider = typeof args.provider === "string" && args.provider.trim() ? args.provider.trim() : undefined;
       return { credentials: credentialStore.listApiCredentials(provider) };
     }
+    if (action === "remove") {
+      // Never a default id: a call that names no key must not delete one.
+      const credentialId = requiredString(args.credentialId, "credentialId");
+      const named = typeof args.provider === "string" && args.provider.trim() ? args.provider.trim() : null;
+      // The SDK lets a host remove a key by id alone. Ids are unique per
+      // provider, not overall, so an id two providers share needs the provider.
+      const matches = named
+        ? [named]
+        : credentialStore.listApiCredentials()
+          .filter((summary) => summary.credentialId === credentialId && summary.source === "store")
+          .map((summary) => summary.provider);
+      if (matches.length > 1) {
+        throw new Error(`Credential '${credentialId}' exists for ${matches.join(", ")}; pass the provider to remove one.`);
+      }
+      const provider = matches[0];
+      if (!provider) return { credentialId, removed: false };
+      const existing = credentialStore.getApiCredentialSummary(provider, credentialId);
+      credentialStore.removeApiCredential(provider, credentialId);
+      return {
+        credentialId,
+        provider,
+        removed: existing?.source === "store" && credentialStore.getApiCredentialSummary(provider, credentialId) === null,
+      };
+    }
     const provider = requiredString(args.provider, "provider");
     if (action === "store") {
       if (typeof args.key !== "string" || !args.key.trim()) throw new Error("key is required.");
@@ -80,15 +104,6 @@ export class EmbeddedHostSettings {
       const credential = credentialStore.getApiCredentialSummary(provider, credentialId);
       if (!credential) throw new Error("The credential was stored but its summary could not be read.");
       return { credential };
-    }
-    if (action === "remove") {
-      const credentialId = typeof args.credentialId === "string" ? args.credentialId.trim() : "default";
-      const existing = credentialStore.getApiCredentialSummary(provider, credentialId);
-      credentialStore.removeApiCredential(provider, credentialId);
-      return {
-        credentialId,
-        removed: existing?.source === "store" && credentialStore.getApiCredentialSummary(provider, credentialId) === null,
-      };
     }
     if (!runtime.aiIntegrationService) throw new Error("API key verification is unavailable.");
     return await runtime.aiIntegrationService.verifyApiKeyConnection(provider);

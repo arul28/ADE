@@ -159,7 +159,13 @@ export function observedApprovalFromEvent(event: {
   if (event.type !== "approval_request") return null;
   const itemId = readString(event.itemId);
   if (!itemId) return null;
-  const requestKind = readPendingInputKind(event.requestKind);
+  // Older hosts sent the kind only as `detail.request.kind` (ADE's
+  // `approvalRequestKind` reads both); without it a question is tracked as an
+  // approval the SDK would try to answer with Allow/Reject.
+  const embedded = event.detail && typeof event.detail === "object"
+    ? (event.detail as { request?: { kind?: unknown } }).request?.kind
+    : undefined;
+  const requestKind = readPendingInputKind(event.requestKind) ?? readPendingInputKind(embedded);
   return {
     itemId,
     ...(readString(event.logicalItemId) ? { logicalItemId: readString(event.logicalItemId)! } : {}),

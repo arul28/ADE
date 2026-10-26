@@ -32,7 +32,6 @@ import {
   type StoredMcpServerConfig,
 } from "./mcpHeaders.js";
 import { modelSelectionOf, type ModelSummaryFields } from "./modelSelection.js";
-import { isSupportedProvider } from "./permissions.js";
 import { summaryTurnActive, type PersonalChatsApi } from "./personalChats.js";
 import { budgetExceeded, ThreadUsageAccumulator, type ThreadBudget, type ThreadUsage } from "./usage.js";
 import {
@@ -596,6 +595,8 @@ export type ThreadRecordPatch = {
   provider?: string;
   model?: string;
   modelId?: string;
+  reasoningEffort?: string | null;
+  fastMode?: boolean;
 };
 
 const USAGE = new Set<string>(USAGE_EVENT_TYPES);
@@ -1024,6 +1025,14 @@ export class Thread implements AdeThread {
       );
     }
     const updated = await this.chats.updateSession(args);
+    // A recreate rebuilds the thread from its record, so a reconfigure that is
+    // not written there would come back as the old setting.
+    if (reconfigures) {
+      await this.hostConfig.onRecordChanged?.({
+        ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
+        ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
+      });
+    }
     if (patch.title !== undefined) {
       this.currentTitle =
         typeof updated?.title === "string" ? updated.title : (args.title as string | null);
@@ -1277,7 +1286,7 @@ export class Thread implements AdeThread {
       updated?.permissionCapability,
       this.requestedPermissionPolicy,
     );
-    if (isSupportedProvider(selection.provider)) this.provider = selection.provider;
+    if (selection.provider) this.provider = selection.provider as AdeProvider;
     this.currentModel = selection;
     await this.hostConfig.onRecordChanged?.({
       ...(selection.provider ? { provider: selection.provider } : {}),

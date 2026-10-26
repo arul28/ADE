@@ -186,6 +186,9 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
           ? { mcpServers: toStoredMcpServers(patch.mcpServers), requestedMcp: true }
           : {}),
         ...(patch.attachmentRoots !== undefined ? { attachmentRoots: patch.attachmentRoots } : {}),
+        ...(patch.budget !== undefined ? { budget: patch.budget } : {}),
+        ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort ?? undefined } : {}),
+        ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
       });
     } catch (error) {
       recordError("threadStore.touch", error);
@@ -520,33 +523,53 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       throw new AdeError("invalid_option", `Opening the new thread "${key}" needs a model id. Pass { provider, model }.`);
     }
 
-    const permissionMode = record?.permissionMode ?? opts.permissionMode;
-    const reasoningEffort = record?.reasoningEffort ?? opts.reasoningEffort;
-    const fastMode = record?.fastMode ?? opts.fastMode;
-    const instanceId = record?.instanceId ?? opts.account;
-    const credentialId = record?.credentialId ?? opts.credential;
-    const presetId = record?.presetId ?? opts.preset;
+    // A value the caller passed for a new thread is refused when the provider
+    // cannot honour it. A value from the record is different: the thread may
+    // have moved to another provider since (`setModel`), and refusing it would
+    // leave the thread impossible to rebuild. It is dropped with a log line.
     const providerCapabilities = await ctx.runtime.providerCapabilities(provider);
-    if (providerCapabilities) {
-      if (permissionMode !== undefined && !providerCapabilities.permissionModes.includes(permissionMode)) {
-        throw new AdeError("invalid_option", `Provider "${provider}" does not support permission mode "${permissionMode}".`);
-      }
-      if (reasoningEffort !== undefined && !providerCapabilities.reasoningEfforts.includes(reasoningEffort)) {
-        throw new AdeError("invalid_option", `Provider "${provider}" does not support reasoning effort "${reasoningEffort}".`);
-      }
-      if (fastMode === true && !providerCapabilities.fastMode) {
-        throw new AdeError("invalid_option", `Provider "${provider}" does not support fast mode.`);
-      }
-      if (instanceId !== undefined && !providerCapabilities.multipleAccounts) {
-        throw new AdeError("invalid_option", `Provider "${provider}" does not support multiple accounts.`);
-      }
-      if (credentialId !== undefined && !providerCapabilities.apiKeys) {
-        throw new AdeError("invalid_option", `Provider "${provider}" cannot use stored API credentials.`);
-      }
-      if (presetId !== undefined && !providerCapabilities.presets) {
-        throw new AdeError("invalid_option", `Provider "${provider}" cannot use harness presets.`);
-      }
-    }
+    const fits = <T>(
+      stored: T | undefined,
+      requested: T | undefined,
+      supported: (value: T) => boolean,
+      refusal: (value: T) => string,
+    ): T | undefined => {
+      const value = stored ?? requested;
+      if (value === undefined || !providerCapabilities || supported(value)) return value;
+      if (stored === undefined) throw new AdeError("invalid_option", refusal(value));
+      logger(`ade sdk: thread "${key}" dropped a stored setting its provider no longer supports: ${refusal(value)}`);
+      return undefined;
+    };
+    const permissionMode = fits(
+      record?.permissionMode, opts.permissionMode,
+      (mode) => providerCapabilities!.permissionModes.includes(mode),
+      (mode) => `Provider "${provider}" does not support permission mode "${mode}".`,
+    );
+    const reasoningEffort = fits(
+      record?.reasoningEffort, opts.reasoningEffort,
+      (effort) => providerCapabilities!.reasoningEfforts.includes(effort),
+      (effort) => `Provider "${provider}" does not support reasoning effort "${effort}".`,
+    );
+    const fastMode = fits(
+      record?.fastMode, opts.fastMode,
+      (on) => !on || providerCapabilities!.fastMode,
+      () => `Provider "${provider}" does not support fast mode.`,
+    );
+    const instanceId = fits(
+      record?.instanceId, opts.account,
+      () => providerCapabilities!.multipleAccounts,
+      () => `Provider "${provider}" does not support multiple accounts.`,
+    );
+    const credentialId = fits(
+      record?.credentialId, opts.credential,
+      () => providerCapabilities!.apiKeys,
+      () => `Provider "${provider}" cannot use stored API credentials.`,
+    );
+    const presetId = fits(
+      record?.presetId, opts.preset,
+      () => providerCapabilities!.presets,
+      () => `Provider "${provider}" cannot use harness presets.`,
+    );
     const credentialSecret = credentialId && ctx.resolveSecret
       ? await ctx.resolveSecret(provider, credentialId)
       : undefined;
