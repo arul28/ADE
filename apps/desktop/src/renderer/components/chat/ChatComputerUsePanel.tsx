@@ -94,10 +94,19 @@ export function ProofProvenanceLines({ artifact, warningClassName }: {
   );
 }
 
-export function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
+export function ProofPreviewFailureNotice({ failureText, onRetry }: {
+  failureText: string;
+  /** Offered when another try can work (a machine that was slow or away). */
+  onRetry?: (() => void) | null;
+}) {
   return (
     <Banner
-      model={{ id: "proof-preview-failed", tone: "warning", title: failureText }}
+      model={{
+        id: "proof-preview-failed",
+        tone: "warning",
+        title: failureText,
+        ...(onRetry ? { actions: [{ label: "Retry", onClick: onRetry }] } : {}),
+      }}
       layout="inline"
     />
   );
@@ -180,6 +189,7 @@ export function ChatProofArtifactCard({
     failed,
     explanation,
     onMediaError,
+    retry,
   } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
@@ -240,7 +250,7 @@ export function ChatProofArtifactCard({
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <ProofPreviewFailureNotice failureText={failureText} />
+          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} />
         ) : preview && image ? (
           <button
             type="button"
@@ -379,6 +389,7 @@ function DrawerProofTile({
     failed,
     explanation,
     onMediaError,
+    retry,
   } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const image = isImageArtifact(artifact);
@@ -410,9 +421,22 @@ function DrawerProofTile({
         {hasPreviewProblem ? (
           // Missing or unpreviewable items shrink to a short strip instead of
           // wasting the drawer rail on an empty thumbnail.
-          <div className="flex h-14 items-center justify-center px-2">
-            <WarningCircle size={15} weight="duotone" className="text-amber-200/45" />
-          </div>
+          retry ? (
+            <button
+              type="button"
+              onClick={retry}
+              aria-label={`${failureText} Retry`}
+              title={`${failureText} Click to try again.`}
+              className="flex h-14 w-full items-center justify-center gap-1.5 px-2 font-sans text-[10px] text-amber-100/70 hover:bg-amber-200/[0.06] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200/45"
+            >
+              <WarningCircle size={15} weight="duotone" className="text-amber-200/45" />
+              Retry
+            </button>
+          ) : (
+            <div className="flex h-14 items-center justify-center px-2">
+              <WarningCircle size={15} weight="duotone" className="text-amber-200/45" />
+            </div>
+          )
         ) : loading ? (
           <div className="flex h-[74px] items-center justify-center text-muted-fg/30">
             <SpinnerGap size={15} className="animate-spin" aria-label="Loading proof preview" />

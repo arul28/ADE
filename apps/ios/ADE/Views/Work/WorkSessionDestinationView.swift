@@ -513,6 +513,10 @@ struct WorkSessionDestinationView: View {
   @State var artifactContentLoadsInFlight = Set<String>()
   /// Ended and replaced when the chat goes away, which stops its downloads.
   @State var artifactLoadScope = WorkArtifactLoadScope()
+  /// Cited proof outside this chat's list, found on its host (citations only).
+  @State var citedProofArtifacts: [String: ComputerUseArtifactSummary] = [:]
+  /// Cited ids already asked about, so a row that reappears does not ask again.
+  @State var askedMissingProofIds: Set<String> = []
   @State var artifactRefreshInFlight = false
   @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
@@ -954,14 +958,7 @@ struct WorkSessionDestinationView: View {
       refreshError: artifactRefreshError,
       onRefresh: { await refreshArtifacts(force: true) },
       onLoadArtifact: { artifact, intent in
-        // A chat on another machine reads its artifacts from that machine.
-        if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
-          await SyncFleetTaskRoute.$chat.withValue(remote) {
-            await loadArtifactContent(artifact, intent)
-          }
-        } else {
-          await loadArtifactContent(artifact, intent)
-        }
+        await loadThisChatArtifact(artifact, intent)
       },
       embedded: true
     )
@@ -1826,9 +1823,9 @@ struct WorkSessionDestinationView: View {
         await refreshSessionRowFromLocalStore()
       }
       .task(id: artifactObservationKey) {
-        // Proof artifacts are served from the active project's projection; a
-        // cross-project quick look has no access to the foreign project's proof
-        // drawer, so leave it empty rather than querying the wrong project.
+        // The key is the phone's replica, which cannot describe a chat of
+        // another project or machine; that chat reads its proof on open and
+        // when a citation names proof its list lacks.
         guard !isRemoteOnlyChat else { return }
         // Proof rows arrive through their own projection. Keep this separate
         // from work row refreshes so live chat deltas don't churn artifact
@@ -2362,17 +2359,14 @@ struct WorkSessionDestinationView: View {
       onOpenFile: openFileReference,
       onOpenPr: openPullRequestReference,
       onLoadArtifact: { artifact, intent in
-        // A chat on another machine reads its artifacts from that machine.
-        if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
-          await SyncFleetTaskRoute.$chat.withValue(remote) {
-            await loadArtifactContent(artifact, intent)
-          }
-        } else {
-          await loadArtifactContent(artifact, intent)
-        }
+        await loadThisChatArtifact(artifact, intent)
       },
       onRefreshArtifacts: {
         await refreshArtifacts(force: true)
+      },
+      citedProofArtifacts: citedProofArtifacts,
+      onResolveMissingProof: { artifactId in
+        await resolveMissingProof(artifactId)
       },
       onCancelSteer: cancelSteer,
       onEditSteer: editSteer,
@@ -2568,11 +2562,11 @@ struct WorkSessionDestinationView: View {
     _ = await (summaryLoad, artifactLoad)
   }
 
-  /// Proof artifacts are active-project-scoped; skip for a cross-project
-  /// quick look (the drawer stays empty rather than querying the wrong project).
+  /// A chat of another project or machine lists its proof from that host
+  /// (`refreshArtifacts`).
   @MainActor
   private func refreshOpeningArtifacts() async {
-    guard !isRemoteOnlyChat, !syncService.prefersReducedSyncLoad else { return }
+    guard !syncService.prefersReducedSyncLoad else { return }
     await refreshArtifacts(force: true)
   }
 
@@ -2723,17 +2717,64 @@ struct WorkSessionDestinationView: View {
     artifactContentLoadsInFlight.removeAll()
   }
 
+  /// Reads one of this chat's artifacts from the machine and project that hold
+  /// it: a chat on another machine from that machine, a chat of another
+  /// project on this one from that project.
+  @MainActor
+  func loadThisChatArtifact(_ artifact: ComputerUseArtifactSummary, _ intent: WorkArtifactLoadIntent) async {
+    if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
+      await SyncFleetTaskRoute.$chat.withValue(remote) {
+        await loadArtifactContent(artifact, intent)
+      }
+    } else if isCrossProject, let projectId = crossProjectContext?.projectId {
+      await SyncFleetTaskRoute.$project.withValue(projectId) {
+        await loadArtifactContent(artifact, intent)
+      }
+    } else {
+      await loadArtifactContent(artifact, intent)
+    }
+  }
+
+  /// A citation names proof this chat's list does not hold. Asked once per id:
+  /// a chat of another project or machine asks its host by id (the phone's
+  /// replica cannot know), any other chat re-reads its list (throttled).
+  @MainActor
+  func resolveMissingProof(_ artifactId: String) async {
+    // Held while the ask runs, kept once the host finds the proof. A failed
+    // or empty ask (a phone offline, a timeout, a row scrolled away, proof not
+    // filed yet) is forgotten, so the citation asks again when it next shows.
+    guard askedMissingProofIds.insert(artifactId).inserted else { return }
+    guard isRemoteOnlyChat, !personalChat else {
+      await refreshArtifacts(force: false)
+      return
+    }
+    do {
+      if let found = try await syncService.fetchRemoteChatComputerUseArtifact(
+        sessionId: sessionId,
+        artifactId: artifactId
+      ) {
+        citedProofArtifacts[artifactId] = found
+      } else {
+        // Not there yet (filed after this answer was drawn): ask again when
+        // the citation next shows. A by-id read is small.
+        askedMissingProofIds.remove(artifactId)
+      }
+    } catch {
+      askedMissingProofIds.remove(artifactId)
+    }
+  }
+
   @MainActor
   func refreshArtifacts(force: Bool) async {
-    // Proof artifacts live in the active project's projection; a cross-project
-    // quick look has no access to the foreign project's proof drawer.
-    guard !isRemoteOnlyChat else { return }
+    // Personal chats file no proof of their own.
+    guard !personalChat else { return }
     guard let currentSession = session ?? initialSession,
           isChatSession(currentSession)
     else { return }
 
     let now = Date()
-    let minimumRefreshInterval = syncService.prefersReducedSyncLoad ? 15.0 : 0.8
+    // A remote list is a round trip to the chat's host, not a replica read.
+    let minimumRefreshInterval = syncService.prefersReducedSyncLoad ? 15.0 : isRemoteOnlyChat ? 4.0 : 0.8
     guard force || now.timeIntervalSince(lastArtifactRefreshAt) >= minimumRefreshInterval else { return }
     guard !artifactRefreshInFlight else { return }
 
@@ -2743,8 +2784,17 @@ struct WorkSessionDestinationView: View {
 
     do {
       let previousURIs = Dictionary(uniqueKeysWithValues: artifacts.map { ($0.id, $0.uri) })
-      let refreshed = try await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)
-      let validArtifactIds = Set(refreshed.map(\.id))
+      // The phone's replica holds the active project only; a chat of another
+      // project or machine asks the host that holds its proof.
+      let refreshed: [ComputerUseArtifactSummary]
+      if isRemoteOnlyChat {
+        guard let remote = try await syncService.fetchRemoteChatComputerUseArtifacts(sessionId: sessionId) else { return }
+        refreshed = remote
+      } else {
+        refreshed = try await syncService.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: sessionId)
+      }
+      // Cited proof found outside the list keeps its loaded picture too.
+      let validArtifactIds = Set(refreshed.map(\.id)).union(citedProofArtifacts.keys)
 
       for (artifactId, content) in artifactContent where !validArtifactIds.contains(artifactId) {
         workRemoveLoadedArtifactTempFile(content)

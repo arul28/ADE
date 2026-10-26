@@ -9,7 +9,6 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { runWithAbortSignal } from "./abortSignal";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   recordUsageInteraction,
@@ -144,7 +143,6 @@ import {
   SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
-import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
 import {
   chatEventDeliveryKey,
   compactChatEventEnvelopeForMobileSync,
@@ -186,11 +184,11 @@ import type { createSessionDeltaService } from "../../../../desktop/src/main/ser
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
-import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import { nowIso, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import {
   assertFileRequestWorkspaceVisibleToPeer,
+  createSyncArtifactReads,
   fileContentToBlob,
-  inferMimeType,
   runSyncFileServiceRequest,
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
@@ -355,7 +353,6 @@ import {
 } from "./attachmentUploadService";
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
-import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
 // Existing importers of the wire adapters keep this path.
 export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
@@ -619,7 +616,6 @@ const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_SLOW_COMMAND_MS = 5_000;
-const MAX_SYNC_ARTIFACT_BYTES = CURSOR_CLOUD_ARTIFACT_MAX_BYTES;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 export const SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS = 2_000;
@@ -1290,22 +1286,6 @@ function ensureBootstrapToken(filePath: string): string {
   return fs.readFileSync(filePath, "utf8").trim();
 }
 
-function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
-  const mimeType = inferMimeType(filePath);
-  // An image is binary whatever its first 8 KiB holds: the NUL scan is only a guess
-  // about the bytes, and the type is known. Read as UTF-8 an image has no data URL.
-  const isBinary = hasNullByte(buf) || mimeType?.startsWith("image/") === true;
-  return {
-    path: filePath,
-    size: buf.length,
-    mimeType,
-    encoding: isBinary ? "base64" : "utf-8",
-    isBinary,
-    content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
-    languageId: null,
-    previewKind: isBinary ? "binary" : "text",
-  };
-}
 
 /**
  * Replica or roster, decided once from the hello: a roster socket
@@ -6396,93 +6376,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     broadcastBrainStatus();
   }
 
-  function resolveArtifactPath(
-    request: Extract<SyncFileRequest, { action: "readArtifact" | "readArtifactRange" }>["args"],
-  ): string {
-    const artifactId = toOptionalString(request.artifactId);
-    const explicitUri = toOptionalString(request.uri) ?? toOptionalString(request.path);
-    let candidate = explicitUri;
-    if (artifactId) {
-      const artifact = args.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0] ?? null;
-      candidate = artifact?.uri ?? candidate;
-    }
-    if (!candidate) {
-      throw new Error("Artifact request requires artifactId, uri, or path.");
-    }
-    if (/^https?:\/\//i.test(candidate)) {
-      throw new Error("Remote artifact URLs are not supported by this sync host.");
-    }
-    // Stored URIs use the `ade-artifact://project/<relative>` form the renderer
-    // and the remote-command service both understand. Without stripping the
-    // scheme here the phone resolves a path that starts with "project/" and
-    // every artifact read fails.
-    if (/^ade-artifact:\/\/project(?:\/|$)/i.test(candidate)) {
-      try {
-        candidate = decodeURIComponent(new URL(candidate).pathname.replace(/^\/+/, ""));
-      } catch {
-        throw new Error("Artifact URI is invalid.");
-      }
-    }
-    if (/^file:\/\//i.test(candidate)) {
-      try {
-        candidate = fileURLToPath(candidate);
-      } catch {
-        throw new Error("Artifact file URL is invalid.");
-      }
-    }
-    const absolute = path.isAbsolute(candidate)
-      ? candidate
-      : path.resolve(args.projectRoot, candidate);
-    let resolvedArtifactPath: string;
-    try {
-      resolvedArtifactPath = resolvePathWithinRoot(layout.artifactsDir, absolute);
-    } catch {
-      throw new Error("Artifact path must resolve within .ade/artifacts.");
-    }
-    return resolvedArtifactPath;
-  }
-
-  async function readArtifactBlob(
-    request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"],
-  ): Promise<SyncFileBlob> {
-    const artifactPath = resolveArtifactPath(request);
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.stat(artifactPath);
-    } catch {
-      throw new Error("Artifact file does not exist.");
-    }
-    if (!stat.isFile()) {
-      throw new Error("Artifact file does not exist.");
-    }
-    if (stat.size > MAX_SYNC_ARTIFACT_BYTES) {
-      throw new Error(
-        `Artifact is too large to sync (${stat.size} bytes; max ${MAX_SYNC_ARTIFACT_BYTES} bytes).`,
-      );
-    }
-    const buffer = await fs.promises.readFile(artifactPath);
-    return createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), buffer);
-  }
-
-  /**
-   * The same jail as `readArtifact`, one bounded slice at a time, so a phone
-   * can play a recording larger than the whole-file cap.
-   */
-  async function readArtifactRange(
-    request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
-  ): Promise<SyncArtifactRange> {
-    const artifactPath = resolveArtifactPath(request);
-    const range = await readArtifactByteRange(artifactPath, request.offset, request.length);
-    return {
-      path: normalizeRelative(path.relative(args.projectRoot, artifactPath)),
-      totalSize: range.totalSize,
-      rangeStart: range.rangeStart,
-      rangeEnd: range.rangeEnd,
-      encoding: "base64",
-      content: range.base64,
-      eof: range.eof,
-    };
-  }
+  const artifactReads = createSyncArtifactReads({
+    projectRoot: args.projectRoot,
+    artifactsDir: layout.artifactsDir,
+    findArtifactUri: (artifactId) => args.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0]?.uri ?? null,
+  });
 
   function isMobilePeer(peer: PeerState): boolean {
     if (isRecordBackedSyncAuthKind(peer.authKind)) {
@@ -6515,14 +6413,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         case "watchChanges":
         case "stopWatching":
           throw new Error(`Unsupported file action: ${payload.action}`);
-        case "readArtifact":
-          result = await readArtifactBlob(payload.args);
-          break;
-        case "readArtifactRange":
-          result = await readArtifactRange(payload.args);
-          break;
         default:
-          result = await runSyncFileServiceRequest(args.fileService, payload, { isMobile: isMobilePeer(peer) }) as typeof result;
+          result = await runSyncFileServiceRequest(args.fileService, payload, {
+            isMobile: isMobilePeer(peer),
+            artifacts: artifactReads,
+          }) as typeof result;
       }
 
       respond({
