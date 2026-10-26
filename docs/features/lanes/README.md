@@ -971,9 +971,11 @@ checkout, a lane's iOS DerivedData — runs in a child copy of the runtime
 I/O threads, so every other file read waits behind it: one 190,000-file lane
 folder held a Windows brain's file I/O for 30 s, and other machines connected
 to it timed out. The child never follows a link, takes `.asar` files as files,
-and reads its path from the environment. What it could not remove (a file still
-held open) is retried in the brain, where it is small. The Files tab's Delete
-and Storage's worktree cleanup use the same removal.
+reads its path from the environment, and refuses a path whose real location
+changed after the brain checked it. A file still held open is retried in a new
+child, never in the brain. The Files tab's Delete (which waits up to 31 minutes
+for the removal on every transport) and Storage's worktree cleanup use the same
+removal.
 
 Rails checked before `git worktree remove`, for every lane:
 

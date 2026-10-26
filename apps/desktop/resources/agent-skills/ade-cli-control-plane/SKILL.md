@@ -170,8 +170,10 @@ after every turn it finishes.
 
 **Which lane a child goes in.** An ADE child chat is a subagent that can run
 another provider, so it works where a native subagent would: in your lane,
-under your chat (the default when you leave `--lane` out). Create a new lane
-for it (`--lane auto`, `ade lanes child`) only when the user asks.
+under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
+set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
+Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
+asks.
 
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use

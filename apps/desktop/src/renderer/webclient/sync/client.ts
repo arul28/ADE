@@ -31,7 +31,7 @@ import {
   ARCHIVE_DELETE_TIMEOUT_MS,
   ARCHIVE_RESTORE_TIMEOUT_MS,
   CHAT_CANCEL_LAUNCH_TIMEOUT_MS,
-  LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
+  LANE_ENV_SETUP_TIMEOUT_MS,
 } from "../../../main/services/lanes/laneActionTimeouts";
 import {
   accountMachineDisplayName,
@@ -200,9 +200,12 @@ const LONG_RUNNING_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
     "lanes.archiveAndReclaim",
     "lanes.delete",
     "prs.createLaneFromPrBranch",
+    "git.checkoutBranch",
   ].map((action) => [action, LANE_GIT_WRITE_ACTION_TIMEOUT_MS] as const),
-  ["lanes.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
-  ["lanes.applyTemplate", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // The machine gives the setup its full budget. Wait a minute past it, so
+  // its own result (its timeout included) arrives before this gives up.
+  ["lanes.initEnv", LANE_ENV_SETUP_TIMEOUT_MS + 60_000],
+  ["lanes.applyTemplate", LANE_ENV_SETUP_TIMEOUT_MS + 60_000],
   ["chat.cancelLaunch", CHAT_CANCEL_LAUNCH_TIMEOUT_MS],
   ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
   ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],

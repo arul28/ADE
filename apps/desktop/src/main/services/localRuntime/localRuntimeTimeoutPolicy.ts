@@ -2,6 +2,7 @@ import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoCo
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
   ARCHIVE_RESTORE_TIMEOUT_MS,
@@ -287,6 +288,7 @@ export {
 
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
+  ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
   // Lane actions that run a checkout, `worktree add` or `worktree remove`; see
   // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. A shorter budget reported failure while

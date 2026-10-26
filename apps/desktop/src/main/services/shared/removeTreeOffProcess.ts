@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { captureProblem } from "../../../shared/sentry/capture";
+import { REMOVE_TREE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import { nonAsarFs } from "./nonAsarFs";
 import { execFileOffThread } from "./offThreadSpawn";
 
@@ -23,9 +24,8 @@ import { execFileOffThread } from "./offThreadSpawn";
  * `.asar` file inside the tree is removed as a file.
  */
 
-/** A removal still running after this long is stopped; what is left stays for the caller. */
-const REMOVE_TREE_TIMEOUT_MS = 30 * 60_000;
 const TARGET_ENV = "ADE_REMOVE_TREE_TARGET";
+const EXPECTED_REAL_PATH_ENV = "ADE_REMOVE_TREE_EXPECTED_REAL_PATH";
 
 const CHILD_SCRIPT = [
   `const target = process.env.${TARGET_ENV};`,
@@ -33,6 +33,12 @@ const CHILD_SCRIPT = [
   "try { fs = require('original-fs'); } catch { fs = require('fs'); }",
   "const fail = (code, message) => { process.stderr.write(JSON.stringify({ code, message })); process.exit(1); };",
   "if (!target) fail(null, 'No target.');",
+  // The caller checked this path. If a folder on the way was swapped for a
+  // link since, it now leads somewhere else: refuse rather than remove that.
+  `const expected = process.env.${EXPECTED_REAL_PATH_ENV};`,
+  "let real;",
+  "try { real = fs.realpathSync.native(target); } catch (error) { if (error && error.code === 'ENOENT') process.exit(0); fail((error && error.code) || null, String((error && error.message) || error)); }",
+  "if (expected && real !== expected) fail('ECHANGED', 'The folder moved after it was checked.');",
   "fs.promises.rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })",
   "  .then(() => process.exit(0), (error) => fail((error && error.code) || null, String((error && error.message) || error)));",
 ].join("\n");
@@ -66,12 +72,13 @@ function childRemoveError(targetPath: string, stderr: string, fallback: string):
   return Object.assign(new Error(`Could not remove ${targetPath}: ${message}`), code ? { code } : {});
 }
 
-async function removeInChild(targetPath: string): Promise<void> {
+async function removeInChild(targetPath: string, expectedRealPath: string): Promise<void> {
   const result = await execFileOffThread(process.execPath, ["-e", CHILD_SCRIPT], {
     timeoutMs: REMOVE_TREE_TIMEOUT_MS,
     envPatch: {
       ELECTRON_RUN_AS_NODE: "1",
       [TARGET_ENV]: targetPath,
+      [EXPECTED_REAL_PATH_ENV]: expectedRealPath,
       // The child is a bare Node script. ADE's own preloads and flags are not for it.
       NODE_OPTIONS: undefined,
     },
@@ -107,8 +114,15 @@ export async function removeTreeOffProcess(targetPath: string): Promise<void> {
     await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
     return;
   }
+  let realPath: string;
   try {
-    await removeInChild(resolved);
+    realPath = await nonAsarFs.promises.realpath(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    await removeInChild(resolved, realPath);
   } catch (error) {
     if (!(error instanceof RemoveTreeChildUnavailableError)) throw error;
     captureProblem("Tree removal child process could not start; removing in process", {

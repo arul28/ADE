@@ -4,6 +4,7 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { stableCacheKey } from "./infra/cacheKey";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { fileContentFromBlob, requestFileBlob } from "./infra/fileBlob";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files"> {
@@ -108,8 +109,13 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
 
   // Write failures must reach the caller. Swallowing them let the Files
   // workbench mark a tab saved for bytes that never left the browser.
-  async function requestVoid(action: SupportedFileAction, args: unknown, event?: FileChangeEvent): Promise<void> {
-    await requestFileBlob(client, state, action, asRecord(args));
+  async function requestVoid(
+    action: SupportedFileAction,
+    args: unknown,
+    event?: FileChangeEvent,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await requestFileBlob(client, state, action, asRecord(args), timeoutMs);
     evictReadsForWrite(args, event ? [event.path, event.oldPath ?? ""] : []);
     if (event) events.emit("filesChanged", event);
   }
@@ -239,7 +245,7 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     },
     delete: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("delete", pin);
-      await requestVoid("deletePath", args, changeEvent(args, "deleted"));
+      await requestVoid("deletePath", args, changeEvent(args, "deleted"), FILE_DELETE_TIMEOUT_MS);
     },
     watchChanges: async (_args?: unknown, pin?: RuntimePinArg) => {
       guardPin("watchChanges", pin);

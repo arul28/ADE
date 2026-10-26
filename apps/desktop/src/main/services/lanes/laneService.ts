@@ -341,7 +341,8 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-const WORKTREE_REMOVE_ATTEMPTS = 20;
+/** Each attempt's child already retries a held file for ~11 s (see removeTreeOffProcess). */
+const WORKTREE_REMOVE_ATTEMPTS = 3;
 const WORKTREE_REMOVE_RETRY_MS = 250;
 
 function isRetryableRemoveError(error: unknown): boolean {
@@ -353,27 +354,18 @@ function isRetryableRemoveError(error: unknown): boolean {
  * Remove a worktree directory, recovering from read-only files and — on
  * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
  * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
- * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
- * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
- * Electron a plain `fs` rm fails on every `.asar` file in the tree.
+ * bounded schedule instead of failing the cleanup outright. Exported only for
+ * the Windows lock-retry regression test.
  *
- * The bulk of the tree goes in a separate process (see removeTreeOffProcess):
- * a lane folder can hold hundreds of thousands of files, and removing them
- * here stalls every other file operation in this process. What the child
- * could not remove (a file still held open) is retried here, where it is small.
+ * Every attempt runs in a separate process (see removeTreeOffProcess): a lane
+ * folder can hold hundreds of thousands of files, and a removal that stopped
+ * at one held file can leave most of them, so even a retry here would stall
+ * every other file operation in this process.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
-  try {
-    await removeTreeOffProcess(targetPath);
-    return;
-  } catch (error) {
-    // A held file or a permission is retried below. Anything else (the child
-    // ran out of time, say) would leave too much to remove in this process.
-    if (!isRetryableRemoveError(error)) throw error;
-  }
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+      await removeTreeOffProcess(targetPath);
       return;
     } catch (error) {
       if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;

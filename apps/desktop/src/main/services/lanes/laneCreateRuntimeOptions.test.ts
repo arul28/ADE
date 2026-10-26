@@ -211,20 +211,18 @@ describe("laneService.create runtime options", () => {
     const target = path.join(root, "held");
     fs.mkdirSync(target);
     fs.writeFileSync(path.join(target, "file.txt"), "x");
-    failTreeRemovalOf(target, "EBUSY");
-    const realRm = fs.promises.rm.bind(fs.promises);
     let calls = 0;
-    const spy = vi.spyOn(fs.promises, "rm").mockImplementation(async (...args: Parameters<typeof fs.promises.rm>) => {
+    vi.mocked(removeTreeOffProcess).mockImplementation(async (folder) => {
       calls += 1;
-      if (calls <= 2) throw Object.assign(new Error("resource busy or locked"), { code: "EBUSY" });
-      return realRm(...args);
+      if (calls <= 2) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+      return removeTreeForReal(folder);
     });
     try {
       await removeWorktreeDirectoryWithRecovery(target);
       expect(calls).toBe(3);
       expect(fs.existsSync(target)).toBe(false);
     } finally {
-      spy.mockRestore();
+      vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
     }
     // A non-retryable error surfaces at once.
     const otherPath = path.join(root, "other");

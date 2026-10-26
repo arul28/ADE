@@ -21,13 +21,6 @@ vi.mock("../shared/removeTreeOffProcess", async (importOriginal) => {
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 const removeTreeForReal = vi.mocked(removeTreeOffProcess).getMockImplementation()!;
 
-function failTreeRemovalOf(folder: string, code: string): void {
-  vi.mocked(removeTreeOffProcess).mockImplementation(async (target) =>
-    path.resolve(target) === path.resolve(folder)
-      ? Promise.reject(Object.assign(new Error(`${code}: could not remove ${folder}`), { code }))
-      : removeTreeForReal(target));
-}
-
 const roots: string[] = [];
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -432,14 +425,10 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "file.bin"), "data");
     installGitStub();
-    failTreeRemovalOf(worktreePath, "EBUSY");
-    const originalRm = fs.promises.rm.bind(fs.promises);
-    vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
-      if (path.resolve(String(target)) === path.resolve(worktreePath)) {
-        expect(onArchived).toHaveBeenCalledTimes(1);
-        throw Object.assign(new Error("disk is busy"), { code: "EIO" });
-      }
-      return originalRm(target, options);
+    vi.mocked(removeTreeOffProcess).mockImplementation(async (target) => {
+      if (path.resolve(target) !== path.resolve(worktreePath)) return removeTreeForReal(target);
+      expect(onArchived).toHaveBeenCalledTimes(1);
+      throw Object.assign(new Error("disk is busy"), { code: "EIO" });
     });
     vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
       if (command[0] === "worktree" && command[1] === "remove") return gitResult(1, "", "remove failed");

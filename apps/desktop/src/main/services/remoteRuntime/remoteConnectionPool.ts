@@ -31,6 +31,7 @@ import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
+import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
   LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -184,6 +185,7 @@ const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
  * remote runtime a reasonable response window. */
 export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],

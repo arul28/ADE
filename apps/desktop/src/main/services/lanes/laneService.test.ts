@@ -2759,18 +2759,13 @@ describe("laneService delete outside .ade/worktrees", () => {
       // A removal that dies partway (a file Windows still holds, an `.asar`
       // Electron's fs refuses) takes some files with it, the marker included.
       // The retry must still be allowed, not refused as a replaced folder.
-      failTreeRemovalOf(worktreePath, "EBUSY");
-      const partialRemove = vi.spyOn(fs.promises, "rm").mockImplementationOnce(async (target) => {
-        for (const name of fs.readdirSync(String(target))) {
-          if (name !== "work.txt") fs.rmSync(path.join(String(target), name), { force: true });
+      vi.mocked(removeTreeOffProcess).mockImplementationOnce(async (target) => {
+        for (const name of fs.readdirSync(target)) {
+          if (name !== "work.txt") fs.rmSync(path.join(target, name), { force: true });
         }
         throw Object.assign(new Error("EIO: i/o error, rmdir"), { code: "EIO" });
       });
-      try {
-        await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/EIO/);
-      } finally {
-        partialRemove.mockRestore();
-      }
+      await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/EIO/);
       expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
 
       await service.deleteLeftoverWorktree("lane-external");
@@ -5823,15 +5818,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const { service, db, repoRoot, childPath } = await setupWithLane({ teardown: fake, events });
     fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
     failTreeRemovalOf(childPath, "ENOTEMPTY");
-    const realRm = fs.promises.rm.bind(fs.promises);
-    const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (target: fs.PathLike, options?: Parameters<typeof fs.promises.rm>[1]) => {
-      if (path.resolve(String(target)) === childPath) {
-        const error = new Error(`ENOTEMPTY: directory not empty, rmdir '${childPath}'`) as NodeJS.ErrnoException;
-        error.code = "ENOTEMPTY";
-        throw error;
-      }
-      return realRm(target, options);
-    });
 
     vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
@@ -5863,7 +5849,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     try {
       await service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
     } finally {
-      rmSpy.mockRestore();
+      vi.mocked(removeTreeOffProcess).mockImplementation(removeTreeForReal);
     }
 
     expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
