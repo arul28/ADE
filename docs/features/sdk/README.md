@@ -178,6 +178,21 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `presets.call` | Account-scoped harness preset CRUD through the account settings store. |
 | `runtime/info` | Capabilities, including personal actions, provider capabilities, accounts, credentials and presets. |
 
+**Who may call `providerAccounts.call`, `credentials.call` and `presets.call`.**
+In ADE these are settings only the user may change, so outside the embedded
+profile they need the CTO role. In an embedded runtime they belong to the app
+that spawned it, and reaching the socket does not prove that: the runtime hands
+its own agents an `ade` CLI pointed at it, and a prompt-injected agent must not
+sign the end user's accounts out or read their key list. So the SDK puts a
+fresh random secret in `ADE_EMBEDDED_HOST_TOKEN` for each spawn (never on disk,
+since agents run as the same user), the runtime reads it and deletes it from its
+environment before it starts anything (`takeEmbeddedHostToken`), and only the
+connection whose `ade/initialize` carries `embeddedHostToken` gets the three
+methods. A restart that re-adopts the same child keeps its token. A client in
+`attach` mode, or one that adopted a runtime an earlier host left running, has
+no token: those calls fail `unsupported` client-side, and the fix is to stop
+that runtime and create the client again.
+
 `ade/initialize` returns `runtimeInfo.version`. The SDK compares it with `SUPPORTED_RUNTIME_RANGE`; outside the range it logs once and degrades by feature detection, or throws `runtime_incompatible` under `requireCompatibleRuntime: true`. The verdict is `doctor().runtime.compatibility`.
 
 **`BufferedEvent.category` is deliberately open.** The runtime is downloaded and can be newer than the SDK driving it, so a category this build has never heard of is an ordinary event, not a bug: the type is `KnownBufferedEventCategory | (string & {})`, listed for autocomplete rather than for exhaustiveness. `chatEnvelopeFromBufferedEvent` gates on `"runtime"` exactly, which is what keeps an unknown category from ever being mistaken for chat, and the drain fallback polls `personalChats.streamEvents` with no category filter so the cursor still advances past everything. `runtime` is the only category the SDK decodes: `pty` is terminal bytes it has no surface for, and newer categories pass through as unknown events without becoming chat envelopes.

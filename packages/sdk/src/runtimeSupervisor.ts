@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { resolveBinary } from "./binary.js";
 import { resolveBundledRuntime } from "./bundledRuntime.js";
 import type { AdeClientEvent, AdeClientEventMap } from "./clientEvents.js";
@@ -110,7 +111,13 @@ export type RuntimeSupervisorDeps = {
   onRebound: () => Promise<void>;
 };
 
-type Bound = { connection: JsonRpcConnection; sidecar: Sidecar | null };
+/**
+ * `hostToken` is the per-spawn secret this client put in the runtime's
+ * environment. Only a runtime this client spawned has one: an attached or
+ * adopted runtime was started by someone else, so account management is
+ * refused on it (see `embeddedHostToken` in the handshake).
+ */
+type Bound = { connection: JsonRpcConnection; sidecar: Sidecar | null; hostToken: string | null };
 type Handshake = { initialize: AdeInitializeResult; compatibility: RuntimeCompatibility };
 
 /** A child that has neither exited nor been killed by a signal. */
@@ -151,6 +158,14 @@ export class RuntimeSupervisor {
 
   get sidecar(): Sidecar | null {
     return this.bound.sidecar;
+  }
+
+  /**
+   * Whether this client spawned the runtime it is bound to, and so holds the
+   * secret that account, credential and preset management requires.
+   */
+  get managesAccounts(): boolean {
+    return this.bound.hostToken !== null;
   }
 
   get loginMode(): "isolated" | "machine" | "attached" {
@@ -218,7 +233,7 @@ export class RuntimeSupervisor {
     if (internal.attach) {
       // Attach mode never spawns: used by tests against a mock server and by
       // embedders that already manage the runtime's lifecycle.
-      return { connection: await JsonRpcConnection.connect(socketPath), sidecar: null };
+      return { connection: await JsonRpcConnection.connect(socketPath), sidecar: null, hostToken: null };
     }
     // A previous host that died without unwinding can still own this home. The
     // runtime's own parent-death watchdog ends it within a few seconds, but a
@@ -259,8 +274,11 @@ export class RuntimeSupervisor {
     if (reclaim.action === "reused") {
       // Adopting the live runtime instead of spawning a second one for the same
       // home, which would fight over the socket and the database.
-      return { connection: await JsonRpcConnection.connect(socketPath), sidecar: null };
+      return { connection: await JsonRpcConnection.connect(socketPath), sidecar: null, hostToken: null };
     }
+    // Fresh per spawn and never written to disk: the runtime's own agents run
+    // as this user and could read any file this process can.
+    const hostToken = randomBytes(32).toString("hex");
     const started = await startSidecar({
       binaryPath: binary.binaryPath,
       runtimeRoot: binary.runtimeRoot,
@@ -271,8 +289,9 @@ export class RuntimeSupervisor {
       ...(internal.startupTimeoutMs ? { startupTimeoutMs: internal.startupTimeoutMs } : {}),
       adeDefaultRole: internal.adeDefaultRole ?? DEFAULT_ADE_ROLE,
       useMachineLogin: options.useMachineLogin === true,
+      hostToken,
     });
-    return { connection: started.connection, sidecar: started };
+    return { connection: started.connection, sidecar: started, hostToken };
   }
 
   /**
@@ -296,6 +315,9 @@ export class RuntimeSupervisor {
           // covered by "agent", which the live fixture verifies against a real
           // runtime rather than taking on trust.
           identity: { role: internal.adeDefaultRole ?? DEFAULT_ADE_ROLE, callerId: `ade-sdk:${process.pid}` },
+          // Proves this connection is the app that spawned the runtime, which
+          // is what lets it manage provider accounts, keys and presets.
+          ...(bound.hostToken ? { embeddedHostToken: bound.hostToken } : {}),
         },
         { timeoutMs: 60_000 },
       );
@@ -402,21 +424,25 @@ export class RuntimeSupervisor {
       await this.sleep(policy.backoffMs * 2 ** (attempt - 1));
       if (isDisposed()) return;
       try {
-        const bound = await this.boot();
-        const next = await this.handshake(bound);
-        if (isDisposed()) {
-          bound.connection.close();
-          await bound.sidecar?.stop();
-          return;
-        }
+        const booted = await this.boot();
         // A `reused` boot hands back no sidecar: it reached a runtime that was
         // already answering. When that is the child THIS client spawned (only
         // the socket dropped), keep its handle, or `dispose()` would leave it
-        // running with nobody to stop it.
+        // running with nobody to stop it, and keep its host token, which that
+        // child still holds, so account management survives the reconnect.
         const previous = this.bound.sidecar;
-        const sidecar = bound.sidecar ?? (previous && childAlive(previous.child) ? previous : null);
+        const ownChild = !booted.sidecar && previous && childAlive(previous.child) ? previous : null;
+        // The handshake still sees no sidecar for a reused child, so a failed
+        // handshake does not stop a child that may yet answer the next attempt.
+        const handshaken = ownChild ? { ...booted, hostToken: this.bound.hostToken } : booted;
+        const next = await this.handshake(handshaken);
+        if (isDisposed()) {
+          booted.connection.close();
+          await booted.sidecar?.stop();
+          return;
+        }
         const previousEvents = this.stream;
-        this.bound = { connection: bound.connection, sidecar };
+        this.bound = ownChild ? { ...handshaken, sidecar: ownChild } : handshaken;
         this.handshaken = next;
         await previousEvents.dispose();
         this.stream = await this.startEvents();

@@ -2,7 +2,7 @@ import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeServi
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -325,6 +325,13 @@ export type MultiProjectRpcHandlerOptions = {
   > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
   /** Profile of the outer runtime, used to trust the sole embedded host. */
   runtimeProfile?: "full" | "chat" | "embedded";
+  /**
+   * The secret the SDK host handed this embedded runtime at spawn. Only the
+   * connection that presents it in `ade/initialize` may manage provider
+   * accounts, credentials and presets. Null outside the embedded profile, and
+   * for an embedded runtime started without one (then nobody may).
+   */
+  embeddedHostToken?: string | null;
   /**
    * Backs `providers.status`: what each CLI-backed provider actually is on this
    * machine (installed, where, which version, signed in). Injected like
@@ -1251,6 +1258,24 @@ export function createMultiProjectRpcRequestHandler(
     isRecord(initializedParams) && isRecord(initializedParams.identity)
       ? initializedParams.identity
       : null;
+  /**
+   * Whether this connection is the SDK host that spawned this embedded
+   * runtime. Reaching the socket is not enough: the runtime's own agents get an
+   * `ade` CLI pointed at it, and a prompt-injected agent must not be able to
+   * sign the end user's accounts out or read their key list. The host proves
+   * itself with the per-spawn secret it put in our environment (which the
+   * runtime removed before starting anything that could inherit it).
+   */
+  const callerIsEmbeddedHost = (): boolean => {
+    const expected = options.runtimeProfile === "embedded" ? options.embeddedHostToken ?? null : null;
+    const offered = isRecord(initializedParams) && typeof initializedParams.embeddedHostToken === "string"
+      ? initializedParams.embeddedHostToken
+      : null;
+    if (!expected || !offered) return false;
+    const a = Buffer.from(expected, "utf8");
+    const b = Buffer.from(offered, "utf8");
+    return a.length === b.length && timingSafeEqual(a, b);
+  };
   const callerRole = () => {
     const identityRecord = callerIdentity();
     return resolveSessionBoundRole({
@@ -2760,10 +2785,15 @@ export function createMultiProjectRpcRequestHandler(
       if (!action) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires action.`);
       }
-      if (options.runtimeProfile !== "embedded" && !callerHasRoleAtLeast(callerRole(), "cto")) {
+      const allowed = options.runtimeProfile === "embedded"
+        ? callerIsEmbeddedHost()
+        : callerHasRoleAtLeast(callerRole(), "cto");
+      if (!allowed) {
         throw new JsonRpcError(
           JsonRpcErrorCode.methodNotFound,
-          `Action 'provider_instances.${action}' requires elevated role.`,
+          options.runtimeProfile === "embedded"
+            ? `${method} is only for the app that started this runtime.`
+            : `${method} '${action}' requires elevated role.`,
         );
       }
       if (method === "providerAccounts.call") {

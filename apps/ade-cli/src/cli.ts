@@ -469,6 +469,7 @@ import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./service
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
+  takeEmbeddedHostToken,
   startParentDeathWatchdog,
 } from "./services/runtime/parentDeathWatchdog";
 import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
@@ -26450,6 +26451,11 @@ async function runServe(
   // is connected.
   const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
   const embedded = runtimeProfile === "embedded";
+  // The SDK host's per-spawn secret. Taken out of the environment here, before
+  // this runtime starts anything (provider CLIs, agents, the `ade` shim) that
+  // would inherit it: whoever holds it may manage the end user's accounts and
+  // keys. Only an embedded runtime honours it.
+  const embeddedHostToken = takeEmbeddedHostToken(process.env, embedded);
   // The machine provider-instance store is shared across launch services. Give
   // it the explicit profile from this runtime invocation so its default
   // account uses the same isolated home as the embedded chat service.
@@ -27558,6 +27564,7 @@ async function runServe(
       scopeRegistry,
       personalChatScope,
       runtimeProfile: runtimeProfile ?? "full",
+      embeddedHostToken,
       providerStatus,
       keepAwakeService,
       productAnalyticsService: brainProductAnalytics,

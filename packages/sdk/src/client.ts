@@ -334,6 +334,14 @@ export async function createAdeChat(
     if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
       throw new AdeError("unsupported", `This ADE runtime does not advertise ${domain}.${action}.`);
     }
+    if (!runtime.managesAccounts) {
+      throw new AdeError(
+        "unsupported",
+        "Account, credential and preset management needs a runtime this client started. It is attached to " +
+          "one another process started (attach mode, or a runtime left running by an earlier host); dispose " +
+          "the client, stop that runtime, and create the client again.",
+      );
+    }
     const response = await runtime.connection.request<{ action?: string; result?: unknown }>(
       `${domain}.call`,
       { action, ...(args !== undefined ? { args } : {}) },

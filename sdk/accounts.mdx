@@ -152,6 +152,16 @@ reading. With no alternate, the thread waits for the reset. `"wait"` and
 `"ask"` only emit the event. Threads expose `usageLimit.resumeNow()` and
 `usageLimit.continueOnAlternate()` for an explicit choice.
 
+## Who can manage accounts
+
+Only the client that started the runtime can manage accounts, credentials and
+presets. The SDK proves it with a secret it hands the runtime at launch, so the
+agents running inside your chats, which can reach the same runtime, cannot
+sign your users' accounts out or touch their keys. A client created with
+`attach: true`, or one that found a runtime an earlier copy of your app left
+running, cannot manage accounts and gets `unsupported`. Dispose it, stop that
+runtime, and create the client again.
+
 ## Electron renderers
 
 Account, credential, and preset methods are refused for renderers by default.
