@@ -1021,7 +1021,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"
   // cannot share a permission.
-  account_settings: ["list", "get", "set", "remove", "sync"],
+  account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
   // for the same reason `project_secret.exportEnv` is.

@@ -21,9 +21,9 @@ import {
   CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeCrossMachineLaneImportArgs,
-  normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
+import { isSameGitRepository } from "../github/githubSshAlias";
 import { crossMachineScheduledWorkId } from "../../../shared/deterministicChatSessionId";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import type {
@@ -489,7 +489,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       "The destination project does not have an origin remote.",
     );
     if (
-      normalizeGitRemoteIdentity(origin) !== normalizeGitRemoteIdentity(payload.originUrl)
+      !isSameGitRepository(origin, payload.originUrl)
       || sanitizePortableGitRemote(payload.originUrl) !== payload.originUrl
     ) {
       throw new Error("The destination project points at a different Git repository than the batch lane import.");
@@ -934,7 +934,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       } catch (error) {
         return refuse("lane_blocked", error instanceof Error ? error.message : String(error));
       }
-      if (normalizeGitRemoteIdentity(destinationOrigin) !== normalizeGitRemoteIdentity(capsule.source.originUrl)) {
+      if (!isSameGitRepository(destinationOrigin, capsule.source.originUrl)) {
         return refuse("lane_mismatch", "The original project now points at a different Git repository.");
       }
 

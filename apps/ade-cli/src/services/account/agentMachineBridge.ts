@@ -18,6 +18,7 @@
 import os from "node:os";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { peerGitRemoteIdentity } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
@@ -193,16 +194,16 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     scope: MachineCallScope,
   ): RemoteProjectRecord => {
     if (scope.kind === "anyProject") {
-      const origin = scope.originUrl ? normalizeGitRemoteIdentity(scope.originUrl) : null;
+      const origin = scope.originUrl ? peerGitRemoteIdentity(scope.originUrl) : null;
       const sameRepo = origin
-        ? pickLiveCheckout(records.filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin))
+        ? pickLiveCheckout(records.filter((record) => peerGitRemoteIdentity(record.gitOriginUrl) === origin))
         : null;
       const match = sameRepo ?? pickLiveCheckout(records);
       if (match) return match;
       throw new Error(`${machineName(machine)} has no project open in ADE, so it can't answer this. Open any project there once.`);
     }
     if (scope.kind === "repo") {
-      const origin = normalizeGitRemoteIdentity(scope.originUrl);
+      const origin = peerGitRemoteIdentity(scope.originUrl);
       if (!origin) {
         throw new Error(
           "This project has no git origin remote, so ADE can't find it on another machine. Pass --project <name|path|id>.",
@@ -210,7 +211,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       }
       // Several checkouts of one repository: the same pick as the desktop's.
       const match = pickLiveCheckout(
-        records.filter((record) => normalizeGitRemoteIdentity(record.gitOriginUrl) === origin),
+        records.filter((record) => peerGitRemoteIdentity(record.gitOriginUrl) === origin),
       );
       if (match) return match;
       throw new Error(

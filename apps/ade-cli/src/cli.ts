@@ -99,6 +99,8 @@ import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/share
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
+import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
+import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import {
   registerSentryDiagnosticAttachment,
   registerSentryDiagnosticContext,
@@ -22344,18 +22346,23 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
   };
 }
 
+/**
+ * The project's origin in identity form: an SSH alias of GitHub
+ * (`git@github.com-work:org/repo`) comes back as its `github.com` form, which
+ * other machines can match.
+ */
 function getGitRemote(projectRoot: string): string | null {
   const remote = runLocalCommand(
     "git",
     ["config", "--get", "remote.origin.url"],
     projectRoot,
   );
-  return remote.ok && remote.stdout ? remote.stdout : null;
+  return canonicalGitOriginUrl(remote.ok && remote.stdout ? remote.stdout : null);
 }
 
 function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
   const remote = getGitRemote(projectRoot);
-  const hasGitHubRemote = Boolean(remote && /github\.com[:/]/i.test(remote));
+  const hasGitHubRemote = Boolean(parseGithubRemoteUrl(remote));
   const ghInstalled = commandExists("gh");
   const envTokenPresent = Boolean(
     process.env.ADE_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim(),

@@ -9,6 +9,7 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { runGit } from "../git/git";
+import { gitPushError } from "../git/gitPushFailure";
 import type {
   GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
@@ -24,7 +25,8 @@ import type {
   GitHubStatus,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
+import { resolveGithubRepoRef } from "./githubSshAlias";
 import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
@@ -519,8 +521,7 @@ function detectGitHubTokenType(token: string): NonNullable<GitHubStatus["tokenTy
 }
 
 export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
-  const repo = parseGithubRemoteUrl(remoteUrlRaw);
-  return repo ? { owner: repo.owner, name: repo.repo } : null;
+  return githubRepoRefFromRemoteUrl(remoteUrlRaw);
 }
 
 function repoIdentityFromGitHubResponse(
@@ -1129,7 +1130,7 @@ export function createGithubService({
     }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return null;
-    return parseGitHubRepoFromRemoteUrl(res.stdout);
+    return await resolveGithubRepoRef(res.stdout);
   };
 
   // Returns `{ repo, hasOrigin }` in one git invocation. `hasOrigin` is true
@@ -1145,13 +1146,13 @@ export function createGithubService({
       // parsing cannot see, so fall through once before treating it as non-GitHub.
       const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
       if (res.exitCode !== 0) return { repo: null, hasOrigin: true };
-      return { repo: parseGitHubRepoFromRemoteUrl(res.stdout), hasOrigin: true };
+      return { repo: await resolveGithubRepoRef(res.stdout), hasOrigin: true };
     }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return { repo: null, hasOrigin: false };
     const url = res.stdout.trim();
     if (!url) return { repo: null, hasOrigin: false };
-    return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
+    return { repo: await resolveGithubRepoRef(url), hasOrigin: true };
   };
 
   const validateToken = async (
@@ -2584,7 +2585,9 @@ export function createGithubService({
       const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
       if (pushRes.exitCode !== 0) {
         await cleanupLocalOrigin();
-        throw new Error(`Failed to push to origin: ${redactGitOutput(pushRes.stderr.trim()) || `exit ${pushRes.exitCode}`}`);
+        throw gitPushError(pushRes.stderr.trim() || `exit ${pushRes.exitCode}`, {
+          prefix: "Failed to push to origin:",
+        });
       }
       resultState = "pushed";
     } else {

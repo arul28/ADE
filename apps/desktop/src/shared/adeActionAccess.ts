@@ -322,7 +322,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   account_settings: {
     read: [
-      "list", "get",
+      "list", "deletedKeys", "get",
     ],
     write: [
       "set", "remove", "sync",

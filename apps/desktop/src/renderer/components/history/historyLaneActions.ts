@@ -1,4 +1,5 @@
 import type { GitConflictState, GitStashSummary } from "../../../shared/types";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 
@@ -96,14 +97,12 @@ const laneActionGroups: Array<{
   },
 ];
 
-const GITHUB_REPO_RE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+)$/;
-
 function githubBranchUrl(remoteUrl: string | null, branch: string | null): string | null {
-  if (!remoteUrl || !branch) return null;
-  const match = GITHUB_REPO_RE.exec(remoteUrl.trim().replace(/\.git$/, ""));
-  if (!match) return null;
+  if (!branch) return null;
+  const repo = githubRepoRefFromRemoteUrl(remoteUrl);
+  if (!repo) return null;
   const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
-  return `https://github.com/${match[1]}/${match[2]}/tree/${encodedBranch}`;
+  return `https://github.com/${repo.owner}/${repo.name}/tree/${encodedBranch}`;
 }
 
 export function buildHistoryLaneActions(args: {

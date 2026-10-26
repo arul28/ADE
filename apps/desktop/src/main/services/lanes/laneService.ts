@@ -20,6 +20,7 @@ import {
   type GitCheckoutProgress,
 } from "../git/git";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
+import { runGitPushOrThrow } from "../git/gitPushFailure";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -7868,7 +7869,11 @@ export function createLaneService({
         const lane = getLaneRow(laneId);
         if (!lane) continue;
 
-        await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        await runGitPushOrThrow(["push", "--force-with-lease"], {
+          cwd: lane.worktree_path,
+          timeoutMs: 120_000,
+          branch: lane.branch_ref,
+        });
         laneItem.pushed = true;
         run.pushedLaneIds.push(laneId);
         emitRunLog({
