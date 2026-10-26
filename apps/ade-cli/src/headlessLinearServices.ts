@@ -210,6 +210,8 @@ type HeadlessLinearDeps = {
   getAccountUserId?: () => string | null;
   getDeviceId?: () => string | null;
   refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
+  /** A PR entered or left the hot-refresh set; wakes the PR poller, as desktop main does. */
+  onPrHotRefreshChanged?: () => void;
 };
 
 type HeadlessLinearServices = {
@@ -3145,6 +3147,7 @@ export function createHeadlessLinearServices(
     // the lane's Linear issues. Without it the brain skipped Linear entirely.
     getLinearIssueTracker: () => issueTracker,
     refreshDefaultBranchAfterMerge: args.refreshDefaultBranchAfterMerge,
+    onHotRefreshChanged: () => args.onPrHotRefreshChanged?.(),
   });
   const agentChatService = createHeadlessAgentChatService(
     args.projectRoot,

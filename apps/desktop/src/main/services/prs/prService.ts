@@ -1615,6 +1615,29 @@ export function createPrService({
   const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
   const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
   const linkPrToChatSession = chatLinks.linkPrToChatSession;
+  /**
+   * Link a PR to a chat and then to every chat in its spawn tree, so the
+   * chat that started a subagent shows the PR the subagent opened (and the
+   * other way round). The family only follows a link that was allowed: it
+   * comes from the chat that was just linked, never from the caller. Family
+   * members may sit on other lanes; a spawn tree is one piece of work.
+   */
+  const linkPrToChatFamily = (linkArgs: Parameters<typeof linkPrToChatSession>[0]): boolean => {
+    if (!linkPrToChatSession(linkArgs)) return false;
+    const sessionId = resolveCanonicalChatSessionId(String(linkArgs.sessionId ?? "")) ?? "";
+    let relatives: string[] = [];
+    try {
+      relatives = sessionId ? agentChatService?.getChatFamilySessionIds?.(sessionId) ?? [] : [];
+    } catch (error) {
+      logger.warn("prs.chat_family_lookup_failed", { prId: linkArgs.prId, sessionId, error: getErrorMessage(error) });
+    }
+    for (const relativeId of relatives) {
+      // A chat that unlinked this PR keeps it unlinked.
+      if (hasChatSessionDismissal(linkArgs.prId, relativeId)) continue;
+      linkPrToChatSession({ prId: linkArgs.prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true });
+    }
+    return true;
+  };
   const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
   const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
   const pendingAgentStackAttaches = chatLinks.pendingAgentStackAttaches;
@@ -7619,7 +7642,7 @@ export function createPrService({
     // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
     // internal parent-chat stack attach, not an arbitrary agent-supplied
     // session id on create.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId });
     if (args.source === "agent") {
       chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
       attachNewStackLayerToParentChats({ prId, laneId: lane.id });
@@ -7774,7 +7797,7 @@ export function createPrService({
     // Edges from other lanes survive: one PR can legitimately be referenced by
     // several chats. Cross-lane links are allowed for GitHub stack members or
     // an explicit pick.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     if (headMatchesLane) {
       await publishLinearPrCardsForLane({
@@ -12503,7 +12526,7 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return { ok: false };
-      const ok = linkPrToChatSession({
+      const ok = linkPrToChatFamily({
         prId: pr.id,
         laneId: pr.lane_id,
         sessionId: args.sessionId,
@@ -12511,6 +12534,32 @@ export function createPrService({
       });
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * A chat spawned by another chat shows the open PRs its parent has. An
+     * internal seam for agentChatService's spawn path, not a renderer action.
+     */
+    linkChatToParentPrs(args: { sessionId: string; parentSessionId: string }): void {
+      let rows: Array<{ id: string; lane_id: string }> = [];
+      try {
+        rows = db.all<{ id: string; lane_id: string }>(
+          `select pr.id, pr.lane_id
+             from pull_request_chat_sessions pcs
+             join pull_requests pr on pr.id = pcs.pr_id and pr.project_id = pcs.project_id
+            where pcs.project_id = ? and pcs.session_id = ?
+              and pr.${LIVE_PR_ROWS} and pr.state in ('open', 'draft')`,
+          [projectId, args.parentSessionId],
+        );
+      } catch (error) {
+        logger.warn("prs.parent_chat_prs_read_failed", { sessionId: args.sessionId, error: getErrorMessage(error) });
+        return;
+      }
+      let linked = false;
+      for (const row of rows) {
+        if (linkPrToChatSession({ prId: row.id, laneId: row.lane_id, sessionId: args.sessionId, allowCrossLane: true })) linked = true;
+      }
+      if (linked) emitPrsUpdated();
     },
 
     /**

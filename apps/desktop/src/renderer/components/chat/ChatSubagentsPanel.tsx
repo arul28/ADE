@@ -60,6 +60,7 @@ import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { requestChatActionsPane } from "./chatActionsPaneRequests";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatChildRoster } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
@@ -1138,6 +1139,7 @@ export function ChatSubagentsPanel({
   resolveSpawnedChatTitle,
   capability = null,
   selectedTaskId,
+  selectedChildSessionId = null,
   className,
   variant = "drawer",
   onClose,
@@ -1185,6 +1187,12 @@ export function ChatSubagentsPanel({
    * treated as no transcript (drawer-only). See `shared/subagentCapabilities`. */
   capability?: SubagentCapability | null;
   selectedTaskId?: string | null;
+  /**
+   * The spawned chat on screen, when this roster is its parent's: that row
+   * reads selected, and clicking it again goes back (`onClearSelectedSubagent`),
+   * the same as a drilled-in runtime subagent.
+   */
+  selectedChildSessionId?: string | null;
   className?: string;
   variant?: "drawer" | "pane";
   onClose?: () => void;
@@ -1549,6 +1557,12 @@ export function ChatSubagentsPanel({
     // Spawned ADE chats navigate directly; runtime-native subagents keep the
     // transcript takeover/details behavior below.
     if (snap.childSessionId != null) {
+      if (snap.childSessionId === selectedChildSessionId) {
+        onClearSelectedSubagent?.();
+        return;
+      }
+      // The drawer you clicked in stays open in the chat you land on.
+      requestChatActionsPane(snap.childSessionId);
       // A spawned chat runs on its parent's machine, so the jump keeps this
       // chat's pin (null = the tab's own machine).
       navigateToSpawnedChat(
@@ -1637,7 +1651,8 @@ export function ChatSubagentsPanel({
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
-      selected={selectedTaskId === snap.taskId}
+      selected={selectedTaskId === snap.taskId
+        || (selectedChildSessionId != null && snap.childSessionId === selectedChildSessionId)}
       expanded={expandedTaskId === snap.taskId}
       probing={probingTaskId === snap.taskId}
       canViewFullTranscript={canTakeover}
