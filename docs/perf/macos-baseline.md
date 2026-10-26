@@ -1528,3 +1528,22 @@ while ADE reads with `GIT_OPTIONAL_LOCKS=0` (41-58 ms per status with the
 daemon). The conflict and rebase summaries now reuse the HEAD each lane's
 status printed, behind counts are kept per commit pair, and the search index
 lists the lanes once per pass instead of once per lane.
+
+Brain event loop under real load while a phone connects, measured by P0
+(`perf_hooks.monitorEventLoopDelay` inside the brain, 5 s windows, golden
+clones of the owner's ADE project, machine load 30-50): windows holding a real
+main-thread block over 1 s.
+
+| Real load, phone connecting | Before (`main`) | Baseline (`744f102c3`) | Ceiling |
+|---|---:|---:|---:|
+| Windows with a block > 1 s | 51 of 352 (25 of 169 on a rerun) | 1 of 295 | 1% of windows |
+| Longest block | 3.1 s | 1.1 s | 1.5 s |
+
+The ~2 s blocks every ~30 s on `main` are the keychain read (`0224073ec`)
+and synchronous shell probes that never cached a failure (`744f102c3`).
+
+The first lane refresh after a brain starts is slower than the warm one
+above (Work usable 2.2-2.7 s): each lane also fills its one-time caches (the
+HEAD date, the index path, the conflict check, behind counts), 288 processes
+on 47 lanes. The index path now comes from the worktree's `.git` file
+(`ff8d90ce2`), 49 fewer.
