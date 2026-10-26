@@ -675,6 +675,20 @@ Renderer — settings:
   `browser.linkOpenMode` and `browser.autoOpenDevServer` into the
   project's `.ade/local.yaml`; see
   [Configuration schema](configuration-schema.md).
+- `apps/desktop/src/shared/settingsManifest.ts` — the registry's data and
+  pure helpers, in `shared/` so the CLI (`ade settings find`) and chat chips
+  read the same entries. `renderer/components/settings/settingsManifest.ts`
+  re-exports it and adds what depends on the renderer (platform, web client,
+  standalone Settings).
+- `apps/desktop/src/shared/settingsAgentAccess.ts` — the two lists: settings
+  an agent may change (the setup of the work: lanes, lane templates, agent
+  notes, secrets) and settings only the user changes (publishing, sign-ins,
+  money, agent reach, the computer, deleting data, preferences). A setting
+  not listed is the user's. The refusals live in the brain:
+  `ADE_ACTION_CTO_ONLY` for the writes, and `ownerOnlyProjectConfigChange`,
+  which refuses an agent's `project_config.save` that touches any config key
+  outside the work setup (`AGENT_EDITABLE_PROJECT_CONFIG_KEYS`). An agent can
+  still hand-edit `.ade/local.yaml`; that gap is known.
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
   `keywords`, `tab`, `anchor`, `scope`, `web`, `group`, and an optional

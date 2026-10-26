@@ -128,6 +128,22 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
+  // The person's settings. What an agent may and may not change is listed in
+  // `shared/settingsAgentAccess.ts`; these are the writes behind the "only
+  // you" list. Your account's settings (MCP servers, notifications, chat),
+  // provider sign-ins, and keyboard shortcuts. Turning on PR chat transcripts
+  // publishes your chats as gists. Agents reach the rest of the project config
+  // through `project_config.save`, which the RPC server checks key by key
+  // (`ownerOnlyProjectConfigChange`).
+  account_settings: { only: ["set", "remove"] },
+  provider_instances: {
+    only: [
+      "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced",
+      "loginStart", "loginSubmitCode", "loginCancel", "setSettings",
+    ],
+  },
+  keybindings: { only: ["set"] },
+  project_config: { only: ["setPrTranscriptGists"] },
   /*
    * Fail-closed, and that is the whole point. `cto_memory` reads and rewrites the
    * durable memory injected into every CTO session, so it is operator state, not

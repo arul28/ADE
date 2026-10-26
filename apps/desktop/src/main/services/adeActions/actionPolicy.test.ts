@@ -85,8 +85,10 @@ describe("isAllowedAdeAction", () => {
       expect(isAllowedAdeAction("account_vault", action)).toBe(true);
       expect(isCtoOnlyAdeAction("account_vault", action)).toBe(false);
     }
-    // Settings carry no credentials and stay agent-writable end to end.
-    expect(isCtoOnlyAdeAction("account_settings", "set")).toBe(false);
+    // Account settings are the user's preferences (`shared/settingsAgentAccess.ts`):
+    // an agent reads them but never changes them.
+    for (const action of ["set", "remove"]) expect(isCtoOnlyAdeAction("account_settings", action)).toBe(true);
+    for (const action of ["list", "get", "sync"]) expect(isCtoOnlyAdeAction("account_settings", action)).toBe(false);
   });
 
   it("exposes caller lifecycle writes through the runtime session surface", () => {

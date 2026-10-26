@@ -270,7 +270,7 @@ export function buildAdeBootstrapGuidance(
 ): string {
   return [
     "## ADE",
-    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state; use `ade help <command>` instead of guessing.",
+    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
     "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
     `Skills: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
@@ -283,7 +283,7 @@ export function buildAdeBootstrapGuidance(
     // it saved to /tmp left the user a chip saying "Outside this project".
     "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
     // The distinction agents get wrong: a wake is you doing work later, a
     // draft send is the user's message arriving later. Naming both here keeps

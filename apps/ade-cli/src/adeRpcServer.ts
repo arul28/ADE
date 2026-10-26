@@ -9,6 +9,7 @@ import {
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { DIRTY_WORKTREE_PREFIX } from "../../desktop/src/main/services/prs/prService";
@@ -334,6 +335,17 @@ function isUserClientSession(session: SessionState): boolean {
 function mayUseUserOnlyActions(session: SessionState): boolean {
   return isUserClientSession(session) && isDesktopClientName(session.clientName);
 }
+
+/** Domains whose CTO-only writes are the user's settings (`shared/settingsAgentAccess.ts`). */
+const USER_SETTINGS_ACTION_DOMAINS: ReadonlySet<string> = new Set([
+  "account_settings",
+  "provider_instances",
+  "keybindings",
+  "project_config",
+  "keep_awake",
+  "budget",
+  "analytics",
+]);
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
@@ -5835,6 +5847,14 @@ async function runTool(args: {
       );
     }
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+      if (USER_SETTINGS_ACTION_DOMAINS.has(domain)) {
+        // A setting only the user changes. Say so in words an agent can pass
+        // on, with the way to point the user at it.
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          `Only the user can change this setting (${domain}.${action}). Run \`ade settings find <words>\` and give the user its link.`,
+        );
+      }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
     if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
@@ -5860,6 +5880,31 @@ async function runTool(args: {
         JsonRpcErrorCode.policyDenied,
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
+    }
+    if (domain === "project_config" && action === "save" && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
+      // An agent may change the setup of the work (tests, automations, lane
+      // templates…) but not the person's settings that share the same file:
+      // PR chat transcripts publish chats, and the rest are sign-ins, AI config
+      // and cleanup rules (`shared/settingsAgentAccess.ts`). The whole save is
+      // refused, so nothing is half written.
+      const candidate = argsList?.[0] ?? (hasScalarArg ? toolArgs.arg : toolArgs.args);
+      const current = runtime.projectConfigService?.get();
+      const change = current && isRecord(candidate)
+        ? ownerOnlyProjectConfigChange(
+          { shared: current.shared as Record<string, unknown>, local: current.local as Record<string, unknown> },
+          {
+            shared: isRecord(candidate.shared) ? candidate.shared : current.shared as Record<string, unknown>,
+            local: isRecord(candidate.local) ? candidate.local : current.local as Record<string, unknown>,
+          },
+        )
+        : null;
+      if (change) {
+        const link = change.entryId ? ` It is at ade://settings/${change.entryId}.` : "";
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          `Only the user can change '${change.key}' in the project config, so nothing was saved.${link} Tell the user where it is.`,
+        );
+      }
     }
     // Every chat action whose caller metadata lands in a persisted
     // `user_message` re-derives the spawn-dispatch stamp here, before any

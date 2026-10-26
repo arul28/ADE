@@ -95,6 +95,9 @@ import {
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
+import { findSettingsEntries, settingsEntryLabelPath } from "../../desktop/src/shared/settingsManifest";
+import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
+import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import {
   registerSentryDiagnosticAttachment,
@@ -631,6 +634,7 @@ export type InvocationStep = {
 };
 
 export type FormatterId =
+  | "settings-find"
   | "status"
   | "doctor"
   | "brain-status"
@@ -1314,8 +1318,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
@@ -18410,8 +18413,57 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   };
 }
 
+type SettingsFindRow = {
+  path: string;
+  link: string;
+  /** Null when an agent may change it; else why only the person may. */
+  onlyUser: string | null;
+};
+
+/**
+ * `ade settings find <words>`: where a setting (or an ADE page) is, as a link
+ * the chat draws as a chip. Read from the manifest this binary ships with, so
+ * it needs no brain and costs one short line per hit.
+ */
+function findSettings(query: string): { query: string; results: SettingsFindRow[] } {
+  const rows: SettingsFindRow[] = findSettingsEntries(query, 3).map((entry) => {
+    const access = settingAgentAccess(entry.id);
+    return {
+      path: settingsEntryLabelPath(entry).join(" › "),
+      link: `ade://settings/${entry.id}`,
+      onlyUser: access.agent === "owner-only" ? access.explanation : null,
+    };
+  });
+  const words = new Set(query.toLowerCase().split(/[^a-z0-9-]+/).filter(Boolean));
+  for (const place of OPEN_PLACES) {
+    if (rows.length >= 4) break;
+    // A page is named outright ("pull requests", "connections"), not guessed
+    // from a word inside a longer question.
+    const names = [place.id, place.label.toLowerCase(), ...place.keywords];
+    if (names.some((name) => name.split(" ").every((part) => words.has(part)))) {
+      rows.push({ path: place.label, link: `ade://open/${place.id}`, onlyUser: null });
+    }
+  }
+  return { query, results: rows };
+}
+
+function formatSettingsFind(value: unknown): string {
+  const results = isRecord(value) && Array.isArray(value.results) ? value.results as SettingsFindRow[] : [];
+  if (results.length === 0) return "No setting matches. Try other words, or name the page (Providers, Notifications).";
+  const lines = results.map((row) => `${row.path}  ${row.link}${row.onlyUser ? `  [user only: ${row.onlyUser}]` : ""}`);
+  const userOnly = results.some((row) => row.onlyUser)
+    ? " [user only]: ADE refuses an agent's change, so do not look for another way; tell the user to change it there."
+    : "";
+  return `${lines.join("\n")}\nPut the link in your reply; ADE shows it as a chip.${userOnly}`;
+}
+
 function buildSettingsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "get";
+  if (sub === "find" || sub === "search" || sub === "where") {
+    const query = args.filter((arg) => !arg.startsWith("--")).join(" ").trim();
+    if (!query) throw new CliUsageError("ade settings find needs words, e.g. ade settings find providers");
+    return { kind: "static", value: findSettings(query), formatter: "settings-find" };
+  }
   if (sub === "pr-transcript-gists" || sub === "transcript-gists" || sub === "gist-transcripts") {
     const mode = (firstPositional(args) ?? "status").toLowerCase();
     if (mode === "status") {
@@ -34079,6 +34131,8 @@ function formatTextOutput(
   )
     return value.visual;
   switch (formatter) {
+    case "settings-find":
+      return formatSettingsFind(value);
     case "status":
       return renderKeyValues("ADE status", [
         ["ok", isRecord(value) ? value.ok : null],

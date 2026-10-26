@@ -4510,11 +4510,13 @@ describe("adeRpcServer", () => {
       expect.arrayContaining([
         "account_settings.list",
         "account_settings.get",
-        "account_settings.set",
-        "account_settings.remove",
         "account_settings.sync",
       ]),
     );
+    // The user's preferences: an agent reads them but cannot change them.
+    const agentActionNames = settingsInventory.structuredContent.actions.map((entry: { name: string }) => entry.name);
+    expect(agentActionNames).not.toContain("account_settings.set");
+    expect(agentActionNames).not.toContain("account_settings.remove");
 
     const settingsList = await callTool(agentHandler, "run_ade_action", {
       domain: "account_settings",
@@ -4527,7 +4529,17 @@ describe("adeRpcServer", () => {
     ]);
     expect(accountSettingsStore.list).toHaveBeenCalledWith("all");
 
-    const settingsSet = await callTool(agentHandler, "run_ade_action", {
+    const agentSettingsSet = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
+    });
+    expect(agentSettingsSet?.isError).toBe(true);
+    expect(accountSettingsStore.set).not.toHaveBeenCalled();
+
+    const userHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "user-1", role: "cto" });
+    const settingsSet = await callTool(userHandler, "run_ade_action", {
       domain: "account_settings",
       action: "set",
       argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
