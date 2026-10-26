@@ -1,4 +1,19 @@
 import { AdeError } from "./errors.js";
+export type AccountUsage = {
+  state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error";
+  readAt: string | null;
+  note: string | null;
+  windows: Array<{
+    type: string;
+    label: string;
+    percentLeft: number;
+    resetsAt: string | null;
+    unlimited?: true;
+    countLeft?: number;
+    countTotal?: number;
+  }>;
+};
+
 export type AccountInfo = {
   id: string;
   provider: string;
@@ -7,9 +22,20 @@ export type AccountInfo = {
   plan?: string;
   signedIn: boolean;
   isDefault: boolean;
-  usage?: unknown;
-  [key: string]: unknown;
+  loginBroken?: boolean;
+  accentColor?: string;
+  createdAt?: string;
+  usage?: AccountUsage;
 };
+
+const ACCOUNT_USAGE_STATES: ReadonlySet<AccountUsage["state"]> = new Set([
+  "ok",
+  "stale",
+  "expired",
+  "signed_out",
+  "no_reading",
+  "error",
+]);
 
 export type ApiCredentialInfo = {
   provider: string;
@@ -102,16 +128,62 @@ function accountInfo(value: unknown): AccountInfo {
   if (typeof row.id !== "string" || typeof row.provider !== "string") {
     throw new AdeError("protocol_error", "The ADE runtime returned an invalid provider account.");
   }
+  const email = typeof account.email === "string" ? account.email : row.email;
+  const plan = typeof account.plan === "string" ? account.plan : row.plan;
+  const usage = accountUsage(row.usage);
   return {
-    ...row,
     id: row.id,
     provider: row.provider,
     label: typeof row.label === "string" ? row.label : row.id,
-    ...(typeof account.email === "string" ? { email: account.email } : {}),
-    ...(typeof account.plan === "string" ? { plan: account.plan } : {}),
+    ...(typeof email === "string" ? { email } : {}),
+    ...(typeof plan === "string" ? { plan } : {}),
     signedIn: row.signedIn === true,
     isDefault: row.isDefault === true,
-    ...(row.usage !== undefined ? { usage: row.usage } : {}),
+    ...(typeof row.loginBroken === "boolean" ? { loginBroken: row.loginBroken } : {}),
+    ...(typeof row.accentColor === "string" ? { accentColor: row.accentColor } : {}),
+    ...(typeof row.createdAt === "string" ? { createdAt: row.createdAt } : {}),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function accountUsage(value: unknown): AccountUsage | undefined {
+  const row = record(value);
+  if (
+    !ACCOUNT_USAGE_STATES.has(row.state as AccountUsage["state"])
+    || (row.readAt !== null && typeof row.readAt !== "string")
+    || (row.note !== null && typeof row.note !== "string")
+    || !Array.isArray(row.windows)
+  ) return undefined;
+
+  const windows: AccountUsage["windows"] = [];
+  for (const value of row.windows) {
+    const window = record(value);
+    if (
+      typeof window.type !== "string"
+      || typeof window.label !== "string"
+      || typeof window.percentLeft !== "number"
+      || !Number.isFinite(window.percentLeft)
+      || (window.resetsAt !== null && typeof window.resetsAt !== "string")
+      || (window.unlimited !== undefined && window.unlimited !== true)
+      || (window.countLeft !== undefined && (typeof window.countLeft !== "number" || !Number.isFinite(window.countLeft)))
+      || (window.countTotal !== undefined && (typeof window.countTotal !== "number" || !Number.isFinite(window.countTotal)))
+    ) return undefined;
+    windows.push({
+      type: window.type,
+      label: window.label,
+      percentLeft: window.percentLeft,
+      resetsAt: window.resetsAt as string | null,
+      ...(window.unlimited === true ? { unlimited: true } : {}),
+      ...(typeof window.countLeft === "number" ? { countLeft: window.countLeft } : {}),
+      ...(typeof window.countTotal === "number" ? { countTotal: window.countTotal } : {}),
+    });
+  }
+
+  return {
+    state: row.state as AccountUsage["state"],
+    readAt: row.readAt as string | null,
+    note: row.note as string | null,
+    windows,
   };
 }
 

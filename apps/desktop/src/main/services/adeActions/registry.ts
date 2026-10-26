@@ -3978,6 +3978,38 @@ export function buildProviderInstancesDomainService(
   // sink; every machine still has at least its own default account.
   const store = getMachineProviderInstanceStore();
   const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
+  const withAccountUsage = (instances: ReturnType<typeof store.list>) => {
+    const usage = runtime.usageTrackingService;
+    if (!usage) return instances;
+
+    const report = buildUsageLimitsReport(usage.getUsageSnapshot(), { nowMs: Date.now() });
+    const byInstanceId = new Map<string, (typeof report.accounts)[number]>();
+    for (const account of report.accounts) {
+      if (account.instanceId) byInstanceId.set(account.instanceId, account);
+    }
+
+    return instances.map((instance) => {
+      const account = byInstanceId.get(instance.id);
+      if (!account) return instance;
+      return {
+        ...instance,
+        usage: {
+          state: account.state,
+          readAt: account.readAt,
+          note: account.note,
+          windows: account.windows.map((window) => ({
+            type: window.type,
+            label: window.label,
+            percentLeft: window.percentLeft,
+            resetsAt: window.resetsAt,
+            ...(window.unlimited === true ? { unlimited: true as const } : {}),
+            ...(typeof window.countLeft === "number" ? { countLeft: window.countLeft } : {}),
+            ...(typeof window.countTotal === "number" ? { countTotal: window.countTotal } : {}),
+          })),
+        },
+      };
+    });
+  };
   // The registry file caches each account's email and plan from its last
   // refresh. A brain that has never refreshed would list every account as
   // "not signed in" until something else asked, which is what the Accounts
@@ -3994,7 +4026,7 @@ export function buildProviderInstancesDomainService(
           // list below still returns them, marked not signed in.
         });
       }
-      return { instances: store.list(provider) };
+      return { instances: withAccountUsage(store.list(provider)) };
     },
     create(args: unknown) {
       const input = isRecord(args) ? args : {};
@@ -4094,7 +4126,11 @@ export function buildProviderInstancesDomainService(
     async refresh(args: unknown) {
       const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
       const instanceId = isRecord(args) && typeof args.instanceId === "string" ? args.instanceId : undefined;
-      return { instances: await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService) };
+      return {
+        instances: withAccountUsage(
+          await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService),
+        ),
+      };
     },
   } as OpaqueService;
 }

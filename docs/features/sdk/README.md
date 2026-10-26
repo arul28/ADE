@@ -173,7 +173,7 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `personalChats.call` | Allowlisted actions: create, send, steer, interrupt, models, … |
 | `personalChats.subscribeEvents` / `unsubscribeEvents` | Push `runtime/event` notifications (`scope: "personal"`). Advertised as `capabilities.personalChats.pushEvents`. |
 | `personalChats.streamEvents` | Cursor drain. Fallback when the runtime omits `pushEvents`. |
-| `providerAccounts.call` | Machine-local account CRUD and login flow; uses the provider-instance store and login runner. |
+| `providerAccounts.call` | Machine-local account CRUD and login flow; uses the provider-instance store and login runner. `list` and `refresh` include per-account quota usage when the runtime has a matching usage report. |
 | `credentials.call` | Machine-local multi-key CRUD and verification; returns summaries, never key values. |
 | `presets.call` | Account-scoped harness preset CRUD through the account settings store. |
 | `runtime/info` | Capabilities, including personal actions, provider capabilities, accounts, credentials and presets. |
@@ -232,6 +232,11 @@ with `unsupported` and a named action instead of being sent optimistically.
 - `accounts`, `credentials`, and `presets` use the runtime's existing stores;
   the SDK strips secret-valued fields from summaries. `resolveSecret` pushes a
   host-vault value for a live session without writing it to the thread record.
+- `AccountInfo` is an exact public summary (`id`, `provider`, `label`, sign-in
+  state, optional identity and display fields, and optional `AccountUsage`).
+  It omits runtime-only fields such as provider config paths. Usage includes
+  the account state, reading time, note, and remaining quota windows; it is
+  absent when no matching account usage row is available.
 - Thread create options persist provider permission mode, effort, fast mode,
   account, credential and preset ids. A resume ignores conflicting options
   with the same warning behavior as the older host fields.

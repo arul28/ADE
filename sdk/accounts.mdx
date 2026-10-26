@@ -45,6 +45,36 @@ to the refreshed account or rejects when sign-in fails or is cancelled. Always
 cancel a login the user abandons. The provider account API also has `remove`,
 `rename`, `setDefault`, `signOut`, and `refresh`.
 
+`AccountInfo` contains only the public account summary: `id`, `provider`,
+`label`, `signedIn`, `isDefault`, and optional `email`, `plan`, `loginBroken`,
+`accentColor`, `createdAt`, and `usage`. Runtime-only fields such as an
+absolute provider config path are removed before the result reaches the host.
+`list()` and `refresh()` include `usage` when the runtime has a matching quota
+row for that account:
+
+```ts
+{
+  state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error",
+  readAt: string | null,
+  note: string | null,
+  windows: Array<{
+    type: string;
+    label: string;
+    percentLeft: number;
+    resetsAt: string | null;
+    unlimited?: true;
+    countLeft?: number;
+    countTotal?: number;
+  }>;
+}
+```
+
+Usage can be absent when the runtime has no usage tracker or the latest report
+has no row for that account yet. `readAt` is the quota reading time; `note`
+explains a stale, signed-out, failed, or not-yet-read state. Only accounts with
+an `instanceId` in the usage report receive per-account usage; one-login
+providers do not have one.
+
 `client.providers.capabilities(provider)` returns the runtime's choices for
 permission modes, reasoning effort, fast mode, accounts, sign-in, API keys,
 presets and MCP ([`ProviderCapabilities`](/sdk/reference#providercapabilities)). It throws `unsupported` if the runtime does not advertise
