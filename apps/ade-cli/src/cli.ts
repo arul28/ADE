@@ -3335,7 +3335,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
              keyboard and it is NOT the user's screen. No lease is needed.
     shared   The user's main desktop, only after the user says yes in your
              chat. Actions take over the window they are using.
-  The verbs are the same on both hosts.
+  On Linux it is Linux Desktop, a private virtual display (Xvfb) per lane.
+  The verbs are the same on every host.
 
   Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` and
   \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
