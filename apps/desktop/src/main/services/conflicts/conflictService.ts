@@ -1376,9 +1376,43 @@ export function createConflictService({
     return res.stdout.trim().length > 0;
   };
 
-  const predictLaneVsBase = async (lane: LaneSummary): Promise<ConflictPrediction> => {
+  /**
+   * Whether the stored prediction for this pair already compared these two
+   * commits. A prediction reads only the commits (merge-base, `merge-tree`,
+   * the touched files), so the same pair of SHAs gives the same answer, and
+   * recomputing it cost about four git processes and a synced row rewrite per
+   * pair on every save and every two-minute sweep. A reused row has its time
+   * refreshed (at most every half stale window) so it is not shown as stale.
+   * A failed (`unknown`) prediction is always retried.
+   */
+  const reuseCurrentPrediction = (laneAId: string, laneBId: string | null, laneASha: string, laneBSha: string): boolean => {
+    const row = db.get<Pick<ConflictPredictionRow, "id" | "status" | "lane_a_sha" | "lane_b_sha" | "predicted_at">>(
+      `
+        select id, status, lane_a_sha, lane_b_sha, predicted_at
+        from conflict_predictions
+        where project_id = ?
+          and lane_a_id = ?
+          and ${laneBId == null ? "lane_b_id is null" : "lane_b_id = ?"}
+        order by predicted_at desc
+        limit 1
+      `,
+      laneBId == null ? [projectId, laneAId] : [projectId, laneAId, laneBId],
+    );
+    if (!row || row.status === "unknown" || row.lane_a_sha !== laneASha || row.lane_b_sha !== laneBSha) return false;
+    const ageMs = Date.now() - Date.parse(row.predicted_at);
+    if (!(ageMs < STALE_MS / 2)) {
+      db.run(
+        "update conflict_predictions set predicted_at = ?, expires_at = ? where id = ?",
+        [new Date().toISOString(), toIsoPlusMinutes(30), row.id],
+      );
+    }
+    return true;
+  };
+
+  const predictLaneVsBase = async (lane: LaneSummary): Promise<void> => {
     const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
     const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+    if (reuseCurrentPrediction(lane.id, null, laneHead, baseHead)) return;
     const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
     const merge = await runGitMergeTree({
       cwd: projectRoot,
@@ -1401,7 +1435,7 @@ export function createConflictService({
     const status: PredictionStatus =
       conflicts.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "unknown";
 
-    return upsertPrediction({
+    upsertPrediction({
       laneAId: lane.id,
       laneBId: null,
       status,
@@ -1412,9 +1446,14 @@ export function createConflictService({
     });
   };
 
-  const predictPairwise = async (laneA: LaneSummary, laneB: LaneSummary): Promise<ConflictPrediction> => {
+  const predictPairwise = async (laneA: LaneSummary, laneB: LaneSummary): Promise<void> => {
     const laneAHead = await readHeadSha(laneA.worktreePath, "HEAD");
     const laneBHead = await readHeadSha(laneB.worktreePath, "HEAD");
+    const [leftLane, rightLane, leftSha, rightSha] =
+      laneA.id < laneB.id
+        ? [laneA, laneB, laneAHead, laneBHead]
+        : [laneB, laneA, laneBHead, laneAHead];
+    if (reuseCurrentPrediction(leftLane.id, rightLane.id, leftSha, rightSha)) return;
     const mergeBase = await readMergeBase(projectRoot, laneAHead, laneBHead);
     const merge = await runGitMergeTree({
       cwd: projectRoot,
@@ -1437,12 +1476,7 @@ export function createConflictService({
     const status: PredictionStatus =
       conflicts.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "unknown";
 
-    const [leftLane, rightLane, leftSha, rightSha] =
-      laneA.id < laneB.id
-        ? [laneA, laneB, laneAHead, laneBHead]
-        : [laneB, laneA, laneBHead, laneAHead];
-
-    return upsertPrediction({
+    upsertPrediction({
       laneAId: leftLane.id,
       laneBId: rightLane.id,
       status,

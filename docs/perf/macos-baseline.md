@@ -403,6 +403,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `route-sweep.mjs <runId> <route>,... [idleSecs]` | Per tab: long tasks after switching, IPC calls and time (perf run only), then idle task time, style recalcs, heap, page elements and running animations |
 | `process-cpu.sh <secs> <runtime-socket>` | CPU % and RSS for the main, GPU, renderer and brain processes |
 | `spawn-trace.cjs` (load with `NODE_OPTIONS="--require <abs path>"`) and `spawn-report.mjs <dir> <fromMs> <toMs>` | Every child process the app and its brain start, with the call site that started it, grouped over a time window. For the Idle background-work rows |
+| `loop-delay-trace.cjs` (load like `spawn-trace.cjs`) | Each process's event-loop delay (p50, p99, max at 10 ms resolution) and CPU time, one line per 5 s window in `$ADE_SPAWN_TRACE_DIR/loopdelay-<pid>.log`. For the brain loop-delay rows |
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
@@ -421,7 +422,10 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
-`search-fanout`, `chat-transcript`, `chat-backfill`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+`search-fanout`, `chat-transcript`, `chat-backfill`, `spawn`, `conflict-sweep`
+(the conflict predictor's sweep over scratch lane worktrees: git processes,
+wall time and synced row changes), `db-reads <ade.db>` (the heaviest reads
+on a copy of a project database), `tree-watcher` (plus `tree-watcher-parity.mts`, a
 comparison and not a timing), `codex-app-server` (macOS: Codex app-server
 memory and thread start, one process per chat vs one shared). They read temp
 copies of state and never write to `~/.ade`.
@@ -1360,3 +1364,81 @@ software compositing, which draws the same pixels for about a quarter of the
 CPU at the same delivered frame rate (25 fps), and WebGL still works. Over the ADE account relay from a Mac, the
 desktop app pinned to the box decoded 38 H.264 frames in a 9 s scroll window
 at ~0.8 Mb/s.
+
+## Mac Studio (M4 Max): brain, git and database (2026-10-26)
+
+Lane `perf-p4-brain-git`. Before is `e2f42f44c`; baseline is this branch.
+Not the baseline machine: a Mac Studio with only Apple's git (`/usr/bin/git`,
+Git 2.54.0 Apple Git-157), load average 17-30 from other agents throughout,
+so every pair was run interleaved (before, after, before, after) and each
+cell is the range over the runs. Service benches run from `apps/ade-cli`
+with `npx tsx ../../scripts/perf/service/<name>`; the repository rows use a
+clone of this repository (7,800 files).
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| One git process through `runGit` (`rev-parse HEAD`, median of 200), macOS with only Apple's git | `spawn.bench.mts` (runGit row; `ADE_GIT_EXECUTABLE=/usr/bin/git` for before) | 9.5-11.7 ms | 4.2-6.0 ms | 8 ms |
+| Lane status read on a just-created lane (`status --porcelain=v2 --branch`, each of 5 reads) | `runGit` after `worktree add` on the clone | 1,202-1,288 ms | 26-40 ms | 100 ms |
+| Conflict sweep (`runPrediction({})`, 8 lanes) with no commit since the last sweep: git processes / wall / synced row changes | `conflict-sweep.bench.mts 8` | 169 / 917-1,006 ms / 72 | 25 / 40-42 ms / 0 | 40 / 150 ms / 0 |
+| Same, after one lane commits | same | 169 / 919 ms / 72 | 57 / 251 ms / 16 | 80 / 500 ms / 20 |
+| Turn-end change capture on a lane with 300 edited and 3,000 new files (median of 5) | `collectTurnDiffSummary`, one-off loop on the clone | 211-228 ms, 4 git processes | 129-133 ms, 3 | 200 ms |
+| Terminal snapshot, one busy 160×48 terminal with 2,000 colored lines: serialize + JSON / file write (every 5 s while output flows) | one-off loop over `@xterm/headless` + `addon-serialize` | 9.5 ms (max 18) / 0.3 ms | unchanged | 30 ms |
+
+A dev brain end to end: an isolated brain (own `ADE_HOME` and socket,
+`--no-sync`, `spawn-trace.cjs` and `loop-delay-trace.cjs` loaded) on a
+scratch clone of this repository with 6 new lanes and one shell printing
+`date; ls -la` every 0.2 s, while a CLI asks for the lane list every 3 s for
+3 minutes (an open Lanes tab's pattern). Two interleaved runs per side, load
+average 13-27; the brain's database versions are read from the scratch
+project's cr-sqlite clock tables.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Child processes the brain started per lane-list request | 22.2 (both runs) | 14.0-14.1 | 18 |
+| Same, per minute (the after runs answered 29% more requests in the window) | 255-259 | 210 | 260 |
+| Git processes per lane status refresh | 7 | 4 | 5 |
+| Project-icon worker processes (a node and a CLI process each) per minute | 23-24 | 0 | 2 |
+| `ade lanes list` from a CLI, median | 1,577-1,592 ms | 767-850 ms | 1,200 ms |
+| Synced database versions per second (one busy shell) | 1.85-1.86 | 0.94-0.96 | 1.2 |
+| Brain event-loop delay, p99 (median 5 s window / worst window) | 12.9-13.7 / 15.6-16.2 ms | 13.1-13.4 / 18-39.5 ms | 50 ms / 100 ms |
+| Brain event-loop delay, max | 92-109 ms | 79-107 ms | 250 ms |
+| Brain CPU over the window | 3.7-3.9% | 4.0-4.3% (29% more requests) | 10% (Processes table) |
+
+The icon workers: every `projects.list` (each CLI call, each desktop and
+phone connect) resolved up to 24 project icons, each in a new node process
+loading the whole CLI bundle. On this machine one took 775 ms, past its
+750 ms budget, so it was killed every time: no icon was ever shown and every
+list paid for another worker. The worker now finishes (up to 15 s) after the
+caller stops waiting, and the brain keeps its answer while the same signature
+the in-process resolver trusts still holds. The database versions were the
+busy shell's row: every 0.9 s output tick wrote `last_output_at` and then the
+preview with `last_output_at` again, two versions sent to every synced
+device; a tick that writes a preview now writes once.
+
+The racy-index row is git distrusting every file of a checkout written in the
+same second as its index. ADE's reads never write the index back
+(`GIT_OPTIONAL_LOCKS=0`), so before, every status and diff on a new lane
+re-read all its files until the first `git add`. ADE now refreshes the index
+once, just past that second (`refreshNewWorktreeIndexSoon`).
+
+Project database reads, `db-reads.bench.mts` (new) on a copy of this
+repository's own `ade.db` (74 MB, 640 PR snapshots holding 30 MB), median of
+8 after a first run:
+
+| Read | Default pragmas | 64 MB page cache + 256 MB mmap | mmap only | 16 MB cache |
+|---|---:|---:|---:|---:|
+| Usage stats, all time (Stats page) | 28.6-49.8 ms | 29.7-30.7 ms | 27.1-27.6 ms | 28.5-29.8 ms |
+| Every PR snapshot (the PRs tab reads a bounded set) | 65-83 ms | 28-31 ms | 66-68 ms | 66-69 ms |
+| History, newest 500 operations | 0.5 ms | 0.5 ms | 0.5 ms | 0.5 ms |
+| Conflict matrix rows | 0.3-0.4 ms | 0.3 ms | 0.3 ms | 0.3-0.4 ms |
+| A phone's first sync export, 5,000 changes | 124-147 ms | 120-130 ms | 122-123 ms | 113-118 ms |
+| `openKvDb` on the copy (migrations included) | 417 ms | - | - | - |
+
+No pragma change shipped: only a cache big enough to hold the whole PR table
+helped, on a read no surface makes, and a page cache is per connection, so it
+would be paid once per open project in a brain that opens dozens. Moving reads
+to a read-only worker connection (measured with a one-off probe on the same
+copy) took the main-thread block of every-PR-snapshot from 75 ms (459 ms cold)
+to 1-2 ms and of 7,800 history rows from 16-69 ms to 1-3 ms, but the longest
+real read, the sync export, needs cr-sqlite's virtual table, which a plain
+read-only connection does not have.

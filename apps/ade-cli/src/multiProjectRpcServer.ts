@@ -773,13 +773,13 @@ function isResolvedProjectIcon(value: unknown): value is ResolvedProjectIcon {
 
 // Icon discovery includes synchronous directory scans and a native rasterizer.
 // Run it outside the RPC process so the connect-critical event loop remains
-// responsive and the parent can enforce a real wall-clock deadline by killing
-// a worker that outlives its remaining catalog budget.
-function resolveRemoteProjectIconInWorker(
+// responsive; the caller's deadline is enforced by `resolveIconBeforeDeadline`,
+// and a worker that hangs is killed at `timeoutMs`. `null` when the worker
+// failed or ran out of time, which is not an answer worth keeping.
+function runProjectIconWorker(
   rootPath: string,
   timeoutMs: number,
-): Promise<ResolvedProjectIcon> {
-  if (timeoutMs <= 0) return Promise.resolve(EMPTY_PROJECT_ICON);
+): Promise<ResolvedProjectIcon | null> {
   const invocation = projectIconWorkerInvocation(rootPath);
   return new Promise((resolve) => {
     execFile(
@@ -794,18 +794,101 @@ function resolveRemoteProjectIconInWorker(
       },
       (error, stdout) => {
         if (error) {
-          resolve(EMPTY_PROJECT_ICON);
+          resolve(null);
           return;
         }
         try {
           const icon = JSON.parse(stdout.trim()) as unknown;
-          resolve(isResolvedProjectIcon(icon) ? icon : EMPTY_PROJECT_ICON);
+          resolve(isResolvedProjectIcon(icon) ? icon : null);
         } catch {
-          resolve(EMPTY_PROJECT_ICON);
+          resolve(null);
         }
       },
     );
   });
+}
+
+/**
+ * The worker's answers, kept in this process. Every `projects.list` (each CLI
+ * call, each desktop and phone connect) resolved up to 24 icons, and each was
+ * a new node process loading the whole CLI bundle, whose own result cache died
+ * with it: measured, a dev brain answering a lane list every 3 s started 24
+ * such processes a minute. An answer is reused while the same signature the
+ * in-process resolver trusts still holds (the folders it scans, the project's
+ * `.ade/local.yaml` icon setting, the icon file itself), for at most the same
+ * five minutes. The stats are async: a project on a dead network mount must
+ * not stop the event loop.
+ */
+const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
+/**
+ * How long a worker may run. The list's caller stops waiting at its own
+ * budget (750 ms) and shows no icon, as before, but the worker finishes and
+ * its answer serves the next list. Killed at the caller's budget, a worker
+ * whose cold start alone took longer (775 ms on a loaded Mac, longer on
+ * Windows) never answered, so the icon never came and every list paid for
+ * another worker.
+ */
+const PROJECT_ICON_WORKER_TIMEOUT_MS = 15_000;
+const projectIconAnswers = new Map<string, { signature: string; icon: ResolvedProjectIcon; expiresAtMs: number }>();
+const projectIconResolves = new Map<string, Promise<ResolvedProjectIcon | null>>();
+
+function statStamp(entry: string): Promise<string> {
+  return fs.promises.stat(entry).then((stat) => `${stat.mtimeMs}:${stat.size}`, () => "-");
+}
+
+async function projectIconSignature(rootPath: string, sourcePath: string | null): Promise<string> {
+  const watched = [
+    rootPath,
+    path.join(rootPath, "apps"),
+    path.join(rootPath, "packages"),
+    path.join(rootPath, ".ade", "local.yaml"),
+    ...(sourcePath ? [sourcePath] : []),
+  ];
+  return (await Promise.all(watched.map(statStamp))).join("|");
+}
+
+/**
+ * Drop a kept answer and stop sharing a resolve that started before the
+ * change, so a just-set icon is read afresh. A resolve still running keeps
+ * the signature from before the change, so its answer is never trusted later.
+ */
+function forgetProjectIconAnswer(rootPath: string): void {
+  projectIconAnswers.delete(rootPath);
+  projectIconResolves.delete(rootPath);
+}
+
+async function resolveRemoteProjectIconInWorker(
+  rootPath: string,
+  timeoutMs: number,
+): Promise<ResolvedProjectIcon> {
+  if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
+  const kept = projectIconAnswers.get(rootPath);
+  if (kept && kept.expiresAtMs > Date.now()
+    && kept.signature === await projectIconSignature(rootPath, kept.icon.sourcePath)) {
+    return kept.icon;
+  }
+  // Two lists at once (a desktop and a phone connecting) share one worker.
+  let resolving = projectIconResolves.get(rootPath);
+  if (!resolving) {
+    resolving = (async () => {
+      // Taken before the worker reads, so a change while it runs is not hidden.
+      const folders = await projectIconSignature(rootPath, null);
+      const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
+      if (!icon) return null;
+      projectIconAnswers.set(rootPath, {
+        signature: icon.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders,
+        icon,
+        expiresAtMs: Date.now() + PROJECT_ICON_ANSWER_TTL_MS,
+      });
+      return icon;
+    })();
+    const current = resolving;
+    projectIconResolves.set(rootPath, current);
+    void current.finally(() => {
+      if (projectIconResolves.get(rootPath) === current) projectIconResolves.delete(rootPath);
+    });
+  }
+  return (await resolving) ?? EMPTY_PROJECT_ICON;
 }
 
 async function resolveIconBeforeDeadline(
@@ -3045,6 +3128,7 @@ export function createMultiProjectRpcRequestHandler(
       const upload = readProjectIconUpload(params);
       try {
         importProjectIconBytes(project.rootPath, upload.fileName, upload.data);
+        forgetProjectIconAnswer(project.rootPath);
       } catch (error) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
@@ -3064,6 +3148,7 @@ export function createMultiProjectRpcRequestHandler(
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
       assertProjectFolderPresent(project.rootPath);
       removeProjectIconOverride(project.rootPath);
+      forgetProjectIconAnswer(project.rootPath);
       return await resolveIconBeforeDeadline(
         resolveRemoteProjectIconInWorker,
         project.rootPath,

@@ -27,6 +27,11 @@ export type WorktreeStatusPorcelainV2 = {
   untracked: number;
   /** `null` for a detached HEAD or when git did not report the header. */
   headBranchRef: string | null;
+  /**
+   * Commits on HEAD's upstream that HEAD lacks (`# branch.ab`'s `-N`); `null`
+   * with no upstream, or one whose ref is gone (git then omits `branch.ab`).
+   */
+  upstreamBehind: number | null;
 };
 
 /**
@@ -45,6 +50,7 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
   let unstaged = 0;
   let untracked = 0;
   let headBranchRef: string | null = null;
+  let upstreamBehind: number | null = null;
   const nulDelimited = stdout.includes("\0");
   const records = stdout.split(nulDelimited ? "\0" : "\n");
   for (let index = 0; index < records.length; index += 1) {
@@ -52,6 +58,11 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
     const record = nulDelimited ? rawRecord : rawRecord.replace(/\r$/, "");
     if (!record) continue;
     if (record.startsWith("#")) {
+      const aheadBehind = /^# branch\.ab \+\d+ -(\d+)$/.exec(record);
+      if (aheadBehind) {
+        upstreamBehind = Number(aheadBehind[1]);
+        continue;
+      }
       const match = /^# branch\.head (.*)$/.exec(record);
       if (!match) continue;
       const value = (match[1] ?? "").trim();
@@ -80,7 +91,7 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
     if (stagedCode !== " " && stagedCode !== "." && stagedCode !== "?") staged += 1;
     if (unstagedCode !== " " && unstagedCode !== "." && unstagedCode !== "?") unstaged += 1;
   }
-  return { dirty, changedFileCount, staged, unstaged, untracked, headBranchRef };
+  return { dirty, changedFileCount, staged, unstaged, untracked, headBranchRef, upstreamBehind };
 }
 
 /**

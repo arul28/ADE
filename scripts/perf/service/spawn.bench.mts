@@ -6,6 +6,9 @@
 //            <repoDir> (default: the current repository), `node -e 0`, and a `.cmd`
 //            shim (`npx --version`) launched the way the brain launches one
 //            (resolveCliSpawnInvocation, so cmd.exe on Windows)
+//   runGit   200 `git rev-parse HEAD` through ADE's own runGit and the git it
+//            resolves (on macOS, Apple's git behind the /usr/bin/git shim;
+//            ADE_GIT_EXECUTABLE=/usr/bin/git forces the shim for comparison)
 // Prints median and max per row. Read-only.
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -14,6 +17,7 @@ import {
   resolveExecutableFromKnownLocations,
 } from "../../../apps/desktop/src/main/services/ai/cliExecutableResolver";
 import { resolveCliSpawnInvocation } from "../../../apps/desktop/src/main/services/shared/processExecution";
+import { resolveGitExecutable, runGit } from "../../../apps/desktop/src/main/services/git/git";
 
 const repo = path.resolve(process.argv[2] ?? path.join(import.meta.dirname, "../../.."));
 const clis = ["claude", "codex", "copilot", "agent", "cursor-agent", "gemini", "opencode", "droid", "npx", "npm", "node", "git", "gh", "bun"];
@@ -48,5 +52,15 @@ bench("node -e 0", 5, process.execPath, ["-e", "0"]);
 if (resolved.npx) {
   const inv = resolveCliSpawnInvocation(resolved.npx, ["--version"]);
   bench(`.cmd shim: npx --version (${path.basename(inv.command)})`, 5, inv.command, inv.args, { verbatim: inv.windowsVerbatimArguments });
+}
+{
+  const executable = await resolveGitExecutable();
+  const ms: number[] = [];
+  for (let i = 0; i < 200; i++) {
+    const t = performance.now();
+    await runGit(["rev-parse", "HEAD"], { cwd: repo });
+    ms.push(performance.now() - t);
+  }
+  console.log(JSON.stringify({ row: "runGit rev-parse HEAD", executable, n: ms.length, medianMs: r1(med(ms)), maxMs: r1(Math.max(...ms)) }));
 }
 console.log(JSON.stringify({ repo }));

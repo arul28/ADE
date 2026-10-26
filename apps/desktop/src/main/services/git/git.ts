@@ -102,7 +102,7 @@ async function resolveGitExecutableUncached(): Promise<string> {
       const out = stdout.trim();
       const isIndependentMacGit = process.platform !== "darwin" || out !== "/usr/bin/git";
       if (out && fs.existsSync(out) && (isIndependentMacGit || !resolvedCandidate)) {
-        cachedGitExecutable = out;
+        cachedGitExecutable = isIndependentMacGit ? out : await resolveAppleGitBehindShim() ?? out;
         return cachedGitExecutable;
       }
     } catch {
@@ -110,13 +110,48 @@ async function resolveGitExecutableUncached(): Promise<string> {
     }
   }
   if (resolvedCandidate) {
-    cachedGitExecutable = resolvedCandidate;
+    cachedGitExecutable = process.platform === "darwin" && resolvedCandidate === "/usr/bin/git"
+      ? await resolveAppleGitBehindShim() ?? resolvedCandidate
+      : resolvedCandidate;
     return cachedGitExecutable;
   }
   // Fall back to bare "git" — spawn will surface the original ENOENT with a
   // clearer pre-check error message wrapped around it.
   cachedGitExecutable = process.platform === "win32" ? "git.exe" : "git";
   return cachedGitExecutable;
+}
+
+/**
+ * `/usr/bin/git` on macOS is Apple's xcrun shim: every run looks up the
+ * developer directory before it starts the real git, which doubled a
+ * `git rev-parse HEAD` here (12.5 ms through the shim, 6.2 ms direct). Ask
+ * xcrun once where that git is and spawn it directly. When xcrun cannot answer
+ * (no Command Line Tools, the Xcode license not accepted), keep the shim so
+ * its own message still explains what to install or accept.
+ */
+async function resolveAppleGitBehindShim(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/xcrun", ["--find", "git"], {
+      encoding: "utf8",
+      timeout: 3_000,
+    });
+    const found = stdout.trim();
+    if (!path.isAbsolute(found) || found === "/usr/bin/git" || !fs.existsSync(found)) return null;
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Forget a resolved git that has gone away (Xcode moved or deleted,
+ * `xcode-select` switched), so the next run resolves again instead of failing
+ * until restart.
+ */
+function forgetMissingGitExecutable(executable: string): void {
+  if (cachedGitExecutable === executable && path.isAbsolute(executable) && !fs.existsSync(executable)) {
+    cachedGitExecutable = null;
+  }
 }
 
 /**
@@ -503,6 +538,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
         return;
       }
       const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetMissingGitExecutable(executable);
       finish({
         exitCode: 1,
         stdout,
@@ -586,6 +622,28 @@ export function parseNameStatusRecords(stdout: string): Array<{ letter: string; 
     if (first) records.push({ letter, path: first, oldPath: null });
   }
   return records;
+}
+
+/**
+ * Refresh a just-created worktree's index once, in the background.
+ *
+ * `git worktree add` writes the files and then the index in the same second,
+ * so git cannot trust any entry's timestamp ("racily clean") and re-reads
+ * every file on each status and diff. ADE's reads never write the index back
+ * (`GIT_OPTIONAL_LOCKS=0`), so a new lane kept paying that until its first
+ * `git add`: measured on this repository (7,800 files), every
+ * `status --porcelain` on a new lane took 660 ms, 20-30 ms after the refresh.
+ * The refresh waits until just past the second the checkout ended, or its own
+ * index would be racy too. A failure (another git holds `index.lock`, the
+ * lane was removed meanwhile) changes nothing; the next index write fixes it.
+ */
+export function refreshNewWorktreeIndexSoon(worktreePath: string): void {
+  const msIntoSecond = Date.now() % 1_000;
+  const timer = setTimeout(() => {
+    if (!fs.existsSync(worktreePath)) return;
+    void runGit(["update-index", "-q", "--refresh"], { cwd: worktreePath, timeoutMs: 60_000 }).catch(() => undefined);
+  }, 1_000 - msIntoSecond + 50);
+  timer.unref?.();
 }
 
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {

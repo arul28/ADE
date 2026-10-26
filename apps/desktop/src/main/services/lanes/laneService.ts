@@ -15,8 +15,10 @@ import {
   GIT_TREE_WRITE_TIMEOUT_MS,
   GitTimeoutError,
   parseGitCheckoutProgressLine,
+  refreshNewWorktreeIndexSoon,
   runGit,
   runGitOrThrow,
+  runGitRepoCached,
   type GitCheckoutProgress,
 } from "../git/git";
 import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
@@ -1221,6 +1223,7 @@ async function computeLaneStatus(
         unstaged: 0,
         untracked: 0,
         headBranchRef: null,
+        upstreamBehind: null,
       };
   const dirty = parsedStatus.dirty;
   const headBranchRef = parsedStatus.headBranchRef;
@@ -1262,13 +1265,18 @@ async function computeLaneStatus(
 
   const trackedFileCount = await trackedFileCountPromise;
 
-  // Check how far behind the remote tracking branch we are
+  // How far behind the remote tracking branch we are. The status above
+  // already counted it (`# branch.ab`), so only a failed status asks git again.
   let remoteBehind = -1; // -1 = no upstream configured
-  const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
-    cwd: worktreePath,
-    timeoutMs: 5_000
-  });
-  if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+  const upstreamRes = dirtyRes?.exitCode === 0
+    ? null
+    : await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+      cwd: worktreePath,
+      timeoutMs: 5_000
+    });
+  if (!upstreamRes) {
+    remoteBehind = parsedStatus.upstreamBehind ?? -1;
+  } else if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
     const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
       cwd: worktreePath,
       timeoutMs: 5_000
@@ -1282,7 +1290,12 @@ async function computeLaneStatus(
   // Detect stuck rebase state
   let rebaseInProgress = false;
   try {
-    const gitDirRes = await runGit(["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: worktreePath, timeoutMs: 5_000 });
+    // A worktree's git dir never moves, so one answer serves every refresh.
+    const gitDirRes = await runGitRepoCached(
+      ["rev-parse", "--path-format=absolute", "--git-dir"],
+      { cwd: worktreePath, timeoutMs: 5_000 },
+      { key: `git-dir:${worktreePath}`, cacheClass: "stable" },
+    );
     if (gitDirRes.exitCode === 0) {
       const gitDir = gitDirRes.stdout.trim();
       const kind = detectConflictKind(gitDir);
@@ -4354,6 +4367,7 @@ export function createLaneService({
           });
         }, createSignal ? { signal: createSignal, message: LANE_CREATE_CANCEL_MESSAGE } : undefined);
         endLaneGitWriteStopWindow(createSignal);
+        refreshNewWorktreeIndexSoon(worktreePath);
       } catch (addError) {
         // A cancelled or stopped checkout leaves a half-written worktree
         // registered (and still locked "initializing" by the killed git) plus
@@ -5588,6 +5602,7 @@ export function createLaneService({
         const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
         try {
           await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
+          refreshNewWorktreeIndexSoon(targetPath);
         } catch (error) {
           // The folder was absent before `add`, so anything there now is this
           // failed attempt's. Clear it and its registration, or every later
@@ -6736,6 +6751,7 @@ export function createLaneService({
           gitWrite.end();
         }
         worktreeAdded = true;
+        refreshNewWorktreeIndexSoon(worktreePath);
 
         // Preserve a remote lane tree by recording the parent directly. This
         // import intentionally uses the given branch as-is and never rebases.
@@ -8913,6 +8929,7 @@ export function createLaneService({
             : ["worktree", "add", "-b", branchName, targetPath, `origin/${branchName}`];
           try {
             await runGitOrThrow(addArgs, { cwd: projectRoot, ...TREE_WRITE_GIT_LIMITS });
+            refreshNewWorktreeIndexSoon(targetPath);
           } catch (addError) {
             // The folder was absent before `add`. A stopped add leaves it half
             // written, and the next restore would take it as the lane's.

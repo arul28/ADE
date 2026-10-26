@@ -108,14 +108,18 @@ export function parseDirtyPorcelainZ(stdout: string): string[] {
  */
 export type WorkingTreeFingerprint = Map<string, string>;
 
-export async function captureWorkingTreeFingerprint(cwd: string): Promise<WorkingTreeFingerprint | null> {
+/** `git status --porcelain=v1 -z -uall`, or `null` when git could not answer. */
+async function readPorcelainStatusZ(cwd: string): Promise<string | null> {
   const status = await runGit(["status", "--porcelain=v1", "-z", "-uall"], {
     cwd,
     timeoutMs: GIT_TIMEOUT_MS,
   });
-  if (status.exitCode !== 0) return null;
+  return status.exitCode === 0 ? status.stdout : null;
+}
+
+async function fingerprintFromPorcelainZ(cwd: string, statusStdout: string): Promise<WorkingTreeFingerprint> {
   const fingerprint: WorkingTreeFingerprint = new Map();
-  for (const relativePath of parseDirtyPorcelainZ(status.stdout)) {
+  for (const relativePath of parseDirtyPorcelainZ(statusStdout)) {
     try {
       const stat = await fs.promises.stat(path.join(cwd, relativePath));
       fingerprint.set(relativePath, `${stat.size}:${stat.mtimeMs}`);
@@ -124,6 +128,11 @@ export async function captureWorkingTreeFingerprint(cwd: string): Promise<Workin
     }
   }
   return fingerprint;
+}
+
+export async function captureWorkingTreeFingerprint(cwd: string): Promise<WorkingTreeFingerprint | null> {
+  const statusStdout = await readPorcelainStatusZ(cwd);
+  return statusStdout == null ? null : await fingerprintFromPorcelainZ(cwd, statusStdout);
 }
 
 /** Paths whose fingerprint changed between two captures, plus paths new to the second. */
@@ -171,14 +180,9 @@ export function countAddedLines(contents: Buffer): number {
 }
 
 /** `only`: the paths worth reading; any other untracked file is skipped unread. */
-async function untrackedFiles(cwd: string, only?: ReadonlySet<string>): Promise<TurnDiffFile[]> {
-  const status = await runGit(["status", "--porcelain=v1", "-z", "-uall"], {
-    cwd,
-    timeoutMs: GIT_TIMEOUT_MS,
-  });
-  if (status.exitCode !== 0) return [];
+async function untrackedFiles(cwd: string, statusStdout: string, only?: ReadonlySet<string>): Promise<TurnDiffFile[]> {
   const files: TurnDiffFile[] = [];
-  for (const relativePath of parseUntrackedPorcelainZ(status.stdout)) {
+  for (const relativePath of parseUntrackedPorcelainZ(statusStdout)) {
     if (only && !only.has(relativePath)) continue;
     let additions = 0;
     try {
@@ -197,20 +201,6 @@ async function untrackedFiles(cwd: string, only?: ReadonlySet<string>): Promise<
     files.push({ path: relativePath, additions, deletions: 0, status: "A" });
   }
   return files;
-}
-
-/**
- * The paths that changed since `beforeTree`: `undefined` when the caller asked
- * for no scope, `null` when either capture failed.
- */
-async function touchedSince(
-  cwd: string,
-  beforeTree: WorkingTreeFingerprint | null | undefined,
-): Promise<Set<string> | null | undefined> {
-  if (beforeTree === undefined) return undefined;
-  const afterTree = await captureWorkingTreeFingerprint(cwd);
-  if (!beforeTree || !afterTree) return null;
-  return fingerprintChanges(beforeTree, afterTree);
 }
 
 /**
@@ -238,18 +228,18 @@ export async function collectTurnDiffSummary(args: {
   const uncommitted = beforeSha === afterSha;
   const range = uncommitted ? beforeSha : `${beforeSha}..${afterSha}`;
 
-  const numstat = await runGit(["diff", "--numstat", "--find-renames", "-z", range], {
-    cwd,
-    timeoutMs: GIT_TIMEOUT_MS,
-  });
+  // Independent reads, so they run at once. An uncommitted turn's one status
+  // serves both its fingerprint and its untracked files (two `-uall` walks of
+  // the tree before).
+  const [numstat, nameStatus, statusStdout] = await Promise.all([
+    runGit(["diff", "--numstat", "--find-renames", "-z", range], { cwd, timeoutMs: GIT_TIMEOUT_MS }),
+    runGit(["diff", "--name-status", "--find-renames", "-z", range], { cwd, timeoutMs: GIT_TIMEOUT_MS }),
+    uncommitted ? readPorcelainStatusZ(cwd) : Promise.resolve(null),
+  ]);
   if (numstat.exitCode !== 0) return null;
 
   const files = parseNumstatZ(numstat.stdout);
 
-  const nameStatus = await runGit(["diff", "--name-status", "--find-renames", "-z", range], {
-    cwd,
-    timeoutMs: GIT_TIMEOUT_MS,
-  });
   if (nameStatus.exitCode === 0) {
     const statuses = parseNameStatusZ(nameStatus.stdout);
     for (const file of files) {
@@ -264,12 +254,15 @@ export async function collectTurnDiffSummary(args: {
     // beats the whole tree's dirt presented as the turn's work. Scoped first,
     // so an untracked file the turn never touched is not read just to be
     // filtered out.
-    const touched = await touchedSince(cwd, beforeTree);
-    if (touched === null) return null;
+    let touched: Set<string> | undefined;
+    if (beforeTree !== undefined) {
+      if (!beforeTree || statusStdout == null) return null;
+      touched = fingerprintChanges(beforeTree, await fingerprintFromPorcelainZ(cwd, statusStdout));
+    }
     // A file git has never seen produces no diff record at all, so the turn
     // that created it would otherwise report zero changes.
     const seen = new Set(files.map((file) => file.path));
-    for (const file of await untrackedFiles(cwd, touched)) {
+    for (const file of statusStdout == null ? [] : await untrackedFiles(cwd, statusStdout, touched)) {
       if (seen.has(file.path)) continue;
       files.push(file);
     }

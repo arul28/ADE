@@ -5267,7 +5267,12 @@ export function createPtyService({
     // the derived preview line is blank or unchanged — so a tracked session
     // emitting steady but non-preview-changing output (spinners, repeated
     // status lines) is not wrongly flagged idle by the stale-session detector.
-    if (entry.tracked) {
+    // A new preview line writes the same timestamp with it, so such a tick is
+    // one synced row write, not two: one busy terminal was about two database
+    // versions a second, each sent to every synced device.
+    const candidate = (entry.latestPreviewLine ?? "").trim();
+    const previewWillWrite = Boolean(candidate) && candidate !== entry.lastPreviewWritten;
+    if (entry.tracked && !previewWillWrite) {
       sessionService.touchSessionActivity(
         entry.sessionId,
         new Date(now).toISOString(),
