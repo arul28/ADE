@@ -49531,6 +49531,14 @@ export function createAgentChatService(args: {
         throw new Error(claim.message);
       }
     }
+    // A spawned chat is part of its parent's work: it shows the parent's open PRs.
+    if (prService && normalizedParentSessionId) {
+      try {
+        prService.linkChatToParentPrs({ sessionId, parentSessionId: normalizedParentSessionId });
+      } catch (error) {
+        logger.warn("agent_chat.parent_pr_link_failed", { sessionId, error: getErrorMessage(error) });
+      }
+    }
     // Only a person's choice moves the machine's defaults. A launch the
     // person did not configure (the onboarding tour's first chat on a cheap
     // model) opts out.
@@ -74619,6 +74627,47 @@ export function createAgentChatService(args: {
       if (!id) return null;
       const lineage = managedSessions.get(id)?.session ?? readPersistedState(id);
       return lineage?.orchestrationParentSessionId?.trim() || null;
+    },
+    /**
+     * Every chat in this chat's spawn tree, other than itself: its parents up
+     * to the chat that started the tree, and every chat spawned under that one.
+     * A PR one of them opens belongs to all of them. Parents come from each
+     * chat's own lineage; children only from chats loaded on this machine.
+     */
+    getChatFamilySessionIds: (sessionId: string): string[] => {
+      const id = sessionId.trim();
+      if (!id) return [];
+      const family = new Set<string>([id]);
+      let root = id;
+      // No fixed depth: `family.has` ends a cycle, and a real tree ends at a
+      // chat with no parent.
+      for (;;) {
+        const lineage = managedSessions.get(root)?.session ?? readPersistedState(root);
+        const parentId = lineage?.orchestrationParentSessionId?.trim();
+        if (!parentId || family.has(parentId)) break;
+        family.add(parentId);
+        root = parentId;
+      }
+      const childrenByParent = new Map<string, string[]>();
+      for (const managed of managedSessions.values()) {
+        if (managed.deleted) continue;
+        const parentId = managed.session.orchestrationParentSessionId?.trim();
+        if (!parentId) continue;
+        childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), managed.session.id]);
+      }
+      // Walk down from every chat already known to be in the family, not just
+      // the root: the chat that was linked is seeded above, and its own children
+      // hang under it.
+      const queue = [...family];
+      while (queue.length > 0) {
+        for (const childId of childrenByParent.get(queue.shift()!) ?? []) {
+          if (family.has(childId)) continue;
+          family.add(childId);
+          queue.push(childId);
+        }
+      }
+      family.delete(id);
+      return [...family];
     },
     previewCrossMachineHandoff: (previewArgs: AgentChatPreviewCrossMachineHandoffArgs) =>
       requireCrossMachineHandoff().preview(previewArgs),
