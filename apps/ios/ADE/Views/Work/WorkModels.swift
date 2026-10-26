@@ -2263,6 +2263,12 @@ func workArtifactHostLacksRangeRead(_ error: Error) -> Bool {
   error.localizedDescription.contains("Unsupported file action")
 }
 
+/// The host refused a whole-file read because the file is over its cap
+/// (`readArtifact` in the host's `syncFileRequests.ts`); slices still work.
+func workArtifactHostRefusedWholeFileRead(_ error: Error) -> Bool {
+  error.localizedDescription.contains("too large to sync")
+}
+
 /// "34 MB" for the play placeholder.
 func workArtifactSizeLabel(_ sizeBytes: Int) -> String {
   ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)

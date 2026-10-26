@@ -926,26 +926,27 @@ export function createSessionService({
         queryParams
       );
     };
+    // The live-first page: every unsettled row (up to `limit`), then only the
+    // newest settled ones in the room left. A plain newest-first page let a
+    // pile of settled chats push an older chat that is still working off
+    // another machine's Work list.
+    const settledRoomFor = (settledLimit: number, unsettledCount: number): number => effectiveLimit === null
+      ? settledLimit
+      : Math.min(settledLimit, Math.max(0, effectiveLimit - unsettledCount));
     const fetchRows = (
       extraWhere: string[] = [],
       extraParams: (string | number | null)[] = [],
     ): SessionRow[] => {
       if (effectiveSettledLimit === null) return queryRows(extraWhere, extraParams, effectiveLimit);
-      // Live work first: every unsettled row (up to `limit`), then only the
-      // newest settled ones. A plain newest-first page let a pile of settled
-      // chats push an older chat that is still working off another machine's
-      // Work list.
       const unsettled = queryRows([...extraWhere, "s.settled_at is null"], extraParams, effectiveLimit);
-      const settledRoom = effectiveLimit === null
-        ? effectiveSettledLimit
-        : Math.min(effectiveSettledLimit, Math.max(0, effectiveLimit - unsettled.length));
+      const settledRoom = settledRoomFor(effectiveSettledLimit, unsettled.length);
       if (settledRoom === 0) return unsettled;
       const settled = queryRows([...extraWhere, "s.settled_at is not null"], extraParams, settledRoom);
       return [...unsettled, ...settled]
         .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
     };
 
-    // The tool-type reads merge several pages, so the page rules apply again
+    // The tool-type reads merge several pages, so the page rule applies again
     // to the merged, newest-first rows.
     const limitMergedRows = (rows: SessionRow[]): SessionRow[] => {
       if (effectiveSettledLimit === null) {
@@ -953,11 +954,10 @@ export function createSessionService({
       }
       const unsettled = rows.filter((row) => !row.settledAt);
       const keptUnsettled = effectiveLimit === null ? unsettled : unsettled.slice(0, effectiveLimit);
-      const settledRoom = effectiveLimit === null
-        ? effectiveSettledLimit
-        : Math.min(effectiveSettledLimit, Math.max(0, effectiveLimit - keptUnsettled.length));
-      const kept = new Set([...keptUnsettled, ...rows.filter((row) => row.settledAt).slice(0, settledRoom)]);
-      return rows.filter((row) => kept.has(row));
+      const settled = rows.filter((row) => row.settledAt)
+        .slice(0, settledRoomFor(effectiveSettledLimit, keptUnsettled.length));
+      const keptIds = new Set([...keptUnsettled, ...settled].map((row) => row.id));
+      return rows.filter((row) => keptIds.has(row.id));
     };
 
     if (normalizedToolTypes.length > 0) {

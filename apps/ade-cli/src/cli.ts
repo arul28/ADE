@@ -27685,9 +27685,7 @@ async function runServe(
       activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
         if (reportedMissingSyncProjectIds.has(record.projectId)) return;
         reportedMissingSyncProjectIds.add(record.projectId);
-        const message = fs.existsSync(record.rootPath)
-          ? `ADE brain is hosting sync without project "${record.displayName}": ADE's data for it is missing from ${path.join(record.rootPath, ".ade")}. Open it in the ADE app to restore it or start fresh.`
-          : `ADE brain is hosting sync without project "${record.displayName}": the project folder ${record.rootPath} isn't there. Plug its drive in or move it back; ADE has not created a replacement.`;
+        const message = `ADE brain is hosting sync without project "${record.displayName}". ${projectRegistry.projectDataMissingMessage(record, { commandHints: false })}`;
         process.stderr.write(`${message}\n`);
         headlessProjectLogger.warn("sync.host_project_missing", {
           projectId: record.projectId,

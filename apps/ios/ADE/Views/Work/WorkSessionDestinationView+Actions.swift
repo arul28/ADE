@@ -1029,7 +1029,7 @@ extension WorkSessionDestinationView {
       }
     } catch is CancellationError {
       return
-    } catch where !isVideo && error.localizedDescription.contains("too large to sync") {
+    } catch where workArtifactIsImage(artifact) && workArtifactHostRefusedWholeFileRead(error) {
       do {
         publish(.image(try await loadLargeProofImage(artifact, cacheKey: cacheKey, scope: scope)))
       } catch is CancellationError {
@@ -1076,7 +1076,7 @@ extension WorkSessionDestinationView {
       return "Preview isn't available on this device."
     }
     // Older hosts send only the message text for these.
-    if raw.contains("too large to sync") {
+    if workArtifactHostRefusedWholeFileRead(error) {
       return "This recording is too large for the machine's ADE version. Update ADE there to play it."
     }
     let nsError = error as NSError

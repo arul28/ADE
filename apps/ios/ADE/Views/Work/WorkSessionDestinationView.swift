@@ -513,6 +513,10 @@ struct WorkSessionDestinationView: View {
   @State var artifactContentLoadsInFlight = Set<String>()
   /// Ended and replaced when the chat goes away, which stops its downloads.
   @State var artifactLoadScope = WorkArtifactLoadScope()
+  /// Cited proof outside this chat's list, found on its host (citations only).
+  @State var citedProofArtifacts: [String: ComputerUseArtifactSummary] = [:]
+  /// Cited ids already asked about, so a row that reappears does not ask again.
+  @State var askedMissingProofIds: Set<String> = []
   @State var artifactRefreshInFlight = false
   @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
@@ -1819,6 +1823,10 @@ struct WorkSessionDestinationView: View {
         await refreshSessionRowFromLocalStore()
       }
       .task(id: artifactObservationKey) {
+        // The key is the phone's replica, which cannot describe a chat of
+        // another project or machine; that chat reads its proof on open and
+        // when a citation names proof its list lacks.
+        guard !isRemoteOnlyChat else { return }
         // Proof rows arrive through their own projection. Keep this separate
         // from work row refreshes so live chat deltas don't churn artifact
         // loading state.
@@ -2356,6 +2364,10 @@ struct WorkSessionDestinationView: View {
       onRefreshArtifacts: {
         await refreshArtifacts(force: true)
       },
+      citedProofArtifacts: citedProofArtifacts,
+      onResolveMissingProof: { artifactId in
+        await resolveMissingProof(artifactId)
+      },
       onCancelSteer: cancelSteer,
       onEditSteer: editSteer,
       onDispatchSteerInline: dispatchSteerInlineAction,
@@ -2721,6 +2733,23 @@ struct WorkSessionDestinationView: View {
     } else {
       await loadArtifactContent(artifact, intent)
     }
+  }
+
+  /// A citation names proof this chat's list does not hold. Asked once per id:
+  /// a chat of another project or machine asks its host by id (the phone's
+  /// replica cannot know), any other chat re-reads its list (throttled).
+  @MainActor
+  func resolveMissingProof(_ artifactId: String) async {
+    guard askedMissingProofIds.insert(artifactId).inserted else { return }
+    guard isRemoteOnlyChat, !personalChat else {
+      await refreshArtifacts(force: false)
+      return
+    }
+    guard let found = try? await syncService.fetchRemoteChatComputerUseArtifact(
+      sessionId: sessionId,
+      artifactId: artifactId
+    ) else { return }
+    citedProofArtifacts[artifactId] = found
   }
 
   @MainActor

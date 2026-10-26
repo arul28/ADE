@@ -11237,69 +11237,12 @@ final class SyncService: ObservableObject {
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
     database.fetchComputerUseArtifacts(ownerKind: ownerKind, ownerId: ownerId)
+      .filter { !workProofIsExcludedFromLists($0) }
   }
 
   /// A proof record by id from the replicated project database, whatever chat filed it.
   func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
     database.fetchComputerUseArtifact(id: artifactId)
-  }
-
-  /// The proof a chat of another project or another machine filed, asked of
-  /// the host that holds it. The phone's replica holds the focused machine's
-  /// active project only, so these chats used to list no proof at all and every
-  /// picture their answers cited failed. Nil when that host predates
-  /// `computerUse.listArtifacts`.
-  func fetchRemoteChatComputerUseArtifacts(sessionId: String) async throws -> [ComputerUseArtifactSummary]? {
-    let action = "computerUse.listArtifacts"
-    guard supportsChatRemoteAction(action, sessionId: sessionId) else { return nil }
-    let scope = chatCommandScope(for: sessionId)
-    let response = try await sendCommand(
-      action: action,
-      args: ["ownerKind": "chat_session", "ownerId": sessionId, "excludeMetadataKind": "scene_still"],
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath,
-      fallbackToActiveProjectScope: false
-    )
-    let rows = (response as? [[String: Any]]) ?? []
-    return rows.compactMap { computerUseArtifactSummary(fromHostView: $0, ownerId: sessionId) }
-      .sorted { $0.createdAt < $1.createdAt }
-  }
-
-  /// One `ComputerUseArtifactView` as the host's broker returns it, in the
-  /// shape the replica's rows take.
-  private func computerUseArtifactSummary(fromHostView row: [String: Any], ownerId: String) -> ComputerUseArtifactSummary? {
-    guard let id = row["id"] as? String, !id.isEmpty,
-          let uri = row["uri"] as? String
-    else { return nil }
-    let links = (row["links"] as? [[String: Any]]) ?? []
-    let link = links.first { ($0["ownerKind"] as? String) == "chat_session" && ($0["ownerId"] as? String) == ownerId }
-    var metadataJson: String?
-    if let metadata = row["metadata"], JSONSerialization.isValidJSONObject(metadata),
-       let data = try? JSONSerialization.data(withJSONObject: metadata) {
-      metadataJson = String(data: data, encoding: .utf8)
-    }
-    return ComputerUseArtifactSummary(
-      id: id,
-      artifactKind: row["kind"] as? String ?? "screenshot",
-      backendStyle: row["backendStyle"] as? String ?? "external_cli",
-      backendName: row["backendName"] as? String ?? "",
-      sourceToolName: row["sourceToolName"] as? String,
-      originalType: row["originalType"] as? String,
-      title: row["title"] as? String ?? "",
-      description: row["description"] as? String,
-      uri: uri,
-      storageKind: row["storageKind"] as? String ?? "file",
-      mimeType: row["mimeType"] as? String,
-      metadataJson: metadataJson,
-      laneId: row["laneId"] as? String,
-      createdAt: row["createdAt"] as? String ?? "",
-      ownerKind: "chat_session",
-      ownerId: ownerId,
-      relation: link?["relation"] as? String ?? "attached_to",
-      reviewState: row["reviewState"] as? String,
-      workflowState: row["workflowState"] as? String,
-      reviewNote: row["reviewNote"] as? String
-    )
   }
 
   func renameSession(sessionId: String, title: String) async throws {

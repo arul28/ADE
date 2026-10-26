@@ -250,7 +250,7 @@ export function ChatProofArtifactCard({
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <ProofPreviewFailureNotice failureText={failureText} onRetry={externalUrl ? null : retry} />
+          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} />
         ) : preview && image ? (
           <button
             type="button"
@@ -421,7 +421,7 @@ function DrawerProofTile({
         {hasPreviewProblem ? (
           // Missing or unpreviewable items shrink to a short strip instead of
           // wasting the drawer rail on an empty thumbnail.
-          retry && !externalUrl ? (
+          retry ? (
             <button
               type="button"
               onClick={retry}

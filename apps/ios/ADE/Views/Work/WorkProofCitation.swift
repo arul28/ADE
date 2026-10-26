@@ -13,9 +13,9 @@ struct WorkProofCitationContext {
   var lookup: ((String) -> ComputerUseArtifactSummary?)? = nil
   let content: [String: WorkLoadedArtifactContent]
   let load: WorkArtifactLoader
-  /// Asks the chat's host for its proof again. A citation of proof the list
-  /// does not hold yet (filed after the list was read) calls it once.
-  var refresh: (@MainActor () async -> Void)? = nil
+  /// Asks the chat's host about a cited id the list does not hold (filed after
+  /// the list was read, or by another chat). The chat asks once per id.
+  var resolveMissing: (@MainActor (String) async -> Void)? = nil
 }
 
 private struct WorkProofCitationEnvironmentKey: EnvironmentKey {
@@ -71,7 +71,7 @@ struct WorkProofCitationView: View {
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .task(id: artifactId) { await citations?.refresh?() }
+      .task(id: artifactId) { await citations?.resolveMissing?(artifactId) }
     }
   }
 

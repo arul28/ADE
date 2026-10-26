@@ -186,7 +186,7 @@ function CitedProofMedia({
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
-        <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={externalUrl ? null : retry} /></span>
+        <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={retry} /></span>
       ) : preview && image ? (
         <button
           type="button"

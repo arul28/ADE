@@ -189,7 +189,6 @@ import {
   assertFileRequestWorkspaceVisibleToPeer,
   createSyncArtifactReads,
   fileContentToBlob,
-  inferMimeType,
   runSyncFileServiceRequest,
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
@@ -6414,14 +6413,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         case "watchChanges":
         case "stopWatching":
           throw new Error(`Unsupported file action: ${payload.action}`);
-        case "readArtifact":
-          result = await artifactReads.readArtifact(payload.args);
-          break;
-        case "readArtifactRange":
-          result = await artifactReads.readArtifactRange(payload.args);
-          break;
         default:
-          result = await runSyncFileServiceRequest(args.fileService, payload, { isMobile: isMobilePeer(peer) }) as typeof result;
+          result = await runSyncFileServiceRequest(args.fileService, payload, {
+            isMobile: isMobilePeer(peer),
+            artifacts: artifactReads,
+          }) as typeof result;
       }
 
       respond({

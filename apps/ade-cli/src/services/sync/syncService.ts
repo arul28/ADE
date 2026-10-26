@@ -2330,11 +2330,9 @@ export function createSyncService(args: SyncServiceArgs) {
 
     /** A `file_request` routed here from the brain's sync host. */
     async executeRemoteFileRequest(payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown> {
-      // A phone showing the proof of a chat in this project while another
-      // project hosts sync: the same jailed reads the host serves.
-      if (payload.action === "readArtifact") return await artifactReads.readArtifact(payload.args);
-      if (payload.action === "readArtifactRange") return await artifactReads.readArtifactRange(payload.args);
-      return await runSyncFileServiceRequest(args.fileService, payload, context);
+      // Proof reads included: a phone shows the proof of a chat in this
+      // project while another project hosts sync.
+      return await runSyncFileServiceRequest(args.fileService, payload, { ...context, artifacts: artifactReads });
     },
 
     getDeviceRegistryService() {

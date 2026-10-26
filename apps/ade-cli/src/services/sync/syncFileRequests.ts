@@ -59,15 +59,15 @@ export function assertFileRequestWorkspaceVisibleToPeer(args: {
 }
 
 /**
- * Runs one `file_request` against a project's file service: every action but
- * the artifact reads, which belong to the sync host's own project. The host
- * uses it for its project; the brain uses it for a request that names another
- * open project (a phone reading a lane of this machine's other checkout).
+ * Runs one `file_request` against a project: its file service, and its proof
+ * files through `opts.artifacts`. The host uses it for its project; the brain
+ * uses it for a request that names another open project (a phone reading a
+ * lane of this machine's other checkout, or the proof of a chat there).
  */
 export async function runSyncFileServiceRequest(
   fileService: ReturnType<typeof createFileService>,
   payload: SyncFileRequest,
-  opts: { isMobile: boolean },
+  opts: { isMobile: boolean; artifacts?: SyncArtifactReads },
 ): Promise<unknown> {
   if (opts.isMobile) {
     const workspaceId = syncFileRequestWorkspaceId(payload);
@@ -112,9 +112,16 @@ export async function runSyncFileServiceRequest(
       return await fileService.quickOpen(payload.args);
     case "searchText":
       return await fileService.searchText(payload.args);
+    case "readArtifact":
+      if (opts.artifacts) return await opts.artifacts.readArtifact(payload.args);
+      break;
+    case "readArtifactRange":
+      if (opts.artifacts) return await opts.artifacts.readArtifactRange(payload.args);
+      break;
     default:
-      throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
+      break;
   }
+  throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
 }
 
 export function inferMimeType(filePath: string): string | null {
@@ -196,6 +203,8 @@ function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
  * the brain for a request that names another open project; the brain's path
  * once had none, so a phone could not show the proof of a chat there.
  */
+export type SyncArtifactReads = ReturnType<typeof createSyncArtifactReads>;
+
 export function createSyncArtifactReads(deps: {
   projectRoot: string;
   artifactsDir: string;

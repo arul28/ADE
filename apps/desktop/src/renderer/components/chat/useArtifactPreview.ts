@@ -106,12 +106,12 @@ function artifactPreviewExplanation(
 /**
  * Where a tile's picture comes from.
  *
- * An image on this computer streams through `ade-artifact://project/`. A video
- * on this computer or on a paired one plays from main's loopback media server,
- * which answers every Range read, so a long recording loads, seeks, and costs
- * only what the player reads. Everything else, a paired machine too old to
- * stream, and a main process with no media server take the capped data URL
- * read.
+ * An image on this computer streams through `ade-artifact://project/`. Every
+ * other picture and every video plays from main's loopback media server, which
+ * answers every Range read (a long recording loads, seeks, and costs only what
+ * the player reads) and keeps a paired machine's pictures in memory. The
+ * capped data URL read is the fallback: the web client, a paired machine too
+ * old to stream, and a main process with no media server.
  */
 type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
@@ -142,7 +142,10 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   failed: boolean;
   explanation: string;
   onMediaError: () => void;
-  /** Loads again from the start; null when another try cannot help (no stored bytes). */
+  /**
+   * Loads again from the start. Null when another try cannot help: no stored
+   * bytes, a file at its source, or this computer's own read found nothing.
+   */
   retry: (() => void) | null;
 } {
   const scope = useChatRuntimeScope();
@@ -325,6 +328,14 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     failed,
     explanation,
     onMediaError,
-    retry: failed && !isBrokenArtifact(artifact) ? retry : null,
+    // Retry only where something outside this read can change: a paired
+    // machine that was slow, away or did not send, or a player that refused
+    // what arrived. This computer's own read finding nothing will again.
+    retry: failed
+      && !isBrokenArtifact(artifact)
+      && !externalArtifactUrl(artifact.uri)
+      && (failure !== null || !allowLocalArtifactProtocol)
+      ? retry
+      : null,
   };
 }

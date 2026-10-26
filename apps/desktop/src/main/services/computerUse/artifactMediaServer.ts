@@ -176,16 +176,29 @@ async function serveLocal(
 const REMOTE_IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
 /** Larger pictures stream as before and are not kept. */
 const REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES = 24 * 1024 * 1024;
+const REMOTE_IMAGE_PULLS_AT_ONCE = 3;
 
 type RemoteImageCache = {
   get: (key: string) => Buffer | null;
   set: (key: string, bytes: Buffer) => void;
+  /**
+   * One pull per picture at a time: an answer and the proof drawer often show
+   * the same picture at once, and both asked the other machine for every byte.
+   */
+  inFlight: Map<string, Promise<WholeImagePull>>;
+  /**
+   * Distinct pictures pulled whole at once. Each holds up to 24 MiB until it
+   * is kept, and a chat scrolled into view asks for all its pictures together.
+   */
+  pullSlots: ReturnType<typeof createSlots>;
 };
 
 function createRemoteImageCache(maxBytes = REMOTE_IMAGE_CACHE_BYTES): RemoteImageCache {
   const entries = new Map<string, Buffer>();
   let total = 0;
   return {
+    inFlight: new Map(),
+    pullSlots: createSlots(REMOTE_IMAGE_PULLS_AT_ONCE),
     get(key) {
       const bytes = entries.get(key);
       if (!bytes) return null;
@@ -209,6 +222,48 @@ function createRemoteImageCache(maxBytes = REMOTE_IMAGE_CACHE_BYTES): RemoteImag
       }
     },
   };
+}
+
+/** Runs at most `limit` tasks at once; the rest wait their turn. */
+function createSlots(limit: number): { run: <T>(task: () => Promise<T>) => Promise<T> } {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return {
+    async run(task) {
+      if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+      active += 1;
+      try {
+        return await task();
+      } finally {
+        active -= 1;
+        waiting.shift()?.();
+      }
+    },
+  };
+}
+
+type WholeImagePull =
+  | { kind: "whole"; bytes: Buffer }
+  /** Too big to keep: the first chunk, so the stream does not read it again. */
+  | { kind: "large"; first: { totalSize: number; bytes: Buffer } };
+
+async function pullWholeImage(
+  read: (offset: number, length: number) => Promise<{ totalSize: number; bytes: Buffer }>,
+  imageCache: RemoteImageCache,
+  cacheKey: string,
+): Promise<WholeImagePull> {
+  const first = await read(0, REMOTE_ARTIFACT_CHUNK_BYTES);
+  if (first.totalSize > REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES) return { kind: "large", first };
+  // One buffer of the final size: no list of chunks and second copy to join them.
+  const whole = Buffer.alloc(first.totalSize);
+  let received = first.bytes.copy(whole, 0);
+  while (received < first.totalSize) {
+    const chunk = (await read(received, first.totalSize - received)).bytes;
+    if (chunk.length === 0) throw new Error("The file ended early on the other computer.");
+    received += chunk.copy(whole, received);
+  }
+  imageCache.set(cacheKey, whole);
+  return { kind: "whole", bytes: whole };
 }
 
 function isImageFile(fileName: string): boolean {
@@ -258,53 +313,51 @@ async function serveRemote(
     length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES)),
   }));
 
-  // A picture is read whole, kept, then served, so the next showing costs no
-  // round trip. Its first chunk also says how big it is.
-  if (image && req.method === "GET") {
-    let first: { totalSize: number; bytes: Buffer };
+  // Turns a failed read into the 502 the player shows. Null means it is sent.
+  const readOrFail = async (offset: number, length: number) => {
     try {
-      first = await read(0, REMOTE_ARTIFACT_CHUNK_BYTES);
+      return await read(offset, length);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendText(res, 502, message || "The other computer did not send this file.");
-      return;
+      return null;
     }
-    if (first.totalSize <= REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES) {
-      const parts = [first.bytes];
-      let received = first.bytes.length;
-      try {
-        while (received < first.totalSize && !gone) {
-          const chunk = (await read(received, first.totalSize - received)).bytes;
-          if (chunk.length === 0) throw new Error("The file ended early on the other computer.");
-          parts.push(chunk);
-          received += chunk.length;
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        sendText(res, 502, message || "The other computer did not send this file.");
-        return;
-      }
-      if (gone) return;
-      const whole = Buffer.concat(parts, received).subarray(0, first.totalSize);
-      imageCache.set(cacheKey, whole);
-      serveBuffer(req, res, whole, target.relativePath);
-      return;
-    }
-  }
+  };
 
   const range = parseRangeHeader(req.headers.range);
   const head = req.method === "HEAD";
   // When the start is known, the first chunk also carries the size. A suffix
   // or a HEAD asks for one byte to learn the size first.
   const knownStart = range?.kind === "suffix" ? null : (range?.start ?? 0);
-  let probe: { totalSize: number; bytes: Buffer };
-  try {
-    probe = await read(knownStart ?? 0, head || knownStart === null ? 1 : REMOTE_ARTIFACT_CHUNK_BYTES);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendText(res, 502, message || "The other computer did not send this file.");
-    return;
+  let probe: { totalSize: number; bytes: Buffer } | null = null;
+
+  // A picture is read whole, kept, then served, so the next showing costs no
+  // round trip. One too big to keep streams below like a video, starting from
+  // the chunk this already read.
+  if (image && req.method === "GET") {
+    let pull = imageCache.inFlight.get(cacheKey);
+    if (!pull) {
+      pull = imageCache.pullSlots.run(() => pullWholeImage(read, imageCache, cacheKey))
+        .finally(() => imageCache.inFlight.delete(cacheKey));
+      imageCache.inFlight.set(cacheKey, pull);
+    }
+    let pulled: Awaited<typeof pull>;
+    try {
+      pulled = await pull;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendText(res, 502, message || "The other computer did not send this file.");
+      return;
+    }
+    if (pulled.kind === "whole") {
+      if (!gone) serveBuffer(req, res, pulled.bytes, target.relativePath);
+      return;
+    }
+    if (knownStart === 0) probe = pulled.first;
   }
+
+  probe ??= await readOrFail(knownStart ?? 0, head || knownStart === null ? 1 : REMOTE_ARTIFACT_CHUNK_BYTES);
+  if (!probe) return;
 
   const bytes = writeRangeHead(res, range, probe.totalSize, target.relativePath);
   if (!bytes) return;

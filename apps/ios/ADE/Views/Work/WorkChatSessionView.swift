@@ -690,6 +690,10 @@ struct WorkChatSessionView: View {
   let onOpenPr: @MainActor (Int) async -> Void
   let onLoadArtifact: WorkArtifactLoader
   let onRefreshArtifacts: @MainActor () async -> Void
+  /// Cited proof the chat's list does not hold, found on the chat's host by id.
+  var citedProofArtifacts: [String: ComputerUseArtifactSummary] = [:]
+  /// Asks the chat's host once about a cited id its list does not hold.
+  var onResolveMissingProof: (@MainActor (String) async -> Void)? = nil
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
   let onDispatchSteerInline: (@MainActor (String) async -> Void)?
@@ -2024,12 +2028,12 @@ struct WorkChatSessionView: View {
   private var proofCitationContext: WorkProofCitationContext {
     WorkProofCitationContext(
       artifactsById: Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
-      lookup: { [syncServiceReference] id in
-        syncServiceReference.service?.fetchComputerUseArtifact(id: id)
+      lookup: { [syncServiceReference, citedProofArtifacts] id in
+        citedProofArtifacts[id] ?? syncServiceReference.service?.fetchComputerUseArtifact(id: id)
       },
       content: artifactContent,
       load: onLoadArtifact,
-      refresh: onRefreshArtifacts
+      resolveMissing: onResolveMissingProof
     )
   }
 

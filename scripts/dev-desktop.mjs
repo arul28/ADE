@@ -250,7 +250,8 @@ function laneUserDataEnv() {
  * instead. ADE_OPEN_DEVTOOLS=1 opts back in; NO_DEVTOOLS, when already set,
  * wins either way. A person running this keeps DevTools as before.
  */
-function devToolsEnv(env = process.env) {
+function devToolsEnv() {
+  const env = process.env;
   if (env.NO_DEVTOOLS) return {};
   if (env.ADE_OPEN_DEVTOOLS === "1") return {};
   const launchedByAgent = [
