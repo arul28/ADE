@@ -25,10 +25,13 @@ import { useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   GitBranch,
   GitCommit,
+  GearSix,
   GitPullRequest,
   Globe,
   Images,
   Lightning,
+  Lock,
+  SignIn,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -54,6 +57,55 @@ import { getFileIcon } from "../files/filePresentation";
 import { buildChipMenuEntries } from "./chipMenu";
 import { chipMenuExtras, isChipActionable, openChipTarget, type ChipActionContext } from "./chipActions";
 import { useMachineFacts } from "./useMachineFacts";
+import { isComputerSettingsEntry, settingsEntryById, settingsEntryLabelPath, settingUnavailableReason } from "../settings/settingsManifest";
+import { settingIsProtected } from "../../../shared/settingsAgentAccess";
+
+type SettingChipFacts = {
+  parts: string[];
+  /** A protected setting (publishing, sign-ins, money…): drawn with a lock. */
+  locked: boolean;
+  /** Why this window cannot open it, or null. Drawn muted. */
+  unavailable: string | null;
+};
+
+/**
+ * A settings chip's face, from this build's manifest: the path as the sidebar
+ * names it (with the chat machine's name on a Computer page), a lock on the
+ * settings that guard your work, and whether this window can open it at all.
+ * Nothing here comes from the agent's text.
+ */
+function settingChipFacts(chip: Chip, machineName: string): SettingChipFacts | null {
+  if (chip.kind !== "setting" || chip.source.origin !== "deeplink" || chip.source.target.kind !== "settings") return null;
+  const entry = settingsEntryById(chip.source.target.entryId);
+  if (!entry) return null;
+  // A link that names its own machine opens that one, so the chat machine's
+  // name would be wrong; leave the machine out of the path.
+  const named = isComputerSettingsEntry(entry) && !chip.source.target.machineId;
+  return {
+    parts: settingsEntryLabelPath(entry, named ? machineName : null),
+    locked: settingIsProtected(entry.id),
+    unavailable: settingUnavailableReason(entry),
+  };
+}
+
+/**
+ * `Computer › Studio › Providers › AI connections`, shortened in the middle
+ * when it does not fit, so the group and the setting itself always show.
+ */
+function SettingPathLabel({ parts }: { parts: string[] }) {
+  if (parts.length < 3) return <span className="truncate">{parts.join(" › ")}</span>;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const middle = parts.slice(1, -1).join(" › ");
+  return (
+    <span className="flex min-w-0 items-baseline">
+      <span className="shrink-0 whitespace-pre">{first} › </span>
+      <span className="min-w-[1.5em] shrink-[4] truncate">{middle}</span>
+      <span className="shrink-0 whitespace-pre"> › </span>
+      <span className="min-w-0 truncate">{last}</span>
+    </span>
+  );
+}
 import { cn } from "../ui/cn";
 
 /** The hover title: the token, or for an attached tab the tab itself (its token is the agent's instruction block). */
@@ -94,6 +146,8 @@ const KIND_ICONS: Partial<Record<Chip["kind"], Icon>> = {
   skill: Lightning,
   artifact: Images,
   browser_tab: Globe,
+  setting: GearSix,
+  place: SignIn,
 };
 
 const ICON_MARK_CLASS = "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center opacity-80";
@@ -152,11 +206,14 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
 }
 
 // One weight and size wherever a chip sits: inside **bold** prose it must not
-// turn bold, inside a heading it must not grow.
+// turn bold, inside a heading it must not grow. Tinted with the theme's accent
+// so a chip reads as a button when scanning the thread, in light and dark.
 const CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-fg/[0.14]"
-  + " bg-fg/[0.08] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
-  + " font-medium not-italic leading-5 tracking-normal text-white/90";
+  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-accent/[0.38]"
+  + " bg-accent/[0.14] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
+  + " font-medium not-italic leading-5 tracking-normal"
+  + " text-[color:color-mix(in_srgb,var(--color-accent)_40%,var(--color-fg))]";
+const CHIP_HOVER_CLASS = " cursor-pointer transition-[filter,background-color,border-color] hover:border-accent/60 hover:bg-accent/[0.24]";
 
 type ChipFacts = {
   /** The entity's real name: the lane name, the chat title. */
@@ -248,7 +305,10 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const terminalLabel = terminalId
     ? scoped.sessions?.find((session) => session.id.toLowerCase() === terminalId)?.title?.trim() || null
     : null;
-  const label = terminalLabel ?? mention.label ?? facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
+  const setting = useMemo(() => settingChipFacts(chip, chatScope.machineName), [chip, chatScope.machineName]);
+  const label = setting
+    ? setting.parts.join(" › ")
+    : terminalLabel ?? mention.label ?? facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
   const actionContext: ChipActionContext = {
     scope: chatScope,
     lanes: scoped.lanes,
@@ -279,7 +339,7 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
     <>
       <span
         ref={hoverCard.triggerRef}
-        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-[filter,background-color] hover:bg-fg/[0.14] hover:brightness-125" : ""}`}
+        className={`${CHIP_CLASS}${setting ? " max-w-[360px]" : ""}${setting?.unavailable ? " opacity-60" : ""}${actionable ? CHIP_HOVER_CLASS : ""}`}
         style={laneColorStyle(facts.color)}
         data-chip-kind={chip.kind}
         // The token is the truth behind the label; a hover always reveals it.
@@ -300,8 +360,14 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
           open();
         }}
       >
-        <ChipIcon chip={chip} markSvg={markSvg} iconDataUrl={preview?.iconDataUrl ?? null} />
-        <span className="truncate">{label}</span>
+        {setting?.locked ? (
+          <span aria-label="Only you can change this" className={`${ICON_MARK_CLASS} text-amber-200`}>
+            <Lock size={12} weight="bold" />
+          </span>
+        ) : (
+          <ChipIcon chip={chip} markSvg={markSvg} iconDataUrl={preview?.iconDataUrl ?? null} />
+        )}
+        {setting ? <SettingPathLabel parts={setting.parts} /> : <span className="truncate">{label}</span>}
         {facts.live ? (
           <span
             aria-label={facts.live === "running" ? "Running" : "Needs you"}
@@ -338,7 +404,8 @@ function AttachmentTranscriptChip({ chip, attachment }: { chip: Chip; attachment
   return (
     <>
       <span
-        className={`${CHIP_CLASS} cursor-pointer transition-colors hover:bg-white/[0.14]`}
+        className={`${CHIP_CLASS}${CHIP_HOVER_CLASS}`}
+        data-chip-kind={chip.kind}
         title={`${chip.token} — ${name}`}
         role="button"
         tabIndex={0}

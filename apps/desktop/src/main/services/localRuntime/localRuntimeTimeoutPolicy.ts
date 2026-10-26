@@ -93,6 +93,18 @@ export function localRuntimeStartupConnectMaxMs(platform: NodeJS.Platform): numb
 export const LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS = localRuntimeStartupConnectMaxMs(process.platform);
 
 /**
+ * A CLI run from source boots through tsx (4-6 s idle on Node 24, 10-20 s on a
+ * loaded CI runner), so it gets the Windows allowance; a bundled `cli.cjs`
+ * keeps the platform's shorter one. This is the spawn clock only: the read
+ * budgets below stay derived from the platform allowance, so in a from-source
+ * session a brain slower than them reads as a degraded snapshot once and the
+ * next read joins the same pending connect.
+ */
+export function localRuntimeSourceCliStartupConnectMaxMs(platform: NodeJS.Platform): number {
+  return Math.max(localRuntimeStartupConnectMaxMs(platform), 30_000);
+}
+
+/**
  * The longest a machine-scope sync STATUS READ waits for the local runtime
  * before the desktop answers for itself.
  *

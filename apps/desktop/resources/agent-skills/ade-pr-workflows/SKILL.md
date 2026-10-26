@@ -24,6 +24,11 @@ you from the PR, it uploads the proof you cite, and it tells you what a reader
 will miss in your text. Use `gh pr create` only when `ade prs create` fails
 after a real attempt. A project's own instructions about PRs come first.
 
+It pushes the branch for you. When this computer's git has no GitHub sign-in,
+the push retries with ADE's GitHub credential (GitHub CLI or the personal
+access token in Settings), so it works where a bare `git push` or `gh` fails.
+Push later commits with `ade git push --lane <lane>` for the same reason.
+
 ```bash
 ade prs create --lane <lane> --base main \
   --title "fix(web): new chats no longer spike CPU" --body-file "$TMPDIR/pr.md" --text

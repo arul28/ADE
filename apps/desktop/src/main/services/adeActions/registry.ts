@@ -309,6 +309,7 @@ export {
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
+  userSettingWrite,
 } from "./actionPolicy";
 export type { AdeActionRole, CtoOnlyRule } from "./actionPolicy";
 export {
@@ -1177,6 +1178,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
       agentChatService.getTurnStatus(readStringActionArg(args, "sessionId"));
+  }
+  // Actions arrive as one object (`ade chat ask --clear` sends `{ sessionId }`);
+  // the service takes the id itself.
+  if (typeof base.clearAsk === "function") {
+    service.clearAsk = (args?: unknown) =>
+      agentChatService.clearAsk(readStringActionArg(args, "sessionId"));
   }
   if (typeof base.listScheduledWork === "function") {
     service.listScheduledWork = (args?: unknown) => {

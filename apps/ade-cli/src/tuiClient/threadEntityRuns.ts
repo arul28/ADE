@@ -12,6 +12,7 @@
 
 import { chipDisplayLabel } from "../../../desktop/src/shared/chips";
 import { buildDeeplink, parseDeeplink } from "../../../desktop/src/shared/deeplinks";
+import { settingIsProtected } from "../../../desktop/src/shared/settingsAgentAccess";
 import {
   buildThreadEntityLookup,
   EMPTY_THREAD_ENTITY_LOOKUP,
@@ -81,6 +82,7 @@ export function tuiThreadEntityFactsVersion(): number {
 
 const CHAT_COLOR = "#7dd3fc";
 const ENTITY_COLOR = "#c4b5fd";
+const SETTING_COLOR = "#fcd34d";
 
 export type TuiEntityRun = { text: string; color?: string; href?: string; link?: boolean; dim?: boolean };
 
@@ -114,6 +116,17 @@ export function tuiRunForThreadEntity(entity: ThreadEntity, now: number = Date.n
       link: true,
       href: buildDeeplink({ kind: "session", sessionId: source.id }),
     };
+  }
+  if (source.origin === "deeplink" && source.target.kind === "settings") {
+    // A setting opens through the desktop app. The label is the manifest's
+    // path; a protected one says only the user can change it.
+    const locked = settingIsProtected(source.target.entryId);
+    return { text: `${locked ? "[locked] " : ""}${chipDisplayLabel(chip)}`, color: SETTING_COLOR, link: true, href: source.url };
+  }
+  if (source.origin === "deeplink" && source.target.kind === "open") {
+    // A page link runs only from a click in the desktop chat; the OS refuses
+    // it, so the terminal shows the name without a link.
+    return { text: chipDisplayLabel(chip), color: SETTING_COLOR };
   }
   if (source.origin === "deeplink") {
     // A repo-less PR (`#1407`) has no deeplink that parses; colour it, but do

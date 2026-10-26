@@ -21,12 +21,12 @@ import { focusWorkSession } from "../../lib/workSessionRequests";
 import { chatDraftMachineId, openStartChatDraft } from "../../lib/workDraft";
 import { laneOwnedByBranch } from "../app/InboundDeeplinkModal";
 import { showToast } from "../app/toast/toastStore";
-import { settingsRouteFor } from "../settings/settingsManifest";
+import { isComputerSettingsEntry, settingsEntryById, settingsRouteFor, settingUnavailableReason } from "../settings/settingsManifest";
 import { requestWorkTool } from "../terminals/workToolRequests";
 import { rootAppStoreApi, selectActiveProjectStateKey } from "../../state/appStore";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
 import type { ChatRuntimeScope } from "./ChatRuntimeScope";
-import { chatMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
+import { chatMachineId, chatSettingsMachineId, openChatDeeplinkTarget } from "./chatDeeplinks";
 import { openPrInChatToolsPane } from "./chatPrPaneRequests";
 import type { ChatWorkspacePathOpener } from "./chatWorkspacePaths";
 import type { MachineFacts } from "./useMachineFacts";
@@ -163,6 +163,14 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
         return;
       }
     }
+    if (target.kind === "settings") {
+      openSettingFromChat(target.entryId, target.machineId ?? null, scope);
+      return;
+    }
+    if (target.kind === "open") {
+      navigateToAppTarget({ kind: "open-place", place: target.place });
+      return;
+    }
     if (target.kind === "session") {
       const session = findById(context.sessions, target.sessionId);
       navigateToAppTarget({ kind: "chat", sessionId: target.sessionId, laneId: session?.laneId ?? null });
@@ -213,6 +221,31 @@ export function openChipTarget(chip: Chip, context: ChipActionContext): void {
     default:
       return;
   }
+}
+
+/**
+ * A settings chip's click: the card, on the chat's machine when it is a
+ * Computer page (Providers in a chat on Studio opens Studio's Providers), or on
+ * the machine the link names. Project pages stay on the project's machine. A
+ * setting this window cannot show says why instead of opening nothing.
+ */
+function openSettingFromChat(entryId: string, linkMachineId: string | null, scope: ChatRuntimeScope): void {
+  const entry = settingsEntryById(entryId);
+  if (!entry) {
+    navigateToAppTarget({ kind: "settings" });
+    return;
+  }
+  const unavailable = settingUnavailableReason(entry);
+  if (unavailable) {
+    showToast({ title: entry.label, message: unavailable });
+    return;
+  }
+  navigateToAppTarget({
+    kind: "settings",
+    entryId: entry.id,
+    // A link that names its machine opens that one, as it does from outside ADE.
+    machineId: isComputerSettingsEntry(entry) ? linkMachineId ?? chatSettingsMachineId(scope) : null,
+  });
 }
 
 function openMcpSettings(serverName: string): void {

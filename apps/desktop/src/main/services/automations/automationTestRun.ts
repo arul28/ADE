@@ -11,6 +11,7 @@
  * another.
  */
 
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { randomUUID } from "node:crypto";
 import type {
   AutomationAction,
@@ -468,7 +469,7 @@ export function createAutomationTestRuns({
     const sources = [`refs/pull/${pr.number}/head`, ...(pr.headBranch ? [`refs/heads/${pr.headBranch}`] : [])];
     let lastError = "";
     for (const source of sources) {
-      const fetched = await runGit(["fetch", "--no-tags", "origin", `+${source}:${ref}`], { cwd: projectRoot, timeoutMs: 120_000 });
+      const fetched = await runGitWithGithubAuthFallback(["fetch", "--no-tags", "origin", `+${source}:${ref}`], { cwd: projectRoot, timeoutMs: 120_000 });
       if (fetched.exitCode !== 0) {
         lastError = fetched.stderr.trim();
         continue;

@@ -94,10 +94,10 @@ import {
   type WorkBoardWaitingReason,
 } from "./useWorkSessions";
 import {
-  WORK_BOARD_COLUMN_LABEL,
   isWorkBoardMoveTarget,
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
+import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
@@ -1086,6 +1086,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneActions?: SessionContextMenuLaneActions | null,
     openIn?: SessionContextMenuOpenIn | null,
     laneType?: LaneSummary["laneType"] | null,
+    /** Why the board files this row under Waiting, foreign machines included. */
+    waitingReason?: WorkBoardWaitingReason | null,
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -2582,6 +2584,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               ? openIn
               : null,
             sessionLane?.laneType,
+            boardUnion.waitingReasons.get(session.id) ?? null,
           );
         }}
         compact={options?.compact}
@@ -2806,112 +2809,33 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const handleBoardMove = useCallback(
     (session: TerminalSessionSummary, column: WorkBoardColumn) => {
-      const move = window.ade.sessions?.moveOnBoard;
-      if (typeof move !== "function") {
-        showToast({
-          title: "Move failed",
-          message: "This window cannot move board cards.",
-          tone: "error",
-        });
-        return;
-      }
       // The board's column keys ARE the action's targets, so there is nothing
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
-      const to = column;
       const foreignRow = boardUnion.sessionRow.get(session.id);
       const binding = foreignRow?.binding ?? null;
-      void move(session.id, to, binding)
-        .then((result) => {
-          if (!result?.changed || !result.moveId) {
-            // A no-op is ALWAYS a disagreement here: the board only offers a
-            // column the card is not already in, so the host answering "it is
-            // already there" means the two derived it differently. They can,
-            // in exactly one way — the host files Waiting from the snooze
-            // alone, while this board also parks a running row there for a
-            // pending check or an outstanding review, which the host still
-            // reads as Working. Say so; a silent snap-back reads as a bug.
-            if (result && !result.changed) {
-              // A live structured card is a different refusal: the row really
-              // is in Needs you, and clearing the attention columns would not
-              // answer the provider's question — so the card would sit there
-              // while the toast claimed a move. Say what is actually blocking.
-              const pendingCard = result.reason === "pending_input";
-              showToast({
-                id: `session-board-move:${session.id}`,
-                title: pendingCard
-                  ? "Answer the question first"
-                  : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
-                message: pendingCard
-                  ? "This chat is waiting on an answer, so moving it would not change what it needs."
-                  : "The PR is what is waiting, not the chat.",
-                durationMs: 4_000,
-              });
-            }
-            return;
-          }
-          const moveId = result.moveId;
+      // One narration for a move, shared with the row menu's Change status.
+      moveSessionOnBoard({
+        session,
+        to: column,
+        binding,
+        onMoved: () => {
           if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
           setBoardMovePulses((previous) => {
             const next = new Map(previous);
             next.set(session.id, new Date().toISOString());
             return next;
           });
-          showToast({
-            id: `session-board-move:${session.id}`,
-            title: `Moved to ${WORK_BOARD_COLUMN_LABEL[to]}`,
-            message: result.message ? "The agent will be told." : undefined,
-            durationMs: 5_000,
-            actions: [{
-              label: "Undo",
-              onClick: () => {
-                const undo = window.ade.sessions?.undoBoardMove;
-                if (typeof undo !== "function") return;
-                void undo(session.id, moveId, binding)
-                  .then((undone) => {
-                    if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
-                    setBoardMovePulses((previous) => {
-                      const next = new Map(previous);
-                      next.delete(session.id);
-                      return next;
-                    });
-                    if (undone?.ok !== false) return;
-                    showToast({
-                      title: "Too late to undo",
-                      message: undone.reason === "unknown_move"
-                        // The host restarted inside the undo window: the
-                        // columns are written, the message was never sent, and
-                        // it no longer knows what to put back.
-                        ? "ADE no longer has this move staged. The card stays where you put it."
-                        : undone.reason === "session_advanced"
-                          // The chat moved on inside the window — a new hand, a
-                          // settle, a snooze. Putting the old state back would
-                          // overwrite something newer than the move.
-                          ? "This chat has changed since the move, so there is nothing left to take back."
-                          : "The agent has already been told about this move.",
-                      tone: "error",
-                    });
-                  })
-                  .catch((error: unknown) => {
-                    showToast({
-                      title: "Undo failed",
-                      message: error instanceof Error ? error.message : String(error),
-                      tone: "error",
-                    });
-                  });
-              },
-            }],
+        },
+        onUndoSettled: () => {
+          if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
+          setBoardMovePulses((previous) => {
+            const next = new Map(previous);
+            next.delete(session.id);
+            return next;
           });
-        })
-        .catch((error: unknown) => {
-          showToast({
-            title: "Move failed",
-            // The host reverses its own status write when the move cannot
-            // complete, so the card genuinely did not move.
-            message: error instanceof Error ? error.message : String(error),
-            tone: "error",
-          });
-        });
+        },
+      });
     },
     [boardUnion.sessionRow],
   );

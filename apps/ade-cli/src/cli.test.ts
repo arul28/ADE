@@ -3438,6 +3438,9 @@ describe("ADE CLI", () => {
     expect(enable.kind).toBe("execute");
     if (enable.kind !== "execute") return;
     expect(enable.label).toBe("enable PR chat transcripts");
+    // Only the user may change it, so the user's terminal asserts the operator role
+    // (an agent's shell is clamped back to agent by the brain).
+    expect(enable.connectRole).toBe("cto");
     expect(enable.steps).toEqual([
       {
         key: "result",
@@ -5167,6 +5170,24 @@ describe("ADE CLI", () => {
         args: { sessionId: "terminal-row-1", value: "testing" },
       },
     });
+    // `ade chat ask --clear`: the retraction rides the scoped `chat` domain,
+    // so the RPC server's chat guard keeps a bound agent on its own row.
+    const clearAsk = expectExecutePlan(buildCliPlan([
+      "chat",
+      "ask",
+      "--clear",
+      "--session",
+      "session-x",
+    ]));
+    expect(clearAsk.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "clearAsk",
+        args: { sessionId: "session-x" },
+      },
+    });
+
     expect(() => buildCliPlan(["chat", "activity", "coding"]))
       .toThrow(/Unsupported chat activity 'coding'.*planning.*monitoring.*clear/i);
     expect(() => buildCliPlan(["chat", "activity"]))
@@ -17339,6 +17360,15 @@ describe("ade providers accounts", () => {
     expect(
       expectExecutePlan(buildCliPlan(["providers", "actions"])).steps[0]?.params,
     ).toEqual({ name: "list_ade_actions", arguments: { domain: "provider_instances" } });
+
+    // Adding, removing and re-pointing sign-ins are the user's: their terminal
+    // asserts the operator role; reading the list does not need it.
+    for (const args of [
+      ["providers", "accounts", "add", "--provider", "codex"],
+      ["providers", "accounts", "default", "--instance", "work"],
+      ["providers", "accounts", "remove", "--instance", "work"],
+    ]) expect(expectExecutePlan(buildCliPlan(args)).connectRole, args.join(" ")).toBe("cto");
+    expect(expectExecutePlan(buildCliPlan(["providers", "accounts", "list"])).connectRole).toBeUndefined();
   });
 
   it("requires the inputs each mutation cannot invent, and refuses names", () => {

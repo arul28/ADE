@@ -9,6 +9,7 @@
  * blocked import is an error the run reports.
  */
 
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { runGit } from "../git/git";
 import type {
   AutomationTriggerPrContext,
@@ -103,7 +104,7 @@ export async function advanceLaneToPrHead(worktreePath: string, laneName: string
   // A private ref, not FETCH_HEAD: another fetch in this worktree (the user's
   // Fetch button) rewrites FETCH_HEAD and would change what we merge.
   const privateRef = `refs/ade/pr-head/${prNumber}`;
-  const fetch = await runGit(["fetch", "--no-tags", "origin", `+pull/${prNumber}/head:${privateRef}`], { cwd: worktreePath, timeoutMs: 60_000 });
+  const fetch = await runGitWithGithubAuthFallback(["fetch", "--no-tags", "origin", `+pull/${prNumber}/head:${privateRef}`], { cwd: worktreePath, timeoutMs: 60_000 });
   if (fetch.exitCode !== 0) {
     throw new Error(`Could not fetch PR #${prNumber} into lane '${laneName}': ${redactGitOutput(fetch.stderr.trim()) || "git fetch failed"}.`);
   }

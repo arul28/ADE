@@ -4478,6 +4478,54 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(false);
   });
 
+  it("refuses an agent's project config save or setting write that changes a key only the user owns", async () => {
+    const fixture = createRuntime();
+    const local = { version: 1, automations: [], github: { prTranscriptGists: { enabled: false } } };
+    const projectConfigService = {
+      get: vi.fn(() => ({ shared: {}, local })),
+      save: vi.fn((candidate: unknown) => candidate),
+      setPrTranscriptGists: vi.fn(() => ({ shared: {}, local })),
+    };
+    (fixture.runtime as any).projectConfigService = projectConfigService;
+    const agentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent" });
+    const save = (handler: typeof agentHandler, candidate: unknown) =>
+      callTool(handler, "run_ade_action", { domain: "project_config", action: "save", argsList: [candidate] });
+
+    // Turning on PR chat transcripts publishes chats: refused, with the link to the setting.
+    const publish = await save(agentHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(publish?.isError).toBe(true);
+    expect(JSON.stringify(publish)).toContain("ade://settings/lanes-git.pr-chat-transcripts");
+    // Save writes `local`; leaving it out would write an empty file and drop the key.
+    const wipe = await save(agentHandler, { shared: {} });
+    expect(wipe?.isError).toBe(true);
+    expect(projectConfigService.save).not.toHaveBeenCalled();
+
+    // The work setup is the agent's to change.
+    const automations = await save(agentHandler, { shared: {}, local: { ...local, automations: [{ id: "nightly" }] } });
+    expect(automations?.isError).toBeUndefined();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(1);
+
+    // An agent in an orchestrator run keeps the operator role it asks for; that is still not the user.
+    const runHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(runHandler, { callerId: "run-agent", role: "cto", runId: "run-1" });
+    const runPublish = await save(runHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(runPublish?.isError).toBe(true);
+    const runToggle = await callTool(runHandler, "run_ade_action", {
+      domain: "project_config", action: "setPrTranscriptGists", args: { enabled: true },
+    });
+    expect(runToggle?.isError).toBe(true);
+    expect(projectConfigService.setPrTranscriptGists).not.toHaveBeenCalled();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(1);
+
+    // The user's own client may change the owner-only key.
+    const userHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "user-1", role: "cto" });
+    const userPublish = await save(userHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
+    expect(userPublish?.isError).toBeUndefined();
+    expect(projectConfigService.save).toHaveBeenCalledTimes(2);
+  });
+
   it("routes account settings and vault actions through the runtime stores", async () => {
     const fixture = createRuntime();
     const accountSettingsStore = {
@@ -4510,11 +4558,13 @@ describe("adeRpcServer", () => {
       expect.arrayContaining([
         "account_settings.list",
         "account_settings.get",
-        "account_settings.set",
-        "account_settings.remove",
         "account_settings.sync",
       ]),
     );
+    // The user's preferences: an agent reads them but cannot change them.
+    const agentActionNames = settingsInventory.structuredContent.actions.map((entry: { name: string }) => entry.name);
+    expect(agentActionNames).not.toContain("account_settings.set");
+    expect(agentActionNames).not.toContain("account_settings.remove");
 
     const settingsList = await callTool(agentHandler, "run_ade_action", {
       domain: "account_settings",
@@ -4527,7 +4577,17 @@ describe("adeRpcServer", () => {
     ]);
     expect(accountSettingsStore.list).toHaveBeenCalledWith("all");
 
-    const settingsSet = await callTool(agentHandler, "run_ade_action", {
+    const agentSettingsSet = await callTool(agentHandler, "run_ade_action", {
+      domain: "account_settings",
+      action: "set",
+      argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],
+    });
+    expect(agentSettingsSet?.isError).toBe(true);
+    expect(accountSettingsStore.set).not.toHaveBeenCalled();
+
+    const userHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "user-1", role: "cto" });
+    const settingsSet = await callTool(userHandler, "run_ade_action", {
       domain: "account_settings",
       action: "set",
       argsList: ["all", "appearance.theme", "light", { expectedAccountUserId: "account-a" }],

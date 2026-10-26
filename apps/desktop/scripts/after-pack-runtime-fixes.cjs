@@ -467,6 +467,8 @@ module.exports = async function afterPack(context) {
     }
   } else if (platform === "win32") {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
+    // Git Bash runs this one (install-path.cmd puts an `ade` next to `ade.cmd`).
+    requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade"), "bundled ADE CLI POSIX wrapper for Git Bash");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
     requireFile(path.join(resourcesRoot, "ade-cli", "windows-uninstall-cleanup.ps1"), "bundled Windows uninstall cleanup script");
     requireFile(path.join(resourcesRoot, "ade-cli", "windows-install-setup.ps1"), "bundled Windows install setup script");

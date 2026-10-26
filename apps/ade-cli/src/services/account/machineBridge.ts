@@ -21,6 +21,7 @@
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
+import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { RuntimeRpcClient } from "../../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
 import { PairedRuntimeCompatibilityError } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import { getOrCreateLocalAccountMachineIdentity } from "../../../../desktop/src/main/services/account/localMachineIdentity";
@@ -75,6 +76,8 @@ export type RemoteProjectRecord = {
 export type PooledConnection = {
   hostDeviceId: string;
   client: RuntimeRpcClient;
+  /** What the target's `ade/initialize` advertised, so a caller can skip what it cannot take. */
+  capabilities: Record<string, unknown> | null;
   projects: { at: number; records: RemoteProjectRecord[] } | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Calls in flight on this connection; the idle timer only runs at zero. */
@@ -151,7 +154,8 @@ export function readGitOriginUrl(root: string): string | null {
   });
   if (result.status !== 0) return null;
   const value = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return value || null;
+  // The identity form: an SSH alias of GitHub becomes `github.com`.
+  return canonicalGitOriginUrl(value || null);
 }
 
 export function coerceProjects(value: unknown): RemoteProjectRecord[] {
@@ -355,6 +359,8 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     const userId = signedInUserId();
     const store = pairedStore();
     const budget = createRemoteLaunchBudget(CONNECT_BUDGET_MS);
+    // Set by the handshake of the transport that is kept.
+    let targetCapabilities: Record<string, unknown> | null = null;
     const target: RemoteRuntimeTarget = {
       id: `${options.poolId}:${machine.machineKey}`,
       name: machineName(machine),
@@ -400,6 +406,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
             const capabilities = isRecord(initialized) && isRecord(initialized.capabilities)
               ? initialized.capabilities
               : null;
+            targetCapabilities = capabilities;
             const required = options.requiredCapability ?? null;
             if (
               (info?.multiProject !== true && capabilities?.projects !== true)
@@ -441,7 +448,14 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
         client = await open();
       }
     }
-    const entry: PooledConnection = { hostDeviceId, client, projects: null, idleTimer: null, inFlight: 0 };
+    const entry: PooledConnection = {
+      hostDeviceId,
+      client,
+      capabilities: targetCapabilities,
+      projects: null,
+      idleTimer: null,
+      inFlight: 0,
+    };
     client.onDisconnect(() => dropConnection(hostDeviceId, entry));
     touch(entry);
     logger?.info(`${options.logPrefix}.connected`, { machineKey: machine.machineKey });
