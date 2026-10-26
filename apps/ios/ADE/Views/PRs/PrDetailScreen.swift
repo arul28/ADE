@@ -2054,6 +2054,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
   }
 
+  /// The Duo's outer display, upright: the bar's trailing items are its edge
+  /// rail, so the dock's bubbles stand there under ⋯ (as a chat's buttons do)
+  /// instead of floating over the thread.
+  private var dockInRail: Bool { context != .pane && compactEdgeRail && !duo.hasEdgeBar }
+
+  /// The dock as a row along the bottom: a phone, the Duo upright on an iPad.
+  private var showsRowDock: Bool { isReady && !dockIsVertical && !dockInRail }
+
   var body: some View {
     switch context {
     case .pane:
@@ -2099,6 +2107,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
         split?.setDetailWantsFullWidth(files)
       }
       .onDisappear { split?.setDetailWantsFullWidth(false) }
+      .sheet(item: Binding(
+        get: { dockInRail ? dock : nil },
+        set: { next in if next == nil, dockInRail { dock = nil } }
+      )) { item in
+        ScrollView { card(item) }
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+      }
       .task {
         guard let initialDock else { return }
         try? await Task.sleep(for: .milliseconds(700))
@@ -2279,14 +2295,14 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
       .adeFlatList()
       .listSectionSpacing(.compact)
       // Rows scroll clear of the dock's row along the bottom.
-      .contentMargins(.bottom, isReady && !dockIsVertical ? 84 : 24, for: .scrollContent)
+      .contentMargins(.bottom, showsRowDock ? 84 : 24, for: .scrollContent)
       .adeScrollDiagnosticsSurface(.prDetail, key: "pr-detail-\(context)")
       .refreshable { await actions.refresh() }
       // The ticks and a column of bubbles keep a strip of their own on the
       // trailing edge, so neither ever covers a row.
       .safeAreaInset(edge: .trailing, spacing: 0) { trailingStrip }
       .overlay(alignment: .bottom) {
-        if isReady && !dockIsVertical {
+        if showsRowDock {
           rowDock
             // Beside the edge bar (a Work chat's pane, the PRs tab, the
             // closed display) the row's capsules end on the rail's bottom
@@ -2502,10 +2518,11 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   private func cardPopover(_ item: PrDuoDock) -> PrDockCardPopover<some View> {
     PrDockCardPopover(
       isPresented: Binding(
-        get: { dock == item },
+        // A rail button cannot anchor a popover: there the card is a sheet.
+        get: { dock == item && !dockInRail },
         set: { shown in if !shown, dock == item { dock = nil } }
       ),
-      arrowEdge: dockIsVertical ? .trailing : .bottom
+      arrowEdge: dockIsVertical || dockInRail ? .trailing : .bottom
     ) {
       card(item)
     }
@@ -2534,6 +2551,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
             .accessibilityLabel("Pull request actions")
         }
       }
+      railDockItems
     case .column, .pane:
       if !duo.hasEdgeBar {
         DuoSplitListToggle(split: split)
@@ -2547,8 +2565,40 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
               .accessibilityLabel("Pull request actions")
           }
         }
+        railDockItems
       }
     }
+  }
+
+  /// The dock on the outer display's rail: Merge (its symbol in the merge
+  /// state's colour), then Comment, Reviewers, Labels, Assignees, each
+  /// opening its card beside the rail.
+  @ToolbarContentBuilder
+  private var railDockItems: some ToolbarContent {
+    if dockInRail && isReady {
+      ToolbarSpacer(.fixed, placement: .topBarTrailing)
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        railBubble(.merge)
+        ForEach(Self.bubbleItems) { item in
+          railBubble(item)
+        }
+      }
+    }
+  }
+
+  private func railBubble(_ item: PrDuoDock) -> some View {
+    let isOpen = dock == item
+    let tint: Color? = item == .merge
+      ? prDuoMergeRingColor(model.step, mergeStatus: model.mergeStatus)
+      : (isOpen ? ADEColor.accent : nil)
+    return Button {
+      toggle(item)
+    } label: {
+      Label(item == .merge ? "Merge: \(mergeHeadline)" : item.title, systemImage: item.symbol)
+    }
+    .tint(tint)
+    .badge(badgeCount(item))
+    .modifier(cardPopover(item))
   }
 
   // MARK: Files

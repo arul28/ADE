@@ -47,6 +47,8 @@ struct WorkToolsSheet: View {
 
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
+  /// The Duo's outer display, upright: its trailing column is the edge rail.
+  @State private var displayHasEdgeRail = false
 
   @State private var state: WorkToolsLaneState?
   @State private var loaded = false
@@ -158,12 +160,29 @@ struct WorkToolsSheet: View {
     } else {
       NavigationStack {
         stateContent
-          .navigationTitle(tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)
+          // On the Duo's outer display the bar's trailing items are the edge
+          // rail: close there as an ×, like the other screens, and leave the
+          // top to the content (each card already names the tool).
+          .navigationTitle(displayHasEdgeRail ? "" : (tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title))
           .navigationBarTitleDisplayMode(.inline)
           .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-              Button("Done") { dismiss() }
+            if displayHasEdgeRail {
+              ToolbarItem(placement: .topBarTrailing) {
+                Button { dismiss() } label: {
+                  Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close \(tool.title)")
+              }
+            } else {
+              ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+              }
             }
+          }
+          .onGeometryChange(for: Bool.self) { proxy in
+            workDisplayHasEdgeRail(proxy)
+          } action: { hasRail in
+            if displayHasEdgeRail != hasRail { displayHasEdgeRail = hasRail }
           }
       }
     }
