@@ -142,6 +142,8 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   failed: boolean;
   explanation: string;
   onMediaError: () => void;
+  /** Loads again from the start; null when another try cannot help (no stored bytes). */
+  retry: (() => void) | null;
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<E>(null);
@@ -231,11 +233,15 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
           }));
         });
     };
-    // Images on a paired machine stay on the data URL read; a video has no size cap this way.
-    const mediaServer = video
-      && !isWebClientMode()
+    // A video, and an image on a paired machine, play from the media server:
+    // no 10 MiB cap, no base64 copy in this page, and main keeps a paired
+    // machine's picture so showing it again does not fetch it again. A local
+    // image already streamed above.
+    const mediaServer = !isWebClientMode()
       && !streamRefused
-      && (allowLocalArtifactProtocol || Boolean(targetId && projectId));
+      && (video
+        ? allowLocalArtifactProtocol || Boolean(targetId && projectId)
+        : !allowLocalArtifactProtocol && Boolean(targetId && projectId));
     if (!mediaServer) {
       readDataUrl();
       return () => {
@@ -302,11 +308,23 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   // "unplayable" is only set on a loaded preview and cleared with it (a new
   // artifact resets the state).
   const failed = failure === "unplayable" || (loaded && !preview);
+  const retry = useCallback(() => {
+    setStreamRefused(false);
+    setState(EMPTY_PREVIEW);
+  }, []);
   const explanation = useMemo(() => artifactPreviewExplanation(artifact, {
     // Offline explains any failure on a paired machine, whatever broke first.
     reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,
     machineName: scope.machineName,
   }), [allowLocalArtifactProtocol, artifact, failed, failure, remoteOffline, scope.machineName]);
 
-  return { containerRef, preview, loading, failed, explanation, onMediaError };
+  return {
+    containerRef,
+    preview,
+    loading,
+    failed,
+    explanation,
+    onMediaError,
+    retry: failed && !isBrokenArtifact(artifact) ? retry : null,
+  };
 }
