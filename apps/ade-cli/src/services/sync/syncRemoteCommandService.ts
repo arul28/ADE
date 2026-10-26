@@ -6447,9 +6447,13 @@ function registerMacDesktopRemoteCommands({
       ...status,
       recording: null,
     });
+    // The lane is optional: a viewer asks once with no lane to learn which
+    // lane-screen tool this host has (its platform and support), before any
+    // lane's pane is open. Requiring one left the web client unable to tell a
+    // Linux or Windows host from a Mac.
     register("macDesktop.getStatus", { viewerAllowed: true }, async (payload) =>
       redact(await macDesktopService.getStatus({
-        laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
+        laneId: asTrimmedString(payload.laneId) || null,
       })));
 
     // Frozen inspect from a phone or the hosted web viewer: one accessibility

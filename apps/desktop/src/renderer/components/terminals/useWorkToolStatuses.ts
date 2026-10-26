@@ -596,12 +596,14 @@ export function useWorkToolStatuses(args: {
     The lane's Apple device, for the card's one line. Polled here rather than
     added to the feed provider because it is a lanes-DB read keyed by LANE, and
     the feeds are keyed by machine — different lifetimes, and the card is the
-    only reader.
+    only reader. A host that has answered with another platform has no Apple
+    card and no simulators, so it is not polled; an unanswered host still is.
   */
+  const appleHostPossible = context.hostPlatform == null || context.hostPlatform === "darwin";
   const appleDevice = useAppleLaneDeviceCard({
     laneId,
     runtimePin,
-    enabled: enabled && !offline,
+    enabled: enabled && !offline && appleHostPossible,
     refreshKey: appleDeviceRefreshKey,
   });
 

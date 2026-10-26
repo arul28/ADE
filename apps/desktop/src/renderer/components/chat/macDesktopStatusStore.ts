@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStatus, MacDesktopStopResult } from "../../../shared/types/macDesktop";
-import { subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
+import { subscribeRemoteRuntimeIdentityChanges, subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
 
 /**
  * The one place the pane and the tool card read a lane's desktop from.
@@ -120,14 +120,17 @@ export function withMacDesktopTimeout<T>(
  * the old brain. Without a re-read on these signals the pane and the card kept
  * showing a display that no longer existed. The same three signals the Work
  * pane's tool publish already follows: the local runtime's status, the
- * project's binding, and the paired machines' connection snapshot.
+ * project's binding, and the paired machines' connections.
  */
 export function subscribeMacDesktopRuntimeChanges(onChange: () => void): () => void {
   const ade = typeof window === "undefined" ? undefined : window.ade;
   const disposers = [
     subscribeRuntimeIdentityChanges(onChange),
     ade?.app?.onProjectBindingChanged?.(() => onChange()),
-    ade?.remoteRuntime?.onConnectionSnapshotChanged?.(() => onChange()),
+    // A paired machine connecting, dropping or reconnecting, not every
+    // snapshot: the web client republishes its snapshot every few seconds, and
+    // each one cost the lane's machine a status read over the relay.
+    subscribeRemoteRuntimeIdentityChanges(onChange),
   ];
   return () => {
     for (const dispose of disposers) {
