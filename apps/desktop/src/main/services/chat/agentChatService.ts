@@ -63215,8 +63215,11 @@ export function createAgentChatService(args: {
    * the stop cannot start a new turn. ADE's own stops (turn recovery, a
    * headless limit) call `interrupt` and keep it.
    */
-  const stopRequested = (args: AgentChatInterruptArgs): Promise<AgentChatInterruptResult> =>
-    interruptTree(args, { cancelAutoResume: true }, new Set());
+  const stopRequested = (
+    args: AgentChatInterruptArgs,
+    internalOptions: { requireClaudeProviderInterrupt?: boolean; keepProviderQueue?: boolean } = {},
+  ): Promise<AgentChatInterruptResult> =>
+    interruptTree(args, { ...internalOptions, cancelAutoResume: true }, new Set());
 
   /** `interrupt`, carrying the chats already stopped so a cycle cannot loop. */
   const interruptTree = async (

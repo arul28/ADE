@@ -18,7 +18,7 @@ const OFF_MESSAGE = "Fast mode is off, so Claude is answering at standard speed.
 
 const REASON_DETAIL: Record<string, string> = {
   free: "Fast mode needs a paid Claude plan.",
-  preference: "Fast mode is turned off in Claude Code's own settings.",
+  preference: "Your organization has turned Fast mode off.",
   extra_usage_disabled: "It needs extra usage turned on for this Claude account.",
   network_error: "Claude Code could not reach Anthropic to check Fast mode.",
   not_first_party: "Fast mode works only with an Anthropic account, not through this provider.",
