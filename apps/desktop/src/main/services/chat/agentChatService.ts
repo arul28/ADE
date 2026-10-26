@@ -103,6 +103,7 @@ import {
   normalizeClaudeInterruptReceipt,
   normalizeClaudeRewindSkippedLinks,
   normalizeClaudeSdkSessionMessageModel,
+  sendClaudeControlRequest,
 } from "./claudeSdkCompat";
 import {
   createClaudeStructuredActivityState,
@@ -21300,6 +21301,12 @@ export function createAgentChatService(args: {
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
+    // Every turn end passes here, including the ones that emit no `done`
+    // (a failed dispatch, a stop while the turn was still opening), so a
+    // restart the turn asked for (`afterTurn`) can never be left armed for a
+    // later turn. The `done` event schedules it too, for a runtime still
+    // mid-turn when the idle mark lands.
+    if (managed.restartAfterTurn) runRestartAfterTurn(managed);
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
@@ -21364,10 +21371,6 @@ export function createAgentChatService(args: {
     // `turnStartedAt` is the same guard `maybeRefreshIdleStatusLine` uses: no
     // turn ran, nothing ended. Fire-and-forget and error-safe by construction.
     if (turnStartedAt) notifySimRecordingTurnEnded(managed.session.id);
-    // A restart the turn asked for (`afterTurn`) runs here, where every
-    // provider's turn settles; the `done` event schedules it too, for a turn
-    // whose idle mark came first.
-    if (managed.restartAfterTurn) runRestartAfterTurn(managed);
   };
 
   /**
@@ -63021,6 +63024,32 @@ export function createAgentChatService(args: {
     return { cancelled: true };
   };
 
+  const sessionTurnRunning = (managed: ManagedChatSession): boolean =>
+    runtimeMidTurn(managed) || managed.session.status === "active";
+
+  /**
+   * Run a restart deferred by `afterTurn`, once the turn's `done` has settled.
+   * A queued message that already started the next turn keeps it waiting for
+   * that turn's end; a chat deleted meanwhile drops it.
+   */
+  const runRestartAfterTurn = (managed: ManagedChatSession): void => {
+    setTimeout(() => {
+      if (!managed.restartAfterTurn) return;
+      if (managed.deleted) {
+        managed.restartAfterTurn = false;
+        return;
+      }
+      if (sessionTurnRunning(managed)) return;
+      void restartSession({ sessionId: managed.session.id }).catch((error) => {
+        managed.restartAfterTurn = false;
+        logger.warn("agent_chat.session_restart_after_turn_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 0);
+  };
+
   /**
    * Restart the agent session: stop the provider process, keep the
    * conversation. The next message starts a fresh process that resumes the
@@ -63079,32 +63108,6 @@ export function createAgentChatService(args: {
       backgroundJobsStopped,
     });
     return { sessionId, restarted: hadRuntime, stoppedTurn: midTurn, backgroundJobsStopped };
-  };
-
-  const sessionTurnRunning = (managed: ManagedChatSession): boolean =>
-    runtimeMidTurn(managed) || managed.session.status === "active";
-
-  /**
-   * Run a restart deferred by `afterTurn`, once the turn's `done` has settled.
-   * A queued message that already started the next turn keeps it waiting for
-   * that turn's end; a chat deleted meanwhile drops it.
-   */
-  const runRestartAfterTurn = (managed: ManagedChatSession): void => {
-    setTimeout(() => {
-      if (!managed.restartAfterTurn) return;
-      if (managed.deleted) {
-        managed.restartAfterTurn = false;
-        return;
-      }
-      if (sessionTurnRunning(managed)) return;
-      void restartSession({ sessionId: managed.session.id }).catch((error) => {
-        managed.restartAfterTurn = false;
-        logger.warn("agent_chat.session_restart_after_turn_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }, 0);
   };
 
   /**
@@ -72521,14 +72524,12 @@ export function createAgentChatService(args: {
     const getClaudeUsage = async ({ sessionId, skipBehaviors }: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
       const managed = ensureManagedSession(sessionId);
       const sessionQuery = await getClaudeControlQuery(managed, "/usage");
-      // `get_usage` is a control request the SDK types but gives no method
-      // for (0.3.310); `request` is the channel its typed methods use.
-      const control = sessionQuery as unknown as { request?: (request: Record<string, unknown>) => Promise<{ response?: unknown }> };
-      if (typeof control.request !== "function") {
-        throw new Error("This Claude SDK build cannot report usage.");
-      }
-      const reply = await control.request({ subtype: "get_usage", ...(skipBehaviors ? { skip_behaviors: true } : {}) });
-      return normalizeClaudeUsageReport(reply?.response);
+      const call = sendClaudeControlRequest(sessionQuery, {
+        subtype: "get_usage",
+        ...(skipBehaviors ? { skip_behaviors: true } : {}),
+      });
+      if (!call) throw new Error("This Claude SDK build cannot report usage.");
+      return normalizeClaudeUsageReport((await call)?.response);
     };
 
   /**

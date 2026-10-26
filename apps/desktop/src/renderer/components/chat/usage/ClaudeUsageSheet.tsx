@@ -20,6 +20,8 @@ import {
   type ClaudeUsageReport,
 } from "../../../../shared/claudeUsageReport";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
+import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
+import { formatDurationMs, formatSpend } from "../../../lib/format";
 import { Dialog } from "../../ui/dialog";
 import { useAgentChatApi } from "../agentChatApi";
 import { showToast } from "../../app/toast/toastStore";
@@ -38,30 +40,8 @@ const PLAN_LABELS: Record<string, string> = {
   enterprise: "Enterprise",
 };
 
-const EFFORT_LABELS: Record<string, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function formatUsd(value: number): string {
-  return value < 0.01 && value > 0 ? "<$0.01" : `$${value.toFixed(2)}`;
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
 }
 
 function modelName(model: string): string {
@@ -132,6 +112,8 @@ export function ClaudeUsageSheet({
 }) {
   const [report, setReport] = useState<ClaudeUsageReport | null>(null);
   const [behaviors, setBehaviors] = useState<ClaudeUsageReport["behaviors"] | undefined>(undefined);
+  /** The transcript scan failed; distinct from `behaviors: null`, which means no plan to scan. */
+  const [behaviorsError, setBehaviorsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [range, setRange] = useState<Range>("week");
@@ -151,6 +133,9 @@ export function ClaudeUsageSheet({
     const api = apiRef.current;
     setLoading(true);
     setError(null);
+    setBehaviorsError(null);
+    // Another chat's (or an older) report must not show under this one.
+    setReport(null);
     setNowMs(Date.now());
     // Limits first (no transcript scan), then the scan for "What's using it".
     void api.getClaudeUsage({ sessionId, skipBehaviors: true }, pinRef.current)
@@ -171,10 +156,12 @@ export function ClaudeUsageSheet({
         if (request !== requestRef.current) return;
         setReport(full);
         setBehaviors(full.behaviors);
+        setError(null);
       })
-      .catch(() => {
+      .catch((scanError: unknown) => {
         if (request !== requestRef.current) return;
         setBehaviors(null);
+        setBehaviorsError(errorText(scanError));
       });
   }, [sessionId]);
 
@@ -202,8 +189,14 @@ export function ClaudeUsageSheet({
       for (const text of fixPlan.messages) {
         // A running turn (or the Fix's own first message) is still going, so
         // the rest wait in the queue rather than steering it.
-        if (queueBehindTurn) await api.steer({ sessionId, text }, pinRef.current);
-        else await api.send({ sessionId, text }, pinRef.current);
+        if (queueBehindTurn) {
+          const steered = await api.steer({ sessionId, text }, pinRef.current);
+          if (steered.reason === "queue_full") {
+            throw new Error("This chat's queue is full. Send the rest when the queue clears.");
+          }
+        } else {
+          await api.send({ sessionId, text }, pinRef.current);
+        }
         queueBehindTurn = true;
       }
       showToast({
@@ -271,7 +264,7 @@ export function ClaudeUsageSheet({
                     <div className="ade-cu-limit-line">
                       <span className="ade-cu-limit-label">Extra usage this month</span>
                       <span className="ade-cu-limit-left kit-num">
-                        {`${formatUsd(report.extraUsage.usedCredits ?? 0)} of ${formatUsd(report.extraUsage.monthlyLimit)}`}
+                        {`${formatSpend(report.extraUsage.usedCredits ?? 0)} of ${formatSpend(report.extraUsage.monthlyLimit)}`}
                       </span>
                     </div>
                     <span className="kit-meter">
@@ -297,7 +290,7 @@ export function ClaudeUsageSheet({
                 <div className="ade-cu-stats">
                   <div>
                     <span className="kit-eyebrow">Cost</span>
-                    <div className="kit-stat">{formatUsd(session.costUsd)}</div>
+                    <div className="kit-stat">{formatSpend(session.costUsd)}</div>
                   </div>
                   <div>
                     <span className="kit-eyebrow">Code</span>
@@ -309,7 +302,7 @@ export function ClaudeUsageSheet({
                   </div>
                   <div>
                     <span className="kit-eyebrow">API time</span>
-                    <div className="ade-cu-stat-sm kit-num">{formatDuration(session.apiDurationMs)}</div>
+                    <div className="ade-cu-stat-sm kit-num">{formatDurationMs(session.apiDurationMs)}</div>
                   </div>
                 </div>
                 {session.models.length ? (
@@ -323,7 +316,7 @@ export function ClaudeUsageSheet({
                         >
                           {`${abbreviateTokenCount(row.inputTokens + row.cacheReadTokens + row.cacheWriteTokens)} in · ${abbreviateTokenCount(row.outputTokens)} out`}
                         </span>
-                        <span className="ade-cu-model-cost kit-num">{formatUsd(row.costUsd)}</span>
+                        <span className="ade-cu-model-cost kit-num">{formatSpend(row.costUsd)}</span>
                       </div>
                     ))}
                   </div>
@@ -339,8 +332,7 @@ export function ClaudeUsageSheet({
           <header className="kit-card-head">
             <ChartBar size={14} />
             What's using it
-            <span className="ade-cu-head-spacer" />
-            <div className="kit-seg" role="group" aria-label="Period">
+            <div className="kit-seg ade-cu-period" role="group" aria-label="Period">
               <button type="button" aria-pressed={range === "day"} onClick={() => setRange("day")}>Today</button>
               <button type="button" aria-pressed={range === "week"} onClick={() => setRange("week")}>7 days</button>
             </div>
@@ -350,7 +342,9 @@ export function ClaudeUsageSheet({
               <span className="ade-cu-muted">Reading this computer's Claude sessions…</span>
             ) : !windowData ? (
               <span className="ade-cu-muted">
-                {behaviors === null ? "Only shown for a Claude plan sign-in." : "Nothing recorded in this period."}
+                {behaviorsError
+                  ? "Couldn't read what is using your plan. Refresh to try again."
+                  : behaviors === null ? "Only shown for a Claude plan sign-in." : "Nothing recorded in this period."}
               </span>
             ) : (
               <>
@@ -378,7 +372,7 @@ export function ClaudeUsageSheet({
                     <span className="kit-eyebrow">Fix does</span>
                     <ul className="ade-cu-fix-list">
                       {fixPlan.effort ? (
-                        <li>{`Sets this chat's effort to ${EFFORT_LABELS[fixPlan.effort] ?? fixPlan.effort}`}</li>
+                        <li>{`Sets this chat's effort to ${modelMentionEffortLabel(fixPlan.effort)}`}</li>
                       ) : null}
                       {fixPlan.messages.map((message) => (
                         <li key={message} className="ade-cu-fix-message" title={message}>

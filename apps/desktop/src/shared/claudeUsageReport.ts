@@ -7,6 +7,9 @@
  * answer. Verified against @anthropic-ai/claude-agent-sdk 0.3.310.
  */
 
+import { isRecord } from "./agentObservationNormalizers";
+import { windowLabel } from "./usageWindowPresentation";
+
 export type ClaudeUsageModelRow = {
   model: string;
   inputTokens: number;
@@ -86,17 +89,17 @@ export type AgentChatClaudeUsageArgs = {
   skipBehaviors?: boolean;
 };
 
-/** The app's window names (`shared/usageWindowPresentation.ts`): "5-hour", "Weekly". */
+/** Claude's window keys under the app's own names (`windowLabel`); per-model weeks add the model. */
 const LIMIT_LABELS: Record<string, string> = {
-  five_hour: "5-hour",
-  seven_day: "Weekly",
-  seven_day_opus: "Weekly · Opus",
-  seven_day_sonnet: "Weekly · Sonnet",
-  seven_day_oauth_apps: "OAuth apps",
+  five_hour: windowLabel({ windowType: "five_hour" }),
+  seven_day: windowLabel({ windowType: "weekly" }),
+  seven_day_opus: `${windowLabel({ windowType: "weekly" })} · Opus`,
+  seven_day_sonnet: `${windowLabel({ windowType: "weekly" })} · Sonnet`,
+  seven_day_oauth_apps: windowLabel({ windowType: "weekly_oauth_apps" }),
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  return isRecord(value) ? value : null;
 }
 
 function num(value: unknown): number {
@@ -206,7 +209,7 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
         const row = asRecord(entry);
         const name = str(row?.display_name);
         if (!row || !name) continue;
-        const window = readWindow(`model:${name}`, `Weekly · ${name}`, row);
+        const window = readWindow(`model:${name}`, `${windowLabel({ windowType: "weekly" })} · ${name}`, row);
         // The per-model row repeats a fixed window the server already sent.
         if (window && !limits.some((limit) => limit.label === window.label)) limits.push(window);
       }

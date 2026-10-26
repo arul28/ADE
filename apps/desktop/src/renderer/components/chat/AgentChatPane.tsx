@@ -6909,6 +6909,8 @@ export function AgentChatPane({
     if (!selectedSession && draftLaunchTarget) return draftLaunchTarget.harness;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey, draftLaunchTarget]);
+  /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
+  const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
     provider: selectedSession?.provider ?? sessionProvider,
     events: selectedEventsForDisplay,
@@ -14524,8 +14526,7 @@ export function AgentChatPane({
     if (
       text === "/usage"
       && selectedSessionId
-      && sessionProvider === "claude"
-      && !personalScope
+      && claudeUsageAvailable
       && !attachments.length
       && !contextAttachmentsSnapshot.length
       && !visualContextPrefix.length
@@ -15024,7 +15025,7 @@ export function AgentChatPane({
     countSentMessages,
     openSideChatFromComposer,
     isPersonalPane, attachments,
-    personalScope,
+    claudeUsageAvailable,
     ambientTurnContext,
     buildNativeControlPayload,
     busy,
@@ -19083,7 +19084,7 @@ export function AgentChatPane({
           }}
         />
       ) : null}
-      {selectedSessionId && sessionProvider === "claude" && !personalScope ? (
+      {selectedSessionId && claudeUsageAvailable ? (
         <ClaudeUsageSheet
           open={claudeUsageSheetOpen}
           onOpenChange={setClaudeUsageSheetOpen}

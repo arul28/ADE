@@ -168,7 +168,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   function callRequired<T>(
     action: string,
     args: unknown,
-    capability: "Scheduled work" | "Chat history" | "Chat" | "Usage limit",
+    capability: "Scheduled work" | "Chat history" | "Chat" | "Usage limit" | "Usage",
     idempotent: boolean,
   ): Promise<T> {
     return commands.call<T>(action, asRecord(args), {
@@ -598,7 +598,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getClaudeUsage: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("getClaudeUsage", pin);
-      return await callRequired("chat.getClaudeUsage", args, "Usage limit", true);
+      return await callRequired("chat.getClaudeUsage", args, "Usage", true);
     },
     rewindFiles: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rewindFiles", pin);

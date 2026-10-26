@@ -5797,6 +5797,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .restartSession({
         sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
         ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+        ...(payload.afterTurn === true ? { afterTurn: true } : {}),
       });
     return { ...result, ok: true };
   });

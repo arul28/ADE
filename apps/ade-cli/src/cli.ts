@@ -11534,12 +11534,13 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "restart" || sub === "restart-session") {
     // With no session, an agent restarts its own chat. Its own restart always
     // waits for the turn that asked to end: stopping that turn would cut off
-    // the very command call, and the agent's work with it.
+    // the very command call, and the agent's work with it. The input is built
+    // here rather than through `withSession`, so no `--arg` can add stopFirst.
     const ownSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
     const target = requireValue(sessionId ?? ownSessionId, "sessionId");
-    const ownChat = Boolean(ownSessionId) && target === ownSessionId;
-    const afterTurn = ownChat || readFlag(args, ["--after-turn"]);
+    const ownChat = target === ownSessionId;
     const stopFirst = !ownChat && readFlag(args, ["--stop", "--stop-first"]);
+    const afterTurn = !stopFirst && (ownChat || readFlag(args, ["--after-turn"]));
     return {
       kind: "execute",
       label: "chat restart session",
@@ -11550,7 +11551,8 @@ function buildChatPlan(args: string[]): CliPlan {
           "restartSession",
           {
             sessionId: target,
-            ...(stopFirst ? { stopFirst: true } : afterTurn ? { afterTurn: true } : {}),
+            ...(stopFirst ? { stopFirst: true } : {}),
+            ...(afterTurn ? { afterTurn: true } : {}),
           },
         ),
       ],

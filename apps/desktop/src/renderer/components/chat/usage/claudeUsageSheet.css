@@ -6,7 +6,6 @@
   gap: 8px;
 }
 
-
 .ade-cu-body {
   display: flex;
   flex-direction: column;
@@ -93,7 +92,7 @@
 .ade-cu-model-tokens { font-size: 11px; color: var(--kit-text-3); }
 .ade-cu-model-cost { font-size: 11.5px; text-align: right; color: var(--kit-text-2); }
 
-.ade-cu-head-spacer { flex: 1; }
+.ade-cu-period { margin-left: auto; }
 
 .ade-cu-scope {
   display: block;
@@ -189,4 +188,3 @@
   overflow: hidden;
 }
 
-.ade-cu-fix .kit-btn { display: inline-flex; align-items: center; gap: 6px; }
