@@ -1375,12 +1375,12 @@ describe("interface draft setup", () => {
     expect(initialModelState("chat").interfaceMode).toBe("chat");
   });
 
-  it("starts new TUI chats on GPT-6 Astra with its low default", () => {
+  it("starts new TUI chats on GPT-6.1 Sol with its low default", () => {
     expect(initialModelState("chat")).toMatchObject({
       provider: "codex",
-      model: "gpt-6-astra",
-      modelId: "openai/gpt-6-astra",
-      displayName: "GPT-6 Astra",
+      model: "gpt-6.1-sol",
+      modelId: "openai/gpt-6.1-sol",
+      displayName: "GPT-6.1 Sol",
       reasoningEffort: "low",
       permissionMode: "full-auto",
       codexApprovalPolicy: "never",
@@ -1389,10 +1389,10 @@ describe("interface draft setup", () => {
     expect(registryModelsForProvider("codex").slice(0, 6).map((model) => model.modelId)).toEqual([
       "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
+      "openai/gpt-6.1-terra",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
       "openai/gpt-5.6-sol",
-      "openai/gpt-5.6-terra",
     ]);
   });
 
@@ -1407,18 +1407,18 @@ describe("interface draft setup", () => {
         .map((effort) => ({ effort, description: effort })),
     }];
 
-    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(modelReasoningEfforts(modelState, models)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(modelReasoningEfforts({
       ...modelState,
       model: "gpt-6-astra",
       modelId: "openai/gpt-6-astra",
       displayName: "GPT-6 Astra",
-    }, [])).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    }, [])).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(modelReasoningEfforts({
       ...modelState,
-      model: "gpt-5.6-terra",
-      modelId: "openai/gpt-5.6-terra",
-      displayName: "GPT-5.6 Terra",
+      model: "gpt-5.6-sol",
+      modelId: "openai/gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
     }, [])).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(modelReasoningEfforts({
       ...modelState,
@@ -1435,7 +1435,7 @@ describe("interface draft setup", () => {
       interfaceEditable: true,
     }).find((row) => row.kind === "reasoning")).toMatchObject({
       value: "Light",
-      detail: "Light, Medium, High, Extra High, Max",
+      detail: "Light, Medium, High, Extra High, Max, Ultra",
     });
   });
 

@@ -309,6 +309,7 @@ export {
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
+  userSettingWrite,
 } from "./actionPolicy";
 export type { AdeActionRole, CtoOnlyRule } from "./actionPolicy";
 export {
@@ -1177,6 +1178,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
       agentChatService.getTurnStatus(readStringActionArg(args, "sessionId"));
+  }
+  // Actions arrive as one object (`ade chat ask --clear` sends `{ sessionId }`);
+  // the service takes the id itself.
+  if (typeof base.clearAsk === "function") {
+    service.clearAsk = (args?: unknown) =>
+      agentChatService.clearAsk(readStringActionArg(args, "sessionId"));
   }
   if (typeof base.listScheduledWork === "function") {
     service.listScheduledWork = (args?: unknown) => {
@@ -3971,6 +3978,38 @@ export function buildProviderInstancesDomainService(
   // sink; every machine still has at least its own default account.
   const store = getMachineProviderInstanceStore();
   const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
+  const withAccountUsage = (instances: ReturnType<typeof store.list>) => {
+    const usage = runtime.usageTrackingService;
+    if (!usage) return instances;
+
+    const report = buildUsageLimitsReport(usage.getUsageSnapshot(), { nowMs: Date.now() });
+    const byInstanceId = new Map<string, (typeof report.accounts)[number]>();
+    for (const account of report.accounts) {
+      if (account.instanceId) byInstanceId.set(account.instanceId, account);
+    }
+
+    return instances.map((instance) => {
+      const account = byInstanceId.get(instance.id);
+      if (!account) return instance;
+      return {
+        ...instance,
+        usage: {
+          state: account.state,
+          readAt: account.readAt,
+          note: account.note,
+          windows: account.windows.map((window) => ({
+            type: window.type,
+            label: window.label,
+            percentLeft: window.percentLeft,
+            resetsAt: window.resetsAt,
+            ...(window.unlimited === true ? { unlimited: true as const } : {}),
+            ...(typeof window.countLeft === "number" ? { countLeft: window.countLeft } : {}),
+            ...(typeof window.countTotal === "number" ? { countTotal: window.countTotal } : {}),
+          })),
+        },
+      };
+    });
+  };
   // The registry file caches each account's email and plan from its last
   // refresh. A brain that has never refreshed would list every account as
   // "not signed in" until something else asked, which is what the Accounts
@@ -3987,7 +4026,7 @@ export function buildProviderInstancesDomainService(
           // list below still returns them, marked not signed in.
         });
       }
-      return { instances: store.list(provider) };
+      return { instances: withAccountUsage(store.list(provider)) };
     },
     create(args: unknown) {
       const input = isRecord(args) ? args : {};
@@ -4087,7 +4126,11 @@ export function buildProviderInstancesDomainService(
     async refresh(args: unknown) {
       const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
       const instanceId = isRecord(args) && typeof args.instanceId === "string" ? args.instanceId : undefined;
-      return { instances: await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService) };
+      return {
+        instances: withAccountUsage(
+          await refreshProviderAccounts({ provider, instanceId }, runtime.usageTrackingService),
+        ),
+      };
     },
   } as OpaqueService;
 }
@@ -4137,6 +4180,10 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
     deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),
+    laneBuildOutputRemoved: (args?: { laneId?: string }) =>
+      typeof args?.laneId === "string" && args.laneId.trim()
+        ? storageInsightsService.laneBuildOutputRemoved(args.laneId.trim())
+        : Promise.resolve(null),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {

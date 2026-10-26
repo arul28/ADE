@@ -104,14 +104,14 @@ export function EditorGroup(props: EditorGroupProps) {
     const name = tab.path.split("/").filter(Boolean).pop() ?? tab.path;
     return [
       { type: "item", label: "Close", icon: <X size={13} />, onClick: () => props.onCloseTab(group.id, tabId) },
-      { type: "item", label: "Close Others", icon: <XCircle size={13} />, onClick: () => props.onCloseOthers(group.id, tabId), disabled: group.tabs.length <= 1 },
+      { type: "item", label: "Close others", icon: <XCircle size={13} />, onClick: () => props.onCloseOthers(group.id, tabId), disabled: group.tabs.length <= 1 },
       { type: "separator" },
       { type: "item", label: pinned ? "Pinned" : "Pin", icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} />, onClick: () => props.onPinTab(group.id, tabId), disabled: pinned },
-      { type: "item", label: "Split Right", icon: <SplitHorizontal size={13} />, onClick: () => props.onSplitTab(group.id, tabId), disabled: group.tabs.length <= 1 },
+      { type: "item", label: "Split right", icon: <SplitHorizontal size={13} />, onClick: () => props.onSplitTab(group.id, tabId), disabled: group.tabs.length <= 1 },
       { type: "separator" },
-      { type: "item", label: "Copy Full Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(joinDisplayPath(ctx.rootPath, tab.path)) },
-      { type: "item", label: "Copy Relative Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(tab.path) },
-      { type: "item", label: "Copy Name", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(name) },
+      { type: "item", label: "Copy path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(joinDisplayPath(ctx.rootPath, tab.path)) },
+      { type: "item", label: "Copy relative path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(tab.path) },
+      { type: "item", label: "Copy name", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(name) },
       {
         type: "item",
         label: revealLabel,
@@ -226,10 +226,10 @@ export function EditorGroup(props: EditorGroupProps) {
                       key={m}
                       type="button"
                       onClick={() => toggleDiff(activeTab.id)}
-                      className="px-2 py-0.5 text-[10px] font-semibold uppercase"
+                      className="px-2 py-0.5 text-[11px] font-medium"
                       style={{ color: isOn ? "var(--color-accent-fg)" : COLORS.textMuted, background: isOn ? COLORS.accent : "transparent" }}
                     >
-                      {m}
+                      {m === "edit" ? "Edit" : "Diff"}
                     </button>
                   );
                 })}

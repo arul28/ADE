@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DotsThreeVertical, Info, StopCircle } from "@phosphor-icons/react";
+import { DotsThreeVertical, Info, Square } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
@@ -77,12 +77,15 @@ function StopSessionButton({
     <SmartTooltip content={{ label: stopping ? "Stopping…" : "Stop session", description: "Terminate the running session." }}>
       <button
         type="button"
-        className={cn(WORK_SURFACE_HEADER_ACTION_BASE, "px-1.5 text-red-300/70 hover:text-red-200")}
+        className={cn(
+          WORK_SURFACE_HEADER_ACTION_BASE,
+          "w-6 justify-center px-0 border-red-500/25 bg-red-500/[0.08] text-red-400/80 hover:border-red-500/40 hover:bg-red-500/[0.14] hover:text-red-400 disabled:opacity-50",
+        )}
         onClick={() => onStopRunningSession?.(session)}
         aria-label="Stop session"
         disabled={stopping}
       >
-        <StopCircle size={14} weight="regular" />
+        <Square size={9} weight="fill" />
       </button>
     </SmartTooltip>
   );
@@ -313,7 +316,6 @@ export function CliSessionWorkSurfaceHeader({
       trailingActions={
         <>
           <ClaudeLoginHeaderAction session={session} runtimePin={runtimePin} />
-          <SessionStatusDot session={session} />
           <CliSurfaceTrailingActions
             session={session}
             stopping={stopping}

@@ -635,6 +635,8 @@ struct WorkChatSessionView: View {
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
   @StateObject var outputViewer = WorkOutputViewerModel()
+  /// The skill chip sheet: one per chat surface, asked for by chips in cells.
+  @StateObject var skillInstructions = WorkSkillInstructionsModel()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -690,6 +692,10 @@ struct WorkChatSessionView: View {
   let onOpenPr: @MainActor (Int) async -> Void
   let onLoadArtifact: WorkArtifactLoader
   let onRefreshArtifacts: @MainActor () async -> Void
+  /// Cited proof the chat's list does not hold, found on the chat's host by id.
+  var citedProofArtifacts: [String: ComputerUseArtifactSummary] = [:]
+  /// Asks the chat's host once about a cited id its list does not hold.
+  var onResolveMissingProof: (@MainActor (String) async -> Void)? = nil
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
   let onDispatchSteerInline: (@MainActor (String) async -> Void)?
@@ -1514,8 +1520,13 @@ struct WorkChatSessionView: View {
   var transcriptContentRevision: Int {
     var hasher = Hasher()
     hasher.combine(artifactContentRenderSignature)
-    // An answer's proof citation shows once its artifact is in the list.
+    // An answer's proof citation shows once its artifact is in the list, or
+    // once the chat's host has named a cited proof the list does not hold.
     hasher.combine(artifactsRenderSignature)
+    for id in citedProofArtifacts.keys.sorted() {
+      hasher.combine(id)
+      hasher.combine(citedProofArtifacts[id]?.uri)
+    }
     hasher.combine(maxUserBubbleWidth ?? 0)
     hasher.combine(chatSummaryContext.provider)
     hasher.combine(chatSummaryContext.usageLimitResume != nil)
@@ -2024,11 +2035,12 @@ struct WorkChatSessionView: View {
   private var proofCitationContext: WorkProofCitationContext {
     WorkProofCitationContext(
       artifactsById: Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
-      lookup: { [syncServiceReference] id in
-        syncServiceReference.service?.fetchComputerUseArtifact(id: id)
+      lookup: { [syncServiceReference, citedProofArtifacts] id in
+        citedProofArtifacts[id] ?? syncServiceReference.service?.fetchComputerUseArtifact(id: id)
       },
       content: artifactContent,
-      load: onLoadArtifact
+      load: onLoadArtifact,
+      resolveMissing: onResolveMissingProof
     )
   }
 
@@ -2073,6 +2085,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
             .modifier(
@@ -2574,6 +2587,14 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// Skill chips in this chat open their instructions from this chat's own
+  /// machine, so the capability is asked of that machine, per chat.
+  private func bindSkillInstructions() {
+    let sessionId = session.id
+    let reference = syncServiceReference
+    skillInstructions.isSupported = { reference.service?.supportsSkillInstructions(sessionId: sessionId) ?? false }
+  }
+
   /// Haptics and sheet presenters, split from `body` for type-checker budget.
   private func feedbackAndSheets<V: View>(_ content: V) -> some View {
     content
@@ -2582,6 +2603,18 @@ struct WorkChatSessionView: View {
         .environment(\.workOutputViewer, outputViewer)
         .fullScreenCover(item: $outputViewer.request) { request in
           WorkOutputViewerScreen(request: request)
+        }
+        .environment(\.workSkillInstructions, skillInstructions)
+        .onAppear { bindSkillInstructions() }
+        .onChange(of: session.id) { _, _ in bindSkillInstructions() }
+        .sheet(item: $skillInstructions.request) { request in
+          WorkSkillInstructionsSheet(
+            sessionId: session.id,
+            name: request.name,
+            service: syncServiceReference.service
+          )
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $artifactDrawerPresented, onDismiss: { proofDrawerFocus = nil }) {
           WorkProofSheet(

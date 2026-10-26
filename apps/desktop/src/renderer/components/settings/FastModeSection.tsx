@@ -37,7 +37,7 @@ export function FastModeSection() {
         <ModernRow
           anchor="fast-mode"
           title="Allow Fast mode"
-          hint="Roughly 2× standard, up to 8× for Ultrafast. Off for your account until you turn it on here; even then, every new chat starts at Standard and you turn Fast on per chat."
+          hint="About 2× cost (Ultrafast up to 8×). Chats start at Standard; turn Fast on per chat."
           control={(
             <SettingsToggle
               label="Allow Fast mode"

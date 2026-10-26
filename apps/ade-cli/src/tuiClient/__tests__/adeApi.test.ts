@@ -1232,7 +1232,7 @@ describe("getAvailableModels", () => {
 });
 
 describe("createChatSession", () => {
-  it("defaults Codex chats to GPT-6 Astra low reasoning", async () => {
+  it("defaults Codex chats to GPT-6.1 Sol low reasoning", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
     const connection = {
       action: async (domain: string, action: string, args?: Record<string, unknown>) => {
@@ -1241,7 +1241,7 @@ describe("createChatSession", () => {
           id: "chat-1",
           laneId: "lane-1",
           provider: "codex",
-          model: "gpt-6-astra",
+          model: "gpt-6.1-sol",
           status: "idle",
           createdAt: "2026-01-01T00:00:00.000Z",
           lastActivityAt: "2026-01-01T00:00:00.000Z",
@@ -1257,8 +1257,8 @@ describe("createChatSession", () => {
         action: "createSession",
         args: expect.objectContaining({
           provider: "codex",
-          model: "gpt-6-astra",
-          modelId: "openai/gpt-6-astra",
+          model: "gpt-6.1-sol",
+          modelId: "openai/gpt-6.1-sol",
           reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
           surface: "work",
         }),
@@ -1278,13 +1278,13 @@ describe("createChatSession", () => {
     await createChatSession({
       connection,
       laneId: "lane-1",
-      modelId: "openai/gpt-5.6-terra",
+      modelId: "openai/gpt-5.6-sol",
     });
 
     expect(calls[0]?.args).toEqual(expect.objectContaining({
-      model: "gpt-5.6-terra",
-      modelId: "openai/gpt-5.6-terra",
-      reasoningEffort: "medium",
+      model: "gpt-5.6-sol",
+      modelId: "openai/gpt-5.6-sol",
+      reasoningEffort: "low",
     }));
   });
 

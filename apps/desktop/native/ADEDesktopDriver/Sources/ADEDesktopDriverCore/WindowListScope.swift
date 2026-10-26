@@ -56,3 +56,47 @@ public struct WindowListScope: Equatable, Sendable {
         return true
     }
 }
+
+/// Which window-server layers a listing keeps.
+///
+/// Layer 0 is where ordinary document windows live, and for a long time it was
+/// the only layer listed. An app's modal alert (`NSAlert.runModal`, layer 8)
+/// and its floating palettes (layer 3) are real windows too, and leaving them
+/// out meant `observe`, `claim`, `park` and the watcher could not see a panel
+/// that blocked the whole app. From the menu band up (the menu bar, status
+/// items, pop-up menus, tooltips, the screen saver) nothing is a window a lane
+/// should hold.
+public enum WindowLayerPolicy {
+    /// `kCGMainMenuWindowLevel`. This layer and everything above stay out.
+    public static let menuBand = 24
+    /// `kCGModalPanelWindowLevel`: an app-modal alert or panel.
+    public static let modalPanel = 8
+
+    /// Whether an entry at `layer` may be listed.
+    ///
+    /// A panel layer (1 up to the menu band) is kept only for an app a lane
+    /// watches (it launched it or holds one of its windows), for a lookup that
+    /// named the window by id, or for the system Open/Save panel service in a
+    /// lane's own listing. Other apps' floating panels never fill the claim
+    /// picker.
+    public static func admits(
+        layer: Int,
+        ownerIsLaneApp: Bool,
+        lookupById: Bool,
+        isOpenSavePanelInLaneListing: Bool
+    ) -> Bool {
+        if layer == 0 { return true }
+        guard layer > 0, layer < menuBand else { return false }
+        return ownerIsLaneApp || lookupById || isOpenSavePanelInLaneListing
+    }
+
+    /// The process macOS runs an app's Open and Save panels in, when the app
+    /// is sandboxed or asks for the remote panel. On macOS 27 the panel window
+    /// on screen belongs to the app, which shows the service's content in it;
+    /// the service owns only a hidden window. A window it does own is never a
+    /// lane's to take.
+    public static func isOpenSavePanelService(bundleId: String?) -> Bool {
+        guard let bundleId else { return false }
+        return bundleId.hasPrefix("com.apple.appkit.xpc.openAndSavePanelService")
+    }
+}

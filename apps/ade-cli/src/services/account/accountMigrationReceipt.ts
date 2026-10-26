@@ -41,6 +41,12 @@ export type MigrationSource =
   | "renderer_preferences"
   /** `project-secrets.v1.enc` — the project secret store. */
   | "project_secrets"
+  /**
+   * Account rows a repository filed under its SSH-alias key
+   * (`repo:github.com-work/org/repo`) before ADE resolved aliases, copied to
+   * the `repo:github.com/org/repo` key the repository uses now.
+   */
+  | "repo_scope_alias"
   /** `ai.api_key.*` — provider API keys from the Electron-only store. */
   | "provider_api_keys"
   /** `linear.token.v1` and friends — the Linear OAuth credential. */
@@ -50,9 +56,13 @@ export const MIGRATION_SOURCES: readonly MigrationSource[] = [
   "shared_project_config",
   "renderer_preferences",
   "project_secrets",
+  "repo_scope_alias",
   "provider_api_keys",
   "linear_credentials",
 ] as const;
+
+/** Sources recorded for each project root rather than once for the machine. */
+const PROJECT_SOURCES: ReadonlySet<MigrationSource> = new Set(["project_secrets", "repo_scope_alias"]);
 
 export type MigrationOutcome = {
   /** Set only after the account confirmed the write. */
@@ -147,7 +157,7 @@ export function createAccountMigrationReceipt(args: {
   }
 
   function scopedProjectRoot(source: MigrationSource, scope?: MigrationReceiptScope): string | null {
-    if (source !== "project_secrets") return null;
+    if (!PROJECT_SOURCES.has(source)) return null;
     const root = scope?.projectRoot?.trim();
     return root ? canonicalProjectRoot(root, platform) : null;
   }
@@ -157,7 +167,7 @@ export function createAccountMigrationReceipt(args: {
     source: MigrationSource,
     scope?: MigrationReceiptScope,
   ): Partial<Record<MigrationSource, MigrationOutcome>> {
-    if (source !== "project_secrets") return receipt.sources;
+    if (!PROJECT_SOURCES.has(source)) return receipt.sources;
     const root = scope?.projectRoot?.trim();
     if (!root) return receipt.sources;
 

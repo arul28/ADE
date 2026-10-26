@@ -321,7 +321,7 @@ describe("AutoHandoffModal", () => {
     fireEvent.click(screen.getByRole("switch", { name: "usage limit" }));
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("alert").textContent).toContain("at least one");
-    expect((screen.getByRole("button", { name: /rule for all/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /apply to all chats/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("defaults the model to the first configured one that is not the chat's own", async () => {
@@ -429,13 +429,13 @@ describe("AutoHandoffModal", () => {
     await expect(loadAutoHandoffRulesForSession("chat-42")).resolves.toBeNull();
   });
 
-  it("saves an unscoped rule from the rule-for-all link", async () => {
+  it("saves an unscoped rule from the apply-to-all-chats link", async () => {
     renderModal();
     await waitFor(() => {
       expect((screen.getByLabelText("Handoff model") as HTMLSelectElement).value).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /rule for all/ }));
+    fireEvent.click(screen.getByRole("button", { name: /apply to all chats/i }));
 
     await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1));
     const draft = saveDraft.mock.calls[0]![0].draft;

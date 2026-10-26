@@ -579,11 +579,10 @@ export function CrossMachineHandoffModal({
   const sendLabel = turnActive ? "Send when this turn ends" : "Send chat";
 
   const newChatControls = onModelChange && modelId != null ? (
-    <div className="space-y-1.5">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-fg/38">The new chat</span>
-      {/* The composer's own control row, so each picker keeps its
-          own "can this model do it?" logic. */}
-      <div className="flex flex-wrap items-center gap-1.5">
+    // The composer's own control row, so each picker keeps its own
+    // "can this model do it?" logic.
+    // A size container, so the effort chip spells its level out ("High").
+    <div className="@container flex flex-wrap items-center gap-1.5">
         <ModelPicker
           value={modelId}
           onChange={(nextModelId, pickerOptions) => {
@@ -612,10 +611,6 @@ export function CrossMachineHandoffModal({
           />
         ) : null}
         {destinationPermissionPicker}
-      </div>
-      {mode === "fork" ? (
-        <span className="block text-[10px] leading-4 text-fg/40">Full history replays onto the destination; any available model is fine.</span>
-      ) : null}
     </div>
   ) : null;
 
@@ -658,8 +653,8 @@ export function CrossMachineHandoffModal({
       }}
       title="Continue on another computer"
       hideHeader
-      width={760}
-      maxHeight="min(780px, calc(100vh - 32px))"
+      width={640}
+      maxHeight="min(720px, calc(100vh - 32px))"
       bodyPadding={false}
       scrollBody={false}
       bodyStyle={{ display: "flex", flexDirection: "column" }}
@@ -672,12 +667,18 @@ export function CrossMachineHandoffModal({
         if (document.querySelector("[data-permission-mode-picker-dropdown]")) event.preventDefault();
       }}
       footerStart={
-        <div className="min-w-0 text-[10px] text-fg/38">
+        <div className="min-w-0 truncate whitespace-nowrap text-[10.5px] text-fg/40">
           {busyLabel ? (
             <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
           ) : stage === "choose"
-            ? (queueOnly ? "Nothing moves until this turn ends. A new message from you keeps it here." : "Nothing is sent until you confirm.")
-            : "This chat stays here too. Progress shows above its composer."}
+            ? (queueOnly
+              ? "A new message from you keeps it here."
+              : !loading && continueBlockers.length > 0
+                ? (continueBlockers.some((blocker) => blocker.id === "turn-active")
+                  ? "Choose when to move this chat first."
+                  : continueBlockers.length === 1 ? "Fix the item above to continue." : "Fix the items above to continue.")
+                : null)
+            : "This chat stays here too."}
         </div>
       }
       footer={
@@ -726,8 +727,8 @@ export function CrossMachineHandoffModal({
         </div>
       }
     >
-        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-fg/[0.065] px-5 py-4">
-          <div className="flex min-w-0 items-start gap-3">
+        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-fg/[0.065] px-5 py-3.5">
+          <div className="flex min-w-0 items-center gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200">
               <CloudArrowUp size={19} weight="duotone" />
             </div>
@@ -735,8 +736,8 @@ export function CrossMachineHandoffModal({
               <h2 aria-hidden="true" className="font-sans text-[14px] font-semibold text-fg/92">
                 Continue on another computer
               </h2>
-              <p className="mt-1 text-[11px] leading-4 text-fg/48">
-                Continue this chat on one of your other computers. ADE copies your branch over and starts a new chat where this one left off.
+              <p className="mt-0.5 truncate whitespace-nowrap text-[11px] leading-4 text-fg/48">
+                ADE copies your branch there and picks up where this chat left off.
               </p>
             </div>
           </div>

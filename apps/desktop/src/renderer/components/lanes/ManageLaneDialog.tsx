@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { toneText } from "./laneDesignTokens";
 import {
   WarningCircle,
   Archive,
@@ -289,13 +288,13 @@ function ManageLaneHeaderDetails({
               />
               <span className="font-semibold text-fg">{lane.name}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
-              <span className="truncate font-mono text-muted-fg/60">{lane.branchRef}</span>
+              <span className="truncate font-mono text-muted-fg/60">{formatBranchLabel(lane.branchRef)}</span>
               <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
                 {lane.laneType}
               </span>
               {lane.status.dirty ? (
-                <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
-                  dirty
+                <span className="whitespace-nowrap rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+                  Uncommitted changes
                 </span>
               ) : null}
             </div>
@@ -310,19 +309,21 @@ function ManageLaneHeaderDetails({
 
   return (
     <div data-tour="lanes.manageDialog.laneInfo" className="min-w-0">
-      {lane.status.dirty ? (
-        <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
-          dirty
-        </span>
-      ) : null}
-      <dl className={`space-y-1.5 text-xs${lane.status.dirty ? " mt-2.5" : ""}`}>
-        <div className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5">
+      <dl className="space-y-1 text-xs">
+        <div className="grid grid-cols-[48px_1fr] items-center gap-x-3">
           <dt className="text-muted-fg/60">Branch</dt>
-          <dd className="min-w-0 truncate font-mono text-fg/85">{lane.branchRef}</dd>
+          <dd className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate font-mono text-fg/85">{formatBranchLabel(lane.branchRef)}</span>
+            {lane.status.dirty ? (
+              <span className="shrink-0 whitespace-nowrap rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+                Uncommitted changes
+              </span>
+            ) : null}
+          </dd>
         </div>
-        <div className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5">
+        <div className="grid grid-cols-[48px_1fr] items-center gap-x-3">
           <dt className="text-muted-fg/60">Path</dt>
-          <dd className="min-w-0 break-all text-fg/75">{lane.worktreePath}</dd>
+          <dd className="min-w-0 truncate text-fg/75" title={lane.worktreePath}>{lane.worktreePath}</dd>
         </div>
       </dl>
     </div>
@@ -507,9 +508,9 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleLaneType]);
-  // Manage Lane opens on Delete — it's the first tab and the action users
-  // reach for most. Other tabs (appearance, restack, archive) are opt-in, or
-  // picked by the caller (the sidebar's "Archive all" opens on Archive).
+  // Manage Lane opens on Delete, the first tab and the action users reach for
+  // most, with nothing ticked (the hosts start with an empty selection and
+  // Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
     if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
     return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
@@ -580,6 +581,14 @@ export function ManageLaneDialog({
   }, [open, runtimePin, singleLaneId]);
 
   const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
+  // A lane with uncommitted work only deletes with Force on; say so at the button.
+  const needsForce = hasAnyDirty && !deleteForce;
+  const deleteDisabledReason = !hasDeleteSelection
+    ? "Pick what to delete"
+    : needsForce
+      ? "Tick Force delete to discard uncommitted work"
+      : null;
+  const deleteDisabled = laneActionBusy || deleteDisabledReason != null;
   const showStaticBusy = laneActionBusy && !deleteProgress;
   const reclaimBlocked = reclaimRisk?.blockedReasons.some((reason) => reason.disposition === "blocked") ?? false;
 
@@ -631,15 +640,22 @@ export function ManageLaneDialog({
     });
   };
 
+  // A branch that was never pushed has no remote copy to delete.
+  const remoteBranchMissing = deleteRisk != null && !deleteRisk.remoteBranchExists;
   const allTargetsSelected =
-    deleteSelection.worktree && deleteSelection.localBranch && deleteSelection.remoteBranch;
+    deleteSelection.worktree && deleteSelection.localBranch && (deleteSelection.remoteBranch || remoteBranchMissing);
   const toggleSelectAll = () => {
     setDeleteSelection(
       allTargetsSelected
         ? EMPTY_LANE_DELETE_SELECTION
-        : { worktree: true, localBranch: true, remoteBranch: true },
+        : { worktree: true, localBranch: true, remoteBranch: !remoteBranchMissing },
     );
   };
+  useEffect(() => {
+    if (remoteBranchMissing && deleteSelection.remoteBranch) {
+      setDeleteSelection({ ...deleteSelection, remoteBranch: false });
+    }
+  }, [remoteBranchMissing, deleteSelection, setDeleteSelection]);
 
   useEffect(() => {
     if (tabDefs.some((tab) => tab.id === activeTab)) return;
@@ -692,6 +708,8 @@ export function ManageLaneDialog({
       headerExtra={headerExtra}
       width="min(720px, calc(100vw - 1rem))"
       busy={laneActionBusy}
+      // The rename pencil is the first control; focusing it on open drew a ring.
+      preventAutoFocus
     >
       {lanes.length === 0 ? (
         <div className="py-4 text-sm text-muted-fg">Select a lane first.</div>
@@ -854,50 +872,38 @@ export function ManageLaneDialog({
 
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
-              <p className="text-xs text-red-200/70">
-                Stops lane activity and removes what you pick below. Cannot be undone.
+              <p className="whitespace-nowrap text-xs text-red-200/70">
+                Stops lane activity and removes what you pick. Cannot be undone.
+                {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
+                  <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.</span>
+                ) : null}
               </p>
-              {!isBatch && reclaimRisk ? (
-                <div className="mt-2 text-xs text-muted-fg/70">
-                  Estimated local files removed: <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.
-                  Branch deletion is separate below.
-                </div>
-              ) : null}
 
-              {hasAnyDirty ? (
-                <Banner
-                  model={{
-                    id: "lane-delete-dirty-warning",
-                    tone: "warning",
-                    title: isBatch ? "Uncommitted changes on some lanes." : "Uncommitted changes on this lane.",
-                  }}
-                  layout="inline"
-                  style={{ marginTop: 12 }}
-                />
-              ) : null}
-
+              {/* Uncommitted changes are named once, by the header chip; the
+                  Force delete row and the button's reason carry the rest. */}
               <DeleteTargetChecklist
                 selection={deleteSelection}
-                allSelected={allTargetsSelected}
+                // A row that cannot be picked leaves "Select everything" mixed, not ticked.
+                allSelected={allTargetsSelected && !remoteBranchMissing}
                 disabled={laneActionBusy}
                 onToggle={toggleDeleteTarget}
                 onToggleAll={toggleSelectAll}
                 risk={deleteRisk}
                 lane={singleLane}
+                remoteBranchMissing={remoteBranchMissing}
               />
 
               {singleLane ? (
                 <PreflightPanel
                   risk={deleteRisk}
-                  selection={deleteSelection}
-                  lane={singleLane}
                   chatSessionCount={chatSessionCount}
                 />
               ) : null}
 
-              <label className="mt-3 flex items-center gap-2 text-xs text-muted-fg/80 cursor-pointer select-none">
+              <label className="mt-3 flex items-center gap-2 whitespace-nowrap text-xs text-muted-fg/80 cursor-pointer select-none">
                 <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded accent-red-400" />
                 Force delete
+                <span className="text-muted-fg/50">· discards uncommitted work</span>
               </label>
 
               {deleteProgress ? (
@@ -925,14 +931,17 @@ export function ManageLaneDialog({
                 />
               ) : null}
 
-              <div className="mt-4 flex items-center gap-2">
+              <div className="mt-4 flex items-center gap-3">
                 <Button
                   size="sm"
-                  variant="primary"
+                  variant="danger"
+                  casing="sentence"
                   data-tour="lanes.manageDialog.delete"
-                  className="bg-red-600 hover:bg-red-500"
-                  disabled={laneActionBusy || !hasDeleteSelection}
+                  disabled={deleteDisabled}
                   onClick={onDelete}
+                  className={deleteDisabled
+                    ? "!border-fg/[0.1] !bg-fg/[0.05] !text-muted-fg disabled:!opacity-100"
+                    : "!border-red-600 !bg-red-600 !text-white hover:!bg-red-500"}
                 >
                   {laneActionBusy && laneActionKind === "delete" ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
                   {laneActionBusy && laneActionKind === "delete"
@@ -941,6 +950,9 @@ export function ManageLaneDialog({
                       ? `Delete ${lanes.length} lanes`
                       : "Delete lane"}
                 </Button>
+                {deleteDisabledReason && !laneActionBusy ? (
+                  <span className="whitespace-nowrap text-xs text-muted-fg/70">{deleteDisabledReason}</span>
+                ) : null}
               </div>
             </ManageLaneTabPanel>
           ) : null}
@@ -976,6 +988,7 @@ function DeleteTargetChecklist({
   onToggleAll,
   risk,
   lane,
+  remoteBranchMissing,
 }: {
   selection: LaneDeleteSelection;
   allSelected: boolean;
@@ -984,12 +997,14 @@ function DeleteTargetChecklist({
   onToggleAll: () => void;
   risk: LaneDeleteRisk | null;
   lane: LaneSummary | null;
+  /** The branch was never pushed, so the remote row has nothing to delete. */
+  remoteBranchMissing: boolean;
 }) {
   const branchRef = risk?.branchRef ?? lane?.branchRef ?? null;
   const branchLabel = branchRef ? formatBranchLabel(branchRef) : null;
   const someSelected = selection.worktree || selection.localBranch || selection.remoteBranch;
 
-  const rows: { key: keyof LaneDeleteSelection; icon: React.ReactNode; title: string; hint: string; mono?: boolean }[] = [
+  const rows: { key: keyof LaneDeleteSelection; icon: React.ReactNode; title: string; hint: string; mono?: boolean; unavailable?: boolean }[] = [
     {
       key: "worktree",
       icon: <Cube size={15} weight="duotone" />,
@@ -1007,8 +1022,9 @@ function DeleteTargetChecklist({
       key: "remoteBranch",
       icon: <Cloud size={15} weight="duotone" />,
       title: "Remote branch",
-      hint: branchLabel ? `origin · ${branchLabel}` : "Delete the branch on the remote",
-      mono: Boolean(branchLabel),
+      hint: remoteBranchMissing ? "Not on remote" : branchLabel ? `origin · ${branchLabel}` : "Delete the branch on the remote",
+      mono: Boolean(branchLabel) && !remoteBranchMissing,
+      unavailable: remoteBranchMissing,
     },
   ];
 
@@ -1023,24 +1039,21 @@ function DeleteTargetChecklist({
       >
         <DeleteCheckbox checked={allSelected} indeterminate={someSelected && !allSelected} />
         <div className="min-w-0 flex-1 text-[11px] font-medium text-fg">Select everything</div>
-        {allSelected ? (
-          <span className="shrink-0 rounded-full bg-red-500/15 px-1.5 py-px text-[10px] font-medium text-red-200">All</span>
-        ) : null}
       </button>
 
       <div className="ml-3 overflow-hidden rounded-xl border border-fg/[0.08] bg-black/25">
         <div className="divide-y divide-fg/[0.04]">
           {rows.map((row) => {
-            const checked = selection[row.key];
+            const checked = selection[row.key] && !row.unavailable;
             return (
               <button
                 key={row.key}
                 type="button"
                 role="checkbox"
                 aria-checked={checked}
-                disabled={disabled}
+                disabled={disabled || row.unavailable}
                 onClick={() => onToggle(row.key, !checked)}
-                className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed ${row.unavailable ? "disabled:opacity-40" : "disabled:opacity-60"} ${
                   checked ? "bg-red-500/[0.08]" : "hover:bg-fg/[0.03]"
                 }`}
               >
@@ -1067,73 +1080,11 @@ function DeleteTargetChecklist({
   );
 }
 
-type DeleteRemovalItem = { icon: React.ReactNode; label: React.ReactNode; hint?: string };
-
-function buildDeleteRemovalPreview(
-  selection: LaneDeleteSelection,
-  lane: LaneSummary,
-  risk: LaneDeleteRisk | null,
-): DeleteRemovalItem[] {
-  const items: DeleteRemovalItem[] = [];
-  const branchRef = risk?.branchRef ?? lane.branchRef ?? null;
-  const branchLabel = branchRef ? formatBranchLabel(branchRef) : null;
-  const laneColor = lane.color ?? null;
-  const laneColorStyle = laneColor ? { color: toneText(laneColor) } : undefined;
-
-  if (selection.worktree) {
-    items.push({
-      icon: (
-        <LaneIcon
-          size={13}
-          weight="duotone"
-          className={laneColor ? "shrink-0" : "shrink-0 text-red-300/80"}
-          style={laneColorStyle}
-        />
-      ),
-      label: (
-        <span className="flex min-w-0 flex-col">
-          <span className="font-semibold" style={laneColorStyle}>
-            {lane.name}
-          </span>
-          {lane.worktreePath ? (
-            <span className="break-all text-[11px] text-muted-fg/55">{lane.worktreePath}</span>
-          ) : null}
-        </span>
-      ),
-    });
-  }
-
-  if (selection.localBranch && branchLabel) {
-    const unpushed =
-      risk?.hasUnpushedCommits && risk.unpushedCommitCount > 0
-        ? ` · ${risk.unpushedCommitCount} unpushed`
-        : "";
-    items.push({
-      icon: <BranchIcon size={12} className="text-red-300/80" />,
-      label: `Local branch · ${branchLabel}${unpushed}`,
-    });
-  }
-
-  if (selection.remoteBranch && branchLabel) {
-    items.push({
-      icon: <Cloud size={12} className="text-red-300/80" />,
-      label: `Remote · origin/${branchLabel}`,
-      hint: risk && !risk.remoteBranchExists ? "Not on remote yet" : undefined,
-    });
-  }
-
-  return items;
-}
-
 function PreflightPanel({
   risk,
-  selection,
-  lane,
   chatSessionCount,
 }: {
   risk: LaneDeleteRisk | null;
-  selection: LaneDeleteSelection;
-  lane: LaneSummary;
   chatSessionCount?: number;
 }) {
   const willStop: { icon: React.ReactNode; label: string }[] = [];
@@ -1157,40 +1108,18 @@ function PreflightPanel({
     });
   }
 
-  const willRemove = buildDeleteRemovalPreview(selection, lane, risk);
-
-  if (willStop.length === 0 && willRemove.length === 0) return null;
+  // What gets removed is the checklist above; this panel names only what stops.
+  if (willStop.length === 0) return null;
 
   return (
-    <div className="mt-3 rounded-lg border border-fg/[0.08] bg-black/30 px-3 py-2.5">
-      {willStop.length > 0 ? (
-        <ul className="space-y-1.5">
-          {willStop.map((item, i) => (
-            <li key={`stop-${i}`} className="flex items-center gap-2 text-xs text-fg/80">
-              {item.icon}
-              <span>{item.label}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {willRemove.length > 0 ? (
-        <>
-          <div className={`text-[10px] uppercase tracking-wide text-muted-fg/50 ${willStop.length > 0 ? "mt-2.5" : ""} mb-1.5`}>
-            Will remove
-          </div>
-          <ul className="space-y-1.5">
-            {willRemove.map((item, i) => (
-              <li key={`remove-${i}`} className="flex items-start gap-2 text-xs text-red-200/85">
-                <span className="mt-0.5 flex h-3.5 w-3.5 items-center justify-center">{item.icon}</span>
-                <span className="flex min-w-0 flex-1 items-baseline gap-1 break-all">
-                  {item.label}
-                  {item.hint ? <span className="text-muted-fg/60">({item.hint})</span> : null}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg/80">
+      <span className="text-muted-fg/60">Stops</span>
+      {willStop.map((item, i) => (
+        <span key={`stop-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          {item.icon}
+          {item.label}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1222,7 +1151,7 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
         ))}
       </div>
       {progress.overallStatus === "cancelled" ? (
-        <div className="mt-2 text-[11px] text-amber-300">Delete cancelled. The lane was not removed.</div>
+        <div className="mt-2 text-[11px] text-amber-300">Delete stopped. The lane is still here; delete it again to finish.</div>
       ) : null}
       {progress.overallStatus === "completed" ? (
         <div className="mt-2 text-[11px] text-emerald-300">Delete completed. Refreshing lane list...</div>

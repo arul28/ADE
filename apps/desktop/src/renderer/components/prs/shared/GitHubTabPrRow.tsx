@@ -456,22 +456,25 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           flow. See `PrRowAuthorAvatar`. */}
       <PrRowAuthorAvatar item={item} accentBg={sc.bg} />
       {/* Row 1: the headline — number and title, which are the row's reason to exist
-          and the two things that never drop. They share one wrapping text flow, so
-          the title takes the whole card and runs to as many lines as it needs
-          instead of ellipsing after a few characters. Only the CI glyph flanks it. */}
+          and the two things that never drop. One line, so every row keeps the same
+          anatomy; a long title ends in "…" and shows in full on hover. Only the CI
+          glyph flanks it. */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
-        <div style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 12,
-          fontWeight: 600,
-          lineHeight: 1.35,
-          color: COLORS.textPrimary,
-          fontFamily: SANS_FONT,
-          // A single unbroken token (a branch name, a URL) can be wider than the
-          // whole column; break it rather than let it overflow the card.
-          overflowWrap: "anywhere",
-        }}>
+        <div
+          title={item.title}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 12,
+            fontWeight: 600,
+            lineHeight: 1.35,
+            color: COLORS.textPrimary,
+            fontFamily: SANS_FONT,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
           {item.isBot ? (
             <span style={{
               fontSize: 9,
@@ -545,7 +548,9 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
       {/* Row 4: inline stats, and the timestamp pinned to the right so it lands
           beside the GitHub link below. `minHeight` keeps that row's optical centre
           on the link button's even when it holds nothing but the timestamp. */}
-      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minHeight: 20 }}>
+      {/* `empty:hidden`: a row with no stats (a PR without an ADE lane) keeps no
+          blank band under its branch line. */}
+      <div className="flex empty:hidden" style={{ alignItems: "center", flexWrap: "wrap", gap: 6, minHeight: 20 }}>
         <GitHubStackBadge stack={item.stack} compact />
         {/* The state badge is redundant on a merged row — the bucket, the glyph colour
             and the merge facts all already say it. Closed keeps it: "closed" is a

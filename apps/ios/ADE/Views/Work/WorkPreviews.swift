@@ -1279,7 +1279,46 @@ enum WorkProofPreviewData {
   after: proof-2 Inbox with every filter cleared
   caption: The empty state now names the filters to clear. The preview data has no messages.
   ```
+
+  The export screen did not come through this time:
+
+  ![The export screen](ade-proof://proof-5)
   """
+
+  /// `chat-links`: an answer with a web link, an ADE chat link and a skill
+  /// chip, for the long-press link menu and the skill sheet.
+  static let linksMarkdown = """
+  Fixed it. The root cause is described in [Apple's TabView notes](https://developer.apple.com/documentation/swiftui/tabview), and the follow-up lives in [the phone perf chat](ade://session/preview-chat-2).
+
+  Run `/quality` next to review the change.
+  """
+
+  @MainActor static let linksTranscript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    return [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 1, event: .userMessage(text: "Why does the Work tab lag?", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 2, event: .assistantText(text: linksMarkdown, turnId: "turn-1", itemId: "a1")),
+    ]
+  }()
+
+  static let skillInstructions = WorkSkillInstructions(
+    status: "ready",
+    name: "quality",
+    description: "Make the code correct, clean, and current before it ships.",
+    source: "project",
+    path: "/Users/you/Projects/ADE/.claude/skills/quality/SKILL.md",
+    body: """
+    # Quality
+
+    Run once the change works.
+
+    1. **Review** the branch for correctness and security.
+    2. **Fix** every verified finding.
+    3. **Check** typecheck and the touched tests once, at the end.
+    """,
+    truncated: false
+  )
 
   @MainActor static let transcript: [WorkChatEnvelope] = {
     let sessionId = WorkPreviewData.chatSummary.sessionId
@@ -1392,6 +1431,15 @@ enum ADEPreviewScreen: String, CaseIterable {
   case proofEmpty = "proof-empty"
   case proofViewer = "proof-viewer"
   case tools = "tools"
+  /// A reply with links and a skill chip (long-press for the link menu, tap
+  /// the chip for its instructions).
+  case chatLinks = "chat-links"
+  /// The skill instructions sheet on its own.
+  case skillInstructions = "skill-instructions"
+  /// The browser card with each tab's × (close with undo).
+  case toolsClose = "tools-close"
+  /// The same, opened with one tab's close waiting on Undo.
+  case toolsClosePending = "tools-close-pending"
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
@@ -1450,6 +1498,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
   case prsList = "prs-list"
   case prDetail = "pr-detail"
+  /// Open PR with reactions and an editable own comment.
+  case prConversation = "pr-conversation"
   case prFiles = "pr-files"
   case prDiff = "pr-diff"
   /// A PR description with a before/after pair, a picture and a video.
@@ -1559,6 +1609,8 @@ struct ADEPreviewScreenHost: View {
       PrsListPreviewHost()
     case .prDetail:
       PrDetailPreviewHost(tab: .overview)
+    case .prConversation:
+      PrDetailPreviewHost(tab: .overview, state: "open", conversation: true)
     case .prFiles:
       PrDetailPreviewHost(tab: .files)
     case .prMedia:
@@ -1597,6 +1649,40 @@ struct ADEPreviewScreenHost: View {
         tool: .browser,
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
+      )
+    case .toolsClose:
+      WorkToolsSheet(
+        laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
+        previewState: WorkProofPreviewData.toolsState,
+        previewFrame: WorkProofPreviewData.toolsFrame,
+        previewAllowsTabClose: true
+      )
+    case .toolsClosePending:
+      WorkToolsSheet(
+        laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
+        previewState: WorkProofPreviewData.toolsState,
+        previewFrame: WorkProofPreviewData.toolsFrame,
+        previewAllowsTabClose: true,
+        previewPendingCloseTabId: WorkProofPreviewData.toolsState.browser?.tabs.last?.id
+      )
+    case .chatLinks:
+      NavigationStack {
+        workPreviewChatSessionView(transcript: WorkProofPreviewData.linksTranscript)
+      }
+      .task {
+        WorkSkillInstructionsModel.previewSkill = WorkProofPreviewData.skillInstructions
+        // After the composer's own reset, which clears the chat's skills.
+        try? await Task.sleep(for: .seconds(1))
+        WorkThreadEntityDirectory.shared.record(skillNames: ["quality"])
+      }
+    case .skillInstructions:
+      WorkSkillInstructionsSheet(
+        sessionId: WorkPreviewData.chatSummary.sessionId,
+        name: "quality",
+        service: nil,
+        previewState: .ready(WorkProofPreviewData.skillInstructions)
       )
     case .compactFirst:
       NavigationStack {

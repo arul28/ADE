@@ -2,7 +2,7 @@ import React, { startTransition, useCallback, useEffect, useMemo, useRef, useSta
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, Gear, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -30,7 +30,7 @@ import {
   WORK_TOOL_SECTION_LABEL_TEXT,
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
 import {
   __resetLaneGitListCacheForTests,
@@ -634,71 +634,62 @@ function HoverTitleButton({
   return wrapped;
 }
 
+/** One row of the "More git actions" menu: icon, sentence-case label, optional badge. */
 function ActionButton({
   title,
   detail,
   onClick,
   disabled,
-  emphasis = "secondary",
   badge,
   icon,
-  fullWidth = false,
+  tone = "default",
   smartTooltip,
 }: {
   title: string;
   detail: string;
   onClick: () => void;
   disabled: boolean;
-  emphasis?: "primary" | "secondary";
   badge?: string | null;
   icon?: React.ReactNode;
-  fullWidth?: boolean;
+  /** `caution` for actions that rewrite shared history (force push). */
+  tone?: "default" | "caution";
   smartTooltip?: SmartTooltipContent;
 }) {
-  const primary = emphasis === "primary";
-  return (
-    <HoverTitleButton
+  const color = tone === "caution" ? "var(--color-warning)" : COLORS.textPrimary;
+  const button = (
+    <button
       type="button"
+      role="menuitem"
       disabled={disabled}
       onClick={onClick}
-      tooltip={`${title}. ${detail}`}
-      smartTooltip={smartTooltip}
+      title={`${title}. ${detail}`}
+      className="hover:bg-fg/[0.06]"
       style={{
-        display: "inline-flex",
+        display: "flex",
         alignItems: "center",
-        justifyContent: "space-between",
         gap: 8,
-        width: fullWidth ? "100%" : "auto",
-        minWidth: 0,
-        height: 34,
+        width: "100%",
+        height: 30,
         padding: "0 10px",
-        border: primary ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.outlineBorder}`,
-        background: primary ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : "transparent",
-        color: primary ? COLORS.textPrimary : COLORS.textSecondary,
+        borderRadius: 6,
+        background: "transparent",
+        color,
+        fontFamily: SANS_FONT,
+        fontSize: 12,
         textAlign: "left",
+        whiteSpace: "nowrap",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.45 : 1,
+        ...(disabled ? { pointerEvents: "none" as const } : {}),
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        {icon ? <span style={{ flexShrink: 0, display: "inline-flex", alignItems: "center" }}>{icon}</span> : null}
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            fontFamily: MONO_FONT,
-            letterSpacing: "0.7px",
-            textTransform: "uppercase",
-            minWidth: 0,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {title}
-        </span>
-      </div>
-      {badge ? <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{badge}</span> : null}
-    </HoverTitleButton>
+      <span style={{ display: "inline-flex", width: 14, flexShrink: 0, opacity: tone === "caution" ? 0.9 : 0.55 }}>{icon}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>{title}</span>
+      {badge ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>{badge}</span> : null}
+    </button>
   );
+  const wrapped = disabled ? <span title={`${title}. ${detail}`} style={{ display: "block" }}>{button}</span> : button;
+  return smartTooltip ? <SmartTooltip content={smartTooltip}>{wrapped}</SmartTooltip> : wrapped;
 }
 
 type ChangeSection = "staged" | "unstaged" | "branch";
@@ -867,6 +858,10 @@ export function LaneGitActionsPane({
   const [branchSupported, setBranchSupported] = useState(() => typeof window.ade?.diff?.getBranchChanges === "function");
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /** The branch stashes strip, opened from the "More git actions" menu. */
+  const [showStashes, setShowStashes] = useState(false);
+  const advancedMenuRef = useRef<HTMLDivElement>(null);
+  const advancedTriggerRef = useRef<HTMLSpanElement>(null);
   const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(
     autoRebaseStatusSnapshot ?? initialCachedGitState?.autoRebaseStatus ?? null,
   );
@@ -1044,6 +1039,7 @@ export function LaneGitActionsPane({
 
   useEffect(() => {
     setShowAdvanced(false);
+    setShowStashes(false);
   }, [laneId]);
 
   const hasUncommittedChanges = changes.staged.length + changes.unstaged.length > 0;
@@ -1192,8 +1188,19 @@ export function LaneGitActionsPane({
       event.preventDefault();
       setShowAdvanced(false);
     };
+    // A dropdown: a press anywhere outside it (or its trigger) closes it.
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (advancedMenuRef.current?.contains(target) || advancedTriggerRef.current?.contains(target)) return;
+      setShowAdvanced(false);
+    };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+    };
   }, [showAdvanced]);
 
   const refreshAutoRebaseStatus = useCallback(async (targetLaneId: string | null = laneId) => {
@@ -1225,9 +1232,12 @@ export function LaneGitActionsPane({
     }
   }, [autoRebaseStatusSnapshot]);
 
+  // Only git's own `[rejected] … (non-fast-forward)` / `(fetch first)` refusal
+  // means the remote history moved. Every refused push also prints "failed to
+  // push some refs", including hook, branch-rule and credential refusals, where
+  // a force push cannot help and the host's message already says why.
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
-    const lower = rawMessage.toLowerCase();
-    return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
+    return /non-fast-forward|\(fetch first\)/i.test(rawMessage);
   }, []);
 
   const formatActionError = useCallback((actionName: string, rawMessage: string): string => {
@@ -2233,7 +2243,7 @@ export function LaneGitActionsPane({
   const filesSectionIsEmpty = !diffViewActive
     && changes.staged.length === 0
     && changes.unstaged.length === 0
-    && !showAdvanced;
+    && !showStashes;
 
   /*
     The pane's one chrome row: which branch, how far from the remote, and
@@ -2246,7 +2256,7 @@ export function LaneGitActionsPane({
       <PaneTooltip label={lane?.branchRef ?? "No branch"} side="bottom" className={WORK_TOOL_CHROME_CHIP_WRAP}>
         <span className={cn(WORK_TOOL_CHROME_CHIP, "cursor-default font-mono")}>
           <BranchIcon size={12} weight="bold" aria-hidden className="shrink-0 text-muted-fg" />
-          <span className="min-w-0 truncate">{lane?.branchRef ?? "No branch"}</span>
+          <span className="min-w-0 truncate">{lane?.branchRef ? lane.branchRef.replace(/^refs\/heads\//, "") : "No branch"}</span>
         </span>
       </PaneTooltip>
       {paneAhead > 0 || paneBehind > 0 ? (
@@ -2308,14 +2318,16 @@ export function LaneGitActionsPane({
         >
           <Stack size={16} />
         </WorkToolChromeButton>
-        <WorkToolChromeButton
-          label="More git actions"
-          onClick={() => setShowAdvanced((prev) => !prev)}
-          active={showAdvanced}
-          testId="git-pane-more"
-        >
-          <DotsThree size={16} weight="bold" />
-        </WorkToolChromeButton>
+        <span ref={advancedTriggerRef} className="inline-flex">
+          <WorkToolChromeButton
+            label="More git actions"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+            active={showAdvanced}
+            testId="git-pane-more"
+          >
+            <DotsThree size={16} weight="bold" />
+          </WorkToolChromeButton>
+        </span>
         <WorkToolChromeButton
           label="Refresh"
           onClick={() => {
@@ -2332,7 +2344,199 @@ export function LaneGitActionsPane({
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
-      {paneChromeRow}
+      <div className="relative shrink-0">
+        {paneChromeRow}
+        {/* ─── Advanced Git (collapsible) ─── */}
+          {showAdvanced ? (
+            <div
+              ref={advancedMenuRef}
+              role="menu"
+              aria-label="More git actions"
+              className="ade-liquid-glass-menu"
+              data-testid="advanced-section"
+              style={{
+                position: "absolute",
+                top: "100%",
+                right: 8,
+                zIndex: 30,
+                minWidth: 220,
+                padding: 4,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                borderRadius: 10,
+              }}
+              // A picked row runs its action; the menu closes behind it.
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("[role=\"menuitem\"]")) setShowAdvanced(false);
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <ActionButton
+                  title="Fetch only"
+                  icon={<ArrowDown size={14} />}
+                  detail="Download remote updates without changing your local branch."
+                  disabled={!laneId || busyAction != null}
+                  onClick={runFetchOnly}
+                  smartTooltip={{
+                    label: "Fetch Only",
+                    description: "Download remote updates without merging or rebasing. Your local branch stays unchanged.",
+                    gitCommand: "git fetch",
+                    effect: "Check for new remote commits without modifying local files",
+                  }}
+                />
+                <ActionButton
+                  title="Force push (lease)"
+                  icon={<ArrowUp size={14} weight="bold" />}
+                  tone="caution"
+                  detail="Overwrite the remote branch only if nobody else pushed in the meantime."
+                  badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "Check first" : null}
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => runPush(true)}
+                  smartTooltip={{
+                    label: "Force Push (Lease)",
+                    description: "Overwrite the remote branch only if nobody else pushed in the meantime. Safe for rebased or amended commits.",
+                    gitCommand: "git push --force-with-lease",
+                    effect: (syncStatus?.ahead ?? 0) > 0
+                      ? `Force push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"}`
+                      : "Force push current branch",
+                    warning: "This will overwrite remote history",
+                  }}
+                />
+                {lane?.parentLaneId ? (
+                  <ActionButton
+                    title="Rebase local only"
+                    icon={<Stack size={14} />}
+                    detail={lane?.status.behind === 0
+                      ? "Already up to date with parent."
+                      : lane?.status.dirty
+                        ? "Commit or stash uncommitted changes before rebasing."
+                        : "Update this lane from its parent without pushing anything yet."}
+                    disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
+                    onClick={() => {
+                      if (!laneId) return;
+                      if (onRebaseNowLocal) {
+                        void runAction("rebase", async () => {
+                          await onRebaseNowLocal(laneId);
+                        });
+                        return;
+                      }
+                      void runAction("rebase", async () => {
+                        invalidateLaneGitCaches(projectStateKey, laneId);
+                        const start = await window.ade.lanes.rebaseStart({
+                          laneId,
+                          scope: "lane_only",
+                          pushMode: "none",
+                          actor: "user"
+                        }, pin);
+                        if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+                          throw new Error(start.run.error ?? "Rebase failed.");
+                        }
+                      });
+                    }}
+                    smartTooltip={{
+                      label: "Rebase Local Only",
+                      description: "Replay your commits on top of the parent branch without pushing. Use this to stay current before pushing.",
+                      gitCommand: `git rebase ${parentLane?.branchRef ?? "<parent>"}`,
+                      effect: lane?.status.behind === 0
+                        ? "Already up to date with parent"
+                        : lane?.status.dirty
+                          ? "Cannot rebase: uncommitted changes present"
+                          : `Rebase onto parent (${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind)`,
+                      warning: lane?.status.dirty ? "Commit or stash changes first" : undefined,
+                    }}
+                  />
+                ) : null}
+                {lane?.parentLaneId ? (
+                  <ActionButton
+                    title="View rebase details"
+                    icon={<GitBranch size={14} />}
+                    detail="See detailed rebase history, including conflicts and timing."
+                    disabled={!laneId || busyAction != null}
+                    onClick={() => onViewRebaseDetails?.(laneId)}
+                    smartTooltip={{
+                      label: "View Rebase Details",
+                      description: "See detailed rebase history, including conflicts and timing.",
+                      effect: "Open the rebase details panel",
+                    }}
+                  />
+                ) : null}
+                <ActionButton
+                  title="Revert commit"
+                  icon={<ArrowUUpLeft size={14} />}
+                  detail="Create a new commit that undoes an earlier commit."
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("revert commit", async () => {
+                      const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 }, pin);
+                      const sha = await requestTextInput({
+                        title: "Commit SHA to revert",
+                        defaultValue: commits[0]?.sha ?? "",
+                        validate: (value) => (value ? null : "Commit SHA is required")
+                      });
+                      if (!sha) throw new Error("__ade_cancelled__");
+                      invalidateLaneGitCaches(projectStateKey, laneId);
+                      await window.ade.git.revertCommit({ laneId, commitSha: sha }, pin);
+                    });
+                  }}
+                  smartTooltip={{
+                    label: "Revert Commit",
+                    description: "Create a new commit that undoes the changes introduced by a previous commit. The original commit stays in history.",
+                    gitCommand: "git revert <sha>",
+                    effect: "You'll be prompted for a commit SHA to revert",
+                  }}
+                />
+                <ActionButton
+                  title="Cherry-pick"
+                  icon={<GitCommit size={14} />}
+                  detail="Apply a commit from another branch onto this lane."
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("cherry-pick", async () => {
+                      const sha = await requestTextInput({
+                        title: "Commit SHA to cherry-pick",
+                        validate: (value) => (value ? null : "Commit SHA is required")
+                      });
+                      if (!sha) throw new Error("__ade_cancelled__");
+                      invalidateLaneGitCaches(projectStateKey, laneId);
+                      await window.ade.git.cherryPickCommit({ laneId, commitSha: sha }, pin);
+                    });
+                  }}
+                  smartTooltip={{
+                    label: "Cherry-pick",
+                    description: "Copy a commit from another branch and apply it on top of this lane. Creates a new commit with the same changes.",
+                    gitCommand: "git cherry-pick <sha>",
+                    effect: "You'll be prompted for a commit SHA to cherry-pick",
+                  }}
+                />
+                <div style={{ height: 1, background: COLORS.border, margin: "4px 6px" }} />
+                <ActionButton
+                  title={stashes.length > 0 ? `Branch stashes (${stashes.length})` : "Branch stashes"}
+                  icon={<Archive size={14} />}
+                  detail="Save changes without committing, or restore them."
+                  disabled={!laneId}
+                  onClick={() => {
+                    setShowAdvanced(false);
+                    setShowStashes((prev) => !prev);
+                  }}
+                />
+                {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
+                  <ActionButton
+                    title="Turn on auto-rebase…"
+                    icon={<Gear size={14} />}
+                    detail="Auto-rebase is off. Turn it on in Settings > Lane Templates so child lanes follow their parent."
+                    disabled={false}
+                    onClick={() => {
+                      setShowAdvanced(false);
+                      onOpenSettings?.();
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+      </div>
 
       {stuckRebase ? (
         <Banner
@@ -2512,187 +2716,22 @@ export function LaneGitActionsPane({
             >
               <ArrowUUpLeft size={16} />
             </WorkToolChromeButton>
+            {/* The commit action sits by its message, not only as an icon up in
+                the header, so how to commit is never a guess. */}
+            <button
+              type="button"
+              data-testid="git-pane-commit-inline"
+              title={(!hasStaged && !amendCommit) ? "Stage a file to commit" : `${amendCommit ? "Amend" : "Commit"} (${modifierKeyLabel}+Enter)`}
+              onClick={() => { void submitCommit(); }}
+              disabled={(!hasStaged && !amendCommit) || busyAction != null}
+              className="shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
+              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 12, borderRadius: 7 })}
+            >
+              {amendCommit ? "Amend" : "Commit"}
+            </button>
           </div>
 
         </div>
-
-        {/* ─── Advanced Git (collapsible) ─── */}
-        {showAdvanced ? (
-          <div
-            className="shrink-0"
-            data-testid="advanced-section"
-            style={{
-              padding: "8px 10px",
-              background: COLORS.recessedBg,
-              borderBottom: `1px solid ${COLORS.border}`,
-            }}
-          >
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-              <ActionButton
-                title="Fetch only"
-                detail="Download remote updates without changing your local branch."
-                disabled={!laneId || busyAction != null}
-                onClick={runFetchOnly}
-                smartTooltip={{
-                  label: "Fetch Only",
-                  description: "Download remote updates without merging or rebasing. Your local branch stays unchanged.",
-                  gitCommand: "git fetch",
-                  effect: "Check for new remote commits without modifying local files",
-                }}
-              />
-              <ActionButton
-                title="Force push (lease)"
-                detail="Overwrite the remote branch only if nobody else pushed in the meantime."
-                badge={nextActionHint?.action === "force_push_lease" || divergedSync ? "CHECK FIRST" : null}
-                disabled={!laneId || busyAction != null}
-                onClick={() => runPush(true)}
-                smartTooltip={{
-                  label: "Force Push (Lease)",
-                  description: "Overwrite the remote branch only if nobody else pushed in the meantime. Safe for rebased or amended commits.",
-                  gitCommand: "git push --force-with-lease",
-                  effect: (syncStatus?.ahead ?? 0) > 0
-                    ? `Force push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"}`
-                    : "Force push current branch",
-                  warning: "This will overwrite remote history",
-                }}
-              />
-              {lane?.parentLaneId ? (
-                <ActionButton
-                  title="Rebase local only"
-                  detail={lane?.status.behind === 0
-                    ? "Already up to date with parent."
-                    : lane?.status.dirty
-                      ? "Commit or stash uncommitted changes before rebasing."
-                      : "Update this lane from its parent without pushing anything yet."}
-                  disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
-                  onClick={() => {
-                    if (!laneId) return;
-                    if (onRebaseNowLocal) {
-                      void runAction("rebase", async () => {
-                        await onRebaseNowLocal(laneId);
-                      });
-                      return;
-                    }
-                    void runAction("rebase", async () => {
-                      invalidateLaneGitCaches(projectStateKey, laneId);
-                      const start = await window.ade.lanes.rebaseStart({
-                        laneId,
-                        scope: "lane_only",
-                        pushMode: "none",
-                        actor: "user"
-                      }, pin);
-                      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-                        throw new Error(start.run.error ?? "Rebase failed.");
-                      }
-                    });
-                  }}
-                  smartTooltip={{
-                    label: "Rebase Local Only",
-                    description: "Replay your commits on top of the parent branch without pushing. Use this to stay current before pushing.",
-                    gitCommand: `git rebase ${parentLane?.branchRef ?? "<parent>"}`,
-                    effect: lane?.status.behind === 0
-                      ? "Already up to date with parent"
-                      : lane?.status.dirty
-                        ? "Cannot rebase: uncommitted changes present"
-                        : `Rebase onto parent (${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind)`,
-                    warning: lane?.status.dirty ? "Commit or stash changes first" : undefined,
-                  }}
-                />
-              ) : null}
-              {lane?.parentLaneId ? (
-                <ActionButton
-                  title="View rebase details"
-                  detail="See detailed rebase history, including conflicts and timing."
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => onViewRebaseDetails?.(laneId)}
-                  smartTooltip={{
-                    label: "View Rebase Details",
-                    description: "See detailed rebase history, including conflicts and timing.",
-                    effect: "Open the rebase details panel",
-                  }}
-                />
-              ) : null}
-              <ActionButton
-                title="Revert commit"
-                detail="Create a new commit that undoes an earlier commit."
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (!laneId) return;
-                  void runAction("revert commit", async () => {
-                    const commits = await window.ade.git.listRecentCommits({ laneId, limit: 20 }, pin);
-                    const sha = await requestTextInput({
-                      title: "Commit SHA to revert",
-                      defaultValue: commits[0]?.sha ?? "",
-                      validate: (value) => (value ? null : "Commit SHA is required")
-                    });
-                    if (!sha) throw new Error("__ade_cancelled__");
-                    invalidateLaneGitCaches(projectStateKey, laneId);
-                    await window.ade.git.revertCommit({ laneId, commitSha: sha }, pin);
-                  });
-                }}
-                smartTooltip={{
-                  label: "Revert Commit",
-                  description: "Create a new commit that undoes the changes introduced by a previous commit. The original commit stays in history.",
-                  gitCommand: "git revert <sha>",
-                  effect: "You'll be prompted for a commit SHA to revert",
-                }}
-              />
-              <ActionButton
-                title="Cherry-pick"
-                detail="Apply a commit from another branch onto this lane."
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (!laneId) return;
-                  void runAction("cherry-pick", async () => {
-                    const sha = await requestTextInput({
-                      title: "Commit SHA to cherry-pick",
-                      validate: (value) => (value ? null : "Commit SHA is required")
-                    });
-                    if (!sha) throw new Error("__ade_cancelled__");
-                    invalidateLaneGitCaches(projectStateKey, laneId);
-                    await window.ade.git.cherryPickCommit({ laneId, commitSha: sha }, pin);
-                  });
-                }}
-                smartTooltip={{
-                  label: "Cherry-pick",
-                  description: "Copy a commit from another branch and apply it on top of this lane. Creates a new commit with the same changes.",
-                  gitCommand: "git cherry-pick <sha>",
-                  effect: "You'll be prompted for a commit SHA to cherry-pick",
-                }}
-              />
-            </div>
-            {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: "8px 10px",
-                  fontSize: 10,
-                  fontFamily: MONO_FONT,
-                  letterSpacing: "0.5px",
-                  border: `1px solid ${COLORS.border}`,
-                  background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
-                  color: COLORS.info,
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: 10,
-                  alignItems: "center",
-                  borderRadius: 6,
-                }}
-              >
-                <span style={{ flex: 1, minWidth: 220 }}>
-                  Auto-rebase is off. Enable it in Settings {" > "} Lane Templates if you want child lanes to auto-rebase and auto-push when their parent advances.
-                </span>
-                <button
-                  type="button"
-                  style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto" }}
-                  onClick={onOpenSettings}
-                >
-                  SETTINGS
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
 
         {/* ─── Files + History (maximized) ─── */}
         <div
@@ -2714,7 +2753,9 @@ export function LaneGitActionsPane({
                 ? "auto minmax(0, 1fr)"
                 : diffViewActive
                   ? "minmax(0, 2fr) minmax(0, 1fr)"
-                  : "minmax(0, 1fr) minmax(0, 1fr)",
+                  // A short change list takes its own height, so History
+                  // starts right under it; a long one stops at half.
+                  : "fit-content(50%) minmax(0, 1fr)",
             padding: SKIN.bodyPadding,
             gap: SKIN.bodyGap,
             flex: "1 1 0",
@@ -2866,7 +2907,7 @@ export function LaneGitActionsPane({
                         void moveUnstagedToNewLane();
                       }}
                     >
-                      {SKIN.actionLabel("Create new lane with current changes")}
+                      {SKIN.actionLabel("Move changes to new lane")}
                     </button>
                   </SmartTooltip>
                 ) : null}
@@ -2899,7 +2940,7 @@ export function LaneGitActionsPane({
                 actions already are. */}
             <div
               style={{
-                display: !showAdvanced ? "none" : "flex",
+                display: !showStashes ? "none" : "flex",
                 flexDirection: "column",
                 gap: 8,
                 paddingBottom: 8,
@@ -2980,7 +3021,7 @@ export function LaneGitActionsPane({
               </div>
               {stashes.length === 0 ? (
                 <div style={{ fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Save this branch's in-progress changes without committing. You can restore them later.
+                  Save changes without committing.
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

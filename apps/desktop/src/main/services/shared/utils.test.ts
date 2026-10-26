@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  parseNumstatRecordsZ,
   isRecord,
   asString,
   asNumber,
@@ -36,11 +37,16 @@ import {
   hasEnvRefToken,
   looksSensitiveKey,
   looksSensitiveValue,
+  redactSecrets,
   sanitizeStructuredData,
   signalChildProcessTree,
   signalProcessGroup,
   terminateChildProcessTree,
 } from "./utils";
+// Windows needs Developer Mode or admin rights for a directory symlink, but
+// not for a junction. Node reads a junction as a symlink, as ADE sees one.
+const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
+
 
 describe("isRecord", () => {
   it("returns true for plain objects", () => {
@@ -197,16 +203,26 @@ describe("spawnAsync", () => {
 });
 
 describe("parseDiffNameOnly", () => {
-  it("parses newline-separated file names", () => {
-    expect(parseDiffNameOnly("a.ts\nb.ts\nc.ts\n")).toEqual(["a.ts", "b.ts", "c.ts"]);
+  // `-z` output: names come back raw, with no C-quoting to undo.
+  it.each([
+    ["several names", "a.ts\0b.ts\0c.ts\0", ["a.ts", "b.ts", "c.ts"]],
+    ["spaces, quotes and non-ASCII kept as they are", ' a b.ts \0caf\u00e9 "q".txt\0', [" a b.ts ", 'caf\u00e9 "q".txt']],
+    ["empty records skipped", "a.ts\0\0b.ts\0", ["a.ts", "b.ts"]],
+    ["empty input", "", []],
+  ])("%s", (_label, stdout, expected) => {
+    expect(parseDiffNameOnly(stdout)).toEqual(expected);
   });
+});
 
-  it("filters out empty lines and trims whitespace", () => {
-    expect(parseDiffNameOnly("  a.ts  \n\n  b.ts  \n\n")).toEqual(["a.ts", "b.ts"]);
-  });
-
-  it("returns empty for empty input", () => {
-    expect(parseDiffNameOnly("")).toEqual([]);
+describe("parseNumstatRecordsZ", () => {
+  it("reads plain, binary and renamed records, with the destination as a rename's path", () => {
+    const stdout = "3\t1\tsrc/a.ts\0-\t-\timg.png\0" + "0\t0\t\0old name.txt\0new\tname.txt\0" + "2\t0\tlast.ts\0";
+    expect(parseNumstatRecordsZ(stdout)).toEqual([
+      { addRaw: "3", delRaw: "1", path: "src/a.ts" },
+      { addRaw: "-", delRaw: "-", path: "img.png" },
+      { addRaw: "0", delRaw: "0", path: "new\tname.txt" },
+      { addRaw: "2", delRaw: "0", path: "last.ts" },
+    ]);
   });
 });
 
@@ -247,7 +263,7 @@ describe("resolvePathWithinRoot", () => {
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
     const linkPath = path.join(root, "linked-outside");
     try {
-      fs.symlinkSync(outsideDir, linkPath);
+      fs.symlinkSync(outsideDir, linkPath, DIRECTORY_LINK_TYPE);
       expect(() => resolvePathWithinRoot(root, path.join(linkPath, "secret.txt"), { allowMissing: true })).toThrow(
         /Path escapes root/,
       );
@@ -287,7 +303,7 @@ describe("resolvePathWithinRoot", () => {
       const linkPath = path.join(tempRoot, "linked");
       const outsideFile = path.join(outsideDir, "secret.txt");
       fs.writeFileSync(outsideFile, "secret", "utf8");
-      fs.symlinkSync(outsideDir, linkPath, "dir");
+      fs.symlinkSync(outsideDir, linkPath, DIRECTORY_LINK_TYPE);
 
       expect(() => resolvePathWithinRoot(tempRoot, path.join(linkPath, "secret.txt"))).toThrow("Path escapes root");
     } finally {
@@ -300,7 +316,7 @@ describe("resolvePathWithinRoot", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
     try {
-      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), "dir");
+      fs.symlinkSync(outsideDir, path.join(tempRoot, "linked"), DIRECTORY_LINK_TYPE);
       expect(() => resolvePathWithinRoot(tempRoot, "linked/../secret.txt", { allowMissing: true })).toThrow("Path escapes root");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -605,13 +621,34 @@ describe("looksSensitiveKey", () => {
   });
 });
 
+describe("redactSecrets", () => {
+  it.each([
+    ["an Anthropic key", `sk-ant-api03-${"z".repeat(20)}_${"z".repeat(12)}-AA`],
+    ["an OpenAI project key", `sk-proj-${"z".repeat(12)}_${"z".repeat(20)}`],
+    ["a Hugging Face token", `hf_${"z".repeat(34)}`],
+    ["a Google API key", `AIza${"z".repeat(35)}`],
+    ["a GitLab token", `glpat-${"z".repeat(24)}`],
+  ])("removes the whole of %s", (_label, key) => {
+    const redacted = redactSecrets(`Error: request failed with key ${key} (401)`);
+    expect(redacted).toBe("Error: request failed with key [REDACTED] (401)");
+    expect(redacted).not.toContain("zzzz");
+    expect(redacted).not.toContain("sk-");
+  });
+});
+
 describe("looksSensitiveValue", () => {
   it("detects bearer tokens", () => {
     expect(looksSensitiveValue("Bearer abc123")).toBe(true);
   });
 
-  it("detects sk- prefixed keys", () => {
-    expect(looksSensitiveValue("sk-abc123def456ghi7")).toBe(true);
+  // Low-entropy bodies built at runtime: a real-looking key literal would trip
+  // the repo's gitleaks scan. Real Anthropic and OpenAI keys carry `-` and `_`.
+  it.each([
+    ["a plain sk- key", `sk-${"z".repeat(16)}`],
+    ["an Anthropic key", `sk-ant-api03-${"z".repeat(20)}_${"z".repeat(12)}-AA`],
+    ["an OpenAI project key", `sk-proj-${"z".repeat(12)}_${"z".repeat(20)}`],
+  ])("detects %s", (_label, key) => {
+    expect(looksSensitiveValue(key)).toBe(true);
   });
 
   it("detects GitHub tokens", () => {

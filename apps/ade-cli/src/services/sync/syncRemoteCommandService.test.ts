@@ -69,6 +69,8 @@ function createService(options?: {
     streamEvents?: ReturnType<typeof vi.fn>;
   };
   remoteCommandResultMaxBytes?: number;
+  workToolsStateService?: Record<string, unknown>;
+  builtInBrowserService?: Record<string, unknown>;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -131,6 +133,8 @@ function createService(options?: {
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     ...(options?.attachmentUploads ? { attachmentUploads: options.attachmentUploads } : {}),
+    ...(options?.workToolsStateService ? { workToolsStateService: options.workToolsStateService } : {}),
+    ...(options?.builtInBrowserService ? { builtInBrowserService: options.builtInBrowserService } : {}),
     ...(options?.remoteCommandResultMaxBytes != null
       ? { remoteCommandResultMaxBytes: options.remoteCommandResultMaxBytes }
       : {}),
@@ -3849,5 +3853,37 @@ describe("remote command reply bounds", () => {
     expect(result.refreshedCount).toBe(1);
     expect(result.prs.map((entry) => entry.id)).toEqual(["merged-1"]);
     expect(result.snapshots.map((entry) => entry.prId)).toEqual(["merged-1"]);
+  });
+});
+
+describe("workTools.closeBrowserTab", () => {
+  // A phone closes a tab only in the lane it names, so it cannot close another
+  // lane's tab by guessing its id, and a tab that is already gone is not an error.
+  it.each([
+    { name: "closes a tab the lane shows", tabId: "tab-a", browser: true, closed: true, result: { ok: true, alreadyClosed: false } },
+    { name: "leaves another lane's tab alone", tabId: "tab-other-lane", browser: true, closed: false, result: { ok: true, alreadyClosed: true } },
+    { name: "refuses when the desktop shows no browser", tabId: "tab-a", browser: false, closed: false, result: "error" as const },
+  ])("$name", async ({ tabId, browser, closed, result }) => {
+    const closeTab = vi.fn().mockResolvedValue(undefined);
+    const getLaneState = vi.fn(async ({ laneId }: { laneId: string }) => ({
+      laneId,
+      browser: browser ? { tabs: [{ id: "tab-a" }, { id: "tab-b" }] } : null,
+    }));
+    const { service } = createService({
+      workToolsStateService: { getLaneState, readObservationPreview: vi.fn() },
+      builtInBrowserService: { closeTab },
+    });
+    const run = service.execute(makePayload("workTools.closeBrowserTab", { laneId: "lane-1", tabId }));
+    if (result === "error") {
+      await expect(run).rejects.toThrow(/browser/);
+    } else {
+      await expect(run).resolves.toEqual(result);
+    }
+    expect(getLaneState).toHaveBeenCalledWith({ laneId: "lane-1" });
+    if (closed) {
+      expect(closeTab).toHaveBeenCalledWith({ tabId });
+    } else {
+      expect(closeTab).not.toHaveBeenCalled();
+    }
   });
 });

@@ -18,6 +18,7 @@ import {
 } from "react";
 
 import { Composer, type ComposerProps } from "./composer/Composer";
+import { QueueStrip } from "./composer/QueueStrip";
 import {
   AdeChatProvider,
   useAdeProviders,
@@ -31,6 +32,9 @@ import type { AdeChatClient, ModelDescriptor, SendInput } from "./sdkTypes";
 import { AdeChatStyles } from "./theme/AdeChatStyles";
 import type { AdeChatTheme } from "./theme/createTheme";
 import { Transcript, type TranscriptProps } from "./transcript/Transcript";
+import { UsageLimitNotice } from "./UsageLimitNotice";
+import { requireAccepted } from "./actionResult";
+import type { UsageLimitEvent } from "./sdkTypes";
 
 /** What `AdeChatProps.onSend` may return. See `onSend`. */
 export type AdeChatSendResult = void | boolean | "handled";
@@ -241,6 +245,23 @@ function AdeChatInner({
     ...(activeModelId ? { modelId: activeModelId } : {}),
     ...(historyPageSize !== undefined ? { historyPageSize } : {}),
   });
+  const [usageLimitEvent, setUsageLimitEvent] = useState<UsageLimitEvent | null>(null);
+  const usageLimit = usageLimitEvent?.key === threadKey ? usageLimitEvent.status : null;
+  const [queueRefreshKey, setQueueRefreshKey] = useState(0);
+
+  useEffect(() => {
+    setUsageLimitEvent(null);
+    if (!thread.thread?.usageLimit || typeof client.on !== "function") return;
+    try {
+      return client.on("usageLimit", (event: UsageLimitEvent) => {
+        if (event.key !== threadKey) return;
+        setUsageLimitEvent(event);
+      });
+    } catch {
+      // An older client may reject this optional event; its chat remains usable.
+      return;
+    }
+  }, [client, threadKey, thread.thread?.usageLimit]);
 
   // Internal: read after the `await` in the send handler, where the render's
   // own `thread` could be a stale snapshot.
@@ -419,6 +440,7 @@ function AdeChatInner({
         {...(onLinkClick ? { onLinkClick } : {})}
         {...(approvals ? { approvals } : {})}
         {...approvalHandler}
+        {...(thread.canRespond ? { onRespond: thread.respond } : {})}
         {...(renderToolResult ? { renderToolResult } : {})}
         {...(toolChipActions ? { toolChipActions } : {})}
         hasOlder={thread.hasOlder}
@@ -426,15 +448,28 @@ function AdeChatInner({
         onLoadOlder={thread.loadOlder}
         {...(emptyState !== undefined ? { emptyState } : {})}
       />
+      <UsageLimitNotice
+        status={usageLimit}
+        {...(thread.thread?.usageLimit?.resumeNow ? { onResumeNow: () => requireAccepted(thread.thread!.usageLimit!.resumeNow!()) } : {})}
+        {...(thread.thread?.usageLimit?.continueOnAlternate ? { onContinueOnAlternate: () => requireAccepted(thread.thread!.usageLimit!.continueOnAlternate!()) } : {})}
+      />
       {children ? children(thread) : null}
+      {thread.thread?.queue ? <QueueStrip key={threadKey} queue={thread.thread.queue} refreshKey={`${queueRefreshKey}:${thread.status.state}`} /> : null}
       <Composer
         onSend={async (input) => {
           const result = onSend ? await onSend(input, threadStateRef.current) : undefined;
           if (result === false) return false;
-          if (result === "handled") return;
+          if (result === "handled") {
+            setQueueRefreshKey((value) => value + 1);
+            return;
+          }
           await threadStateRef.current.send(input);
+          setQueueRefreshKey((value) => value + 1);
         }}
-        onSteer={(input) => thread.steer(input)}
+        onSteer={async (input) => {
+          await thread.steer(input);
+          setQueueRefreshKey((value) => value + 1);
+        }}
         onInterrupt={thread.interrupt}
         status={thread.status.state}
         ready={thread.ready}
@@ -446,6 +481,10 @@ function AdeChatInner({
         modelRail={modelRail !== undefined ? modelRail : defaultRail}
         {...(actions !== undefined ? { actions } : {})}
         error={thread.error?.message ?? null}
+        {...(thread.slashCommands !== undefined ? { slashCommands: thread.slashCommands } : {})}
+        slashCommandsLoading={thread.slashCommandsLoading}
+        slashCommandsError={thread.slashCommandsError}
+        onRetrySlashCommands={thread.reloadSlashCommands}
       />
     </div>
   );

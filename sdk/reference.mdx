@@ -46,9 +46,15 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `providers.status()` | Map of provider id → [`ProviderStatus`](#providerstatus). Served from the runtime's probe cache. |
 | `providers.refresh()` | The same map with the probe cache bypassed. Spawns `--version` per provider. |
 | `providers.onChange(cb)` | Full status list on each change. Never bypasses the cache. Returns unsubscribe. |
+| `providers.capabilities(provider)` | Provider-specific permission, model, account and sign-in support. Throws `unsupported` when not advertised. |
+| `accounts.list/add/remove/rename/setDefault/signOut/refresh` | Manage provider accounts. See [Accounts](/sdk/accounts). |
+| `accounts.signIn(id, options?)` | Start a login and receive a [`SignInHandle`](#signinhandle). |
+| `credentials.list/add/remove/verify` | Manage API keys; returned records never contain key values. |
+| `presets.list/add/update/remove` | Manage custom endpoint presets. Returned records omit key material. |
 | `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
 | `models.onChange(cb)` | The whole catalog, each time a model's id, `isAvailable`, `connected` or `isDefault` changes. Not called on subscribe. Returns unsubscribe. SDK 0.4. |
 | `models.defaultModel({ available?, providers?, prefer? }?)` | The model a new thread should use, or `null`. See [`pickDefaultModel`](#pickdefaultmodel). SDK 0.4; `prefer` is SDK 0.5. |
+| `run(prompt, { provider, model, schema? })` | Run a temporary thread and delete it after completion. A schema response is parsed and validated, then retried once if invalid. See [One-shot runs](/sdk/testing#one-shot-runs). |
 | `doctor()` | Structured health check. |
 | `exportThread(key)` | Transcript as JSONL. |
 | `dispose()` | Stop the runtime. Idempotent. Ends in-flight turns without `error`/`done`. |
@@ -57,22 +63,25 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 
 | Option | |
 |---|---|
-| `provider` | `claude` \| `codex` \| `cursor` \| `droid` \| `opencode` \| `pi` |
+| `provider` | Any provider id present in the runtime model catalog; known provider ids are suggestions, not a closed set. |
 | `model` | Catalog id (aliases resolved by the runtime). |
+| `budget` | `{ maxTokens?, maxCostUsd? }`. Cumulative per-thread limit; stored with the key and enforced only when the runtime/provider reports the corresponding usage. |
+| `permissionMode` | Provider-native permission mode, checked against provider capabilities when available. |
+| `reasoningEffort` / `fastMode` | Provider-native reasoning tier and fast-mode flag, checked against provider capabilities when available. |
+| `account` / `credential` / `preset` | Provider account instance, stored credential, or endpoint preset id. Create-only and persisted for recreation. |
 | `permissions` | `"always-allow"` \| `"default"` \| `ThreadPermissionPolicy`. See [Permissions](/sdk/permissions). |
 | `instructions` | `string \| { mode: "append" \| "replace", text }`. A bare string means append. |
 | `cwd` | Absolute path the provider runs in. Created at mode `0755`. Defaults to `<home>/personal-chats/workspaces`. |
 | `attachmentRoots` | `string[]`. Extra directories an absolute attachment path may point into. Same rules as `cwd`; at most 32. Runtime 1.2.82 or later. One refused entry fails the whole open, so test a candidate with `checkAttachmentRoot` or prepare the list with `filterAttachmentRoots` (SDK 0.5). See [Attachments](/sdk/threads#where-a-path-may-point). SDK 0.4. |
 | `settingSources` | `"none"` (default) \| `"project"` \| `"user"` \| `"all"`. |
-| `reasoningEffort` | Provider-native effort token, when the model offers one. |
 | `title` | Display title stored on the thread record. |
 | `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
 | `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
 | `refresh` | `{ mcpServers?, attachmentRoots? }`. Replaces the thread's MCP servers or attachment roots on a resume, so a new token, port or folder takes effect. The one option a resume does not ignore. A map or list identical to the one already in use is not sent again, so a host that repeats its own values costs no update call. |
 
-All four host-configuration options persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
+Host configuration and provider launch choices persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
 
-They apply on **create only**, with one exception: `refresh`. A resume reads `cwd`, `attachmentRoots`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
+They apply on **create only**, with one exception: `refresh`. A resume reads `cwd`, `attachmentRoots`, `instructions`, `settingSources`, `permissions`, `permissionMode`, `reasoningEffort`, `fastMode`, `account`, `credential`, `preset`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
 
 A **recreate** (the key is stored, but the runtime lost its session) uses the stored record first. This call's options fill only fields the record does not have. The SDK logs one line for each stored value it used.
 
@@ -98,13 +107,20 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `title` | The thread's title, or `null`. |
 | `model` | `ThreadModelSelection` — `{ modelId, provider, model, displayName }`, or `null` before the runtime reported one. |
 | `steer(text, { attachments }?)` | Mid-turn follow-up. Does not start a turn. Text or at least one attachment. |
-| `interrupt()` | Stop the in-flight turn. |
+| `interrupt(options?)` | Stop the in-flight turn; `queue: "keep"` preserves queued messages, `"drop"` clears them. |
+| `respond(requestId, response)` | Send `{ answers?: Record<string, string \| string[]>; decision?: "accept" \| "accept_for_session" \| "decline" \| "cancel"; responseText?: string \| null }` to `respondToInput`. Answers use question ids; plan approval requires explicit `"accept"` or `"decline"`. |
+| `queue` | `list`, `cancel`, `edit`, `move`, `dispatch`, `cancelDispatched`, `restore` queued messages. |
+| `stopTask(taskId)` / `slashCommands()` | Stop a provider task or list provider slash commands. |
+| `recover(options?)` / `resolveUnprocessed(args)` | Recover an interrupted turn or resolve queued input the runtime could not process. |
+| `usageLimit.resumeNow()` / `.continueOnAlternate()` | Resume after a usage limit or switch to another signed-in account. |
+| `switchAccount(instanceId)` | Change this thread's provider account; inspect the result for busy or signed-out failures. |
 | `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. Returns the selection plus `capabilities` (the four reports for the new provider), and emits `capabilities_changed` on the `status` channel. |
 | `update({ title?, reasoningEffort?, fastMode? }, { force? }?)` | Rename, or change effort or fast mode. A rename always works; the other two are refused mid-turn with `turn_in_flight` unless `{ force: true }`. Returns `{ title, model }`. |
 | `retry()` / `editLast(text, { displayText?, attachments? }?)` | Run the last user message again, or a new one in its place. The old turn leaves the history. Claude and Codex, runtime 1.2.82. Returns `{ retractedFromSequence, historyGeneration, conversationRollback }`. See [Retry and edit](/sdk/threads#retry-and-edit). SDK 0.4. |
 | `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn; mid-turn the runtime queues them for the turn's end. Returns the `mcpCapability`. Needs runtime 1.2.81 or later. |
 | `refreshMcpHeaders()` | Re-resolve the thread's MCP header values through `mcpHeaders` and push them if they changed. `send`, `retry` and `editLast` already do this before each turn. |
 | `history({ limit }?)` | Envelopes in transcript order. |
+| `usage()` | Cumulative token totals, optional context window and provider-reported cost. `complete: false` means the SDK could not seed prior totals from transcript history. |
 | `historyPage({ beforeSequence?, limit? }?)` | One page: `{ events, hasMore, nextBeforeSequence }`. Omit `beforeSequence` for the newest page. |
 | `approve(itemId, decision, responseText?)` | Answer an approval. `"accept"` \| `"accept_always"` \| `"reject"`. Throws `approval_not_found` when it is already settled, and `invalid_option` for a question-shaped request. |
 | `pendingApprovals()` | Outstanding requests, so a reload can restore cards. |
@@ -112,6 +128,18 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `settingSourcesCapability` | `{ requested, level, value, mechanism, detail }` or `null`. |
 | `permissionCapability` | `{ level, mechanism, residual }` or `null`. Refreshed after `setModel`. |
 | `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. When the runtime exits, each live thread receives `{ type: "status", turnStatus: "failed", message, synthetic: true }` on `status`. |
+
+## Login and usage options
+
+| Option | Type | |
+|---|---|---|
+| `useMachineLogin` | `boolean` | Default `false` in SDK 0.7: provider logins are isolated per app. Set `true` to reuse the host machine's logins; **BREAKING default change from 0.6.** |
+| `resolveSecret` | `(provider, credentialId) => string \| undefined \| Promise<…>` | Resolve a host-vault secret for a live thread session. The SDK never persists the value. |
+| `onUsageLimit` | `"failover" \| "wait" \| "ask"` | Default `"wait"`. `"failover"` tries another signed-in account; `"ask"` emits `usageLimit` for the host to handle. |
+
+`ThreadOpenOptions` also accepts `permissionMode`, `fastMode`, `account`,
+`credential`, and `preset`. These launch settings persist and are reused when a
+lost runtime session is recreated. See [Accounts](/sdk/accounts).
 
 The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
 
@@ -123,6 +151,54 @@ The three capability fields are `null` when the thread requested nothing, **and*
 | `transport` | `{ state: "closed" \| "reconnected", error }` | The socket closed, or `autoRestart` brought it back. |
 | `restart` | `{ attempt, ok, error, final }` | One `autoRestart` attempt finished. `final` (SDK 0.4) is `true` when no attempt follows: it succeeded, or it was the last one `maxAttempts` allows. |
 | `threadLifecycle` | `{ key, change: "deleted" \| "archived" \| "unarchived" }` | A `threads.delete`, `archive` or `unarchive` through this client succeeded, from main or from a renderer over the bridge. SDK 0.4. |
+| `usageLimit` | [`UsageLimitEvent`](#usagelimitevent) | A provider account reached a usage limit. SDK 0.7. |
+
+## `SignInHandle` {#signinhandle}
+
+| Member | |
+|---|---|
+| `on("update", listener)` | Receive the current and later [`SignInStatus`](#signinstatus) values. Returns unsubscribe. |
+| `submitCode(code)` | Submit a code when the provider login requests one. |
+| `cancel()` | Cancel the login attempt. |
+| `done` | Resolves to the refreshed [`AccountInfo`](#accountinfo), or rejects on failure/cancellation. |
+
+## `AccountInfo` {#accountinfo}
+
+`id`, `provider`, `label`, `signedIn` and `isDefault`, with optional `email`,
+`plan` and provider usage data. Account responses are summaries and omit
+secret-valued fields.
+
+## `SignInStatus` {#signinstatus}
+
+| Field | |
+|---|---|
+| `state` | `running` \| `verifying` \| `succeeded` \| `failed` \| `cancelled` \| `expired` |
+| `loginId`, `instanceId`, `provider` | The sign-in and provider account being authenticated. |
+| `url`, `deviceCode`, `awaitingCode` | Optional browser/device login details and whether a code is requested. |
+| `email`, `message` | The signed-in email, and the provider's message when a sign-in fails. |
+| `startedAt`, `endedAt` | ISO timestamps; `endedAt` is present after completion. |
+
+## `ProviderCapabilities` {#providercapabilities}
+
+Provider-specific supported permission modes, reasoning efforts, fast mode,
+multiple accounts, sign-in method, API keys, presets and MCP support. Obtain it
+with `client.providers.capabilities(provider)`; the runtime must advertise the
+provider capability surface.
+
+## `UsageLimitEvent` {#usagelimitevent}
+
+```ts
+type UsageLimitEvent = {
+  key: string;
+  sessionId: string;
+  provider: string;
+  turnId?: string;
+  message?: string;
+};
+```
+
+`doctor().logins` reports the login mode (`isolated`, `machine`, or `attached`)
+and whether each provider is `isolated`, `shared`, or `unknown`.
 
 ## `pickDefaultModel` {#pickdefaultmodel}
 
@@ -273,6 +349,10 @@ type DoctorReport = {
     gapsRecovered: number;
   };
   providers: Record<string, ProviderStatus>;
+  logins: {
+    mode: "isolated" | "machine" | "attached";
+    perProvider: Record<string, "isolated" | "shared" | "unknown">;
+  };
   threads: { tracked: number; live: number };
   recentErrors: Array<{ at: string; scope: string; message: string }>;
 };
@@ -286,7 +366,7 @@ type DoctorReport = {
 
 `AdeError` with `code`:
 
-`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported`
+`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `invalid_output` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported` · `sign_in_failed`
 
 `turn_in_flight` (SDK 0.4) is every refusal that exists only because a turn is running: `setModel` or a reasoning `update` without `{ force: true }`, and a runtime action that must wait for the turn to end. Nothing changed; wait for the turn to finish, or call `interrupt()`, then call again. Before 0.4 these used `invalid_option`.
 
@@ -295,6 +375,10 @@ type DoctorReport = {
 A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRoots` entry, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code. Prepare an `attachmentRoots` list with [`filterAttachmentRoots`](#attachment-root-helpers) to keep one bad entry from failing the open.
 
 `runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
+
+`invalid_output` is thrown by `client.run()` after the structured response fails JSON parsing or schema validation twice. `InvalidOutputError.rawText` contains the last model response. `client.run()` rejects with `rpc_timeout` when a turn outlasts `timeoutMs` (default 10 minutes), and with `unsupported` when the turn asks for an approval or an answer, which a one-shot run cannot give.
+
+`sign_in_failed` rejects a sign-in handle's `done` when the sign-in failed, was cancelled, or expired; the handle's last status names which.
 
 `approve()` throws `approval_not_found` when the item is already settled. `unauthorized` comes from an Electron bridge whose `authorize` hook refused the call.
 

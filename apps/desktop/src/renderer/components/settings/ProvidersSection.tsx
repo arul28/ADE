@@ -151,7 +151,10 @@ function ProviderCard({
   const version = normalizeProviderVersion(descriptor.version?.(ctx));
   // A count of zero while the probe is still out is a claim we cannot make.
   // A disabled provider's count is real but beside the point.
-  const showModelCount = status.state !== "checking" && status.state !== "disabled";
+  // A connected provider reporting none yet uses its defaults; "0 models"
+  // beside "Connected" reads as broken.
+  const showModelCount = status.state !== "checking" && status.state !== "disabled"
+    && !(status.state === "connected" && models.length === 0);
 
   // A provider in trouble gets the real status sentence; a healthy one gets
   // where its credential came from — the only question a working one raises.
@@ -165,6 +168,8 @@ function ProviderCard({
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
     ...(version ? [version] : []),
   ];
+  // Every card keeps a second line, so names line up across a row.
+  if (metaParts.length === 0 && healthy) metaParts.push("Signed in");
 
   const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
   // A provider that is not set up is one whose pinned copy is not on this

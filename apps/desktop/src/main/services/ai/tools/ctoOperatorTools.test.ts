@@ -1361,4 +1361,61 @@ describe("createCtoOperatorTools", () => {
     expect(requestApproval).toHaveBeenCalledTimes(1);
     expect(simulated).toMatchObject({ success: false, error: "Declined by the user: Not yet" });
   });
+
+  it("answers a usage summary by default and the full breakdowns only when asked", async () => {
+    // The owner's 2026-10-24 run: the whole snapshot is about 1 MB, more than
+    // an agent can read, and the daily breakdowns are nearly all of it. The
+    // CTO needs the windows, the accounts and the spend; the rest is opt-in.
+    const snapshot = {
+      windows: [{ provider: "claude", usedPercent: 40 }],
+      accounts: [{ instanceId: "claude" }],
+      pacing: { state: "ok" },
+      costs: [{
+        provider: "claude",
+        last30dCostUsd: 120.5,
+        todayCostUsd: 3.25,
+        tokenBreakdown: {
+          "claude-opus-4": { costUsd: 100.4 },
+          "claude-sonnet-4": { costUsd: 20.1 },
+        },
+        dailyTokenBreakdownByPreset: { week: { claude: { "claude-opus-4": { costUsd: 100.4 } } } },
+      }],
+      adeCosts: [{
+        provider: "codex",
+        last30dCostUsd: 9,
+        todayCostUsd: 1,
+        tokenBreakdown: { "gpt-5": { costUsd: 9 } },
+        dailyTokenBreakdownByPreset: { week: { codex: { "gpt-5": { costUsd: 9 } } } },
+      }],
+      extraUsage: [],
+      lastPolledAt: "2026-10-25T00:00:00.000Z",
+      errors: [],
+    };
+    const usageService = { getUsageSnapshot: vi.fn().mockResolvedValue(snapshot) };
+    const tools = createCtoOperatorTools(buildDeps({ usageService } as never));
+
+    const summary = await (tools.getUsageSnapshot as any).execute({ detail: "summary" });
+    expect(summary).toMatchObject({ success: true });
+    expect(summary.result).toMatchObject({
+      detail: "summary",
+      accounts: snapshot.accounts,
+      costs: [{
+        provider: "claude",
+        last30dCostUsd: 120.5,
+        todayCostUsd: 3.25,
+        topModels30d: [
+          { model: "claude-opus-4", costUsd: 100.4 },
+          { model: "claude-sonnet-4", costUsd: 20.1 },
+        ],
+      }],
+      adeCosts: [{ provider: "codex", last30dCostUsd: 9 }],
+    });
+    // The breakdowns are what made the answer unreadable; they are opt-in.
+    expect(summary.result.costs[0].dailyTokenBreakdownByPreset).toBeUndefined();
+    expect(summary.result.costs[0].tokenBreakdown).toBeUndefined();
+    expect(summary.result.adeCosts[0].dailyTokenBreakdownByPreset).toBeUndefined();
+
+    const full = await (tools.getUsageSnapshot as any).execute({ detail: "full" });
+    expect(full.result).toBe(snapshot);
+  });
 });

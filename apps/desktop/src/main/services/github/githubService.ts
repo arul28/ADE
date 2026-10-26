@@ -9,6 +9,7 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { runGit } from "../git/git";
+import { gitPushError } from "../git/gitPushFailure";
 import type {
   GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
@@ -24,7 +25,8 @@ import type {
   GitHubStatus,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
+import { resolveGithubRepoRef } from "./githubSshAlias";
 import { parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
@@ -67,6 +69,7 @@ import {
   type GithubRequestAccountingContext,
   type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
+import { readGitTransportStatus, runGitWithGithubAuthFallback, setGitTransportTokenReader } from "../git/gitTransportAuth";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -107,6 +110,7 @@ import {
   collectGithubRestPages,
 } from "./githubRestPagination";
 import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
+import { redactGitOutput } from "../../utils/redaction";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -518,8 +522,7 @@ function detectGitHubTokenType(token: string): NonNullable<GitHubStatus["tokenTy
 }
 
 export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
-  const repo = parseGithubRemoteUrl(remoteUrlRaw);
-  return repo ? { owner: repo.owner, name: repo.repo } : null;
+  return githubRepoRefFromRemoteUrl(remoteUrlRaw);
 }
 
 function repoIdentityFromGitHubResponse(
@@ -1073,6 +1076,10 @@ export function createGithubService({
     };
   };
 
+  /** ADE's GitHub credential for git transport, or null; the git fallback's reader. */
+  const readGitTransportToken = async (): Promise<string | null> => (await readGitTransportAuthToken()).token;
+  setGitTransportTokenReader(readGitTransportToken, logger);
+
   const readAuthTokenSync = (): GitHubTokenLookup => {
     const patLookup = readPatAuthToken();
     const patTokenStored = Boolean(patLookup);
@@ -1128,7 +1135,7 @@ export function createGithubService({
     }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return null;
-    return parseGitHubRepoFromRemoteUrl(res.stdout);
+    return await resolveGithubRepoRef(res.stdout);
   };
 
   // Returns `{ repo, hasOrigin }` in one git invocation. `hasOrigin` is true
@@ -1144,13 +1151,13 @@ export function createGithubService({
       // parsing cannot see, so fall through once before treating it as non-GitHub.
       const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
       if (res.exitCode !== 0) return { repo: null, hasOrigin: true };
-      return { repo: parseGitHubRepoFromRemoteUrl(res.stdout), hasOrigin: true };
+      return { repo: await resolveGithubRepoRef(res.stdout), hasOrigin: true };
     }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return { repo: null, hasOrigin: false };
     const url = res.stdout.trim();
     if (!url) return { repo: null, hasOrigin: false };
-    return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
+    return { repo: await resolveGithubRepoRef(url), hasOrigin: true };
   };
 
   const validateToken = async (
@@ -2082,7 +2089,18 @@ export function createGithubService({
     }
     // Corroborate a failing status against githubstatus.com. Shared with the
     // headless (brain) service so both getStatus owners behave identically.
-    const work = computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger }));
+    // Git's own sign-in is a separate leg from the API ladder; its check is
+    // cached per repository, so this usually costs nothing.
+    const work = Promise.all([
+      computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger })),
+      readGitTransportStatus(projectRoot, readGitTransportToken, opts)
+        .catch((error: unknown) => {
+          logger.warn("github.git_transport_check_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }),
+    ]).then(([status, gitTransport]): GitHubStatus => ({ ...status, gitTransport }));
     statusInFlight = work;
     try {
       return await work;
@@ -2574,16 +2592,21 @@ export function createGithubService({
     });
     if (remoteAddRes.exitCode !== 0) {
       await cleanupLocalOrigin();
-      throw new Error(`Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`);
+      throw new Error(`Failed to add origin remote: ${redactGitOutput(remoteAddRes.stderr.trim()) || `exit ${remoteAddRes.exitCode}`}`);
     }
 
     const headRes = await runGit(["rev-parse", "--verify", "HEAD"], { cwd: projectRoot, timeoutMs: 5_000 });
     let resultState: "pushed" | "remote_added";
     if (headRes.exitCode === 0) {
-      const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
+      const pushRes = await runGitWithGithubAuthFallback(["push", "-u", "origin", "HEAD"], {
+        cwd: projectRoot,
+        timeoutMs: 5 * 60_000,
+      });
       if (pushRes.exitCode !== 0) {
         await cleanupLocalOrigin();
-        throw new Error(`Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`);
+        throw gitPushError(pushRes.stderr.trim() || `exit ${pushRes.exitCode}`, {
+          prefix: "Failed to push to origin:",
+        });
       }
       resultState = "pushed";
     } else {

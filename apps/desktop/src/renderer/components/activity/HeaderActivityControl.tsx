@@ -481,7 +481,7 @@ export function HeaderActivityControl({
 
         <footer className="activity-hdr-panel-foot">
           <span>{footerLine}</span>
-          <button type="button" className="activity-hdr-open-all" onClick={openPane}>
+          <button type="button" className="activity-hdr-open-all" onClick={openPane} disabled={items.length === 0} title={items.length === 0 ? "Nothing to open yet" : undefined}>
             Open all
             <ArrowRight size={12} weight="bold" />
           </button>

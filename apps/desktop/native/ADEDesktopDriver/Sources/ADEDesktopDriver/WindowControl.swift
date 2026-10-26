@@ -32,6 +32,9 @@ struct DesktopWindow {
     var onDisplayId: CGDirectDisplayID?
     var minimized: Bool
     var singleInstance: Bool
+    /// The window-server layer: 0 for an ordinary window, 3 for a floating
+    /// palette, 8 for an app-modal alert or panel. See `WindowLayerPolicy`.
+    var layer: Int = 0
     /// The app's icon, base64 PNG. Carried by the first window of each bundle
     /// id in a listing and nil on the rest — see `WindowControl.appIconBase64`.
     var iconPng: String? = nil
@@ -55,9 +58,24 @@ struct DesktopWindow {
             "onDisplayId": onDisplayId.map { JSONValue.int(Int($0)) } ?? .null,
             "minimized": .bool(minimized),
             "singleInstance": .bool(singleInstance),
+            "layer": .int(layer),
             // Omitted rather than sent as null on every row that does not carry
             // one: a listing is mostly rows without an icon.
         ].merging(iconPng.map { ["iconPng": JSONValue.string($0)] } ?? [:]) { _, new in new }
+    }
+}
+
+/// A lane app's new window the watcher could not move onto the lane's display.
+struct OffLaneWindow {
+    var laneId: String
+    var pid: pid_t
+    var appName: String
+    var title: String?
+    var reason: String
+
+    func warning(windowId: CGWindowID) -> String {
+        let name = title.map { "\(appName) (\"\($0)\")" } ?? appName
+        return "Window \(windowId) of \(name) is on the user's display, and ADE could not move it to this lane (\(reason)). Ask the user to close it or drag it onto this lane's screen."
     }
 }
 
@@ -143,6 +161,10 @@ final class WindowControl {
     /// sweep inside the first one.
     var isSweeping = false
     var pollTimer: Timer?
+    /// New windows of a lane's apps that the watcher could not move off the
+    /// user's screen, by window id. Read by `observe` as a warning, and
+    /// dropped as soon as the window ends or reaches the lane's display.
+    var offLaneWindows: [CGWindowID: OffLaneWindow] = [:]
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
     /// laneId → which of the lane's displays `placements` describes. See
@@ -217,6 +239,13 @@ final class WindowControl {
         }
     }
 
+    /// Whether `frame` touches any lane's display.
+    func isOnLaneDisplay(_ frame: CGRect) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return placements.values.contains { $0.frame.intersects(frame) }
+    }
+
     func placement(forLane laneId: String) -> DisplayPlacement? {
         lock.lock()
         defer { lock.unlock() }
@@ -259,6 +288,9 @@ final class WindowControl {
         let laneDisplay = laneId.flatMap { displayIds[$0] }
         let origins = windowOrigins
         lock.unlock()
+        // The apps a lane launched or holds a window of: only theirs are
+        // listed at a panel layer. See `WindowLayerPolicy`.
+        let lanePids = Set(newWindows.watchedPids.keys)
         var windows: [DesktopWindow] = []
         // One AX read per app, at most, and only for apps that have an entry the
         // window server says is not on screen. See `axWindowMinimizedState`.
@@ -267,12 +299,18 @@ final class WindowControl {
         // other rows, so forty windows of eight apps cost eight PNGs.
         var iconSentFor: Set<String> = []
         for entry in raw {
-            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+            guard let layer = entry[kCGWindowLayer as String] as? Int else { continue }
             guard let windowNumber = entry[kCGWindowNumber as String] as? UInt32 else { continue }
             guard let ownerPid = entry[kCGWindowOwnerPID as String] as? Int32 else { continue }
             if let pid, ownerPid != pid { continue }
             let windowId = CGWindowID(windowNumber)
             if let windowIds, !windowIds.contains(windowId) { continue }
+            // Nothing from the menu band up, whoever owns it. The rest of the
+            // layer rule needs the owner, read below.
+            guard layer >= 0, layer < WindowLayerPolicy.menuBand else { continue }
+            // And the claim picker's whole-Mac listing never pays the owner
+            // lookups below for another app's palettes.
+            if layer != 0, laneId == nil, windowIds == nil, !lanePids.contains(ownerPid) { continue }
             let ownedBy = ownership.owner(ofWindow: Int(windowId))
             // A lane's list is what is ON its display, owned or not: a window
             // the user dragged there by hand is an app on that desktop too,
@@ -290,17 +328,48 @@ final class WindowControl {
             ) else { continue }
             let application = NSRunningApplication(processIdentifier: ownerPid)
             let bundleId = application?.bundleIdentifier
+            // Only in a lane's listing, where the scope has already kept just
+            // what sits on the lane's display: the panel service's windows on
+            // the user's screen are another app's business.
+            let isOpenSavePanel = laneId != nil
+                && !lanePids.contains(ownerPid)
+                && WindowLayerPolicy.isOpenSavePanelService(bundleId: bundleId)
+            guard WindowLayerPolicy.admits(
+                layer: layer,
+                ownerIsLaneApp: lanePids.contains(ownerPid),
+                lookupById: windowIds != nil,
+                isOpenSavePanelInLaneListing: isOpenSavePanel
+            ) else { continue }
             let appName = (entry[kCGWindowOwnerName as String] as? String)
                 ?? application?.localizedName
                 ?? "Unknown"
             let onScreen = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
             let title = (entry[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            // The Open/Save panel service is an untitled background process,
+            // so the "a person would recognise it" rule would drop the panel
+            // an agent most needs to see.
             guard Self.isUserWindow(
                 title: title,
                 frame: frame,
                 pid: ownerPid,
                 application: application
-            ) else { continue }
+            ) || (isOpenSavePanel && frame.width > 0 && frame.height > 0) else { continue }
+            if layer != 0 {
+                // Above layer 0 an app also keeps surfaces that are not
+                // windows: tooltips, popover chrome, hidden panels it reuses.
+                // Only an on-screen entry that the app publishes as an
+                // Accessibility window is a panel a lane can see, park or
+                // press keys into; without the bridge there is no telling.
+                guard onScreen else { continue }
+                let state: [CGWindowID: Bool]?
+                if let cached = axStateByPid[ownerPid] {
+                    state = cached
+                } else {
+                    state = axWindowMinimizedState(pid: ownerPid)
+                    axStateByPid[ownerPid] = state
+                }
+                guard let state, state[windowId] != nil else { continue }
+            }
             /*
               Off screen is three different facts, and reporting them as one is
               what put an app in the claim picker twice.
@@ -365,6 +434,7 @@ final class WindowControl {
                     onDisplayId: displayId(containing: frame),
                     minimized: minimized,
                     singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application),
+                    layer: layer,
                     iconPng: iconPng
                 )
             )
@@ -648,6 +718,16 @@ final class WindowControl {
         if let refusal = launchedApps.refusal(pid: window.pid, laneId: laneId, appName: window.appName) {
             throw refusal
         }
+        // macOS draws a sandboxed app's Open and Save panels in its own
+        // service process and places them over the app's window itself. A
+        // move through Accessibility is undone or ignored, and taking the
+        // service would make every app's next panel the lane's.
+        if WindowLayerPolicy.isOpenSavePanelService(bundleId: window.bundleId) {
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: "Window \(windowId) is a macOS Open/Save panel, drawn by the system for another app, and ADE cannot move it. Cancel it, put the app's window on the lane's display, and open the panel again: it opens over that window."
+            )
+        }
         let hold: WindowOwnership
         do {
             hold = try ownership.park(
@@ -722,11 +802,17 @@ final class WindowControl {
             height: min(window.frame.height > 0 ? window.frame.height : placement.height, placement.height)
         )
         let target = Geometry.cascadeFrame(index: max(0, index), size: size, display: placement)
-        _ = Self.setFrame(element, target)
+        // A panel that already opened on the lane's display stays where its
+        // app put it, over the window it belongs to; only one that opened on
+        // the user's screen is moved.
+        let keepFrame = window.layer != 0 && placement.frame.contains(window.frame)
+        if !keepFrame {
+            _ = Self.setFrame(element, target)
+        }
 
         var parked = window
         parked.laneId = laneId
-        parked.frame = Self.frame(of: element) ?? target
+        parked.frame = Self.frame(of: element) ?? (keepFrame ? window.frame : target)
         parked.origin = origin
         parked.onDisplayId = current.displayId
         startWatching(pid: window.pid, laneId: laneId, launched: launchedApps.isLaunched(pid: window.pid, byLane: laneId))

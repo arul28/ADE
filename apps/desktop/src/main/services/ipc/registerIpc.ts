@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, shell, systemPreferences, webContents } from "electron";
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
@@ -112,6 +112,8 @@ import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
+import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
+import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
@@ -185,7 +187,6 @@ import type { createProjectSecretService } from "../secrets/projectSecretService
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
-import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
@@ -213,6 +214,8 @@ import {
 } from "../projects/recentProjectSummary";
 import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRuntimeAuthorization";
 import { parseAttentionItem } from "../attention/attentionItemRouting";
+import { createUserActivityProbe } from "../attention/userActivityProbe";
+import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import { isTrustedAdeRendererSender } from "./trustedRendererSender";
@@ -294,6 +297,7 @@ import type {
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -600,6 +604,8 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatCopyTempAttachmentArgs,
@@ -1080,6 +1086,7 @@ import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport 
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
+  StorageItem,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -2098,6 +2105,18 @@ export function registerIpc({
     onAccountSnapshot: onAttentionAccountSnapshot,
     onPreferences: onAttentionPreferences,
     onSessionMuted: onAttentionSessionMuted,
+    readUserActive: () => userActivityProbe.read(),
+  });
+  // Lock and sleep tell the phone at once; otherwise the last "in use" report
+  // would keep it quiet until that report ages out.
+  const userActivityProbe = createUserActivityProbe({
+    powerMonitor,
+    onAway: () => void attentionAccountCoordinator.reportUserAway(),
+    onBack: () => void attentionAccountCoordinator.reportUserBack(),
+    onError: (what, error) => getCtx().logger.warn("attention.user_activity_probe_failed", {
+      what,
+      error: error instanceof Error ? error.message : String(error),
+    }),
   });
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
@@ -4064,20 +4083,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
-    clipboard.writeText(text);
+    await clipboard.writeText(text);
   });
 
   ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
     assertTrustedAppControlSender(event, IPC.appReadClipboardText);
-    return clipboard.readText() ?? "";
+    return (await clipboard.readText()) ?? "";
   });
 
   ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
-    return !clipboard.readImage().isEmpty();
+    return !(await readClipboardImage(await readClipboardItem())).isEmpty();
   });
 
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4132,7 +4151,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4169,7 +4188,7 @@ export function registerIpc({
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
     }
-    clipboard.writeImage(image);
+    await writeClipboardFlavors({ image });
   });
 
   ipcMain.handle(
@@ -4425,6 +4444,16 @@ export function registerIpc({
     return service.deletedLaneChatsSummary();
   });
 
+  ipcMain.handle(IPC.storageLaneBuildOutputRemoved, async (
+    _event,
+    arg: { laneId?: string },
+  ): Promise<StorageItem["buildOutputRemoved"] | null> => {
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    if (!laneId) return null;
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return await service.laneBuildOutputRemoved(laneId);
+  });
+
   ipcMain.handle(IPC.storageCleanupPreview, async (
     _event,
     targets: StorageCleanupTarget[],
@@ -4500,7 +4529,7 @@ export function registerIpc({
         title: "Open repository",
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) {
         return null;
       }
@@ -4521,7 +4550,7 @@ export function registerIpc({
         defaultPath: args.defaultPath?.trim() || undefined,
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) return null;
       return result.filePaths[0] ?? null;
     }
@@ -4842,8 +4871,10 @@ export function registerIpc({
       const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
       if (!repoOwner || !repoName) return null;
       // One tested implementation: parses each recent project's git origin
-      // from .git/config (no git subprocess), cached by config mtime.
-      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      // from .git/config (no git subprocess), cached by config mtime. An SSH
+      // origin on a host that is not GitHub or a known forge runs `ssh -G`,
+      // once for each host; the cache answers after that.
+      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
     },
   );
 
@@ -4859,6 +4890,7 @@ export function registerIpc({
       return authorizeRecentProjectRuntimeRoot({
         requestedRootPath,
         activeGitOriginUrl: activeOrigin,
+        activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
       });
     },
@@ -5188,7 +5220,7 @@ export function registerIpc({
       properties: ["openDirectory", "createDirectory"],
       ...(typeof arg?.defaultPath === "string" && path.isAbsolute(arg.defaultPath) ? { defaultPath: arg.defaultPath } : {}),
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showRememberedOpenDialog(win, options);
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
@@ -5275,7 +5307,7 @@ export function registerIpc({
       buttonLabel: "Move lanes here",
       properties: ["openDirectory", "createDirectory"],
     };
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const picked = await showRememberedOpenDialog(owner, options);
     return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
@@ -5341,7 +5373,7 @@ export function registerIpc({
       const written = writeDiagnosticReportFile(result.filePath, result.report);
       let copied = false;
       try {
-        clipboard.writeText(result.report);
+        await clipboard.writeText(result.report);
         copied = true;
       } catch {
         copied = false;
@@ -6446,6 +6478,19 @@ export function registerIpc({
     const snapshot = await syncStatusReaders.readMachine(arg);
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
+  });
+
+  // This computer only, like getLocalStatus: the check is "can other devices
+  // reach the computer you are sitting at", answered by its own brain.
+  ipcMain.handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
+    if (!localRuntimeConnectionPool) {
+      throw new Error("ADE's background service isn't running on this computer. Restart ADE, then check again.");
+    }
+    return await localRuntimeConnectionPool.callSync<HostReachabilityReport>(
+      "sync.checkReachability",
+      {},
+      { timeoutMs: 30_000 },
+    );
   });
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
@@ -7597,6 +7642,7 @@ export function registerIpc({
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
       githubIssue: arg.githubIssue ?? null,
+      ...(arg.operationId ? { operationId: arg.operationId } : {}),
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -7732,6 +7778,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return ctx.laneService.cancelDelete(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesCancelGitWrite, async (_event, arg: CancelLaneGitWriteArgs) => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.cancelGitWrite(arg);
   });
 
   ipcMain.handle(IPC.lanesListDeleteProgress, async () => {
@@ -9410,6 +9461,7 @@ export function registerIpc({
     return await ctx.agentChatService.restartSession({
       sessionId: record.sessionId,
       ...(record.stopFirst === true ? { stopFirst: true } : {}),
+      ...(record.afterTurn === true ? { afterTurn: true } : {}),
     });
   });
 
@@ -9845,6 +9897,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getContextUsage(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeUsage, async (_event, arg: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getClaudeUsage(arg);
   });
 
   ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
@@ -11557,7 +11614,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
     const ctx = ensureFileContext();
-    ctx.fileService.deletePath(arg);
+    await ctx.fileService.deletePath(arg);
   });
 
   ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
@@ -11751,48 +11808,19 @@ export function registerIpc({
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     const fallback = { remoteUrl: null, branch: null } as const;
     if (!laneId) return fallback;
-    let worktreePath: string;
-    let knownBranch: string | null = null;
+    // One owner for the read, shared with the runtime action: it strips
+    // credentials and names GitHub's host for an SSH alias of GitHub.
     try {
-      const info = ctx.laneService.getLaneBaseAndBranch(laneId);
-      worktreePath = info.worktreePath;
-      knownBranch = info.branchRef?.trim() || null;
+      return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
-      return fallback;
-    }
-    if (!worktreePath) return fallback;
-    const [remoteRes, branchRes] = await Promise.all([
-      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-      knownBranch
-        ? Promise.resolve(null)
-        : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-    ]);
-    const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
-    // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
-    // before exposing the URL to the renderer, so secrets do not cross the IPC
-    // boundary.
-    const remoteUrl = ((): string | null => {
-      if (!rawRemote) return rawRemote;
+      // An unknown lane, or one whose worktree is gone (an unmounted drive),
+      // reads as no remote. The lane row still knows its branch.
       try {
-        const parsed = new URL(rawRemote);
-        if (parsed.username || parsed.password) {
-          parsed.username = "";
-          parsed.password = "";
-          return parsed.toString();
-        }
-        return rawRemote;
+        return { remoteUrl: null, branch: ctx.laneService.getLaneBaseAndBranch(laneId).branchRef?.trim() || null };
       } catch {
-        // Non-URL form (e.g. SSH `git@host:owner/repo.git`) — return unchanged;
-        // these never embed user credentials.
-        return rawRemote;
+        return fallback;
       }
-    })();
-    let branch = knownBranch;
-    if (!branch && branchRes && branchRes.exitCode === 0) {
-      const out = branchRes.stdout.trim();
-      branch = out && out !== "HEAD" ? out : null;
     }
-    return { remoteUrl, branch };
   });
 
   ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
@@ -12545,6 +12573,7 @@ export function registerIpc({
     accountBridge,
     getAccountMigrationGeneration: () => accountBridge.getMigrationGeneration(),
     accountVaultBridge,
+    accountSettingsBridge: accountSettingsSyncService,
     getContexts: () => getResourceUsageContexts?.() ?? [getCtx()],
     getLogger: () => getCtx().logger,
   });

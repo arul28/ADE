@@ -82,6 +82,12 @@ export type IosSimulatorStatus = {
    * (`ade apple … --machine`), so this machine's panel can say who is driving.
    */
   remoteHolder?: { machineName: string | null } | null;
+  /**
+   * One sentence per lane device that is off because ADE powered it off
+   * (idle, or a Clean up), with when and what boots it again. Absent when
+   * there is nothing to explain.
+   */
+  deviceNotices?: string[];
   platform: NodeJS.Platform;
   supported: boolean;
   tools: IosSimulatorToolStatus[];
@@ -166,6 +172,8 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceStart",
   "deviceStop",
   "deviceDetach",
+  /* One of the lane's extra devices becomes its own; the old one is kept. */
+  "devicePromote",
   "deviceDelete",
   /* Remove this project's leftover ADE devices and power off idle ones. It
      only ever deletes a device ADE made; the user's own are listed, not touched. */
@@ -218,6 +226,8 @@ export const APPLE_AGENT_ACTIONS = [
      as a flick and scrolls nothing. */
   "tap",
   "typeText",
+  /* A real key press with modifiers (arrows, escape, ⌘F), not typed text. */
+  "pressKey",
   "drag",
   "swipe",
   "scroll",
@@ -544,6 +554,13 @@ export type IosSimulatorStreamStatus = {
   inputBackend?: "helper" | null;
   /** Where a viewer connects, and with what token. Minted by `startStream`. */
   transport?: IosSimulatorStreamTransport | null;
+  /**
+   * The screen in points, the plane `tap`, `drag` and `swipe` take: the
+   * transport's numbers, lifted to the top for `stream-status`. Null while
+   * no stream runs.
+   */
+  pointWidth?: number | null;
+  pointHeight?: number | null;
   /** Measured by the helper's encoder. */
   bitrateKbps?: number | null;
 };
@@ -1543,6 +1560,12 @@ export type IosSimulatorElementMatch = {
   ref: string;
   element: IosScreenElement;
   matchCount: number;
+  /**
+   * Set when the element was found another way than the query said: a
+   * `--label` matched as an accessibility identifier. One sentence that names
+   * the flag to use instead.
+   */
+  note?: string | null;
 };
 
 export type IosSimulatorElementActionKind = "tap" | "fill" | "wait" | "assert";
@@ -2036,9 +2059,11 @@ export type AppleRunTestsResult = {
   resultBundlePath: string | null;
   /** The whole `xcodebuild` output. */
   logPath: string;
-  /** `Executed N tests, with M failures`, when xcodebuild printed it. */
+  /** The run's total `Executed N tests, with M failures`, when xcodebuild printed it. */
   testsExecuted: number | null;
   testsFailed: number | null;
+  /** `with K tests skipped`, from the same total line; 0 when it names none. */
+  testsSkipped?: number | null;
   /** The failing test names and the last lines that matter. */
   summary: string;
   durationMs: number;
@@ -2153,6 +2178,8 @@ export type AppleDeviceListResult = {
   lane: AppleLaneDevice | null;
   /** The lane's extra devices (`device-create --extra`), each reached with `--device`. */
   extras?: AppleLaneDevice[];
+  /** As `IosSimulatorStatus.deviceNotices`: why a lane device ADE powered off is off. */
+  deviceNotices?: string[];
   /**
    * Every lane binding this project knows about, mine flagged.
    *
@@ -2225,6 +2252,94 @@ export type AppleDeviceDetachArgs = {
   /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
   agentCaller?: boolean | null;
 };
+
+/**
+ * `devicePromote`: one of the lane's extra devices becomes the lane's own
+ * device (the one that streams, records, launches builds and runs tests).
+ *
+ * The lane's old device is kept installed: an ADE device becomes an extra in
+ * the promoted one's place, and an attached simulator is detached back to the
+ * user. Refused with `APPLE_LANE_DEVICE_BUSY` while the old device streams,
+ * records, runs tests or a launch, or another holder has the lane's lease.
+ */
+export type AppleDevicePromoteArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** udid or name of one of the lane's extra devices. */
+  device: string;
+  /** Promote even while another chat holds the lane's session. */
+  ignoreOwnership?: boolean | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
+};
+
+export type AppleDevicePromoteResult = {
+  /** The lane's device now. */
+  device: AppleLaneDevice;
+  /** The lane's device before, or null when the lane had none. */
+  previous: AppleLaneDevice | null;
+  /** What became of `previous`: an extra of this lane, detached (still installed), or nothing. */
+  previousKeptAs: "extra" | "detached" | null;
+};
+
+/**
+ * `apple key`: named keys as USB HID keyboard usages (page 0x07), sent to the
+ * device as real key presses through the helper, so a hardware-keyboard
+ * shortcut (⌘F, ⌘→) or an arrow reaches the app the way a person's keyboard
+ * would. Single letters and digits are added by `appleKeyUsage`.
+ */
+export const APPLE_NAMED_KEY_USAGES: Readonly<Record<string, number>> = {
+  return: 0x28,
+  enter: 0x28,
+  escape: 0x29,
+  esc: 0x29,
+  delete: 0x2a,
+  backspace: 0x2a,
+  tab: 0x2b,
+  space: 0x2c,
+  "forward-delete": 0x4c,
+  home: 0x4a,
+  "page-up": 0x4b,
+  end: 0x4d,
+  "page-down": 0x4e,
+  right: 0x4f,
+  left: 0x50,
+  down: 0x51,
+  up: 0x52,
+};
+
+/** Modifier keys held around an `apple key` press, as HID usages (left-hand keys). */
+export const APPLE_KEY_MODIFIER_USAGES: Readonly<Record<string, number>> = {
+  ctrl: 0xe0,
+  shift: 0xe1,
+  alt: 0xe2,
+  cmd: 0xe3,
+};
+
+/** The HID usage for a key name or a single letter or digit, or null. */
+export function appleKeyUsage(name: string): number | null {
+  const key = name.trim().toLowerCase();
+  const named = APPLE_NAMED_KEY_USAGES[key];
+  if (named !== undefined) return named;
+  if (/^[a-z]$/u.test(key)) return 0x04 + key.charCodeAt(0) - "a".charCodeAt(0);
+  if (/^[1-9]$/u.test(key)) return 0x1e + Number(key) - 1;
+  if (key === "0") return 0x27;
+  return null;
+}
+
+export type IosSimulatorPressKeyArgs = {
+  deviceUdid?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** A name from `APPLE_NAMED_KEY_USAGES`, or one letter or digit. */
+  key: string;
+  /** Held while the key is pressed: cmd, shift, alt, ctrl. */
+  modifiers?: string[] | null;
+  source?: AppleInputSource;
+};
+
+/** `devicePromote` refused: the lane's current device is in use. */
+export const APPLE_LANE_DEVICE_BUSY_CODE = "APPLE_LANE_DEVICE_BUSY";
 
 /**
  * `deviceDeleteInstalled`: remove one simulator the owner picked from the list.

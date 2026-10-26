@@ -161,7 +161,7 @@ public enum Geometry {
                     height: template.height,
                     scale: template.scale
                 )
-                guard obstacles.allSatisfy({ !overlapsOrSharesEdge(placement.frame, $0) }) else {
+                guard obstacles.allSatisfy({ !pointerCanCross(placement.frame, $0) }) else {
                     isSafe = false
                     break
                 }
@@ -183,9 +183,172 @@ public enum Geometry {
         let yDirection: Int
     }
 
-    /// A corner contact is safe; positive-area overlap and any shared edge are
-    /// rejected because macOS and the pointer treat both as connected screens.
-    private static func overlapsOrSharesEdge(_ first: CGRect, _ second: CGRect) -> Bool {
+    /// The real displays a pointer cannot reach from the main display without
+    /// crossing something else, by index into `realDisplayFrames`.
+    ///
+    /// The pointer only crosses a shared edge, so two real displays are
+    /// neighbours when they share one (or overlap, as a mirror set does); a
+    /// corner contact does not count. A display outside the main display's
+    /// group is cut off: the person can reach it only through a lane display,
+    /// which the pointer fence keeps them out of. That is the AirPlay trap:
+    /// macOS puts a newly connected display beside a lane display, or restores
+    /// an arrangement it remembered with one.
+    public static func cutOffRealDisplays(realDisplayFrames: [CGRect], mainIndex: Int) -> [Int] {
+        guard realDisplayFrames.indices.contains(mainIndex) else { return [] }
+        let reached = connectedGroup(from: mainIndex, frames: realDisplayFrames)
+        return realDisplayFrames.indices.filter { !reached.contains($0) }
+    }
+
+    /// The real display frames with every cut-off group moved flush against
+    /// the main display's group, so each one shares an edge with a real
+    /// display again. The same order as the input; a frame that did not need
+    /// to move is returned unchanged. Nil when a cut-off group fits nowhere.
+    ///
+    /// A group keeps its own internal arrangement and moves as one. It goes to
+    /// the side of a reachable display it was already on, keeping its offset
+    /// along that edge where it can, and always overlapping at least half of
+    /// the shorter of the two edges so the crossing is easy to hit. It never
+    /// lands on an obstacle: another ADE helper's lane display, which that
+    /// helper does not re-plan on this one's say-so. Integral frames give
+    /// integral moves, which is what the window server takes.
+    public static func reconnectedRealDisplayFrames(
+        realDisplayFrames: [CGRect],
+        mainIndex: Int,
+        obstacleDisplayFrames: [CGRect] = []
+    ) -> [CGRect]? {
+        guard realDisplayFrames.indices.contains(mainIndex) else { return nil }
+        var frames = realDisplayFrames
+        var reached = connectedGroup(from: mainIndex, frames: frames)
+
+        while reached.count < frames.count {
+            guard let start = frames.indices.first(where: { !reached.contains($0) }) else { break }
+            let group = connectedGroup(from: start, frames: frames)
+            let groupBox = group.map { frames[$0] }.reduce(CGRect.null) { $0.union($1) }
+            let anchors = reached.sorted {
+                let lhs = squaredGap(frames[$0], groupBox)
+                let rhs = squaredGap(frames[$1], groupBox)
+                return lhs != rhs ? lhs < rhs : $0 < $1
+            }
+            var shift: CGVector?
+            search: for anchor in anchors {
+                for side in sidesFacing(groupBox, from: frames[anchor]) {
+                    let offset = flushOffset(moving: groupBox, against: frames[anchor], side: side)
+                    let fits = group.allSatisfy { index in
+                        let moved = frames[index].offsetBy(dx: offset.dx, dy: offset.dy)
+                        return reached.allSatisfy { !overlapsWithArea(moved, frames[$0]) }
+                            && obstacleDisplayFrames.allSatisfy { !overlapsWithArea(moved, $0) }
+                    }
+                    if fits {
+                        shift = offset
+                        break search
+                    }
+                }
+            }
+            guard let shift else { return nil }
+            for index in group {
+                frames[index] = frames[index].offsetBy(dx: shift.dx, dy: shift.dy)
+            }
+            reached = connectedGroup(from: mainIndex, frames: frames)
+            guard group.isSubset(of: reached) else { return nil }
+        }
+        return frames
+    }
+
+    /// The lane displays the pointer fence must let a person cross, by index
+    /// into `laneDisplayFrames`: each one that shares an edge with a cut-off
+    /// real display, and every lane display joined to those by shared edges.
+    /// Empty whenever every real display is reachable, which is the normal
+    /// case once the placement pass has run.
+    public static func laneDisplaysOnRouteToCutOffRealDisplays(
+        realDisplayFrames: [CGRect],
+        mainIndex: Int,
+        laneDisplayFrames: [CGRect]
+    ) -> Set<Int> {
+        let cutOff = cutOffRealDisplays(realDisplayFrames: realDisplayFrames, mainIndex: mainIndex)
+        guard !cutOff.isEmpty else { return [] }
+        var route = Set(laneDisplayFrames.indices.filter { lane in
+            cutOff.contains { pointerCanCross(laneDisplayFrames[lane], realDisplayFrames[$0]) }
+        })
+        var queue = Array(route)
+        while let current = queue.popLast() {
+            for next in laneDisplayFrames.indices where !route.contains(next)
+                && pointerCanCross(laneDisplayFrames[current], laneDisplayFrames[next]) {
+                route.insert(next)
+                queue.append(next)
+            }
+        }
+        return route
+    }
+
+    private enum Side { case left, right, above, below }
+
+    private static func connectedGroup(from start: Int, frames: [CGRect]) -> Set<Int> {
+        var reached: Set<Int> = [start]
+        var queue = [start]
+        while let current = queue.popLast() {
+            for next in frames.indices where !reached.contains(next)
+                && pointerCanCross(frames[current], frames[next]) {
+                reached.insert(next)
+                queue.append(next)
+            }
+        }
+        return reached
+    }
+
+    /// The sides of `anchor` to try for `box`, the side it already lies on first.
+    private static func sidesFacing(_ box: CGRect, from anchor: CGRect) -> [Side] {
+        let dx = box.midX - anchor.midX
+        let dy = box.midY - anchor.midY
+        let horizontal: [Side] = dx >= 0 ? [.right, .left] : [.left, .right]
+        let vertical: [Side] = dy >= 0 ? [.below, .above] : [.above, .below]
+        return abs(dx) >= abs(dy) ? horizontal + vertical : vertical + horizontal
+    }
+
+    private static func flushOffset(moving box: CGRect, against anchor: CGRect, side: Side) -> CGVector {
+        switch side {
+        case .left, .right:
+            let x = side == .right ? anchor.maxX : anchor.minX - box.width
+            let y = clampedAlong(box.minY, length: box.height, edgeStart: anchor.minY, edgeLength: anchor.height)
+            return CGVector(dx: x - box.minX, dy: y - box.minY)
+        case .above, .below:
+            let y = side == .below ? anchor.maxY : anchor.minY - box.height
+            let x = clampedAlong(box.minX, length: box.width, edgeStart: anchor.minX, edgeLength: anchor.width)
+            return CGVector(dx: x - box.minX, dy: y - box.minY)
+        }
+    }
+
+    /// Keeps `start` where it is when the span already overlaps the edge by
+    /// half the shorter length, otherwise slides it just far enough.
+    private static func clampedAlong(
+        _ start: CGFloat,
+        length: CGFloat,
+        edgeStart: CGFloat,
+        edgeLength: CGFloat
+    ) -> CGFloat {
+        let overlap = (min(length, edgeLength) / 2).rounded(.up)
+        let lowest = edgeStart - length + overlap
+        let highest = edgeStart + edgeLength - overlap
+        return min(max(start, lowest), highest)
+    }
+
+    private static func overlapsWithArea(_ first: CGRect, _ second: CGRect) -> Bool {
+        let overlapWidth = min(first.maxX, second.maxX) - max(first.minX, second.minX)
+        let overlapHeight = min(first.maxY, second.maxY) - max(first.minY, second.minY)
+        return overlapWidth > 0 && overlapHeight > 0
+    }
+
+    private static func squaredGap(_ first: CGRect, _ second: CGRect) -> CGFloat {
+        let dx = max(0, max(first.minX, second.minX) - min(first.maxX, second.maxX))
+        let dy = max(0, max(first.minY, second.minY) - min(first.maxY, second.maxY))
+        return dx * dx + dy * dy
+    }
+
+    /// True when a person's pointer can move between the two rects: they share
+    /// an edge of positive length, or overlap (a mirror set). A corner contact
+    /// is not a route: only a hard diagonal push crosses it. So lane displays
+    /// may touch real ones at a corner, and a real display touching the
+    /// others only at a corner counts as cut off.
+    public static func pointerCanCross(_ first: CGRect, _ second: CGRect) -> Bool {
         let overlapWidth = min(first.maxX, second.maxX) - max(first.minX, second.minX)
         let overlapHeight = min(first.maxY, second.maxY) - max(first.minY, second.minY)
         return overlapWidth >= 0 && overlapHeight >= 0 && (overlapWidth > 0 || overlapHeight > 0)

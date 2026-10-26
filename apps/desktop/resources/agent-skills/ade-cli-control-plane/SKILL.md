@@ -168,6 +168,13 @@ them with `ade chat list` (archived ones need `--include-archived`), and read th
 to `--mode chat` for a subagent that must report back**: a chat child reports
 after every turn it finishes.
 
+**Which lane a child goes in.** An ADE child chat is a subagent that can run
+another provider, so it works where a native subagent would: in your lane,
+under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
+set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
+Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
+asks.
+
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use
 `ade lanes child --lane <current> --name <n>` instead of a fresh lane.
@@ -231,11 +238,47 @@ a chat you do not own:
   person (money, credentials, a product call) are theirs: ask them, or leave
   the card for them. Approvals and secret questions are never relayed to you.
   Approvals are the person's to answer unless you were told you may approve.
+- When a subagent waits on a card only the person can answer (a real-input
+  lease, a consent, a secret), you get one message that says so, also from
+  another project or machine. `ade chat status` shows the same as `only the
+  user can answer this`. That chat is waiting, not stuck: do not start a
+  second chat for the same work or on the same lane. Tell the person, then
+  carry on with other work.
+- A peer (`--type peer`) never wakes you. If you wait on one, `ade chat wait`
+  stops with `waiting_on_user` (exit 1) when it waits on such a card, and an
+  `--async` wait wakes you once to say so and stays armed.
+- `ade chat send <B> --after <A>` also tells you once when A waits on such a
+  card: the queued prompt has not been sent yet. It goes when the person
+  answers and A moves on.
+- **Long or multi-line text goes through a file or stdin, not an argument.**
+  `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
+  <session> --text-file -` read stdin (or a path instead of `-`). The file is
+  read on this machine, so this works with `--machine` too:
+
+  ```bash
+  ade chat message "$ADE_PARENT_CHAT_SESSION_ID" --kind auto --text-file - <<'REPORT_END'
+  ...the report...
+  REPORT_END
+  ```
+
+  On Windows, never pass multi-line text as an argument: `ade.cmd` runs
+  through cmd.exe, which cuts the command at the first line break, so the
+  other agent gets only the first line. In PowerShell, write the text to a
+  file (`$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $text
+  -Encoding utf8`) and pass `--text-file $f`. In Git Bash, call `ade` (not
+  `ade.cmd`) and use a here-doc as above.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
   `ade chat send ...` with the new instruction. Do not send a second normal turn
   into an active chat and hope the provider interprets it as steering.
+- When the user asks you to restart or refresh your session (to pick up new
+  skills, plugins, MCP servers or project instructions), run
+  `ade chat restart`. It restarts your own chat after this turn ends; the
+  conversation is kept. Finish your reply in the same turn: the next message
+  starts the fresh process. Background jobs you started (`run_in_background`,
+  background subagents) stop with the old process, so wait for them or tell
+  the user first. Only restart when the user asks.
 
 ### Checking whether delegated / backgrounded work finished
 
@@ -330,6 +373,16 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+- **Take the hand down when you moved on without an answer.**
+  `ade chat ask --clear` drops the marker this chat raised (alias
+  `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
+  being the thing you are waiting on: a coordinator or peer sent new
+  instructions, or you decided and kept working. Otherwise the row keeps saying
+  **Needs you** for the rest of the run, and the person reads a live "blocked on
+  you" badge about a decision that was already made. It clears only an
+  agent-raised ask — never one the user raised, never a provider question card.
+  A message from another agent is not a user answer, so it does not clear the
+  hand on its own.
 - **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
   asked to hear about**, and only then: "tell me when the deploy is done",
   "ping me if the tests fail". Never on your own initiative; ADE already alerts
@@ -727,7 +780,10 @@ them yourself.
 If `command -v ade` fails (PowerShell: `Get-Command ade`):
 
 1. Try `${ADE_CLI_PATH:-}` if set (PowerShell: `& $env:ADE_CLI_PATH ...`).
+   On Windows it is `ade.cmd`; from Git Bash prefer step 2.
 2. Try `${ADE_CLI_BIN_DIR:-}/ade` if set (PowerShell: `& "$env:ADE_CLI_BIN_DIR\ade.cmd" ...`).
+   On Windows that folder holds `ade.cmd` for PowerShell and cmd.exe and an
+   `ade` script for Git Bash.
 3. In an ADE source checkout, after confirming it exists, use `node apps/ade-cli/dist/cli.cjs ...`.
 
 The normal reason to skip ADE CLI is that it is truly unreachable after these fallbacks.

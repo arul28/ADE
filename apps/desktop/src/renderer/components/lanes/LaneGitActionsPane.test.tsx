@@ -557,7 +557,7 @@ describe("LaneGitActionsPane rescue action", () => {
     const user = userEvent.setup();
     renderPane({ runtimePin: runtimePin as any });
 
-    const rescueButton = await screen.findByRole("button", { name: /create new lane with current changes/i });
+    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(rescueButton);
@@ -590,7 +590,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    const rescueButton = await screen.findByRole("button", { name: /create new lane with current changes/i });
+    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
     expect(rescueButton.getAttribute("title")).toMatch(/unstage all changes/i);
   });
@@ -673,6 +673,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await user.click(await screen.findByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     await user.click(await screen.findByRole("button", { name: "Save changes" }));
     await user.type(await screen.findByPlaceholderText("Optional note"), "stash untracked audit");
     await user.click(screen.getByRole("button", { name: "Save stash" }));
@@ -745,7 +746,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    const rescueButton = await screen.findByRole("button", { name: /create new lane with current changes/i });
+    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
   });
@@ -822,6 +823,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     expect(screen.getByText("drop me")).toBeTruthy();
 
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
@@ -861,6 +863,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     expect(screen.getByText("restore me")).toBeTruthy();
 
     await user.click(screen.getAllByRole("button", { name: "RESTORE" })[0]);
@@ -889,6 +892,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("1 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     await user.click(screen.getByRole("button", { name: "COPY TO WORKTREE" }));
 
     await waitFor(() => {
@@ -906,19 +910,19 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await user.click(await screen.findByRole("button", { name: /more/i }));
-    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /fetch only/i })).toBeTruthy();
 
     await user.keyboard("{Escape}");
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: /fetch only/i })).toBeNull();
     });
 
     await user.click(screen.getByRole("button", { name: /more/i }));
-    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /fetch only/i })).toBeTruthy();
 
     await user.click(screen.getByTestId("git-pane-refresh"));
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: /fetch only/i })).toBeNull();
     });
   });
 
@@ -938,6 +942,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
@@ -966,6 +971,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     await user.click(screen.getByRole("button", { name: "Clear stashes" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
     await user.click(screen.getByRole("button", { name: "Delete all" }));
@@ -990,6 +996,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));

@@ -38,24 +38,31 @@ import type {
   ProviderStatus as SdkProviderStatus,
 } from "@ade-dev/sdk";
 import type {
+  AccountManagement,
   AdeChatClient,
   AdeChatClientEventMap,
   AdeThread,
   AgentChatEventEnvelope,
   ApprovalDecision,
   ApprovalRequest,
+  CredentialManagement,
   ChatAttachment,
   ThreadHistoryPage,
   HistoryPageOptions,
   ModelDescriptor,
   ProviderStatus,
+  ProviderCapabilities,
+  PendingInputResponse,
   SendInput,
+  SlashCommand,
+  ThreadQueue,
   ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUpdatePatch,
   ThreadUpdateReply,
   ThreadUsage,
+  UsageLimitEvent,
   Unsubscribe,
 } from "../sdkTypes";
 import { readThreadModelSelection } from "../models/modelSelection";
@@ -181,6 +188,14 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      */
     approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
     pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
+    respond?(requestId: string, response: PendingInputResponse): Promise<void>;
+    queue?: ThreadQueue;
+    slashCommands?(): Promise<readonly SlashCommand[]>;
+    usageLimit?: {
+      resumeNow?(): Promise<unknown>;
+      continueOnAlternate?(): Promise<unknown>;
+    };
+    switchAccount?(instanceId: string): Promise<unknown>;
     /** `@ade-dev/sdk` >= 0.3 `thread.update`. Forwarded only when present. */
     update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
     /** `@ade-dev/sdk` >= 0.4 `thread.retry` / `thread.editLast`. Forwarded only when present. */
@@ -208,15 +223,18 @@ export interface SdkLikeChatClient {
     status(): Promise<Record<string, SdkProviderStatusRecord>>;
     onChange(cb: (statuses: Record<string, SdkProviderStatusRecord>) => void): Unsubscribe;
     refresh?(): Promise<Record<string, SdkProviderStatusRecord>>;
+    capabilities?(provider: string): Promise<ProviderCapabilities | null>;
   };
   models: { list(): Promise<SdkModelCatalogEntry[]> };
   threads: {
     open(key: string, opts?: Record<string, unknown>): Promise<SdkLikeThread>;
   };
+  accounts?: AccountManagement;
+  credentials?: CredentialManagement;
   /**
-   * Client lifecycle events (`@ade-dev/sdk` >= 0.3 `client.on`, and the
-   * Electron renderer client). OPTIONAL: only `restart` is read, and a client
-   * without `on` reports no restarts.
+   * Client events (`@ade-dev/sdk` >= 0.3 `client.on`, and the Electron
+   * renderer client). OPTIONAL: clients without this surface report neither
+   * restarts nor usage-limit updates.
    */
   on?(event: "restart", cb: (payload: AdeChatClientEventMap["restart"]) => void): Unsubscribe;
 }
@@ -562,6 +580,14 @@ class AdaptedThread implements AdeThread {
   ) => Promise<void>;
 
   readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
+  readonly respond?: (requestId: string, response: PendingInputResponse) => Promise<void>;
+  readonly queue?: ThreadQueue;
+  readonly slashCommands?: () => Promise<readonly SlashCommand[]>;
+  readonly usageLimit?: {
+    resumeNow?: () => Promise<unknown>;
+    continueOnAlternate?: () => Promise<unknown>;
+  };
+  readonly switchAccount?: (instanceId: string) => Promise<unknown>;
 
   /** Present only when the inner thread has `update`. */
   readonly update?: (patch: ThreadUpdatePatch) => Promise<ThreadUpdateReply>;
@@ -585,6 +611,34 @@ class AdaptedThread implements AdeThread {
     }
     if (inner.pendingApprovals) {
       this.pendingApprovals = () => inner.pendingApprovals!();
+    }
+    if (inner.respond) {
+      this.respond = (requestId, response) => inner.respond!(requestId, response);
+    }
+    if (inner.queue) {
+      const queue = inner.queue;
+      this.queue = {
+        ...(queue.list ? { list: () => queue.list!() } : {}),
+        ...(queue.cancel ? { cancel: (id) => queue.cancel!(id) } : {}),
+        ...(queue.edit ? { edit: (id, text) => queue.edit!(id, text) } : {}),
+        ...(queue.move ? { move: (id, index) => queue.move!(id, index) } : {}),
+        ...(queue.dispatch ? { dispatch: (id) => queue.dispatch!(id) } : {}),
+        ...(queue.cancelDispatched ? { cancelDispatched: (id) => queue.cancelDispatched!(id) } : {}),
+        ...(queue.restore ? { restore: () => queue.restore!() } : {}),
+      };
+    }
+    if (inner.slashCommands) {
+      this.slashCommands = () => inner.slashCommands!();
+    }
+    if (inner.usageLimit) {
+      const usageLimit = inner.usageLimit;
+      this.usageLimit = {
+        ...(usageLimit.resumeNow ? { resumeNow: () => usageLimit.resumeNow!() } : {}),
+        ...(usageLimit.continueOnAlternate ? { continueOnAlternate: () => usageLimit.continueOnAlternate!() } : {}),
+      };
+    }
+    if (inner.switchAccount) {
+      this.switchAccount = (instanceId) => inner.switchAccount!(instanceId);
     }
     if (inner.update) {
       this.update = (patch) => inner.update!(patch);
@@ -709,6 +763,9 @@ export function adaptSdkClient(
               providerStatusesFromSdk(await refresh.call(sdk.providers), options),
           }
         : {}),
+      ...(sdk.providers.capabilities
+        ? { capabilities: (provider) => sdk.providers.capabilities!(provider) }
+        : {}),
     },
     models: {
       list: async () => {
@@ -719,12 +776,27 @@ export function adaptSdkClient(
     threads: {
       open: async (key, opts) => new AdaptedThread(await sdk.threads.open(key, openOptionsFor(opts))),
     },
+    ...(sdk.accounts ? { accounts: sdk.accounts } : {}),
+    ...(sdk.credentials ? { credentials: sdk.credentials } : {}),
     ...(on
       ? {
           on: <E extends keyof AdeChatClientEventMap>(
             event: E,
             cb: (payload: AdeChatClientEventMap[E]) => void,
-          ): Unsubscribe => on.call(sdk, event, cb),
+          ): Unsubscribe => {
+            if (event === "usageLimit") {
+              try {
+                const subscribe = on as unknown as (name: string, listener: (payload: UsageLimitEvent) => void) => Unsubscribe;
+                return subscribe.call(sdk, "usageLimit", cb as (payload: UsageLimitEvent) => void);
+              } catch (cause: unknown) {
+                // Older SDK versions reject unknown client events; that means
+                // this optional notice is unavailable, not that the chat is broken.
+                if (cause instanceof Error && /Unknown client event/.test(cause.message)) return () => {};
+                throw cause;
+              }
+            }
+            return on.call(sdk, event as "restart", cb as (payload: AdeChatClientEventMap["restart"]) => void);
+          },
         }
       : {}),
   };

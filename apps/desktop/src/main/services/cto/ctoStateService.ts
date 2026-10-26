@@ -692,7 +692,8 @@ export type CtoLiveStateSnapshot = {
   pullRequestsTotal: number;
   approvals: Array<{ sessionId: string; title: string }>;
   approvalsTotal: number;
-  scheduledWork: Array<{ sessionId: string; title: string; status: string; nextRunAt: string | null }>;
+  /** `own` marks the CTO thread's own jobs (its launches and check-ins). */
+  scheduledWork: Array<{ sessionId: string; title: string; status: string; nextRunAt: string | null; own?: boolean }>;
   scheduledWorkTotal: number;
   automationRuns: Array<{ name: string; status: string; at: string }>;
   automationRunsTotal: number;
@@ -710,6 +711,12 @@ export type CtoLiveStateSnapshot = {
   /** Sources that threw while the snapshot was captured, by name. */
   unavailable: string[];
 };
+
+/** Sort key for a schedule's next run: soonest first, unknown times last. */
+function scheduleOrder(nextRunAt: string | null): number {
+  const epoch = nextRunAt ? Date.parse(nextRunAt) : Number.NaN;
+  return Number.isFinite(epoch) ? epoch : Number.POSITIVE_INFINITY;
+}
 
 function liveStateOverflowLine(
   shown: number,
@@ -784,7 +791,8 @@ export function renderCtoLiveStateBlock(
   lines.push("", `Scheduled work (${snapshot.scheduledWorkTotal})`);
   if (!snapshot.scheduledWork.length) lines.push("- none");
   for (const item of snapshot.scheduledWork) {
-    lines.push(`- ${clipText(item.title, 60)} [${item.sessionId}] — ${item.status}${item.nextRunAt ? `, next ${item.nextRunAt}` : ""}`);
+    const owner = item.own ? "yours" : item.sessionId;
+    lines.push(`- ${clipText(item.title, 60)} [${owner}] — ${item.status}${item.nextRunAt ? `, next ${item.nextRunAt}` : ""}`);
   }
   lines.push(...liveStateOverflowLine(snapshot.scheduledWork.length, snapshot.scheduledWorkTotal, "schedules"));
 
@@ -1239,10 +1247,14 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     }
 
     try {
-      const chats = await sources.listChats(undefined, {
-        includeIdentity: false,
+      // The identity thread (the CTO itself) is read too, for its own
+      // scheduled work only: it is not one of the chats it supervises, but its
+      // launches and check-ins are the schedule it most needs to see.
+      const listed = await sources.listChats(undefined, {
+        includeIdentity: true,
         includeAutomation: true,
       });
+      const chats = listed.filter((chat) => !chat.identityKey);
       // "Active" means the chat is still a live concern: anything not ended or
       // archived. A finished chat belongs in the daily log, not the live block.
       const active = chats.filter((chat) => chat.status !== "ended" && !chat.archivedAt);
@@ -1267,13 +1279,22 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         title: chat.title?.trim() || chat.sessionId,
       }));
 
-      const schedules = active.flatMap((chat) =>
-        (chat.scheduledWork ?? []).map((item) => ({
-          sessionId: chat.sessionId,
-          title: item.title,
-          status: item.status,
-          nextRunAt: item.nextRunAt ?? null,
-        })));
+      // Only what is still to run, soonest first: a finished row is history,
+      // and chat order let a busy chat's rows push the next launch out of the
+      // capped list.
+      const identity = listed.filter((chat) => chat.identityKey && chat.status !== "ended" && !chat.archivedAt);
+      const schedules = [...identity, ...active]
+        .flatMap((chat) =>
+          (chat.scheduledWork ?? [])
+            .filter((item) => item.status === "scheduled" || item.status === "paused")
+            .map((item) => ({
+              sessionId: chat.sessionId,
+              title: item.title,
+              status: item.status,
+              nextRunAt: item.nextRunAt ?? null,
+              ...(chat.identityKey ? { own: true } : {}),
+            })))
+        .sort((a, b) => scheduleOrder(a.nextRunAt) - scheduleOrder(b.nextRunAt));
       snapshot.scheduledWorkTotal = schedules.length;
       snapshot.scheduledWork = schedules.slice(0, LIVE_STATE_MAX_SCHEDULED);
     } catch {

@@ -227,6 +227,21 @@ export function resolvePalette(theme: AdeTheme): ResolvedAdeThemePalette {
 }
 
 /**
+ * The accent as text. Dark pages read the bright accent as it is; on a light
+ * page an accent tuned to fill a button sits near 2 : 1, so it is darkened (hue
+ * kept) until it reads at 4.5 : 1 on the theme's darkest everyday surface.
+ */
+function accentText(p: ResolvedAdeThemePalette, isDark: boolean): string {
+  if (isDark) return p.accentBright;
+  const surfaces = [p.bg, p.card, p.surfaceRecessed].map((c) => rgb(c, WHITE));
+  let candidate = rgb(p.accent, BLACK);
+  for (let attempt = 0; attempt < 24 && Math.min(...surfaces.map((s) => contrastRatio(candidate, s))) < WCAG_AA_TEXT_CONTRAST; attempt += 1) {
+    candidate = shiftLightness(candidate, -0.02);
+  }
+  return toHex(candidate);
+}
+
+/**
  * Every CSS custom property a non-stylesheet theme overrides.
  *
  * Shell, work and chat tokens whose stylesheet definition is already a
@@ -266,6 +281,7 @@ export function resolveCssVars(theme: AdeTheme, palette: ResolvedAdeThemePalette
     "--color-accent-bright": p.accentBright,
     "--color-accent-deep": p.accentDeep,
     "--color-accent-glow-strong": alphaCss(p.accentBright, 0.22, rgb(p.accentBright, BLACK)),
+    "--color-accent-text": accentText(p, isDark),
     "--color-surface-raised": p.surfaceRaised,
     "--color-surface-recessed": p.surfaceRecessed,
     "--color-surface-overlay": p.surfaceOverlay,
@@ -549,6 +565,9 @@ export function resolveFlairVars(
   }
 
   if (flair.sansFont && flair.sansFont !== "default") vars["--theme-font-sans"] = FONT_STACKS[flair.sansFont];
+  // A monospace interface runs about a fifth wider than the default face, so
+  // labels sized for it truncate. Tightening the tracking wins part of it back.
+  if (flair.sansFont === "mono") vars["--theme-letter-spacing"] = "-0.035em";
   if (flair.backdrop && flair.backdrop !== "none") Object.assign(vars, backdropVars(flair.backdrop, palette, isDark));
   return vars;
 }

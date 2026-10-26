@@ -16,7 +16,16 @@ import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
 import { AppleRenderHost } from "../apple/AppleRenderHost";
-import { ACCOUNT_SETTINGS_ROUTE, isMachineScopedSettingsRoute, resolveSettingsTab } from "../settings/settingsManifest";
+import {
+  ACCOUNT_SETTINGS_ROUTE,
+  isMachineScopedSettingsRoute,
+  isMachineSelectableSettingsTab,
+  resolveSettingsTab,
+  settingsEntryById,
+} from "../settings/settingsManifest";
+import { openPlaceById } from "../../../shared/openPlaces";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
@@ -242,6 +251,37 @@ const RouteLoadingFallback = (
 
 const LazyFallback = RouteLoadingFallback;
 
+/**
+ * The Work tab's own placeholder while its chunk loads: shaped like the chat it
+ * is about to show (a title bar, a few messages, the prompt box at the bottom)
+ * rather than the generic list-and-panels grid, so the page does not change
+ * shape when it arrives.
+ */
+const WorkLoadingFallback = (
+  <div className="flex h-full min-h-0 w-full flex-col" style={{ background: "var(--color-bg)" }} aria-label="Loading chats" aria-busy="true">
+    <div className="flex h-12 shrink-0 items-center gap-3 px-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
+      <div className="h-3.5 w-56 animate-pulse rounded" style={{ background: fgTint(7) }} />
+      <span className="ml-auto text-[11px] text-muted-fg/60">Loading chats…</span>
+    </div>
+    <div className="mx-auto flex min-h-0 w-full max-w-[52rem] flex-1 flex-col gap-5 px-6 pt-8">
+      <div className="ml-auto h-14 w-2/3 animate-pulse rounded-2xl" style={{ background: fgTint(6) }} />
+      <div className="space-y-2.5">
+        {["w-11/12", "w-4/5", "w-3/5"].map((width) => (
+          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
+        ))}
+      </div>
+      <div className="space-y-2.5">
+        {["w-5/6", "w-2/3"].map((width) => (
+          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
+        ))}
+      </div>
+    </div>
+    <div className="mx-auto w-full max-w-[52rem] shrink-0 px-6 pb-5">
+      <div className="h-[88px] animate-pulse rounded-2xl border border-border" style={{ background: fgTint(4) }} />
+    </div>
+  </div>
+);
+
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
 }
@@ -409,6 +449,15 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
   const pageActive = active && !overlayOpen;
+  // CTO stays mounted (parked) once opened, like Work: leaving it for a chat
+  // and pressing CTO again shows its thread where it was, with no reload.
+  const isCtoRoute = pathname === "/cto" || pathname.startsWith("/cto/");
+  const [ctoMounted, setCtoMounted] = React.useState(isCtoRoute);
+  React.useEffect(() => {
+    if (isCtoRoute) setCtoMounted(true);
+  }, [isCtoRoute]);
+  const ctoSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  useParkedSurfaceFocus(ctoSurfaceRef, !isCtoRoute, ctoMounted);
   const shouldRenderWork = workMounted || isWorkRoute || heldWork;
   const shouldRenderLanes = active && (isLanesRoute || heldLanes);
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
@@ -498,7 +547,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             {...parkedSurfaceProps(!isWorkRoute)}
           >
             <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>
+              <React.Suspense fallback={WorkLoadingFallback}>
                 <ProjectSidebarHold held={heldWork}>
                   <TerminalsPage active={workShown} />
                 </ProjectSidebarHold>
@@ -572,14 +621,20 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               </ProjectSidebarHold>
             </div>
           ) : null}
-          {active && overlayOpen ? (
+          {active && (ctoMounted || isCtoRoute) ? (
+            <div
+              ref={ctoSurfaceRef}
+              className="ade-project-page h-full min-h-0 w-full"
+              {...parkedSurfaceProps(!isCtoRoute)}
+            >
+              <PageErrorBoundary>
+                <React.Suspense fallback={LazyFallback}><CtoPage active={isCtoRoute} /></React.Suspense>
+              </PageErrorBoundary>
+            </div>
+          ) : null}
+          {active && overlayOpen && !isCtoRoute ? (
             <div className="ade-project-page h-full min-h-0 w-full">
               <Routes location={route}>
-                <Route path="/cto" element={
-                  <PageErrorBoundary>
-                    <React.Suspense fallback={LazyFallback}><CtoPage active={active} /></React.Suspense>
-                  </PageErrorBoundary>
-                } />
                 <Route path="/history" element={
                   <PageErrorBoundary>
                     <React.Suspense fallback={LazyFallback}><HistoryPage active={active} /></React.Suspense>
@@ -1370,13 +1425,32 @@ function AppNavigationBridge() {
       // settings tab — and land on a specific card — without
       // taking a `useNavigate` dependency. Unknown tabs fall back to the
       // settings root rather than 404-ing to General.
-      const tab = resolveSettingsTab(target.tab ?? null);
-      const anchor = target.anchor?.trim();
+      // A settings chip or `ade://settings/<id>` names a manifest entry, which
+      // owns its tab and anchor. A Computer page also names its machine, so a
+      // chip in a chat on another machine opens that machine's page; a machine
+      // this window does not know lands on This computer (SettingsPage).
+      const entry = target.entryId ? settingsEntryById(target.entryId) : null;
+      const tab = entry?.tab ?? resolveSettingsTab(target.tab ?? null);
+      const anchor = entry?.anchor ?? target.anchor?.trim();
+      const params = new URLSearchParams();
+      if (tab) params.set("tab", tab);
+      const machineId = target.machineId?.trim();
+      if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
+      const search = params.toString();
       navigate({
         pathname: "/settings",
-        search: tab ? `?tab=${tab}` : "",
+        search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "open-place") {
+      // Only a chat chip sends this (the protocol handler refuses `open`).
+      const place = openPlaceById(target.place);
+      if (!place) return false;
+      if (place.target.kind === "connections") openConnectionsPanel(place.target.tab);
+      else navigate(place.target.route);
       return true;
     }
 

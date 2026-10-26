@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Shell scripts keep LF everywhere. The Windows package is built on a Windows
+# runner, whose checkout would turn them into CRLF, and Git Bash then fails on
+# the packaged POSIX `ade` wrapper.
+*.sh text eol=lf

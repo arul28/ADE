@@ -38,6 +38,39 @@ export type CtoOnlyRule =
   | { allExcept: readonly string[] };
 
 /**
+ * The CTO-only actions that change one of the person's settings, each with
+ * the Settings card it is changed from (null when there is none). A refused
+ * agent is told where the setting is rather than that it lacks a role.
+ * `ADE_ACTION_CTO_ONLY` reads these lists, so a write added here is refused.
+ */
+const USER_SETTING_WRITES = {
+  account_settings: { actions: ["set", "remove"], entryId: null },
+  provider_instances: {
+    actions: [
+      "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced",
+      "loginStart", "loginSubmitCode", "loginCancel", "setSettings",
+    ],
+    entryId: "agents.providers",
+  },
+  keybindings: { actions: ["set"], entryId: null },
+  project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
+  keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
+  budget: { actions: ["updateConfig"], entryId: "agents.budget" },
+  analytics: { actions: ["setEnabled"], entryId: null },
+  remote_mcp: { actions: ["setEnabled", "createToken", "updateConnection", "removeConnection"], entryId: "ade-mcp.server" },
+} as const satisfies Partial<Record<AdeActionDomain, { actions: readonly string[]; entryId: string | null }>>;
+
+/**
+ * When an action changes one of the person's settings: the card it lives on
+ * (`entryId` null when it has none). Null for every other action.
+ */
+export function userSettingWrite(domain: AdeActionDomain, action: string): { entryId: string | null } | null {
+  const write: { actions: readonly string[]; entryId: string | null } | undefined =
+    (USER_SETTING_WRITES as Partial<Record<AdeActionDomain, { actions: readonly string[]; entryId: string | null }>>)[domain];
+  return write?.actions.includes(action) ? { entryId: write.entryId } : null;
+}
+
+/**
  * Methods that require at least `cto` role when invoked via `run_ade_action`.
  * The generic bridge has no built-in role check, so anything that mutates
  * account-level credentials, persisted policy, or drives privileged polling
@@ -75,7 +108,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   },
   // Keep-awake preferences are machine-wide power policy. The desktop, phone,
   // and direct user clients can change them; session-bound agents cannot.
-  keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
+  keep_awake: { only: ["getSnapshot", ...USER_SETTING_WRITES.keep_awake.actions] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -112,12 +145,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
   ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel"] },
-  budget: { only: ["updateConfig"] },
+  budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
   usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
-  analytics: { only: ["setEnabled", "flush"] },
+  analytics: { only: [...USER_SETTING_WRITES.analytics.actions, "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   // A fix edits the project's data, git links or other tools' config: the
   // person presses it. Agents read the report and offer the fixes.
@@ -128,6 +161,17 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
+  // The person's settings. What an agent may and may not change is listed in
+  // `shared/settingsAgentAccess.ts`; these are the writes behind the "only
+  // you" list. Your account's settings (MCP servers, notifications, chat),
+  // provider sign-ins, and keyboard shortcuts. Turning on PR chat transcripts
+  // publishes your chats as gists. Agents reach the rest of the project config
+  // through `project_config.save`, which the RPC server checks key by key
+  // (`ownerOnlyProjectConfigChange`).
+  account_settings: { only: USER_SETTING_WRITES.account_settings.actions },
+  provider_instances: { only: USER_SETTING_WRITES.provider_instances.actions },
+  keybindings: { only: USER_SETTING_WRITES.keybindings.actions },
+  project_config: { only: USER_SETTING_WRITES.project_config.actions },
   /*
    * Fail-closed, and that is the whole point. `cto_memory` reads and rewrites the
    * durable memory injected into every CTO session, so it is operator state, not
@@ -405,6 +449,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "attachGitHubIssueToSession",
     "attachJiraIssueToSession",
     "cancelDelete",
+    "cancelGitWrite",
     "create",
     "createChild",
     "createFromUnstaged",
@@ -674,6 +719,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archiveSession",
     "cancelDispatchedSteer",
     "cancelSteer",
+    // `ade chat ask --clear`: the agent takes back the hand it raised. Fenced
+    // to `agent_explicit` in the service, and scoped to the caller's own chat
+    // by the RPC server's chat guard, so it cannot drop a person's hand.
+    "clearAsk",
     "createSession",
     "deleteSession",
     "dispatchSteer",
@@ -687,6 +736,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getChatEventHistory",
     "getChatEventHistoryPage",
     "getContextUsage",
+    "getClaudeUsage",
     "getImageDataUrl",
     "getMainTranscript",
     "getSubagentTranscript",
@@ -976,7 +1026,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"
   // cannot share a permission.
-  account_settings: ["list", "get", "set", "remove", "sync"],
+  account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
   // for the same reason `project_secret.exportEnv` is.
@@ -1117,7 +1167,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
-  storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "runMaintenanceNow"],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "laneBuildOutputRemoved", "runMaintenanceNow"],
   project_health: ["fix", "getReport"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
@@ -1318,29 +1368,20 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // Exposing them here would hand remote callers a snapshot that never updates.
   "external-sessions": ["list", "import", "getDetail"],
   /*
-   * Deliberately NOT in `ADE_ACTION_CTO_ONLY`, read AND write.
+   * Reachable on the action bus; every write is CTO-only (`USER_SETTING_WRITES`).
    *
    * A provider instance is a label plus a machine-local config DIRECTORY —
    * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The store never reads, writes, copies
    * or returns a token: the provider's own CLI writes its credentials inside
-   * that directory, `loginCommand` only hands back the argv and the one env var
-   * that points the CLI at it, and none of them can leak a credential.
-   * `signOut` and `remove` (which signs out first) clear one account's saved
-   * login. They stay open to agents on purpose: the user wants an agent to
-   * manage accounts end to end, and the default account is refused by both.
+   * that directory, and `loginCommand` only hands back the argv and the one env
+   * var that points the CLI at it.
    *
-   * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
-   * account in a private PTY. That opens the user's browser and, once the user
-   * approves there, the CLI writes a new login into that account's directory,
-   * which can replace the login it held (tracked as `replacedAccount`). ADE
-   * still never sees the token, and nothing changes without the user's
-   * approval in the browser.
-   *
-   * The locked decision is that an agent may both see and manage accounts:
-   * a worker agent that needs a second Claude login (rate limits, a separate
-   * work identity) must be able to create it and point a session at it without
-   * an operator round-trip. If you are here to "fix" a missing CTO-only rule,
-   * this is that rule's absence, on purpose.
+   * Agents may still see accounts and use one (`list`, `loginStatus`,
+   * `loginCommand`, `refresh`, `getSettings`). Creating, removing, signing in or
+   * out, renaming and re-pointing the default are the user's: sign-ins are on
+   * the "only you" list (`shared/settingsAgentAccess.ts`). This reverses the
+   * earlier decision that agents manage accounts end to end; the owner chose
+   * the two lists on 2026-10-25.
    */
   provider_instances: [
     "list",
@@ -1449,5 +1490,9 @@ export function isAutomationAllowedAdeAction(
 ): boolean {
   return isAllowedAdeAction(domain, action)
     && !isCtoOnlyAdeAction(domain, action)
-    && !isUserOnlyAdeAction(domain, action);
+    && !isUserOnlyAdeAction(domain, action)
+    // A config save writes the whole file, owner-only keys included. The RPC
+    // server checks an agent's save key by key; an automation step skips that
+    // check, so it may not save the config at all.
+    && !(domain === "project_config" && action === "save");
 }

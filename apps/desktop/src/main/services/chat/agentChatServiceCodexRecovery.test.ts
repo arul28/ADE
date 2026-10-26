@@ -412,6 +412,81 @@ describe("createAgentChatService", () => {
       });
     });
 
+    // The bug: a message a PERSON sent through `chat.messageSession` (the CLI's
+    // `ade chat send`, the phone, the hosted web client, drafts) reached the
+    // chat but never took the "Needs you" hand down, because the clear lived
+    // only in `steerUserMessage` — the composer's wrapper. A row then said
+    // "Needs you" for the rest of a 40-minute run about a question the person
+    // had already answered.
+    it("clears the lifecycle markers when a person's message arrives through messageSession", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      await service.messageSession({
+        sessionId: session.id,
+        text: "Keep working, you are doing great.",
+        kind: "auto",
+      });
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+    });
+
+    // `ade chat ask --clear`: the retraction takes down ONLY the marker this
+    // chat raised. A hand the person raised is theirs to drop, and clearing it
+    // here would silently erase a question the agent never asked.
+    it("takes down an agent ask, and never a hand the person raised", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      const row = mockState.sessions.get(session.id);
+      const raised = (source: string) => {
+        row.attentionRequestedAt = "2026-10-26T12:45:51.379Z";
+        row.attentionMessage = "Want me to do it in this lane?";
+        row.attentionSource = source;
+      };
+
+      raised("agent_explicit");
+      expect(service.clearAsk(session.id)).toEqual({ cleared: true });
+      expect(mockState.sessions.get(session.id)?.attentionRequestedAt).toBeNull();
+      expect(mockState.sessions.get(session.id)?.attentionSource).toBeNull();
+
+      raised("user");
+      expect(service.clearAsk(session.id)).toEqual({ cleared: false });
+      expect(mockState.sessions.get(session.id)?.attentionRequestedAt)
+        .toBe("2026-10-26T12:45:51.379Z");
+    });
+
+    // The other half of the same rule: a delivery another agent (or the
+    // scheduler) wrote is NOT the person engaging, so it must not wipe a hand
+    // the person has not seen yet. A subagent reporting in used to be the
+    // classic way a real question went quiet.
+    it("leaves the hand up when a host-authored delivery steers the same chat", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      await service.messageSession({
+        sessionId: session.id,
+        text: "Your child finished.",
+        kind: "auto",
+        metadata: { agentRelay: { fromSessionId: "parent-1" } },
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
     it("correlates combined Codex user-message content without consuming another accepted steer", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

@@ -15,6 +15,7 @@ import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js"
 import type { RuntimeDownloader } from "./download.js";
 import type { AdeProvider, AgentChatSettingSources, McpServerConfig } from "./types.js";
 import type { AdeThread } from "./thread.js";
+import type { ThreadBudget } from "./usage.js";
 
 export type CreateAdeChatOptions = {
   /** Isolated per-app ADE state root. Created if missing. */
@@ -117,6 +118,29 @@ export type CreateAdeChatOptions = {
    * `"explicit"`. Ignored without `binaryPath`.
    */
   source?: "packaged";
+  /**
+   * Reuse the runtime host's provider logins. Defaults to false (isolated
+   * per-app logins). SDK 0.7 changes the default from machine logins; pass
+   * true to keep relying on the host machine's Claude/Codex login.
+   */
+  useMachineLogin?: boolean;
+  /**
+   * The environment the runtime starts with. Defaults to this process's
+   * environment. `useMachineLogin: false` isolates the providers' sign-in
+   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
+   * users must run only on their own logins and keys. The host's own `ADE_*`
+   * variables are always removed.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Resolve a host-vault credential id to a secret for one thread session.
+   * The value is pushed to the runtime for the live session and never saved
+   * in the SDK thread record.
+   */
+  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  /** Usage-limit behavior for new threads. Defaults to `wait`. */
+  onUsageLimit?: "failover" | "wait" | "ask";
 };
 
 /**
@@ -182,8 +206,23 @@ export type InternalAdeChatOptions = CreateAdeChatOptions & {
 };
 
 export type ThreadOpenOptions = {
-  provider: AdeProvider;
+  /** A provider id present in this runtime's model catalog. */
+  provider: AdeProvider | (string & {});
   model: string;
+  /** Stop a turn when cumulative reported usage reaches either limit. */
+  budget?: ThreadBudget;
+  /** Direct harness permission mode; validated against provider capabilities when available. */
+  permissionMode?: import("./types.js").AgentChatPermissionMode;
+  /** Reasoning tier, validated against provider capabilities when available. */
+  reasoningEffort?: string;
+  /** Fast mode, validated against provider capabilities when available. */
+  fastMode?: boolean;
+  /** Provider instance id. Create-only; persisted and reused when recreating this key. */
+  account?: string;
+  /** Runtime credential id. Create-only; persisted without its key value. */
+  credential?: string;
+  /** Harness preset id. Create-only; persisted and reused when recreating this key. */
+  preset?: string;
   /**
    * MCP servers to attach to this thread.
    *
@@ -362,7 +401,6 @@ export type ThreadOpenOptions = {
    * differs. See {@link ThreadResumeOptions}.
    */
   settingSources?: AgentChatSettingSources;
-  reasoningEffort?: string;
   title?: string;
   /** See {@link ThreadRefreshOptions}. */
   refresh?: ThreadRefreshOptions;

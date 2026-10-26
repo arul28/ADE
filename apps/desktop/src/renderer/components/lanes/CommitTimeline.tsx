@@ -1,5 +1,6 @@
 import React, { startTransition } from "react";
 import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
+import { CloudArrowUp, CloudCheck, CloudSlash, CloudX } from "@phosphor-icons/react";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
@@ -37,17 +38,14 @@ function formatTimelineError(err: unknown): string {
 }
 
 /**
- * A small sentence-case tag on a history row: "Head", "Remote", "Needs push".
- * Tinted from its own colour so it reads as a state, not a button.
+ * A commit's push state as a 12px glyph with a tooltip, so the subject keeps
+ * the row's width: a muted cloud on pushed commits (the run of clouds ends at
+ * the remote branch), a warning cloud on local-only ones.
  */
-function RowTag({ color, title, children }: { color: string; title?: string; children: React.ReactNode }) {
+function PushStateGlyph({ icon: Glyph, color, title }: { icon: typeof CloudCheck; color: string; title: string }) {
   return (
-    <span
-      title={title}
-      className="inline-flex h-[17px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-medium leading-none"
-      style={{ color, background: `color-mix(in srgb, ${color} 13%, transparent)` }}
-    >
-      {children}
+    <span title={title} aria-label={title} role="img" className="inline-flex shrink-0" style={{ color }}>
+      <Glyph size={12} weight="regular" />
     </span>
   );
 }
@@ -146,21 +144,25 @@ export function CommitTimeline({
     void load();
   }, [load, refreshTrigger]);
 
+  // `commits` stays oldest-first (the shared list cache's shape); the pane
+  // shows newest first so it opens on the head instead of a clipped old row.
+  const newestFirst = React.useMemo(() => [...commits].reverse(), [commits]);
+
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     if (!didInitialScrollRef.current && commits.length > 0) {
       // Scroll to the selected commit if present, otherwise show most recent
-      const selectedIdx = selectedSha ? commits.findIndex((c) => c.sha === selectedSha) : -1;
-      if (selectedIdx >= 0) {
-        const rows = el.querySelectorAll("button");
-        rows[selectedIdx]?.scrollIntoView({ block: "center" });
+      // Newest first: the list opens at the top on a whole row (the head).
+      const selectedIdx = selectedSha ? newestFirst.findIndex((c) => c.sha === selectedSha) : -1;
+      if (selectedIdx > 0) {
+        el.querySelectorAll<HTMLElement>("[data-commit-row]")[selectedIdx]?.scrollIntoView({ block: "nearest" });
       } else {
-        el.scrollTop = el.scrollHeight;
+        el.scrollTop = 0;
       }
       didInitialScrollRef.current = true;
     }
-  }, [commits, selectedSha]);
+  }, [commits, newestFirst, selectedSha]);
 
   const ensureMeta = React.useCallback(
     async (sha: string) => {
@@ -183,7 +185,8 @@ export function CommitTimeline({
 
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
-    if (el.scrollTop < 60 && !loading) {
+    // Older commits are below now: load more near the bottom.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60 && !loading) {
       setLimit((prev) => Math.min(200, prev + 40));
     }
   };
@@ -239,14 +242,14 @@ export function CommitTimeline({
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>
         <div className="relative" style={{ paddingLeft: 22, paddingRight: 4, paddingTop: 4, paddingBottom: 4 }}>
-          {/* Continuous vertical line */}
-          <div
+          {/* Continuous vertical line (none under an empty state) */}
+          {newestFirst.length > 0 ? <div
             className="absolute"
             style={{ left: 12, top: 0, bottom: 0, width: 1, background: COLORS.borderMuted }}
-          />
+          /> : null}
 
-          {commits.map((commit, idx) => {
-            const isNewest = idx === commits.length - 1;
+          {newestFirst.map((commit, idx) => {
+            const isNewest = idx === 0;
             const isSelected = selectedSha === commit.sha;
             const isMerge = commit.parents.length > 1;
 
@@ -257,7 +260,8 @@ export function CommitTimeline({
               <React.Fragment key={commit.sha}>
                 <button
                   type="button"
-                  title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
+                  data-commit-row=""
+                  title={isNewest ? "Head: the lane's latest commit." : isMerge ? "Merge commit (multiple parents)." : "Commit"}
                   className="relative flex w-full items-start gap-2 rounded-lg text-left transition-colors duration-100"
                   style={{
                     padding: "6px 10px",
@@ -289,7 +293,7 @@ export function CommitTimeline({
                   }}
                 >
                   {/* Node on the line */}
-                  <div className="absolute" style={{ left: -14, top: 10 }}>
+                  <div className="absolute" style={{ left: -14, top: 9 }}>
                     <div
                       style={{
                         width: 10, height: 10, borderRadius: "50%",
@@ -305,41 +309,39 @@ export function CommitTimeline({
                     ) : null}
                   </div>
 
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate" style={{ color: COLORS.textPrimary, fontSize: 12.5, lineHeight: 1.4 }}>
+                  {/* One line: subject, then the exception tags, the hash and the
+                      time in a muted right-hand cluster. */}
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5" style={{ lineHeight: 1.4 }}>
+                    <span className="min-w-0 flex-1 truncate" style={{ color: COLORS.textPrimary, fontSize: 12.5 }}>
                       {commit.subject}
-                    </div>
-                    <div className="flex min-w-0 items-center gap-1.5" style={{ marginTop: 3 }}>
-                      <span className="shrink-0" style={{ fontFamily: MONO_FONT, fontSize: 11, color: isNewest ? COLORS.success : COLORS.textMuted }}>
-                        {commit.shortSha}
-                      </span>
-                      {isNewest ? <RowTag color={COLORS.success}>Head</RowTag> : null}
-                      {isMerge ? <RowTag color={COLORS.info}>Merge</RowTag> : null}
-                      {remoteMissing ? (
-                        <RowTag color={COLORS.warning} title="The configured remote branch no longer exists.">Remote gone</RowTag>
-                      ) : hasUpstream === false ? (
-                        <RowTag color={COLORS.textMuted} title="No upstream branch yet.">Unpublished</RowTag>
-                      ) : commit.pushed ? (
-                        <RowTag color={COLORS.textMuted} title="This commit exists on the remote branch.">Remote</RowTag>
-                      ) : (
-                        <RowTag color={COLORS.warning} title="This commit is local only.">Needs push</RowTag>
-                      )}
-                      <span className="ml-auto shrink-0 tabular-nums" style={{ fontSize: 11, color: COLORS.textDim }}>
-                        {formatRelative(commit.authoredAt)}
-                      </span>
-                    </div>
+                    </span>
+                    {remoteMissing ? (
+                      <PushStateGlyph icon={CloudX} color={COLORS.warning} title="Remote gone: the configured remote branch no longer exists." />
+                    ) : hasUpstream === false ? (
+                      <PushStateGlyph icon={CloudSlash} color={COLORS.textDim} title="Unpublished: no upstream branch yet." />
+                    ) : commit.pushed ? (
+                      <PushStateGlyph icon={CloudCheck} color={COLORS.textDim} title="Pushed: on the remote branch." />
+                    ) : (
+                      <PushStateGlyph icon={CloudArrowUp} color={COLORS.warning} title="Needs push: this commit is local only." />
+                    )}
+                    <span className="shrink-0" style={{ fontFamily: MONO_FONT, fontSize: 11, color: isNewest ? COLORS.success : COLORS.textDim }}>
+                      {commit.shortSha}
+                    </span>
+                    <span className="w-[52px] shrink-0 text-right tabular-nums" style={{ fontSize: 11, color: COLORS.textDim }}>
+                      {formatRelative(commit.authoredAt)}
+                    </span>
                   </div>
                 </button>
                 {/* Arrow connector */}
-                {!isNewest ? (
+                {idx < newestFirst.length - 1 ? (
                   <div style={{ height: 2 }} />
                 ) : null}
               </React.Fragment>
             );
           })}
           {!commits.length && !loading ? (
-            <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>
-              No commits found
+            <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textMuted }}>
+              No commits yet
             </div>
           ) : null}
         </div>

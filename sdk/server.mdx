@@ -1,0 +1,64 @@
+---
+title: "WebSocket server"
+description: "Expose an ADE chat client to a browser or another process with a host-owned WebSocket server."
+icon: "server"
+---
+
+`@ade-dev/sdk/server` exports `createAdeServer()` and `createAdeRemoteClient()`. The SDK handles the chat RPC contract; your app owns the WebSocket listener, authentication and network policy.
+
+```ts
+import { WebSocketServer } from "ws";
+import { createAdeChat } from "@ade-dev/sdk";
+import { createAdeServer } from "@ade-dev/sdk/server";
+
+const client = await createAdeChat({ home: "./.ade-embed" });
+const bridge = createAdeServer({
+  client,
+  authorize: (socket, method, params) => canCall(socket, method, params),
+  allowThreadKey: (key, method, params, socket) => ownsThread(socket, key),
+});
+const server = new WebSocketServer({ port: 4318, host: "127.0.0.1" });
+server.on("connection", (socket) => bridge.handleConnection(socket));
+
+// On shutdown:
+bridge.close();
+server.close();
+await client.dispose();
+```
+
+The server does not bind a port or load a WebSocket package. `handleConnection()` accepts a browser WebSocket or Node `ws` socket. Closing the bridge removes its listeners and per-connection thread handles; the host still owns and disposes the client.
+
+`authorize` runs before every built-in, custom or unsupported RPC. `allowThreadKey` runs on each thread-key call and can filter `threads.list()`. A connection can only use a thread after calling `threads.open` through that connection. `openOptions(key, rendererOptions, context)` lets the host add trusted options or constrain what a renderer may choose.
+
+You can add host-owned RPCs through `methods`. They use the same authorization check:
+
+```ts
+const bridge = createAdeServer({
+  client,
+  authorize: canCall,
+  methods: {
+    "app.config": async (_params, { socket }) => configFor(socket),
+  },
+});
+```
+
+The protocol is JSON over WebSocket:
+
+```json
+{"id":1,"method":"threads.open","params":{"key":"support","options":{"provider":"claude","model":"claude-sonnet-4-5"}}}
+{"id":1,"ok":true,"result":{"id":"…","key":"support","title":null,"model":null}}
+{"push":"event","key":"support","envelope":{"sessionId":"…","timestamp":"…","event":{"type":"text","text":"Hello"}}}
+```
+
+Errors use `{ "id", "ok": false, "error": { "code", "message" } }`. The server sends thread events and provider/client changes as pushes. `createAdeRemoteClient(url)` returns the remote client; pass `{ WebSocket }` if the environment has no global WebSocket. A compatible transport object can be passed instead of a URL.
+
+```ts
+import { createAdeRemoteClient } from "@ade-dev/sdk/server";
+
+const remote = createAdeRemoteClient("ws://127.0.0.1:4318");
+const thread = await remote.threads.open("support", { provider: "claude", model: "claude-sonnet-4-5" });
+thread.on("event", ({ event }) => render(event));
+await thread.send("Summarise the incident");
+```
+
+The remote client implements the chat-ui SDK adapter surface and also exposes `call(method, params)` for host-defined methods. Its `thread.usage()` is asynchronous because it makes an RPC. Use `wss://` for remote networks and authenticate before accepting a connection; the SDK does not add TLS or user authentication.

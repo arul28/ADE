@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { canRestartAde, restartAde } from "../app/restartAde";
@@ -293,7 +293,7 @@ export function AboutSection() {
             ) : null}
             {!isDev ? (
               <button type="button" className="ade-modern-btn" disabled={checking} onClick={checkForUpdates}>
-                <ArrowsClockwise size={13} weight="bold" className={checking ? "animate-spin" : undefined} />
+                <ArrowClockwise size={13} className={checking ? "animate-spin" : undefined} />
                 {checking ? "Checking..." : "Check for updates"}
               </button>
             ) : null}
@@ -313,9 +313,9 @@ export function AboutSection() {
               ) : null}
               {downloadedVersion ? (
                 <>Installed <span className="kit-num">{installedVersion}</span> · Downloaded <span className="kit-num">{downloadedVersion}</span></>
-              ) : (
+              ) : installedVersion !== runningVersion ? (
                 <>Installed <span className="kit-num">{installedVersion}</span></>
-              )}
+              ) : null}
             </span>
           </div>
 
@@ -334,9 +334,15 @@ export function AboutSection() {
                 <span className="kit-stat kit-num">{runtime.versionSkew.runtimeVersion ?? info.appVersion}</span>
                 <span className="kit-dot" data-state={runtimeServiceHealthTone(runtime.serviceHealth.state)} aria-hidden />
               </span>
-              <span className="ade-modern-stat-sub">
-                {runtimeServiceHealthLabel(runtime.serviceHealth.state)} · {runtimeServiceLabel(runtime.serviceInstall.state)}
-                {runtime.connectionState === "connected" ? " · Connected" : ` · Status: ${runtime.connectionState}.`}
+              {/* One plain state; the install and connection details are the
+                  tooltip, so the line does not read as status soup. */}
+              <span
+                className="ade-modern-stat-sub"
+                title={`Install: ${runtimeServiceLabel(runtime.serviceInstall.state)} · Connection: ${runtime.connectionState}${runtime.runtimeMode === "isolated" ? " · Fallback mode" : ""}`}
+              >
+                {runtimeServiceHealthLabel(runtime.serviceHealth.state)}
+                {runtime.serviceInstall.state !== "installed" ? ` · service install ${runtimeServiceLabel(runtime.serviceInstall.state).toLowerCase()}` : ""}
+                {runtime.connectionState === "connected" ? " · Connected" : ""}
                 {runtime.runtimeMode === "isolated" ? " · Fallback mode" : ""}
               </span>
             </div>

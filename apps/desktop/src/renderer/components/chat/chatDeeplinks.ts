@@ -27,6 +27,22 @@ export function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | nu
 }
 
 /**
+ * The machine whose Computer settings a chip in this chat should open: the
+ * chat's machine, or — when the chat runs on the tab's own machine — the tab's
+ * bound machine. Settings with no `?machine=` would open This computer, which
+ * is wrong whenever the tab itself is bound to another computer.
+ */
+export function chatSettingsMachineId(scope: Pick<ChatRuntimeScope, "pin">): string {
+  const chatMachine = chatMachineId(scope);
+  if (chatMachine) return chatMachine;
+  const state = rootAppStoreApi.getState();
+  const binding = state.projectBinding;
+  if (!binding) return THIS_MACHINE_ID;
+  return machineEntryForBinding(state, binding)?.machineId
+    ?? (binding.kind === "remote" ? binding.targetId : THIS_MACHINE_ID);
+}
+
+/**
  * Open an `ade://` link that appeared in a chat (a chip, a scene), resolved
  * against that chat's lane and machine rather than the tab's.
  */

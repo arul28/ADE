@@ -38,6 +38,30 @@ export type ToolMeta = {
   getTarget?: (args: Record<string, unknown>) => string | null;
 };
 
+/**
+ * Cursor's typed `computerUse` call (SDK 1.0.38+, Cursor Cloud VMs only):
+ * its own description when the model gave one, else the actions it ran.
+ */
+function describeCursorComputerUse(args: Record<string, unknown>): string | null {
+  const description = typeof args.description === "string" ? args.description.trim() : "";
+  if (description) return description;
+  if (!Array.isArray(args.actions)) return null;
+  const parts = args.actions.flatMap((entry) => {
+    const action = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    const type = typeof action?.type === "string" ? action.type : "";
+    if (!type) return [];
+    const at = action?.coordinate && typeof action.coordinate === "object"
+      ? action.coordinate as Record<string, unknown>
+      : null;
+    const point = typeof at?.x === "number" && typeof at?.y === "number" ? ` (${at.x}, ${at.y})` : "";
+    if (type === "type" && typeof action?.text === "string") return [`type "${action.text.slice(0, 40)}"`];
+    if (type === "key" && typeof action?.key === "string") return [`key ${action.key}`];
+    return [`${type}${point}`];
+  });
+  if (!parts.length) return null;
+  return parts.length > 4 ? `${parts.slice(0, 4).join(" · ")} · +${parts.length - 4} more` : parts.join(" · ");
+}
+
 const TOOL_META: Record<string, ToolMeta> = {
   Read: { label: "Read", icon: FileCode, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "read", sourceTone: "info", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
   Grep: { label: "Search", icon: MagnifyingGlass, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "read", sourceTone: "info", getTarget: a => String(a.pattern ?? a.path ?? "") || null },
@@ -77,6 +101,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   apply_patch: { label: "Patch", icon: Scissors, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "codex", sourceTone: "success" },
   update_plan: { label: "Plan", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "codex", sourceTone: "accent" },
   sleep: { label: "Sleep", icon: Hourglass, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "codex", sourceTone: "info", getTarget: a => String(a.duration ?? "") || null },
+  computerUse: { label: "Computer Use", icon: Cpu, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: describeCursorComputerUse },
   computer_use: { label: "Computer Use", icon: Cpu, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "codex", sourceTone: "info", getTarget: a => {
     const status = String(a.status ?? "").trim();
     return status ? `· ${status}` : null;

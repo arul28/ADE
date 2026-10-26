@@ -21,6 +21,7 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
+import { HostStallNote } from "./HostStallNote";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
@@ -229,9 +230,12 @@ export function SavedMachineRow({
               ? "Connecting…"
               : target.lastConnectedAt || statusLabel !== "Not connected"
                 ? [
-                    statusLabel,
+                    // The hollow dot and the section already say "not connected".
+                    statusLabel === "Not connected" ? null : statusLabel,
                     autoConnectOff,
-                    formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                    statusLabel === "Not connected"
+                      ? formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "Last seen ")
+                      : formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That
@@ -339,7 +343,9 @@ export function SavedMachineRow({
               >
                 <Plugs size={15} />
               </button>
-            ) : section !== "unavailable" ? (
+            ) : null}
+            {/* Connected, Test also asks the machine itself whether other devices can reach it. */}
+            {section !== "unavailable" ? (
               <button
                 type="button"
                 aria-label="Test"
@@ -352,7 +358,10 @@ export function SavedMachineRow({
               >
                 <Pulse size={15} />
               </button>
-            ) : null}
+            ) : (
+              // Keeps the icon rail in fixed columns across rows.
+              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
+            )}
             {section !== "unavailable" ? (
               <button
                 type="button"
@@ -366,7 +375,9 @@ export function SavedMachineRow({
               >
                 <PencilSimple size={15} />
               </button>
-            ) : null}
+            ) : (
+              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
+            )}
             <button
               type="button"
               aria-label={`Remove ${target.name}`}
@@ -439,6 +450,11 @@ export function SavedMachineRow({
           </div>
         ) : null}
 
+        <HostStallNote
+          stall={status?.hostStall}
+          machineName={target.name?.trim() || target.hostname}
+        />
+
         <ConnectionRouteDetails
           attempts={routeAttempts}
           correlationId={routeCorrelationId}
@@ -458,7 +474,11 @@ export function SavedMachineRow({
 
       {testOpen ? (
         <div id={`remote-target-test-${target.id}`}>
-          <ConnectionDoctorPanel machineId={target.id} />
+          <ConnectionDoctorPanel
+            machineId={target.id}
+            machineName={target.name?.trim() || target.hostname}
+            connected={Boolean(row.connected)}
+          />
         </div>
       ) : null}
 

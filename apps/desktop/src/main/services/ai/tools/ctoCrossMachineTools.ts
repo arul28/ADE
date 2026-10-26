@@ -10,6 +10,7 @@
 import { z } from "zod";
 import type { AgentChatSession, AgentChatSessionSummary, LaneSummary } from "../../../../shared/types";
 import { isSecretBearingAdeAction } from "../../adeActions/actionPolicy";
+import { captureError } from "../../../../shared/sentry/capture";
 import { getErrorMessage } from "../../shared/utils";
 import {
   clampActionListForModel,
@@ -32,13 +33,14 @@ const RUN_MACHINE_ACTION_DEFAULT_TIMEOUT_SECONDS = 30;
 
 /**
  * Everything `spawnRemoteChat` can wait on in sequence: the lane, the chat,
- * its title, its first message and the check-in, plus one connect allowance
- * (the bridge keeps the connection for the later calls).
+ * the named lane's other chats, its title, its first message and the check-in,
+ * plus one connect allowance (the bridge keeps the connection for the later
+ * calls).
  */
 export const SPAWN_REMOTE_CHAT_BUDGET_MS =
   REMOTE_LANE_CREATE_TIMEOUT_MS
   + REMOTE_CHAT_CREATE_TIMEOUT_MS
-  + 3 * REMOTE_DEFAULT_CALL_TIMEOUT_MS
+  + 4 * REMOTE_DEFAULT_CALL_TIMEOUT_MS
   + REMOTE_CALL_ALLOWANCE_MS;
 
 /** A remote lane create: its call timeout plus the connect allowance. */
@@ -80,6 +82,66 @@ export function summarizeLane(lane: CtoRemoteLane | LaneSummary) {
   };
 }
 
+/**
+ * What a new chat's spawn result should warn about. The host lowers a requested
+ * permission mode on purpose (a chat never gets more access than the chat or
+ * agent that starts it) and says nothing, so the CTO compares what it asked
+ * for with what it got. A lane that already has a chat at work, or one waiting
+ * on the owner, is the other warning: two chats then share one worktree.
+ */
+export function spawnWarnings(args: {
+  requestedPermissionMode?: string | null;
+  session: { permissionMode?: string | null };
+  laneChats?: Array<Partial<AgentChatSessionSummary> & { sessionId: string }>;
+  newSessionId?: string;
+}): string[] {
+  const warnings: string[] = [];
+  const requested = args.requestedPermissionMode ?? null;
+  const applied = args.session.permissionMode ?? null;
+  if (requested && applied && requested !== applied) {
+    warnings.push(
+      `ADE started this chat at permission mode '${applied}', not '${requested}': a chat never gets more access `
+      + "than the chat that starts it. Tell the user if the work needs more; only they can raise it.",
+    );
+  }
+  const busy = (args.laneChats ?? []).filter((chat) =>
+    chat.sessionId !== args.newSessionId
+    && !chat.archivedAt
+    && chat.status !== "ended"
+    && (chat.status === "active" || chat.awaitingInput === true || Boolean(chat.pendingInputItemId)));
+  for (const chat of busy.slice(0, 3)) {
+    const title = chat.title?.trim() || chat.sessionId;
+    const state = chat.pendingInputUserOnly
+      ? "is waiting on the user (only they can answer its request)"
+      : chat.awaitingInput || chat.pendingInputItemId
+        ? "is waiting for an answer"
+        : "is working";
+    warnings.push(`Lane already has chat ${chat.sessionId} ("${title}") that ${state}. Both chats now share one worktree.`);
+  }
+  return warnings;
+}
+
+/** Spreads `{ warnings }` into a tool result only when there are some. */
+export function withSpawnWarnings(warnings: string[]): { warnings?: string[] } {
+  return warnings.length ? { warnings } : {};
+}
+
+/**
+ * A read the caller can live without, reported instead of thrown: the spawn is
+ * already made and this read only supplies a warning, so a failure must not
+ * fail the tool, and must not be invisible either.
+ */
+export function readOrReport<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+  return read().catch((error: unknown) => {
+    captureError(error, {
+      tags: { area: "cto.spawn_lane_chats" },
+      fingerprint: ["cto", "spawn_lane_chats_unreadable"],
+      handled: true,
+    });
+    return fallback;
+  });
+}
+
 export type CtoCrossMachineToolDeps = {
   crossMachine?: CtoCrossMachineDeps | null;
   currentSessionId: string;
@@ -115,6 +177,9 @@ export type CtoRemoteChatSpawn = {
   reasoningEffort: string | null;
   permissionMode?: AgentChatSession["permissionMode"];
   droidPermissionMode?: AgentChatSession["droidPermissionMode"];
+  /** The account to run on there; omitted, that machine picks its own. */
+  instanceId?: string;
+  credentialId?: string;
   checkBackMinutes?: number;
 };
 
@@ -166,8 +231,10 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
           "If it finished, tell the user the result. If it is still working, schedule another check with scheduleWork. If it is blocked on input, say what it needs.",
         ].join(" "),
       });
+      // `create` answers `{ item, timeZone }`; the id is the item's.
       const record = isRecord(created) ? created : {};
-      const scheduleId = record.scheduleId ?? record.id;
+      const item = isRecord(record.item) ? record.item : {};
+      const scheduleId = item.id ?? record.scheduleId ?? record.id;
       return { scheduled: true, minutes: args.minutes, scheduleId: typeof scheduleId === "string" ? scheduleId : null };
     } catch (error) {
       return { scheduled: false, minutes: args.minutes, reason: getErrorMessage(error) };
@@ -206,6 +273,8 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
         reasoningEffort: args.reasoningEffort,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.droidPermissionMode !== undefined ? { droidPermissionMode: args.droidPermissionMode } : {}),
+        ...(args.instanceId ? { instanceId: args.instanceId } : {}),
+        ...(args.credentialId ? { credentialId: args.credentialId } : {}),
         surface: "work",
         sessionProfile: "workflow",
       },
@@ -215,6 +284,18 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
     const remoteSessionId = typeof created.id === "string" ? created.id : "";
     if (!remoteSessionId) throw new Error(`${target.name} did not return the new chat's id.`);
     const warnings: string[] = [];
+    // A named lane can already hold a chat at work. Read before the first
+    // message, so the new chat is not yet "working" itself; a failed read only
+    // loses the warning.
+    if (args.laneId?.trim()) {
+      const laneChats = asRemoteChats(await readOrReport(() => runRemote(target, {
+        domain: "chat",
+        action: "listSessions",
+        args: { laneId: remoteLaneId, includeIdentity: false, includeAutomation: false, includeArchived: false },
+      }), []));
+      warnings.push(...spawnWarnings({ session: {}, laneChats, newSessionId: remoteSessionId }));
+    }
+    warnings.push(...spawnWarnings({ requestedPermissionMode: args.permissionMode ?? null, session: created }));
     const title = args.title?.trim() || "";
     const initialPrompt = args.initialPrompt?.trim() || "";
     if (title) {
@@ -261,6 +342,7 @@ export function createCtoCrossMachineToolKit(deps: CtoCrossMachineToolDeps) {
       modelId: created.modelId ?? args.modelId ?? null,
       permissionMode: created.permissionMode ?? null,
       droidPermissionMode: created.droidPermissionMode ?? null,
+      instanceId: created.instanceId ?? null,
       spawnKind: null,
       followUp,
       note: followUp.scheduled

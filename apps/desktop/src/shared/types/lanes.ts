@@ -443,6 +443,11 @@ export type CreateLaneArgs = {
   githubIssue?: LaneGitHubIssue | null;
   /** A Jira issue the lane is for; linked to the lane itself for PR references. */
   jiraIssue?: LaneJiraIssue | null;
+  /**
+   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
+   * stops the git checkout while it runs.
+   */
+  operationId?: string;
 };
 
 export type CreateChildLaneArgs = {
@@ -453,6 +458,11 @@ export type CreateChildLaneArgs = {
   baseBranchRef?: string;
   branchName?: string;
   linearIssue?: LaneLinearIssue | null;
+  /**
+   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
+   * stops the git checkout while it runs.
+   */
+  operationId?: string;
 };
 
 export type CreateLaneFromUnstagedArgs = {
@@ -465,6 +475,18 @@ export type ImportBranchLaneArgs = {
   name?: string;
   description?: string;
   baseBranch?: string;
+  /**
+   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
+   * stops the git checkout while it runs.
+   */
+  operationId?: string;
+};
+
+export type CancelLaneGitWriteArgs = { operationId: string };
+
+export type CancelLaneGitWriteResult = {
+  /** False when no git write with this id is running (it finished, or never started). */
+  cancelled: boolean;
 };
 
 export type LaneBranchSwitchMode = "existing" | "create";
@@ -483,6 +505,11 @@ export type LaneBranchSwitchArgs = {
   startPoint?: string;
   baseRef?: string;
   acknowledgeActiveWork?: boolean;
+  /**
+   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
+   * stops the git checkout while it runs.
+   */
+  operationId?: string;
 };
 
 export type LaneBranchSwitchPreview = {
@@ -664,6 +691,7 @@ export type LaneDeleteProgress = {
   startedAt: string;
   completedAt?: string;
   overallStatus: LaneDeleteOverallStatus;
+  /** True while `cancelDelete` can stop the delete: during the lane folder removal. */
   cancellable: boolean;
   /**
    * Set when delete finishes and an external folder was left on disk.

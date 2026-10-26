@@ -9,6 +9,7 @@ import {
   ArrowUp,
   Bell,
   BellSlash,
+  Check,
   CheckCircle,
   ClockCountdown,
   Copy,
@@ -37,7 +38,10 @@ import type {
   LaneType,
   OpenProjectBinding,
   TerminalSessionSummary,
+  WorkBoardWaitingReason,
 } from "../../../shared/types";
+import { type WorkBoardMoveTarget } from "../../../shared/types/chat";
+import { sessionStatusChangeModel, type SessionStatusOption } from "../../lib/sessionStatusChange";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
@@ -138,6 +142,8 @@ export type SessionContextMenuState = {
   machineName?: string | null;
   openIn?: SessionContextMenuOpenIn | null;
   laneType?: LaneType | null;
+  /** Why the board files this row under Waiting, when the opening surface knows it. */
+  waitingReason?: WorkBoardWaitingReason | null;
   /** Present only for a singleton lane's card (see the type above). */
   laneActions?: SessionContextMenuLaneActions | null;
   x: number;
@@ -187,10 +193,26 @@ type SessionContextMenuProps = {
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
-  onSettle?: (
+  /**
+   * Move a row between the Work-board columns it can actually be in.
+   *
+   * The same action the board's drag uses (`session.moveOnBoard`): it owns the
+   * lifecycle write, the host-authored message the agent reacts to, and the
+   * refusal when a live card has to be answered first. Waiting is not a target
+   * — it is derived from a snooze, a mid-CI PR, an outstanding review, an armed
+   * wake, or a busy subagent.
+   */
+  onChangeStatus: (
     session: TerminalSessionSummary,
+    target: WorkBoardMoveTarget,
     binding?: OpenProjectBinding | null,
   ) => void;
+  /**
+   * The fold's own reason this row is in Waiting, when the surface knows it.
+   * Passed straight into `sessionStatusChangeModel` so the disabled Working
+   * entry says "CI running" instead of a generic refusal.
+   */
+  statusWaitingReason?: WorkBoardWaitingReason | null;
   /**
    * Opens a handoff destination (local or another machine) in the chat pane.
    * The menu cannot open
@@ -275,7 +297,8 @@ function SessionContextMenuPanel({
   onCopySessionDeepLink,
   onOpenSessionInWeb,
   onTogglePinned,
-  onSettle,
+  onChangeStatus,
+  statusWaitingReason,
   onOpenChatHandoff,
   pinnedSessionIds,
   gridSessionIds,
@@ -366,16 +389,25 @@ function SessionContextMenuPanel({
   }, [binding, isChat, session.id]);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
-  const canDismissNeedsYou =
-    canonicalPhase !== "needs_you"
-    || isChat
-    || Boolean(session.attentionRequestedAt);
   // Snooze is a visibility overlay, so it is read from the shared snooze
   // derivation and never inferred from the canonical phase.
   const isSnoozed = isSessionSnoozed(session);
+  const statusModel = sessionStatusChangeModel({
+    session,
+    waitingReason: statusWaitingReason ?? null,
+  });
+  /** Every status entry is the same write as a board drop. */
+  const changeStatus = (target: WorkBoardMoveTarget): void => {
+    onChangeStatus(session, target, binding);
+  };
   const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
-  const isSettled = canonicalPhase === "settled";
+  const isSettled = canonicalPhase === "settled"
+    // A settled row that is mid-turn reads Working (a settle only holds at
+    // rest), but the declaration is still there and the person may want to
+    // withdraw it before the row goes idle and re-settles.
+    || Boolean(session.settledAt)
+    || session.settleOverride === "settled";
   const isDeclaredSettled = Boolean(session.settledAt);
   const canStopRuntime = isRunning && Boolean(session.ptyId) && !isChat;
   const chooseSnooze = (key: SnoozeDurationKey) => {
@@ -421,56 +453,135 @@ function SessionContextMenuPanel({
     </div>
   );
 
-  // Hoisted out of the JSX only because the settle branch is a four-way chain;
-  // inline it would bury the grouping it sits inside.
-  const settleRow = isSettled ? (
+  /**
+   * The status entries, rendered from the shared model so the menu, the board
+   * and the tests agree on what a row can become:
+   *
+   *   Working     only when the session is ALREADY live. A status change cannot
+   *               start a model, so an idle row is refused with that reason
+   *               instead of being moved somewhere it will not stay.
+   *   Needs you   always. The write is a person parking the row for themselves.
+   *   Done        always, except over a live provider card (the card, not the
+   *               settle, is what has to be answered) and a terminal waiting at
+   *               its own prompt with no recorded hand.
+   *   Unsettle,   the reverse of Done, shown while the row is declared settled
+   *   Keep active (Keep active also pins it so a clean exit cannot re-settle it).
+   *   Snoozed     the presets, or Wake now when the row is snoozed — the reverse
+   *               state lives where the way in lives.
+   *
+   * Waiting is deliberately absent: it is derived from a snooze, a mid-CI PR,
+   * an outstanding review, an armed wake, or a busy subagent, never asserted.
+   */
+  const statusDisabledItemClass =
+    "flex w-full cursor-not-allowed items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted-fg/45";
+  const statusMenuContent = (
     <>
-      <button
-        type="button"
-        className={MENU_ITEM_CLASS}
-        onClick={() => {
-          // Declared settles clear the column; derived settles have no
-          // column to clear, so the keep-active pin is the only unsettle.
-          // Both branches live in the shared lifecycle action.
-          void unsettleSession(session, binding);
-          onClose();
-        }}
-      >
-        <MenuRowIcon icon={ArrowCounterClockwise} />
-        Unsettle
-      </button>
-      {isDeclaredSettled ? (
+      {statusModel.options
+        .filter((option): option is SessionStatusOption & { target: WorkBoardMoveTarget } => option.target !== "snoozed")
+        .map((option) => {
+          const Icon = option.target === "working"
+            ? Lightning
+            : option.target === "needs_you" ? Bell : CheckCircle;
+          const current = option.current;
+          const enabled = option.enabled && !current;
+          return (
+            <button
+              key={option.target}
+              type="button"
+              data-testid={`session-menu-status-${option.target}`}
+              className={enabled ? MENU_ITEM_CLASS : statusDisabledItemClass}
+              disabled={!enabled}
+              title={option.reason
+                ?? (current ? `Already ${option.label.toLowerCase()}` : undefined)}
+              onClick={() => {
+                if (!enabled) return;
+                changeStatus(option.target);
+                onClose();
+              }}
+            >
+              <MenuRowIcon icon={current ? Check : Icon} />
+              {option.label}
+              {!option.enabled && option.reason ? (
+                <span
+                  className="ml-auto max-w-[170px] truncate pl-4 text-[10px] text-muted-fg/50"
+                  title={option.reason}
+                >
+                  {option.reason}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+
+      {isSettled ? (
+        <>
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => {
+              // Declared settles clear the column; derived settles have no
+              // column to clear, so the keep-active pin is the only unsettle.
+              // Both branches live in the shared lifecycle action.
+              void unsettleSession(session, binding);
+              onClose();
+            }}
+          >
+            <MenuRowIcon icon={ArrowCounterClockwise} />
+            Unsettle
+          </button>
+          {isDeclaredSettled ? (
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              title="Pin this session active so a clean exit cannot re-settle it"
+              onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
+            >
+              <MenuRowIcon icon={Lightning} />
+              Keep active
+            </button>
+          ) : null}
+        </>
+      ) : null}
+
+      <MenuSeparator />
+      <MenuSectionLabel>Snooze</MenuSectionLabel>
+      {isSnoozed ? (
         <button
           type="button"
           className={MENU_ITEM_CLASS}
-          title="Pin this session active so a clean exit cannot re-settle it"
-          onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
+          onClick={() => { void wakeSessionNow(session, binding); onClose(); }}
         >
-          <MenuRowIcon icon={Lightning} />
-          Keep active
+          <MenuRowIcon icon={Alarm} />
+          Wake now
+          {snoozeWake ? (
+            <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">{snoozeWake}</span>
+          ) : null}
         </button>
-      ) : null}
+      ) : (
+        <>
+          {snoozePresets.map((preset) => (
+            <button
+              key={preset.key}
+              type="button"
+              className={MENU_ITEM_CLASS}
+              data-testid={`session-menu-status-snooze-${preset.key}`}
+              onClick={() => chooseSnooze(preset.key)}
+            >
+              <MenuRowIcon icon={ClockCountdown} />
+              {preset.label}
+              <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">
+                {preset.whenLabel}
+              </span>
+            </button>
+          ))}
+        </>
+      )}
     </>
-  ) : !isActivelyRunning && onSettle && canDismissNeedsYou ? (
-    <button
-      type="button"
-      className={MENU_ITEM_CLASS}
-      onClick={() => { onSettle(session, binding); onClose(); }}
-    >
-      <MenuRowIcon icon={CheckCircle} />
-      {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
-    </button>
-  ) : canonicalPhase === "needs_you" && !canDismissNeedsYou ? (
-    <button
-      type="button"
-      className="flex w-full cursor-not-allowed items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted-fg/45"
-      disabled
-      title="Resolve the terminal prompt before settling this session"
-    >
-      <MenuRowIcon icon={Prohibit} />
-      Resolve input to settle
-    </button>
-  ) : null;
+  );
+
+  // Tag writes need a live Claude SDK runtime (updateSession throws for ended
+  // sessions), so the item is only enabled while one runs.
+  const canSetTag = session.toolType === "claude-chat" && isRunning;
 
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
@@ -498,7 +609,7 @@ function SessionContextMenuPanel({
               }}
             >
               <MenuRowIcon icon={PencilSimple} />
-              Rename…
+              Rename
             </button>
             <MenuSeparator />
           </>
@@ -589,7 +700,10 @@ function SessionContextMenuPanel({
         {renderIdentityContent()}
         {/* Tag writes need a live Claude SDK runtime (updateSession throws for
             ended sessions), so only offer the item while the session runs. */}
-        {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (
+        {/* Every chat row uses the same items in the same ORDER. An item that
+            does not apply right now is left out (a column of disabled rows only
+            made the menu taller), but nothing ever moves. */}
+        {!renaming && !tagging && canSetTag && onSetChatTag ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
@@ -600,7 +714,7 @@ function SessionContextMenuPanel({
             }}
           >
             <MenuRowIcon icon={Tag} />
-            Set tag…
+            Set tag
           </button>
         ) : null}
         {onTogglePinned ? (
@@ -637,9 +751,9 @@ function SessionContextMenuPanel({
         ) : null}
 
         {/* ── Lifecycle — every action that changes where the sidebar files this
-            row: stop (runtime), snooze/wake (visibility) and settle/keep-active
-            (state). Keep it exhaustive: a row that reaches the end of this block
-            with nothing rendered is a row the user cannot un-hide. ── */}
+            row: stop (runtime) and one status submenu (snooze/wake, settle and
+            the board columns). Keep it exhaustive: a row that reaches the end of
+            this block with nothing rendered is a row the user cannot un-hide. ── */}
         <MenuSeparator />
         <MenuSectionLabel>Lifecycle</MenuSectionLabel>
         {canStopRuntime ? (
@@ -656,48 +770,21 @@ function SessionContextMenuPanel({
           </button>
         ) : null}
 
-        {isSnoozed ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { void wakeSessionNow(session, binding); onClose(); }}
-          >
-            <MenuRowIcon icon={Alarm} />
-            Wake now
-            {snoozeWake ? (
-              <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">{snoozeWake}</span>
-            ) : null}
-          </button>
-        ) : (
-          <MenuSubmenu
-            label="Snooze…"
-            icon={<MenuRowIcon icon={ClockCountdown} />}
-            className={MENU_ITEM_CLASS}
-            // Resolved against the wall clock at the moment the submenu opens,
-            // NOT from the static vocabulary. The static list would offer "This
-            // evening" at 11pm, which silently resolves to TOMORROW evening — a
-            // menu that quietly does something other than what it says. The
-            // hover popover and the `ade code` TUI resolve the same way.
-            onOpen={() => setSnoozePresets(resolveSnoozePresets())}
-          >
-            {snoozePresets.map((preset) => (
-              <button
-                key={preset.key}
-                type="button"
-                className={MENU_ITEM_CLASS}
-                onClick={() => chooseSnooze(preset.key)}
-              >
-                <MenuRowIcon icon={ClockCountdown} />
-                {preset.label}
-                <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">
-                  {preset.whenLabel}
-                </span>
-              </button>
-            ))}
-          </MenuSubmenu>
-        )}
-
-        {settleRow}
+        <MenuSubmenu
+          label="Change status"
+          hint={statusModel.currentLabel}
+          icon={<MenuRowIcon icon={SquaresFour} />}
+          className={MENU_ITEM_CLASS}
+          data-testid="session-menu-change-status"
+          // Presets resolve against the wall clock at the moment the submenu
+          // opens, NOT from the static vocabulary. The static list would offer
+          // "This evening" at 11pm, which silently resolves to TOMORROW evening
+          // — a menu that quietly does something other than what it says. The
+          // hover popover and the `ade code` TUI resolve the same way.
+          onOpen={() => setSnoozePresets(resolveSnoozePresets())}
+        >
+          {statusMenuContent}
+        </MenuSubmenu>
 
         {/* Handoff. One submenu, the same three destinations the Chat actions →
             Handoff tab offers: a fresh chat here, one of your other machines, or
@@ -706,7 +793,7 @@ function SessionContextMenuPanel({
             single place instead of split across the menu. */}
         {isChat ? (
           <MenuSubmenu
-            label="Hand off…"
+            label="Hand off"
             icon={<MenuRowIcon icon={ArrowBendUpRight} />}
             className={MENU_ITEM_CLASS}
             data-testid="session-menu-handoff"
@@ -721,7 +808,7 @@ function SessionContextMenuPanel({
               }}
             >
               <MenuRowIcon icon={GitFork} />
-              Local handoff
+              Local handoff…
             </button>
             <CrossMachineMoveSubmenu
               session={session}
@@ -762,19 +849,6 @@ function SessionContextMenuPanel({
           </MenuSubmenu>
         ) : null}
 
-        {isChat ? (
-          <button
-            type="button"
-            data-testid="session-menu-restart-agent"
-            className={MENU_ITEM_CLASS}
-            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
-            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
-          >
-            <MenuRowIcon icon={ArrowClockwise} />
-            Restart agent session
-          </button>
-        ) : null}
-
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button
             type="button"
@@ -807,48 +881,6 @@ function SessionContextMenuPanel({
           <MenuRowIcon icon={GitBranch} />
           Go to lane
         </button>
-        {onOpenSessionInWeb ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
-          >
-            <MenuRowIcon icon={Globe} />
-            Open in web
-          </button>
-        ) : null}
-
-        {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
-        <MenuSubmenu label="Copy" icon={<MenuRowIcon icon={Copy} />} className={MENU_ITEM_CLASS}>
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onCopySessionId(session.id); onClose(); }}
-          >
-            <MenuRowIcon icon={Hash} />
-            Session ID
-          </button>
-          {onCopySessionDeepLink ? (
-            <button
-              type="button"
-              className={MENU_ITEM_CLASS}
-              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
-            >
-              <MenuRowIcon icon={Link} />
-              Session deep link
-            </button>
-          ) : null}
-        </MenuSubmenu>
-
-        {openIn ? (
-          <OpenInSubmenu
-            rootPath={openIn.rootPath}
-            remote={openIn.remote}
-            onClose={onClose}
-            className={MENU_ITEM_CLASS}
-          />
-        ) : null}
-
         {/* Lane section — only on a singleton row, which has no lane divider to
             right-click. Appended to THIS menu rather than bound to a second
             gesture on some sub-region of the card: a hidden gesture nobody can
@@ -871,8 +903,64 @@ function SessionContextMenuPanel({
           />
         ) : null}
 
-        {/* ── Destructive, last and fenced off. ── */}
+        {openIn ? (
+          <OpenInSubmenu
+            rootPath={openIn.rootPath}
+            remote={openIn.remote}
+            onClose={onClose}
+            className={MENU_ITEM_CLASS}
+          />
+        ) : null}
+
+        {onOpenSessionInWeb ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
+          >
+            <MenuRowIcon icon={Globe} />
+            Open in web
+          </button>
+        ) : null}
+
+        <MenuSeparator />
+        {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
+        <MenuSubmenu label="Copy" icon={<MenuRowIcon icon={Copy} />} className={MENU_ITEM_CLASS}>
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onCopySessionId(session.id); onClose(); }}
+          >
+            <MenuRowIcon icon={Hash} />
+            Session ID
+          </button>
+          {onCopySessionDeepLink ? (
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
+            >
+              <MenuRowIcon icon={Link} />
+              Session deep link
+            </button>
+          ) : null}
+        </MenuSubmenu>
+
+        {/* ── Disruptive and destructive, last and fenced off. Restarting the
+            agent process sits here, not among the everyday lifecycle rows. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}
+        {isChat ? (
+          <button
+            type="button"
+            data-testid="session-menu-restart-agent"
+            className={MENU_ITEM_CLASS}
+            title="Fresh provider process, same conversation: picks up new skills, plugins, and MCP servers"
+            onClick={() => { void restartAgentSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Restart agent session
+          </button>
+        ) : null}
         {canStopRuntime ? (
           <button
             type="button"

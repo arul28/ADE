@@ -1,0 +1,46 @@
+---
+title: "Testing"
+description: "Exercise SDK consumers without launching ADE or spending provider tokens."
+icon: "flask"
+---
+
+`@ade-dev/sdk/testing` exports `createMockAdeChat()`. It implements the SDK client and thread shapes in memory, with no runtime process, credentials or network calls.
+
+```ts
+import { createMockAdeChat } from "@ade-dev/sdk/testing";
+
+const client = createMockAdeChat();
+client.queueReply("The incident is resolved.");
+const thread = await client.threads.open("support", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+});
+
+await thread.send("Summarise the incident");
+const events = await thread.history();
+await client.dispose();
+```
+
+Queue a tool call, approval or error with `queueToolCall`, `queueApproval` or `queueError`. If no response was queued, a send gets the default reply `Mock reply`. `queueUsage(event)` feeds usage events into the next send so a host can exercise `thread.usage()` and thread budgets.
+
+`replay(envelopes, key?)` seeds a thread from saved `AgentChatEventEnvelope` values and returns its handle. The mock assigns a new session id to the thread but preserves the supplied envelopes and sequence numbers.
+
+The mock is for consumer logic and UI integration tests. Keep a smaller number of runtime-backed tests for process, socket and provider behavior that an in-memory client cannot prove.
+
+## One-shot runs
+
+`client.run(prompt, { provider, model })` creates a random temporary thread, returns its text response and deletes the thread in `finally`. When you pass `schema`, it parses the response as JSON and validates the supported subset: types, object properties, required keys, array items, enum values and additional properties. Invalid JSON or a schema mismatch gets one repair prompt; a second failure throws `InvalidOutputError` with the raw text.
+
+```ts
+const result = await client.run("Return a contact record", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  schema: {
+    type: "object",
+    properties: { name: { type: "string" }, email: { type: "string" } },
+    required: ["name", "email"],
+    additionalProperties: false,
+  },
+});
+// result is parsed data after the schema check
+```

@@ -10,7 +10,7 @@ import {
   GitCommit,
   NotePencil,
 } from "@phosphor-icons/react";
-import type { GitUpstreamSyncStatus, LaneSummary } from "../../../../shared/types";
+import type { GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { relativeWhen } from "../../../lib/format";
 import { revealLabel } from "../../../lib/platform";
 import { ProviderLogo } from "../../shared/ProviderLogos";
@@ -35,7 +35,8 @@ function Sep() {
  * edge; the menu then opens down and to the left and stays inside the
  * overview column instead of covering the Git pane.
  */
-const LANE_MENU_WIDTH = 340;
+// The lane menu's own width (LaneContextMenu minWidth plus room), so its right edge meets the button.
+const LANE_MENU_WIDTH = 210;
 
 /** The hosted web client zooms <body>; Electron zooms the whole frame (factor 1). */
 const TONE_COLOR: Record<LaneStatusTone, string> = {
@@ -77,6 +78,8 @@ export function LaneIdentity({
   upstream,
   createdBy,
   active,
+  pin = null,
+  machineId = null,
   canReveal,
   revealUnavailableReason = null,
   onStartChat,
@@ -95,6 +98,10 @@ export function LaneIdentity({
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
   active: boolean;
+  /** The lane's machine when it is not the tab's; the branch picker acts there. */
+  pin?: OpenProjectBinding | null;
+  /** That machine's id, for refreshing its lane list. */
+  machineId?: string | null;
   canReveal: boolean;
   /**
    * Why reveal is shown but disabled ("On Mac Studio"): the lane's folder is on
@@ -187,7 +194,7 @@ export function LaneIdentity({
         {/* One line that never wraps: the branch gives way first. */}
         <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[12px] text-muted-fg" data-testid="lane-identity-meta">
           <span className="-ml-2 -mr-1 flex min-w-0 shrink">
-            <LaneBranchSwitcher lane={lane} primaryLane={primaryLane} active={active} />
+            <LaneBranchSwitcher lane={lane} primaryLane={primaryLane} active={active} pin={pin} machineId={machineId} />
           </span>
           <Sep />
           {isPrimary ? (

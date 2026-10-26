@@ -201,6 +201,12 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
     path.join(cliBinDir, "ade-beta.cmd"),
     '@echo off\r\n"C:\\Other ADE\\ade-beta.cmd" %*\r\n',
   );
+  // The extensionless Git Bash commands install-path.cmd writes: this
+  // install's own, another channel's, and one that runs a different tool.
+  const shimText = (target) => `#!/bin/sh\nexec '${target.replaceAll("\\", "/")}' "$@"\n`;
+  fs.writeFileSync(path.join(cliBinDir, "ade"), shimText(path.join(shortPackagedCliDir, "ade")));
+  fs.writeFileSync(path.join(cliBinDir, "ade-alpha"), shimText(path.join(packagedCliDir, "ade")));
+  fs.writeFileSync(path.join(cliBinDir, "ade-beta"), shimText("C:/Other ADE/bin/ade"));
 
   const result = spawnSync("powershell.exe", [
     "-NoProfile",
@@ -221,6 +227,54 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
   assert.equal(fs.existsSync(path.join(cliBinDir, "ade.cmd")), false);
   assert.equal(fs.existsSync(path.join(cliBinDir, "ade-alpha.cmd")), false);
   assert.equal(fs.existsSync(path.join(cliBinDir, "ade-beta.cmd")), true);
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade")), false);
+  // A stable uninstall leaves another channel's command alone, and only a
+  // shim that runs this install's packaged wrapper is ours.
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade-alpha")), true);
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade-beta")), true);
+});
+
+test("Windows uninstall cleanup removes an owned Git Bash shim whose .cmd is gone", {
+  skip: process.platform !== "win32",
+}, (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade uninstall orphan shim "));
+  t.after(() => removeTempRoot(tempRoot));
+  const installDir = path.join(tempRoot, "ADE");
+  const packagedCliDir = path.join(installDir, "resources", "ade-cli", "bin");
+  const cliBinDir = path.join(tempRoot, "user bin");
+  fs.mkdirSync(packagedCliDir, { recursive: true });
+  fs.mkdirSync(cliBinDir, { recursive: true });
+  // Keeps the directory after its shims are gone, so the second pass has a
+  // place to write.
+  fs.writeFileSync(path.join(cliBinDir, "notes.txt"), "keep the directory\n");
+  const shimText = (target) => `#!/bin/sh\nexec '${target.replaceAll("\\", "/")}' "$@"\n`;
+  const runCleanup = () => spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    cleanupScript,
+    "-InstallDir",
+    realWindowsPath(installDir),
+    "-CliBinDir",
+    cliBinDir,
+    "-SkipServiceRemoval",
+    "-SkipUserPathUpdate",
+  ], { encoding: "utf8" });
+
+  // A previous uninstall removed the .cmd but left the shim behind. It would
+  // otherwise stay on PATH pointing into the uninstalled app.
+  fs.writeFileSync(path.join(cliBinDir, "ade"), shimText(path.join(packagedCliDir, "ade")));
+  const first = runCleanup();
+  assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade")), false);
+
+  // The same name pointing at some other tool is not ours and stays.
+  fs.writeFileSync(path.join(cliBinDir, "ade"), shimText("C:/Other ADE/bin/ade"));
+  const second = runCleanup();
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade")), true);
 });
 
 test("Windows stable uninstall reaches protocol cleanup without treating it as C# source", {

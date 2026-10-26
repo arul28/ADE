@@ -1,12 +1,13 @@
 ---
 name: ade-apple
-description: Use this skill when you need to see an iOS or SwiftUI change actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
+description: Use this skill when you need to see an iOS app or an iOS SwiftUI view actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
 ---
 
 # ADE Apple Development
 
-This skill is for iOS and SwiftUI apps. For a macOS app, a dev Electron app or
-a web page, the **ade-computer-use** skill picks the right surface.
+This skill is for iOS apps and iOS SwiftUI views. For a macOS app, a dev
+Electron app or a web page, the **ade-computer-use** skill picks the right
+surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
 `$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
@@ -51,7 +52,7 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 | Open a web page or deep link | `"$A" apple open-url "https://www.google.com" --text` |
 | Tap a control by its label | `"$A" apple tap-element --label "Address" --text` |
 | Type, then press Return | `"$A" apple type "reddit" --submit --text` |
-| Press one key | `"$A" apple key return --text` (also `tab`) |
+| Press one key | `"$A" apple key return --text` (also `escape`, `delete`, `space`, arrows `up`/`down`/`left`/`right`, letters; hold `--cmd`/`--shift`/`--alt`/`--ctrl`: `apple key f --cmd`) |
 | Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
 | Which app is in front | `"$A" apple foreground --text` (`--wait 10` right after a launch) |
 | Open an app with launch arguments | `"$A" apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home` |
@@ -134,7 +135,14 @@ another lane, an `xcodebuild test` run, or the user.
   `--device <udid|name>` (`rotate`, `screenshot`, `snapshot`, `relaunch`,
   `tap-element`, …). Without `--device` every command still drives the lane's
   own device. ADE deletes it with the lane; `device-delete --device <udid>`
-  deletes it now.
+  deletes it now. `boot --device <udid>` boots an extra that is off and
+  answers only once `simctl` lists it Booted.
+- An extra cannot stream, record, launch a build or run tests. To make it the
+  lane's own device (say it already has the build and the sign-in), run
+  `device-promote --device <udid|name>`. The old lane device becomes an extra,
+  so nothing installed on it is lost. It is refused while the lane device is
+  streaming, recording, running tests or held by another chat: stop that
+  first.
 - You may attach an installed simulator only when the user names it
   (`device-attach --simulator <name>` or `start --udid <udid>`). ADE refuses a
   simulator another lane holds, with `APPLE_DEVICE_NOT_LANE_OWNED`.
@@ -221,8 +229,13 @@ A new device has no sign-ins, so the app starts at its first-run state.
   cache, when the lane is archived or deleted. An attached device is powered
   off and loses only the apps ADE installed. ADE never deletes a simulator it
   did not create.
-- An ADE device that nothing uses for 30 minutes is powered off. `start` boots
-  it again in seconds.
+- An ADE device that nothing uses for 30 minutes is powered off, extras too
+  (`ADE_APPLE_IDLE_POWER_OFF_MINUTES` in ADE's environment changes the
+  minutes; `0` turns it off). Every command that names a device counts as
+  use. `status` and `device-list` then say so, for example `note: ADE powered
+  iPad Air 11 off after 31 min idle at 10:12; the next --device command boots
+  it again.` `start` boots the lane's device again, and the next `--device`
+  command boots an extra. Do not `simctl boot` it yourself.
 - Deleting an installed simulator from the list is the user's call, made in
   the desktop picker. ADE refuses it from an agent; do not try.
 
@@ -240,6 +253,12 @@ Name elements, not pixels.
 
 - Run `snapshot` first. Query with `--ref`, `--identifier`, `--label`,
   `--text-match`, `--role` and `--index`.
+- In the snapshot's label column, a bare word is a label (`--label`). An
+  element with no label shows `#name` for its accessibility identifier (query
+  `--identifier name`), `component:name` or `value:text`. A `--label` that no
+  element carries still finds an exact identifier, and the answer says it did.
+  A miss names the closest field and flag: `The closest is the identifier
+  "BackButton"; query it with --identifier "BackButton".`
 - A `ref` names its own tier. `id:` and `component:` survive a re-render;
   `pos:` survives nothing, so ask for an accessibility identifier instead.
 - `wait-for-element` replaces a sleep. Add `--gone` to wait for a disappearance.
@@ -330,7 +349,9 @@ opens nothing. Use the App Switcher instead.
 ```
 
 - Coordinates are points. Read the screen size from `apple stream-status`
-  (`pointWidth` × `pointHeight`); the example is an iPhone 16 Pro (402 × 874).
+  (`screen points` in `--text`, `pointWidth` × `pointHeight` in `--json`; both
+  are empty while no stream runs, so `apple start` first). The example is an
+  iPhone 16 Pro (402 × 874).
 - The front app's card sits in the middle of the switcher. Swipe it up from
   about (W/2, 0.55 H) to (W/2, 0.09 H), fast: 150 ms. A slow drag only lifts
   the card.
@@ -526,6 +547,12 @@ One chat owns a simulator session at a time. A second launch fails with
   first, or add another model beside it with `device-create --extra`.
 - `APPLE_EXTRA_DEVICE_LIMIT` — the lane already has 2 extra devices. Delete
   one with `device-delete --device <udid>`.
+- `APPLE_DEVICE_IS_EXTRA` — that command needs the lane's own device and you
+  named an extra. Use the lane's device, or run the `device-promote --device
+  <udid>` the message prints to make the extra the lane's device.
+- `APPLE_LANE_DEVICE_BUSY` — `device-promote` found the lane's device
+  streaming, recording, testing, launching or leased. Finish or stop that, then
+  promote again.
 - `APPLE_DEVICE_NOT_LANE_OWNED` — you named a simulator this lane does not
   hold, or another lane holds it. Do not look for a way around it. Run
   `ade apple start` to get the lane's own, or attach it first if the user named it.

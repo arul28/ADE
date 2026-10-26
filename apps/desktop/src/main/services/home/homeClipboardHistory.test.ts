@@ -21,9 +21,9 @@ function fakeClipboard(): FakeClipboard {
     text: "",
     markers: new Set<string>(),
     dword: null,
-    readText: () => clip.text,
-    writeText: (text) => { clip.text = text; },
-    readBuffer: (format) => {
+    readText: async () => clip.text,
+    writeText: async (text) => { clip.text = text; },
+    readBuffer: async (format) => {
       if (format === "CanIncludeInClipboardHistory" && clip.dword != null) {
         const buffer = Buffer.alloc(4);
         buffer.writeUInt32LE(clip.dword, 0);
@@ -31,8 +31,11 @@ function fakeClipboard(): FakeClipboard {
       }
       return Buffer.alloc(0);
     },
-    has: (format) => clip.markers.has(format),
-    availableFormats: () => ["text/plain"],
+    availableFormats: async () => [
+      "text/plain",
+      ...clip.markers,
+      ...(clip.dword != null ? ["CanIncludeInClipboardHistory"] : []),
+    ],
   };
   return clip;
 }
@@ -205,6 +208,28 @@ describe("clipboard history: which windows keep the watch on", () => {
     await service.setPresence(2, null);
     await copy(clip, "watched again");
     expect(await texts()).toEqual(["watched again", "seen by window 1"]);
+    service.dispose();
+  });
+
+  it("records nothing a read returns after history is turned off mid-read", async () => {
+    const dir = tempDir();
+    writeSettings(dir, { enabled: true, persist: false });
+    const { clip, service } = history(dir);
+    await service.load();
+    await copy(clip, "kept before");
+
+    // The next read of the clipboard is still in flight when the user turns history off.
+    let finishRead: (text: string) => void = () => {};
+    clip.readText = () => new Promise<string>((resolve) => { finishRead = resolve; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await service.configure({ enabled: false });
+    finishRead("copied while turning it off");
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const state = await service.getState();
+    expect(state.enabled).toBe(false);
+    expect(state.entries.map((entry) => entry.text)).toEqual(["kept before"]);
+    expect(state.skippedSecrets).toBe(0);
     service.dispose();
   });
 });

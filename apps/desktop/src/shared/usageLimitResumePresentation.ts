@@ -425,6 +425,10 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
     || identity.includes("outofusage")) {
     return true;
   }
+  // The wording a provider's own terminal turn leaves behind: "You've hit your
+  // session limit" / "…your weekly limit". Found in the wild as the last
+  // assistant text of a turn that stopped at the limit.
+  if (identity.includes("hityour") && identity.includes("limit")) return true;
   if (!identity.includes("429")) return false;
   return identity.includes("rate")
     || identity.includes("usage")

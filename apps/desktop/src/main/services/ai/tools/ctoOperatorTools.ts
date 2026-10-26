@@ -8,9 +8,12 @@ import {
   asRemoteLanes,
   CREATE_REMOTE_LANE_BUDGET_MS,
   createCtoCrossMachineToolKit,
+  readOrReport,
   REMOTE_LANE_CREATE_TIMEOUT_MS,
   SPAWN_REMOTE_CHAT_BUDGET_MS,
+  spawnWarnings,
   summarizeLane,
+  withSpawnWarnings,
 } from "./ctoCrossMachineTools";
 import { DEFAULT_ADE_TOOL_BUDGET_MS } from "./toolDeadline";
 import type { ArmChatWaitArgs, ChatWaiter } from "../../../../shared/chatWait";
@@ -33,6 +36,8 @@ import type {
   SessionWakeReason,
   TestRunSummary,
   TestSuiteDefinition,
+  CostSnapshot,
+  UsageSnapshot,
 } from "../../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
@@ -638,6 +643,41 @@ function redactConfigValues(value: unknown, key?: string): unknown {
   return value;
 }
 
+/** How many models each provider's summarized spend names, most expensive first. */
+const USAGE_SUMMARY_TOP_MODELS = 5;
+
+/**
+ * `getUsageSnapshot` without the per-model and per-day token breakdowns. Those
+ * are nearly all of a real snapshot (about 500 KB of JSON on a busy machine,
+ * against a few KB for everything else), and a CTO checking whether an account
+ * has room needs the windows, the accounts and the spend totals.
+ */
+function summarizeUsageSnapshot(snapshot: unknown): unknown {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  const { costs, adeCosts, ...rest } = snapshot as UsageSnapshot;
+  const summarizeCost = (cost: CostSnapshot) => ({
+    provider: cost.provider,
+    last30dCostUsd: cost.last30dCostUsd,
+    todayCostUsd: cost.todayCostUsd,
+    ...(cost.costUsdByPreset ? { costUsdByPreset: cost.costUsdByPreset } : {}),
+    topModels30d: Object.entries(cost.tokenBreakdown ?? {})
+      .filter(([, breakdown]) => (breakdown?.costUsd ?? 0) > 0)
+      .sort(([, a], [, b]) => (b.costUsd ?? 0) - (a.costUsd ?? 0))
+      .slice(0, USAGE_SUMMARY_TOP_MODELS)
+      .map(([model, breakdown]) => ({ model, costUsd: Math.round((breakdown.costUsd ?? 0) * 100) / 100 })),
+    ...(cost.estimation ? { estimation: cost.estimation } : {}),
+    ...(cost.pricingSource ? { pricingSource: cost.pricingSource } : {}),
+  });
+  return {
+    ...rest,
+    costs: (costs ?? []).map(summarizeCost),
+    // The ADE-attributed subset is the same shape; dropping it silently left a
+    // caller unable to tell "no ADE spend" from "not in this answer".
+    ...(adeCosts ? { adeCosts: adeCosts.map(summarizeCost) } : {}),
+    detail: "summary",
+  };
+}
+
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorToolMap {
   const tools: CtoOperatorToolMap = {};
 
@@ -872,6 +912,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           + "recorded as quiet notes and never wake you.",
         ),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
+      instanceId: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Claude or Codex account to run the chat on: an accounts[].instanceId from getUsageSnapshot (e.g. 'claude'). "
+          + "Pass it when one account has room and another does not. Omit to let the machine pick its default "
+          + "(or smart-balance) account. The account must be signed in on the machine the chat runs on.",
+        ),
+      credentialId: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe("A stored API credential to run the chat on instead of a signed-in account. Rarely needed."),
       machine: machineArgSchema,
       checkBackMinutes: z
         .number()
@@ -882,7 +938,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
     budgetMs: ({ machine }) => (machine ? SPAWN_REMOTE_CHAT_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
-    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, machine, checkBackMinutes }) => {
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, instanceId, credentialId, machine, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
@@ -901,6 +957,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
             permissionMode,
             droidPermissionMode,
+            ...(instanceId ? { instanceId } : {}),
+            ...(credentialId ? { credentialId } : {}),
             checkBackMinutes,
           });
         }
@@ -920,6 +978,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           // persisted as a real selection and pin the spawned chat to it.
           ...(permissionMode !== undefined ? { permissionMode } : {}),
           ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+          ...(instanceId ? { instanceId } : {}),
+          ...(credentialId ? { credentialId } : {}),
           // Lineage, so the child's completion reports back here instead of
           // ending in silence. The CTO thread is the parent for everything it
           // starts; `spawnKind` decides whether that report wakes it.
@@ -973,6 +1033,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           permissionMode: session.permissionMode ?? null,
           droidPermissionMode: session.droidPermissionMode ?? null,
           spawnKind: session.spawnKind ?? null,
+          instanceId: session.instanceId ?? null,
+          ...withSpawnWarnings(spawnWarnings({
+            requestedPermissionMode: permissionMode,
+            session,
+            // Only a named lane can already hold work; a fresh lane is empty.
+            laneChats: laneId?.trim() ? await readOrReport(() => deps.listChats(session.laneId), []) : [],
+            newSessionId: session.id,
+          })),
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -981,13 +1049,21 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.sendChatMessage = core({
-    description: "Send a message to an ADE chat session you are supervising.",
+    description:
+      "Send a message to an ADE chat session you are supervising. Pass machine for a chat on another machine "
+      + "(the same machine you started or listed it on).",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
       text: z.string().trim().min(1),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId, text }) => {
+    execute: async ({ sessionId, text, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          await runRemote(target, { domain: "chat", action: "sendMessage", args: { sessionId, text } });
+          return { success: true, ...onMachine(target), sessionId };
+        }
         await deps.sendChatMessage({ sessionId, text });
         return { success: true, sessionId };
       } catch (error) {
@@ -1210,15 +1286,29 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.listPullRequests = core({
-    description: "List ADE-managed pull requests so the CTO can inspect active review state.",
+    description:
+      "List ADE-managed pull requests so the CTO can inspect active review state. Lists open and draft PRs by "
+      + "default, newest first; pass state 'merged', 'closed' or 'all' for the history. 'count' is the total that "
+      + "matched, 'truncated' says the list was cut at limit.",
     inputSchema: z.object({
       refresh: z.boolean().optional().default(true),
+      state: z.enum(["open", "merged", "closed", "all"]).optional().default("open"),
+      limit: z.number().int().positive().max(200).optional().default(25),
     }),
-    execute: async ({ refresh }) => {
+    execute: async ({ refresh, state, limit }) => {
       if (!deps.prService) return { success: false, error: "PR service is not available." };
       try {
-        const prs = refresh ? await deps.prService.refresh() : deps.prService.listAll();
-        return { success: true, count: prs.length, prs };
+        const all = refresh ? await deps.prService.refresh() : deps.prService.listAll();
+        const updatedEpoch = (value: string | null | undefined) => {
+          const epoch = parseIsoToEpoch(value);
+          return Number.isFinite(epoch) ? epoch : 0;
+        };
+        // A draft is an open PR that is not ready for review yet.
+        const matched = all
+          .filter((pr) => state === "all" || pr.state === state || (state === "open" && pr.state === "draft"))
+          .sort((a, b) => updatedEpoch(b.updatedAt) - updatedEpoch(a.updatedAt));
+        const prs = matched.slice(0, limit);
+        return { success: true, state, count: matched.length, truncated: matched.length > prs.length, prs };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3396,12 +3486,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.getUsageSnapshot = insights({
-    description: "Read provider rate-limit windows and spend controls for the signed-in account.",
-    inputSchema: z.object({}),
-    execute: async () => {
+    description:
+      "Read provider rate-limit windows (5-hour, weekly) per account, the accounts and their instance ids, pacing, "
+      + "and spend totals. The default summary is a few KB. detail 'full' adds the per-model and per-day token "
+      + "breakdowns, which run to hundreds of KB: ask for it only when you need those numbers.",
+    inputSchema: z.object({
+      detail: z.enum(["summary", "full"]).optional().default("summary"),
+    }),
+    execute: async ({ detail }) => {
       const usage = deps.usageService;
       if (!usage) return unavailable("Usage tracking");
-      return attempt(() => usage.getUsageSnapshot());
+      return attempt(async () => {
+        const snapshot = await usage.getUsageSnapshot();
+        return detail === "full" ? snapshot : summarizeUsageSnapshot(snapshot);
+      });
     },
   });
 

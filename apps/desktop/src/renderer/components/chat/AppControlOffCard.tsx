@@ -61,9 +61,7 @@ export function AppControlOffCard({
       tone="idle"
       icon={Desktop}
       title="No app attached"
-      detail={laneName
-        ? `Launch ${laneName}'s Electron app, or attach to one that is already running.`
-        : "Launch this lane's Electron app, or attach to one that is already running."}
+      detail={laneName ? `Launch or attach ${laneName}'s app.` : "Launch or attach an Electron app."}
     >
       <form
         className="flex w-full min-w-0 flex-col gap-2 text-left"
@@ -87,7 +85,8 @@ export function AppControlOffCard({
           <input
             value={launchCwd}
             onChange={(event) => onLaunchCwdChange(event.target.value)}
-            placeholder="Folder (optional, lane root)"
+            placeholder="Folder (optional)"
+            title="Folder to launch from. Defaults to the lane root."
             aria-label="App Control launch folder"
             disabled={controlsDisabled}
             spellCheck={false}

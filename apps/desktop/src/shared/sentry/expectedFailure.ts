@@ -94,6 +94,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // Added from Sentry traffic, 2026-10-23.
   // GitHub, Jira and remote-machine sign-ins the user has to fix in Settings.
   /GitHub auth is invalid or missing required access/,
+  // Added from Sentry traffic, 2026-10-25: a repository the credential cannot see.
+  /^GitHub auth cannot access [^:]+: .+\. Update it in Settings to sync pull requests\.$/,
   /\bAPI rate limit (?:already )?exceeded for user ID\b/,
   /\[jira:unauthenticated\]/,
   GITHUB_AUTOLINKS_REFUSED,

@@ -1382,6 +1382,60 @@ credential word outranks a transport word, and `cipher` reads as identity.
 `superseded` exists so a losing route stops reading as a fault. Another route
 won the same connection attempt; nothing is wrong.
 
+### Which part failed: the connection doctor
+
+A client can only see that a route failed; the machine at the other end knows
+why. So there are two halves, sharing one wording module
+(`shared/connectionDiagnosis.ts`), so a failure reads the same on every
+surface:
+
+- **Test connection** (a machine row's Test button, `ConnectionDoctorPanel`)
+  probes every route of a machine and classifies each failure from its
+  structure (`classifyDoctorFailure` in `connectionDoctor.ts`): the relay's
+  close code 4501 is `host_offline` (the relay answered; the machine is not
+  connected to it), a relay name that does not resolve or a down interface is
+  `no_network` (this computer's own network), and the rest reuse the connect
+  classifier (`pairing`, `authentication`, `protocol`, `timeout`,
+  `unreachable`…). `diagnoseDoctorChecks` writes one sentence and one fix over
+  all routes; any route that works wins, since a LAN address failing away from
+  home is expected.
+- **Check** on the This machine card in Connections
+  (`HostReachabilityCheck.tsx`, IPC `ade.sync.checkLocalReachability`, brain
+  method `sync.checkReachability` in `hostReachabilityCheck.ts`) asks this
+  computer's own brain whether others can reach it: the sync listener, the
+  relay control socket and bridge, a real self-probe through the relay
+  (dialled like a phone would, only when the control and bridge are up),
+  Tailscale's state and whether it routes everything through an exit node
+  (`tailscale status --json`; an exit node that blocks the relay is the case
+  that looked healthy on the host and dead everywhere else), the account, and
+  a recent freeze. Each part gets a state and a fix. It is always this physical
+  computer (like `getLocalStatus`), never the window's bound machine; the web
+  client has no such check and shows nothing.
+- **On <machine>** is the same check asked of a connected remote machine,
+  from inside its Test panel (`HostReachabilitySection`, IPC
+  `ade.remoteRuntime.checkReachability`). The desktop sends
+  `sync.checkReachability` over that machine's own connection
+  (`callMachineMethod`, 30 s, no retry) and rewrites "this computer" to the
+  machine's name (`describeReportForMachine`). A machine that is not
+  connected has no section; one running an older ADE answers "can't check
+  itself" with the fix to update it.
+
+**A frozen host says so.** While a machine is frozen, its clients cannot tell
+that from a dropped network. The brain loop watchdog now reports every stall
+it came back from (`onStall`, not suspensions) and every wedge it restarted
+(`onRecovered`) to `hostStallRecord.ts`, which keeps the latest one of 5 s or
+more, with the 1-minute load average (none on Windows) and core count. For 5
+minutes, `hello_ok` carries it as `hostHealth.lastStall` with an age instead
+of a timestamp, so clients need no clock sync. The desktop keeps it on the
+machine's connection status (`hostStall`, a note under the row for 10
+minutes) and shows one toast per freeze; the web client toasts it from its
+hello; iOS shows it on the Connection card. "Its CPU is overloaded (load 21 on
+8 cores)" when load exceeds the cores, otherwise "ADE there was too busy to
+answer". Older hosts omit the field and nothing changes. The web client's close
+messages name the cause too: 4501 says the computer is not connected to the
+relay, and a socket that went stale after working says the computer stopped
+responding (overloaded, asleep or off the network).
+
 ## Compatibility warnings
 
 Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:

@@ -136,6 +136,10 @@ import {
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+  APPLE_KEY_MODIFIER_USAGES,
+  APPLE_NAMED_KEY_USAGES,
+  appleKeyUsage,
+  type IosSimulatorPressKeyArgs,
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { commandExists } from "../ai/utils";
@@ -147,7 +151,14 @@ import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
-import { appleDeviceDataRoot, appleInstalledSimulatorsFrom, parseAppleInstalledRuntimes, parseSimctlDevices } from "./appleSimulatorCatalog";
+import {
+  appleDeviceDataRoot,
+  appleInstalledSimulatorsFrom,
+  deviceTypeBundlePath,
+  deviceTypeScreenScale,
+  parseAppleInstalledRuntimes,
+  parseSimctlDevices,
+} from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
@@ -155,7 +166,12 @@ import { readAppleDeviceMarker } from "./appleDeviceMarker";
 import { appleAppOnDevice, appleLaneDerivedDataPath } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
 import type { LaneDeviceStore } from "./laneDeviceRows";
-import { createLaneDeviceMaintenance, type LaneDeviceMaintenance } from "./laneDeviceMaintenance";
+import {
+  createLaneDeviceMaintenance,
+  describeDevicePowerOff,
+  type AppleDevicePowerOffRecord,
+  type LaneDeviceMaintenance,
+} from "./laneDeviceMaintenance";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -1741,16 +1757,43 @@ function inferAccessibilityScale(
   return usableRatios[0] ?? null;
 }
 
+/**
+ * The screenshot's scale from the helper's own point size for the screen on
+ * show (the live stream's transport), when the two describe the same picture:
+ * both axes give the same ratio. That is the plane `tap` maps into, so the
+ * snapshot's `screen` then agrees with it. The element-frame guess picked @2x
+ * for the Duo's inner panel, which is @3x.
+ */
+function measuredScreenshotScale(
+  shot: IosSimulatorScreenshot,
+  pointSize: { width: number; height: number } | null,
+): number | null {
+  const width = shot.width ?? 0;
+  const height = shot.height ?? 0;
+  if (!pointSize || pointSize.width <= 0 || pointSize.height <= 0 || width <= 0 || height <= 0) return null;
+  const across = width / pointSize.width;
+  const down = height / pointSize.height;
+  if (!Number.isFinite(across) || across <= 0 || Math.abs(across - down) / across > 0.02) return null;
+  return across;
+}
+
 function scaleAccessibilityElementsToScreenshot(
   elements: IosScreenElement[],
   shot: IosSimulatorScreenshot,
+  pointSize: { width: number; height: number } | null = null,
+  deviceScale: number | null = null,
 ): { elements: IosScreenElement[]; screen: IosInspectableScreen | null } {
   const width = shot.width ?? 0;
   const height = shot.height ?? 0;
   if (!elements.length || width <= 0 || height <= 0) {
     return { elements, screen: null };
   }
-  const scale = inferAccessibilityScale(elements, shot);
+  // The stream's point size first, then the device type's own scale (a
+  // screenshot is in the device's native pixels), and the guess from the
+  // element frames only when neither is known.
+  const scale = measuredScreenshotScale(shot, pointSize)
+    ?? deviceScale
+    ?? inferAccessibilityScale(elements, shot);
   if (!scale || !Number.isFinite(scale) || scale <= 0) {
     return { elements, screen: null };
   }
@@ -2147,7 +2190,7 @@ const AGENT_NO_LANE_DEVICE_MESSAGE =
  */
 const AGENT_DEVICE_DRIVING_ACTIONS = [
   "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
-  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "drag", "swipe", "scroll", "selectPoint",
+  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "pressKey", "drag", "swipe", "scroll", "selectPoint",
   "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
@@ -2173,10 +2216,30 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
  * device. Everything else acts on the device it is given.
  */
 const AGENT_EXTRA_DEVICE_REFUSED_ACTIONS = new Set<string>([
-  "launch", "openDevice", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
+  "launch", "runTests", "startStream", "stopStream", "closeDevice", "deviceStop",
   "recordStart", "startEventLog", "stopEventLog", "getEventLog", "selectPoint", "duoAppStoreScreenshots", "getInspectorSnapshot",
   "frame",
 ]);
+
+/** A result an extra note can ride on: a plain object, not an array, a Buffer or a class instance. */
+function isPlainResultObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * `start --udid <extra>` and `device-attach --simulator <extra>` on the lane
+ * that owns the extra: the answer is the promote verb, not a second device.
+ */
+function extraIsNotLaneDeviceError(extra: Pick<AppleLaneDevice, "name" | "udid">): AdeExpectedError {
+  return new AdeExpectedError(
+    `${APPLE_DEVICE_IS_EXTRA_CODE}: ${extra.name} is one of this lane's extra devices, not its own device, so it `
+    + "cannot stream, record or launch builds. To make it the lane's device (the old one stays installed), run: "
+    + `ade apple device-promote --device ${extra.udid}`,
+    "user",
+  );
+}
 
 /** Who holds the session, when it is an agent on another machine. */
 function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
@@ -2716,6 +2779,40 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
+  /**
+   * The device's own pixels per point, from its device type's profile. A
+   * device never changes type, so each udid is read once. Null when anything
+   * on the way is missing; the snapshot then falls back to its guess.
+   */
+  const deviceScreenScales = new Map<string, Promise<number | null>>();
+  const deviceScreenScale = (deviceUdid: string): Promise<number | null> => {
+    const known = deviceScreenScales.get(deviceUdid);
+    if (known) return known;
+    const read = (async (): Promise<number | null> => {
+      // Only the profile's own answer is remembered. A device or profile not
+      // found yet (a list read while simctl was busy, a device type still
+      // installing) is asked again by the next snapshot.
+      const device = (await listInstalledSimulators()).find((entry) => entry.udid === deviceUdid);
+      if (!device?.deviceTypeIdentifier) throw new Error("device type not listed");
+      const { stdout: types } = await run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 });
+      const bundlePath = deviceTypeBundlePath(types, device.deviceTypeIdentifier);
+      if (!bundlePath) throw new Error(`no profile for ${device.deviceTypeIdentifier}`);
+      const capabilitiesPath = path.join(bundlePath, "Contents", "Resources", "capabilities.plist");
+      const { stdout } = await run("/usr/bin/plutil", ["-convert", "json", "-o", "-", capabilitiesPath], { timeoutMs: 10_000 });
+      return deviceTypeScreenScale(JSON.parse(stdout) as unknown);
+    })().catch((error: unknown) => {
+      // Not remembered: the next snapshot asks again.
+      deviceScreenScales.delete(deviceUdid);
+      args.logger.debug("apple.device_scale_unread", {
+        deviceUdid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    deviceScreenScales.set(deviceUdid, read);
+    return read;
+  };
+
   const laneDevices = createLaneDeviceRegistry({
     run: (command, commandArgs, options) => run(command, commandArgs, options),
     powerOffDevice: (udid) => power.powerOffDevice(udid, "delete"),
@@ -2802,6 +2899,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
     invalidateStatus: (runtime) => invalidateStatus(runtime),
     invalidateDeviceList: () => invalidateDeviceList(),
+    laneDeviceBusyReason: (runtime, device, chatSessionId) => {
+      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === device.udid) {
+        return "streaming its live view";
+      }
+      if (recordings.active({ laneId: runtime.key })) return "recording";
+      if (activeTestUdids.has(device.udid)) return "running tests";
+      if (runtime.activeLaunchId) return "launching a build";
+      const lease = deviceLeases.status(runtime.key);
+      if (lease.held && lease.current && lease.current.holder !== (chatSessionId ?? "")) {
+        return `leased to ${lease.current.holder}`;
+      }
+      return null;
+    },
     emit: (payload) => emit(payload),
     logger: args.logger,
   });
@@ -3006,7 +3116,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     run: (file, commandArgs, options) => run(file, commandArgs, options),
     waitForBootStatus: (device) => waitForSimulatorBootStatus(device),
     invalidateDeviceList: () => invalidateDeviceList(),
-    resetHelperDevice: (udid, reason) => resetHelperDevice(udid, reason),
+    resetHelperDevice: (udid, reason) => {
+      // Every ADE boot passes here: a device ADE powered off earlier is on
+      // again, so its "ADE powered this off" note is no longer true.
+      if (reason === "boot") laneMaintenance().clearPowerOff(udid);
+      return resetHelperDevice(udid, reason);
+    },
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
   });
 
@@ -3623,6 +3738,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
     const xcrunAvailable = tools.find((tool) => tool.name === "xcrun")?.available ?? false;
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
+    // Why a lane device ADE powered off is off, from the list read above: a
+    // pane that polls the status must not pay a second `simctl list` for it.
+    // A notice that cannot be built must not fail the status read; it is
+    // logged so the failing read is not invisible.
+    const powerOffNotices = isDarwin
+      ? await devicePowerOffNotices(runtime.key, devices).catch((error: unknown) => {
+        args.logger.warn("apple.device_power_off_notices_failed", {
+          laneId: runtime.key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [] as string[];
+      })
+      : [];
     return {
       platform: process.platform,
       supported: isDarwin && xcrunAvailable && xcodebuildAvailable,
@@ -3634,6 +3762,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       laneDevice: laneDevice ?? null,
       laneId: runtime.laneId,
       helper: helperToolInfo(),
+      ...(powerOffNotices.length ? { deviceNotices: powerOffNotices } : {}),
       // The same redaction rule as `getStreamStatus`: the shape, never the
       // address or the token.
       stream: currentStatusStream(runtime),
@@ -5044,8 +5173,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * `select` all keep working across the engine swap.
    *
    * The frames are in DEVICE POINTS, as they were from idb. Everything
-   * downstream (`scaleAccessibilityElementsToScreenshot`) already infers the
-   * scale from the screenshot, so nothing here converts.
+   * downstream (`scaleAccessibilityElementsToScreenshot`) finds the scale, so
+   * nothing here converts.
    */
   const readAccessibilityElements = async (deviceUdid: string): Promise<IosScreenElement[]> => {
     const payload = await helper().send({ type: "ax-describe", udid: deviceUdid });
@@ -5111,7 +5240,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let accessibilityScreen: IosInspectableScreen | null = null;
     try {
       const rawAccessibilityElements = await readAccessibilityElements(shot.deviceUdid);
-      const scaledAccessibility = scaleAccessibilityElementsToScreenshot(rawAccessibilityElements, shot);
+      // The live stream knows the point size of the screen on show; with no
+      // stream the device type's profile gives the scale.
+      const transport = shot.deviceUdid ? runtimeStreamingUdid(shot.deviceUdid)?.streamStatus.transport ?? null : null;
+      const pointSize = transport?.pointWidth && transport.pointHeight
+        ? { width: transport.pointWidth, height: transport.pointHeight }
+        : null;
+      const scaledAccessibility = scaleAccessibilityElementsToScreenshot(
+        rawAccessibilityElements,
+        shot,
+        pointSize,
+        pointSize || !shot.deviceUdid ? null : await deviceScreenScale(shot.deviceUdid),
+      );
       accessibilityElements = scaledAccessibility.elements;
       accessibilityScreen = scaledAccessibility.screen;
       providers.push({
@@ -5354,13 +5494,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const getStreamStatus = (streamArgs: { laneId?: string | null; chatSessionId?: string | null } = {}): IosSimulatorStreamStatus => {
     const runtime = resolveRuntime(streamArgs);
     const status = runtime.streamStatus;
-    if (!status.transport) return { ...status, streamUrl: null };
+    if (!status.transport) return { ...status, streamUrl: null, pointWidth: null, pointHeight: null };
     return {
       ...status,
       // `streamUrl` would carry the same address, so redacting only the
       // transport would leave it in the field right next to it. Both go.
       streamUrl: null,
       transport: { ...status.transport, url: null, token: null },
+      // Where the skill tells an agent to read the screen size for a swipe.
+      pointWidth: status.transport.pointWidth ?? null,
+      pointHeight: status.transport.pointHeight ?? null,
     };
   };
 
@@ -6204,6 +6347,57 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /**
+   * One real key press, with modifiers held around it: key-down and key-up
+   * HID events through the helper, the way a hardware keyboard sends them.
+   * `typeText` only spells characters, so it had no arrows, no escape and no
+   * ⌘-shortcuts. Every modifier is released even when a press fails, or the
+   * device would keep ⌘ held for the next command.
+   */
+  const pressKey = async (input: IosSimulatorPressKeyArgs): Promise<{ ok: true; key: string }> => {
+    assertDarwin();
+    const usage = appleKeyUsage(input.key ?? "");
+    if (usage === null) {
+      throw new AdeExpectedError(
+        `Unknown key ${JSON.stringify(input.key)}. Keys: ${Object.keys(APPLE_NAMED_KEY_USAGES).join(", ")}, or one letter or digit.`,
+        "user",
+      );
+    }
+    const modifierNames = (input.modifiers ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+    const modifiers = modifierNames.map((name) => {
+      const modifier = APPLE_KEY_MODIFIER_USAGES[name];
+      if (modifier === undefined) {
+        throw new AdeExpectedError(
+          `Unknown modifier ${JSON.stringify(name)}. Modifiers: ${Object.keys(APPLE_KEY_MODIFIER_USAGES).join(", ")}.`,
+          "user",
+        );
+      }
+      return modifier;
+    });
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
+    const label = [...modifierNames, input.key.trim().toLowerCase()].join("+");
+    return enqueueControl("text", async () => {
+      const send = (phase: "down" | "up", code: number) => helper().send({ type: "key", udid: deviceUdid, phase, usage: code });
+      const held: number[] = [];
+      try {
+        for (const modifier of modifiers) {
+          await send("down", modifier);
+          held.push(modifier);
+        }
+        await send("down", usage);
+        await send("up", usage);
+      } finally {
+        for (const modifier of held.reverse()) {
+          await send("up", modifier).catch(() => undefined);
+        }
+      }
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source });
+      return { ok: true, key: label };
+    });
+  };
+
   const drag = async (input: IosSimulatorDragArgs, action: "drag" | "swipe" = "drag"): Promise<{ ok: true; action: "drag" | "swipe" }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
@@ -6424,14 +6618,68 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return device;
   };
 
-  /** Boot one of a lane's extra devices if it is off, and note that it was used. */
-  const bootExtraDevice = async (device: AppleLaneDevice): Promise<void> => {
+  /**
+   * Boot one of a lane's extra devices if it is off, and note that it was used.
+   *
+   * Answers whether this call booted it, and the sentence to show when ADE
+   * had powered it off for being idle: the agent that finds its device was
+   * off has to learn why, or it blames its own last command. A boot is only
+   * reported once `simctl` lists the device as Booted, after `bootstatus`.
+   */
+  const bootExtraDevice = async (device: AppleLaneDevice): Promise<{ bootedNow: boolean; notice: string | null }> => {
     const listed = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
+    let bootedNow = false;
+    let notice: string | null = null;
     if (listed?.state !== "Booted") {
-      await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" });
+      const poweredOff = laneMaintenance().readPowerOff(device.udid);
+      bootedNow = await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" });
       invalidateDeviceList();
+      const after = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
+      if (after && after.state !== "Booted") {
+        throw new AdeExpectedError(
+          `${device.name} did not boot: simctl lists it as ${after.state}. Try again in a few seconds, or delete it with device-delete --device ${device.udid}.`,
+          "user",
+        );
+      }
+      if (poweredOff) {
+        laneMaintenance().clearPowerOff(device.udid);
+        notice = describeDevicePowerOff(poweredOff, device.name, "this command booted it again.");
+      }
     }
-    maintenance?.touch(device.udid);
+    laneMaintenance().touch(device.udid);
+    return { bootedNow, notice };
+  };
+
+  /**
+   * Why each of the lane's devices is off, when ADE powered it off: one
+   * sentence per device for `status` and `device-list`. A device that is
+   * Booted again (by anything) has nothing to explain.
+   *
+   * `installed` is the device list the caller already read, so a status read
+   * that polls (the pane asks every two seconds while a group is open) does not
+   * add a `simctl` list of its own; see `computeStatus`.
+   */
+  const devicePowerOffNotices = async (
+    laneId: string,
+    installed?: readonly IosSimulatorDevice[],
+  ): Promise<string[]> => {
+    if (!laneId) return [];
+    const devices = laneDevices.list().filter((device) => device.laneId === laneId);
+    if (!devices.length) return [];
+    const records = devices
+      .map((device) => ({ device, record: laneMaintenance().readPowerOff(device.udid) }))
+      .filter((entry): entry is { device: AppleLaneDevice; record: AppleDevicePowerOffRecord } => entry.record !== null);
+    if (!records.length) return [];
+    const listed = installed ?? await listDevices().catch(() => [] as IosSimulatorDevice[]);
+    return records
+      .filter(({ device }) => listed.find((entry) => entry.udid === device.udid)?.state !== "Booted")
+      .map(({ device, record }) => describeDevicePowerOff(
+        record,
+        device.name,
+        device.extra
+          ? "the next --device command boots it again."
+          : "ade apple start boots it again.",
+      ));
   };
 
   const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
@@ -6519,6 +6767,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       invalidateDeviceList();
       invalidateStatus(runtime);
     } else if (requestedUdid && requestedUdid !== laneDevice.udid) {
+      const extra = laneDevices.findExtra(laneId, requestedUdid);
+      if (extra) throw extraIsNotLaneDeviceError(extra);
       throw new AppleDeviceExistsError(laneDevice);
     }
     const udid = laneDevice.udid;
@@ -6647,7 +6897,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // No `assertDarwin`: a Windows caller asking what is installed should get
     // an empty list and the lane's (absent) device, not an exception.
     const runtime = resolveRuntime(deviceArgs);
-    return laneDevices.deviceList({
+    const notices = process.platform === "darwin" ? await devicePowerOffNotices(runtime.key) : [];
+    const result = await laneDevices.deviceList({
       installed: deviceArgs.installed,
       laneId: runtime.key || null,
       // Opt-in: the picker paints its list from the cheap call and asks for the
@@ -6656,6 +6907,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       disk: deviceArgs.disk,
       runtimes: deviceArgs.runtimes,
     });
+    return notices.length ? { ...result, deviceNotices: notices } : result;
   };
 
   /**
@@ -7052,13 +7304,37 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
             throw new AdeExpectedError(
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
               + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
-              + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>.",
+              + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>. "
+              + `To make ${extra.name} the lane's device, run: ade apple device-promote --device ${extra.udid}`,
               "user",
             );
           }
-          if (mode === "drive") await bootExtraDevice(extra);
+          if (mode === "check") {
+            // A read names the extra too: it is in use, so the idle timer
+            // must not power it off under the agent.
+            laneMaintenance().touch(extra.udid);
+          }
+          const booted = mode === "drive" ? await bootExtraDevice(extra) : { bootedNow: false, notice: null };
+          if (action === "openDevice") {
+            // `boot --device <extra>`: the boot is the whole job. It is not a
+            // device session (that is the lane device's live view), so the
+            // hub is never pointed at the extra, and the answer is what
+            // `simctl` lists after `bootstatus`, not what was asked for.
+            return {
+              deviceUdid: extra.udid,
+              deviceName: extra.name,
+              chatSessionId: null,
+              laneId: runtime.key,
+              openedAt: nowIso(),
+              bootedByAde: booted.bootedNow,
+              state: "Booted",
+              extra: true,
+              ...(booted.notice ? { deviceNotice: booted.notice } : {}),
+            };
+          }
           const onExtra = { ...callArgs, deviceUdid: extra.udid, ...(callArgs.udid !== undefined ? { udid: extra.udid } : {}) };
-          return (original as (...params: unknown[]) => unknown)(onExtra, ...rest);
+          const result = await (original as (...params: unknown[]) => unknown)(onExtra, ...rest);
+          return booted.notice && isPlainResultObject(result) ? { ...result, deviceNotice: booted.notice } : result;
         }
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
@@ -7127,6 +7403,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     renderAck: duo.renderAck,
     renderComplete: duo.renderComplete,
     typeText,
+    pressKey,
     drag,
     swipe: (input: IosSimulatorDragArgs) => drag(input, "swipe"),
     /** The helper's re-anchoring scroll gesture, by viewport direction. */
@@ -7144,6 +7421,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceDelete: lifecycle.deviceDelete,
     /** Unbind the lane's device and keep the simulator. The off card's "Choose another device". */
     deviceDetach: lifecycle.deviceDetach,
+    /** One of the lane's extra devices becomes its own; the old one is kept. */
+    devicePromote: lifecycle.devicePromote,
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,

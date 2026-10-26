@@ -129,6 +129,20 @@ export type RemoteRuntimeConnectResult = {
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
+  /** The machine froze shortly before this connect (from its handshake). */
+  hostStall?: RemoteRuntimeHostStall | null;
+};
+
+/**
+ * A freeze the machine reported when it was reached again. `endedAt` is this
+ * computer's clock (the host sends only an age), so no clock sync is needed.
+ */
+export type RemoteRuntimeHostStall = {
+  durationMs: number;
+  endedAt: number;
+  loadAverage1m?: number;
+  cpuCount?: number;
+  restarted?: boolean;
 };
 
 export type RemoteRuntimePortForwardRequest = {
@@ -308,6 +322,8 @@ export type RemoteRuntimeConnectionStatus = {
   lastErrorInfo?: RemoteRuntimeConnectErrorInfo | null;
   lastAttemptedAt: number | null;
   connectedAt: number | null;
+  /** See `RemoteRuntimeConnectResult.hostStall`. Cleared by a clean reconnect. */
+  hostStall?: RemoteRuntimeHostStall | null;
   /**
    * `disconnected` when the person disconnected this machine, or another ADE
    * on this computer took the connection. Calls to it are refused until
@@ -353,10 +369,30 @@ export type RemoteRuntimeDoctorCheck = {
   ok: boolean;
   latencyMs?: number;
   error?: string;
+  /** What failed, classified from the error. Absent on older desktops. */
+  failure?: RemoteRuntimeDoctorFailure;
 };
+
+/**
+ * Which part of the path failed. `host_offline`: the relay answered but the
+ * machine is not connected to it. `no_network`: this computer could not resolve
+ * or reach anything (its own network). The rest match the connect classifier.
+ */
+export type RemoteRuntimeDoctorFailure =
+  | RemoteRuntimeConnectionAttemptFailure
+  | "host_offline"
+  | "no_network";
 
 export type RemoteRuntimeDoctorResult = {
   checks: RemoteRuntimeDoctorCheck[];
+  /** One sentence over all routes and what to do. Absent on older desktops. */
+  diagnosis?: {
+    tone: "success" | "warning" | "danger";
+    title: string;
+    fix?: string;
+  };
+  /** The machine said it froze recently (read from a route that connected). */
+  hostStall?: RemoteRuntimeHostStall | null;
 };
 
 export type RemoteRuntimeMachineProjectCapability =

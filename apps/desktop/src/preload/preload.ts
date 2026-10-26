@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -96,6 +97,7 @@ import {
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
+  type AttentionPresenceReceipt,
   type AttentionSnapshot,
 } from "../shared/types/attention";
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
@@ -166,6 +168,7 @@ import type {
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
+  StorageItem,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
@@ -416,6 +419,8 @@ import type {
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
+  CancelLaneGitWriteResult,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -715,6 +720,8 @@ import type {
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
@@ -4935,6 +4942,13 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "deletedLaneChatsSummary", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageDeletedLaneChatsSummary),
       ),
+    laneBuildOutputRemoved: async (
+      laneId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<StorageItem["buildOutputRemoved"] | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "storage", "laneBuildOutputRemoved", { args: { laneId } }, () =>
+        ipcRenderer.invoke(IPC.storageLaneBuildOutputRemoved, { laneId }),
+      ),
     cleanupPreview: async (
       targets: StorageCleanupTarget[],
       pin?: OpenProjectBinding | null,
@@ -5291,6 +5305,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.remoteRuntimeGetLocalPairingInfo),
     runDoctor: async (id: string): Promise<RemoteRuntimeDoctorResult> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRunDoctor, { id }),
+    checkReachability: async (id: string): Promise<HostReachabilityReport> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCheckReachability, { id }),
     saveTarget: async (
       input: RemoteRuntimeTargetInput,
     ): Promise<RemoteRuntimeTarget> =>
@@ -6168,6 +6184,8 @@ const adeBridge = {
       ),
     getLocalStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
       ipcRenderer.invoke(IPC.syncGetLocalStatus, args),
+    checkLocalReachability: async (): Promise<HostReachabilityReport> =>
+      ipcRenderer.invoke(IPC.syncCheckLocalReachability),
     refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.refreshDiscovery", {}, () =>
         ipcRenderer.invoke(IPC.syncRefreshDiscovery),
@@ -6590,7 +6608,7 @@ const adeBridge = {
       dismissedAt?: string | null;
     }): Promise<AttentionAcknowledgmentOutcome> =>
       ipcRenderer.invoke(IPC.attentionAcknowledge, args),
-    reportPresence: async (presence: AttentionPresence): Promise<void> =>
+    reportPresence: async (presence: AttentionPresence): Promise<AttentionPresenceReceipt | void> =>
       ipcRenderer.invoke(IPC.attentionReportPresence, presence),
     getPreferences: async (accountOwnerId: string): Promise<AttentionPreferences | null> =>
       ipcRenderer.invoke(IPC.attentionGetPreferences, { accountOwnerId }),
@@ -6846,8 +6864,9 @@ const adeBridge = {
     },
     previewBranchSwitch: async (
       args: LaneBranchSwitchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneBranchSwitchPreview> =>
-      callProjectRuntimeActionOr("lane", "previewBranchSwitch", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "previewBranchSwitch", { args }, () =>
         ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
       ),
     switchBranch: async (
@@ -6971,14 +6990,27 @@ const adeBridge = {
       }
       clearGitReadCaches();
     },
-    cancelDelete: async (args: {
-      laneId: string;
-    }): Promise<{ cancelled: boolean; reason?: string }> =>
-      callProjectRuntimeActionOr(
+    cancelDelete: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ cancelled: boolean; reason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "lane",
         "cancelDelete",
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+      ),
+    cancelGitWrite: async (
+      args: CancelLaneGitWriteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CancelLaneGitWriteResult> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "lane",
+        "cancelGitWrite",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCancelGitWrite, args),
       ),
     listDeleteProgress: async (): Promise<LaneDeleteProgress[]> =>
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
@@ -8881,6 +8913,13 @@ const adeBridge = {
     ): Promise<AgentChatContextUsage | null> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "getContextUsage", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
+      ),
+    getClaudeUsage: async (
+      args: AgentChatClaudeUsageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ClaudeUsageReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getClaudeUsage", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetClaudeUsage, args),
       ),
     rewindFiles: async (
       args: AgentChatRewindFilesArgs,

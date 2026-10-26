@@ -1,4 +1,4 @@
-import type { ThreadResumeOptions } from "./clientOptions.js";
+import type { CreateAdeChatOptions, ThreadResumeOptions } from "./clientOptions.js";
 import { AdeError } from "./errors.js";
 import type { ChatEventSource } from "./eventStream.js";
 import {
@@ -28,7 +28,6 @@ import {
 import { modelSelectionOf } from "./modelSelection.js";
 import {
   isPermissionPolicy,
-  isSupportedProvider,
   readApprovalTimeoutMs,
   resolvePermissionArgs,
   type PermissionPreset,
@@ -37,9 +36,11 @@ import {
 import type { PersonalChatsApi } from "./personalChats.js";
 import { Thread, type ThreadRecordPatch } from "./thread.js";
 import type { ThreadRecord, ThreadStore } from "./threadStore.js";
+import { validateThreadBudget, type ThreadBudget } from "./usage.js";
 import { sameJson, threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
 import type {
   AdeProvider,
+  ProviderCapabilities,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
   McpCapabilityReport,
@@ -90,7 +91,7 @@ function withValidatedAttachmentRoots(opts: ThreadResumeOptions, home: string): 
  */
 function resolveThreadProvider(...candidates: Array<string | undefined>): AdeProvider {
   for (const candidate of candidates) {
-    if (candidate && isSupportedProvider(candidate)) return candidate;
+    if (candidate?.trim()) return candidate as AdeProvider;
   }
   return "claude";
 }
@@ -114,6 +115,7 @@ export type ThreadOpenerContext = {
   /** The client-wide `instructions` default. */
   defaultInstructions: ThreadInstructions | undefined;
   mcpHeaders: McpHeadersResolver | undefined;
+  resolveSecret: CreateAdeChatOptions["resolveSecret"] | undefined;
   chats: PersonalChatsApi;
   store: ThreadStore;
   hub: ChatEventSource & { emit(envelope: AgentChatEventEnvelope): void };
@@ -133,6 +135,8 @@ export type ThreadOpenerContext = {
     pendingInputs(): boolean;
     historyPage(): boolean;
     rerunLastTurn(): boolean;
+    actionListed(action: string): boolean;
+    providerCapabilities(provider: string): Promise<ProviderCapabilities | undefined>;
   };
 };
 
@@ -151,6 +155,7 @@ type BuildThreadInit = {
   title: string | null;
   model: ThreadModelSelection | null;
   policy: ThreadPermissionPolicy | undefined;
+  budget?: ThreadBudget;
 };
 
 export type ThreadOpener = ReturnType<typeof createThreadOpener>;
@@ -181,10 +186,24 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
           ? { mcpServers: toStoredMcpServers(patch.mcpServers), requestedMcp: true }
           : {}),
         ...(patch.attachmentRoots !== undefined ? { attachmentRoots: patch.attachmentRoots } : {}),
+        ...(patch.budget !== undefined ? { budget: patch.budget } : {}),
+        ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort ?? undefined } : {}),
+        ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
       });
     } catch (error) {
       recordError("threadStore.touch", error);
     }
+  };
+
+  const pushResolvedSecret = async (sessionId: string, provider: string, credentialId: string | undefined): Promise<void> => {
+    if (!credentialId || !ctx.resolveSecret) return;
+    const secret = await ctx.resolveSecret(provider as AdeProvider, credentialId);
+    if (!secret) {
+      throw new AdeError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
+    }
+    // The secret travels to the runtime only for this session. ThreadStore
+    // persists the credential id, never the value.
+    await chats.updateSession({ sessionId, credentialId, credentialSecret: secret });
   };
 
   /** The one place a `Thread` is constructed, whichever branch opened it. */
@@ -198,6 +217,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       requestedInstructions: init.requestedInstructions,
       requestedSettingSources: init.requestedSettingSources,
       requestedPermissionPolicy: init.requestedPermissionPolicy,
+      ...(init.budget ? { budget: init.budget } : {}),
       logger,
       title: init.title,
       model: init.model,
@@ -206,6 +226,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       emitSynthetic: (envelope) => ctx.hub.emit(envelope),
       ...(approvalTimeoutMs !== undefined ? { approvalTimeoutMs } : {}),
       pendingInputsSupported: ctx.runtime.pendingInputs,
+      actionListed: ctx.runtime.actionListed,
       updateMcpServersSupported: ctx.runtime.updateMcpServers,
       mcpToolFiltersSupported: ctx.runtime.mcpToolFilters,
       storedMcpServers: async () => (await store.get(init.key))?.mcpServers,
@@ -331,6 +352,12 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     opts: ThreadResumeOptions,
     comparison: { supplied: Record<string, unknown>; stored: Record<string, unknown> },
   ): Promise<Thread> => {
+    const budget = validateThreadBudget(record.budget ?? opts.budget);
+    if (!record.budget && budget) await persistThread(key)({ budget });
+    else if (record.budget && opts.budget && !sameJson(record.budget, opts.budget)) {
+      logger(`ade sdk: thread "${key}" ignored a different budget on resume; the stored budget remains in force`);
+    }
+    await pushResolvedSecret(summary.sessionId, record.provider || summary.provider, record.credentialId);
     await persistThread(key)({ title: summary.title ?? record.title ?? null });
     // A capability report is only meaningful for a thread that asked for one.
     // If this thread is on record as having requested nothing, ignore whatever
@@ -387,6 +414,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
         ...(record.modelId ? { modelId: record.modelId } : {}),
       }),
       policy: record.permissionPolicy,
+      ...(budget ? { budget } : {}),
     });
   };
 
@@ -398,7 +426,10 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
   const open = async (key: string, rawOpts: ThreadResumeOptions): Promise<Thread> => {
     // Validated once, before anything reaches the runtime: a bad root must
     // refuse the open before a resume pushes MCP servers or a create starts.
-    const opts = withValidatedAttachmentRoots(rawOpts, ctx.home);
+    const opts = {
+      ...withValidatedAttachmentRoots(rawOpts, ctx.home),
+      budget: validateThreadBudget(rawOpts.budget),
+    };
     // Provider/model are validated at the CREATE branch below, not here: a
     // durable key already recorded both, so reopening `"support"` after a
     // restart must not force the caller to remember how it was created.
@@ -414,6 +445,12 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(opts.instructions !== undefined ? { instructions: normalizeInstructions(opts.instructions) } : {}),
       ...(opts.settingSources !== undefined ? { settingSources: opts.settingSources } : {}),
       ...(opts.permissions !== undefined ? { permissions: opts.permissions } : {}),
+      ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+      ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(opts.fastMode !== undefined ? { fastMode: opts.fastMode } : {}),
+      ...(opts.account !== undefined ? { account: opts.account } : {}),
+      ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
+      ...(opts.preset !== undefined ? { preset: opts.preset } : {}),
       // Compared in the stored form. The record keeps header NAMES, so a map
       // passed with its bearer token would otherwise never equal the record
       // and every resume would report the servers as ignored. A caller who is
@@ -432,6 +469,12 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
         ...(record.settingSources !== undefined ? { settingSources: record.settingSources } : {}),
         ...(record.permissionPolicy !== undefined ? { permissionPolicy: record.permissionPolicy } : {}),
         ...(record.permissionPreset !== undefined ? { permissionPreset: record.permissionPreset } : {}),
+        ...(record.permissionMode !== undefined ? { permissionMode: record.permissionMode } : {}),
+        ...(record.reasoningEffort !== undefined ? { reasoningEffort: record.reasoningEffort } : {}),
+        ...(record.fastMode !== undefined ? { fastMode: record.fastMode } : {}),
+        ...(record.instanceId !== undefined ? { instanceId: record.instanceId } : {}),
+        ...(record.credentialId !== undefined ? { credentialId: record.credentialId } : {}),
+        ...(record.presetId !== undefined ? { presetId: record.presetId } : {}),
         ...(record.mcpServers !== undefined ? { mcpServers: record.mcpServers } : {}),
         ...(record.loadUserMcpServers !== undefined ? { loadUserMcpServers: record.loadUserMcpServers } : {}),
       };
@@ -470,16 +513,68 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     // call's options are all there is.
     const provider = (record?.provider || opts.provider) as AdeProvider | undefined;
     const model = record?.modelId || record?.model || opts.model;
-    if (!provider || !isSupportedProvider(provider)) {
+    if (!provider?.trim()) {
       throw new AdeError(
         "invalid_option",
-        record
-          ? `The stored thread "${key}" names an unsupported provider (${String(provider)}).`
-          : `Opening the new thread "${key}" needs a provider. Pass { provider, model }.`,
+        `Opening the new thread "${key}" needs a provider. Pass { provider, model }.`,
       );
     }
     if (!model?.trim()) {
       throw new AdeError("invalid_option", `Opening the new thread "${key}" needs a model id. Pass { provider, model }.`);
+    }
+
+    // A value the caller passed for a new thread is refused when the provider
+    // cannot honour it. A value from the record is different: the thread may
+    // have moved to another provider since (`setModel`), and refusing it would
+    // leave the thread impossible to rebuild. It is dropped with a log line.
+    const providerCapabilities = await ctx.runtime.providerCapabilities(provider);
+    const fits = <T>(
+      stored: T | undefined,
+      requested: T | undefined,
+      supported: (value: T) => boolean,
+      refusal: (value: T) => string,
+    ): T | undefined => {
+      const value = stored ?? requested;
+      if (value === undefined || !providerCapabilities || supported(value)) return value;
+      if (stored === undefined) throw new AdeError("invalid_option", refusal(value));
+      logger(`ade sdk: thread "${key}" dropped a stored setting its provider no longer supports: ${refusal(value)}`);
+      return undefined;
+    };
+    const permissionMode = fits(
+      record?.permissionMode, opts.permissionMode,
+      (mode) => providerCapabilities!.permissionModes.includes(mode),
+      (mode) => `Provider "${provider}" does not support permission mode "${mode}".`,
+    );
+    const reasoningEffort = fits(
+      record?.reasoningEffort, opts.reasoningEffort,
+      (effort) => providerCapabilities!.reasoningEfforts.includes(effort),
+      (effort) => `Provider "${provider}" does not support reasoning effort "${effort}".`,
+    );
+    const fastMode = fits(
+      record?.fastMode, opts.fastMode,
+      (on) => !on || providerCapabilities!.fastMode,
+      () => `Provider "${provider}" does not support fast mode.`,
+    );
+    const instanceId = fits(
+      record?.instanceId, opts.account,
+      () => providerCapabilities!.multipleAccounts,
+      () => `Provider "${provider}" does not support multiple accounts.`,
+    );
+    const credentialId = fits(
+      record?.credentialId, opts.credential,
+      () => providerCapabilities!.apiKeys,
+      () => `Provider "${provider}" cannot use stored API credentials.`,
+    );
+    const presetId = fits(
+      record?.presetId, opts.preset,
+      () => providerCapabilities!.presets,
+      () => `Provider "${provider}" cannot use harness presets.`,
+    );
+    const credentialSecret = credentialId && ctx.resolveSecret
+      ? await ctx.resolveSecret(provider, credentialId)
+      : undefined;
+    if (credentialId && ctx.resolveSecret && !credentialSecret) {
+      throw new AdeError("invalid_option", `No host-vault secret was returned for credential "${credentialId}".`);
     }
 
     // Host configuration: the record, then this call's options, then the
@@ -498,6 +593,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     const permissionPreset = isPermissionPolicy(permissions) ? undefined : permissions;
     // Validated here so a bad value fails the open, not a timer later.
     readApprovalTimeoutMs(permissionPolicy);
+    const budget = validateThreadBudget(record?.budget ?? opts.budget);
 
     // `refresh.mcpServers` is the one field that replaces the record; the
     // record's servers carry header NAMES only, so their values come from the
@@ -547,7 +643,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       provider,
       model,
       ...(title ? { title } : {}),
-      ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       // A policy sends `permissionMode: "default"` plus the policy itself, so a
       // runtime that does not understand `permissionPolicy` behaves like
       // today's `"default"` rather than like `always-allow`. Degrading toward
@@ -555,6 +651,12 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       // `approvalTimeoutMs` never reaches the wire: the normalizer drops every
       // field the engine does not define, and the SDK enforces that one itself.
       ...resolvePermissionArgs(provider, permissions),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(instanceId ? { instanceId } : {}),
+      ...(credentialId ? { credentialId } : {}),
+      ...(presetId ? { presetId } : {}),
+      ...(credentialSecret ? { credentialSecret } : {}),
       ...(instructions ? { instructions } : {}),
       // `requestedCwd` is the field name the engine has always used for this.
       ...(cwd ? { requestedCwd: cwd } : {}),
@@ -616,6 +718,13 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(settingSources ? { settingSources } : {}),
       ...(permissionPolicy ? { permissionPolicy } : {}),
       ...(permissionPreset ? { permissionPreset } : {}),
+      ...(budget ? { budget } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(instanceId ? { instanceId } : {}),
+      ...(credentialId ? { credentialId } : {}),
+      ...(presetId ? { presetId } : {}),
     });
     const capability = normalizeMcpCapability(created.mcpCapability);
     const instructionsCapability = normalizeInstructionsCapability(
@@ -663,6 +772,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       title: created.title ?? title ?? null,
       model: modelSelectionOf(created, names, { provider, model }),
       policy: permissionPolicy,
+      ...(budget ? { budget } : {}),
     });
   };
 
@@ -690,6 +800,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
         }
         if (summary?.sessionId) {
           if (record) {
+            await pushResolvedSecret(thread.id, record.provider || summary.provider, record.credentialId);
             const refreshed = await refreshMcpOnResume(key, thread.id, record, undefined);
             if (refreshed) thread.setMcpCapability(normalizeMcpCapability(refreshed.mcpCapability));
           }

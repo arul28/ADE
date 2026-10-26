@@ -3,7 +3,7 @@ import type {
   AuthInfo,
   BrowserWindowConstructorOptions,
   Certificate,
-  LoginAuthenticationResponseDetails,
+  AuthenticationResponseDetails,
   WebContents,
 } from "electron";
 import type { Logger } from "../logging/logger";
@@ -20,7 +20,7 @@ type HttpAuthCredentials = {
 
 type HttpAuthPrompt = (input: {
   parent: BrowserWindow | null;
-  details: LoginAuthenticationResponseDetails;
+  details: AuthenticationResponseDetails;
   authInfo: AuthInfo;
 }) => Promise<HttpAuthCredentials | null>;
 
@@ -113,7 +113,7 @@ export function configureBuiltInBrowserAuthentication(args: {
 
 async function showHttpAuthPrompt(input: {
   parent: BrowserWindow | null;
-  details: LoginAuthenticationResponseDetails;
+  details: AuthenticationResponseDetails;
   authInfo: AuthInfo;
 }): Promise<HttpAuthCredentials | null> {
   const origin = safeOrigin(input.details.url) ?? input.authInfo.host;

@@ -764,6 +764,44 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it.each([
+    ["any tool", {}],
+    ["chats only", { toolTypes: ["codex-chat" as const] }],
+  ])("settledLimit keeps an older working chat ahead of newer settled ones (%s)", async (_label, filter) => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    const chat = (sessionId: string, startedAt: string) => service.create({
+      sessionId,
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: sessionId,
+      startedAt,
+      transcriptPath: `/tmp/${sessionId}.log`,
+      toolType: "codex-chat",
+    });
+    chat("coordinator", "2026-03-17T00:00:00.000Z");
+    for (let i = 0; i < 4; i++) chat(`settled-${i}`, new Date(Date.UTC(2026, 2, 17, 1, i)).toISOString());
+    chat("newest-live", "2026-03-17T02:00:00.000Z");
+    db.run("update terminal_sessions set settled_at = ? where id like 'settled-%'", ["2026-03-17T03:00:00.000Z"]);
+
+    // The plain newest-first page drops the coordinator behind settled chats.
+    expect(service.list({ ...filter, limit: 3, includeArchived: false }).map((row) => row.id))
+      .toEqual(["newest-live", "settled-3", "settled-2"]);
+    // Every unsettled row first, settled ones only in the room left, newest first.
+    expect(service.list({ ...filter, limit: 3, settledLimit: 2, includeArchived: false }).map((row) => row.id))
+      .toEqual(["newest-live", "settled-3", "coordinator"]);
+    // The settled cap holds on its own when the page has room.
+    expect(service.list({ ...filter, limit: 10, settledLimit: 2, includeArchived: false }).map((row) => row.id))
+      .toEqual(["newest-live", "settled-3", "settled-2", "coordinator"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("repairs legacy droid chat rows from their resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

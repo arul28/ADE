@@ -4,7 +4,7 @@
  * only carries status; every colour is a theme token.
  */
 
-.ade-int-page { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-int-page { display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 
 /* The connection card's identity row. */
 .ade-int-hero { display: flex; align-items: center; gap: 12px; padding: 14px; min-width: 0; }
@@ -33,6 +33,7 @@
 .ade-int-fact + .ade-int-fact { border-left: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
 .ade-int-fact-label { font-size: 11px; color: var(--color-muted-fg); }
 .ade-int-fact-value { font-size: 12.5px; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-int-fact-value[data-tone="warn"] { color: var(--kit-warn); }
 
 .ade-int-page .ade-modern-rows > * + * { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
 

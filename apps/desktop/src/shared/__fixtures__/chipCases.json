@@ -35,7 +35,13 @@
     { "url": "https://linear.app/ade/issue/ADE-431/fix-it", "kind": "linear_issue", "label": "ADE-431" },
     { "url": "ade://linear-issue/ade-431", "kind": "linear_issue", "label": "ADE-431" },
     { "url": "ade://lane/25f280a4/session/abc", "kind": "ade_link", "label": "ADE · lane/25f280a4/session/abc" },
-    { "url": "ade://something-a-newer-ade-minted/42", "kind": "ade_link", "label": "ADE · something-a-newer-ade-minted/42" }
+    { "url": "ade://something-a-newer-ade-minted/42", "kind": "ade_link", "label": "ADE · something-a-newer-ade-minted/42" },
+    { "url": "ade://settings/agents.providers", "kind": "setting", "label": "Computer › Providers › AI connections" },
+    { "url": "ade://settings/lanes-git.pr-chat-transcripts", "kind": "setting", "label": "Project › Agents › PR chat transcripts" },
+    { "url": "ade://settings/mcp.servers", "kind": "setting", "label": "You › MCP servers" },
+    { "url": "ade://settings/not-a-setting", "kind": "ade_link", "label": "ADE · settings/not-a-setting" },
+    { "url": "ade://open/prs", "kind": "place", "label": "Pull requests" },
+    { "url": "ade://open/not-a-page", "kind": "ade_link", "label": "ADE · open/not-a-page" }
   ],
   "_mentionsComment": [
     "Mention-grammar parity rows (`@chat:` / `@lane:` / `@term:`). `text` is a",

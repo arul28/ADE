@@ -28,7 +28,7 @@
  * ADE does not fall forward for it; it only says precisely what happened.
  *
  * Codex has one, from OpenAI's backend and per model (the text is not in the
- * 0.162.1 binary; it arrives as the error of a model request): "The '<model>'
+ * 0.164.0 binary; it arrives as the error of a model request): "The '<model>'
  * model requires a newer version of Codex. Please upgrade to the latest app or
  * CLI and try again." It is known to fire on current clients too (stale
  * caches, openai/codex #31826/#32482), so it only starts a model probe

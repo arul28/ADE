@@ -244,9 +244,12 @@ enum PrDetailEditorSheet: Identifiable {
   case review
   case comment
   case reviewers
+  /// Rewrite one of the account's own conversation comments.
+  case editComment(githubId: Int, source: String, body: String)
 
   var id: String {
     switch self {
+    case .editComment(let githubId, _, _): return "edit-comment-\(githubId)"
     case .title: return "title"
     case .body: return "body"
     case .labels: return "labels"

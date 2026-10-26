@@ -39,6 +39,7 @@ type OpenTarget =
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issue: string; branch?: string }
+  | { kind: "settings" }
   | { kind: "unknown" };
 
 const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
@@ -137,6 +138,7 @@ function parseTarget(query: VercelQuery): OpenTarget {
       return branch ? { kind: "linear-issue", issue, branch } : { kind: "linear-issue", issue };
     }
   }
+  if (type === "settings" && pickQuery(query.id)) return { kind: "settings" };
   return { kind: "unknown" };
 }
 
@@ -189,6 +191,11 @@ function describe(target: OpenTarget): { title: string; description: string } {
         description: target.branch
           ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in ADE.`
           : `Open Linear issue ${target.issue} in ADE.`,
+      };
+    case "settings":
+      return {
+        title: "Open a setting in ADE",
+        description: "Opens this setting in ADE's Settings on your desktop.",
       };
     case "unknown":
       return {

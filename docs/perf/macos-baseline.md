@@ -198,6 +198,7 @@ Run without the app (`scripts/perf/service/`).
 | Apple pane, 3D view of an iPhone Duo (inner display, 2007×2853 frame), the simulator scrolling continuously (an agent drag every ~0.5 s), 20 s average: dev Electron renderer / GPU process CPU. The screen texture now follows the pane's size up to 1,600 px on its long side (was a fixed 512 wide, soft on Retina and in renders) | `ps` sampling (`%cpu` of the worktree's `--type=renderer` and `--type=gpu-process`), same window, same pane size, back to back; the chat UI was live in both runs (idle reads 24–28% / 50–61%) | 512: 36.6% / 64.4% | 1,600: 45.0% / 75.1% (Mac Studio M4 Max dev build, 2026-10-22, not the baseline machine) | not set yet; needs approval |
 | `sessions.list` handler, 617 chat metadata files (synthetic, sized like a real project: 8.1 MB, p50 4.4 KB, p90 34 KB, max 152 KB). Chat-scoped (a chat pane's shells, per chat switch) / lane (`limit 200`) / unscoped (`limit 500`); median of 7 runs in each of 3 processes | `session-list.bench.mts` | — | chat-scoped 226 → 13 ms; lane 102 → 78 ms; unscoped 235 → 191 ms (main → head, with the orphan repair; medians of 3 interleaved processes). Chat metadata reads per call 500 → 0, 222 → 137, 500 → 351 | proposed, needs approval: chat-scoped 25 ms, lane 120 ms, unscoped 250 ms |
 | Onboarding discovery: first-run setup's project discovery (`app.discoverOnboardingProjects`, 460 agent folders → 12 projects, 11 providers) and one cold chat list (`app.listOnboardingProjectChats`), Electron main event loop. Mac Studio M4 Max, 2026-10-21, this branch (not the baseline machine) | one-off `vite-node` script on this machine's real provider history, 1 ms interval probe + `monitorEventLoopDelay` (no bench file yet) | — | discovery: longest main-thread block 2,742 → 7 ms, total 4.7 → 5.5 s (now in a child process; the extra is its start); cold chat list: block 769–957 → 3–7 ms, total 0.85–1.7 → 1.1–1.9 s; a list after discovery 0 ms (kept in main) | proposed, needs approval: longest main-thread block 50 ms |
+| Idle-lane build output cleanup (storage doctor step `fs.lane_build_output`, at most once a day): one run over a throwaway 8-lane project (git `ls-files`/`status`/`check-ignore` per lane, one `lsof -d cwd`, 8 folders removed); and the shared disk accounting (`diskUsage.measureTree`, allocated blocks + hard-link tally + pnpm store skip) against the old `stat.size` walk on this lane's `apps/desktop/node_modules` (114,573 files). Mac Studio, 2026-10-25, load average 400–800 from other agents' typechecks (not the baseline machine) | one-off `tsx` scripts driving `createStorageInsightsService` and `measureTree` (no bench file yet) | — | sweep 3.6 s for 8 lanes; accounting 3.6–9.2 s new vs 5.4–6.7 s old over 3 interleaved rounds (same file count, 3.10 GB allocated vs 2.77 GB length), longest event-loop gap 131 ms under that load | sweep within its own 15 min budget; accounting within 25% of the old walk (approved by the owner 2026-10-26) |
 
 On 2026-10-19, a focused Node 22 harness compared the existing 5-second
 desktop poll with the brain poll after this change. Both used the same activity
@@ -273,6 +274,37 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
 | Process start to first window, warm compile cache (sd 40 ms) | `desktop-main-start.mjs --mode warm` | 1027 ms | 881 ms | not set, needs your OK |
 | Process start to first window, first launch after an update (`--mode cold`) | `desktop-main-start.mjs --mode cold` | — | 1114 ms | not set, needs your OK |
 | Cursor sign-in snapshot on the launch status path (`buildProviderConnections` → `getCursorSdkAuthSnapshot`): reads `~/.cursor/sdk/auth.json` instead of importing `@cursor/sdk` on the main thread. Windows 11 bench, not the macOS machine above; Electron main not measured | one-off `node` loop, 3 cold processes, Node 22.13.1 (`import()` of the SDK, then the file read) | 411–815 ms (cold SDK import) | 0.2–0.3 ms (file read) | not set, needs your OK |
+
+#### Electron 41.5.0 → 44.9.3
+
+Measured 2026-10-25 on the `ade/t3-electron-network-c64e8985` branch, Mac Studio
+M4 Max (not the baseline machine), the same branch code on both, only the
+Electron binary swapped (`ELECTRON_OVERRIDE_DIST_PATH`), `--use-mock-keychain`.
+Start-up: `desktop-main-start.mjs --mode warm --runs 9`. Processes: an
+isolated dev app (throwaway `ADE_HOME`, user data and project) idle on the
+sign-in screen, `footprint` after 60 s.
+
+| Metric | Bench | Electron 41.5.0 | Electron 44.9.3 | Ceiling |
+|---|---|---|---|---|
+| Process start to first window, warm cache (median; sd 10–11 ms) | `desktop-main-start.mjs --mode warm` | 626 ms | 556 ms | not set, needs your OK |
+| Process start to bundle evaluated, warm cache (median) | `desktop-main-start.mjs --mode warm` | 403 ms | 338 ms | not set, needs your OK |
+| Electron main / GPU footprint, idle | `footprint` | 170 MB / 79 MB | 170–181 MB / 54 MB | the Processes table |
+| App renderer footprint, idle (wallpaper differed between the runs) | `footprint` | 436 MB | 467–473 MB | the Processes table |
+| Clipboard history poll read (text + flavor list; async on 44) | one-off Electron loop, 200 reads | 0.042 ms | 0.056 ms | — |
+
+#### Brain on Node 22.22 → 24.22
+
+Same branch, machine and date. A headless brain (`serve --no-sync`) on a
+throwaway `ADE_HOME` and scratch project, tool downloads off, idle for 30 s
+after its socket appears; two runs each. Node 24's V8 sizes the young
+generation by machine memory, so the release runtime is built with Node 22's
+16 MB cap (`execArgv` in `build-static.mjs`).
+
+| Metric | Bench | Node 22.22.2 (`cli.cjs`) | Node 24.22.1 (`cli.cjs`, no cap) | Node 24.22.1 release runtime, capped | Ceiling |
+|---|---|---|---|---|---|
+| Spawn to socket listening | one-off loop | 2,595–2,645 ms | 2,484–2,528 ms | 2,502–2,511 ms | — |
+| Footprint, idle 30 s | `footprint` | 226 MB | 279 MB | 224–225 MB (264 MB uncapped) | the Processes table |
+| CPU time, first 30 s | `ps` | 0.97–1.01 s | 0.70–0.71 s | 0.74–0.80 s | — |
 
 ### Open items (measured, over budget or unbudgeted)
 

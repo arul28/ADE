@@ -1,21 +1,10 @@
-declare module "node:sqlite" {
-  export type StatementResultingChanges = {
-    changes: number;
-    lastInsertRowid: number | bigint;
-  };
+import "node:sqlite";
 
-  export class StatementSync {
-    run(...params: unknown[]): StatementResultingChanges;
+// Node's own `node:sqlite` types return rows as `Record<string, SQLOutputValue>`.
+// ADE's readers name the row shape they select: `.get<Row>()`, `.all<Row>()`.
+declare module "node:sqlite" {
+  interface StatementSync {
     get<T = Record<string, unknown>>(...params: unknown[]): T | undefined;
     all<T = Record<string, unknown>>(...params: unknown[]): T[];
-  }
-
-  export class DatabaseSync {
-    constructor(path: string, options?: { allowExtension?: boolean; readOnly?: boolean });
-    close(): void;
-    exec(sql: string): void;
-    prepare(sql: string): StatementSync;
-    enableLoadExtension(allow: boolean): void;
-    loadExtension(path: string): void;
   }
 }

@@ -314,7 +314,8 @@ function PickerDetail({ type, metrics, onBack, onAdded }: { type: HomeWidgetType
           return (
             <button key={option} type="button" role="radio" aria-checked={cls === option} onClick={() => setCls(option)} className="ade-picker-size">
               <SizeGlyph span={optionSpan} />
-              <span>{HOME_CLASS_LABEL[option].long}</span>
+              {/* Same letters as the size switch on each card in edit mode. */}
+              <span><b className="kit-num">{HOME_CLASS_LABEL[option].short}</b> · {HOME_CLASS_LABEL[option].long}</span>
               <span className="kit-num">{optionSpan.w} × {optionSpan.h}</span>
             </button>
           );
@@ -394,7 +395,7 @@ export default function HomeWidgetPicker({ open, onOpenChange }: { open: boolean
           </nav>
           <div className="ade-picker-rail-foot">
             <span className="kit-eyebrow">Your page</span>
-            <span>{metrics.columns} columns · up to {metrics.maxRows} rows · fills itself</span>
+            <span>{metrics.columns} columns · {metrics.maxRows} rows max</span>
             <span>{items.length} widget{items.length === 1 ? "" : "s"}</span>
           </div>
         </aside>

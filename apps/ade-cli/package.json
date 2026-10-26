@@ -29,12 +29,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.300",
-    "@cursor/sdk": "1.0.36",
+    "@anthropic-ai/claude-agent-sdk": "0.3.310",
+    "@cursor/sdk": "1.0.40",
     "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.162.1",
+    "@openai/codex": "0.164.0",
     "@opencode/cli": "2.0.29",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
@@ -59,7 +59,7 @@
     "@muse-code/sdk": "1.4.7",
     "@opencode/client": "2.0.29",
     "@sentry/node": "11.7.0",
-    "@types/node": "^20.11.30",
+    "@types/node": "^24.19.2",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",
     "@types/ws": "^8.18.1",
@@ -68,7 +68,7 @@
     "pngjs": "^7.0.0",
     "postject": "^1.0.0-alpha.6",
     "tsup": "^8.3.5",
-    "tsx": "^4.20.6",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.3",
     "vitest": "^0.34.6"
   }

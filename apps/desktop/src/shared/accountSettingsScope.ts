@@ -61,6 +61,11 @@ function stripCredential(identity: string): string {
  * Null is a real answer, not a failure: a repository with no GitHub origin has
  * no identity that means anything on a second machine, so its repo-scoped
  * settings stay local until it gets one.
+ *
+ * Pass the canonical origin (`readGitOriginUrl` in main), so a checkout that
+ * reaches GitHub through an SSH alias shares the key of every other checkout
+ * of that repository. The `repo_scope_alias` account migration copies rows
+ * from the alias key that ADE used before.
  */
 export function accountRepoScopeKey(gitOriginUrl: string | null | undefined): string | null {
   const identity = normalizeGitRemoteIdentity(gitOriginUrl);

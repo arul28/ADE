@@ -219,6 +219,12 @@ export function handleDeeplinkUrl(
     });
     return;
   }
+  if (parsed.target.kind === "open") {
+    // An `open` link runs only when a person clicks it in a chat. From outside
+    // (a web page, another app, `ade open`) it does nothing.
+    log("deeplink.refused", { url: rawUrl, source, kind: parsed.target.kind });
+    return;
+  }
   const navigationTarget = deeplinkToNavigationTarget(parsed.target);
   log("deeplink.dispatch", { url: rawUrl, source, kind: navigationTarget.kind });
   void Promise.resolve(

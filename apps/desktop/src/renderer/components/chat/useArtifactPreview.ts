@@ -106,12 +106,12 @@ function artifactPreviewExplanation(
 /**
  * Where a tile's picture comes from.
  *
- * An image on this computer streams through `ade-artifact://project/`. A video
- * on this computer or on a paired one plays from main's loopback media server,
- * which answers every Range read, so a long recording loads, seeks, and costs
- * only what the player reads. Everything else, a paired machine too old to
- * stream, and a main process with no media server take the capped data URL
- * read.
+ * An image on this computer streams through `ade-artifact://project/`. Every
+ * other picture and every video plays from main's loopback media server, which
+ * answers every Range read (a long recording loads, seeks, and costs only what
+ * the player reads) and keeps a paired machine's pictures in memory. The
+ * capped data URL read is the fallback: the web client, a paired machine too
+ * old to stream, and a main process with no media server.
  */
 type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
@@ -121,6 +121,8 @@ type PreviewState = {
   loading: boolean;
   loaded: boolean;
   failure: ArtifactPreviewFailure | null;
+  /** The read threw (IPC, a file held open) rather than finding nothing. */
+  readThrew: boolean;
 };
 
 const EMPTY_PREVIEW: PreviewState = {
@@ -129,6 +131,7 @@ const EMPTY_PREVIEW: PreviewState = {
   loading: false,
   loaded: false,
   failure: null,
+  readThrew: false,
 };
 
 /** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
@@ -142,6 +145,11 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   failed: boolean;
   explanation: string;
   onMediaError: () => void;
+  /**
+   * Loads again from the start. Null when another try cannot help: no stored
+   * bytes, a file at its source, or this computer's own read found nothing.
+   */
+  retry: (() => void) | null;
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<E>(null);
@@ -154,7 +162,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   const projectId = remote?.projectId ?? null;
   const remoteRoot = remote?.rootPath ?? null;
   const remoteOffline = scope.isRemote && !scope.online;
-  const { preview, source, loading, loaded, failure } = state;
+  const { preview, source, loading, loaded, failure, readThrew } = state;
 
   useEffect(() => {
     const node = containerRef.current;
@@ -218,6 +226,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
             failure: !dataUrl && streamRefused && scope.isRemote ? "unsent" : s.failure,
             loading: false,
             loaded: true,
+            readThrew: false,
           }));
         })
         .catch(() => {
@@ -228,14 +237,19 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
             failure: scope.isRemote ? "unsent" : s.failure,
             loading: false,
             loaded: true,
+            readThrew: true,
           }));
         });
     };
-    // Images on a paired machine stay on the data URL read; a video has no size cap this way.
-    const mediaServer = video
-      && !isWebClientMode()
+    // A video, and an image on a paired machine, play from the media server:
+    // no 10 MiB cap, no base64 copy in this page, and main keeps a paired
+    // machine's picture so showing it again does not fetch it again. A local
+    // image already streamed above.
+    const mediaServer = !isWebClientMode()
       && !streamRefused
-      && (allowLocalArtifactProtocol || Boolean(targetId && projectId));
+      && (video
+        ? allowLocalArtifactProtocol || Boolean(targetId && projectId)
+        : !allowLocalArtifactProtocol && Boolean(targetId && projectId));
     if (!mediaServer) {
       readDataUrl();
       return () => {
@@ -302,11 +316,31 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   // "unplayable" is only set on a loaded preview and cleared with it (a new
   // artifact resets the state).
   const failed = failure === "unplayable" || (loaded && !preview);
+  const retry = useCallback(() => {
+    setStreamRefused(false);
+    setState(EMPTY_PREVIEW);
+  }, []);
   const explanation = useMemo(() => artifactPreviewExplanation(artifact, {
     // Offline explains any failure on a paired machine, whatever broke first.
     reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,
     machineName: scope.machineName,
   }), [allowLocalArtifactProtocol, artifact, failed, failure, remoteOffline, scope.machineName]);
 
-  return { containerRef, preview, loading, failed, explanation, onMediaError };
+  return {
+    containerRef,
+    preview,
+    loading,
+    failed,
+    explanation,
+    onMediaError,
+    // Retry only where another try can differ: a paired machine that was
+    // slow, away or did not send, a read that threw, or a player that refused
+    // what arrived. This computer's own read finding nothing will again.
+    retry: failed
+      && !isBrokenArtifact(artifact)
+      && !externalArtifactUrl(artifact.uri)
+      && (failure !== null || readThrew || !allowLocalArtifactProtocol)
+      ? retry
+      : null,
+  };
 }

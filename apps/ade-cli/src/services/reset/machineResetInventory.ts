@@ -347,7 +347,7 @@ export function inventoryLanes(deps: MachineResetDeps, rootPath: string, adeDir:
     if (isInside(realPath(current.path), realAdeDir)) {
       const worktreePath = path.resolve(current.path);
       const present = isDirectory(worktreePath);
-      const status = present ? gitLines(deps, worktreePath, ["status", "--porcelain"]) : [];
+      const status = present ? gitLines(deps, worktreePath, ["status", "--porcelain", "--untracked-files=normal"]) : [];
       // A branch lane: commits no remote has. A detached HEAD (a lane in the
       // middle of a rebase, say): commits no branch, tag or remote holds —
       // removing the worktree would lose them with its HEAD.

@@ -170,7 +170,7 @@ only user-visible output is the per-iteration status line and the final summary.
 ## Repo facts (ADE)
 
 - **Package manager:** `npm`; each app under `apps/` has its own `node_modules` +
-  `package-lock.json` (no workspaces). Node 22 (`.nvmrc`).
+  `package-lock.json` (no workspaces). Node 24 (`.nvmrc`).
 - **CI:** `.github/workflows/ci.yml` — desktop tests shard **8-way**
   (`npx vitest run --shard=<n>/8`) plus `test-ade-cli`; a `ci-pass`/`ci-status`
   gate aggregates required jobs. Discover the required-check list live via

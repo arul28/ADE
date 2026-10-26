@@ -8,6 +8,7 @@
 export { AdeChat, type AdeChatProps, type AdeChatSendResult } from "./AdeChat";
 
 export { Composer, mergeAttachments, type ComposerProps } from "./composer/Composer";
+export { QueueStrip, type QueueStripProps } from "./composer/QueueStrip";
 export {
   resolveComposerAction,
   resolveComposerState,
@@ -28,6 +29,7 @@ export {
   type TranscriptProps,
 } from "./transcript/Transcript";
 export { ToolChip, type ToolChipAction, type ToolChipProps } from "./transcript/ToolChip";
+export { PendingInputCard, type PendingInputCardProps, type PendingInputRespond } from "./transcript/PendingInputCard";
 export {
   ApprovalCard,
   approvalRequestFromRow,
@@ -146,6 +148,12 @@ export {
 } from "./theme/createTheme";
 export { AdeChatStyles, type AdeChatStylesProps } from "./theme/AdeChatStyles";
 export { adeChatCss, injectAdeChatStyles, type InjectAdeChatStylesOptions } from "./theme/styles";
+export { UsageLimitNotice, type UsageLimitNoticeProps } from "./UsageLimitNotice";
+export { AccountList, type AccountListProps } from "./accounts/AccountList";
+export { AccountSwitcher, type AccountSwitcherProps } from "./accounts/AccountSwitcher";
+export { ApiKeyForm, type ApiKeyFormProps } from "./accounts/ApiKeyForm";
+export { SignInCard, type SignInCardProps } from "./accounts/SignInCard";
+export { UsageMeter, type UsageMeterProps } from "./accounts/UsageMeter";
 
 export type {
   AdeChatClient,
@@ -154,15 +162,30 @@ export type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatResourceLink,
+  AccountInfo,
+  AccountManagement,
+  AccountUsage,
+  AccountUsageWindow,
+  ApiCredentialInfo,
   ApprovalDecision,
   ApprovalKind,
   ApprovalRequest,
   ChatAttachment,
+  CredentialManagement,
   ChatEventMcpSource,
   HistoryPageOptions,
   ModelDescriptor,
   ProviderId,
+  ProviderCapabilities,
   ProviderStatus,
+  QueuedMessage,
+  PendingInputOption,
+  PendingInputDecision,
+  PendingInputResponse,
+  PendingInputQuestion,
+  SignInHandle,
+  SignInUpdate,
+  SlashCommand,
   SendInput,
   ThreadHistoryPage,
   ThreadModelSelection,
@@ -172,5 +195,8 @@ export type {
   ThreadUpdateReply,
   ThreadUsage,
   ToolCallStatus,
+  ThreadQueue,
+  UsageLimitEvent,
+  UsageLimitStatus,
   Unsubscribe,
 } from "./sdkTypes";

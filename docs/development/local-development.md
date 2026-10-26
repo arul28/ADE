@@ -56,6 +56,10 @@ First-time setup:
 npm run setup
 ```
 
+Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
+fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
+`npm run dev` runs, and fails with the download's exit code if it cannot.
+
 Daily desktop dev:
 
 ```bash
@@ -123,6 +127,16 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
   and your dev brain is still running,
   `npm run dev:desktop:attach -- --socket <your socket>` reopens just the
   window. Never leave the app open while you edit main-process code.
+- **Mind the machine's memory.** Run one dev app per agent, and only while you
+  use it. Before you start a dev app, a dev brain, a simulator or a build,
+  check `memory_pressure | tail -1` and wait while free memory is under ~30%:
+  many lanes' dev apps, brains and simulators at once once filled a Mac
+  Studio, and the installed ADE that hosts every agent kept crashing. A dev
+  app an agent starts from its shell (an ADE chat or run) opens no detached
+  DevTools window; attach over CDP instead, or set `ADE_OPEN_DEVTOOLS=1` to get
+  it. An App Control launch cannot be told from a person's, so put
+  `NO_DEVTOOLS=1` in its command. Run by hand, it still opens DevTools
+  unless `NO_DEVTOOLS=1` is set. View > Toggle DevTools works either way.
 - **Stop what you started, brain included.** Stop the dev app's process group
   (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
   `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;
@@ -278,10 +292,15 @@ Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-Use Node 22.23.3 for repository development. `npm run build:static` in
-`apps/ade-cli` requires Node 22.19.0 or newer because the headless runtime runs
-Pi's SDK worker on its own Node. Set `ADE_STATIC_NODE_BINARY` to use another
-Node binary for that build.
+Use Node 24 (the version in `.nvmrc`) for repository development. CI and the
+release builds use it too. `npm run build:static` in `apps/ade-cli` embeds the
+Node it runs on in the headless runtime, so a release brain built by CI gets
+Node 24's proxy and system-certificate support; the build warns when it embeds
+a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
+than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
+`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. The `ade`
+CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
+(a brain says so once at start) and otherwise works as before.
 
 ### On Windows
 

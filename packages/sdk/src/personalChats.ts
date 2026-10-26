@@ -7,8 +7,23 @@ import type {
   AgentChatFileRef,
   AgentChatModelCatalog,
   AgentChatSessionSummary,
+  AgentChatCancelDispatchedSteerArgs,
+  AgentChatCancelSteerArgs,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatDispatchSteerArgs,
+  AgentChatEditSteerArgs,
   PendingInputRequest,
   PendingInputsResult,
+  AgentChatInterruptArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatRecoverTurnArgs,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatRestoreCancelledQueueArgs,
+  AgentChatRespondToInputArgs,
+  AgentChatResumeUsageLimitNowArgs,
+  AgentChatSlashCommand,
+  AgentChatStopTaskArgs,
+  AgentChatSwitchAccountArgs,
 } from "./types.js";
 import type { ThreadRerunResult } from "./thread.js";
 import type { PersonalChatCallResponse } from "./wireTypes.js";
@@ -149,6 +164,66 @@ export class PersonalChatsApi {
 
   interrupt(sessionId: string): Promise<unknown> {
     return this.call("interrupt", { sessionId }, 60_000);
+  }
+
+  interruptWithQueueMode(args: AgentChatInterruptArgs): Promise<unknown> {
+    return this.call("interruptWithQueueMode", args, 60_000);
+  }
+
+  cancelSteer(args: AgentChatCancelSteerArgs): Promise<unknown> {
+    return this.call("cancelSteer", args, 60_000);
+  }
+
+  editSteer(args: AgentChatEditSteerArgs): Promise<unknown> {
+    return this.call("editSteer", args, 60_000);
+  }
+
+  moveSteer(args: AgentChatMoveSteerArgs): Promise<unknown> {
+    return this.call("moveSteer", args, 60_000);
+  }
+
+  dispatchSteer(args: AgentChatDispatchSteerArgs): Promise<unknown> {
+    return this.call("dispatchSteer", args, 120_000);
+  }
+
+  cancelDispatchedSteer(args: AgentChatCancelDispatchedSteerArgs): Promise<unknown> {
+    return this.call("cancelDispatchedSteer", args, 60_000);
+  }
+
+  restoreCancelledQueue(args: AgentChatRestoreCancelledQueueArgs): Promise<unknown> {
+    return this.call("restoreCancelledQueue", args, 60_000);
+  }
+
+  stopTask(args: AgentChatStopTaskArgs): Promise<unknown> {
+    return this.call("stopTask", args, 60_000);
+  }
+
+  recoverTurn(args: AgentChatRecoverTurnArgs): Promise<unknown> {
+    return this.call("recoverTurn", args, 120_000);
+  }
+
+  resolveUnprocessedMessage(args: AgentChatResolveUnprocessedMessageArgs): Promise<unknown> {
+    return this.call("resolveUnprocessedMessage", args, 120_000);
+  }
+
+  respondToInput(args: AgentChatRespondToInputArgs): Promise<unknown> {
+    return this.call("respondToInput", args, 60_000);
+  }
+
+  slashCommands(args: { sessionId: string; provider?: string }): Promise<AgentChatSlashCommand[]> {
+    return this.call<AgentChatSlashCommand[]>("slashCommands", args);
+  }
+
+  resumeUsageLimitNow(args: AgentChatResumeUsageLimitNowArgs): Promise<unknown> {
+    return this.call("resumeUsageLimitNow", args, 120_000);
+  }
+
+  continueUsageLimitOnAlternate(args: AgentChatContinueUsageLimitOnAlternateArgs): Promise<unknown> {
+    return this.call("continueUsageLimitOnAlternate", args, 120_000);
+  }
+
+  switchAccount(args: AgentChatSwitchAccountArgs): Promise<unknown> {
+    return this.call("switchAccount", args, 120_000);
   }
 
   getEventHistory(args: {

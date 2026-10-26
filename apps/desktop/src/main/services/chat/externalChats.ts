@@ -232,6 +232,13 @@ export type ExternalParentWake = {
   wakeText: string;
   /** The child's project root, so a failure notice can find it again. */
   childProjectRoot: string;
+  /**
+   * Set when this is not a finished turn but a notice: the child waits on a
+   * card only the user can answer. The parent gets `wakeText` as a message and
+   * no completion. A brain older than this field reads it as a finished turn,
+   * which is why `summary` and `wakeText` say plainly that the child waits.
+   */
+  notice?: "awaiting_user";
 };
 
 /** The key one child turn's delivery to one parent is deduped under. */
@@ -281,6 +288,7 @@ export function readExternalParentWake(
       ...(typeof completion.summary === "string" ? { summary: completion.summary.slice(0, 4_000) } : {}),
       ...(typeof completion.humanMessageCount === "number" ? { humanMessageCount: completion.humanMessageCount } : {}),
     },
+    ...(record.notice === "awaiting_user" ? { notice: "awaiting_user" as const } : {}),
   };
 }
 

@@ -94,6 +94,7 @@ export default defineConfig([
         ...(options.alias ?? {}),
         sqlite: "node:sqlite",
         "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
+        electron: path.join(packageRoot, "src", "electronUnavailableStub.cjs"),
       };
     },
   },
@@ -136,6 +137,7 @@ export default defineConfig([
         ...(options.alias ?? {}),
         sqlite: "node:sqlite",
         "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
+        electron: path.join(packageRoot, "src", "electronUnavailableStub.cjs"),
       };
     },
   },

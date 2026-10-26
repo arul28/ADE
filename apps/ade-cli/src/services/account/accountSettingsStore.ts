@@ -247,6 +247,20 @@ export function createAccountSettingsStore(args: {
       return rows.sort((left, right) => left.key.localeCompare(right.key));
     },
 
+    /**
+     * Keys in one scope that some machine deleted. `list` hides tombstones;
+     * a copy between scopes needs them so it does not bring a deleted row back.
+     */
+    deletedKeys(scope: string): Array<{ key: string; updatedAt: string }> {
+      const keys: Array<{ key: string; updatedAt: string }> = [];
+      for (const [composite, setting] of Object.entries(cache.readCache().rows)) {
+        if (!setting.deleted) continue;
+        const split = splitCacheKey(composite);
+        if (split && split.scope === scope) keys.push({ key: split.key, updatedAt: setting.updatedAt });
+      }
+      return keys.sort((left, right) => left.key.localeCompare(right.key));
+    },
+
     get(scope: string, key: string): unknown {
       const row = cache.readCache().rows[cacheKey(scope, key)];
       // A key deleted on another machine reads as absent here too, which is what

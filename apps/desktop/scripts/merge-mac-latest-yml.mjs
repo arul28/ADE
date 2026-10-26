@@ -60,12 +60,19 @@ if (!hasArm || !hasIntel) {
 // but keep a valid path/sha512 for older clients). Prefer the arm64 zip.
 const primary = zips.find((file) => file.url.includes("arm64")) ?? zips[0];
 
+// Electron 44 needs macOS 13 (its LSMinimumSystemVersion is 13.0). A Mac on
+// macOS 12 must stay on the last build it can run rather than download one
+// that will not launch. electron-updater compares this to `os.release()`, the
+// Darwin version, and macOS 13 is Darwin 22.
+const MINIMUM_DARWIN_VERSION = "22.0.0";
+
 const merged = {
   version,
   files,
   path: primary.url,
   sha512: primary.sha512,
   releaseDate: docs[0].releaseDate,
+  minimumSystemVersion: MINIMUM_DARWIN_VERSION,
 };
 
 fs.writeFileSync(outPath, stringify(merged));

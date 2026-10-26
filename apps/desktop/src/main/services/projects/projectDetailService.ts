@@ -9,7 +9,7 @@ import type {
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeProjectWorktreeSummary,
 } from "../../../shared/types";
-import { runGit } from "../git/git";
+import { branchNameFromHeadRef, runGit } from "../git/git";
 import { readGlobalState } from "../state/globalState";
 import { toRecentProjectSummary } from "./recentProjectSummary";
 import { pathKey } from "../shared/pathCompare";
@@ -218,13 +218,13 @@ export function parseDirtyStatus(raw: string): {
 
 async function readGitMetadata(rootPath: string): Promise<Pick<ProjectDetail, "branchName" | "dirtyCount" | "dirtyBreakdown" | "lastCommit" | "aheadBehind">> {
   const [branchRes, dirtyRes, lastCommitRes, aheadBehindRes] = await Promise.all([
-    runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: rootPath, timeoutMs: 5_000 }),
+    runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: rootPath, timeoutMs: 5_000 }),
     runGit(["status", "--porcelain"], { cwd: rootPath, timeoutMs: 8_000 }),
     runGit(["log", "-1", "--format=%s%x1f%cI%x1f%h"], { cwd: rootPath, timeoutMs: 6_000 }),
     runGit(["rev-list", "--left-right", "--count", "@{u}...HEAD"], { cwd: rootPath, timeoutMs: 6_000 }),
   ]);
 
-  const branchName = branchRes.exitCode === 0 ? branchRes.stdout.trim() || null : null;
+  const branchName = branchRes.exitCode === 0 ? branchNameFromHeadRef(branchRes.stdout) || null : null;
   const dirty = dirtyRes.exitCode === 0 ? parseDirtyStatus(dirtyRes.stdout) : null;
   const dirtyCount = dirty?.count ?? null;
   const dirtyBreakdown = dirty?.breakdown ?? null;
@@ -242,7 +242,7 @@ async function readWorktreeSummary(args: {
   const isRepo = await isGitRepo(args.rootPath);
   if (!isRepo) return null;
   const [branchRes, dirtyRes] = await Promise.all([
-    runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+    runGit(["rev-parse", "--symbolic-full-name", "HEAD"], {
       cwd: args.rootPath,
       timeoutMs: 5_000,
     }),
@@ -254,7 +254,7 @@ async function readWorktreeSummary(args: {
   return {
     rootPath: args.rootPath,
     name: args.name,
-    branchName: branchRes.exitCode === 0 ? branchRes.stdout.trim() || null : null,
+    branchName: branchRes.exitCode === 0 ? branchNameFromHeadRef(branchRes.stdout) || null : null,
     dirtyCount:
       dirtyRes.exitCode === 0
         ? dirtyRes.stdout

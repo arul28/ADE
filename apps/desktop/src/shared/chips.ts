@@ -36,6 +36,8 @@ import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browser
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
+import { openPlaceById } from "./openPlaces";
+import { settingsEntryById, settingsEntryLabel } from "./settingsManifest";
 import { getModelById, resolveProviderGroupForModel } from "./modelRegistry";
 import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
@@ -76,7 +78,11 @@ export type ChipKind =
   /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
   | "attachment"
   /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
-  | "browser_tab";
+  | "browser_tab"
+  /** One card in Settings (`ade://settings/<id>`), labelled from the manifest. */
+  | "setting"
+  /** A page from the open list (`ade://open/<place>`). */
+  | "place";
 
 /**
  * Where the chip came from, which is what a click needs in order to route.
@@ -142,6 +148,8 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   mcp: "⚙",
   attachment: "▣",
   browser_tab: "🌐",
+  setting: "⚙",
+  place: "↪",
 };
 
 export function chipGlyph(kind: ChipKind): string {
@@ -176,6 +184,8 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   mcp: "m",
   attachment: "I",
   browser_tab: "B",
+  setting: "S",
+  place: ">",
 };
 
 export function chipGlyphAscii(kind: ChipKind): string {
@@ -323,7 +333,31 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       // identifier for the https form. Without this, ade://linear-issue/ade-431
       // and the linear.app url for the same issue drew different labels.
       return { kind: "linear_issue", token: url, label: target.issueIdentifier.toUpperCase(), source };
+    case "settings": {
+      // The label is the manifest's path, never anything the agent wrote, so
+      // a chip cannot claim to be a setting it is not. The renderer adds the
+      // chat machine's name to a Computer page.
+      const entry = settingsEntryById(target.entryId);
+      if (!entry) return { kind: "ade_link", token: url, label: `ADE · settings/${target.entryId}`, source };
+      return { kind: "setting", token: url, label: settingsEntryLabel(entry), source };
+    }
+    case "open": {
+      const place = openPlaceById(target.place);
+      if (!place) return { kind: "ade_link", token: url, label: `ADE · open/${target.place}`, source };
+      return { kind: "place", token: url, label: place.label, source };
+    }
   }
+}
+
+/**
+ * Whether a deeplink names something this build knows. A setting or page id
+ * that is not in this build's lists draws no chip: a guessed pointer is worse
+ * than plain text.
+ */
+export function isKnownDeeplinkTarget(target: DeeplinkTarget): boolean {
+  if (target.kind === "settings") return settingsEntryById(target.entryId) != null;
+  if (target.kind === "open") return openPlaceById(target.place) != null;
+  return true;
 }
 
 /**
@@ -353,7 +387,7 @@ export function chipFromSmartLink(preview: SmartLinkPreview): Chip {
 
   if (preview.kind === "ade_deeplink" || looksLikeAdeDeeplink(preview.url)) {
     const parsed = parseDeeplink(preview.url);
-    if (parsed.ok) {
+    if (parsed.ok && isKnownDeeplinkTarget(parsed.target)) {
       const chip = chipFromDeeplinkTarget(preview.url, parsed.target);
       return { ...chip, title: base.title, iconDataUrl: base.iconDataUrl };
     }

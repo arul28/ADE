@@ -130,6 +130,9 @@ async function assertSeaCapableNodeBinary(binaryPath) {
  */
 const MIN_EMBEDDED_NODE = "22.19.0";
 
+/** The first Node with `http.setGlobalProxyFromEnv`: an older runtime ignores HTTPS_PROXY. */
+const PROXY_CAPABLE_NODE = "24.14.0";
+
 function compareNodeVersions(left, right) {
   const a = left.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
   const b = right.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
@@ -154,7 +157,12 @@ async function assertEmbeddedNodeVersion(binaryPath, target) {
     process.stdout.write(`Not checking the Node version of ${binaryPath}: it is built for ${target}, not this machine.\n`);
     return;
   }
-  if (compareNodeVersions(version, MIN_EMBEDDED_NODE) >= 0) return;
+  if (compareNodeVersions(version, MIN_EMBEDDED_NODE) >= 0) {
+    if (compareNodeVersions(version, PROXY_CAPABLE_NODE) < 0) {
+      process.stdout.write(`Warning: embedding Node ${version}; a runtime older than ${PROXY_CAPABLE_NODE} ignores HTTPS_PROXY. Release builds use Node 24 (.nvmrc).\n`);
+    }
+    return;
+  }
   throw new Error([
     `The headless runtime needs Node ${MIN_EMBEDDED_NODE} or newer, and ${binaryPath} is ${version}.`,
     "Run build:static with a newer Node, or set ADE_STATIC_NODE_BINARY to one.",
@@ -452,6 +460,11 @@ async function main() {
     disableExperimentalSEAWarning: true,
     useCodeCache: false,
     useSnapshot: false,
+    // Node 24's V8 sizes the young generation by the machine's memory, which
+    // left an idle brain ~55 MB larger than on Node 22. 16 MB is Node 22's
+    // cap; collection cost is unchanged from the Node 22 runtime. An older
+    // Node ignores the field.
+    execArgv: ["--max-semi-space-size=16"],
   };
   await fs.writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`, "utf8");
   await run(sourceNodeBinary, ["--experimental-sea-config", seaConfigPath]);

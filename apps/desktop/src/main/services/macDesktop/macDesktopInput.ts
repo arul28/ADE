@@ -216,6 +216,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       stalledApps: Array.isArray(reply.stalledApps)
         ? reply.stalledApps.filter((app): app is string => typeof app === "string" && app.length > 0)
         : [],
+      ...(Array.isArray(reply.warnings) && reply.warnings.length
+        ? { warnings: reply.warnings.filter((line): line is string => typeof line === "string" && line.length > 0) }
+        : {}),
       caption: asNullableString(reply.caption) ?? args.caption?.trim() ?? null,
       ...(deps.platform ? { platform: deps.platform } : {}),
       ...(display.seatMode ? { seatMode: display.seatMode } : {}),

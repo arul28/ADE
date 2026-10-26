@@ -272,7 +272,7 @@ describe("SubagentResultCard", () => {
 
   it("hides an all-zero diff-stat summary and keeps one with any change", () => {
     const zero = render(<SubagentResultCard event={resultEvent({ summaryPreview: "+0 −0 · 0 files" })} />);
-    expect(zero.container.querySelector("[data-subagent-overview]")).toBeNull();
+    expect(zero.container.querySelector("[data-subagent-overview]")?.textContent).toBe("");
     expect(zero.container.textContent).not.toContain("0 files");
     expect(zero.container.textContent).toContain("1m");
     zero.unmount();

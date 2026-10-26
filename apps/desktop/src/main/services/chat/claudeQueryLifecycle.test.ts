@@ -5,11 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const claudeSdk = vi.hoisted(() => ({
   messages: [] as Array<Record<string, unknown>>,
+  /** Holds the query open before its result, so a test can act mid-turn. */
+  gate: null as null | { reached: () => void; open: Promise<void> },
 }));
 
 function makeClaudeQuery(messages: Array<Record<string, unknown>>) {
   const iterator = (async function* () {
     for (const message of messages) yield message;
+    if (claudeSdk.gate) {
+      claudeSdk.gate.reached();
+      await claudeSdk.gate.open;
+    }
     yield {
       type: "result",
       subtype: "success",
@@ -275,6 +281,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tempRoot, ".ade", "cache", "chat-sessions"), { recursive: true });
   fs.mkdirSync(path.join(tempRoot, ".ade", "transcripts", "chat"), { recursive: true });
   vi.spyOn(os, "homedir").mockReturnValue(tempRoot);
+  claudeSdk.gate = null;
   vi.clearAllMocks();
 });
 
@@ -368,6 +375,48 @@ describe("Claude query lifecycle", () => {
       message: expect.stringContaining("The agent is told on its next turn."),
     });
     expect(wakeTurns()).toHaveLength(1);
+  });
+
+  // An afterTurn restart asked for mid-turn (the agent running `ade chat restart`
+  // on itself) waits for that turn to end, runs once, and does not run again on a later turn.
+  it("defers an afterTurn restart until the turn that asked for it ends, then runs it once", async () => {
+    const { service, events } = createHarness([]);
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    let reached!: () => void;
+    const parked = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release!: () => void;
+    claudeSdk.gate = {
+      reached,
+      open: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    };
+    const restartNotices = () => events.filter((envelope) =>
+      envelope.event.type === "system_notice" && /Agent session restarted/.test(envelope.event.message));
+    const turn = service.runSessionTurn({ sessionId: session.id, text: "Restart yourself when done." });
+    await parked;
+
+    const scheduled = await service.restartSession({ sessionId: session.id, afterTurn: true });
+    expect(scheduled).toMatchObject({ restarted: false, scheduled: true });
+    expect(restartNotices()).toHaveLength(0);
+
+    claudeSdk.gate = null;
+    release();
+    await turn;
+    await vi.waitFor(() => expect(restartNotices()).toHaveLength(1));
+
+    await service.runSessionTurn({ sessionId: session.id, text: "A later turn." });
+    await vi.waitFor(() => expect(events.filter((envelope) => envelope.event.type === "done")).toHaveLength(2));
+    // The deferred restart is scheduled on a zero-delay timer after `done`; let that timer run before asserting it did not fire.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(restartNotices()).toHaveLength(1);
   });
 
   it("does not emit an orphan notice when reset has no open background task", async () => {

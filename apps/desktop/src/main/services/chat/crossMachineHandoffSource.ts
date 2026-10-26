@@ -25,6 +25,7 @@ import {
   normalizeGitRemoteIdentity,
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
+import { canonicalGitOriginUrl, gitRemoteIdentity } from "../github/githubSshAlias";
 import type { GitRunOptions, GitRunResult } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import { writeFileAtomic } from "../state/durableFile";
@@ -47,6 +48,7 @@ import {
   type CrossMachinePreparedCapsule,
   type CrossMachineSourceInspection,
 } from "./crossMachineHandoffOrchestrator";
+import { redactGitOutput } from "../../utils/redaction";
 
 type RunGit = (args: string[], opts: GitRunOptions) => Promise<GitRunResult>;
 
@@ -285,7 +287,10 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
         fixHint: `finish or abort the merge in ${lane.name}`,
       });
     }
-    const rawOrigin = await gitText(["remote", "get-url", "origin"]);
+    // The capsule carries the canonical origin: an SSH alias of GitHub only
+    // exists in this machine's ssh config, so the other machine could neither
+    // match nor fetch it.
+    const rawOrigin = canonicalGitOriginUrl(await gitText(["remote", "get-url", "origin"]));
     const originUrl = rawOrigin ? normalizeGitRemoteIdentity(sanitizePortableGitRemote(rawOrigin)) : null;
     if (!originUrl) {
       blockers.push({
@@ -613,7 +618,7 @@ export function createCrossMachineBatchSource(deps: {
       cwd: summary.worktreePath,
       timeoutMs: 30_000,
     });
-    if (remote.exitCode !== 0) throw new Error(`ADE could not read '${branchRef}' on origin. ${remote.stderr.trim()}`.trim());
+    if (remote.exitCode !== 0) throw new Error(`ADE could not read '${branchRef}' on origin. ${redactGitOutput(remote.stderr.trim())}`.trim());
     const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
     const sourceMachineKey = deps.localMachineKey();
     const gitBundle = includeChanges
@@ -649,7 +654,7 @@ export function createCrossMachineBatchSource(deps: {
     if (
       current.branchRef !== payload.branchRef
       || current.headSha !== payload.headSha
-      || normalizeGitRemoteIdentity(current.originUrl) !== normalizeGitRemoteIdentity(payload.originUrl)
+      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(payload.originUrl)
     ) throw new CrossMachineSourceStaleError("The source lane changed after the batch was prepared. Review the batch again.");
     if (payload.gitBundle) {
       validateHandoffGitBundle({ source: { headSha: payload.headSha }, gitBundle: payload.gitBundle });

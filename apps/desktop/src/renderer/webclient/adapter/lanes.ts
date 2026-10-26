@@ -156,6 +156,15 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       });
     },
     listDeleteProgress: () => call("lanes.listDeleteProgress", {}, []),
+    // An older host without these answers "not stopped", which the UI shows.
+    cancelDelete: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("cancelDelete", pin);
+      return await call("lanes.cancelDelete", args, { cancelled: false, reason: "This ADE host cannot stop a delete." }, false);
+    },
+    cancelGitWrite: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("cancelGitWrite", pin);
+      return await call("lanes.cancelGitWrite", args, { cancelled: false }, false);
+    },
     getDeleteRisk: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("getDeleteRisk", pin);
       return await call("lanes.getDeleteRisk", args, {

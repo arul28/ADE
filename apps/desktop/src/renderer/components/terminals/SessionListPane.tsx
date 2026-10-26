@@ -94,10 +94,10 @@ import {
   type WorkBoardWaitingReason,
 } from "./useWorkSessions";
 import {
-  WORK_BOARD_COLUMN_LABEL,
   isWorkBoardMoveTarget,
   type WorkBoardColumn,
 } from "../../../shared/types/chat";
+import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
@@ -139,7 +139,7 @@ const EMPTY_LANE_IDS: string[] = [];
 const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   activity: "Recent",
   name: "Name",
-  created: "New",
+  created: "Newest",
   manual: "Manual",
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
@@ -278,6 +278,7 @@ type ForeignLaneEntry = {
   shelf: WorkLaneShelf | null;
   /** Rolled-up lane status for the header dot; null when nothing is live. */
   focusStatus: WorkLaneFocusStatus | null;
+  focusFailed: boolean;
 };
 
 /**
@@ -545,6 +546,7 @@ function StickyGroupHeader({
   variant = "default",
   tone = "default",
   busyLabel = null,
+  onStopBusy = null,
   heading = false,
   dimmed = false,
   quietCounts = null,
@@ -554,6 +556,7 @@ function StickyGroupHeader({
   dropIndicatorEdge = null,
   layoutDependency,
   laneStatus = null,
+  laneFailed = false,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -598,6 +601,8 @@ function StickyGroupHeader({
   tone?: GroupShelfTone;
   /** Disables the lane group and overlays lifecycle progress. */
   busyLabel?: string | null;
+  /** Set while the busy work can still stop; adds a Stop button to the overlay. */
+  onStopBusy?: (() => void) | null;
   /** Quiet-lane mode plus inline `☾n ○n` counts replacing the total pill. */
   quietCounts?: { snoozed: number; settled: number } | null;
   /**
@@ -628,6 +633,8 @@ function StickyGroupHeader({
    * board column's accent. Null when every row is snoozed or settled.
    */
   laneStatus?: WorkLaneFocusStatus | null;
+  /** A chat in the lane failed: the collapsed dot turns red. */
+  laneFailed?: boolean;
 }) {
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
@@ -835,7 +842,8 @@ function StickyGroupHeader({
                   className="shrink-0 text-muted-fg/45"
                 />
               ) : null}
-              {isLane && laneStatus ? <LaneFocusStatusDot status={laneStatus} /> : null}
+              {/* Only a collapsed lane needs the summary; an open one shows its chats. */}
+              {isLane && collapsed && laneStatus ? <LaneFocusStatusDot status={laneStatus} failed={laneFailed} /> : null}
               {machineMarker}
               {prBadge}
               {headerAction}
@@ -867,6 +875,20 @@ function StickyGroupHeader({
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/75 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
                 <CircleNotch size={12} className="animate-spin" />
                 {busyLabel}
+                {onStopBusy ? (
+                  <button
+                    type="button"
+                    className="pointer-events-auto rounded px-1.5 py-0.5 text-fg/85 hover:bg-fg/[0.08]"
+                    title="Stop the delete. The lane stays, and part of its folder may already be gone."
+                    data-testid="work-lane-stop-delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onStopBusy();
+                    }}
+                  >
+                    Stop
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -1069,6 +1091,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneActions?: SessionContextMenuLaneActions | null,
     openIn?: SessionContextMenuOpenIn | null,
     laneType?: LaneSummary["laneType"] | null,
+    /** Why the board files this row under Waiting, foreign machines included. */
+    waitingReason?: WorkBoardWaitingReason | null,
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -1915,7 +1939,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (snoozedRows + settledRows === 0) return null;
       return settledRows > snoozedRows ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf, focusStatus: focus.status };
+    return { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf, focusStatus: focus.status, focusFailed: focus.failed };
   });
 
   // Foreign composite ids fold and return exactly like local lane ids: a
@@ -2561,10 +2585,10 @@ export const SessionListPane = React.memo(function SessionListPane({
             foreignRow?.binding,
             foreignRow?.machineName,
             options?.laneActions,
-            openIn && !options?.laneActions
-              ? openIn
-              : null,
+            // Every row offers "Open in", singleton or grouped: one menu shape.
+            openIn ?? null,
             sessionLane?.laneType,
+            boardUnion.waitingReasons.get(session.id) ?? null,
           );
         }}
         compact={options?.compact}
@@ -2789,112 +2813,33 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const handleBoardMove = useCallback(
     (session: TerminalSessionSummary, column: WorkBoardColumn) => {
-      const move = window.ade.sessions?.moveOnBoard;
-      if (typeof move !== "function") {
-        showToast({
-          title: "Move failed",
-          message: "This window cannot move board cards.",
-          tone: "error",
-        });
-        return;
-      }
       // The board's column keys ARE the action's targets, so there is nothing
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
-      const to = column;
       const foreignRow = boardUnion.sessionRow.get(session.id);
       const binding = foreignRow?.binding ?? null;
-      void move(session.id, to, binding)
-        .then((result) => {
-          if (!result?.changed || !result.moveId) {
-            // A no-op is ALWAYS a disagreement here: the board only offers a
-            // column the card is not already in, so the host answering "it is
-            // already there" means the two derived it differently. They can,
-            // in exactly one way — the host files Waiting from the snooze
-            // alone, while this board also parks a running row there for a
-            // pending check or an outstanding review, which the host still
-            // reads as Working. Say so; a silent snap-back reads as a bug.
-            if (result && !result.changed) {
-              // A live structured card is a different refusal: the row really
-              // is in Needs you, and clearing the attention columns would not
-              // answer the provider's question — so the card would sit there
-              // while the toast claimed a move. Say what is actually blocking.
-              const pendingCard = result.reason === "pending_input";
-              showToast({
-                id: `session-board-move:${session.id}`,
-                title: pendingCard
-                  ? "Answer the question first"
-                  : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
-                message: pendingCard
-                  ? "This chat is waiting on an answer, so moving it would not change what it needs."
-                  : "The PR is what is waiting, not the chat.",
-                durationMs: 4_000,
-              });
-            }
-            return;
-          }
-          const moveId = result.moveId;
+      // One narration for a move, shared with the row menu's Change status.
+      moveSessionOnBoard({
+        session,
+        to: column,
+        binding,
+        onMoved: () => {
           if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
           setBoardMovePulses((previous) => {
             const next = new Map(previous);
             next.set(session.id, new Date().toISOString());
             return next;
           });
-          showToast({
-            id: `session-board-move:${session.id}`,
-            title: `Moved to ${WORK_BOARD_COLUMN_LABEL[to]}`,
-            message: result.message ? "The agent will be told." : undefined,
-            durationMs: 5_000,
-            actions: [{
-              label: "Undo",
-              onClick: () => {
-                const undo = window.ade.sessions?.undoBoardMove;
-                if (typeof undo !== "function") return;
-                void undo(session.id, moveId, binding)
-                  .then((undone) => {
-                    if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
-                    setBoardMovePulses((previous) => {
-                      const next = new Map(previous);
-                      next.delete(session.id);
-                      return next;
-                    });
-                    if (undone?.ok !== false) return;
-                    showToast({
-                      title: "Too late to undo",
-                      message: undone.reason === "unknown_move"
-                        // The host restarted inside the undo window: the
-                        // columns are written, the message was never sent, and
-                        // it no longer knows what to put back.
-                        ? "ADE no longer has this move staged. The card stays where you put it."
-                        : undone.reason === "session_advanced"
-                          // The chat moved on inside the window — a new hand, a
-                          // settle, a snooze. Putting the old state back would
-                          // overwrite something newer than the move.
-                          ? "This chat has changed since the move, so there is nothing left to take back."
-                          : "The agent has already been told about this move.",
-                      tone: "error",
-                    });
-                  })
-                  .catch((error: unknown) => {
-                    showToast({
-                      title: "Undo failed",
-                      message: error instanceof Error ? error.message : String(error),
-                      tone: "error",
-                    });
-                  });
-              },
-            }],
+        },
+        onUndoSettled: () => {
+          if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
+          setBoardMovePulses((previous) => {
+            const next = new Map(previous);
+            next.delete(session.id);
+            return next;
           });
-        })
-        .catch((error: unknown) => {
-          showToast({
-            title: "Move failed",
-            // The host reverses its own status write when the move cannot
-            // complete, so the card genuinely did not move.
-            message: error instanceof Error ? error.message : String(error),
-            tone: "error",
-          });
-        });
+        },
+      });
     },
     [boardUnion.sessionRow],
   );
@@ -3175,6 +3120,20 @@ export const SessionListPane = React.memo(function SessionListPane({
   const hasForeignSessions = visibleForeignRows.length > 0;
 
 
+  // Sent to the lane's own machine, which refuses once the folder is gone.
+  const stopLaneDelete = (laneId: string, laneName: string, pin: OpenProjectBinding | null) => {
+    const showRefusal = (message: string) => showToast({
+      title: `Could not stop deleting ${laneName}`,
+      message,
+      tone: "error",
+    });
+    void window.ade.lanes.cancelDelete({ laneId }, pin)
+      .then((result) => {
+        if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
+      })
+      .catch((error: unknown) => showRefusal(error instanceof Error ? error.message : String(error)));
+  };
+
   const renderLaneGroup = (lane: LaneSummary) => {
     const list = sessionsGroupedByLane?.get(lane.id) ?? [];
     const laneHandoffJobs = handoffJobsByLaneId.get(lane.id) ?? [];
@@ -3273,11 +3232,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           </>
         ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, null) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
         layoutDependency={laneOrderSignature}
         laneStatus={laneFocusByLaneId.get(lane.id)?.status ?? null}
+        laneFailed={laneFocusByLaneId.get(lane.id)?.failed ?? false}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: list.filter((session) =>
@@ -3428,6 +3389,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         collapsed={collapsed}
         headerless={headerless}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        // That machine's delete has no progress feed here, so Stop is always
+        // offered and the machine says whether it still can.
+        onStopBusy={deleteProgress && row.binding
+          ? () => stopLaneDelete(row.lane.id, row.lane.name, row.binding)
+          : null}
         accentColor={row.lane.color ?? null}
         prBadge={primaryPr ? (
           <LanePrBadge
@@ -3438,6 +3404,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : null}
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
         laneStatus={entry.focusStatus}
+        laneFailed={entry.focusFailed}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: quietTop.snoozed.length,
@@ -4004,8 +3971,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               data-testid="work-view-mode-toggle"
             >
               {([
-                { mode: "list" as const, label: "List", Icon: ListBullets, description: "Group sessions in the scrolling list." },
-                { mode: "board" as const, label: "Board", Icon: Kanban, description: "Lay sessions out as a board: Needs you, Working, Waiting, Done." },
+                { mode: "list" as const, label: "List", Icon: ListBullets, description: "One scrolling list." },
+                { mode: "board" as const, label: "Board", Icon: Kanban, description: "Columns by status." },
               ]).map(({ mode, label, Icon, description }) => (
                 <SmartTooltip key={mode} content={{ label, description }}>
                   <button
@@ -4241,11 +4208,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           </div>
         ) : !hasAnySessions && !hasForeignSessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
-            <Terminal size={16} weight="regular" className="text-muted-fg/15 mb-2" />
-            <div className="text-[11px] font-medium text-fg/70">No sessions</div>
-            <div className="mt-1 text-[10px] text-muted-fg/40 leading-relaxed max-w-[180px]">
-              Start a new session above.
-            </div>
+            <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
+            <div className="text-[12px] font-medium text-fg/70">No chats yet</div>
+            <div className="mt-1 text-[11px] text-muted-fg/60">Start one from the prompt box</div>
           </div>
         ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
           <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">

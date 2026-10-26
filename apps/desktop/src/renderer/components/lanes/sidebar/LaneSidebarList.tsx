@@ -51,6 +51,8 @@ export type LaneSidebarListProps = {
   agentsByLaneId: ReadonlyMap<string, LaneAgent[]>;
   lanePrTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
   deleteProgressByLaneId: Record<string, LaneDeleteProgress>;
+  /** Stops a running delete, by row key. */
+  onStopDelete?: (laneId: string) => void;
   creatingLaneIds: ReadonlySet<string>;
   pendingCreatingIssues: CreatingIssuePlaceholder[];
   pulsingLaneId: string | null;
@@ -101,6 +103,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     agentsByLaneId,
     lanePrTagsByLaneId,
     deleteProgressByLaneId,
+    onStopDelete,
     creatingLaneIds,
     pendingCreatingIssues,
     pulsingLaneId,
@@ -165,6 +168,11 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         rebaseSuggestion={snapshot?.rebaseSuggestion ?? null}
         autoRebaseStatus={snapshot?.autoRebaseStatus ?? null}
         deleteStatusLabel={deleting ? getLaneDeleteStatusLabel(deleteProgress) : null}
+        // Another machine's delete has no progress feed here, so its row
+        // always offers Stop and that machine says whether it still can.
+        onStopDelete={deleting && onStopDelete && (deleteProgress?.cancellable || foreignLaneIds?.has(laneId))
+          ? () => onStopDelete(laneId)
+          : null}
         creating={!deleting && creatingLaneIds.has(laneId)}
         parentHint={row.parentHint ?? null}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
@@ -306,8 +314,20 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
           </div>
         )}
         {rowCount === 0 && pendingCreatingIssues.length === 0 ? (
-          <div className="px-2 py-3 text-[12px]" style={{ color: COLORS.textMuted }}>
-            {loading && totalLaneCount === 0 ? "Loading lanes…" : totalLaneCount === 0 ? "No lanes yet." : "No lanes match."}
+          <div className="px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
+            {loading && totalLaneCount === 0 ? "Loading lanes…" : totalLaneCount === 0 ? "No lanes yet" : "No lanes match"}
+          </div>
+        ) : filter.trim().length === 0 && totalLaneCount === 1 && pendingCreatingIssues.length === 0 ? (
+          // Only the primary lane: the next step is a lane to work in.
+          <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
+            <span>Lanes keep each task on its own branch</span>
+            <button
+              type="button"
+              className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"
+              onClick={onCreateLane}
+            >
+              New lane
+            </button>
           </div>
         ) : null}
       </div>

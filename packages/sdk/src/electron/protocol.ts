@@ -115,6 +115,19 @@ export type AdeIpcInvokeResponse<T = unknown> =
   | { ok: true; value: T }
   | { ok: false; error: AdeIpcErrorPayload };
 
+/** Flatten errors for JSON transports while preserving SDK error codes. */
+export function serializeAdeError(error: unknown): AdeIpcErrorPayload {
+  const candidate = error && typeof error === "object"
+    ? (error as { name?: unknown; code?: unknown; message?: unknown })
+    : null;
+  return {
+    __adeError: true,
+    name: "AdeError",
+    code: candidate?.name === "AdeError" && typeof candidate.code === "string" ? candidate.code : "rpc_error",
+    message: typeof candidate?.message === "string" ? candidate.message : String(error),
+  };
+}
+
 /** A pushed envelope for one thread subscription. */
 export type AdeIpcThreadEvent = {
   kind: "thread";
@@ -209,6 +222,7 @@ export type AdeIpcSubscription = { subscriptionId: string };
 export const ADE_IPC_METHODS = [
   "providers.status",
   "providers.refresh",
+  "providers.capabilities",
   "providers.subscribe",
   "providers.unsubscribe",
   "models.list",
@@ -229,10 +243,44 @@ export const ADE_IPC_METHODS = [
   "thread.send",
   "thread.steer",
   "thread.interrupt",
+  "thread.respond",
+  "thread.queue.list",
+  "thread.queue.cancel",
+  "thread.queue.edit",
+  "thread.queue.move",
+  "thread.queue.dispatch",
+  "thread.queue.cancelDispatched",
+  "thread.queue.restore",
+  "thread.stopTask",
+  "thread.slashCommands",
+  "thread.recover",
+  "thread.resolveUnprocessed",
+  "thread.usageLimit.resumeNow",
+  "thread.usageLimit.continueOnAlternate",
+  "thread.switchAccount",
   "thread.history",
   "thread.setModel",
   "thread.approve",
   "thread.pendingApprovals",
+  "accounts.list",
+  "accounts.add",
+  "accounts.remove",
+  "accounts.rename",
+  "accounts.setDefault",
+  "accounts.signOut",
+  "accounts.refresh",
+  "accounts.signIn",
+  "accounts.signInStatus",
+  "accounts.signInSubmitCode",
+  "accounts.signInCancel",
+  "credentials.list",
+  "credentials.add",
+  "credentials.remove",
+  "credentials.verify",
+  "presets.list",
+  "presets.add",
+  "presets.update",
+  "presets.remove",
   "thread.subscribe",
   "thread.unsubscribe",
 ] as const;
@@ -257,6 +305,21 @@ export const ADE_IPC_THREAD_KEY_METHODS: ReadonlySet<AdeIpcMethod> = new Set<Ade
   "thread.send",
   "thread.steer",
   "thread.interrupt",
+  "thread.respond",
+  "thread.queue.list",
+  "thread.queue.cancel",
+  "thread.queue.edit",
+  "thread.queue.move",
+  "thread.queue.dispatch",
+  "thread.queue.cancelDispatched",
+  "thread.queue.restore",
+  "thread.stopTask",
+  "thread.slashCommands",
+  "thread.recover",
+  "thread.resolveUnprocessed",
+  "thread.usageLimit.resumeNow",
+  "thread.usageLimit.continueOnAlternate",
+  "thread.switchAccount",
   "thread.history",
   "thread.setModel",
   "thread.approve",

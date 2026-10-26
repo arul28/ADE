@@ -11,11 +11,19 @@
 //   ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 //   ade://pr/<owner>/<repo>/<number>[?tab=overview|files|checks]
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
+//   ade://settings/<entry-id>[?machine=<machine-id>]
+//   ade://open/<place>
 //
-//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...
+//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
 //    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number[+tab];
-//    linear-issue→issue[+branch])
+//    linear-issue→issue[+branch]; settings→id[+machine])
+//
+// `settings` names one card in Settings by its manifest id
+// (`shared/settingsManifest.ts`); a chat draws it as a chip whose label is the
+// manifest's, never the link text. `open` names a page from the short list in
+// `shared/openPlaces.ts`. It has no https form, and the OS protocol handler
+// refuses it: an `open` link runs only when a person clicks it in a chat.
 //
 // PR links may name the detail sub-tab to land on (`?tab=`). The value is
 // parsed leniently: an unknown tab is dropped, never failing the whole link,
@@ -137,7 +145,22 @@ export type DeeplinkLinearIssueTarget = {
   branch?: string;
 };
 
+/** One card in Settings, by manifest id. `machineId` picks the Computer page's machine. */
+export type DeeplinkSettingsTarget = {
+  kind: "settings";
+  entryId: string;
+  machineId?: string;
+};
+
+/** A page from the `open` list (`shared/openPlaces.ts`). Chat clicks only. */
+export type DeeplinkOpenPlaceTarget = {
+  kind: "open";
+  place: string;
+};
+
 export type DeeplinkTarget =
+  | DeeplinkSettingsTarget
+  | DeeplinkOpenPlaceTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
   | DeeplinkFileTarget
@@ -157,6 +180,11 @@ const LINEAR_ID_RE = /^[A-Za-z][A-Za-z0-9]{0,9}-\d{1,9}$/;
 const BRANCH_BAD_RE = /(^|\/)\.\.($|\/)|[\x00-\x1f\x7f]/;
 const OPAQUE_ID_BAD_RE = /[\x00-\x1f\x7f]/;
 const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+// Manifest ids (`agents.provider.claude`) and place names (`prs`). Checked for
+// shape only: whether the id is a real setting is the reader's call, so a link
+// from a newer ADE still parses on an older one and simply draws no chip.
+const SETTINGS_ENTRY_ID_RE = /^[a-z0-9][a-z0-9.-]{0,95}$/;
+const OPEN_PLACE_RE = /^[a-z][a-z0-9-]{0,39}$/;
 
 function isValidGhOwner(value: string): boolean {
   return GH_OWNER_RE.test(value);
@@ -334,6 +362,8 @@ export type BuildOptions = {
 };
 
 export function buildDeeplink(target: DeeplinkTarget, options: BuildOptions = {}): string {
+  // `open` has no https form: it must never run from outside a chat.
+  if (target.kind === "open") return buildAdeUrl(target);
   return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : buildHttpsUrl(target);
 }
 
@@ -413,10 +443,16 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
       return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
     }
+    case "settings": {
+      const base = `${ADE_DEEPLINK_SCHEME}://settings/${encodeURIComponent(target.entryId)}`;
+      return target.machineId ? `${base}?machine=${encodeURIComponent(target.machineId)}` : base;
+    }
+    case "open":
+      return `${ADE_DEEPLINK_SCHEME}://open/${encodeURIComponent(target.place)}`;
   }
 }
 
-function buildHttpsUrl(target: DeeplinkTarget): string {
+function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>): string {
   const params = new URLSearchParams();
   switch (target.kind) {
     case "lane":
@@ -469,6 +505,11 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
       params.set("type", "linear-issue");
       params.set("issue", target.issueIdentifier);
       if (target.branch) params.set("branch", target.branch);
+      break;
+    case "settings":
+      params.set("type", "settings");
+      params.set("id", target.entryId);
+      if (target.machineId) params.set("machine", target.machineId);
       break;
   }
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
@@ -599,7 +640,34 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     };
   }
 
+  if (host === "settings") {
+    if (pathSegments.length !== 1) {
+      return { ok: false, error: { kind: "malformed", reason: "expected settings/<id>" }, rawUrl };
+    }
+    return buildSettingsTarget(safeDecode(pathSegments[0]), url.searchParams, rawUrl);
+  }
+
+  if (host === "open") {
+    const place = pathSegments[0] ? safeDecode(pathSegments[0]).toLowerCase() : "";
+    if (pathSegments.length !== 1 || !OPEN_PLACE_RE.test(place)) {
+      return { ok: false, error: { kind: "malformed", reason: "invalid place" }, rawUrl };
+    }
+    return { ok: true, target: { kind: "open", place }, rawUrl };
+  }
+
   return { ok: false, error: { kind: "unknown_type", type: host }, rawUrl };
+}
+
+function buildSettingsTarget(entryIdRaw: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
+  const entryId = entryIdRaw.trim().toLowerCase();
+  if (!SETTINGS_ENTRY_ID_RE.test(entryId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid setting id" }, rawUrl };
+  }
+  const machineId = searchParams.get("machine")?.trim() ?? "";
+  if (machineId && !isValidOpaqueId(machineId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid machine id" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "settings", entryId, ...(machineId ? { machineId } : {}) }, rawUrl };
 }
 
 function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
@@ -657,6 +725,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
       rawUrl,
     };
   }
+  if (type === "settings") return buildSettingsTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
 }
 
@@ -845,6 +914,10 @@ export function describeTarget(target: DeeplinkTarget): string {
         : `PR #${target.prNumber}`;
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
+    case "settings":
+      return "ADE setting";
+    case "open":
+      return `ADE ${target.place}`;
   }
 }
 
@@ -912,5 +985,9 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         issueIdentifier: target.issueIdentifier,
         branch: target.branch ?? null,
       };
+    case "settings":
+      return { kind: "settings", entryId: target.entryId, machineId: target.machineId ?? null };
+    case "open":
+      return { kind: "open-place", place: target.place };
   }
 }

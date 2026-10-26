@@ -101,7 +101,7 @@ export const WORK_SURFACE_HEADER_ACTION_BASE =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 
 export const WORK_SURFACE_HEADER_ACTION_IDLE =
-  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
+  "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/70 hover:border-fg/[0.10] hover:text-fg/85 disabled:opacity-40 disabled:hover:text-muted-fg/70";
 
 /** Canonical 32px title rail shared by chat and CLI work surfaces. */
 export const WORK_SURFACE_HEADER_CLASS = "ade-work-surface-header flex h-8 items-center px-2";
@@ -173,7 +173,10 @@ export type WorkSurfaceHeaderProps = {
 export type CenteredWorkSurfaceHeaderProps = Omit<
   WorkSurfaceHeaderProps,
   "laneChipName" | "laneChipColor" | "showLaneChip" | "onLaneChipClick"
->;
+> & {
+  /** Pinned to the left edge, opposite the action cluster (a subagent's way back). */
+  leadingAction?: ReactNode;
+};
 
 /**
  * The parts both header layouts share: the title drag props of a grid tile,
@@ -301,6 +304,7 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
   const {
     title,
     titleAccessory,
+    leadingAction,
     showCacheBadge = false,
     cacheIdleSinceAt,
     promptCache,
@@ -312,13 +316,15 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     testId,
   } = props;
   const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolButtons } = useWorkSurfaceHeaderParts(props);
-  // The title is centred on the whole row, so it needs the right cluster's
+  // The title is centred on the whole row, so it needs the wider side cluster's
   // width reserved on BOTH sides; a fixed inset let a PR badge in a narrow grid
-  // tile run straight over the title. Measured, because the cluster's contents
-  // (PR state, cache chip, snooze) change per chat.
+  // tile run straight over the title. Measured, because the clusters' contents
+  // (PR state, cache chip, snooze, a subagent's way back) change per chat.
   const rowRef = useRef<HTMLDivElement | null>(null);
   const clusterRef = useRef<HTMLDivElement | null>(null);
-  const [widths, setWidths] = useState({ row: 0, cluster: 0 });
+  const leadingRef = useRef<HTMLDivElement | null>(null);
+  const [widths, setWidths] = useState({ row: 0, cluster: 0, leading: 0 });
+  const hasLeading = leadingAction != null;
   useLayoutEffect(() => {
     const row = rowRef.current;
     const cluster = clusterRef.current;
@@ -327,21 +333,28 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
       const next = {
         row: Math.floor(toLayoutPx(row.getBoundingClientRect().width)),
         cluster: Math.ceil(toLayoutPx(cluster.getBoundingClientRect().width)),
+        leading: leadingRef.current ? Math.ceil(toLayoutPx(leadingRef.current.getBoundingClientRect().width)) : 0,
       };
-      setWidths((previous) => (previous.row === next.row && previous.cluster === next.cluster ? previous : next));
+      setWidths((previous) => (
+        previous.row === next.row && previous.cluster === next.cluster && previous.leading === next.leading
+          ? previous
+          : next
+      ));
     };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(row);
     observer.observe(cluster);
+    if (leadingRef.current) observer.observe(leadingRef.current);
     return () => observer.disconnect();
-  }, []);
-  const centredInset = Math.max(64, widths.cluster + 12);
-  // Too narrow to centre with the cluster's width reserved on both sides: the
-  // title moves to the left edge and truncates, instead of vanishing.
+  }, [hasLeading]);
+  const centredInset = Math.max(64, Math.max(widths.cluster, widths.leading) + 12);
+  // Too narrow to centre with the clusters' width reserved on both sides: the
+  // title moves to the left edge (after any leading action) and truncates,
+  // instead of vanishing.
   const leftAligned = widths.row > 0 && widths.row - centredInset * 2 < 140;
   const titleBoxStyle = leftAligned
-    ? { paddingLeft: 12, paddingRight: widths.cluster + 12, justifyContent: "flex-start" as const }
+    ? { paddingLeft: widths.leading + 12, paddingRight: widths.cluster + 12, justifyContent: "flex-start" as const }
     : { paddingInline: centredInset };
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, "relative", className)} data-testid={testId} onContextMenu={onContextMenu}>
@@ -361,6 +374,11 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
             {leftAligned ? null : titleAccessory}
           </div>
         </div>
+        {hasLeading ? (
+          <div ref={leadingRef} className="relative z-10 flex min-w-0 shrink items-center">
+            {leadingAction}
+          </div>
+        ) : null}
         <div ref={clusterRef} className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} cache={promptCache} />

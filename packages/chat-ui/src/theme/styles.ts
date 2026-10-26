@@ -325,6 +325,79 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   outline-offset: 2px;
 }
 
+/* Pending input, queue and account surfaces ------------------------------ */
+.adechat-pending-question {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--adechat-space) * 0.75);
+  min-width: 0;
+  margin: 0;
+  padding: calc(var(--adechat-space) * 0.75);
+  border: 1px solid var(--adechat-border);
+  border-radius: var(--adechat-radius-sm);
+}
+.adechat-pending-question legend { padding: 0 calc(var(--adechat-space) * 0.5); font-weight: 600; }
+.adechat-pending-plan,
+.adechat-pending-description { margin: 0; white-space: pre-wrap; }
+.adechat-pending-option { display: flex; align-items: flex-start; gap: calc(var(--adechat-space) * 0.75); }
+.adechat-pending-option span { display: flex; flex-direction: column; gap: calc(var(--adechat-space) * 0.25); }
+.adechat-pending-option small { color: var(--adechat-muted); }
+.adechat-pending-answer,
+.adechat-queue-edit input,
+.adechat-api-key-form input,
+.adechat-sign-in-code-form input {
+  min-width: 0;
+  width: 100%;
+  padding: calc(var(--adechat-space) * 0.75);
+  border: 1px solid var(--adechat-border);
+  border-radius: var(--adechat-radius-sm);
+  background: var(--adechat-bg);
+  color: var(--adechat-fg);
+  font: inherit;
+}
+.adechat-pending-answer { min-height: 4.5em; resize: vertical; }
+.adechat-queue { padding: calc(var(--adechat-space) * 1.25); border-top: 1px solid var(--adechat-border); }
+.adechat-queue-list { display: flex; flex-direction: column; gap: calc(var(--adechat-space) * 0.75); margin: 0; padding: 0; list-style: none; }
+.adechat-queue-item { display: flex; align-items: center; gap: calc(var(--adechat-space) * 0.75); min-width: 0; }
+.adechat-queue-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.adechat-queue-actions,
+.adechat-queue-edit { display: flex; align-items: center; flex-wrap: wrap; gap: calc(var(--adechat-space) * 0.5); }
+.adechat-queue-edit { flex: 1 1 auto; }
+.adechat-queue-state,
+.adechat-account-state { margin: 0; color: var(--adechat-muted); }
+.adechat-queue-error,
+.adechat-account-error,
+.adechat-usage-limit-error,
+.adechat-slash-error { display: flex; align-items: center; flex-wrap: wrap; gap: calc(var(--adechat-space) * 0.75); color: var(--adechat-danger); }
+.adechat-slash-menu { display: flex; flex-direction: column; max-height: 16rem; overflow-y: auto; padding: calc(var(--adechat-space) * 0.5); border: 1px solid var(--adechat-border); border-radius: var(--adechat-radius-sm); background: var(--adechat-bg-raised); }
+.adechat-slash-option { display: grid; grid-template-columns: auto 1fr; gap: calc(var(--adechat-space) * 0.25) calc(var(--adechat-space) * 0.75); padding: calc(var(--adechat-space) * 0.75); border: 0; border-radius: var(--adechat-radius-sm); background: transparent; color: var(--adechat-fg); text-align: left; font: inherit; cursor: pointer; }
+.adechat-slash-option[aria-selected="true"],
+.adechat-slash-option:hover { background: var(--adechat-hover); }
+.adechat-slash-option small { color: var(--adechat-muted); }
+.adechat-slash-description { grid-column: 1 / -1; color: var(--adechat-muted); font-size: 0.85em; }
+.adechat-slash-state { margin: 0; padding: calc(var(--adechat-space) * 0.75); color: var(--adechat-muted); }
+.adechat-account-list { display: flex; flex-direction: column; gap: calc(var(--adechat-space) * 1); }
+.adechat-account { display: flex; align-items: center; flex-wrap: wrap; gap: calc(var(--adechat-space) * 1); padding: calc(var(--adechat-space) * 1.25); border: 1px solid var(--adechat-border); border-radius: var(--adechat-radius); background: var(--adechat-bg-subtle); }
+.adechat-account-summary { display: flex; flex: 1 1 14rem; flex-direction: column; gap: calc(var(--adechat-space) * 0.25); min-width: 0; }
+.adechat-account-summary span,
+.adechat-usage-meter-reset { color: var(--adechat-muted); font-size: 0.85em; }
+.adechat-usage-meter { display: flex; flex: 1 1 10rem; flex-direction: column; gap: calc(var(--adechat-space) * 0.5); }
+.adechat-usage-meter-label { display: flex; justify-content: space-between; gap: calc(var(--adechat-space) * 1); font-size: 0.85em; }
+.adechat-usage-meter-track { height: 0.45rem; overflow: hidden; border-radius: 999px; background: var(--adechat-border); }
+.adechat-usage-meter-track span { display: block; height: 100%; border-radius: inherit; background: var(--adechat-accent); }
+.adechat-sign-in,
+.adechat-sign-in-code-form,
+.adechat-api-key-form { display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--adechat-space) * 1); }
+.adechat-sign-in-code-form label,
+.adechat-api-key-form label { display: flex; flex-direction: column; gap: calc(var(--adechat-space) * 0.5); width: 100%; }
+.adechat-sign-in-code { overflow-wrap: anywhere; }
+.adechat-account-switcher { display: inline-flex; align-items: center; gap: calc(var(--adechat-space) * 0.75); }
+.adechat-account-switcher select { max-width: 100%; padding: calc(var(--adechat-space) * 0.5); border: 1px solid var(--adechat-border); border-radius: var(--adechat-radius-sm); background: var(--adechat-bg); color: var(--adechat-fg); font: inherit; }
+.adechat-usage-limit { display: flex; align-items: center; flex-wrap: wrap; gap: calc(var(--adechat-space) * 1); padding: calc(var(--adechat-space) * 1.25); border-bottom: 1px solid var(--adechat-border); background: var(--adechat-bg-subtle); }
+.adechat-usage-limit-copy { display: flex; flex: 1 1 14rem; flex-direction: column; gap: calc(var(--adechat-space) * 0.25); }
+.adechat-usage-limit-copy span { color: var(--adechat-muted); font-size: 0.9em; }
+.adechat-usage-limit-actions { display: flex; flex-wrap: wrap; gap: calc(var(--adechat-space) * 0.75); }
+
 /* Live activity ---------------------------------------------------------- */
 
 .adechat-activity {

@@ -209,7 +209,11 @@ function macDesktopWindowsFooter(windows: JsonObject[], options: { elevatedWarni
     ...windows.map((window) => {
       const title = asString(window.title);
       const appName = asString(window.appName) ?? "?";
-      return `  #${window.id ?? "?"} ${appName}${window.elevated === true ? " [admin]" : ""}`
+      // A panel above the app's windows: an alert at the modal layer blocks
+      // its app until it closes, so the agent has to see which one it is.
+      const layer = typeof window.layer === "number" ? window.layer : 0;
+      const panel = layer >= 8 ? " [modal panel]" : layer > 0 ? " [panel]" : "";
+      return `  #${window.id ?? "?"} ${appName}${window.elevated === true ? " [admin]" : ""}${panel}`
         + `${title ? ` — ${title}` : ""}`;
     }),
   ];
@@ -280,6 +284,11 @@ function macDesktopObservationSections(
       "",
       `Truncated: ${elements.length} of ${observation.elementCount ?? "?"} elements shown. Narrow with --window <id>, or raise --limit.`,
     );
+  }
+  const warnings = (Array.isArray(observation.warnings) ? observation.warnings : [])
+    .filter((line): line is string => typeof line === "string" && line.length > 0);
+  if (warnings.length) {
+    sections.push("", ...warnings.map((line) => `Warning: ${line}`));
   }
   sections.push(...macDesktopWindowsFooter(windows));
   return sections;

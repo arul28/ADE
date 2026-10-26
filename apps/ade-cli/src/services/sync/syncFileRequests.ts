@@ -1,9 +1,14 @@
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
-import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
+import { hasNullByte, normalizeRelative, resolvePathWithinRoot, toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
+import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 import type {
   FileContent,
   FilesWorkspace,
+  SyncArtifactRange,
   SyncFileBlob,
   SyncFileRequest,
 } from "../../../../desktop/src/shared/types";
@@ -11,7 +16,7 @@ import type {
 // One project's `file_request` handling, with no sync-host state: the host
 // runs it for its own project, and the brain runs it for a request that names
 // another open project on the machine (a phone reading a lane of that
-// checkout). Artifact reads stay with the host, which owns the artifacts.
+// checkout, or the proof of a chat in it).
 
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
@@ -54,15 +59,15 @@ export function assertFileRequestWorkspaceVisibleToPeer(args: {
 }
 
 /**
- * Runs one `file_request` against a project's file service: every action but
- * the artifact reads, which belong to the sync host's own project. The host
- * uses it for its project; the brain uses it for a request that names another
- * open project (a phone reading a lane of this machine's other checkout).
+ * Runs one `file_request` against a project: its file service, and its proof
+ * files through `opts.artifacts`. The host uses it for its project; the brain
+ * uses it for a request that names another open project (a phone reading a
+ * lane of this machine's other checkout, or the proof of a chat there).
  */
 export async function runSyncFileServiceRequest(
   fileService: ReturnType<typeof createFileService>,
   payload: SyncFileRequest,
-  opts: { isMobile: boolean },
+  opts: { isMobile: boolean; artifacts?: SyncArtifactReads },
 ): Promise<unknown> {
   if (opts.isMobile) {
     const workspaceId = syncFileRequestWorkspaceId(payload);
@@ -101,15 +106,22 @@ export async function runSyncFileServiceRequest(
       fileService.rename(payload.args);
       return { ok: true };
     case "deletePath":
-      fileService.deletePath(payload.args);
+      await fileService.deletePath(payload.args);
       return { ok: true };
     case "quickOpen":
       return await fileService.quickOpen(payload.args);
     case "searchText":
       return await fileService.searchText(payload.args);
+    case "readArtifact":
+      if (opts.artifacts) return await opts.artifacts.readArtifact(payload.args);
+      break;
+    case "readArtifactRange":
+      if (opts.artifacts) return await opts.artifacts.readArtifactRange(payload.args);
+      break;
     default:
-      throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
+      break;
   }
+  throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
 }
 
 export function inferMimeType(filePath: string): string | null {
@@ -163,4 +175,127 @@ export function fileContentToBlob(filePath: string, content: FileContent): SyncF
     ...(typeof content.isPartial === "boolean" ? { isPartial: content.isPartial } : {}),
     ...(typeof content.totalSize === "number" ? { totalSize: content.totalSize } : {}),
   };
+}
+
+/** The largest proof file one whole-file `readArtifact` returns; larger ones are read in slices. */
+const MAX_SYNC_ARTIFACT_BYTES = CURSOR_CLOUD_ARTIFACT_MAX_BYTES;
+
+function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
+  const mimeType = inferMimeType(filePath);
+  // An image is binary whatever its first 8 KiB holds: the NUL scan is only a guess
+  // about the bytes, and the type is known. Read as UTF-8 an image has no data URL.
+  const isBinary = hasNullByte(buf) || mimeType?.startsWith("image/") === true;
+  return {
+    path: filePath,
+    size: buf.length,
+    mimeType,
+    encoding: isBinary ? "base64" : "utf-8",
+    isBinary,
+    content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
+    languageId: null,
+    previewKind: isBinary ? "binary" : "text",
+  };
+}
+
+/**
+ * The proof-file reads of one project (`readArtifact`, `readArtifactRange`),
+ * jailed to its `.ade/artifacts`. The sync host serves them for its project and
+ * the brain for a request that names another open project; the brain's path
+ * once had none, so a phone could not show the proof of a chat there.
+ */
+export type SyncArtifactReads = ReturnType<typeof createSyncArtifactReads>;
+
+export function createSyncArtifactReads(deps: {
+  projectRoot: string;
+  artifactsDir: string;
+  findArtifactUri: (artifactId: string) => string | null;
+}) {
+  function resolveArtifactPath(
+    request: Extract<SyncFileRequest, { action: "readArtifact" | "readArtifactRange" }>["args"],
+  ): string {
+    const artifactId = toOptionalString(request.artifactId);
+    const explicitUri = toOptionalString(request.uri) ?? toOptionalString(request.path);
+    let candidate = explicitUri;
+    if (artifactId) {
+      candidate = deps.findArtifactUri(artifactId) ?? candidate;
+    }
+    if (!candidate) {
+      throw new Error("Artifact request requires artifactId, uri, or path.");
+    }
+    if (/^https?:\/\//i.test(candidate)) {
+      throw new Error("Remote artifact URLs are not supported by this sync host.");
+    }
+    // Stored URIs use the `ade-artifact://project/<relative>` form the renderer
+    // and the remote-command service both understand. Without stripping the
+    // scheme here the phone resolves a path that starts with "project/" and
+    // every artifact read fails.
+    if (/^ade-artifact:\/\/project(?:\/|$)/i.test(candidate)) {
+      try {
+        candidate = decodeURIComponent(new URL(candidate).pathname.replace(/^\/+/, ""));
+      } catch {
+        throw new Error("Artifact URI is invalid.");
+      }
+    }
+    if (/^file:\/\//i.test(candidate)) {
+      try {
+        candidate = fileURLToPath(candidate);
+      } catch {
+        throw new Error("Artifact file URL is invalid.");
+      }
+    }
+    const absolute = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(deps.projectRoot, candidate);
+    let resolvedArtifactPath: string;
+    try {
+      resolvedArtifactPath = resolvePathWithinRoot(deps.artifactsDir, absolute);
+    } catch {
+      throw new Error("Artifact path must resolve within .ade/artifacts.");
+    }
+    return resolvedArtifactPath;
+  }
+
+  async function readArtifact(
+    request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"],
+  ): Promise<SyncFileBlob> {
+    const artifactPath = resolveArtifactPath(request);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(artifactPath);
+    } catch {
+      throw new Error("Artifact file does not exist.");
+    }
+    if (!stat.isFile()) {
+      throw new Error("Artifact file does not exist.");
+    }
+    if (stat.size > MAX_SYNC_ARTIFACT_BYTES) {
+      throw new Error(
+        `Artifact is too large to sync (${stat.size} bytes; max ${MAX_SYNC_ARTIFACT_BYTES} bytes).`,
+      );
+    }
+    const buffer = await fs.promises.readFile(artifactPath);
+    return createBlobFromBuffer(normalizeRelative(path.relative(deps.projectRoot, artifactPath)), buffer);
+  }
+
+  /**
+   * The same jail as `readArtifact`, one bounded slice at a time, so a phone
+   * can play a recording larger than the whole-file cap.
+   */
+  async function readArtifactRange(
+    request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
+  ): Promise<SyncArtifactRange> {
+    const artifactPath = resolveArtifactPath(request);
+    const range = await readArtifactByteRange(artifactPath, request.offset, request.length);
+    return {
+      path: normalizeRelative(path.relative(deps.projectRoot, artifactPath)),
+      totalSize: range.totalSize,
+      rangeStart: range.rangeStart,
+      rangeEnd: range.rangeEnd,
+      encoding: "base64",
+      content: range.base64,
+      eof: range.eof,
+    };
+  }
+
+  return { readArtifact, readArtifactRange };
 }

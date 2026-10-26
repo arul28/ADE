@@ -572,7 +572,8 @@ struct WorkChatMessageBubble: View, Equatable {
       .frame(maxWidth: .infinity, alignment: .leading)
     .workAssistantMessageContextMenu(
       onCopy: { UIPasteboard.general.string = message.markdown },
-      onOpenFullOutput: onOpenFullOutput
+      onOpenFullOutput: onOpenFullOutput,
+      linkTexts: [preview.text]
     )
     .accessibilityElement(children: .contain)
     .adeInspectable(
@@ -679,6 +680,7 @@ struct WorkChatMessageBubble: View, Equatable {
       } label: {
         Label("Copy message", systemImage: "doc.on.doc")
       }
+      WorkMessageLinkMenuItems(source: .user(message.markdown, attachments: message.attachments))
     }
     .accessibilityElement(children: .contain)
     .adeInspectable(
@@ -759,10 +761,16 @@ struct WorkChatMessageBubble: View, Equatable {
 func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   switch chip.origin {
   case .link(let link):
+    // A setting or a desktop page is changed in ADE on a computer; the pill
+    // names where, and a tap here would have nowhere to land.
+    if link.kind == .setting || link.kind == .place { return nil }
     return URL(string: link.url)
-  case .model, .permission, .skill:
-    // A model, permission or skill chip names a setting, not a place.
+  case .model, .permission:
+    // A model or permission chip names a setting, not a place.
     return nil
+  case .skill(let name):
+    // Opens the skill's instructions, on a surface that has the sheet.
+    return workSkillURL(name: name)
   case .browserTab:
     // The tab is a live host-side resource, not an iOS deeplink target.
     return nil
@@ -844,6 +852,9 @@ func workChipPill(
 /// to the system.
 @MainActor
 func workOpenChipURL(_ url: URL) -> OpenURLAction.Result {
+  // A skill chip on a surface without the instructions sheet: nothing to
+  // open, and the system must never be handed the app-internal scheme.
+  if workSkillName(from: url) != nil { return .handled }
   guard url.scheme?.lowercased() == "ade" else { return .systemAction }
   if url.host?.lowercased() == "lane",
      let laneId = url.pathComponents.first(where: { $0 != "/" })?.removingPercentEncoding,
@@ -983,6 +994,7 @@ func workUserTextLooksLikeMarkdown(_ text: String) -> Bool {
 }
 
 struct WorkChipMessageText: View {
+  @Environment(\.workSkillInstructions) private var skillInstructions
   let text: String
   /// The message's attachments. `[Image #k]` / `[File #k: …]` tokens resolve
   /// against these; with none, every such token stays text.
@@ -1046,6 +1058,10 @@ struct WorkChipMessageText: View {
 
   private var chipOpenURLAction: OpenURLAction {
     OpenURLAction { url in
+      if let name = workSkillName(from: url) {
+        skillInstructions?.present(name: name)
+        return .handled
+      }
       if url.scheme?.lowercased() == "ade", url.host?.lowercased() == "machine",
          let key = url.pathComponents.dropFirst().first?.removingPercentEncoding,
          let machine = AccountService.shared.machines.first(where: { workMachineMentionId($0) == key })
@@ -2248,9 +2264,13 @@ extension View {
   /// and the full-output viewer. Shared so the bubble and the split markdown /
   /// monospaced rows of the same message cannot drift apart in wording or in
   /// which actions they offer.
+  ///
+  /// `linkTexts` is the inline text the row draws; its links get a section of
+  /// their own (`WorkMessageLinkMenuItems`), found only when the menu opens.
   func workAssistantMessageContextMenu(
     onCopy: @escaping () -> Void,
-    onOpenFullOutput: @escaping () -> Void
+    onOpenFullOutput: @escaping () -> Void,
+    linkTexts: [String] = []
   ) -> some View {
     contextMenu {
       Button(action: onCopy) {
@@ -2258,6 +2278,9 @@ extension View {
       }
       Button(action: onOpenFullOutput) {
         Label("Open full response", systemImage: "arrow.up.left.and.arrow.down.right")
+      }
+      if !linkTexts.isEmpty {
+        WorkMessageLinkMenuItems(source: .assistant(linkTexts))
       }
     }
   }

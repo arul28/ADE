@@ -178,7 +178,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
@@ -429,7 +429,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
@@ -751,7 +751,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's
@@ -927,7 +927,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # Restore-only: a cache saved on a release tag is invisible to the next
       # release, so saving here only filled the repo's 10 GB cache limit. main's

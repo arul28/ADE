@@ -40,8 +40,7 @@ struct HubChatBoardState: Hashable {
 ///
 ///   awaiting, failed                 → Needs you
 ///   snoozed (not failed or awaiting) → Waiting, reason snoozed
-///   running, lane PR CI or review    → Waiting, reason ci / review
-///   running                          → Working
+///   running (whatever the lane PR)   → Working
 ///   idle, scheduled wake pending     → Waiting, reason scheduled
 ///   idle, ended                      → Done
 func hubChatBoardState(
@@ -60,9 +59,8 @@ func hubChatBoardState(
   }
   switch chat.status {
   case .running:
-    if let reason = ActivityWaitingReason(wireValue: lane?.prWaitingReason), reason != .snoozed {
-      return HubChatBoardState(column: .waiting, failed: false, waitingReason: reason)
-    }
+    // A live turn is Working even while its lane's PR is in CI or review —
+    // the desktop Work board's rule.
     return HubChatBoardState(column: .working, failed: false, waitingReason: nil)
   case .idle where workScheduledWakeIsPending(chat.nextWakeAt, now: now):
     return HubChatBoardState(column: .waiting, failed: false, waitingReason: .scheduled)

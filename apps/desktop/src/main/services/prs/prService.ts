@@ -168,7 +168,9 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { classifyGitPushFailure, runGitPushOrThrow } from "../git/gitPushFailure";
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -247,6 +249,7 @@ import {
   toPrReactions,
   type GithubCommentSource,
 } from "./prCommentMutations";
+import { redactGitOutput } from "../../utils/redaction";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -1612,6 +1615,58 @@ export function createPrService({
   const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
   const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
   const linkPrToChatSession = chatLinks.linkPrToChatSession;
+  /**
+   * Link a PR to a chat and then to every chat in its spawn tree, so the
+   * chat that started a subagent shows the PR the subagent opened (and the
+   * other way round). The family only follows a link that was allowed: it
+   * comes from the chat that was just linked, never from the caller. Family
+   * members may sit on other lanes; a spawn tree is one piece of work.
+   */
+  const linkPrToChatFamily = (
+    linkArgs: Parameters<typeof linkPrToChatSession>[0],
+    options: { emit?: boolean } = {},
+  ): { ok: boolean; addedFamilySessionIds: string[] } => {
+    if (!linkPrToChatSession(linkArgs)) return { ok: false, addedFamilySessionIds: [] };
+    const prId = linkArgs.prId;
+    const sessionId = resolveCanonicalChatSessionId(String(linkArgs.sessionId ?? "")) ?? "";
+    let relatives: string[] = [];
+    try {
+      relatives = sessionId ? agentChatService?.getChatFamilySessionIds?.(sessionId) ?? [] : [];
+    } catch (error) {
+      logger.warn("prs.chat_family_lookup_failed", { prId, sessionId, error: getErrorMessage(error) });
+    }
+    /**
+     * Whether this chat already had the edge, read the same way
+     * `linkPrToChatSession` does. A caller that rolls a partial link back may
+     * only remove what this call created; an unreadable answer counts as
+     * present, so a rollback cannot delete someone else's edge.
+     */
+    const alreadyLinked = (relativeId: string): boolean => {
+      try {
+        return Boolean(db.get(
+          `select 1 as present from pull_request_chat_sessions
+            where project_id = ? and pr_id = ? and session_id = ? limit 1`,
+          [projectId, prId, relativeId],
+        ));
+      } catch (error) {
+        logger.warn("prs.chat_family_edge_read_failed", { prId, sessionId: relativeId, error: getErrorMessage(error) });
+        return true;
+      }
+    };
+    const addedFamilySessionIds: string[] = [];
+    for (const relativeId of relatives) {
+      // A chat that unlinked this PR keeps it unlinked.
+      if (hasChatSessionDismissal(prId, relativeId)) continue;
+      const existed = alreadyLinked(relativeId);
+      if (linkPrToChatSession({ prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true }) && !existed) {
+        addedFamilySessionIds.push(relativeId);
+      }
+    }
+    // The relatives' lists changed even when this PR's own summary did not, so
+    // a caller that relies on its own refresh to emit would leave them stale.
+    if (options.emit !== false && addedFamilySessionIds.length > 0) emitPrsUpdated();
+    return { ok: true, addedFamilySessionIds };
+  };
   const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
   const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
   const pendingAgentStackAttaches = chatLinks.pendingAgentStackAttaches;
@@ -2511,11 +2566,10 @@ export function createPrService({
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
-    if (upstreamCheck.exitCode === 0) {
-      await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-      return;
-    }
-    await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const pushArgs = upstreamCheck.exitCode === 0
+      ? ["push", "--force-with-lease"]
+      : ["push", "-u", "origin", headBranch];
+    await runGitPushOrThrow(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: headBranch });
   };
 
   const restoreAutoRebaseChildLane = async (args: {
@@ -3261,7 +3315,7 @@ export function createPrService({
       return;
     }
     for (const session of sessions) {
-      linkPrToChatSession({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
+      linkPrToChatFamily({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
     }
   };
 
@@ -4327,7 +4381,7 @@ export function createPrService({
     branch: string;
     headBranch: string;
   }): Promise<void> => {
-    const fetchResult = await runGit([
+    const fetchResult = await runGitWithGithubAuthFallback([
       "fetch",
       "--prune",
       args.remote,
@@ -4338,7 +4392,7 @@ export function createPrService({
       maxOutputBytes: 256 * 1024,
     });
     if (fetchResult.exitCode === 0) return;
-    const detail = (fetchResult.stderr || fetchResult.stdout).trim();
+    const detail = redactGitOutput((fetchResult.stderr || fetchResult.stdout).trim());
     throw new Error(`Could not check the remote branch "${args.headBranch}" before creating the PR.${detail ? ` ${detail}` : ""}`);
   };
 
@@ -4352,7 +4406,7 @@ export function createPrService({
       { cwd: args.cwd, timeoutMs: 15_000 }
     );
     if (result.exitCode !== 0) {
-      const detail = (result.stderr || result.stdout).trim();
+      const detail = redactGitOutput((result.stderr || result.stdout).trim());
       throw new Error(`Could not compare "${args.headBranch}" with remote before creating the PR.${detail ? ` ${detail}` : ""}`);
     }
     const counts = parseLeftRightCounts(result.stdout);
@@ -4407,7 +4461,7 @@ export function createPrService({
       };
     }
 
-    const remoteBranchCheck = await runGit(["ls-remote", "--heads", "origin", headBranch], {
+    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", headBranch], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
       maxOutputBytes: 256 * 1024,
@@ -4473,16 +4527,19 @@ export function createPrService({
     const pushArgs = readiness.hasUpstream
       ? ["push"]
       : ["push", "-u", "origin", headBranch];
-    const pushResult = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const pushResult = await runGitWithGithubAuthFallback(pushArgs, {
+      cwd: lane.worktreePath,
+      timeoutMs: 60_000,
+    });
     if (pushResult.exitCode === 0) return;
 
-    const detail = (pushResult.stderr || pushResult.stdout).trim();
-    const detailLower = detail.toLowerCase();
-    if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
-      throw new Error(
-        `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`
-      );
+    const raw = (pushResult.stderr || pushResult.stdout).trim();
+    const failure = classifyGitPushFailure(raw, { branch: headBranch });
+    const detail = redactGitOutput(raw);
+    if (failure?.kind === "non_fast_forward") {
+      throw new Error(`${failure.message} ADE did not force-push.\n\n${detail}`);
     }
+    if (failure) throw new Error(`${redactGitOutput(failure.message)}\n\n${detail}`);
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
@@ -4748,7 +4805,7 @@ export function createPrService({
     headSha: string | null;
   }): Promise<CreateLaneFromPrBranchBlock | null> => {
     const remoteRef = `origin/${args.headBranch}`;
-    const lsRemote = await runGit(["ls-remote", "--heads", "origin", args.headBranch], {
+    const lsRemote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", args.headBranch], {
       cwd: projectRoot,
       timeoutMs: 30_000,
     });
@@ -4756,11 +4813,18 @@ export function createPrService({
       ? parseRemoteBranchSha(lsRemote.stdout, args.headBranch)
       : null;
 
+    // When git could not reach the remote at all, its error is the answer,
+    // not "branch not found". A remote that answered without the branch
+    // settles it, whatever a later fetch says.
+    let remoteFailure = "";
     if (!remoteSha) {
-      await runGit(["fetch", "--prune", "origin"], {
+      const fetched = await runGitWithGithubAuthFallback(["fetch", "--prune", "origin"], {
         cwd: projectRoot,
-        timeoutMs: 60_000,
-      }).catch(() => null);
+        timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
+      });
+      if (lsRemote.exitCode !== 0 && fetched.exitCode !== 0) {
+        remoteFailure = fetched.stderr.trim() || lsRemote.stderr.trim();
+      }
       const cached = await runGit(["rev-parse", "--verify", `refs/remotes/${remoteRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
@@ -4771,7 +4835,9 @@ export function createPrService({
     if (!remoteSha) {
       return createLaneFromPrBranchBlock(
         "remote_branch_missing",
-        `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
+        remoteFailure
+          ? `ADE could not read '${remoteRef}' from the remote. ${formatGitExecutionError(remoteFailure)}`
+          : `Remote branch '${remoteRef}' was not found. It may have been deleted.`,
       );
     }
 
@@ -4805,7 +4871,7 @@ export function createPrService({
     const headRepoLabel = `${args.headRepoOwner}/${args.headRepoName}`;
 
     const localRemoteRef = `refs/remotes/${prHeadImportRef(args.githubPrNumber, args.headBranch)}`;
-    const fetch = await runGit([
+    const fetch = await runGitWithGithubAuthFallback([
       "fetch",
       "origin",
       `+refs/pull/${args.githubPrNumber}/head:${localRemoteRef}`,
@@ -4814,7 +4880,7 @@ export function createPrService({
       timeoutMs: 60_000,
     });
     if (fetch.exitCode !== 0) {
-      const detail = (fetch.stderr || fetch.stdout).trim();
+      const detail = redactGitOutput((fetch.stderr || fetch.stdout).trim());
       return createLaneFromPrBranchBlock(
         "fork_unavailable",
         `Fork PR branch '${headRepoLabel}:${args.headBranch}' could not be fetched from ${args.repo.owner}/${args.repo.name}${detail ? `: ${detail}` : "."}`,
@@ -7388,8 +7454,8 @@ export function createPrService({
    * is actually on before using the record.
    */
   const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
-    const head = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
-    const checkedOut = head.exitCode === 0 ? head.stdout.trim() : "";
+    const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
+    const checkedOut = head.exitCode === 0 ? branchNameFromHeadRef(head.stdout) : "";
     if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;
     laneService.updateBranchRef(lane.id, checkedOut);
     return { ...lane, branchRef: checkedOut };
@@ -7605,7 +7671,7 @@ export function createPrService({
     // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
     // internal parent-chat stack attach, not an arbitrary agent-supplied
     // session id on create.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId });
     if (args.source === "agent") {
       chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
       attachNewStackLayerToParentChats({ prId, laneId: lane.id });
@@ -7760,7 +7826,7 @@ export function createPrService({
     // Edges from other lanes survive: one PR can legitimately be referenced by
     // several chats. Cross-lane links are allowed for GitHub stack members or
     // an explicit pick.
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
+    linkPrToChatFamily({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     if (headMatchesLane) {
       await publishLinearPrCardsForLane({
@@ -7883,7 +7949,7 @@ export function createPrService({
         const deleteFlag = state === "merged" ? "-D" : "-d";
         const deleted = await runGit(["branch", deleteFlag, branchName], { cwd: projectRoot, timeoutMs: 30_000 });
         if (deleted.exitCode === 0) result.localDeleted = true;
-        else result.localError = deleted.stderr || deleted.stdout || `Failed to delete local branch ${branchName}`;
+        else result.localError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete local branch ${branchName}`;
       }
     }
 
@@ -7893,14 +7959,14 @@ export function createPrService({
       if (remoteCheck.exitCode !== 0) {
         result.remoteError = `Remote '${remote}' is not configured for this repository`;
       } else {
-        const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
+        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
           cwd: projectRoot,
           timeoutMs: 12_000,
         });
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
-          const deleted = await runGit(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+          const deleted = await runGitWithGithubAuthFallback(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
           if (deleted.exitCode === 0) result.remoteDeleted = true;
-          else result.remoteError = deleted.stderr || deleted.stdout || `Failed to delete remote branch ${branchName}`;
+          else result.remoteError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete remote branch ${branchName}`;
         }
       }
     }
@@ -9421,8 +9487,8 @@ export function createPrService({
               let theirsExcerpt: string | null = null;
               try {
                 const [diffA, diffB] = await Promise.all([
-                  runGit(["diff", `${baseSha}..${laneA.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
-                  runGit(["diff", `${baseSha}..${laneB.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+                  runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneA.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                  runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneB.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
                 ]);
                 if (diffA.exitCode === 0 && diffA.stdout.trim()) oursExcerpt = diffA.stdout.slice(0, 500);
                 if (diffB.exitCode === 0 && diffB.stdout.trim()) theirsExcerpt = diffB.stdout.slice(0, 500);
@@ -9499,8 +9565,8 @@ export function createPrService({
             let theirsExcerpt: string | null = null;
             try {
               const [diffI, diffS] = await Promise.all([
-                runGit(["diff", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
-                runGit(["diff", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+                runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${mergeIntoHeadSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${baseSha}..${laneSummary.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
               ]);
               if (diffI.exitCode === 0 && diffI.stdout.trim()) oursExcerpt = diffI.stdout.slice(0, 500);
               if (diffS.exitCode === 0 && diffS.stdout.trim()) theirsExcerpt = diffS.stdout.slice(0, 500);
@@ -12489,14 +12555,40 @@ export function createPrService({
         [args.prId, projectId],
       );
       if (!pr) return { ok: false };
-      const ok = linkPrToChatSession({
+      const ok = linkPrToChatFamily({
         prId: pr.id,
         laneId: pr.lane_id,
         sessionId: args.sessionId,
         allowCrossLane: args.allowCrossLane === true,
-      });
+      }).ok;
       if (ok) emitPrsUpdated();
       return { ok };
+    },
+
+    /**
+     * A chat spawned by another chat shows the open PRs its parent has. An
+     * internal seam for agentChatService's spawn path, not a renderer action.
+     */
+    linkChatToParentPrs(args: { sessionId: string; parentSessionId: string }): void {
+      let rows: Array<{ id: string; lane_id: string }> = [];
+      try {
+        rows = db.all<{ id: string; lane_id: string }>(
+          `select pr.id, pr.lane_id
+             from pull_request_chat_sessions pcs
+             join pull_requests pr on pr.id = pcs.pr_id and pr.project_id = pcs.project_id
+            where pcs.project_id = ? and pcs.session_id = ?
+              and pr.${LIVE_PR_ROWS} and pr.state in ('open', 'draft')`,
+          [projectId, args.parentSessionId],
+        );
+      } catch (error) {
+        logger.warn("prs.parent_chat_prs_read_failed", { sessionId: args.sessionId, error: getErrorMessage(error) });
+        return;
+      }
+      let linked = false;
+      for (const row of rows) {
+        if (linkPrToChatSession({ prId: row.id, laneId: row.lane_id, sessionId: args.sessionId, allowCrossLane: true })) linked = true;
+      }
+      if (linked) emitPrsUpdated();
     },
 
     /**
@@ -12586,7 +12678,7 @@ export function createPrService({
           throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
         }
         // An explicit watch is an explicit link, even over an earlier unlink.
-        if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+        if (linkPrToChatFamily({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true }).ok) {
           emitPrsUpdated();
         }
         record = chatWatchStore.arm({
@@ -12638,14 +12730,15 @@ export function createPrService({
           .map((sibling) => sibling.prId),
       );
       const linkedIds: string[] = [];
+      const linkedFamilyEdges: Array<{ prId: string; sessionId: string }> = [];
       for (const sibling of unclaimed) {
-        const ok = linkPrToChatSession({
+        const result = linkPrToChatFamily({
           prId: sibling.prId,
           laneId: sibling.laneId,
           sessionId: offer.sessionId,
           allowCrossLane: true,
-        });
-        if (!ok) {
+        }, { emit: false });
+        if (!result.ok) {
           for (const prId of linkedIds) {
             unlinkPrFromChatSession({
               prId,
@@ -12653,9 +12746,17 @@ export function createPrService({
               dismiss: restoreDismissals.has(prId),
             });
           }
+          // Family edges are new rows, never a restored unlink, so they go
+          // without a tombstone.
+          for (const edge of linkedFamilyEdges) {
+            unlinkPrFromChatSession({ ...edge, dismiss: false });
+          }
           return { ok: false, linked: 0 };
         }
         linkedIds.push(sibling.prId);
+        for (const sessionId of result.addedFamilySessionIds) {
+          linkedFamilyEdges.push({ prId: sibling.prId, sessionId });
+        }
       }
       if (linkedIds.length > 0) emitPrsUpdated();
       return { ok: true, linked: linkedIds.length };

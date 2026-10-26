@@ -68,10 +68,48 @@ function shimSafe(value: string | null, platform: NodeJS.Platform): value is str
 }
 
 /**
+ * The `#!/bin/sh` body both POSIX shims share: the brain defaults, NODE_PATH,
+ * then the entry. A Windows brain writes the same script for Git Bash, with
+ * forward-slash paths and Node's `;` NODE_PATH separator.
+ */
+function renderShShim(args: {
+  entryPath: string;
+  execPath: string;
+  defaults: ReadonlyArray<readonly [string, string]>;
+  nodeModulePaths: readonly string[];
+  /** `:` on Unix, `;` on Windows: how Node splits NODE_PATH. */
+  pathSeparator: string;
+  /** A Windows path as Git Bash reads it; the identity on Unix. */
+  toSh?: (value: string) => string;
+}): string {
+  const toSh = args.toSh ?? ((value: string) => value);
+  // A JS entry runs under the runtime that wrote the shim; anything else runs as is.
+  const isJsEntry = /\.(?:cjs|mjs|js)$/i.test(args.entryPath);
+  const lines = ["#!/bin/sh"];
+  if (args.defaults.length) {
+    lines.push(
+      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
+      ...args.defaults.map(([name, value]) => `  ${name}=${shellQuote(value)}; export ${name}`),
+      "fi",
+    );
+  }
+  if (isJsEntry && args.nodeModulePaths.length) {
+    const separator = args.pathSeparator;
+    lines.push(`NODE_PATH=${shellQuote(args.nodeModulePaths.join(separator))}\${NODE_PATH:+${separator}$NODE_PATH}; export NODE_PATH`);
+  }
+  lines.push(isJsEntry
+    ? `ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(toSh(args.execPath))} ${shellQuote(toSh(args.entryPath))} "$@"`
+    : `exec ${shellQuote(toSh(args.entryPath))} "$@"`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
  * The `ade` shim an agent runs. It names the brain that wrote it: when the
  * caller's env picks no brain (no ADE_HOME and no ADE_RUNTIME_SOCKET_PATH),
  * it defaults both to this brain's. A caller that set either keeps its choice,
  * and `--socket <path>` still wins because the CLI reads it before the env.
+ *
+ * On Windows that is `ade.cmd`, which PowerShell and cmd.exe run.
  */
 export function renderAdeCliShim(args: {
   entryPath: string;
@@ -83,13 +121,13 @@ export function renderAdeCliShim(args: {
 }): string {
   const platform = args.platform ?? process.platform;
   const nodeModulePaths = (args.nodeModulePaths ?? []).filter((entry) => shimSafe(entry, platform));
-  // A JS entry runs under the runtime that wrote the shim; anything else runs as is.
-  const isJsEntry = /\.(?:cjs|mjs|js)$/i.test(args.entryPath);
   const defaults = [
     ["ADE_HOME", args.brain.adeHome],
     ["ADE_RUNTIME_SOCKET_PATH", args.brain.socketPath],
   ].filter((entry): entry is [string, string] => shimSafe(entry[1], platform));
   if (platform === "win32") {
+    // A JS entry runs under the runtime that wrote the shim; anything else runs as is.
+    const isJsEntry = /\.(?:cjs|mjs|js)$/i.test(args.entryPath);
     const lines = ["@echo off", "setlocal"];
     if (defaults.length) {
       lines.push(
@@ -114,21 +152,47 @@ export function renderAdeCliShim(args: {
     }
     return `${lines.join("\r\n")}\r\n`;
   }
-  const lines = ["#!/bin/sh"];
-  if (defaults.length) {
-    lines.push(
-      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
-      ...defaults.map(([name, value]) => `  ${name}=${shellQuote(value)}; export ${name}`),
-      "fi",
-    );
-  }
-  if (isJsEntry && nodeModulePaths.length) {
-    lines.push(`NODE_PATH=${shellQuote(nodeModulePaths.join(":"))}\${NODE_PATH:+:$NODE_PATH}; export NODE_PATH`);
-  }
-  lines.push(isJsEntry
-    ? `ELECTRON_RUN_AS_NODE=1 exec ${shellQuote(args.execPath)} ${shellQuote(args.entryPath)} "$@"`
-    : `exec ${shellQuote(args.entryPath)} "$@"`);
-  return `${lines.join("\n")}\n`;
+  return renderShShim({
+    entryPath: args.entryPath,
+    execPath: args.execPath,
+    defaults,
+    nodeModulePaths,
+    pathSeparator: ":",
+  });
+}
+
+/**
+ * The extensionless `ade` a Windows brain writes next to `ade.cmd`, for Git
+ * Bash. Git Bash looks up a bare `ade` without trying `.cmd`, so it found
+ * nothing. It also skips cmd.exe, which ends a command line at its first line
+ * feed and cut every multi-line `--prompt` or `--text` to one line. It sets
+ * the same defaults as the `.cmd` and runs the same entry with "$@".
+ *
+ * Paths use forward slashes, which Git Bash runs as Windows paths. The brain
+ * defaults keep their own spelling: a named pipe needs its backslashes.
+ */
+export function renderAdeCliGitBashShim(args: {
+  entryPath: string;
+  execPath: string;
+  brain: AdeCliShimBrain;
+  nodeModulePaths?: readonly string[];
+}): string {
+  // A sh-quoted value has no cmd.exe quoting rule to satisfy, so only a
+  // newline or NUL disqualifies one; the paths are forward-slashed below.
+  const toSh = (value: string): string => value.replace(/\\/g, "/");
+  const nodeModulePaths = (args.nodeModulePaths ?? []).filter((entry) => shimSafe(entry, "linux")).map(toSh);
+  const defaults = [
+    ["ADE_HOME", args.brain.adeHome],
+    ["ADE_RUNTIME_SOCKET_PATH", args.brain.socketPath],
+  ].filter((entry): entry is [string, string] => shimSafe(entry[1], "linux"));
+  return renderShShim({
+    entryPath: args.entryPath,
+    execPath: args.execPath,
+    defaults,
+    nodeModulePaths,
+    pathSeparator: ";",
+    toSh,
+  });
 }
 
 /**

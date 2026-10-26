@@ -109,7 +109,7 @@ Files under `.ade/cto/`, owned by `ctoMemoryService`:
 | --- | --- | --- | --- |
 | `context-store.json` | The one project brief, ranked typed facts (`fact`, `decision`, `convention`, `trap`, `environment`, `pointer`; pinned / active / archived), threads the CTO has directed, and the rolling thread state. Atomic, mode `0600`, gitignored. This is the durable copy: it is not tied to a chat id, so a restart, a crash, and a cleared CTO session leave it in place. When the repo has a git remote, the same rows mirror through the existing account settings store as `ctx.brief`, `ctx.item.<id>`, `ctx.thread.<id>`, `ctx.state`, and `ctx.meta` (about 120 live facts per repo, so many repos fit the account's shared key budget). `setProjectBrief` keeps any field the caller omits. Rows the cap drops are deleted from the account instead of being pulled back on the next reconcile. A retired fact is archived with a new `updatedAt`, so the retirement reaches every machine. | `saveMemory`, `forgetMemory`, the automatic memory pass, `setProjectBrief`, `spawnChat` (thread row), one-time import of `MEMORY.md` bullets | Brief (1.2k), ranked facts (1.8k) the notes file below does not already say, threads (800), ahead of the files below |
 | `MEMORY.md` | Local notes. Still written by `saveMemory`, the automatic memory pass and the memory panel. New `- ` bullets are copied into the context store; the rest of the file is not stored as one fact. `forgetMemory` moves the matching line to `memory-archive.md`. | `saveMemory` tool, the memory pass, `CtoMemoryPanel` edits | Always (tail-capped at 4k chars for injection; disk copy never truncated, hard byte cap 64 KiB drops oldest facts into `memory-archive.md`) |
-| `thread-state.md` | Rolling summary of the current goal, work in flight, decisions, open loops. Mirrored to the context store's `ctx.state`; reads take the newer of the file and the synced copy, so a second machine or a CTO that moved home opens on where the work is. | Deterministic flush + the memory pass | Always (head-capped 3k chars) |
+| `thread-state.md` | Rolling summary of the current goal, work in flight, decisions, open loops. Mirrored to the context store's `ctx.state`; reads take the newer of the file and the synced copy, so a second machine or a CTO that moved home opens on where the work is. | Deterministic flush + the memory pass (every 6 settled turns, or on the next settled turn once the file is 45 min old: a CTO on 30-min scheduled wakes otherwise went 3 h between refreshes) | Always (head-capped 3k chars), under a `(Written 2 h ago. …)` line that tells the model how old it is and that Live project state wins |
 | `daily/<date>.md` | Per-turn journal: `HH:MM — intent → outcome` | Turn-end append (no LLM) | The two most recent daily files that exist (tail-capped 3k chars) |
 | `discoveries.md` / `discoveries-archive.md` / `discoveries.cursor` | The unreviewed worker-discovery queue and its read cursor | The `recordDiscovery` tool, from any agent | Never directly — drained into the CTO's turn (see [Worker discoveries](#worker-discoveries)) |
 
@@ -173,7 +173,7 @@ The CTO is told what is happening rather than asked to go find out. Each CTO tur
 
 Last is deliberate. The turn-context prefix truncates by keeping its tail, so the freshest and most perishable section is placed where a budgeted send cannot cut it.
 
-The snapshot reads six things through `CtoLiveStateSources` — a `Pick` of the operator tools' own dependency surface, so the block and the tools see one project through one set of shapes: open lanes (with dirty/ahead/behind), active chats (title, lane, status, note, lineage), open PRs (checks + review), pending approvals, scheduled work, and recent automation runs. Approvals and scheduled work are derived from the same chat summaries rather than a second round-trip. Rendering runs most- to least-urgent — "Waiting on you" first, automation runs last — and empty sections say `- none`.
+The snapshot reads six things through `CtoLiveStateSources` — a `Pick` of the operator tools' own dependency surface, so the block and the tools see one project through one set of shapes: open lanes (with dirty/ahead/behind), active chats (title, lane, status, note, lineage), open PRs (checks + review), pending approvals, scheduled work, and recent automation runs. Approvals and scheduled work are derived from the same chat summaries rather than a second round-trip. The chat list is read with the identity thread included, for one purpose only: the CTO's own jobs (its launches and check-ins, marked `[yours]`) are part of Scheduled work, which used to leave them out. Scheduled work lists only rows still to run (`scheduled`, `paused`), soonest first. Rendering runs most- to least-urgent — "Waiting on you" first, automation runs last — and empty sections say `- none`.
 
 Every source is read in its own `try`/`catch`; a throw names the source in an `Unavailable this turn:` line rather than blanking the block, and a service that simply is not wired is skipped silently (not the same thing as unavailable). A refresh failure is swallowed and logged — a slow PR refresh must not block the user's turn. Refresh is per-send rather than on a timer, because the block tells the model not to re-derive it, and a stale block is worse than no block.
 
@@ -443,6 +443,21 @@ For git tools the rule is split by whether the call mutates:
 
 The CTO is a director, not a dispatcher: work it starts returns to it without
 being polled for.
+
+`spawnChat` takes `instanceId` (an `accounts[].instanceId` from
+`getUsageSnapshot`) or `credentialId` to pick the account the chat runs on,
+here or with `machine`; without one the target machine picks its default or
+smart-balance account. The result carries `warnings` when the host started the
+chat at a lower permission mode than asked (a chat never gets more access than
+the chat that starts it) or when a named `laneId` already has a chat at work or
+one waiting on the user. A remote spawn's `followUp.scheduleId` is the id of
+the check-in it scheduled on the CTO thread, so `cancelScheduledWork` can take
+it. `sendChatMessage` takes `machine` like the other chat tools.
+`getUsageSnapshot` answers a summary by default (windows, accounts, pacing,
+spend totals and the top models by cost) and the full per-model and per-day
+token breakdowns only with `detail: "full"`; a busy machine's full snapshot is
+about 1 MB of tool output. `listPullRequests` lists open and draft PRs by
+default, newest first, with `state` and `limit`.
 
 `spawnChat` sets `orchestrationParentSessionId` to the calling CTO session
 unconditionally, and `spawnKind` defaults to `"subagent"` — twice, once in the

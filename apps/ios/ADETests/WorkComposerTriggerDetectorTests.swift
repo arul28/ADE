@@ -566,6 +566,8 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     case .machine: return "machine"
     case .mcp: return "mcp"
     case .image: return "image"
+    case .setting: return "setting"
+    case .place: return "place"
     }
   }
 

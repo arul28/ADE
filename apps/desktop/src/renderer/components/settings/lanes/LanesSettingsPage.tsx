@@ -52,7 +52,7 @@ const STORAGE_VIEWS: readonly View[] = [
     id: "cleanup-rules",
     label: "Rules",
     icon: <SlidersHorizontal size={13} weight="duotone" />,
-    anchors: ["lane-storage-rules", "session-lifecycle", "project"],
+    anchors: ["lane-storage-rules", "lane-build-output", "session-lifecycle", "project"],
   },
 ];
 

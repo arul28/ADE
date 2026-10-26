@@ -487,11 +487,13 @@ describe("SessionCard lineage", () => {
     expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Spawned");
   });
 
-  it("moves the status word into the hover card when the row face suppresses it", async () => {
+  it("keeps a failure's word on the card face even when the row suppresses status labels", async () => {
     vi.useFakeTimers();
     const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
     // "Failed" and "Ended" both file under the board's Done column, so the word
-    // is NOT pure duplication — suppressing it on the face must not lose it.
+    // is NOT pure duplication — a suppressed face must still say the turn
+    // failed. Every other settled row drops the word and keeps it in the hover
+    // card; a failure keeps both.
     const failed = makeSession({
       status: "completed",
       runtimeState: "exited",
@@ -500,7 +502,7 @@ describe("SessionCard lineage", () => {
     });
     const { container } = render(<SessionCard {...props} suppressStatusLabel session={failed} />);
 
-    expect(container.querySelector("[data-session-status]")).toBeNull();
+    expect(container.querySelector("[data-session-status]")).toBeTruthy();
 
     fireEvent.mouseEnter(container.querySelector("[data-session-row]") as HTMLElement);
     act(() => { vi.advanceTimersByTime(SESSION_HOVER_CARD_DELAY_MS + 10); });
@@ -948,7 +950,7 @@ describe("SessionCard preview links", () => {
 });
 
 describe("SessionCard status slot", () => {
-  it("swaps the status label out of flow on row hover so the actions can claim its width", () => {
+  it("slides the row actions in beside the status label on hover, leaving the word in place", () => {
     const { container } = render(
       <SessionCard
         session={makeSession({
@@ -966,16 +968,17 @@ describe("SessionCard status slot", () => {
     );
 
     const label = screen.getByTestId("session-status-label");
-    expect(label.className).toContain("group-hover/v2-row:absolute");
-    expect(label.className).toContain("group-hover/v2-row:opacity-0");
+    // A full row has the width for both: the word stays put on hover and is
+    // never hidden under the pointer, so "Needs you" cannot vanish.
+    expect(label.className).not.toContain("group-hover/v2-row:absolute");
 
-    // The action cluster is the mirror image: absolute + transparent at rest,
-    // static + opaque on hover. Going `static` is what makes the swap free.
-    const settle = screen.getByTestId("session-settle-button");
-    const cluster = settle.parentElement!;
+    // The action cluster slides in to its left: absolute + transparent at rest,
+    // static + opaque on hover, ordered first so it claims the space beside it.
+    const cluster = label.parentElement!.lastElementChild as HTMLElement;
     expect(cluster.className).toContain("absolute");
     expect(cluster.className).toContain("group-hover/v2-row:static");
     expect(cluster.className).toContain("group-hover/v2-row:opacity-100");
+    expect(cluster.className).toContain("order-first");
     expect(container.querySelector("[data-session-status-slot]")?.className).toContain("ml-auto");
   });
 
@@ -1160,17 +1163,16 @@ describe("SessionCard status slot", () => {
       />,
     );
 
+    const clusterOf = () =>
+      screen.getByTestId("session-status-label").parentElement!.lastElementChild as HTMLElement;
     const label = screen.getByTestId("session-status-label");
-    const cluster = screen.getByTestId("session-settle-button").parentElement!;
     expect(label.className).not.toContain("absolute right-0 opacity-0");
-    expect(cluster.className).not.toContain("static opacity-100");
+    expect(clusterOf().className).not.toContain("static opacity-100");
 
     fireEvent.click(screen.getByRole("button", { name: "Snooze session" }));
 
     expect(screen.getByTestId("session-status-label").className).toContain("absolute right-0 opacity-0");
-    expect(screen.getByTestId("session-settle-button").parentElement!.className).toContain(
-      "static opacity-100",
-    );
+    expect(clusterOf().className).toContain("static opacity-100");
   });
 
   it("un-pins the slot if the row is blocked while the popover is open", () => {
@@ -1937,13 +1939,13 @@ describe("SessionCard where line", () => {
     // Fixed width at the right edge of the title line, directly beneath the
     // status: the title is elastic because a truncated PR number says nothing.
     expect(badge.className).toContain("shrink-0");
-    const titleSlot = badge.parentElement!;
     const laneIdentity = container.querySelector("[data-session-lane-identity]")!;
     const title = screen.getByText("Build the plan panel");
-    expect(titleSlot.contains(title)).toBe(true);
+    const titleLine = title.parentElement!;
+    expect(titleLine.contains(badge)).toBe(true);
     expect(title.compareDocumentPosition(badge)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(titleSlot.contains(laneIdentity)).toBe(false);
-    expect(laneIdentity.parentElement?.nextElementSibling).toBe(titleSlot);
+    expect(titleLine.contains(laneIdentity)).toBe(false);
+    expect(laneIdentity.parentElement?.nextElementSibling).toBe(titleLine);
 
     fireEvent.click(badge);
     expect(navigateMock).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-1&pr=959&repoOwner=ade-dev&repoName=ade");

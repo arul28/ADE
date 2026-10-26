@@ -391,8 +391,19 @@ export function FilesExplorer({
       ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">
         {rows.length === 0 ? (
-          <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            {searchQuery.trim() ? "No matching paths." : "No files."}
+          // The app's one empty-state style: centred, muted sans, no period,
+          // with the next step when there is one.
+          <div className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]" style={{ color: COLORS.textMuted }}>
+            <span>{searchQuery.trim() ? "No matching paths" : "No files yet"}</span>
+            {searchQuery.trim() ? null : (
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"
+                onClick={() => onCreateFile(activeContextDir)}
+              >
+                New file
+              </button>
+            )}
           </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

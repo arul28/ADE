@@ -344,7 +344,14 @@ function projectItems(report: ProjectHealthReport | null): AttentionItem[] {
     const route = lanes ? settingsRouteFor("lanes-git.lanes") : settingsRouteFor("storage.project-health");
     if (issue.id === "stale-lanes") {
       // A note, not a problem: done lanes take space. The Lanes page is the fix.
-      return [{ id: `project-${issue.id}`, severity: "note", title: issue.title, detail: issue.detail, where: "Project", route }];
+      // The service's sentence is long for a one-line row; the lane list it
+      // describes says the same in a few words.
+      const stale = report.lanes?.filter((lane) => lane.stale) ?? [];
+      const safe = stale.filter((lane) => lane.safeToArchive).length;
+      const detail = stale.length > 0
+        ? `PR merged or closed, or idle. ${safe === stale.length ? "All" : safe} safe to archive.`
+        : issue.detail;
+      return [{ id: `project-${issue.id}`, severity: "note", title: issue.title, detail, where: "Project", route }];
     }
     if (issue.severity === "info") return [];
     return [{

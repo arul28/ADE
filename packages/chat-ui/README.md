@@ -196,12 +196,31 @@ cosmetic bug — the buttons go read-only while the runtime still waits:
 | `accept_always` | Always allow | stop asking for this in this session |
 | `reject` | Reject | refuse, and let the model hear why |
 
-`requestKind` of `question`, `structured_question`, `plan_approval` or
-`model_selection` renders read-only: those want prose or a choice this surface
-cannot carry, and `@ade-dev/sdk`'s own `approve()` refuses them with
-`invalid_option` rather than sending a verdict the request cannot use. A thread
-with no `approve` also renders read-only, with a line saying the host cannot
-answer.
+Questions, structured questions and plan approvals use an input card backed by
+the optional `thread.respond(requestId, response)` method. `response` can carry
+question `answers`, a `decision`, or `responseText`. Plan buttons send
+`decision: "accept"` or `decision: "decline"`; question answers are keyed by
+question id. Without `respond`, those
+cards stay read-only with a reason. Model-selection requests stay read-only.
+Approval cards without `thread.approve` are also read-only; neither card type
+offers an action the client cannot perform.
+
+## Questions, queue and account surfaces
+
+`<AdeChat>` renders question and plan cards in the transcript, a queue strip
+when `thread.queue.list()` exists, and a usage-limit notice when the thread
+reports resume controls. A client may omit any of these optional methods; the
+corresponding controls are hidden or read-only. Failed queue and account reads
+show an error and retry rather than presenting a false empty list.
+
+Structured answers are keyed by question id. Single choices and freeform input
+use a string; multi-select uses a string array. Secret questions use a password
+field. Unstructured freeform responses use `responseText`.
+
+The standalone `<AccountList>`, `<SignInCard>`, `<ApiKeyForm>`,
+`<UsageMeter>` and `<AccountSwitcher>` components are also available. Account
+rows contain no stored API keys. `<ApiKeyForm>` clears the entered key after a
+successful save and does not include service error details that might echo it.
 
 ### `<ModelPicker>`
 
@@ -399,7 +418,7 @@ catch people writing their own proxy:
 
 ## Development
 
-Requires Node 22 (`/opt/homebrew/opt/node@22/bin` on macOS).
+Requires Node 24, the version in the repository's `.nvmrc` (`/opt/homebrew/opt/node@24/bin` on macOS).
 
 ```bash
 npm install            # in packages/chat-ui

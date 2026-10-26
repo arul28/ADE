@@ -1,3 +1,4 @@
+import { Lock } from "@phosphor-icons/react";
 import { modelMentionEffortLabel, modelMentionPermissionLabel } from "../../../shared/modelMentions";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import { isImageArtifact, useArtifactPreview } from "./useArtifactPreview";
@@ -9,10 +10,24 @@ export type ExtraChipCardData =
   | { kind: "permission"; meaning: string; risk: "low" | "medium" | "high" }
   | { kind: "skill"; name: string; description: string | null; source: string; argumentHint: string | null }
   | { kind: "branch"; name: string; lane: string; pullRequest: string | null }
-  | { kind: "artifact"; artifact: ComputerUseArtifactView; artifactKind: string; createdAt: string };
+  | { kind: "artifact"; artifact: ComputerUseArtifactView; artifactKind: string; createdAt: string }
+  /** A settings chip: where it is, whether only you may change it, and whether this window can open it. */
+  | { kind: "setting"; path: string; ownerOnly: string | null; locked: boolean; unavailable: string | null };
 
 export function ExtraChipCardBody({ data }: { data: ExtraChipCardData }) {
   if (data.kind === "artifact") return <ArtifactCardBody data={data} />;
+  if (data.kind === "setting") {
+    return <div className="max-w-[260px] text-[11px] text-fg/65">
+      <div className="text-[12px] font-medium text-fg/90">{data.path}</div>
+      {data.ownerOnly ? (
+        <div className={`mt-1 flex gap-1 ${data.locked ? "text-amber-200/90" : ""}`}>
+          {data.locked ? <Lock size={11} weight="bold" className="mt-[2px] shrink-0" aria-hidden /> : null}
+          <span>Only you can change this. {data.ownerOnly}</span>
+        </div>
+      ) : null}
+      {data.unavailable ? <div className="mt-1">{data.unavailable}</div> : null}
+    </div>;
+  }
   if (data.kind === "commit") {
     return <div className="max-w-[260px] text-[11px] text-fg/65">
       <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.subject}</div>

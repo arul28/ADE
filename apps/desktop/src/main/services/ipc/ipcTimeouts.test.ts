@@ -21,6 +21,11 @@ import {
   IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import {
+  GIT_REMOTE_FETCH_TIMEOUT_MS,
+  GIT_TREE_WRITE_TIMEOUT_MS,
+  LANE_GIT_WRITE_ACTION_TIMEOUT_MS,
+} from "../git/gitTimeouts";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
 
@@ -45,7 +50,7 @@ describe("ipcInvokeTimeoutMs", () => {
       request: { domain: "lane", action: "delete", args: { laneId: "lane-1" } },
     }]);
 
-    expect(innerTimeoutMs).toBe(4 * 60_000);
+    expect(innerTimeoutMs).toBe(LANE_GIT_WRITE_ACTION_TIMEOUT_MS);
     expect(outerTimeoutMs).toBe(
       LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
       + innerTimeoutMs
@@ -67,7 +72,7 @@ describe("ipcInvokeTimeoutMs", () => {
       id: "target-1",
       projectId: "project-1",
       request: { domain: "lane", action: "delete", args: { laneId: "lane-1" } },
-    }])).toBe(4 * 60_000);
+    }])).toBe(outerTimeoutMs);
   });
 
   it("composes cold setup, daemon action, and headroom for archive and unarchive", () => {
@@ -334,19 +339,42 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(405_000);
   });
 
-  it("keeps remote lane creation unchanged while composing the local timeout", () => {
-    expect(ipcInvokeTimeoutMs(IPC.lanesCreate)).toBe(4 * 60_000);
+  // A caller that gives up before git does reports a failure while git is
+  // still writing the tree, and the retry finds a half-made lane.
+  it.each([
+    ["lane", "create", IPC.lanesCreate],
+    ["lane", "createChild", IPC.lanesCreateChild],
+    ["lane", "createFromUnstaged", IPC.lanesCreateFromUnstaged],
+    ["lane", "importBranch", IPC.lanesImportBranch],
+    ["lane", "switchBranch", IPC.lanesSwitchBranch],
+    ["git", "checkoutBranch", IPC.gitCheckoutBranch],
+    ["lane", "unarchive", IPC.lanesUnarchive],
+    ["lane", "archiveAndReclaim", IPC.lanesArchiveAndReclaim],
+    ["lane", "delete", IPC.lanesDelete],
+    ["pr", "createLaneFromPrBranch", IPC.prsCreateLaneFromPrBranch],
+  ])("waits out git's own bounds for %s.%s on every route", (domain, action, channel) => {
+    const daemonBudget = longRunningLocalRuntimeActionTimeoutMs(`${domain}.${action}`);
+    expect(daemonBudget).toBe(LANE_GIT_WRITE_ACTION_TIMEOUT_MS);
+    expect(daemonBudget).toBeGreaterThan(3 * GIT_REMOTE_FETCH_TIMEOUT_MS + 2 * GIT_TREE_WRITE_TIMEOUT_MS);
+    const request = { domain, action, args: {} };
+    const local = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{ request }]);
+    expect(local).toBe(LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + daemonBudget! + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS);
+    expect(ipcInvokeTimeoutMs(channel)).toBe(local);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{ id: "target-1", projectId: "project-1", request }])).toBe(local);
+  });
+
+  it("gives a long-running action with no IPC twin the same budget on a remote machine", () => {
+    const request = { domain: "chat", action: "cancelLaunch", args: {} };
+    const local = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{ request }]);
+    expect(longRunningLocalRuntimeActionTimeoutMs("chat.cancelLaunch")).toBeGreaterThan(LANE_GIT_WRITE_ACTION_TIMEOUT_MS);
+    expect(local).toBeGreaterThan(LANE_GIT_WRITE_ACTION_TIMEOUT_MS);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{ id: "target-1", projectId: "project-1", request }])).toBe(local);
+    // An action with no long budget keeps the short remote default.
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
-      request: { domain: "lane", action: "create", args: {} },
-    }])).toBe(4 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
-      request: { domain: "lane", action: "create", args: {} },
-    }])).toBe(315_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
-      request: { domain: "lane", action: "createChild", args: {} },
-    }])).toBe(315_000);
+      request: { domain: "chat", action: "unknownWriteAction", args: {} },
+    }])).toBe(30_000);
   });
 
   it("outlives the brain call it forwards when reconnecting this machine", () => {

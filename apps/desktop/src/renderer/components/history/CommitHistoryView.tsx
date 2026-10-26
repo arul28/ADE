@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowClockwise, CircleNotch, Warning } from "@phosphor-icons/react";
@@ -34,7 +35,6 @@ import type { RefBadgeActions } from "./CommitRefBadges";
 import { CommitRow, type RowMenuContext } from "./CommitRow";
 import {
   buildRefBadges,
-  githubRepoFromRemote,
   isBaseLinePrimary,
   normalizeBranchName,
   prsForLaneBranch,
@@ -311,7 +311,7 @@ export function CommitHistoryView({
     let cancelled = false;
     void window.ade.git.getOriginRemote({ laneId }, pin)
       .then((remote) => {
-        if (!cancelled) setRepo(githubRepoFromRemote(remote.remoteUrl));
+        if (!cancelled) setRepo(githubRepoRefFromRemoteUrl(remote.remoteUrl));
       })
       .catch(() => {
         if (!cancelled) setRepo(null);
@@ -818,7 +818,7 @@ export function CommitHistoryView({
           ))}
         </div>
       ) : rowCount === 0 && !matches ? (
-        <div className="flex flex-1 items-center justify-center text-[13px] text-muted-fg">No commits yet</div>
+        <div className="flex flex-1 items-center justify-center text-[12.5px] text-muted-fg/70">No commits yet</div>
       ) : (
         <div
           ref={scrollRef}

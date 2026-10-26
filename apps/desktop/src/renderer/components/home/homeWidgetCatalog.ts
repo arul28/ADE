@@ -55,7 +55,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   projects: {
     category: "work",
     title: "Projects",
-    description: "Your recent projects, on every machine.",
+    description: "Recent projects on every machine.",
     icon: FolderSimple,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",
@@ -67,7 +67,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   running: {
     category: "work",
     title: "Working now",
-    description: "Chats that are running or waiting on you.",
+    description: "Chats running or waiting on you.",
     icon: Pulse,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 } },
     defaultClass: "compact",
@@ -79,7 +79,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   activity: {
     category: "insights",
     title: "Activity & usage",
-    description: "Tokens and spend over the last two weeks.",
+    description: "Tokens and spend, last two weeks.",
     icon: ChartBar,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",
@@ -91,7 +91,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   limits: {
     category: "insights",
     title: "Limits & machines",
-    description: "Headroom left per provider, and which machines are up.",
+    description: "Provider headroom and machines.",
     icon: Gauge,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 } },
     defaultClass: "compact",
@@ -103,7 +103,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   prs: {
     category: "work",
     title: "Pull requests",
-    description: "The open project's PRs, checks and this week's merges.",
+    description: "This project's PRs and checks.",
     icon: GitPullRequest,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 }, large: { w: 2, h: 2 } },
     defaultClass: "compact",
@@ -115,7 +115,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   clock: {
     category: "everyday",
     title: "Clock & weather",
-    description: "The time, and the weather where you are.",
+    description: "The time and your weather.",
     icon: CloudSun,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
     defaultClass: "compact",
@@ -127,7 +127,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   pomodoro: {
     category: "everyday",
     title: "Focus timer",
-    description: "Pomodoro sessions, counted toward a focus streak.",
+    description: "Pomodoro sessions and streak.",
     icon: Timer,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
     defaultClass: "compact",
@@ -139,7 +139,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   clipboard: {
     category: "system",
     title: "Clipboard history",
-    description: "What you copied recently. Secrets are left out.",
+    description: "Recent copies, secrets left out.",
     icon: ClipboardText,
     desktopOnly: true,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 } },
@@ -152,7 +152,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   machine: {
     category: "system",
     title: "Machine health",
-    description: "CPU, memory, disks, network, the biggest apps, and the dev servers holding ports.",
+    description: "CPU, memory, disks and ports.",
     icon: Cpu,
     desktopOnly: true,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 }, large: { w: 2, h: 2 } },
@@ -165,7 +165,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   heatmap: {
     category: "insights",
     title: "Contributions",
-    description: "Your GitHub contributions and ADE chats, day by day, and your streak.",
+    description: "Your contributions, day by day.",
     icon: SquaresFour,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",
@@ -177,7 +177,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   shipped: {
     category: "work",
     title: "Shipped this week",
-    description: "Merged PRs, commits and chats since Monday.",
+    description: "Merged PRs, commits and chats.",
     icon: RocketLaunch,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 } },
     defaultClass: "compact",
@@ -189,7 +189,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   feed: {
     category: "work",
     title: "Feed",
-    description: "Merges, finished chats, releases and Linear issues, across projects and machines.",
+    description: "Merges, chats, releases, issues.",
     icon: ClockCounterClockwise,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 1, h: 2 }, large: { w: 2, h: 2 } },
     defaultClass: "regular",
@@ -201,7 +201,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   nowPlaying: {
     category: "everyday",
     title: "Now playing",
-    description: "What any app is playing, with play, pause and skip.",
+    description: "What's playing, with controls.",
     icon: MusicNotes,
     desktopOnly: true,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
@@ -214,7 +214,7 @@ export const HOME_WIDGET_CATALOG: Record<HomeWidgetType, HomeWidgetMeta> = {
   tips: {
     category: "everyday",
     title: "ADE Tips",
-    description: "One thing worth knowing about ADE each day, with a way to try it.",
+    description: "One ADE tip a day, to try.",
     icon: Lightbulb,
     classes: { compact: { w: 1, h: 1 }, regular: { w: 2, h: 1 } },
     defaultClass: "compact",

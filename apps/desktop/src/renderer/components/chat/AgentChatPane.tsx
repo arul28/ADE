@@ -14,7 +14,7 @@ import {
   useStateSkippingSameValue,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowBendUpRight, ArrowLeft, CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, DownloadSimple, GitDiff, GitFork, Hourglass, Lightning, Plus, Terminal, Trash, TreeStructure, X } from "@phosphor-icons/react";
 import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDrawerModel";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -164,6 +164,8 @@ import {
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS, foldLegacyCursorFastConfigValue } from "../../../shared/cursorModes";
+import { PermissionModePicker, type PermissionModeIconKind, type PermissionModeTone } from "../shared/PermissionModePicker";
+import { LaneIcon } from "../ui/vcsIcons";
 import { cn } from "../ui/cn";
 import {
   AgentChatComposer,
@@ -200,6 +202,7 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { ClaudeUsageSheet } from "./usage/ClaudeUsageSheet";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
@@ -296,7 +299,7 @@ import { attachedShellNestParentId } from "../../../shared/sessionSpawnNesting";
 import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
-import { takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
+import { requestChatActionsPane, takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { SideChatHeaderButton } from "./SideChatBadge";
 import {
@@ -2332,10 +2335,58 @@ const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: s
   { value: "agi", label: "AGI" },
 ];
 
-const handoffSelectCls = cn(
-  "h-8 w-full min-w-0 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 font-sans text-[10px] text-fg/70",
-  "outline-none transition-colors duration-150 focus:border-violet-400/30",
-);
+/**
+ * The local handoff's permission choices as the shared shield-chip picker (the
+ * one the remote handoff and the composer use), whatever the provider's own
+ * mode vocabulary is. Tone and glyph follow how much the mode lets the agent do.
+ */
+const HANDOFF_MODE_LOOK: Record<string, { tone: PermissionModeTone; icon: PermissionModeIconKind }> = {
+  default: { tone: "green", icon: "manual" },
+  "read-only": { tone: "green", icon: "plan" },
+  denyUnmatched: { tone: "green", icon: "plan" },
+  promptUnmatched: { tone: "green", icon: "manual" },
+  plan: { tone: "blue", icon: "plan" },
+  acceptEdits: { tone: "amber", icon: "edit" },
+  edit: { tone: "amber", icon: "edit" },
+  auto: { tone: "amber", icon: "auto" },
+  onRequest: { tone: "amber", icon: "auto" },
+  "auto-low": { tone: "green", icon: "auto" },
+  "auto-medium": { tone: "amber", icon: "auto" },
+  "auto-high": { tone: "red", icon: "auto" },
+  bypassPermissions: { tone: "red", icon: "full" },
+  "full-auto": { tone: "red", icon: "full" },
+  allowAll: { tone: "red", icon: "full" },
+  agi: { tone: "red", icon: "agi" },
+  "config-toml": { tone: "slate", icon: "config" },
+};
+
+function handoffPermissionOptions<Value extends string>(
+  modes: ReadonlyArray<{ value: Value; label: string; detail?: string }>,
+): Array<{ value: Value; label: string; detail: string; tone: PermissionModeTone; icon: PermissionModeIconKind }> {
+  return modes.map((mode) => ({
+    value: mode.value,
+    label: mode.label,
+    detail: mode.detail ?? "",
+    ...(HANDOFF_MODE_LOOK[mode.value] ?? { tone: "slate" as const, icon: "agent" as const }),
+  }));
+}
+
+const HANDOFF_CODEX_MODES: Array<{ value: "default" | "plan" | "full-auto" | "config-toml"; label: string; detail: string }> = [
+  { value: "default", label: "Default", detail: "Writes, and asks on risky steps" },
+  { value: "plan", label: "Plan", detail: "Read only, and asks" },
+  { value: "full-auto", label: "Full auto", detail: "No prompts" },
+  { value: "config-toml", label: "Config", detail: "Use codex config.toml" },
+];
+
+/** A labelled row in the local handoff form: a fixed label column, then the control. */
+function HandoffFormRow({ label, alignTop = false, children }: { label: string; alignTop?: boolean; children: React.ReactNode }) {
+  return (
+    <div className={cn("grid grid-cols-[64px_minmax(0,1fr)] gap-3", alignTop ? "items-start" : "items-center")}>
+      <span className={cn("whitespace-nowrap font-sans text-[11px] font-medium text-fg/48", alignTop && "pt-[9px]")}>{label}</span>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
 
 function migrateOldPrefs(): string | null {
   try {
@@ -4507,6 +4558,8 @@ export function AgentChatPane({
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [importBrowserOpen, setImportBrowserOpen] = useState(false);
+  /** `/usage` in a Claude chat opens this sheet instead of sending. */
+  const [claudeUsageSheetOpen, setClaudeUsageSheetOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   // Seeded warm: on a remount into a project whose model catalog was already
   // fetched there is nothing left to wait for, and re-gating would stall the
@@ -4796,6 +4849,7 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  const [handoffNoteFocused, setHandoffNoteFocused] = useState(false);
   // A note the local handoff form takes when it next opens (the quota card's
   // fork button). The form's one-shot open effect consumes it.
   const pendingHandoffPrefillRef = useRef<{ note: string; throughTurn?: HandoffForkPoint | null } | null>(null);
@@ -5078,6 +5132,13 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // Codex Daybreak: the selected chat's stored choice, or the draft's own
+  // until it launches. Switching chats (or to a draft) re-reads it.
+  const [codexDaybreak, setCodexDaybreak] = useState(false);
+  const selectedSessionCodexDaybreak = selectedSession?.codexDaybreak === true;
+  useEffect(() => {
+    setCodexDaybreak(selectedSessionCodexDaybreak);
+  }, [selectedSessionId, selectedSessionCodexDaybreak]);
   // The account's Fast permission for this composer. A chat on any machine
   // carries its owning brain's answer (`fastModeAllowed`); a draft uses this
   // window's copy, which is the same account row. Absent means an older host
@@ -6906,6 +6967,8 @@ export function AgentChatPane({
     if (!selectedSession && draftLaunchTarget) return draftLaunchTarget.harness;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey, draftLaunchTarget]);
+  /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
+  const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
     provider: selectedSession?.provider ?? sessionProvider,
     events: selectedEventsForDisplay,
@@ -7298,7 +7361,10 @@ export function AgentChatPane({
         : chatLaunch?.title?.trim() || "New chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
-  const defaultMessagePlaceholder = "Type to vibecode...";
+  // In CLI mode the prompt starts a terminal session, so say which CLI it starts.
+  const defaultMessagePlaceholder = isWorkCliLaunchDraft
+    ? `Prompt to start the ${resolveAssistantLabel(selectedModelDesc, null) === "Assistant" ? "agent" : resolveAssistantLabel(selectedModelDesc, null)} CLI…`
+    : "Type to vibecode...";
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
   // After a move, say where a message will go before it is typed.
   const sendsElsewhereTo = crossMachineSendsElsewhere(selectedSession?.crossMachineHandoff)?.targetMachineName ?? null;
@@ -7332,9 +7398,22 @@ export function AgentChatPane({
   const spawnLineage = useMemo(() => {
     const parentId = selectedSession?.orchestrationParentSessionId?.trim();
     if (!parentId || parentId === selectedSession?.sessionId) return null;
-    const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
+    // The pane's list holds this lane's chats; the Work list's titles cover a
+    // parent it has not loaded.
+    const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim()
+      || sessionTitleById?.get(parentId)?.trim()
+      || null;
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
-  }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
+  }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions, sessionTitleById]);
+  // A spawned chat's actions pane leads with its parent's roster (this chat
+  // and its siblings), the pane you clicked it in. The parent's own events
+  // add its runtime subagents when this pane still holds them; the spawned
+  // chats come from the session list either way.
+  const spawnParentEvents = spawnLineage ? eventsBySession[spawnLineage.parentId] ?? null : null;
+  const spawnParentSnapshots = useMemo(
+    () => (spawnParentEvents ? deriveChatSubagentSnapshotsIncremental(null, spawnParentEvents).snapshots : []),
+    [spawnParentEvents],
+  );
 
   // Spawned chats of this chat that are working now: the Stop menu offers to
   // stop them too.
@@ -11521,6 +11600,7 @@ export function AgentChatPane({
       reasoningEffort: launchReasoningEffort,
       fastMode: launchFastMode,
       ...(launchFastTier ? { fastTier: launchFastTier } : {}),
+      ...(provider === "codex" && codexDaybreak ? { codexDaybreak: true } : {}),
       // The saved preset (or the stored key) the picker named. Sent as an id:
       // the runtime that owns the lane is the one that can read this
       // machine's preset list and key store, so nothing resolved travels.
@@ -11541,7 +11621,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -13675,9 +13755,18 @@ export function AgentChatPane({
     if (!selectedSessionId || !selectedSession) return;
     const label = chatSessionTitle(selectedSession).trim() || "this chat";
     const confirmed = await confirmDialog({
-      title: `Delete "${label}"?`,
-      message: "This permanently removes the saved chat history from ADE.",
-      confirmLabel: "Delete",
+      title: "Delete chat?",
+      // The chat's own title on one truncated line; the hint stays one line too.
+      message: (
+        <>
+          <span className="line-clamp-2 break-words font-medium text-fg/80" title={label}>{label}</span>
+          <span className="block whitespace-nowrap">Its saved history is removed for good.</span>
+        </>
+      ),
+      icon: <Trash size={16} weight="duotone" />,
+      confirmLabel: "Delete chat",
+      // Wide enough that a typical long chat title shows in full.
+      size: "md",
       destructive: true,
     });
     if (!confirmed) return;
@@ -14519,6 +14608,21 @@ export function AgentChatPane({
     }
     void copyPromptForLaunch(text);
     if (
+      text === "/usage"
+      && selectedSessionId
+      && claudeUsageAvailable
+      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      // Claude Code's usage report as a sheet; nothing reaches the transcript.
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setClaudeUsageSheetOpen(true);
+      return;
+    }
+    if (
       text === "/context"
       && selectedSessionId
       && sessionProvider === "claude"
@@ -15005,6 +15109,7 @@ export function AgentChatPane({
     countSentMessages,
     openSideChatFromComposer,
     isPersonalPane, attachments,
+    claudeUsageAvailable,
     ambientTurnContext,
     buildNativeControlPayload,
     busy,
@@ -15517,6 +15622,44 @@ export function AgentChatPane({
     sessionMutationKind,
     setFastModeState,
   ]);
+
+  /** Per chat: the latest toggle, its write chain, and the value its machine last confirmed. */
+  const codexDaybreakUpdatesRef = useRef(new Map<string, { latest: number; chain: Promise<unknown>; confirmed: boolean }>());
+  const handleCodexDaybreakChange = useCallback((enabled: boolean) => {
+    setCodexDaybreak(enabled);
+    const targetSessionId = selectedSessionId;
+    if (!targetSessionId) return;
+    const updates = codexDaybreakUpdatesRef.current;
+    const entry = updates.get(targetSessionId)
+      ?? { latest: 0, chain: Promise.resolve(), confirmed: selectedSessionCodexDaybreak };
+    const updateId = entry.latest + 1;
+    patchSessionSummary(targetSessionId, { codexDaybreak: enabled });
+    // In order, like Fast: two quick toggles land as the last one. The chat's
+    // own machine stores it, through the pin every chat update uses.
+    const chain = entry.chain
+      .catch(() => {})
+      .then(() => agentChatApiRef.current.updateSession({
+        sessionId: targetSessionId,
+        codexDaybreak: enabled,
+      }, chatRuntimePinRef.current))
+      .then((updatedSession) => {
+        const current = updates.get(targetSessionId);
+        if (!current) return;
+        current.confirmed = updatedSession.codexDaybreak === true;
+        if (current.latest !== updateId) return;
+        patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+        if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+      })
+      .catch((err) => {
+        const current = updates.get(targetSessionId);
+        if (current && current.latest === updateId) {
+          patchSessionSummary(targetSessionId, { codexDaybreak: current.confirmed });
+          if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(current.confirmed);
+        }
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    updates.set(targetSessionId, { latest: updateId, chain, confirmed: entry.confirmed });
+  }, [patchSessionSummary, selectedSessionCodexDaybreak, selectedSessionId]);
 
   const handleFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
     const previousFastMode = fastMode;
@@ -16121,18 +16264,12 @@ export function AgentChatPane({
   const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
   handoffTurnGateRef.current = handoffTurnGate;
   const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
-  const handoffForkCopy = useMemo(() => (handoffForkReplaysTranscript
-    ? {
-        subtitle: "Fork carries this whole conversation into a new chat. Brief summarizes it and starts fresh.",
-        body: <>{handoffSourceProviderLabel} models start a new {handoffSourceProviderLabel} agent — {handoffSourceProviderLabel} threads can&rsquo;t be resumed twice — with the full transcript replayed verbatim. Any other model does the same{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
-      }
-    : {
-        subtitle: "Fork copies the whole conversation. Brief summarizes it and starts fresh.",
-        body: <>Same-family models use {handoffSourceProviderLabel}&rsquo;s native fork. Any other model starts a new chat with the full transcript replayed verbatim{laneId ? <> in this lane ({laneDisplayLabel})</> : null}.</>,
-        footnote: <>Pick any catalog model. Oldest turns drop only if the transcript exceeds the target context window or provider input limit.</>,
-      }
-  ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
+  // The fork mechanics, for the mode hint's tooltip; the visible hint stays one line.
+  const handoffForkCopy = useMemo(() => ({
+    tooltip: handoffForkReplaysTranscript
+      ? `${handoffSourceProviderLabel} threads can't be resumed twice, so every model starts a new chat with the full transcript replayed. Oldest turns drop only if it exceeds the model's context.`
+      : `Same-family models use ${handoffSourceProviderLabel}'s native fork; any other model replays the full transcript. Oldest turns drop only if it exceeds the model's context.`,
+  }), [handoffForkReplaysTranscript, handoffSourceProviderLabel]);
 
   // Handlers for the message list, stable across pane renders. The pane
   // re-renders several times a second while idle (session, usage and runtime
@@ -16488,29 +16625,25 @@ export function AgentChatPane({
     : [AUTO_CREATE_LANE_OPTION];
   // Provider-native permission controls, shared by the fork and brief tabs.
   const handoffPermissionControls = handoffTargetProvider ? (
-    <div className="space-y-1.5">
-      <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Permission mode</div>
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       {handoffTargetProvider === "claude" ? (
-        <select
-          value={handoffClaudePermissionMode}
-          onChange={(e) => setHandoffClaudePermissionMode(e.target.value as AgentChatClaudePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Claude permission mode for handoff"
-        >
-          {HANDOFF_CLAUDE_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Claude permission mode for handoff"
+          selectedValue={handoffClaudePermissionMode}
+          options={handoffPermissionOptions(HANDOFF_CLAUDE_MODES)}
+          onSelect={(value) => setHandoffClaudePermissionMode(value)}
+        />
       ) : null}
       {handoffTargetProvider === "codex" ? (
-        <div className="space-y-0.5">
-          <select
-            value={handoffCodexSelectValue}
-            title={handoffCodexPermissionPreset === "custom" ? "Non-standard policy; choosing a mode replaces it." : undefined}
-            onChange={(e) => {
-              const next = e.target.value as "default" | "plan" | "full-auto" | "config-toml";
+        <>
+          <PermissionModePicker
+            ariaLabel="Codex permission mode for handoff"
+            selectedValue={handoffCodexSelectValue === "edit" ? "default" : handoffCodexSelectValue}
+            options={handoffPermissionOptions(HANDOFF_CODEX_MODES)}
+            {...(handoffCodexPermissionPreset === "custom"
+              ? { title: "This chat uses a custom policy; pick a standard mode to apply it to the new chat." }
+              : {})}
+            onSelect={(next) => {
               const updated = handoffApplyCodexPreset(next, {
                 cap: handoffCodexApprovalPolicy,
                 sandbox: handoffCodexSandbox,
@@ -16519,19 +16652,12 @@ export function AgentChatPane({
               setHandoffCodexSandbox(updated.codexSandbox);
               setHandoffCodexConfigSource(updated.codexConfigSource);
             }}
-            className={handoffSelectCls}
-            aria-label="Codex permission mode for handoff"
-          >
-            <option value="default">Default — write + prompts on risk</option>
-            <option value="plan">Plan — read only + prompts</option>
-            <option value="full-auto">Full auto — no prompts</option>
-            <option value="config-toml">Use codex config.toml</option>
-          </select>
+          />
           {modelSupportsFastMode(handoffTargetDescriptor) ? (
             <button
               type="button"
               className={cn(
-                "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
+                "inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
                 !fastModeAllowedForComposer
                   ? "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/45 hover:border-fg/[0.14] hover:bg-fg/[0.05] hover:text-muted-fg/75"
                   : handoffFastMode
@@ -16556,98 +16682,83 @@ export function AgentChatPane({
             </button>
           ) : null}
           {handoffCodexPermissionPreset === "custom" ? (
-            <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard mode to apply to the new chat.</div>
+            <span className="whitespace-nowrap text-[10px] text-amber-200/60" title="This chat uses a custom policy; pick a standard mode to apply it to the new chat.">Custom policy</span>
           ) : null}
-        </div>
+        </>
       ) : null}
       {handoffTargetProvider === "opencode" ? (
-        <select
-          value={handoffOpenCodePermissionMode}
-          onChange={(e) => setHandoffOpenCodePermissionMode(e.target.value as AgentChatOpenCodePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="OpenCode permission mode for handoff"
-        >
-          {HANDOFF_OPENCODE_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="OpenCode permission mode for handoff"
+          selectedValue={handoffOpenCodePermissionMode}
+          options={handoffPermissionOptions(HANDOFF_OPENCODE_MODES)}
+          onSelect={(value) => setHandoffOpenCodePermissionMode(value)}
+        />
       ) : null}
       {handoffTargetProvider === "droid" ? (
-        <select
-          value={handoffDroidPermissionMode}
-          onChange={(e) => setHandoffDroidPermissionMode(e.target.value as AgentChatDroidPermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Droid autonomy mode for handoff"
-        >
-          {HANDOFF_DROID_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Droid autonomy mode for handoff"
+          selectedValue={handoffDroidPermissionMode}
+          options={handoffPermissionOptions(HANDOFF_DROID_MODES)}
+          onSelect={(value) => setHandoffDroidPermissionMode(value)}
+        />
       ) : null}
       {handoffTargetProvider === "muse" ? (
-        <select
-          value={handoffMusePermissionMode}
-          onChange={(e) => setHandoffMusePermissionMode(e.target.value as AgentChatMusePermissionMode)}
-          className={handoffSelectCls}
-          aria-label="Muse approval mode for handoff"
-        >
-          {HANDOFF_MUSE_MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Muse approval mode for handoff"
+          selectedValue={handoffMusePermissionMode}
+          options={handoffPermissionOptions(HANDOFF_MUSE_MODES)}
+          onSelect={(value) => setHandoffMusePermissionMode(value)}
+        />
       ) : null}
       {handoffTargetProvider === "cursor" ? (
-        <select
-          value={handoffCursorModeId?.trim() || "agent"}
-          onChange={(e) => {
-            setHandoffCursorModeId(e.target.value || "agent");
-          }}
-          className={handoffSelectCls}
-          aria-label="Cursor agent mode for handoff"
-        >
-          {CURSOR_AVAILABLE_MODE_IDS.map((modeId) => (
-            <option key={modeId} value={modeId}>
-              {modeId}
-            </option>
-          ))}
-        </select>
+        <PermissionModePicker
+          ariaLabel="Cursor agent mode for handoff"
+          selectedValue={handoffCursorModeId?.trim() || "agent"}
+          options={handoffPermissionOptions(CURSOR_AVAILABLE_MODE_IDS.map((modeId) => ({ value: modeId, label: modeId })))}
+          onSelect={(value) => setHandoffCursorModeId(value || "agent")}
+        />
       ) : null}
     </div>
   ) : null;
-  const handoffNoteField = (caption: string) => (
-    <div className="space-y-1">
-      <label className="block space-y-1">
-        <span className="font-sans text-[10px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Extra instructions</span>
-        <textarea
-          value={handoffNote}
-          onChange={(event) => setHandoffNote(event.target.value)}
-          rows={3}
-          maxLength={4000}
-          placeholder="What should the new chat pick up from here?"
-          className="min-h-[68px] w-full resize-y rounded-md border border-fg/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
-        />
-      </label>
-      <span className="block text-[10px] leading-4 text-fg/38">{caption}</span>
-    </div>
+  const handoffNoteExpanded = handoffNoteFocused || handoffNote.includes("\n") || handoffNote.length > 60;
+  const handoffNoteField = (
+    <HandoffFormRow label="Note" alignTop={handoffNoteExpanded}>
+      <textarea
+        aria-label="Note for the new chat"
+        value={handoffNote}
+        onChange={(event) => setHandoffNote(event.target.value)}
+        onFocus={() => setHandoffNoteFocused(true)}
+        onBlur={() => setHandoffNoteFocused(false)}
+        rows={handoffNoteExpanded ? 4 : 1}
+        maxLength={4000}
+        placeholder="Optional: what should the new chat do next?"
+        className={cn(
+          "block w-full resize-none rounded-md border border-fg/[0.08] bg-black/20 px-2.5 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]",
+          handoffNoteExpanded ? "min-h-[72px] py-1.5" : "h-8 overflow-hidden whitespace-nowrap py-[7px]",
+        )}
+      />
+    </HandoffFormRow>
   );
   const handoffForkTabDisabled = !handoffForkSupported;
   // The body shows the brief form whenever fork is not available.
   const handoffLocalModeEffective = handoffLocalMode === "fork" && !handoffForkTabDisabled ? "fork" : "brief";
+  const handoffModeHint = handoffForkTabDisabled
+    ? `${handoffSourceProviderLabel} can't fork history; send a brief.`
+    : handoffLocalModeEffective === "fork"
+      ? (handoffForkPoint ? "Copies the chat up to the picked turn." : "Copies the whole chat; oldest turns may drop to fit the model.")
+      : "Starts fresh from a summary. Any model, any lane.";
   const handoffLocalView = (
     <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-fg/[0.06] px-4 py-3">
-        <div className="min-w-0">
-          <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
-          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">
-            {handoffForkPoint && handoffLocalMode === "fork"
-              ? "Fork copies the conversation up to the turn you picked. Brief summarizes it and starts fresh."
-              : handoffForkCopy.subtitle}
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-fg/[0.06] px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] text-fg/80">
+            <GitFork size={16} weight="duotone" />
+          </div>
+          <div className="min-w-0">
+            <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
+            <div className="mt-0.5 truncate whitespace-nowrap text-[10.5px] leading-4 text-fg/48">
+              Continue this chat in a new one on this computer.
+            </div>
           </div>
         </div>
         <button
@@ -16659,70 +16770,68 @@ export function AgentChatPane({
           <X size={13} />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
         {handoffTurnGate ? (
-          <Banner
-            model={{
-              id: "handoff-turn-running",
-              tone: "warning",
-              title: "A turn is running — wait for it to finish before handing off.",
-            }}
-            layout="inline"
-            style={{ marginBottom: 12 }}
-          />
-        ) : null}
-        <div className="inline-flex w-full rounded-lg border border-fg/[0.07] bg-fg/[0.02] p-0.5">
-          {([
-            { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
-            { mode: "brief" as const, label: "Brief", disabled: false },
-          ]).map(({ mode, label, disabled }) => {
-            const active = handoffLocalMode === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                disabled={disabled}
-                aria-pressed={active}
-                onClick={() => setHandoffLocalMode(mode)}
-                className={cn(
-                  "flex-1 rounded-md px-3 py-1.5 font-sans text-[11px] font-semibold transition-colors",
-                  active
-                    ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_26%,transparent)]"
-                    : "text-fg/52 hover:text-fg/78",
-                  disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        {handoffForkTabDisabled ? (
-          <div className="mt-1.5 text-[10px] leading-4 text-fg/42">
-            {handoffSourceProviderLabel} can&rsquo;t fork chat history — use a brief instead.
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-amber-300/20 bg-amber-400/[0.06] px-2.5" role="status">
+            <Hourglass size={13} weight="bold" className="shrink-0 text-amber-300/80" />
+            <span className="whitespace-nowrap text-[11px] font-semibold text-amber-50/90">
+              {selectedSessionAwaitingInput && !turnActive ? "This chat is waiting on you" : "A turn is running"}
+            </span>
+            <span className="min-w-0 truncate whitespace-nowrap text-[10.5px] text-amber-100/55">You can hand off when it ends.</span>
           </div>
         ) : null}
-
-        {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
-          <div className="mt-3 space-y-3">
-            {handoffForkPoint ? (
-              <Banner
-                model={{
-                  id: "handoff-fork-point",
-                  tone: "accent",
-                  icon: <GitFork size={13} weight="bold" />,
-                  title: `From the turn that ended ${formatHandoffForkPointTime(handoffForkPoint.timestamp)}. Later messages are left out.`,
-                  actions: [{ label: "Whole chat", variant: "secondary", onClick: () => setHandoffForkPoint(null) }],
-                }}
-                layout="inline"
-              />
-            ) : null}
-            <div className="text-[11px] leading-5 text-fg/54">
-              {handoffForkPoint
-                ? "The new chat starts with the conversation through that turn. This chat is not changed."
-                : handoffForkCopy.body}
+        <HandoffFormRow label="Send">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="inline-flex shrink-0 rounded-md border border-fg/[0.08] bg-fg/[0.025] p-0.5">
+              {([
+                { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
+                { mode: "brief" as const, label: "Brief", disabled: false },
+              ]).map(({ mode, label, disabled }) => {
+                const active = handoffLocalModeEffective === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    disabled={disabled}
+                    aria-pressed={active}
+                    onClick={() => setHandoffLocalMode(mode)}
+                    className={cn(
+                      "h-6 rounded-[5px] px-3.5 font-sans text-[11px] font-semibold transition-colors",
+                      active
+                        ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_26%,transparent)]"
+                        : "text-fg/52 hover:text-fg/78",
+                      disabled && "cursor-not-allowed opacity-40 hover:text-fg/52",
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
-            <div className="inline-flex items-center gap-1.5">
+            <span
+              className="min-w-0 truncate whitespace-nowrap text-[10.5px] text-fg/45"
+              title={handoffLocalModeEffective === "fork" ? handoffForkCopy.tooltip : undefined}
+            >
+              {handoffModeHint}
+            </span>
+          </div>
+        </HandoffFormRow>
+        {handoffLocalModeEffective === "fork" && handoffForkPoint ? (
+          <Banner
+            model={{
+              id: "handoff-fork-point",
+              tone: "accent",
+              icon: <GitFork size={13} weight="bold" />,
+              title: `From the turn that ended ${formatHandoffForkPointTime(handoffForkPoint.timestamp)}`,
+              actions: [{ label: "Whole chat", variant: "secondary", onClick: () => setHandoffForkPoint(null) }],
+            }}
+            layout="inline"
+          />
+        ) : null}
+        <HandoffFormRow label="New chat">
+          {/* A size container, so the effort chip spells its level out ("High"). */}
+          <div className="@container flex min-w-0 flex-wrap items-center gap-1.5">
+            {handoffLocalModeEffective === "fork" ? (
               <ModelPicker
                 value={handoffModelId}
                 onChange={chooseHandoffModel}
@@ -16730,58 +16839,54 @@ export function AgentChatPane({
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
                 runtimePin={activeComposerRuntimeBinding}
+                compact
               />
-              <ReasoningEffortPicker
-                modelId={handoffModelId}
-                reasoningEffort={handoffReasoningEffort}
-                onChange={setHandoffReasoningEffort}
-                catalogScopeKey={composerModelCatalogScopeKey}
-              />
-            </div>
-            <div className="text-[10px] leading-4 text-fg/40">{handoffForkCopy.footnote}</div>
-            {handoffPermissionControls}
-            {handoffNoteField("Optional. Sent to the new chat so it knows what to do next.")}
-          </div>
-        ) : (
-          <div className="mt-3 space-y-3">
-            <div className="text-[11px] leading-5 text-fg/54">
-              ADE summarizes this chat and starts a new one from that brief — any model, any lane.
-            </div>
-            <div className="inline-flex items-center gap-1.5">
+            ) : (
               <ModelPicker
                 value={handoffModelId}
                 onChange={chooseHandoffModel}
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
                 runtimePin={activeComposerRuntimeBinding}
+                compact
               />
-              <ReasoningEffortPicker
-                modelId={handoffModelId}
-                catalogScopeKey={composerModelCatalogScopeKey}
-                reasoningEffort={handoffReasoningEffort}
-                onChange={setHandoffReasoningEffort}
-              />
-            </div>
+            )}
+            <ReasoningEffortPicker
+              modelId={handoffModelId}
+              reasoningEffort={handoffReasoningEffort}
+              onChange={setHandoffReasoningEffort}
+              catalogScopeKey={composerModelCatalogScopeKey}
+              compact
+            />
             {handoffPermissionControls}
-            <div className="space-y-1">
-              <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Destination lane</div>
-              <LaneCombobox
-                lanes={handoffLaneOptions}
-                value={handoffTargetLaneId || laneId || ""}
-                onChange={setHandoffTargetLaneId}
-                fullWidth
-                aria-label="Destination lane for handoff"
-              />
-              <div className="text-[10px] leading-4 text-fg/40">Where the new chat starts. Pick another lane or create a fresh one.</div>
-            </div>
-            {handoffNoteField("Optional. Added to the brief as extra instructions.")}
           </div>
-        )}
+        </HandoffFormRow>
+        {handoffLocalModeEffective === "fork" && laneId ? (
+          // A fork stays in this chat's lane; shown so the destination is never a guess.
+          <HandoffFormRow label="Lane">
+            <div className="flex h-8 min-w-0 items-center gap-2 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-2.5 font-sans text-[11px] text-fg/78">
+              <LaneIcon size={12} className="shrink-0 text-muted-fg/60" />
+              <span className="min-w-0 truncate">{laneDisplayLabel}</span>
+              <span className="shrink-0 whitespace-nowrap text-muted-fg/50">· this lane</span>
+            </div>
+          </HandoffFormRow>
+        ) : null}
+        {handoffLocalModeEffective === "brief" ? (
+          <HandoffFormRow label="Lane">
+            <LaneCombobox
+              lanes={handoffLaneOptions}
+              value={handoffTargetLaneId || laneId || ""}
+              onChange={setHandoffTargetLaneId}
+              fullWidth
+              aria-label="Destination lane for handoff"
+            />
+          </HandoffFormRow>
+        ) : null}
+        {handoffNoteField}
         {localHandoffError ? (
           <Banner
             model={{ id: "handoff-local-error", tone: "error", title: localHandoffError }}
             layout="inline"
-            style={{ marginTop: 12 }}
           />
         ) : null}
       </div>
@@ -16800,11 +16905,12 @@ export function AgentChatPane({
             void handoffSession(handoffLocalModeEffective);
           }}
           disabled={!handoffModelId || handoffBlocked}
+          title={handoffTurnGate ? "Wait for the turn to end" : undefined}
         >
           {handoffBusy ? <CircleNotch size={11} className="animate-spin" aria-hidden /> : null}
           {handoffBusy
             ? (handoffLocalModeEffective === "fork" ? "Forking…" : "Summarizing…")
-            : (handoffLocalModeEffective === "fork" ? "Fork chat" : "Start brief handoff")}
+            : (handoffLocalModeEffective === "fork" ? "Fork chat" : "Start from brief")}
         </button>
       </div>
     </div>
@@ -16829,12 +16935,45 @@ export function AgentChatPane({
       onSwitched={() => void refreshSessions({ force: true }).catch(() => {})}
     />
   ) : null;
+  // Back from a spawned chat to the chat that started it. An open actions pane
+  // stays open there, the way it does when a runtime subagent's view closes.
+  const backToSpawnParent = spawnLineage
+    ? () => {
+      if (chatActionsOpen) requestChatActionsPane(spawnLineage.parentId);
+      navigateToSpawnedChat(spawnLineage.parentId, null, chatRuntimePin);
+    }
+    : null;
+  const spawnParentRosterContent = spawnLineage && backToSpawnParent ? (
+    <div data-testid="chat-actions-parent-roster">
+      <button
+        type="button"
+        onClick={backToSpawnParent}
+        className="flex w-full min-w-0 items-center gap-1.5 px-4 pb-1 pt-3 text-left font-sans text-[11px] font-medium text-fg/55 transition-colors hover:text-fg/85"
+        title={spawnLineage.parentTitle ? `Back to "${spawnLineage.parentTitle}"` : "Back to the parent chat"}
+      >
+        <ArrowLeft size={12} weight="bold" aria-hidden className="shrink-0" />
+        <span className="min-w-0 truncate">{spawnLineage.parentTitle ?? "Parent chat"}</span>
+      </button>
+      <ChatSubagentsPanel
+        sessionId={spawnLineage.parentId}
+        snapshots={spawnParentSnapshots}
+        events={spawnParentEvents ?? EMPTY_CHAT_EVENTS}
+        variant="pane"
+        childChatStatuses={knownChatStatusesById}
+        resolveSpawnedChatTitle={resolveSpawnedChatTitle}
+        selectedChildSessionId={selectedSessionId}
+        onClearSelectedSubagent={backToSpawnParent}
+        shellsPin={chatRuntimePin}
+      />
+    </div>
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       footer={chatAccountNote}
       sections={[
+        spawnParentRosterContent && { key: "parent", content: spawnParentRosterContent },
         { key: "agents", content: agentsTabContent },
-        (proofArtifactCount > 0 || (proofShowRequested && renderedComputerUseSnapshot)) && { key: "proof", content: proofTabContent },
+        (proofArtifactCount > 0 || (proofShowRequested && renderedComputerUseSnapshot)) && { key: "proof", content: proofTabContent, priority: true },
         selectedMission && missionHasContent(selectedMission) && {
           key: "mission",
           content: (
@@ -16948,22 +17087,6 @@ export function AgentChatPane({
   );
   const chatHeaderTrailingActions = (
     <>
-      {spawnLineage ? (
-        <button
-          type="button"
-          onClick={() => navigateToSpawnedChat(spawnLineage.parentId, null)}
-          className={cn(
-            "inline-flex max-w-[220px] items-center gap-1.5 px-0.5 py-0.5 font-sans text-[10px] font-medium underline-offset-2 transition-colors hover:underline",
-            spawnLineage.spawnKind === "peer"
-              ? "text-slate-300/70 hover:text-slate-100/90"
-              : "text-violet-200/75 hover:text-violet-100",
-          )}
-          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "Go to parent thread"}
-        >
-          <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
-          <span className="ade-header-collapsible-label min-w-0 truncate">Go to parent thread</span>
-        </button>
-      ) : null}
       {chatTerminalVisible && selectedSessionId ? (
         <ClaudeLoginPromptButton
           visible={showClaudeLoginPrompt}
@@ -17165,12 +17288,36 @@ export function AgentChatPane({
       ) : null}
     </>
   );
+  // One way back from any subagent on screen: a runtime subagent's view
+  // closes back to this chat; a spawned chat goes to the chat that started it.
+  const headerBack = subagentView
+    ? { label: "Back to main thread", title: "Back to this chat's main thread", onBack: () => setSubagentView(null) }
+    : backToSpawnParent && spawnLineage
+      ? {
+        label: `Back to ${spawnLineage.parentTitle ?? "parent chat"}`,
+        title: spawnLineage.parentTitle ? `Back to "${spawnLineage.parentTitle}"` : "Back to the parent chat",
+        onBack: backToSpawnParent,
+      }
+      : null;
+  const headerBackAction = headerBack ? (
+    <button
+      type="button"
+      data-testid="chat-header-back"
+      onClick={headerBack.onBack}
+      className="inline-flex min-w-0 max-w-[260px] items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 font-sans text-[11px] font-medium text-fg/75 transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.06] hover:text-fg"
+      title={headerBack.title}
+    >
+      <ArrowLeft size={12} weight="bold" aria-hidden className="shrink-0" />
+      <span className="min-w-0 truncate">{headerBack.label}</span>
+    </button>
+  ) : null;
   const shellHeader = (
     <div className={CHAT_SHELL_HEADER_CLASS}>
       <CenteredWorkSurfaceHeader
         title={resolvedTitle}
         laneId={laneId}
         prBadgeOnly
+        leadingAction={headerBackAction}
         titleAccessory={<>
         {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
@@ -17666,6 +17813,8 @@ export function AgentChatPane({
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}
+            codexDaybreak={codexDaybreak}
+            {...(subagentComposerModel ? {} : { onCodexDaybreakChange: handleCodexDaybreakChange })}
             fastTier={subagentComposerModel ? null : fastTier}
             // What Codex last reported for this chat's Fast. Codex is the only
             // provider that answers with a service tier, so it is absent
@@ -17732,6 +17881,8 @@ export function AgentChatPane({
             builtInBrowserContextItems={builtInBrowserContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : EMPTY_EXECUTION_MODE_OPTIONS}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
+            // Effort can change mid-turn: the service applies it when the turn ends.
+            effortSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             hideModelControls={hideModelControls}
@@ -19061,6 +19212,16 @@ export function AgentChatPane({
             setHandoffNote("");
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
+        />
+      ) : null}
+      {selectedSessionId && claudeUsageAvailable ? (
+        <ClaudeUsageSheet
+          open={claudeUsageSheetOpen}
+          onOpenChange={setClaudeUsageSheetOpen}
+          sessionId={selectedSessionId}
+          pin={chatRuntimePin}
+          turnActive={turnActive}
+          onApplyEffort={handleReasoningEffortChange}
         />
       ) : null}
       {claudeSignInTarget ? (

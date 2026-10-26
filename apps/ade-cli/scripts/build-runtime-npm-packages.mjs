@@ -36,10 +36,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // here. See `defaultPackRunner`. That module's `main()` is behind an
 // `import.meta.url === argv[1]` guard, so importing it runs nothing.
 import { extractJson, resolveRunInvocation } from "../../../scripts/check-package-licenses.mjs";
-// The cr-sqlite filename from the module that WRITES it, rather than a second
-// opinion about it. `package-native-deps.mjs` runs nothing on import: its
-// `main()` is behind an `import.meta.url === argv[1]` guard.
-import { crsqliteExtensionFileName } from "./package-native-deps.mjs";
+import { RUNTIME_INLINED_PACKAGE_NOTICE_PATHS } from "./native-deps-entry-filter.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..", "..");
@@ -54,6 +51,37 @@ export const RUNTIME_TARGETS = [
 ];
 
 export const META_PACKAGE_NAME = "@ade-dev/runtime";
+
+// The npm runtime packages are used only by SDK embedders, which always start
+// the binary with `--profile embedded`. ADE's CLI installer still consumes the
+// full native archive and keeps these files for `ade code`, Linear and sync.
+//
+// Only packages the runtime bundle (`dist/cli.cjs`) never requires belong
+// here: anything it requires is loaded from `native/node_modules` at startup,
+// whatever the profile. `@xterm/headless` and `@xterm/addon-serialize` are
+// required by the terminal service the bootstrap always builds, so they stay.
+// `verify-built-cli.mjs` fails the CLI build when this set and the bundle
+// disagree; a smoke run on the build machine cannot catch it, because the
+// checkout's own node_modules resolve whatever the package left out.
+export const EMBEDDED_EXCLUDED_PACKAGES = new Set([
+  "@linear/sdk",
+  "@xterm/addon-fit",
+  "@xterm/xterm",
+  "highlight.js",
+  "ink",
+  "ink-text-input",
+  "marked",
+  "react",
+  "react-reconciler",
+]);
+
+const EMBEDDED_PROFILE = "embedded";
+const EMBEDDED_EXCLUDED_NATIVE_PATHS = [
+  "native/tuiClient",
+  "native/vendor/crsqlite",
+  "native/node_modules/@opencode/cli/bin/opencode",
+  "native/node_modules/@opencode/cli/bin/opencode.exe",
+];
 
 export function runtimePackageName(target) {
   return `@ade-dev/runtime-${target}`;
@@ -317,7 +345,7 @@ export function metaPackageManifest({ version }) {
 function runtimePackageReadme(target) {
   return `# ${runtimePackageName(target)}
 
-The ADE runtime binary for \`${target}\`, plus the native modules it dlopens.
+The ADE embedded runtime binary for \`${target}\`, plus the native modules the SDK profile dlopens.
 
 You do not import this package. \`@ade-dev/sdk\` finds it automatically through
 \`resolveBundledRuntime()\`, which is step 2 of its runtime resolution order.
@@ -325,6 +353,11 @@ You do not import this package. \`@ade-dev/sdk\` finds it automatically through
     bin/ade${target === "win32-x64" ? ".exe" : ""}   the runtime binary
     native/          ADE_RUNTIME_ROOT
     native/node_modules   ADE_RUNTIME_NODE_MODULES
+
+This package carries the SDK's embedded runtime profile. It omits ADE Code's
+TUI, Linear's SDK, and cr-sqlite; the CLI installer keeps those in its full
+runtime archive. The Droid SDK implementation is bundled into the executable,
+and its license notice is in \`native/third-party-notices/\`.
 
 Install \`@ade-dev/runtime\` rather than this package directly: it lists all five
 platform packages as \`optionalDependencies\`, so npm installs exactly the one
@@ -395,10 +428,6 @@ package, and https://www.ade-app.dev/docs/sdk/license
  * The filename comes from `package-native-deps.mjs`, which writes the file. A
  * verifier that asserts the exact name the producer wrote cannot drift from it.
  */
-function crsqliteExtensionPath(target) {
-  return `native/vendor/crsqlite/${target}/${crsqliteExtensionFileName(target)}`;
-}
-
 /** Every file under `dir`, as paths relative to it with `/` separators. */
 function listFilesRelative(dir, base = dir) {
   const out = [];
@@ -424,8 +453,101 @@ function isRuntimeCriticalPackedFile(relativePath) {
   if (relativePath.startsWith("bin/")) return true;
   if (relativePath.startsWith("native/vendor/")) return true;
   if (relativePath === "native/manifest.json") return true;
-  if (relativePath === "native/tuiClient/cli.mjs") return true;
+  if (relativePath.startsWith("native/third-party-notices/")) return true;
   return relativePath.endsWith(".node");
+}
+
+function isEmbeddedExcludedPackage(packageName) {
+  return EMBEDDED_EXCLUDED_PACKAGES.has(packageName);
+}
+
+function embeddedPackagePath(packageName) {
+  return `native/node_modules/${packageName.split("/").join("/")}/`;
+}
+
+function assertEmbeddedPackageContents({ packageDir, packedFiles }) {
+  const nativeDir = path.join(packageDir, "native");
+  const manifestPath = path.join(nativeDir, "manifest.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    throw new Error(`${packageDir}: native/manifest.json is missing or invalid; the embedded package profile cannot be verified.`);
+  }
+  if (manifest.profile !== EMBEDDED_PROFILE) {
+    throw new Error(
+      `${packageDir}: native/manifest.json must declare profile "${EMBEDDED_PROFILE}"; found ${JSON.stringify(manifest.profile)}.`,
+    );
+  }
+  const manifestExcluded = (manifest.packages ?? []).filter(isEmbeddedExcludedPackage);
+  if (manifestExcluded.length > 0) {
+    throw new Error(
+      `${packageDir}: embedded native/manifest.json lists excluded packages: ${manifestExcluded.join(", ")}.`,
+    );
+  }
+  const inlinedPackages = new Set(manifest.inlinedPackages ?? []);
+  const misplacedInlined = (manifest.packages ?? []).filter((packageName) => inlinedPackages.has(packageName));
+  if (misplacedInlined.length > 0) {
+    throw new Error(
+      `${packageDir}: native/manifest.json lists inlined packages as copied dependencies: ${misplacedInlined.join(", ")}.`,
+    );
+  }
+  for (const packageName of RUNTIME_INLINED_PACKAGE_NOTICE_PATHS.keys()) {
+    if (!inlinedPackages.has(packageName)) {
+      throw new Error(`${packageDir}: native/manifest.json does not record the inlined ${packageName} package.`);
+    }
+  }
+
+  const excludedPackageNames = new Set([...EMBEDDED_EXCLUDED_PACKAGES, ...inlinedPackages]);
+  const onDisk = listFilesRelative(nativeDir).map((relative) => `native/${relative}`);
+  const forbiddenPaths = onDisk.filter((relative) =>
+    EMBEDDED_EXCLUDED_NATIVE_PATHS.some((prefix) => relative === prefix || relative.startsWith(`${prefix}/`))
+      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name))),
+  );
+  if (forbiddenPaths.length > 0) {
+    throw new Error(
+      `${packageDir}: embedded runtime contains files that are not loaded by the SDK profile: ${forbiddenPaths.join(", ")}.`,
+    );
+  }
+
+  for (const [packageName, noticePath] of RUNTIME_INLINED_PACKAGE_NOTICE_PATHS) {
+    if (!packedFiles.includes(`native/${noticePath}`)) {
+      throw new Error(
+        `${packageDir}: the packed tarball is missing native/${noticePath}, the license notice for ${packageName} code bundled into the executable.`,
+      );
+    }
+  }
+
+  const forbiddenPackedPaths = packedFiles.filter((relative) =>
+    EMBEDDED_EXCLUDED_NATIVE_PATHS.some((prefix) => relative === prefix || relative.startsWith(`${prefix}/`))
+      || [...excludedPackageNames].some((name) => relative.startsWith(embeddedPackagePath(name))),
+  );
+  if (forbiddenPackedPaths.length > 0) {
+    throw new Error(
+      `${packageDir}: npm would publish files excluded from the embedded runtime profile: ${forbiddenPackedPaths.join(", ")}.`,
+    );
+  }
+}
+
+function pruneEmbeddedRuntime(nativeDir) {
+  for (const relative of EMBEDDED_EXCLUDED_NATIVE_PATHS) {
+    fs.rmSync(path.join(nativeDir, ...relative.split("/").slice(1)), { recursive: true, force: true });
+  }
+  for (const packageName of EMBEDDED_EXCLUDED_PACKAGES) {
+    fs.rmSync(path.join(nativeDir, "node_modules", ...packageName.split("/")), { recursive: true, force: true });
+  }
+
+  const manifestPath = path.join(nativeDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(
+      `${nativeDir}: the native archive has no manifest.json, so the embedded package cannot be built from it. ` +
+        "Rebuild the archive with package-native-deps.mjs, which writes one.",
+    );
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.profile = EMBEDDED_PROFILE;
+  manifest.packages = (manifest.packages ?? []).filter((packageName) => !isEmbeddedExcludedPackage(packageName));
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 /** 50 MiB: a real native tree's `npm pack --dry-run --json` listing exceeds Node's 1 MiB default. */
@@ -447,9 +569,23 @@ export const NPM_PACK_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
  * already written.
  */
 function defaultPackRunner(cwd) {
-  const invocation = resolveRunInvocation("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"]);
+  const localNpmCommand = process.platform === "win32"
+    ? path.join(path.dirname(process.execPath), "npm.cmd")
+    : "npm";
+  const command = process.platform === "win32" && fs.existsSync(localNpmCommand)
+    ? localNpmCommand
+    : "npm";
+  const invocation = resolveRunInvocation(command, ["pack", "--dry-run", "--json", "--ignore-scripts"]);
+  const env = { ...process.env };
+  // ADE shells inject NODE_PATH so its own CLI can find the installed brain's
+  // modules. npm's Windows shim uses Node's module resolution while locating
+  // its own prefix; carrying that path into a runtime package directory can
+  // redirect the shim to a package-local `node_modules/npm` that does not
+  // exist. npm pack needs no ADE runtime modules.
+  delete env.NODE_PATH;
   return execFileSync(invocation.command, invocation.args, {
     cwd,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: NPM_PACK_MAX_BUFFER_BYTES,
@@ -459,23 +595,23 @@ function defaultPackRunner(cwd) {
 }
 
 /**
- * Asserts the tarball npm would publish still carries every runtime file.
+ * Asserts the tarball npm would publish still carries every embedded runtime file.
  *
  * `files: ["bin","native",...]` states the intent; npm-packlist decides. It
  * honors `.gitignore` and `.npmignore` files found in SUBDIRECTORIES of the
  * packed package, and `package-native-deps.mjs` copies the dependency tree
  * verbatim. So one dependency bump that adds a `.gitignore` containing `*.node`
  * or `build/` beside a prebuilt module silently drops the native artifact from
- * the published package, and the embedder's app then dies at `dlopen` — the
- * cr-sqlite failure mode, which crashes rather than degrading.
+ * the published package, and the embedder's app then dies at `dlopen`.
  *
  * Parity alone is not enough, because the expected set is derived from disk: an
  * empty `native/node_modules/` produces an empty expectation and every file on
  * disk is trivially packed. So PRESENCE is asserted against the packed listing
  * too — the launcher and at least one native module — which is what catches a
- * truncated or empty `ade-<target>.native.tar.gz`. Without it the six packages
- * publish, `resolveBundledRuntime()` finds `bin/ade`, and the embedder's app
- * dies at `dlopen` on cr-sqlite: a crash rather than a degrade.
+ * truncated or empty `ade-<target>.native.tar.gz`. The SDK package uses the
+ * embedded profile, which does not ship the TUI or cr-sqlite; the verifier
+ * checks that profile, the duplicate OpenCode executable stays out, and the
+ * Droid SDK license notice remains explicitly.
  *
  * `LICENSE` and `README.md` are asserted here as well. They are NOT covered by
  * `scripts/check-package-licenses.mjs`, whatever an earlier version of this
@@ -516,15 +652,15 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
   // package pack a POSIX `bin/ade` and publish a runtime Windows cannot spawn.
   const target = path.basename(packageDir).replace(/^runtime-/, "");
   const targetEntry = RUNTIME_TARGETS.find((candidate) => candidate.target === target);
-  // An unknown directory name decides nothing: the launcher name, the cr-sqlite
-  // extension and the vendor directory all come from the target. Falling back
+  // An unknown directory name decides nothing: the launcher name comes from
+  // the target. Falling back
   // to the POSIX launcher verified the wrong contract in silence, which matters
   // because `verify-runtime-package-contents.mjs` takes directories from argv.
   if (!targetEntry) {
     throw new Error(
       `${packageDir}: "${target}" is not one of the runtime targets ` +
         `(${RUNTIME_TARGETS.map((candidate) => candidate.target).join(", ")}). The directory name ` +
-        `decides which launcher and which cr-sqlite extension this package must carry, so there ` +
+        `decides which launcher this package must carry, so there ` +
         `is no contract to verify against a renamed or unknown directory.`,
     );
   }
@@ -569,35 +705,7 @@ export function verifyPackedRuntimeFiles({ packageDir, runPack = defaultPackRunn
         `tree out of that directory and cannot start without it.`,
     );
   }
-  // cr-sqlite is the one file whose absence is a crash rather than a degrade,
-  // and it does NOT live under native/node_modules — `package-native-deps.mjs`
-  // writes it to native/vendor/crsqlite/<target>/. An archive carrying
-  // node_modules but no vendor/ satisfied every other check here: the critical-
-  // file check only looks at paths that already exist on disk, and a file on
-  // neither side is invisible to it.
-  // The path is exact, not a shape: a `runtime-win32-x64` package carrying a
-  // Linux `native/vendor/crsqlite/win32-x64/crsqlite.so` satisfies the disk
-  // listing, node_modules is non-empty, and the launcher comes from the
-  // separate binary asset — and then dies at dlopen on the user's machine.
-  const crsqlite = crsqliteExtensionPath(target);
-  if (!packedFiles.includes(crsqlite)) {
-    throw new Error(
-      `${packageDir}: the packed tarball carries no ${crsqlite}. The runtime dlopens cr-sqlite ` +
-        `out of that exact path, so the package would install, resolveBundledRuntime() would ` +
-        `find ${launcher}, and the embedder's app would then die at dlopen. Carrying another ` +
-        `platform's extension there is the same failure: found: ` +
-        `${packedFiles.filter((file) => file.startsWith("native/vendor/crsqlite/")).join(", ") || "nothing under native/vendor/crsqlite/"}.`,
-    );
-  }
-  // ADE Code loads this module from ADE_RUNTIME_ROOT. The launcher and
-  // native-module checks do not mention it, so a packlist omit still published.
-  if (!packedFiles.includes("native/tuiClient/cli.mjs")) {
-    throw new Error(
-      `${packageDir}: the packed tarball carries no native/tuiClient/cli.mjs. runAdeCode() ` +
-        `imports that module from ADE_RUNTIME_ROOT, so the package would install and then fail ` +
-        `the first \`ade code\` invocation.`,
-    );
-  }
+  assertEmbeddedPackageContents({ packageDir, packedFiles });
   if (targetEntry.os === "darwin") {
     for (const required of [
       `${SIGNING_DIR_NAME}/${SIGNING_ENTITLEMENTS_FILE}`,
@@ -703,6 +811,7 @@ export function buildRuntimePackage({
         `native modules out of ${nodeModules} and cannot start without it.`,
     );
   }
+  pruneEmbeddedRuntime(nativeDir);
 
   fs.writeFileSync(
     path.join(packageDir, "package.json"),
