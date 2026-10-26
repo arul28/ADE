@@ -366,8 +366,10 @@ export async function removeWorktreeDirectoryWithRecovery(targetPath: string): P
   try {
     await removeTreeOffProcess(targetPath);
     return;
-  } catch {
-    // Retried below, with the lock and permission recovery.
+  } catch (error) {
+    // A held file or a permission is retried below. Anything else (the child
+    // ran out of time, say) would leave too much to remove in this process.
+    if (!isRetryableRemoveError(error)) throw error;
   }
   for (let attempt = 1; ; attempt += 1) {
     try {

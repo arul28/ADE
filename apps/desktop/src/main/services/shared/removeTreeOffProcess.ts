@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import { captureProblem } from "../../../shared/sentry/capture";
 import { nonAsarFs } from "./nonAsarFs";
 import { execFileOffThread } from "./offThreadSpawn";
 
@@ -24,37 +25,17 @@ import { execFileOffThread } from "./offThreadSpawn";
 
 /** A removal still running after this long is stopped; what is left stays for the caller. */
 const REMOVE_TREE_TIMEOUT_MS = 30 * 60_000;
-/** Removals that run at once. More only compete for the same disk. */
-const MAX_CONCURRENT_REMOVALS = 2;
 const TARGET_ENV = "ADE_REMOVE_TREE_TARGET";
 
 const CHILD_SCRIPT = [
   `const target = process.env.${TARGET_ENV};`,
   "let fs;",
   "try { fs = require('original-fs'); } catch { fs = require('fs'); }",
-  "if (!target) { process.stderr.write('No target.'); process.exit(2); }",
+  "const fail = (code, message) => { process.stderr.write(JSON.stringify({ code, message })); process.exit(1); };",
+  "if (!target) fail(null, 'No target.');",
   "fs.promises.rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })",
-  "  .then(() => process.exit(0), (error) => {",
-  "    process.stderr.write(String((error && error.message) || error));",
-  "    process.exit(1);",
-  "  });",
+  "  .then(() => process.exit(0), (error) => fail((error && error.code) || null, String((error && error.message) || error)));",
 ].join("\n");
-
-let running = 0;
-const waiting: Array<() => void> = [];
-
-async function withRemovalSlot<T>(work: () => Promise<T>): Promise<T> {
-  if (running >= MAX_CONCURRENT_REMOVALS) {
-    await new Promise<void>((resolve) => waiting.push(resolve));
-  }
-  running += 1;
-  try {
-    return await work();
-  } finally {
-    running -= 1;
-    waiting.shift()?.();
-  }
-}
 
 /**
  * A single-executable build runs its own entry point whatever its arguments
@@ -69,11 +50,21 @@ function isSingleExecutable(): boolean {
   }
 }
 
-function canRemoveInChild(): boolean {
-  return Boolean(process.execPath) && !isSingleExecutable();
-}
-
 class RemoveTreeChildUnavailableError extends Error {}
+
+/** The child's error, with the `code` (EBUSY, EPERM...) of what stopped it. */
+function childRemoveError(targetPath: string, stderr: string, fallback: string): Error {
+  let code: string | null = null;
+  let message = stderr.trim() || fallback;
+  try {
+    const parsed = JSON.parse(stderr) as { code?: unknown; message?: unknown };
+    if (typeof parsed.code === "string") code = parsed.code;
+    if (typeof parsed.message === "string") message = parsed.message;
+  } catch {
+    // Not the child's own report (it was killed, say): keep the raw text.
+  }
+  return Object.assign(new Error(`Could not remove ${targetPath}: ${message}`), code ? { code } : {});
+}
 
 async function removeInChild(targetPath: string): Promise<void> {
   const result = await execFileOffThread(process.execPath, ["-e", CHILD_SCRIPT], {
@@ -90,8 +81,7 @@ async function removeInChild(targetPath: string): Promise<void> {
     // It never ran (spawn failed, or the off-thread spawner is gone).
     throw new RemoveTreeChildUnavailableError(result.error.message);
   }
-  const detail = result.stderr.trim() || result.error?.message || `exit code ${result.exitCode}`;
-  throw new Error(`Could not remove ${targetPath}: ${detail}`);
+  throw childRemoveError(targetPath, result.stderr, result.error?.message ?? `exit code ${result.exitCode}`);
 }
 
 /**
@@ -100,27 +90,31 @@ async function removeInChild(targetPath: string): Promise<void> {
  * is removed here, since that is one operation. When no child process can run,
  * the tree is removed in this process, as before.
  *
- * Rejects when part of the tree could not be removed (a file another process
- * holds open on Windows, say); whatever was removed stays removed.
+ * Rejects when part of the tree could not be removed; the error carries the
+ * `code` of what stopped it (a file another process holds open on Windows is
+ * EBUSY or EPERM). Whatever was removed stays removed.
  */
 export async function removeTreeOffProcess(targetPath: string): Promise<void> {
   const resolved = path.resolve(targetPath);
   let isDirectory: boolean;
   try {
-    const stat = await nonAsarFs.promises.lstat(resolved);
-    isDirectory = stat.isDirectory();
+    isDirectory = (await nonAsarFs.promises.lstat(resolved)).isDirectory();
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return;
     throw error;
   }
-  if (!isDirectory || !canRemoveInChild()) {
+  if (!isDirectory || isSingleExecutable()) {
     await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
     return;
   }
   try {
-    await withRemovalSlot(() => removeInChild(resolved));
+    await removeInChild(resolved);
   } catch (error) {
     if (!(error instanceof RemoveTreeChildUnavailableError)) throw error;
+    captureProblem("Tree removal child process could not start; removing in process", {
+      tags: { area: "remove_tree" },
+      extra: { reason: error.message },
+    });
     await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
   }
 }

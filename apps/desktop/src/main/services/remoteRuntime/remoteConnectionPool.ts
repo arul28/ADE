@@ -30,6 +30,7 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
   LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -182,14 +183,6 @@ const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
  * notice a peer that disappeared during sleep, while still allowing a cold
  * remote runtime a reasonable response window. */
 export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
-/** Data received this recently shows a connection is alive, however slow one reply is. */
-const REMOTE_RUNTIME_RECENT_TRAFFIC_MS = 12_000;
-/**
- * How long the `ping` that checks a timed-out connection waits. The brain
- * answers it on its event loop without touching disk, so only a machine that
- * is gone, or an event loop stalled this long, misses it.
- */
-const REMOTE_RUNTIME_LIVENESS_PROBE_TIMEOUT_MS = 15_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
@@ -1430,15 +1423,11 @@ export class RemoteConnectionPool {
    */
   private connectionStillAnswers(entry: PoolEntry): Promise<boolean> {
     if (entry.client.isClosed()) return Promise.resolve(false);
-    const lastInboundAt = entry.client.lastInboundAt();
-    if (lastInboundAt != null && Date.now() - lastInboundAt < REMOTE_RUNTIME_RECENT_TRAFFIC_MS) {
-      return Promise.resolve(true);
-    }
+    if (hasRecentTraffic(entry.client.lastInboundAt())) return Promise.resolve(true);
     const pending = this.livenessProbes.get(entry);
     if (pending) return pending;
     const probe = entry.client
-      .call("ping", {}, { timeoutMs: REMOTE_RUNTIME_LIVENESS_PROBE_TIMEOUT_MS })
-      // Any reply counts, an error one included: only silence means gone.
+      .call("ping", {}, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS })
       .then(() => true, (error: unknown) => !entry.client.isClosed() && !isRuntimeTransportTimeoutError(error))
       .finally(() => {
         this.livenessProbes.delete(entry);

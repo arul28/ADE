@@ -30,9 +30,11 @@ const removeTreeForReal = vi.mocked(removeTreeOffProcess).getMockImplementation(
  * The child fails for this one folder, until the end of the test. Background
  * removals an earlier test started still run, so only the folder is matched.
  */
-function failTreeRemovalOf(folder: string, message: string): void {
+function failTreeRemovalOf(folder: string, code: string): void {
   vi.mocked(removeTreeOffProcess).mockImplementation(async (target) =>
-    path.resolve(target) === path.resolve(folder) ? Promise.reject(new Error(message)) : removeTreeForReal(target));
+    path.resolve(target) === path.resolve(folder)
+      ? Promise.reject(Object.assign(new Error(`${code}: could not remove ${folder}`), { code }))
+      : removeTreeForReal(target));
 }
 
 afterEach(() => {
@@ -2757,7 +2759,7 @@ describe("laneService delete outside .ade/worktrees", () => {
       // A removal that dies partway (a file Windows still holds, an `.asar`
       // Electron's fs refuses) takes some files with it, the marker included.
       // The retry must still be allowed, not refused as a replaced folder.
-      failTreeRemovalOf(worktreePath, "EBUSY: resource busy or locked");
+      failTreeRemovalOf(worktreePath, "EBUSY");
       const partialRemove = vi.spyOn(fs.promises, "rm").mockImplementationOnce(async (target) => {
         for (const name of fs.readdirSync(String(target))) {
           if (name !== "work.txt") fs.rmSync(path.join(String(target), name), { force: true });
@@ -5820,7 +5822,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const fake = makeFakeServices();
     const { service, db, repoRoot, childPath } = await setupWithLane({ teardown: fake, events });
     fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
-    failTreeRemovalOf(childPath, "ENOTEMPTY: directory not empty");
+    failTreeRemovalOf(childPath, "ENOTEMPTY");
     const realRm = fs.promises.rm.bind(fs.promises);
     const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (target: fs.PathLike, options?: Parameters<typeof fs.promises.rm>[1]) => {
       if (path.resolve(String(target)) === childPath) {

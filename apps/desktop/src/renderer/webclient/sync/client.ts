@@ -28,6 +28,12 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
 import {
+  ARCHIVE_DELETE_TIMEOUT_MS,
+  ARCHIVE_RESTORE_TIMEOUT_MS,
+  CHAT_CANCEL_LAUNCH_TIMEOUT_MS,
+  LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS,
+} from "../../../main/services/lanes/laneActionTimeouts";
+import {
   accountMachineDisplayName,
   accountMachinePairedSyncEndpoints,
   accountMachineSecureSyncEndpoints,
@@ -178,14 +184,13 @@ type ListenerMap = {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 65_000;
 /**
- * Commands that run git over a whole checkout on the machine, with the budget
- * the desktop app gives the same action. On the 65 s default, a lane delete
- * that removed a large checkout, or a lane made from a slow fetch, reported a
- * failure while it was still running there. A machine that stops answering
- * still fails sooner: the connection closes after 75 s of silence and fails
- * every pending command.
+ * Commands that run long on the machine, with the budget the desktop app gives
+ * the same action. On the 65 s default, a lane delete that removed a large
+ * checkout, or a lane made from a slow fetch, reported a failure while it was
+ * still running there. A machine that stops answering still fails sooner: the
+ * connection closes after 75 s of silence and fails every pending command.
  */
-const LANE_GIT_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
+const LONG_RUNNING_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
   ...[
     "lanes.create",
     "lanes.createChild",
@@ -196,10 +201,18 @@ const LANE_GIT_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
     "lanes.delete",
     "prs.createLaneFromPrBranch",
   ].map((action) => [action, LANE_GIT_WRITE_ACTION_TIMEOUT_MS] as const),
-  // Waits out an in-flight checkout, then deletes the lane.
-  ["chat.cancelLaunch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000],
-  ["archive.restore", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000],
-  ["archive.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000],
+  ["lanes.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["lanes.applyTemplate", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["chat.cancelLaunch", CHAT_CANCEL_LAUNCH_TIMEOUT_MS],
+  ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
+  ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
+  // A model call, a provider fork, or a merge that polls GitHub.
+  ...[
+    "chat.generateAutoLaneIdentity",
+    "chat.prepareCrossMachineHandoff",
+    "chat.startSideChat",
+    "prs.land",
+  ].map((action) => [action, 120_000] as const),
 ]);
 const DEFAULT_RESTORATION_TIMEOUT_MS = 15_000;
 const DEFAULT_TERMINAL_INPUT_ACK_TIMEOUT_MS = 2_000;
@@ -710,7 +723,7 @@ export class AdeSyncClient {
         timer: setTimeout(() => {
           this.pendingCommands.delete(commandId);
           reject(new AdeSyncError("Timed out waiting for remote command result.", "timeout"));
-        }, opts.timeoutMs ?? LANE_GIT_COMMAND_TIMEOUT_MS.get(action) ?? DEFAULT_REQUEST_TIMEOUT_MS),
+        }, opts.timeoutMs ?? LONG_RUNNING_COMMAND_TIMEOUT_MS.get(action) ?? DEFAULT_REQUEST_TIMEOUT_MS),
       };
       this.pendingCommands.set(commandId, pending);
     });

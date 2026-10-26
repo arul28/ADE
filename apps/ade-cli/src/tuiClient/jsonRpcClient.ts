@@ -1,6 +1,7 @@
 import net from "node:net";
 import { parseRpcUrlAuthToken, withRpcAuthParam } from "../rpcAuth";
 import { markExpectedFromWire } from "../../../desktop/src/shared/expectedError";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../desktop/src/shared/rpcLiveness";
 
 type PendingRequest = {
   method: string;
@@ -35,11 +36,6 @@ export class JsonRpcResponseError extends Error {
     this.name = "JsonRpcResponseError";
   }
 }
-
-/** Data this recent shows the brain is alive, however slow one reply is. */
-const RPC_RECENT_TRAFFIC_MS = 12_000;
-/** How long the `ping` that checks a timed-out connection waits. */
-const RPC_LIVENESS_PROBE_TIMEOUT_MS = 15_000;
 
 /** A request that got no reply in time; any other rejection is a reply. */
 class RpcRequestTimeoutError extends Error {}
@@ -149,7 +145,7 @@ export class JsonRpcClient {
    */
   private closeIfUnresponsive(): void {
     if (this.closed || this.probing) return;
-    if (this.lastInboundAt != null && Date.now() - this.lastInboundAt < RPC_RECENT_TRAFFIC_MS) return;
+    if (hasRecentTraffic(this.lastInboundAt)) return;
     this.probing = true;
     void this.request("ping", undefined, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS }).then(
       () => {

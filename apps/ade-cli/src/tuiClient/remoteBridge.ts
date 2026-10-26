@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { localIpcListenOptions } from "../services/runtime/localIpcListenOptions";
 import { RemoteTargetRegistry } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
+import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../desktop/src/shared/rpcLiveness";
 import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
@@ -67,10 +68,6 @@ export type PairedRemoteBridgeConnection = {
 };
 
 const REMOTE_RPC_REQUEST_TIMEOUT_MS = 120_000;
-/** Output this recent shows the remote end is alive, however slow one reply is. */
-const REMOTE_RPC_RECENT_TRAFFIC_MS = 12_000;
-/** How long the `ping` that checks a timed-out connection waits. */
-const REMOTE_RPC_LIVENESS_PROBE_TIMEOUT_MS = 15_000;
 const MAX_RPC_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_STDERR_TAIL_BYTES = 32 * 1024;
 
@@ -185,9 +182,9 @@ export class ProcessJsonRpcClient {
    */
   private closeIfUnresponsive(): void {
     if (this.closed || this.probing) return;
-    if (this.lastInboundAt != null && Date.now() - this.lastInboundAt < REMOTE_RPC_RECENT_TRAFFIC_MS) return;
+    if (hasRecentTraffic(this.lastInboundAt)) return;
     this.probing = true;
-    void this.send("ping", undefined, REMOTE_RPC_LIVENESS_PROBE_TIMEOUT_MS).then(
+    void this.send("ping", undefined, RPC_LIVENESS_PROBE_TIMEOUT_MS).then(
       () => {
         this.probing = false;
       },
@@ -196,7 +193,7 @@ export class ProcessJsonRpcClient {
         // An error reply (an older runtime without `ping`) is still a reply.
         if (this.closed || !(error instanceof RemoteRpcRequestTimeoutError)) return;
         this.handleClosed(
-          new Error(`Remote ADE RPC stopped answering (no reply to ping in ${REMOTE_RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`),
+          new Error(`Remote ADE RPC stopped answering (no reply to ping in ${RPC_LIVENESS_PROBE_TIMEOUT_MS}ms).`),
         );
         this.child.kill();
       },
