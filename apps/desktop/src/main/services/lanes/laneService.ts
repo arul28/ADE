@@ -27,6 +27,7 @@ import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinR
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -355,8 +356,19 @@ function isRetryableRemoveError(error: unknown): boolean {
  * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
  * only for the Windows lock-retry regression test. Uses `nonAsarFs`: under
  * Electron a plain `fs` rm fails on every `.asar` file in the tree.
+ *
+ * The bulk of the tree goes in a separate process (see removeTreeOffProcess):
+ * a lane folder can hold hundreds of thousands of files, and removing them
+ * here stalls every other file operation in this process. What the child
+ * could not remove (a file still held open) is retried here, where it is small.
  */
 export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
+  try {
+    await removeTreeOffProcess(targetPath);
+    return;
+  } catch {
+    // Retried below, with the lock and permission recovery.
+  }
   for (let attempt = 1; ; attempt += 1) {
     try {
       await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
@@ -5424,7 +5436,8 @@ export function createLaneService({
       projectRoot,
       store: db,
       run: runAppleCommand,
-      removeDirectory: (directory: string) => fs.promises.rm(directory, { recursive: true, force: true }),
+      // DerivedData runs to gigabytes; see removeTreeOffProcess.
+      removeDirectory: removeTreeOffProcess,
       removeRecordings: options.removeRecordings,
       derivedDataDirectories: options.worktreePath && !pathsEqual(path.resolve(options.worktreePath), path.resolve(projectRoot))
         ? [appleLaneDerivedDataPath(options.worktreePath)]
@@ -6897,7 +6910,7 @@ export function createLaneService({
             );
           } catch (cleanupError) {
             try {
-              nonAsarFs.rmSync(worktreePath, { recursive: true, force: true });
+              await removeWorktreeDirectoryWithRecovery(worktreePath);
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
                 await runGitWorktreeMutation(() =>
@@ -8941,7 +8954,7 @@ export function createLaneService({
         } catch (error) {
           await runGitWorktreeMutation(async () => {
             await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS });
-            await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true });
+            await removeWorktreeDirectoryWithRecovery(targetPath);
             await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
           });
           throw error;

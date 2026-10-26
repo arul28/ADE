@@ -48,6 +48,7 @@ import {
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { markExpected } from "../../../shared/expectedError";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
@@ -1394,13 +1395,15 @@ export function createFileService({
       emitLaneMutation(args.workspaceId, "file_rename");
     },
 
-    deletePath(args: FilesDeleteArgs): void {
+    async deletePath(args: FilesDeleteArgs): Promise<void> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       if (isWorkspaceRootRelativePath(normalizedRel)) {
         throw new Error("Refusing to delete workspace root.");
       }
-      nonAsarFs.rmSync(absPath, { recursive: true, force: true });
+      // A folder such as node_modules holds enough files that removing it here
+      // would stop this process for minutes; see removeTreeOffProcess.
+      await removeTreeOffProcess(absPath);
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {

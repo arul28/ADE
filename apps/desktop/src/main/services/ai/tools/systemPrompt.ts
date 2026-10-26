@@ -44,7 +44,7 @@ const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `backg
  */
 const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with, and you cannot add or sign in to one. Tell the user: **Sign in** on its row in Settings › MCP servers if it asks, then right-click this chat in Work and choose **Restart agent session** (the conversation is kept).";
 
-const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
+const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle. Like a native subagent, it runs in this lane under this chat by default; create a new lane for it only when the user asks.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 

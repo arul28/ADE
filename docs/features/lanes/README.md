@@ -963,6 +963,18 @@ are swept from the same parent directory at the next rename, except any whose
 `.git` still points at an existing Git admin directory — a worktree Git still
 owns is not trash. macOS and Linux keep the ordinary path.
 
+Every removal of a whole lane folder — the background removal above, residual
+files Git left, a leftover folder the person deletes, a failed create's
+checkout, a lane's iOS DerivedData — runs in a child copy of the runtime
+(`removeTreeOffProcess` in `services/shared/`), on every OS. A recursive
+`fs.rm` in the brain queues an operation per file on the process's four shared
+I/O threads, so every other file read waits behind it: one 190,000-file lane
+folder held a Windows brain's file I/O for 30 s, and other machines connected
+to it timed out. The child never follows a link, takes `.asar` files as files,
+and reads its path from the environment. What it could not remove (a file still
+held open) is retried in the brain, where it is small. The Files tab's Delete
+and Storage's worktree cleanup use the same removal.
+
 Rails checked before `git worktree remove`, for every lane:
 
 - the path is never the project root, the primary checkout, or the

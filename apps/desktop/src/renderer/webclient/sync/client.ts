@@ -26,6 +26,7 @@ import type {
 } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
 import {
   accountMachineDisplayName,
   accountMachinePairedSyncEndpoints,
@@ -176,6 +177,30 @@ type ListenerMap = {
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 65_000;
+/**
+ * Commands that run git over a whole checkout on the machine, with the budget
+ * the desktop app gives the same action. On the 65 s default, a lane delete
+ * that removed a large checkout, or a lane made from a slow fetch, reported a
+ * failure while it was still running there. A machine that stops answering
+ * still fails sooner: the connection closes after 75 s of silence and fails
+ * every pending command.
+ */
+const LANE_GIT_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
+  ...[
+    "lanes.create",
+    "lanes.createChild",
+    "lanes.createFromUnstaged",
+    "lanes.importBranch",
+    "lanes.unarchive",
+    "lanes.archiveAndReclaim",
+    "lanes.delete",
+    "prs.createLaneFromPrBranch",
+  ].map((action) => [action, LANE_GIT_WRITE_ACTION_TIMEOUT_MS] as const),
+  // Waits out an in-flight checkout, then deletes the lane.
+  ["chat.cancelLaunch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000],
+  ["archive.restore", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000],
+  ["archive.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000],
+]);
 const DEFAULT_RESTORATION_TIMEOUT_MS = 15_000;
 const DEFAULT_TERMINAL_INPUT_ACK_TIMEOUT_MS = 2_000;
 const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
@@ -685,7 +710,7 @@ export class AdeSyncClient {
         timer: setTimeout(() => {
           this.pendingCommands.delete(commandId);
           reject(new AdeSyncError("Timed out waiting for remote command result.", "timeout"));
-        }, opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+        }, opts.timeoutMs ?? LANE_GIT_COMMAND_TIMEOUT_MS.get(action) ?? DEFAULT_REQUEST_TIMEOUT_MS),
       };
       this.pendingCommands.set(commandId, pending);
     });

@@ -168,6 +168,11 @@ them with `ade chat list` (archived ones need `--include-archived`), and read th
 to `--mode chat` for a subagent that must report back**: a chat child reports
 after every turn it finishes.
 
+**Which lane a child goes in.** An ADE child chat is a subagent that can run
+another provider, so it works where a native subagent would: in your lane,
+under your chat (the default when you leave `--lane` out). Create a new lane
+for it (`--lane auto`, `ade lanes child`) only when the user asks.
+
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use
 `ade lanes child --lane <current> --name <n>` instead of a fresh lane.
