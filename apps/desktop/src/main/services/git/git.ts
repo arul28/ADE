@@ -779,6 +779,41 @@ export async function runGitRepoCached(
   });
 }
 
+/**
+ * The file a worktree's index lives in. Read from disk when the layout is the
+ * plain one git itself writes (a `.git` folder, or a `.git` file whose one
+ * `gitdir:` line names the worktree's admin folder) and the index is there;
+ * otherwise (an environment that redirects git, anything unusual) asked of
+ * git once per worktree. Empty when neither knows.
+ */
+export async function resolveWorktreeIndexPath(worktreePath: string): Promise<string> {
+  if (!process.env.GIT_DIR && !process.env.GIT_INDEX_FILE && !process.env.GIT_COMMON_DIR) {
+    try {
+      const dotGit = path.join(worktreePath, ".git");
+      const stat = await fs.promises.lstat(dotGit);
+      let gitDir: string | null = null;
+      if (stat.isDirectory()) gitDir = dotGit;
+      else if (stat.isFile()) {
+        const match = /^gitdir: (.+)$/.exec((await fs.promises.readFile(dotGit, "utf8")).trim());
+        if (match?.[1] && !match[1].includes("\n")) gitDir = path.resolve(worktreePath, match[1].trim());
+      }
+      if (gitDir) {
+        const indexPath = path.join(gitDir, "index");
+        if ((await fs.promises.stat(indexPath)).isFile()) return indexPath;
+      }
+    } catch {
+      // Fall through to git.
+    }
+  }
+  const res = await runGitRepoCached(
+    ["rev-parse", "--git-path", "index"],
+    { cwd: worktreePath, timeoutMs: 10_000 },
+    { key: `index-path:${worktreePath}`, cacheClass: "stable" },
+  ).catch(() => null);
+  // Relative to the worktree (`--path-format=absolute` needs git 2.31).
+  return res && res.exitCode === 0 && res.stdout.trim() ? path.resolve(worktreePath, res.stdout.trim()) : "";
+}
+
 /** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */
 export type GitRepoObservation = { commonGitDir: string; epoch: number; askedAtMs: number };
 

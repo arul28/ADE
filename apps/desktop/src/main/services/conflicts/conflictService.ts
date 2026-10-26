@@ -80,6 +80,7 @@ import {
   runGit,
   runGitMergeTree,
   runGitOrThrow,
+  resolveWorktreeIndexPath,
   runGitRepoCached,
 } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
@@ -1378,14 +1379,9 @@ export function createConflictService({
   const activeConflictByWorktree = new Map<string, { signature: string; active: boolean }>();
   const indexSignature = async (worktreePath: string): Promise<string | null> => {
     try {
-      const indexPath = await runGitRepoCached(
-        ["rev-parse", "--git-path", "index"],
-        { cwd: worktreePath, timeoutMs: 8_000 },
-        { key: `index-path:${worktreePath}`, cacheClass: "stable" },
-      );
-      if (indexPath.exitCode !== 0 || !indexPath.stdout.trim()) return null;
-      // Relative to the worktree (`--path-format=absolute` needs git 2.31).
-      const stat = await fs.promises.stat(path.resolve(worktreePath, indexPath.stdout.trim()), { bigint: true });
+      const indexPath = await resolveWorktreeIndexPath(worktreePath);
+      if (!indexPath) return null;
+      const stat = await fs.promises.stat(indexPath, { bigint: true });
       return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
     } catch {
       return null;
