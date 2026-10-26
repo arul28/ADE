@@ -3,9 +3,11 @@ import {
   approvalFromPendingInput,
   engineApprovalDecision,
   isApprovalShaped,
+  validateRespondOptions,
   type ApprovalDecision,
   type ApprovalRequest,
 } from "./approvals.js";
+import { pendingQueue, restorableQueueId, type ThreadQueueItem } from "./threadQueue.js";
 import { ApprovalTracker } from "./approvalTracker.js";
 import { completeAttachments } from "./attachments.js";
 import { AdeError } from "./errors.js";
@@ -87,11 +89,7 @@ export type SendOptions = {
   reasoningEffort?: string | null;
 };
 
-export type ThreadQueueItem = {
-  id: string;
-  text: string;
-  attachments?: AgentChatFileRef[];
-};
+export type { ThreadQueueItem } from "./threadQueue.js";
 
 export type ThreadInterruptOptions = {
   /** Keep queued messages, or remove them along with the active turn. */
@@ -105,14 +103,6 @@ export type ThreadRespondOptions = Pick<
   AgentChatRespondToInputArgs,
   "answers" | "decision" | "responseText"
 >;
-
-const RESPOND_FIELDS: ReadonlySet<string> = new Set(["answers", "decision", "responseText"]);
-const RESPOND_DECISIONS: ReadonlySet<string> = new Set([
-  "accept",
-  "accept_for_session",
-  "decline",
-  "cancel",
-]);
 
 /** Options for `steer`. */
 export type SteerOptions = {
@@ -1342,35 +1332,7 @@ export class Thread implements AdeThread {
     this.assertUsable();
     this.assertAction("respondToInput");
     const id = this.requireId(requestId, "request id");
-    if (!response || typeof response !== "object" || Array.isArray(response)) {
-      throw new AdeError("invalid_option", "respond() needs a response object.");
-    }
-    const responseRecord = response as Record<string, unknown>;
-    const unexpectedField = Object.keys(responseRecord).find((field) => !RESPOND_FIELDS.has(field));
-    if (unexpectedField) {
-      throw new AdeError("invalid_option", `respond() does not accept the "${unexpectedField}" field.`);
-    }
-    const { answers, decision, responseText } = responseRecord;
-    if (decision !== undefined && (typeof decision !== "string" || !RESPOND_DECISIONS.has(decision))) {
-      throw new AdeError(
-        "invalid_option",
-        'respond() decision must be "accept", "accept_for_session", "decline" or "cancel".',
-      );
-    }
-    if (answers !== undefined) {
-      if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
-        throw new AdeError("invalid_option", "respond() answers must be an object keyed by question id.");
-      }
-      for (const [questionId, answer] of Object.entries(answers)) {
-        if (!questionId || !(typeof answer === "string" ||
-          (Array.isArray(answer) && answer.every((value) => typeof value === "string")))) {
-          throw new AdeError("invalid_option", "respond() answers must map question ids to strings or string arrays.");
-        }
-      }
-    }
-    if (responseText !== undefined && responseText !== null && typeof responseText !== "string") {
-      throw new AdeError("invalid_option", "respond() responseText must be a string or null.");
-    }
+    validateRespondOptions(response);
     await this.chats.respondToInput({ sessionId: this.id, itemId: id, ...response });
   }
 
@@ -1437,68 +1399,17 @@ export class Thread implements AdeThread {
   private async listQueue(): Promise<ThreadQueueItem[]> {
     this.assertUsable();
     const history = await this.chats.getEventHistory({ sessionId: this.id });
-    const queued = new Map<string, ThreadQueueItem>();
-    const settled = new Set<string>();
-    const events = history?.events ?? [];
-    for (const envelope of events) {
-      const event = envelope.event;
-      if (event.type === "user_message" && typeof event.steerId === "string" && event.steerId) {
-        if (event.deliveryState === "queued") {
-          if (!settled.has(event.steerId)) queued.set(event.steerId, {
-            id: event.steerId,
-            text: typeof event.displayText === "string" ? event.displayText : String(event.text ?? ""),
-            ...(Array.isArray(event.attachments) ? { attachments: event.attachments as AgentChatFileRef[] } : {}),
-          });
-        } else {
-          queued.delete(event.steerId);
-          // The same rule as ADE's own queue (`isSettledSteerDeliveryState`):
-          // `accepted` is not final, because a Cursor or OpenCode turn can
-          // refuse an inline steer and the same steerId comes back `queued`.
-          if (event.deliveryState !== "accepted") settled.add(event.steerId);
-        }
-      } else if (event.type === "queue_reordered" && Array.isArray(event.steerIds)) {
-        const reordered = new Map<string, ThreadQueueItem>();
-        for (const id of event.steerIds) if (typeof id === "string" && queued.has(id)) reordered.set(id, queued.get(id)!);
-        for (const [id, entry] of queued) if (!reordered.has(id)) reordered.set(id, entry);
-        queued.clear();
-        for (const [id, entry] of reordered) queued.set(id, entry);
-      } else if (event.type === "user_message_resolution" && typeof event.steerId === "string") {
-        queued.delete(event.steerId);
-        settled.add(event.steerId);
-      } else if (event.type === "system_notice" && typeof event.steerId === "string" && typeof event.message === "string" && /cancelled|delivering/i.test(event.message)) {
-        // ADE's own queue resolves a steer on exactly these two notices.
-        queued.delete(event.steerId);
-        settled.add(event.steerId);
-      } else if (event.type === "command_lifecycle" && typeof event.steerId === "string" && event.status !== "queued") {
-        queued.delete(event.steerId);
-        settled.add(event.steerId);
-      } else if (event.type === "queue_recovery" && event.state === "restored" && Array.isArray(event.restoredSteers)) {
-        // A restored queue comes back with its messages, after their earlier
-        // cancellation settled them.
-        for (const steer of event.restoredSteers as Array<{ steerId?: unknown; text?: unknown; attachments?: unknown }>) {
-          if (typeof steer.steerId !== "string" || !steer.steerId) continue;
-          settled.delete(steer.steerId);
-          queued.set(steer.steerId, {
-            id: steer.steerId,
-            text: typeof steer.text === "string" ? steer.text : "",
-            ...(Array.isArray(steer.attachments) ? { attachments: steer.attachments as AgentChatFileRef[] } : {}),
-          });
-        }
-      }
-    }
-    return [...queued.values()];
+    return pendingQueue(history?.events ?? []);
   }
 
   private async restoreQueue(): Promise<void> {
     this.assertAction("restoreCancelledQueue");
     const history = await this.chats.getEventHistory({ sessionId: this.id });
-    const recovery = [...(history?.events ?? [])].reverse().find(({ event }) =>
-      event.type === "queue_recovery" && event.state === "available" && typeof event.recoveryId === "string",
-    );
-    if (!recovery || typeof recovery.event.recoveryId !== "string") {
+    const recoveryId = restorableQueueId(history?.events ?? []);
+    if (!recoveryId) {
       throw new AdeError("invalid_option", `Thread "${this.key}" has no cancelled queue to restore.`);
     }
-    await this.chats.restoreCancelledQueue({ sessionId: this.id, recoveryId: recovery.event.recoveryId });
+    await this.chats.restoreCancelledQueue({ sessionId: this.id, recoveryId });
   }
 
   async approve(

@@ -31,7 +31,7 @@ import { AdeError, errorMessage } from "../errors.js";
 import type { AdeChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
 import { ADE_CLIENT_EVENTS } from "../clientEvents.js";
 import type { AdeThread, HistoryPageOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
-import type { AccountInfo, SignInHandle, SignInStatus } from "../accounts.js";
+import { createSignInRegistry } from "../signInRegistry.js";
 import type { AgentChatEventEnvelope, ThreadSummary, Unsubscribe } from "../types.js";
 import {
   ADE_DEFAULT_CHANNEL_PREFIX,
@@ -397,14 +397,8 @@ export function registerAdeIpc(
   const log = opts.logger ?? (() => {});
   const { allowThreadKey } = opts;
   const renderers = new Map<number, RendererEntry>();
-  type LoginRecord = {
-    owner: number;
-    handle: SignInHandle;
-    status: SignInStatus;
-    stop: Unsubscribe;
-    result: Promise<{ account?: AccountInfo; error?: AdeIpcErrorPayload }>;
-  };
-  const signIns = new Map<string, LoginRecord>();
+  // Sign-ins a renderer started, by webContents id. Released with the renderer.
+  const signIns = createSignInRegistry<number, AdeIpcErrorPayload>(serializeError);
   let disposed = false;
 
   function push(webContents: WebContentsLike, payload: AdeIpcEventPayload): void {
@@ -424,12 +418,7 @@ export function registerAdeIpc(
     entry.disposed = true;
     renderers.delete(id);
     for (const subscriptionId of [...entry.subscriptions.keys()]) releaseSubscription(entry, subscriptionId);
-    for (const [loginId, login] of signIns) {
-      if (login.owner !== id) continue;
-      signIns.delete(loginId);
-      login.stop();
-      void login.handle.cancel().catch(() => {});
-    }
+    signIns.releaseOwner(id);
     entry.threads.clear();
     entry.opening.clear();
     entry.rendererOptions.clear();
@@ -987,48 +976,15 @@ export function registerAdeIpc(
     "accounts.refresh": () => currentClient().accounts.refresh(),
     "accounts.signIn": async (entry, args) => {
       const handle = await currentClient().accounts.signIn(requireString(args[0], "account id"), args[1] && typeof args[1] === "object" ? args[1] as { deviceAuth?: boolean } : undefined);
-      const record: LoginRecord = {
-        owner: entry.webContents.id,
-        handle,
-        status: {} as SignInStatus,
-        stop: () => {},
-        result: Promise.resolve({}),
-      };
-      record.stop = handle.on("update", (next) => { record.status = next; });
-      if (!record.status.loginId) throw new AdeError("protocol_error", "The sign-in did not provide its initial status.");
-      record.result = handle.done.then(
-        (account) => ({ account }),
-        (error) => ({ error: serializeError(error) }),
-      );
-      signIns.set(record.status.loginId, record);
-      return { loginId: record.status.loginId, status: record.status };
+      return await signIns.start(entry.webContents.id, handle);
     },
-    "accounts.signInStatus": async (entry, args) => {
-      const loginId = requireString(args[0], "login id");
-      const login = signIns.get(loginId);
-      if (!login || login.owner !== entry.webContents.id) throw new AdeError("invalid_option", `Sign-in "${loginId}" was not found.`);
-      const terminal = ["succeeded", "failed", "cancelled", "expired"].includes(login.status.state);
-      const result = terminal ? await login.result : {};
-      const value = { status: login.status, ...result };
-      if (terminal) {
-        login.stop();
-        signIns.delete(loginId);
-      }
-      return value;
-    },
+    "accounts.signInStatus": (entry, args) => signIns.status(entry.webContents.id, requireString(args[0], "login id")),
     "accounts.signInSubmitCode": async (entry, args) => {
-      const login = signIns.get(requireString(args[0], "login id"));
-      if (!login || login.owner !== entry.webContents.id) throw new AdeError("invalid_option", "This sign-in is no longer active.");
-      await login.handle.submitCode(requireString(args[1], "sign-in code"));
+      await signIns.submitCode(entry.webContents.id, requireString(args[0], "login id"), requireString(args[1], "sign-in code"));
       return null;
     },
     "accounts.signInCancel": async (entry, args) => {
-      const loginId = requireString(args[0], "login id");
-      const login = signIns.get(loginId);
-      if (!login || login.owner !== entry.webContents.id) return null;
-      await login.handle.cancel();
-      login.stop();
-      signIns.delete(loginId);
+      await signIns.cancel(entry.webContents.id, requireString(args[0], "login id"));
       return null;
     },
     "credentials.list": (_entry, args) => currentClient().credentials.list(typeof args[0] === "string" ? args[0] : undefined),

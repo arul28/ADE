@@ -2,7 +2,7 @@ import { ADE_CLIENT_EVENTS, type AdeClientEvent } from "./clientEvents.js";
 import type { AdeChatClient } from "./client.js";
 import type { ThreadOpenOptions, ThreadResumeOptions } from "./clientOptions.js";
 import type { AdeThread, EditLastOptions, HistoryPageOptions, SendOptions, SetModelOptions, SteerOptions, ThreadRespondOptions, ThreadUpdate, ThreadUpdateOptions } from "./thread.js";
-import type { SignInHandle, SignInStatus } from "./accounts.js";
+import { createSignInRegistry } from "./signInRegistry.js";
 import { AdeError } from "./errors.js";
 import type { ApprovalDecision } from "./approvals.js";
 import { serializeAdeError } from "./electron/protocol.js";
@@ -44,12 +44,7 @@ export type AdeServer = {
 };
 
 type SocketThread = { thread: AdeThread; stop: Unsubscribe };
-type SocketSignIn = {
-  handle: SignInHandle;
-  readonly status: SignInStatus;
-  stop: Unsubscribe;
-  result: Promise<{ account?: unknown; error?: unknown }>;
-};
+
 
 const KEYED_METHODS = new Set([
   "threads.open", "threads.get", "threads.delete", "threads.archive", "threads.unarchive",
@@ -71,7 +66,7 @@ function requireText(value: unknown, label: string): string {
   return value;
 }
 
-const TERMINAL_SIGN_IN_STATES = new Set(["succeeded", "failed", "cancelled", "expired"]);
+
 
 function asParams(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -134,7 +129,7 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
     const requestIds = new Set<string | number>();
     // Sign-ins this connection started. A browser that goes away cannot finish
     // one, so its sign-ins are cancelled with it rather than left running.
-    const signIns = new Map<string, SocketSignIn>();
+    const signIns = createSignInRegistry<AdeServerSocket, ReturnType<typeof serializeAdeError>>(serializeAdeError);
     let disconnected = false;
     const send = (message: unknown) => { if (!disconnected) safeSend(socket, message); };
     const cleanup = () => {
@@ -145,11 +140,7 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       stopProvider();
       for (const stop of stopClientEvents) stop();
       for (const entry of threads.values()) entry.stop();
-      for (const login of signIns.values()) {
-        login.stop();
-        void login.handle.cancel().catch(() => {});
-      }
-      signIns.clear();
+      signIns.releaseOwner(socket);
       threads.clear();
       opening.clear();
       detachMessage();
@@ -278,46 +269,15 @@ export function createAdeServer(options: CreateAdeServerOptions): AdeServer {
       "accounts.refresh": async () => await client.accounts.refresh(),
       "accounts.signIn": async ({ id, options: signInOptions }) => {
         const handle = await client.accounts.signIn(requireText(id, "id"), asParams(signInOptions) as { deviceAuth?: boolean });
-        let status = {} as SignInStatus;
-        const stop = handle.on("update", (next) => { status = next; });
-        if (!status.loginId) {
-          stop();
-          await handle.cancel().catch(() => {});
-          throw new AdeError("protocol_error", "The sign-in did not provide its initial status.");
-        }
-        signIns.set(status.loginId, {
-          handle,
-          get status() { return status; },
-          stop,
-          result: handle.done.then((account) => ({ account }), (error) => ({ error: serializeAdeError(error) })),
-        });
-        return { loginId: status.loginId, status };
+        return await signIns.start(socket, handle);
       },
-      "accounts.signInStatus": async ({ loginId }) => {
-        const id = requireText(loginId, "loginId");
-        const login = signIns.get(id);
-        if (!login) throw new AdeError("invalid_option", "Sign-in " + id + " was not found.");
-        const terminal = TERMINAL_SIGN_IN_STATES.has(login.status.state);
-        const result = terminal ? await login.result : {};
-        if (terminal) {
-          login.stop();
-          signIns.delete(id);
-        }
-        return { status: login.status, ...result };
-      },
+      "accounts.signInStatus": async ({ loginId }) => await signIns.status(socket, requireText(loginId, "loginId")),
       "accounts.signInSubmitCode": async ({ loginId, code }) => {
-        const login = signIns.get(requireText(loginId, "loginId"));
-        if (!login) throw new AdeError("invalid_option", "This sign-in is no longer active.");
-        await login.handle.submitCode(requireText(code, "code"));
+        await signIns.submitCode(socket, requireText(loginId, "loginId"), requireText(code, "code"));
         return null;
       },
       "accounts.signInCancel": async ({ loginId }) => {
-        const id = requireText(loginId, "loginId");
-        const login = signIns.get(id);
-        if (!login) return null;
-        await login.handle.cancel();
-        login.stop();
-        signIns.delete(id);
+        await signIns.cancel(socket, requireText(loginId, "loginId"));
         return null;
       },
       "credentials.list": async ({ provider }) => await client.credentials.list(typeof provider === "string" ? provider : undefined),
