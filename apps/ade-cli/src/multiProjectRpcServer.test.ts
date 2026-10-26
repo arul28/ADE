@@ -1598,6 +1598,86 @@ describe("multi-project RPC server", () => {
     expect(personalChatScope.dispose).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["providerAccounts.call", "providerAccountsCall"],
+    ["credentials.call", "credentialsCall"],
+    ["presets.call", "presetsCall"],
+  ] as const)("limits %s to the connection with the embedded host token", async (method, callName) => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const calls = {
+        providerAccountsCall: vi.fn(async (action: unknown, args: unknown) => ({ action, args })),
+        credentialsCall: vi.fn(async (action: unknown, args: unknown) => ({ action, args })),
+        presetsCall: vi.fn(async (action: unknown, args: unknown) => ({ action, args })),
+      };
+      const makeHandler = () => createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        runtimeProfile: "embedded",
+        embeddedHostToken: "spawn-secret",
+        personalChatScope: {
+          capabilities: () => ({ version: 1 as const, actions: [] }),
+          call: async () => ({ action: "list", result: {} }),
+          streamEvents: async () => ({
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "epoch",
+            gap: false,
+            oldestCursor: null,
+          }),
+          dispose: vi.fn(async () => undefined),
+          ...calls,
+        },
+      });
+      const initialize = async (
+        handler: ReturnType<typeof createMultiProjectRpcRequestHandler>,
+        embeddedHostToken?: string,
+      ) => handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {
+          identity: { role: "cto" },
+          ...(embeddedHostToken === undefined ? {} : { embeddedHostToken }),
+        },
+      });
+      const invoke = (handler: ReturnType<typeof createMultiProjectRpcRequestHandler>) => handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method,
+        params: { action: "list", args: { owner: "sdk-host" } },
+      });
+
+      for (const offeredToken of [undefined, "another-runtime-secret"]) {
+        const guest = makeHandler();
+        try {
+          await initialize(guest, offeredToken);
+          await expect(invoke(guest)).rejects.toThrow(/only for the app that started this runtime/);
+          expect(calls[callName]).not.toHaveBeenCalled();
+        } finally {
+          guest.dispose();
+        }
+      }
+
+      const host = makeHandler();
+      try {
+        await initialize(host, "spawn-secret");
+        await expect(invoke(host)).resolves.toEqual({
+          action: "list",
+          args: { owner: "sdk-host" },
+        });
+        expect(calls[callName]).toHaveBeenCalledTimes(1);
+      } finally {
+        host.dispose();
+      }
+    } finally {
+      if (previousDefaultRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousDefaultRole;
+    }
+  });
+
   it("pushes machine personal chat events over the connection and unsubscribes", async () => {
     const { registry } = createRegistry();
     const buffer = createEventBuffer();

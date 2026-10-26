@@ -6,6 +6,7 @@ import { createAdeChat, type InternalAdeChatOptions } from "../src/client.js";
 import type { AdeChatClient } from "../src/client.js";
 import { SDK_VERSION } from "../src/version.js";
 import type { AgentChatEventEnvelope } from "../src/types.js";
+import { createMockAdeChat } from "../src/testing.js";
 import { MockRuntime } from "./mockRuntime.js";
 
 const homes: string[] = [];
@@ -1226,6 +1227,34 @@ describe("host configuration on create", () => {
     expect(createArgsOf(runtime).instructions).toEqual({ mode: "append", text: "Be brief." });
   });
 
+  it("resolves a host credential for the runtime without storing the secret in its thread record", async () => {
+    const runtime = await startRuntime();
+    const home = makeHome();
+    const credentialSecret = "host-vault-secret";
+    const resolved: Array<[string, string]> = [];
+    const client = await connect(runtime, {
+      home,
+      resolveSecret: async (provider, credentialId) => {
+        resolved.push([provider, credentialId]);
+        return credentialSecret;
+      },
+    });
+
+    await client.threads.open("host-credential", {
+      provider: "codex",
+      model: "gpt-5",
+      credential: "work",
+    });
+
+    const createParams = runtime.calls
+      .filter((call) => call.method === "personalChats.call")
+      .map((call) => call.params as { action?: string; args?: Record<string, unknown> })
+      .find((params) => params.action === "create");
+    expect(resolved).toEqual([["codex", "work"]]);
+    expect(createParams?.args).toMatchObject({ credentialId: "work", credentialSecret });
+    expect(fs.readFileSync(path.join(home, "threads.json"), "utf8")).not.toContain(credentialSecret);
+  });
+
   it("sends a replace instruction verbatim", async () => {
     const runtime = await startRuntime();
     const client = await connect(runtime);
@@ -2356,5 +2385,50 @@ describe("a deny policy that blocks its own MCP servers", () => {
     });
     expect(logs.filter((line) => line.includes("blocks every tool of MCP servers"))).toHaveLength(0);
     expect(logs.filter((line) => line.includes("admits the whole server"))).toHaveLength(0);
+  });
+});
+
+describe("client.run", () => {
+  it("rejects an approval request and deletes the temporary thread", async () => {
+    const client = createMockAdeChat();
+    try {
+      client.queueApproval({ kind: "command", description: "Run a command" });
+
+      await expect(client.run("Run the command", {
+        provider: "codex",
+        model: "gpt-5",
+        timeoutMs: 100,
+      })).rejects.toMatchObject({
+        code: "unsupported",
+        message: expect.stringContaining("cannot answer approvals or questions"),
+      });
+      expect(await client.threads.list()).toHaveLength(0);
+    } finally {
+      await client.dispose();
+    }
+  });
+});
+
+describe("thread queue", () => {
+  it("keeps a steer queued when a provider requeues it after accepting an inline offer", async () => {
+    const runtime = await startRuntime();
+    const client = await connect(runtime);
+    const thread = await client.threads.open("queue-retry", { provider: "codex", model: "gpt-5" });
+    runtime.emitChatEvent(thread.id, {
+      type: "user_message",
+      steerId: "steer-1",
+      deliveryState: "accepted",
+      text: "Continue with the patch",
+    });
+    runtime.emitChatEvent(thread.id, {
+      type: "user_message",
+      steerId: "steer-1",
+      deliveryState: "queued",
+      text: "Continue with the patch",
+    });
+
+    await expect(thread.queue.list()).resolves.toEqual([
+      { id: "steer-1", text: "Continue with the patch" },
+    ]);
   });
 });
