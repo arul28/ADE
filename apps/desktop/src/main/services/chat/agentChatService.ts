@@ -5793,7 +5793,7 @@ const defaultClaudeDescriptor = () => getDefaultModelDescriptor("claude");
 const DEFAULT_OPENCODE_DESCRIPTOR = getDefaultModelDescriptor("opencode");
 const DEFAULT_CURSOR_DESCRIPTOR = getDefaultModelDescriptor("cursor");
 const DEFAULT_DROID_DESCRIPTOR = getDefaultModelDescriptor("droid");
-const defaultCodexModel = (): string => defaultCodexDescriptor()?.providerModelId ?? "gpt-6-astra";
+const defaultCodexModel = (): string => defaultCodexDescriptor()?.providerModelId ?? "gpt-6.1-sol";
 const defaultClaudeModel = (): string => {
   const descriptor = defaultClaudeDescriptor();
   return descriptor?.providerModelId ?? descriptor?.shortId ?? "sonnet";

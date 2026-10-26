@@ -4877,11 +4877,12 @@ the stats and shows update guidance.
   Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
   appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the
   generic `sonnet` alias resolves to Sonnet 5.5. The OpenAI picker
-  always promotes GPT-6 Astra, then GPT-5.6 Sol, Terra, Luna in that
-  order even when a host returns another order; Astra is the fallback default
+  always follows the Codex catalog order (GPT-6.1 Sol, GPT-6 Astra,
+  GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol, GPT-5.6 Luna) even when a
+  host returns another order; GPT-6.1 Sol is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
   tiers/defaults in their original order and falls back to Light / Medium /
-  High / Extra High / Max on Astra/Luna and through Ultra on Sol/Terra
+  High / Extra High / Max on the Lunas and through Ultra on Astra, the Sols and Terra
   (`low` for Astra/Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
   offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
   an optional `reasoningEffort` field that the runtime forwards to
