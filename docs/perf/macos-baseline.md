@@ -1489,3 +1489,42 @@ these calls (628 ms of a 40 s profile). The rest is the chat list the
 snapshot builds (per-row lookups in `agentChatService.listSessions`, chat
 state files) and the 500-row session list: about 44 ms of main-thread time
 per call.
+
+Chat and session lists (`b109c1239`): `scripts/perf/service/session-list.bench.mts`
+(the real chat service over 617 chat metadata files, 8.1 MB), five interleaved
+runs per side against `66d671759`, load 30-104, the fixture's files left 2.5 s
+to settle first so both sides read them from the state-file cache. (Without
+the pause the faster build finishes inside the cache's 2 s settle window and
+reads every file again; that is the bench, not the brain.)
+
+| `sessions.list` (median of 7 per run; range of 5 runs) | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| 500-row window | 75-84 ms | 19-28 ms | 40 ms |
+| One lane, 200 rows | 33-46 ms | 9-11 ms | 20 ms |
+| Every row (764) | 105-141 ms | 28-39 ms | 60 ms |
+
+Within one listing each row's Claude resume pointer, parent chat and move
+record are read once (not once or twice per row), a non-running OpenCode
+chat's `/compact` check walks the prompt folders once per listing instead of
+once per row, the chat tool types come from one statement instead of one query
+per type, and a row whose columns are unchanged reuses its mapped form.
+
+Phone reconnect's lane refresh on the owner's real project: a clone of P0's
+golden copy (47 active lanes, 46 worktrees of the 7,600-file repo, 78 M db
+versions), P0's sync-ON measurement brain, a reconnect then 5 not-modified
+`lanes.refreshSnapshots` and 5 refresh + `work.listSessions` pairs on LAN,
+five interleaved runs per side (`main` e2f42f44c vs `744f102c3`), load 11-77.
+
+| Real load, 47 lanes | Before (`main`) | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Not-modified lane refresh, median of the 5 run medians | 1,975 ms (runs 1,901-2,399) | 1,579 ms (runs 1,515-1,766) | 2,000 ms |
+| Slowest single refresh in 25 | 4,759 ms | 2,472 ms | 3,000 ms |
+| Git processes per measured window | ~5,000 | ~1,100 | 1,500 |
+
+What is left is `git status` itself: ~50 ms per real worktree (33 ms for the
+tracked files, ~20 ms for the untracked walk), so 46 lanes are ~1.5 s of git
+whatever the order. The untracked cache and the fsmonitor daemon do not help
+while ADE reads with `GIT_OPTIONAL_LOCKS=0` (41-58 ms per status with the
+daemon). The conflict and rebase summaries now reuse the HEAD each lane's
+status printed, behind counts are kept per commit pair, and the search index
+lists the lanes once per pass instead of once per lane.
