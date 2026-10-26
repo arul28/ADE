@@ -47839,8 +47839,22 @@ export function createAgentChatService(args: {
     ].join(" ");
     if (parentChatStillExists(parentSessionId)) {
       if (spawnKind === "peer") {
-        emitChatEvent(ensureManagedSession(parentSessionId), awaitingUserQuietNotice(childTitle, summary));
-        return true;
+        try {
+          // The quiet line is written into the parent's transcript, so it must
+          // not do that behind a live brain that runs the parent.
+          assertChatRuntimeOwnedHere(parentSessionId, "deliver an awaiting-user notice");
+          emitChatEvent(ensureManagedSession(parentSessionId), awaitingUserQuietNotice(childTitle, summary));
+          return true;
+        } catch (error) {
+          // A parent row that exists but cannot be rehydrated is not a reason
+          // to fail the child's card; the next event may still reach it.
+          logger.warn("agent_chat.peer_awaiting_user_notice_failed", {
+            parentSessionId,
+            childSessionId: child.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
       }
       void messageSession({
         sessionId: parentSessionId,
@@ -48049,6 +48063,8 @@ export function createAgentChatService(args: {
     if (wake.notice === "awaiting_user") {
       if (wake.spawnKind === "peer") {
         try {
+          // As above: never write into a chat another live brain runs.
+          assertChatRuntimeOwnedHere(wake.parentSessionId, "deliver an awaiting-user notice");
           emitChatEvent(
             ensureManagedSession(wake.parentSessionId),
             awaitingUserQuietNotice(wake.childTitle, wake.summary),
@@ -65505,11 +65521,22 @@ export function createAgentChatService(args: {
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
     whenReady: () => scheduledWorkReady,
-    // A subagent tells its own parent (`relayChildAwaitingUserToParent`).
+    // A subagent tells its own parent (`relayChildAwaitingUserToParent`), so a
+    // waiter would repeat it. A peer's relay is a quiet line that does not
+    // wake, so the waiter is how its parent hears it while asleep and must
+    // still speak. `pendingInputUserOnly` only exists for a chat this brain
+    // manages (see `isUserOnlyPendingInput`), so `managedSessions` is the whole
+    // set the relay can have told.
     callerToldOfUserWait: (targetSessionId, callerSessionId) => {
       const target = managedSessions.get(targetSessionId);
       return target?.session.spawnKind === "subagent"
         && target.session.orchestrationParentSessionId?.trim() === callerSessionId;
+    },
+    // A queued send's wait runs on the brain that owns the chat it sends to,
+    // which may not be its caller's; only a caller this brain runs can be told.
+    callerIsLiveHere: (sessionId) => {
+      const session = managedSessions.get(sessionId);
+      return Boolean(session && !session.deleted);
     },
   });
   chatWaits = chatWaitRegistry;

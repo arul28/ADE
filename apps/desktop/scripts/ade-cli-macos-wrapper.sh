@@ -81,6 +81,12 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
       NODE_PATH_VALUE="$NODE_PATH_VALUE;$NODE_PATH"
     fi
     if [ -n "${ADE_CLI_NODE:-}" ]; then
+      # A Windows environment sets this in its own spelling (C:\Program Files\…);
+      # cygpath turns either form into one this shell can run. A bare `node`
+      # stays a name for PATH to resolve.
+      case "$ADE_CLI_NODE" in
+        */*|*\\*|*:*) ADE_CLI_NODE=$(winpath "$ADE_CLI_NODE") ;;
+      esac
       NODE_PATH="$NODE_PATH_VALUE" exec "$ADE_CLI_NODE" "$CLI_JS" "$@"
     fi
     node_is_22() {

@@ -1458,11 +1458,16 @@ come):
   persist in the project database (`agent-chat:waiters:v1`), re-arm on start,
   and re-check on each target's events with a 15 s backstop. Checks run one at
   a time, so a waiter fires once, and one cancelled mid-check never fires.
-  While a wake waiter is armed, a target that waits on a user-only card wakes
-  the caller once per card (`userWaitsNoticed`, persisted with the waiter) and
-  the waiter stays armed. A caller's own subagent is skipped there, because
-  the subagent relay already told it (`callerToldOfUserWait`). This is how a
-  coordinator that waits on a peer hears it: a peer never wakes its parent.
+  While a waiter is armed, a target that waits on a user-only card is reported
+  to its caller once per card (`userWaitsNoticed`, persisted with the waiter)
+  and the waiter stays armed. That holds for a wait that wakes its caller and
+  for `ade chat send <B> --after <A>`: the sender hears that the queued prompt
+  has not been sent yet, provided it runs on the same brain as A (the brain
+  that checks the wait) — a cross-machine sender is not woken, and its prompt
+  still goes when the card is answered. A caller's own subagent is skipped
+  there, because the subagent relay already told it (`callerToldOfUserWait`).
+  This is how a coordinator that waits on a peer hears it: a peer never wakes
+  its parent.
   A session-bound agent's wake wait can only wake that agent's own chat.
   `main/services/chat/chatWaitRegistry.ts` owns all of this.
   `chat.listWaits` / `ade chat waits` and `chat.cancelWait` /
