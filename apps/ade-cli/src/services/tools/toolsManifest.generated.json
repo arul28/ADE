@@ -4345,6 +4345,54 @@
       }
     },
     {
+      "name": "ffmpeg",
+      "description": "Static FFmpeg (BtbN GPL build) that renders demo videos where neither ade-media nor the desktop app's engine exists.",
+      "entry": {
+        "kind": "binary",
+        "path": "bin/ffmpeg",
+        "windowsPath": "bin/ffmpeg.exe",
+        "files": {
+          "ffprobe": {
+            "path": "bin/ffprobe",
+            "windowsPath": "bin/ffprobe.exe",
+            "executable": true
+          }
+        }
+      },
+      "targets": {
+        "linux-arm64": {
+          "format": "archive",
+          "package": "ffmpeg-linux-arm64",
+          "version": "8.1.3",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n8.1.3-9-g29e619e767-linuxarm64-gpl-8.1.tar.xz",
+          "archive": "tar.xz",
+          "stripComponents": 1,
+          "sha256": "10523d1e0be6b3ce62a9708cc50815c4b5eb5f36ae147fbe2afeecda6f2d6845",
+          "size": 126468728
+        },
+        "linux-x64": {
+          "format": "archive",
+          "package": "ffmpeg-linux-x64",
+          "version": "8.1.3",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n8.1.3-9-g29e619e767-linux64-gpl-8.1.tar.xz",
+          "archive": "tar.xz",
+          "stripComponents": 1,
+          "sha256": "97ce978979194b5cf7e06a5e68020dbdaa7a4f3294c5452b6a1bc347100dbb79",
+          "size": 150360944
+        },
+        "win32-x64": {
+          "format": "archive",
+          "package": "ffmpeg-win32-x64",
+          "version": "8.1.3",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n8.1.3-9-g29e619e767-win64-gpl-8.1.zip",
+          "archive": "zip",
+          "stripComponents": 1,
+          "sha256": "7b801cdd3a1a0bb54ae6f572187e68b4ed54f52086cfee133fab2180bfb429fa",
+          "size": 193109593
+        }
+      }
+    },
+    {
       "name": "node",
       "description": "Official Node.js runtime for JS-only CLIs ADE runs in terminals (Pi's `dist/bundle/cli.js`).",
       "entry": {

@@ -19,6 +19,11 @@
  * corners and no accent bar (drawtext cannot size a box to its text and draw a
  * second shape against it), and wrapped caption lines are left-aligned.
  *
+ * ffmpeg is the machine's own when it has one. Otherwise ADE downloads its
+ * pinned static build (Linux and Windows) the first time a recording needs a
+ * demo — `prefetchFfmpegTools` starts that when the recording starts — and
+ * never at launch.
+ *
  * The output is written beside the target as `.<name>.<pid>.partial.mp4` and
  * renamed at the end, so a cancel or a failure never leaves half a video at
  * `output`.
@@ -45,6 +50,8 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
@@ -59,18 +66,58 @@ const MAX_RINGS = 60;
 const CAMERA_TOLERANCE = { zoom: 0.004, center: 0.002 };
 const CURSOR_TOLERANCE = 0.0015;
 
+export type FfmpegTools = { ffmpegPath: string; ffprobePath: string };
+
 export type FfmpegDemoEngineDeps = {
-  ffmpegPath: string;
-  ffprobePath: string;
+  /** Where ffmpeg and ffprobe are, downloading ADE's copy when the machine has none. */
+  resolveTools: () => Promise<FfmpegTools>;
   logger?: Logger | null;
 };
 
-/** The system's ffmpeg and ffprobe, or null when either is missing. */
-export function resolveFfmpegTools(): { ffmpegPath: string; ffprobePath: string } | null {
+/** The tools-cache name of ADE's pinned static ffmpeg (Linux and Windows only). */
+const FFMPEG_TOOL = "ffmpeg";
+
+/**
+ * ffmpeg and ffprobe already on this machine: the system's own first, then
+ * ADE's pinned copy if an earlier demo downloaded it. Null when neither is.
+ */
+export function resolveFfmpegTools(): FfmpegTools | null {
   const ffmpeg = resolveExecutableFromKnownLocations("ffmpeg");
   const ffprobe = resolveExecutableFromKnownLocations("ffprobe");
-  if (!ffmpeg || !ffprobe) return null;
-  return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
+  if (ffmpeg && ffprobe) return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
+  const pinned = resolvePinnedTool(FFMPEG_TOOL);
+  const pinnedProbe = pinned?.files.ffprobe;
+  return pinned && pinnedProbe ? { ffmpegPath: pinned.entryPath, ffprobePath: pinnedProbe } : null;
+}
+
+/** True when ADE can fetch its own ffmpeg here: pinned for this host and downloads allowed. */
+export function ffmpegDownloadable(): boolean {
+  const status = getPinnedToolStatus(FFMPEG_TOOL);
+  return status.fetchAllowed && status.state !== "unavailable";
+}
+
+/**
+ * Starts ADE's ffmpeg download now when this machine has none, without
+ * waiting on it: a recording that just started is minutes from needing it.
+ */
+export function prefetchFfmpegTools(): void {
+  if (resolveFfmpegTools()) return;
+  const pending = pinnedToolDownload(FFMPEG_TOOL);
+  if (pending) void pending.catch(() => undefined);
+}
+
+/** The tools, downloading ADE's pinned copy on first need (joining a prefetch). */
+export async function ensureFfmpegTools(): Promise<FfmpegTools> {
+  const found = resolveFfmpegTools();
+  if (found) return found;
+  const pending = pinnedToolDownload(FFMPEG_TOOL);
+  if (pending) {
+    const failure = await pending;
+    if (failure) throw new Error(`ADE could not download ffmpeg to make the demo (${failure.message}).`);
+  }
+  const fetched = resolveFfmpegTools();
+  if (!fetched) throw new Error("This machine has no ffmpeg, and ADE's own copy is not available.");
+  return fetched;
 }
 
 export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
@@ -83,7 +130,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
     },
 
     async analyze(inputPath, options) {
-      const probe = await probeVideo(deps.ffprobePath, inputPath, options?.signal);
+      const tools = await deps.resolveTools();
+      const probe = await probeVideo(tools.ffprobePath, inputPath, options?.signal);
       const longSide = DEMO_ANALYSIS_THUMBNAIL_LONG_SIDE;
       const landscape = probe.width >= probe.height;
       const tw = landscape ? longSide : Math.max(1, Math.round((longSide * probe.width) / probe.height));
@@ -125,7 +173,7 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
       };
 
       await runFfmpeg({
-        binaryPath: deps.ffmpegPath,
+        binaryPath: tools.ffmpegPath,
         args: [
           "-hide_banner", "-nostdin", "-loglevel", "info",
           "-i", inputPath,
@@ -163,6 +211,7 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
     },
 
     async render(request, options) {
+      const tools = await deps.resolveTools();
       const startedAt = Date.now();
       const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-ffmpeg-demo-"));
       const partial = path.join(path.dirname(request.output), `.${path.basename(request.output)}.${process.pid}.partial.mp4`);
@@ -173,7 +222,7 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
         const fps = plan.output.fps;
         const bitrate = Math.max(100_000, Math.round(plan.output.bitrate));
         await runFfmpeg({
-          binaryPath: deps.ffmpegPath,
+          binaryPath: tools.ffmpegPath,
           args: [
             "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
             "-i", request.input,

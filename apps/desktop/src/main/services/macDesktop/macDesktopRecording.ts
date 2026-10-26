@@ -496,6 +496,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       const plain = args.plain === true || args.keepIdle === true;
       const demoKey = macDesktopDemoKey(laneId);
       demoTrackRegistry.begin(demoKey, { surface: "mac-desktop", chatSessionId, laneId });
+      // A plain recording is still fitted to 10 MB by an engine, so it fetches too.
+      deps.demoEngines?.prepare?.();
       try {
         await startHelperRecording({
           start: () => provider.startRecording({ laneId, fps, filePath, keepIdle: true }),

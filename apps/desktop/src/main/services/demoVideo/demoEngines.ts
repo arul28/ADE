@@ -12,7 +12,13 @@
 import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
 import { resolveAdeMediaBinary } from "../native/nativeHelperPaths";
-import { createFfmpegDemoEngine, resolveFfmpegTools } from "./ffmpegDemoEngine";
+import {
+  createFfmpegDemoEngine,
+  ensureFfmpegTools,
+  ffmpegDownloadable,
+  prefetchFfmpegTools,
+  resolveFfmpegTools,
+} from "./ffmpegDemoEngine";
 import { createSwiftDemoEngine } from "./swiftDemoEngine";
 
 export type DemoEngineSet = {
@@ -23,6 +29,11 @@ export type DemoEngineSet = {
    * uncut says this instead of a generic "no demo engine".
    */
   missingEngineReason?(): string | null;
+  /**
+   * A recording just started: fetch what its stop will need when no other
+   * engine is here (ADE's own ffmpeg), so the demo does not wait on a download.
+   */
+  prepare?(): void;
 };
 
 export function createDemoEngineSet(args: {
@@ -38,11 +49,12 @@ export function createDemoEngineSet(args: {
     swift = binaryPath ? createSwiftDemoEngine({ binaryPath, logger: args.logger }) : null;
     return swift;
   };
-  let ffmpeg: DemoEngine | null | undefined;
+  let ffmpeg: DemoEngine | null = null;
+  // Not cached when absent: downloads may be switched on after this set exists.
   const ffmpegEngine = (): DemoEngine | null => {
-    if (ffmpeg !== undefined) return ffmpeg;
-    const tools = resolveFfmpegTools();
-    ffmpeg = tools ? createFfmpegDemoEngine({ ...tools, logger: args.logger }) : null;
+    if (ffmpeg) return ffmpeg;
+    if (!resolveFfmpegTools() && !ffmpegDownloadable()) return null;
+    ffmpeg = createFfmpegDemoEngine({ resolveTools: ensureFfmpegTools, logger: args.logger });
     return ffmpeg;
   };
   return {
@@ -55,6 +67,10 @@ export function createDemoEngineSet(args: {
       const system = ffmpegEngine();
       if (system) list.push(system);
       return list;
+    },
+    prepare() {
+      if (swiftEngine() || args.getChromiumDemoEngine?.()) return;
+      prefetchFfmpegTools();
     },
     missingEngineReason() {
       if (!args.getChromiumDemoEngine || args.getChromiumDemoEngine()) return null;
