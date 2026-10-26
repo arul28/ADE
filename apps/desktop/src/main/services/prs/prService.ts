@@ -2629,6 +2629,7 @@ export function createPrService({
     // lets an invalidated list be rebuilt from pulls read before the mutation.
     rawPullMemo.clear();
     activityInputMemo.clear();
+    sharedReads.clear();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4684,6 +4685,54 @@ export function createPrService({
    * `refreshOne`, which bypasses the memo and republishes what it read, so a
    * post-merge / post-edit read never sees the pre-mutation pull.
    */
+  /**
+   * Shares the per-PR reads that several calls make at the same moment.
+   * Opening a PR asks for its status, checks and reviews together, and each of
+   * those read the head's check-runs and combined status (and the reviews) on
+   * its own: three check-runs reads and two of the rest for one open. A read
+   * in flight is joined; a settled one is reused for the same 5 s as
+   * `rawPullMemo`. Failures are never kept. Every caller gets its own copy,
+   * so one that sorts or edits the result cannot change another's.
+   */
+  const SHARED_READ_TTL_MS = 5_000;
+  const SHARED_READ_MAX_ENTRIES = 192;
+  const sharedReads = new Map<string, { settledAt: number | null; value: Promise<unknown> }>();
+  const sharedReadRepoKey = (repo: GitHubRepoRef): string => `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
+  const sharedRead = <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    const now = Date.now();
+    const cached = sharedReads.get(key);
+    if (cached && (cached.settledAt == null || now - cached.settledAt < SHARED_READ_TTL_MS)) {
+      return cached.value as Promise<T>;
+    }
+    const entry: { settledAt: number | null; value: Promise<unknown> } = { settledAt: null, value: Promise.resolve() };
+    const value = load().then(
+      (result) => {
+        entry.settledAt = Date.now();
+        return result;
+      },
+      (error: unknown) => {
+        if (sharedReads.get(key) === entry) sharedReads.delete(key);
+        throw error;
+      },
+    );
+    entry.value = value;
+    sharedReads.set(key, entry);
+    if (sharedReads.size > SHARED_READ_MAX_ENTRIES) {
+      for (const [staleKey, staleEntry] of sharedReads) {
+        if (sharedReads.size <= SHARED_READ_MAX_ENTRIES) break;
+        if (staleEntry.settledAt != null) sharedReads.delete(staleKey);
+      }
+    }
+    return value;
+  };
+  /** Drops a repo's shared reads after a write that can change them. */
+  const forgetSharedReads = (repo: GitHubRepoRef): void => {
+    const prefix = `${sharedReadRepoKey(repo)}|`;
+    for (const key of Array.from(sharedReads.keys())) {
+      if (key.slice(key.indexOf(":") + 1).startsWith(prefix)) sharedReads.delete(key);
+    }
+  };
+
   const RAW_PULL_MEMO_TTL_MS = 5_000;
   const RAW_PULL_MEMO_MAX_ENTRIES = 64;
   const rawPullMemo = new Map<string, { fetchedAt: number; pull: Promise<any> }>();
@@ -4781,6 +4830,7 @@ export function createPrService({
     for (const kind of ["comments", "reviews", "checks"] as const) {
       activityInputMemo.delete(activityInputMemoKey(kind, repo, prNumber));
     }
+    forgetSharedReads(repo);
   };
 
   const forgetActivityInputsForPr = (prId: string): void => {
@@ -5723,6 +5773,11 @@ export function createPrService({
   };
 
   const fetchReviews = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
+    const reviews = await sharedRead(`reviews:${sharedReadRepoKey(repo)}|${prNumber}`, () => fetchReviewsUncached(repo, prNumber));
+    return reviews.map((review) => ({ ...review }));
+  };
+
+  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
     const data = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
     });
@@ -5899,27 +5954,35 @@ export function createPrService({
     });
   };
 
-  const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<{
+  type CombinedStatus = {
     state: string;
     statuses: Array<{ context: string; state: string; description: string | null; target_url: string | null; created_at: string | null; updated_at: string | null }>;
-  }> => {
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/status`
+  };
+
+  const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<CombinedStatus> => {
+    const combined = await sharedRead(`status:${sharedReadRepoKey(repo)}|${sha}`, async (): Promise<CombinedStatus> => {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/status`
+      });
+      return {
+        state: asString(data?.state),
+        statuses: Array.isArray(data?.statuses) ? data.statuses : []
+      };
     });
-    return {
-      state: asString(data?.state),
-      statuses: Array.isArray(data?.statuses) ? data.statuses : []
-    };
+    return { state: combined.state, statuses: [...combined.statuses] };
   };
 
   const fetchCheckRuns = async (repo: GitHubRepoRef, sha: string): Promise<any[]> => {
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
-      query: { per_page: 100 }
+    const runs = await sharedRead(`checkRuns:${sharedReadRepoKey(repo)}|${sha}`, async (): Promise<any[]> => {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
+        query: { per_page: 100 }
+      });
+      return Array.isArray(data?.check_runs) ? data.check_runs : [];
     });
-    return Array.isArray(data?.check_runs) ? data.check_runs : [];
+    return [...runs];
   };
 
   /** Last-known rollup for a PR row, so a failed checks fetch can hold it. */
@@ -6958,6 +7021,26 @@ export function createPrService({
     return await getCommitsSnapshotByCoords(coordsFromRow(row));
   };
 
+  /**
+   * Jobs of finished runs, by run and attempt. A completed attempt's jobs
+   * never change (a re-run is a new attempt, so a new key), yet every detail
+   * refresh used to read them again: six job lists a minute for a PR whose CI
+   * finished hours ago.
+   */
+  const FINISHED_RUN_JOBS_MAX_ENTRIES = 256;
+  const finishedRunJobs = new Map<string, PrActionJob[]>();
+  const finishedRunJobsKey = (repo: GitHubRepoRef, runId: number, attempt: number): string =>
+    `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}|${runId}|${attempt}`;
+  const rememberFinishedRunJobs = (key: string, jobs: PrActionJob[]): void => {
+    finishedRunJobs.delete(key);
+    finishedRunJobs.set(key, jobs);
+    while (finishedRunJobs.size > FINISHED_RUN_JOBS_MAX_ENTRIES) {
+      const oldest = finishedRunJobs.keys().next();
+      if (oldest.done) break;
+      finishedRunJobs.delete(oldest.value);
+    }
+  };
+
   const getActionRunsByCoords = async (coords: PrGithubCoords): Promise<PrActionRun[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const pr = await fetchPr(repo, Number(coords.githubPrNumber));
@@ -6987,8 +7070,12 @@ export function createPrService({
     const runs: PrActionRun[] = await Promise.all(
       rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
         const runId = Number(run?.id);
-        let jobs: PrActionJob[] = [];
-        if (runId > 0 && jobFetchAllowed[index]) {
+        const runAttempt = Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1;
+        const runFinished = toRunStatus(run?.status) === "completed";
+        const jobsKey = finishedRunJobsKey(repo, runId, runAttempt);
+        const knownJobs = runFinished ? finishedRunJobs.get(jobsKey) : undefined;
+        let jobs: PrActionJob[] = knownJobs ? knownJobs.map((job) => ({ ...job, steps: [...job.steps] })) : [];
+        if (runId > 0 && jobFetchAllowed[index] && !knownJobs) {
           try {
             const { data: jobsData } = await githubService.apiRequest<any>({
               method: "GET",
@@ -7015,6 +7102,11 @@ export function createPrService({
                   }))
                 : []
             }));
+            // Kept only once every job has finished too; a run marked done
+            // while a job still reports running is read again next time.
+            if (runFinished && jobs.every((job) => job.status === "completed")) {
+              rememberFinishedRunJobs(jobsKey, jobs.map((job) => ({ ...job, steps: [...job.steps] })));
+            }
           } catch {
             // Jobs fetch failed; return empty jobs array
           }
@@ -7032,7 +7124,7 @@ export function createPrService({
           htmlUrl: asString(run?.html_url) || "",
           createdAt: asString(run?.created_at) || "",
           updatedAt: asString(run?.updated_at) || "",
-          runAttempt: Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1,
+          runAttempt,
           jobs
         };
       })
@@ -10856,6 +10948,14 @@ export function createPrService({
     const githubStatus = await requireGithubSnapshotAuth();
     if (cachedGithubSnapshot && !githubSnapshotMatchesStatus(cachedGithubSnapshot, githubStatus)) {
       invalidateGithubSnapshotCache();
+    }
+    // An automatic forced sweep (the poller's discovery, the on-focus
+    // reconcile) only needs a list fetched from GitHub around now, and a sweep
+    // already on the wire is exactly that. At launch three of them used to
+    // start together, and each walked every page (and the stacks list) on its own.
+    if (force && options.automaticRefresh === true) {
+      const running = githubSnapshotInFlight;
+      if (running && githubSnapshotRequestSatisfies(running, options)) return running.request;
     }
     const forceRequestEpoch = githubSnapshotCacheEpoch;
     /**

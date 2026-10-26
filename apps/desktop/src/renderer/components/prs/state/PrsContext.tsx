@@ -1277,6 +1277,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // moment GitHub does.
     const startDetailPolling = () => {
       const intervalId = window.setInterval(() => {
+        // Nobody sees a hidden window; the next visible tick catches up.
+        if (document.visibilityState === "hidden") return;
         refreshDetailSilently(prId);
       }, 60_000);
       return () => {

@@ -1168,6 +1168,7 @@ export function PrDetailPane({
         return;
       }
       if (isGithubPollStoodDown()) return;
+      if (document.visibilityState === "hidden") return;
       const request = pollStatus();
       if (!request) return;
       request

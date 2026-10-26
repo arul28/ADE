@@ -70,6 +70,7 @@ import {
   type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
 import { readGitTransportStatus, runGitWithGithubAuthFallback, setGitTransportTokenReader } from "../git/gitTransportAuth";
+import { acquireGithubRequestSlot } from "./githubRequestGate";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -455,6 +456,9 @@ async function fetchGitHub(
   init: RequestInit,
   accounting?: GithubRequestAccountingContext,
 ): Promise<Response> {
+  // Waiting for a slot happens before the timeout starts: the timeout is for
+  // GitHub's answer, not for ADE's own queue.
+  const releaseSlot = await acquireGithubRequestSlot();
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const onUpstreamAbort = (): void => controller.abort(upstreamSignal?.reason);
@@ -496,6 +500,7 @@ async function fetchGitHub(
     throw error;
   } finally {
     clearTimeout(timer);
+    releaseSlot();
   }
 }
 

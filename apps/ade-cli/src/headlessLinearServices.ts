@@ -80,6 +80,7 @@ import {
   type GithubRequestAccountingContext,
   type GithubRequestTokenSource,
 } from "../../desktop/src/main/services/github/githubRequestAccounting";
+import { acquireGithubRequestSlot } from "../../desktop/src/main/services/github/githubRequestGate";
 import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
@@ -772,6 +773,9 @@ async function fetchGitHub(
   fetchImpl: typeof fetch = fetch,
   accounting?: GithubRequestAccountingContext,
 ): Promise<Response> {
+  // Waiting for a slot happens before the timeout starts: the timeout is for
+  // GitHub's answer, not for ADE's own queue.
+  const releaseSlot = await acquireGithubRequestSlot();
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
@@ -799,6 +803,7 @@ async function fetchGitHub(
     throw error;
   } finally {
     clearTimeout(timer);
+    releaseSlot();
   }
   // `release` now runs when the body settles, not here — the upstream abort has
   // to stay wired through the body phase for it to be cancellable at all.
