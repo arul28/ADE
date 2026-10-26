@@ -50,7 +50,7 @@ const USER_SETTING_WRITES = {
       "create", "remove", "signOut", "rename", "setDefault", "setAccent", "dismissReplaced",
       "loginStart", "loginSubmitCode", "loginCancel", "setSettings",
     ],
-    entryId: "agents.accounts",
+    entryId: "agents.providers",
   },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
