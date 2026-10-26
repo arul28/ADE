@@ -162,12 +162,6 @@ export function createBuiltInBrowserCertificateTrust(args: {
   persistentPartition: string;
   getLogger?: () => Logger | null;
 }) {
-  const approvals = new Map<string, StoredApproval>(
-    (args.filePath ? loadApprovals(args.filePath, args.persistentPartition) : [])
-      .map((approval) => [approvalKey(approval.partition, approval), approval]),
-  );
-  let writeChain = Promise.resolve();
-
   const logger = (): Logger | null => {
     try {
       return args.getLogger?.() ?? null;
@@ -175,6 +169,11 @@ export function createBuiltInBrowserCertificateTrust(args: {
       return null;
     }
   };
+  const approvals = new Map<string, StoredApproval>(
+    (args.filePath ? loadApprovals(args.filePath, args.persistentPartition, logger()) : [])
+      .map((approval) => [approvalKey(approval.partition, approval), approval]),
+  );
+  let writeChain = Promise.resolve();
 
   const persist = async (): Promise<void> => {
     if (!args.filePath) return;
@@ -300,7 +299,7 @@ function trimApprovals(approvals: Map<string, StoredApproval>): void {
   for (const [key] of oldest) approvals.delete(key);
 }
 
-function loadApprovals(filePath: string, persistentPartition: string): StoredApproval[] {
+function loadApprovals(filePath: string, persistentPartition: string, logger: Logger | null): StoredApproval[] {
   try {
     const parsed = JSON.parse(fsSync.readFileSync(filePath, "utf8")) as unknown;
     if (!isRecord(parsed) || parsed.version !== STORE_VERSION || !Array.isArray(parsed.approvals)) return [];
@@ -308,7 +307,14 @@ function loadApprovals(filePath: string, persistentPartition: string): StoredApp
       .map((value) => normalizeStoredApproval(value, persistentPartition))
       .filter((approval): approval is StoredApproval => Boolean(approval))
       .slice(0, MAX_APPROVALS);
-  } catch {
+  } catch (error) {
+    // No file yet is the normal start. Anything else means saved approvals are
+    // being dropped, and the next save replaces the file.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger?.warn("built_in_browser.certificate_trust_load_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return [];
   }
 }

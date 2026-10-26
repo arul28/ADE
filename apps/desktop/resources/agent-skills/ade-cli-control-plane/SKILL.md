@@ -174,7 +174,7 @@ after every turn it finishes.
 
 To wait on a terminal (a dev server, a long build, a log), watch it instead of
 polling `ade terminal read`: `ade terminal watch <terminal-id> [--match error |
---match "/ready|listening/i"] [--lifetime 30m]`, then end your turn. ADE wakes
+--match "ready|listening"] [--lifetime 30m]`, then end your turn. ADE wakes
 you with the new output (last ~4 KB, colors and redraws removed) once it goes
 quiet, and once more when the terminal exits (with the exit code). Output
 already on screen never wakes you. `ade terminal watch --command "npm run dev"`

@@ -21,8 +21,9 @@ import { listeningPidsOnPort, readProcessChatSessionIds } from "./devServerListe
  *   starts inherits it, even after it is re-parented. Windows cannot read
  *   another process's environment, so there the chat must have reported the
  *   server (its own command printed the address), the listener must run
- *   under this runtime, and it must have been running since before that
- *   report, which rules out a port re-used by a newer process.
+ *   under this runtime, and it must have started shortly before that report:
+ *   not after it (a port re-used by a newer process) and not long before it
+ *   (a server the chat only called or read about).
  * - What must never be hit: this runtime, every process above it (the
  *   desktop app that launched it), and the first two levels below it (the
  *   agent CLIs, the PTY host, the terminal shells and agent CLIs it runs). A
@@ -42,6 +43,13 @@ const WINDOWS_PROCESS_TABLE_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 /** Windows: how much later than the chat's report a listener may have started and still be that server. */
 const WINDOWS_DETECTION_SLACK_MS = 5_000;
+/**
+ * Windows: how long before the chat's report the listener may have started. A
+ * server a chat starts prints its address within moments; one that was already
+ * running when the chat printed its address (a curl, a log it tailed) belongs
+ * to someone else. Too strict only ever refuses, and the terminal can stop it.
+ */
+const WINDOWS_REPORT_WINDOW_MS = 2 * 60_000;
 /** Depth below this runtime that is always protected: agent CLIs, the PTY host, terminal shells. */
 const PROTECTED_DESCENDANT_DEPTH = 2;
 
@@ -103,7 +111,7 @@ const WINDOWS_PROCESS_TABLE_QUERY = [
   "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress))",
 ].join("; ");
 
-async function readProcessTable(platform: NodeJS.Platform): Promise<ProcessTable | null> {
+async function readProcessTable(platform: NodeJS.Platform, onError?: (error: unknown) => void): Promise<ProcessTable | null> {
   if (platform === "win32") {
     try {
       const raw = await runText(
@@ -127,7 +135,8 @@ async function readProcessTable(platform: NodeJS.Platform): Promise<ProcessTable
         });
       }
       return table;
-    } catch {
+    } catch (error) {
+      onError?.(error);
       return null;
     }
   }
@@ -135,7 +144,8 @@ async function readProcessTable(platform: NodeJS.Platform): Promise<ProcessTable
     const text = await runText("ps", ["-axo", "pid=,ppid=,pgid=,stat=,lstart="], PROCESS_TABLE_TIMEOUT_MS);
     const table = parsePosixProcessTable(text);
     return table.size > 0 ? table : null;
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return null;
   }
 }
@@ -268,11 +278,20 @@ export async function stopChatDevServer(input: {
     return refuse("protected", `Port ${port} is ADE's own dev renderer.`);
   }
 
-  const listeners = await listeningPidsOnPort(port, platform);
+  // A failed OS read is refused below; say why in the log, not only that it failed.
+  const logReadFailure = (step: string) => (error: unknown) => {
+    input.logger?.warn("dev_servers.stop_os_read_failed", {
+      chatSessionId,
+      port,
+      step,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+  const listeners = await listeningPidsOnPort(port, platform, logReadFailure("listeners"));
   if (listeners === null) return refuse("failed", `ADE could not check what is using port ${port}.`);
   if (listeners.length === 0) return { ok: true, port, stopped: [], forced: false, alreadyStopped: true };
 
-  const table = await readProcessTable(platform);
+  const table = await readProcessTable(platform, logReadFailure("process_table"));
   if (!table) return refuse("failed", "ADE could not read this computer's process list.");
   const protectedPids = protectedPidsFor(table, process.pid, platform, input.protectedPids);
   const children = childrenIndex(table, platform);
@@ -299,7 +318,13 @@ export async function stopChatDevServer(input: {
     const underRuntime = new Set(descendantsOf(process.pid, children));
     for (const pid of listeners) {
       const startedMs = table.get(pid)?.startedMs ?? null;
-      if (!reportedByChat || !underRuntime.has(pid) || startedMs == null || startedMs > reportedAt + WINDOWS_DETECTION_SLACK_MS) {
+      if (
+        !reportedByChat
+        || !underRuntime.has(pid)
+        || startedMs == null
+        || startedMs > reportedAt + WINDOWS_DETECTION_SLACK_MS
+        || startedMs < reportedAt - WINDOWS_REPORT_WINDOW_MS
+      ) {
         return refuse("not_owned", `Port ${port} is held by something this chat did not start.`);
       }
     }

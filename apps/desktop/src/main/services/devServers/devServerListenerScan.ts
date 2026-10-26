@@ -217,6 +217,7 @@ export async function readProcessChatSessionIds(
 export async function listeningPidsOnPort(
   port: number,
   platform: NodeJS.Platform = process.platform,
+  onError?: (error: unknown) => void,
 ): Promise<number[] | null> {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return [];
   if (platform === "win32") {
@@ -234,7 +235,8 @@ export async function listeningPidsOnPort(
       const parsed: unknown = raw.trim() ? JSON.parse(raw) : [];
       const values = Array.isArray(parsed) ? parsed : [parsed];
       return [...new Set(values.map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))];
-    } catch {
+    } catch (error) {
+      onError?.(error);
       return null;
     }
   }
@@ -243,7 +245,9 @@ export async function listeningPidsOnPort(
     return [...new Set(parseLsofListeners(text).filter((socket) => socket.port === port).map((socket) => socket.pid))];
   } catch (error) {
     // lsof exits 1 with no output when nothing matched: nothing is listening.
-    return (error as { code?: unknown } | null)?.code === 1 ? [] : null;
+    if ((error as { code?: unknown } | null)?.code === 1) return [];
+    onError?.(error);
+    return null;
   }
 }
 

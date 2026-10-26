@@ -62,7 +62,7 @@ export type TerminalWatchArgs = {
   command?: string | null;
   /** Lane for `command`; defaults to the chat's lane. */
   laneId?: string | null;
-  /** Wake only on lines containing this text (case-insensitive), or matching `/regex/flags`. */
+  /** Wake only on lines containing this text (case-insensitive); `|` separates alternatives. */
   match?: string | null;
   /** How long the watch lives: minutes as a number, or `30m`, `2h`, `1d`. */
   lifetime?: string | number | null;
@@ -185,18 +185,13 @@ export type TerminalWatchMatcher = {
 };
 
 /**
- * A quantified group that itself holds a quantifier — `(a+)+`, `(\w*)*`,
- * `(x{2,})+` — is the shape of catastrophic backtracking. Refused up front:
- * the brain runs the pattern on every line a busy process prints.
- */
-const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,?\d*\})/;
-/** A regex is only ever run on this much of a line. */
-const MATCH_LINE_MAX_CHARS = 1_000;
-
-/**
- * Compile a `match` filter. Plain text is a case-insensitive substring;
- * `/pattern/flags` is a regular expression (flags limited to `i`, `m`, `s`,
- * `u`). Null/empty means "any output".
+ * Compile a `match` filter: case-insensitive text, with `|` between
+ * alternatives (`error|failed`). Null/empty means "any output".
+ *
+ * Plain text on purpose, not regular expressions: the brain tests every line a
+ * busy process prints on its main thread, and no up-front check reliably
+ * refuses a pattern that backtracks for seconds (`^(a|a)*$`). Substring tests
+ * are linear in the line.
  */
 export function compileTerminalWatchMatch(value: unknown): TerminalWatchMatcher | null {
   if (value == null) return null;
@@ -205,31 +200,18 @@ export function compileTerminalWatchMatch(value: unknown): TerminalWatchMatcher 
   if (raw.length > TERMINAL_WATCH_MATCH_MAX_CHARS) {
     throw new Error(`The match filter is too long (max ${TERMINAL_WATCH_MATCH_MAX_CHARS} characters).`);
   }
-  const regexForm = /^\/(.+)\/([a-z]*)$/s.exec(raw.trim());
-  if (regexForm) {
-    const [, source = "", flags = ""] = regexForm;
-    if (/[^imsu]/.test(flags)) {
-      throw new Error(`Unsupported regex flags "${flags}". Use any of i, m, s, u.`);
-    }
-    if (NESTED_QUANTIFIER.test(source)) {
-      throw new Error("That pattern nests repeats (like (a+)+), which can hang on long lines. Simplify it.");
-    }
-    let regex: RegExp;
-    try {
-      regex = new RegExp(source, flags);
-    } catch (error) {
-      throw new Error(`Invalid regex: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    return {
-      label: raw.trim(),
-      test: (line) => {
-        regex.lastIndex = 0;
-        return regex.test(line.length > MATCH_LINE_MAX_CHARS ? line.slice(0, MATCH_LINE_MAX_CHARS) : line);
-      },
-    };
+  if (/^\/.+\/[a-z]*$/s.test(raw.trim())) {
+    throw new Error("Match takes plain text, not a regular expression. Separate alternatives with |, as in error|failed.");
   }
-  const needle = raw.trim().toLowerCase();
-  return { label: raw.trim(), test: (line) => line.toLowerCase().includes(needle) };
+  const needles = raw.split("|").map((part) => part.trim().toLowerCase()).filter(Boolean);
+  if (needles.length === 0) return null;
+  return {
+    label: raw.trim(),
+    test: (line) => {
+      const lower = line.toLowerCase();
+      return needles.some((needle) => lower.includes(needle));
+    },
+  };
 }
 
 export function describeTerminalWatchStop(reason: TerminalWatchStopReason, exitCode?: number | null): string {

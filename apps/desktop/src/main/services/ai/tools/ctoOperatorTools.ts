@@ -1948,7 +1948,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "Have ADE wake a chat when an ADE terminal on this machine prints something new, instead of polling it. "
       + "Output already on screen never wakes; new output wakes after it goes quiet for a few seconds, with the last "
-      + "~4 KB cleaned of colors and redraws. 'match' limits wakes to lines containing that text, or a /regex/flags. "
+      + "~4 KB cleaned of colors and redraws. 'match' limits wakes to lines containing that text (case-insensitive; | separates alternatives). "
       + "The terminal exiting, the lifetime (default 2h, max 24h) or 20 wakes in an hour ends the watch with one "
       + "last wake. Pass 'command' instead of a terminal to start it in a new shell and watch it from the first byte. "
       + "Defaults to your own thread; pass sessionId to wake a worker chat.",

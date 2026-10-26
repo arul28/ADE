@@ -63,6 +63,7 @@ export type TerminalWatchServiceDeps = {
     readTerminal: (args: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
     hasLivePty: (sessionId: string) => boolean;
     create?: (args: PtyCreateArgs) => Promise<{ ptyId: string; sessionId: string }>;
+    dispose?: (args: { ptyId: string; sessionId?: string }) => unknown;
   };
   sessionService: {
     get: (sessionId: string) => ChatRow | null;
@@ -121,6 +122,16 @@ function iso(ms: number): string;
 function iso(ms: number | null): string | null;
 function iso(ms: number | null): string | null {
   return ms == null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * A code fence longer than any backtick run in the text, so terminal output
+ * (which a server log can fill with anyone's text) cannot close the fence and
+ * read as ADE's own words in the wake.
+ */
+function codeFenceFor(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  return "`".repeat(Math.max(3, longest + 1));
 }
 
 function formatBytes(bytes: number): string {
@@ -370,19 +381,21 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       lines.push(`Terminal watch: new output in "${title}" (terminal ${watch.terminalId}).`);
     }
     if (excerpt && excerptIsTail) {
-      lines.push("No new output since your last wake. The last lines on screen:", "", "```text", excerpt.text, "```");
+      const fence = codeFenceFor(excerpt.text);
+      lines.push("No new output since your last wake. The last lines on screen:", "", `${fence}text`, excerpt.text, fence);
     } else if (excerpt) {
       const omitted = excerpt.omittedLines > 0 ? ` ${excerpt.omittedLines} earlier line${excerpt.omittedLines === 1 ? "" : "s"} left out.` : "";
       const dropped = watch.droppedChars > 0 ? ` About ${formatBytes(watch.droppedChars)} of older output was not kept.` : "";
       const filter = watch.matcher
         ? ` ${excerpt.matchedLines} line${excerpt.matchedLines === 1 ? "" : "s"} matched ${watch.matcher.label}; shown with a little context.`
         : "";
+      const fence = codeFenceFor(excerpt.text);
       lines.push(
         `${formatBytes(watch.bytesSinceWake)} of new output since ${sinceWhat}. Colors and redraws are removed.${filter}${omitted}${dropped}`,
         "",
-        "```text",
+        `${fence}text`,
         excerpt.text,
-        "```",
+        fence,
       );
     } else if (final) {
       lines.push("No new output to show.");
@@ -710,15 +723,23 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
             cols: 120,
             rows: 36,
           });
-          return arm({
-            chatSessionId,
-            terminalId: created.sessionId,
-            title: command,
-            matcher,
-            lifetimeMs,
-            armedBy,
-            initialOutput: buffer.get(created.sessionId) ?? [],
-          });
+          try {
+            return arm({
+              chatSessionId,
+              terminalId: created.sessionId,
+              title: command,
+              matcher,
+              lifetimeMs,
+              armedBy,
+              initialOutput: buffer.get(created.sessionId) ?? [],
+            });
+          } catch (error) {
+            // The chat filled its watches while the shell started: a shell
+            // running the command with nothing watching it is not what was
+            // asked for, so close it.
+            deps.ptyService.dispose?.({ ptyId: created.ptyId, sessionId: created.sessionId });
+            throw error;
+          }
         } finally {
           launchBuffers.delete(buffer);
           syncSubscriptions();

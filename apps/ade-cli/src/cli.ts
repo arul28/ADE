@@ -2442,8 +2442,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade terminal watch <terminal-id> --text        Wake this chat on new output
     $ ade terminal watch <terminal-id> --match error Only on lines containing "error"
-    $ ade terminal watch <terminal-id> --match "/ready|listening/i" --lifetime 30m
-    $ ade terminal watch --command "npm run dev" --match "/error|ready/i"
+    $ ade terminal watch <terminal-id> --match "ready|listening" --lifetime 30m
+    $ ade terminal watch --command "npm run dev" --match "error|ready"
                                                     Start a shell in the chat's lane and watch it
     $ ade terminal watches --text                   This chat's watches (--all for every chat)
     $ ade terminal unwatch <watch-id>               Stop one quietly (no id: all of this chat's)

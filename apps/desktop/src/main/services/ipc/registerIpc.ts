@@ -10875,7 +10875,12 @@ export function registerIpc({
     if (!tabId || !fingerprint) {
       throw new Error(`${IPC.builtInBrowserTrustCertificate}: expected { tabId, fingerprint }.`);
     }
-    return ensureBuiltInBrowser().trustCertificate({ tabId, fingerprint }, win);
+    // Keep the tab's scope (project or personal collection) like every other
+    // tab action, so the tab is looked up in the browser that owns it.
+    return ensureBuiltInBrowser().trustCertificate(
+      { ...parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserTrustCertificate), tabId, fingerprint },
+      win,
+    );
   });
 
   ipcMain.handle(IPC.builtInBrowserListTrustedCertificates, async (event) => {

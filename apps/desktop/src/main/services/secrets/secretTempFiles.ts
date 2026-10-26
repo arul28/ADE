@@ -30,6 +30,8 @@ export const SECRET_TEMP_FILE_MIN_TTL_MS = 60_000;
 export const SECRET_TEMP_FILE_MAX_TTL_MS = 24 * 60 * 60_000;
 /** A value file with no sidecar this old is a write that never finished. */
 const ORPHAN_GRACE_MS = 60_000;
+/** How soon a removal that failed is tried again. */
+const REMOVE_RETRY_MS = 60_000;
 const FILE_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 export type SecretTempFileRecord = {
@@ -87,11 +89,35 @@ export function createSecretTempFileStore(options: {
 
   const sidecarPath = (id: string) => path.join(dir, `${id}.json`);
 
-  const removeRecordFiles = (id: string): void => {
-    // Value first: a crash in between leaves a sidecar the next sweep drops,
-    // never a value with no record of when it expires.
-    fs.rmSync(path.join(dir, id), { force: true });
-    fs.rmSync(sidecarPath(id), { force: true });
+  /**
+   * Files whose removal failed (Windows: a scanner or a command holding the
+   * file open). The next sweep, armed within `REMOVE_RETRY_MS`, tries them
+   * again even when they have not expired, since their chat already ended.
+   */
+  const pendingRemoval = new Set<string>();
+  let retrySoon = false;
+
+  /**
+   * Remove one value and its sidecar. Never throws: on Windows `rmSync` still
+   * fails with EBUSY/EPERM while another process has the file open, and one
+   * stuck file must not stop the rest or take the runtime down.
+   */
+  const removeRecordFiles = (id: string): boolean => {
+    try {
+      // Value first: a crash in between leaves a sidecar the next sweep drops,
+      // never a value with no record of when it expires.
+      fs.rmSync(path.join(dir, id), { force: true });
+      fs.rmSync(sidecarPath(id), { force: true });
+      pendingRemoval.delete(id);
+      return true;
+    } catch (error) {
+      pendingRemoval.add(id);
+      options.logger?.warn("project_secret.temp_file_remove_failed", {
+        id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   };
 
   const list = (): SecretTempFileRecord[] => {
@@ -119,10 +145,18 @@ export function createSecretTempFileStore(options: {
     }, null);
     if (next == null) return;
     // One timer for the soonest expiry, only while a file exists: nothing runs when there are none.
-    const delay = Math.min(Math.max(next - now(), 1_000), 2 ** 31 - 1);
+    const soonest = pendingRemoval.size > 0 || retrySoon ? Math.min(next, now() + REMOVE_RETRY_MS) : next;
+    const delay = Math.min(Math.max(soonest - now(), 1_000), 2 ** 31 - 1);
     expiryTimer = setTimeout(() => {
       expiryTimer = null;
-      sweep();
+      try {
+        sweep();
+      } catch (error) {
+        options.logger?.warn("project_secret.temp_files_sweep_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        armExpiry();
+      }
     }, delay);
     expiryTimer.unref?.();
   };
@@ -130,6 +164,7 @@ export function createSecretTempFileStore(options: {
   /** Drops expired files, sidecars with no value, and values no sidecar describes. */
   const sweep = (): number => {
     let removed = 0;
+    retrySoon = false;
     let names: string[];
     try {
       names = fs.readdirSync(dir);
@@ -142,14 +177,15 @@ export function createSecretTempFileStore(options: {
       if (name.endsWith(".json")) {
         const record = readSidecar(full);
         if (!record) {
-          fs.rmSync(full, { force: true });
+          try {
+            fs.rmSync(full, { force: true });
+          } catch {
+            retrySoon = true;
+          }
           continue;
         }
         const expired = !(Date.parse(record.expiresAt) > now());
-        if (expired || !present.has(record.id)) {
-          removeRecordFiles(record.id);
-          removed += 1;
-        }
+        if ((expired || !present.has(record.id) || pendingRemoval.has(record.id)) && removeRecordFiles(record.id)) removed += 1;
         continue;
       }
       if (!FILE_ID_PATTERN.test(name) || present.has(`${name}.json`)) continue;
@@ -160,7 +196,7 @@ export function createSecretTempFileStore(options: {
           removed += 1;
         }
       } catch {
-        // Gone already.
+        // Gone already, or held open: the next sweep tries again.
       }
     }
     if (removed > 0) options.logger?.info("project_secret.temp_files_swept", { removed });
@@ -246,15 +282,15 @@ export function createSecretTempFileStore(options: {
       const id = chatSessionId.trim();
       if (!id) return 0;
       let removed = 0;
+      let failed = false;
       for (const record of list()) {
         if (record.chatSessionId !== id) continue;
-        removeRecordFiles(record.id);
-        removed += 1;
+        if (removeRecordFiles(record.id)) removed += 1;
+        else failed = true;
       }
-      if (removed > 0) {
-        options.logger?.info("project_secret.temp_files_removed_for_chat", { chatSessionId: id, removed });
-        armExpiry();
-      }
+      if (removed > 0) options.logger?.info("project_secret.temp_files_removed_for_chat", { chatSessionId: id, removed });
+      // A file that could not go yet is past its chat: the retry timer takes it.
+      if (removed > 0 || failed) armExpiry();
       return removed;
     },
 
