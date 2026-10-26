@@ -32,6 +32,7 @@ import type { ActivityLabelConfig } from "../activity/labels";
 import { resolveActivityLabel, DEFAULT_THINKING_LABEL } from "../activity/labels";
 import type { ThreadStatus } from "../sdkTypes";
 import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./ApprovalCard";
+import { PendingInputCard, type PendingInputRespond } from "./PendingInputCard";
 import { AdeLinkHandlerProvider, type AdeLinkClickHandler } from "./links";
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
 import { ToolChip, type ToolChipAction } from "./ToolChip";
@@ -65,6 +66,8 @@ export type TranscriptProps = {
    * then render read-only with a line saying why.
    */
   onApprove?: ApprovalRespond;
+  /** Answer structured questions and plan approvals; omitted clients render read-only cards. */
+  onRespond?: PendingInputRespond;
   /** Custom approval card renderer and button wording. */
   approvals?: ApprovalUiOptions;
   /**
@@ -125,6 +128,7 @@ export function Transcript({
   renderMarkdown = defaultRenderMarkdown,
   onLinkClick,
   onApprove,
+  onRespond,
   approvals,
   renderToolResult,
   toolChipActions,
@@ -250,6 +254,7 @@ export function Transcript({
               expandReasoning={expandReasoning}
               renderMarkdown={renderMarkdown}
               {...(onApprove ? { onApprove } : {})}
+              {...(onRespond ? { onRespond } : {})}
               {...(approvals ? { approvals } : {})}
               {...(renderToolResult ? { renderToolResult } : {})}
               {...(toolChipActions ? { toolChipActions } : {})}
@@ -282,6 +287,7 @@ const TranscriptRowView = memo(function TranscriptRowView({
   expandReasoning,
   renderMarkdown,
   onApprove,
+  onRespond,
   approvals,
   renderToolResult,
   toolChipActions,
@@ -291,6 +297,7 @@ const TranscriptRowView = memo(function TranscriptRowView({
   expandReasoning: boolean;
   renderMarkdown: (text: string) => ReactNode;
   onApprove?: ApprovalRespond | undefined;
+  onRespond?: PendingInputRespond | undefined;
   approvals?: ApprovalUiOptions | undefined;
   renderToolResult?: ((row: ToolChipRow) => ReactNode) | undefined;
   toolChipActions?: ((row: ToolChipRow) => readonly ToolChipAction[]) | undefined;
@@ -298,6 +305,13 @@ const TranscriptRowView = memo(function TranscriptRowView({
   const event = row.event;
 
   if (event.type === "approval") {
+    if (event.requestKind === "question" || event.requestKind === "structured_question" || event.requestKind === "plan_approval") {
+      return (
+        <div className="adechat-row">
+          <PendingInputCard row={event} {...(onRespond ? { onRespond } : {})} />
+        </div>
+      );
+    }
     return (
       <div className="adechat-row">
         <ApprovalCard
