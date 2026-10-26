@@ -8226,7 +8226,7 @@ export function createLaneService({
       });
       const hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
       if (hasOrigin) {
-        const remoteTemp = await runGit(
+        const remoteTemp = await runGitWithGithubAuthFallback(
           ["ls-remote", "--exit-code", "--heads", "origin", temporaryBranch],
           { cwd: lane.worktree_path, timeoutMs: 12_000 },
         );
@@ -9720,7 +9720,7 @@ export function createLaneService({
           unpushedCommitCount = Number.parseInt(unpushed.stdout.trim(), 10) || 0;
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
-        const remoteCheck = await runGit(
+        const remoteCheck = await runGitWithGithubAuthFallback(
           ["ls-remote", "--heads", "origin", riskBranchName],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );

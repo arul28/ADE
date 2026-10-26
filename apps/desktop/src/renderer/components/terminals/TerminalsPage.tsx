@@ -54,6 +54,7 @@ import type {
   PtyResumeSessionResult,
   TerminalResumeLaunchConfig,
   TerminalSessionSummary,
+  WorkBoardWaitingReason,
 } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -483,9 +484,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         laneActions?: SessionContextMenuLaneActions | null;
         openIn?: SessionContextMenuOpenIn | null;
         laneType?: LaneSummary["laneType"] | null;
+        waitingReason?: WorkBoardWaitingReason | null;
       } = {},
     ) => {
-      const { binding, machineName, laneActions, openIn, laneType } = extras;
+      const { binding, machineName, laneActions, openIn, laneType, waitingReason } = extras;
       setBulkMenu(null);
       setContextMenu({
         session,
@@ -496,6 +498,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
         ...(laneType ? { laneType } : {}),
+        ...(waitingReason ? { waitingReason } : {}),
       });
     },
   );
@@ -511,6 +514,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       laneActions?: SessionContextMenuLaneActions | null,
       openIn?: SessionContextMenuOpenIn | null,
       laneType?: LaneSummary["laneType"] | null,
+      waitingReason?: WorkBoardWaitingReason | null,
     ) => {
       // Right-clicking a row inside a multi-selection acts on the selection, the
       // way Finder does; a row outside it keeps its own single-row menu.
@@ -525,6 +529,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
         ...(laneType ? { laneType } : {}),
+        ...(waitingReason ? { waitingReason } : {}),
       });
     },
   );
@@ -2181,8 +2186,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             onUndoSettled: refreshForeign,
           });
         }}
+        // The row's own reason first: the board's union covers rows on other
+        // machines, which this page's local map does not.
         statusWaitingReason={contextMenu
-          ? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null
+          ? contextMenu.waitingReason ?? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null
           : null}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {

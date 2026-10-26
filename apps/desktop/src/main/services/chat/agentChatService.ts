@@ -50237,7 +50237,7 @@ export function createAgentChatService(args: {
     if (!normalizeGitRemoteIdentity(originUrl) || originUrl.length > 2_048 || originUrl.includes("\0")) {
       throw new Error("The project's origin URL is not portable.");
     }
-    const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+    const remote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
     });

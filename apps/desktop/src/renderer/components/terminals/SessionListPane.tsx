@@ -1086,6 +1086,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneActions?: SessionContextMenuLaneActions | null,
     openIn?: SessionContextMenuOpenIn | null,
     laneType?: LaneSummary["laneType"] | null,
+    /** Why the board files this row under Waiting, foreign machines included. */
+    waitingReason?: WorkBoardWaitingReason | null,
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -2582,6 +2584,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               ? openIn
               : null,
             sessionLane?.laneType,
+            boardUnion.waitingReasons.get(session.id) ?? null,
           );
         }}
         compact={options?.compact}

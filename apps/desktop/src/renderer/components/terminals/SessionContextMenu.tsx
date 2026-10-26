@@ -142,6 +142,8 @@ export type SessionContextMenuState = {
   machineName?: string | null;
   openIn?: SessionContextMenuOpenIn | null;
   laneType?: LaneType | null;
+  /** Why the board files this row under Waiting, when the opening surface knows it. */
+  waitingReason?: WorkBoardWaitingReason | null;
   /** Present only for a singleton lane's card (see the type above). */
   laneActions?: SessionContextMenuLaneActions | null;
   x: number;

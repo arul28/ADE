@@ -25,7 +25,7 @@ import type { createAutomationSecretService } from "../../desktop/src/main/servi
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
-import { readGitTransportStatus, setGitTransportTokenReader } from "../../desktop/src/main/services/git/gitTransportAuth";
+import { readGitTransportStatus, runGitWithGithubAuthFallback, setGitTransportTokenReader } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -2563,11 +2563,12 @@ export function createHeadlessGitHubService(
       );
       let resultState: "pushed" | "remote_added";
       if (headRes.exitCode === 0) {
-        const pushRes = await runGitHeadlessAsync(
-          projectRoot,
-          ["push", "-u", "origin", "HEAD"],
-          5 * 60_000,
-        );
+        // Through the GitHub sign-in fallback, like the desktop publish: git's
+        // own credential first, then ADE's token on an https GitHub origin.
+        const pushRes = await runGitWithGithubAuthFallback(["push", "-u", "origin", "HEAD"], {
+          cwd: projectRoot,
+          timeoutMs: 5 * 60_000,
+        });
         if (pushRes.exitCode !== 0) {
           await cleanupLocalOrigin();
           throw gitPushError(pushRes.stderr.trim() || `exit ${pushRes.exitCode}`, {

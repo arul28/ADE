@@ -234,6 +234,12 @@ export async function runGitWithGithubAuthFallback(
   }
   if (signInFailed) record(key, { systemFailedAtMs: Date.now() });
   if (refusedTokenResult) {
+    if (!signInFailed) {
+      // Git's own sign-in works now and was only denied; ADE's refused token
+      // says nothing about this machine signing in.
+      recordOutcome(key, first, "system", false);
+      return first;
+    }
     recordOutcome(key, refusedTokenResult, "ade", true);
     return refusedTokenResult;
   }
@@ -248,6 +254,12 @@ export async function runGitWithGithubAuthFallback(
     reason: signInFailed ? "sign_in_failed" : "access_denied",
     succeeded: retried.exitCode === 0,
   });
+  if (!signInFailed && !retried.timedOut && !retried.cancelled && isGitAuthFailure(resultOutput(retried))) {
+    // Git signed in and was denied; only ADE's token is broken. The denial is
+    // the answer, and it is not a "can't sign in".
+    recordOutcome(key, first, "system", false);
+    return first;
+  }
   recordOutcome(key, retried, "ade", true);
   return retried;
 }
