@@ -2518,7 +2518,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   private func cardPopover(_ item: PrDuoDock) -> PrDockCardPopover<some View> {
     PrDockCardPopover(
       isPresented: Binding(
-        // A rail button cannot anchor a popover: there the card is a sheet.
+        // On the rail the card is a sheet instead (see `railDockItems`).
         get: { dock == item && !dockInRail },
         set: { shown in if !shown, dock == item { dock = nil } }
       ),
@@ -2571,8 +2571,8 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   }
 
   /// The dock on the outer display's rail: Merge (its symbol in the merge
-  /// state's colour), then Comment, Reviewers, Labels, Assignees, each
-  /// opening its card beside the rail.
+  /// state's colour), then Comment, Reviewers, Labels, Assignees. A rail
+  /// button cannot anchor a popover, so each card opens as a sheet.
   @ToolbarContentBuilder
   private var railDockItems: some ToolbarContent {
     if dockInRail && isReady {
@@ -2598,7 +2598,6 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     }
     .tint(tint)
     .badge(badgeCount(item))
-    .modifier(cardPopover(item))
   }
 
   // MARK: Files

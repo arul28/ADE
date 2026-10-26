@@ -631,7 +631,9 @@ private struct WorkToolsTabRow: View {
               .foregroundStyle(ADEColor.textSecondary)
               .frame(width: 28, height: 28)
               .background(ADEKit.track, in: Circle())
-              .contentShape(Circle())
+              // A full-size target around the small circle.
+              .frame(width: 44, height: 44)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .accessibilityLabel("Close tab \(displayTitle)")

@@ -4068,9 +4068,6 @@ final class MacDesktopStreamDecodeQueue {
   }
 }
 
-/// One slash command as the host's discovery reports it
-/// (`chat.getSlashCommands`). `argumentHint` is the host's cue that the command
-/// accepts input; `source` is `"sdk"` (discovered) or `"local"` (built in).
 /// `chat.getSkillInstructions`: a skill's SKILL.md, or `not_found` when the
 /// chat's machine has no file for it (a provider's built-in skill, say).
 struct WorkSkillInstructions: Decodable, Equatable {
@@ -4086,6 +4083,9 @@ struct WorkSkillInstructions: Decodable, Equatable {
   var isReady: Bool { status == "ready" }
 }
 
+/// One slash command as the host's discovery reports it
+/// (`chat.getSlashCommands`). `argumentHint` is the host's cue that the command
+/// accepts input; `source` is `"sdk"` (discovered) or `"local"` (built in).
 struct HostSlashCommand: Codable, Equatable {
   let name: String
   let description: String?
@@ -12868,9 +12868,6 @@ final class SyncService: ObservableObject {
     supportsRemoteAction("chat.getSlashCommands")
   }
 
-  /// The host's discovered slash commands for a provider (and lane worktree,
-  /// when supplied). Newer hosts return the real registry; callers must keep a
-  /// static fallback for an older host or an offline failure.
   /// Whether this chat's machine can hand over a skill's SKILL.md.
   func supportsSkillInstructions(sessionId: String) -> Bool {
     supportsChatRemoteAction("chat.getSkillInstructions", sessionId: sessionId)
@@ -12892,6 +12889,9 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The host's discovered slash commands for a provider (and lane worktree,
+  /// when supplied). Newer hosts return the real registry; callers must keep a
+  /// static fallback for an older host or an offline failure.
   func getSlashCommands(provider: String, laneId: String? = nil) async throws -> [HostSlashCommand] {
     try requireInvokableRemoteAction("chat.getSlashCommands")
     var args: [String: Any] = ["provider": provider]
@@ -17133,8 +17133,9 @@ final class SyncService: ObservableObject {
 
   /// Rewrites one of the signed-in account's own comments. `commentId` is the
   /// comment's REST id (`githubId`); the host checks it belongs to this PR and
-  /// to the account before it writes. Never queued for later: an edit replayed
-  /// over a newer one would undo it.
+  /// to the account before it writes. Like a description edit, a live failure
+  /// is left for the user to retry; offline it waits in the queue (the result
+  /// is then nil).
   @discardableResult
   func updatePullRequestComment(prId: String, commentId: Int, body: String, source: String) async throws -> PrComment? {
     let result = try await sendCommand(
