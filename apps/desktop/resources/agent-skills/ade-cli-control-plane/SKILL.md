@@ -240,6 +240,9 @@ a chat you do not own:
 - A peer (`--type peer`) never wakes you. If you wait on one, `ade chat wait`
   stops with `waiting_on_user` (exit 1) when it waits on such a card, and an
   `--async` wait wakes you once to say so and stays armed.
+- `ade chat send <B> --after <A>` also tells you once when A waits on such a
+  card: the queued prompt has not been sent yet. It goes when the person
+  answers and A moves on.
 - **Long or multi-line text goes through a file or stdin, not an argument.**
   `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
   <session> --text-file -` read stdin (or a path instead of `-`). The file is
