@@ -17,6 +17,7 @@ import {
   isEnoentError,
   isWithinDir,
   isForeignUncPath,
+  isWindowsUncLikePath,
   resolvePathWithinRoot,
   signalProcessGroup,
   type DirtyFileTextLookup,
@@ -922,9 +923,10 @@ function canonicalizePathForContainment(absPath: string, pathApi: SandboxPathApi
   if (pathApi === path.win32 && process.platform !== "win32") {
     return resolved;
   }
-  // A UNC path (`\\host\share`) is never opened: realpath would connect to
-  // that host over SMB, which can send this user's NTLM credentials to it.
-  if (pathApi === path.win32 && /^[\\/]{2}(?![?.][\\/])/.test(resolved)) {
+  // A UNC path (`\\host\share`, `\\?\UNC\host\share`) is never opened:
+  // realpath would connect to that host over SMB, which can send this user's
+  // NTLM credentials to it.
+  if (pathApi === path.win32 && isWindowsUncLikePath(resolved)) {
     return resolved;
   }
   try {

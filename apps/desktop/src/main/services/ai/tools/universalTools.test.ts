@@ -215,10 +215,16 @@ describe("checkWorkerSandbox", () => {
     const realpath = vi.spyOn(fs, "realpathSync");
     try {
       const cwd = makeTmpDir("ade-sandbox-unc-");
-      const result = checkWorkerSandbox("type \\\\unreachable-host\\share\\x.txt", DEFAULT_WORKER_SANDBOX_CONFIG, cwd);
-      expect(result.allowed).toBe(false);
-      expect(() => resolvePathWithinRoot(cwd, "\\\\unreachable-host\\share\\x.txt")).toThrow(PATH_ESCAPES_ROOT_MESSAGE);
-      const opened = realpath.mock.calls.map(([target]) => String(target)).filter((target) => target.startsWith("\\\\unreachable-host"));
+      for (const share of [
+        "\\\\unreachable-host\\share\\x.txt",
+        "\\\\?\\UNC\\unreachable-host\\share\\x.txt",
+        "\\\\.\\UNC\\unreachable-host\\share\\x.txt",
+        "//?/UNC/unreachable-host/share/x.txt",
+      ]) {
+        expect(checkWorkerSandbox(`type ${share}`, DEFAULT_WORKER_SANDBOX_CONFIG, cwd).allowed).toBe(false);
+        expect(() => resolvePathWithinRoot(cwd, share)).toThrow(PATH_ESCAPES_ROOT_MESSAGE);
+      }
+      const opened = realpath.mock.calls.map(([target]) => String(target)).filter((target) => target.toLowerCase().includes("unreachable-host"));
       expect(opened).toEqual([]);
     } finally {
       realpath.mockRestore();
