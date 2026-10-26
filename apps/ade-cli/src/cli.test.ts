@@ -5170,6 +5170,24 @@ describe("ADE CLI", () => {
         args: { sessionId: "terminal-row-1", value: "testing" },
       },
     });
+    // `ade chat ask --clear`: the retraction rides the scoped `chat` domain,
+    // so the RPC server's chat guard keeps a bound agent on its own row.
+    const clearAsk = expectExecutePlan(buildCliPlan([
+      "chat",
+      "ask",
+      "--clear",
+      "--session",
+      "session-x",
+    ]));
+    expect(clearAsk.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "clearAsk",
+        args: { sessionId: "session-x" },
+      },
+    });
+
     expect(() => buildCliPlan(["chat", "activity", "coding"]))
       .toThrow(/Unsupported chat activity 'coding'.*planning.*monitoring.*clear/i);
     expect(() => buildCliPlan(["chat", "activity"]))

@@ -69,6 +69,7 @@ import {
   type GithubRequestAccountingContext,
   type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
+import { readGitTransportStatus, runGitWithGithubAuthFallback, setGitTransportTokenReader } from "../git/gitTransportAuth";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -1074,6 +1075,10 @@ export function createGithubService({
       ghAuthError: inventory.ghAuthError,
     };
   };
+
+  /** ADE's GitHub credential for git transport, or null; the git fallback's reader. */
+  const readGitTransportToken = async (): Promise<string | null> => (await readGitTransportAuthToken()).token;
+  setGitTransportTokenReader(readGitTransportToken, logger);
 
   const readAuthTokenSync = (): GitHubTokenLookup => {
     const patLookup = readPatAuthToken();
@@ -2084,7 +2089,18 @@ export function createGithubService({
     }
     // Corroborate a failing status against githubstatus.com. Shared with the
     // headless (brain) service so both getStatus owners behave identically.
-    const work = computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger }));
+    // Git's own sign-in is a separate leg from the API ladder; its check is
+    // cached per repository, so this usually costs nothing.
+    const work = Promise.all([
+      computeStatus(opts).then((status) => attachGitHubServiceHealth(status, { logger })),
+      readGitTransportStatus(projectRoot, readGitTransportToken, opts)
+        .catch((error: unknown) => {
+          logger.warn("github.git_transport_check_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }),
+    ]).then(([status, gitTransport]): GitHubStatus => ({ ...status, gitTransport }));
     statusInFlight = work;
     try {
       return await work;
@@ -2582,7 +2598,10 @@ export function createGithubService({
     const headRes = await runGit(["rev-parse", "--verify", "HEAD"], { cwd: projectRoot, timeoutMs: 5_000 });
     let resultState: "pushed" | "remote_added";
     if (headRes.exitCode === 0) {
-      const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
+      const pushRes = await runGitWithGithubAuthFallback(["push", "-u", "origin", "HEAD"], {
+        cwd: projectRoot,
+        timeoutMs: 5 * 60_000,
+      });
       if (pushRes.exitCode !== 0) {
         await cleanupLocalOrigin();
         throw gitPushError(pushRes.stderr.trim() || `exit ${pushRes.exitCode}`, {

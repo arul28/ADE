@@ -359,6 +359,16 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+- **Take the hand down when you moved on without an answer.**
+  `ade chat ask --clear` drops the marker this chat raised (alias
+  `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
+  being the thing you are waiting on: a coordinator or peer sent new
+  instructions, or you decided and kept working. Otherwise the row keeps saying
+  **Needs you** for the rest of the run, and the person reads a live "blocked on
+  you" badge about a decision that was already made. It clears only an
+  agent-raised ask — never one the user raised, never a provider question card.
+  A message from another agent is not a user answer, so it does not clear the
+  hand on its own.
 - **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
   asked to hear about**, and only then: "tell me when the deploy is done",
   "ping me if the tests fail". Never on your own initiative; ADE already alerts

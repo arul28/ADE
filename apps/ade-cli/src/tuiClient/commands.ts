@@ -109,6 +109,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/switch-account", description: "Move this chat to another signed-in account; same thread", placement: "inline", argumentHint: "<account-id>", category: "Chats" },
   { name: "/chat auto-resume", description: "Turn this chat's usage-limit auto-resume on or off", placement: "right", argumentHint: "[on|off]", category: "Chats" },
   { name: "/chat ask", description: "Escalate a blocking question from the active session", placement: "right", argumentHint: "<question>", category: "Chats" },
+  { name: "/chat unask", description: "Take back the Needs you hand this chat raised", placement: "right", category: "Chats" },
   { name: "/chat note", description: "Update the active session status line", placement: "right", argumentHint: "[note]", category: "Chats" },
   { name: "/chat settle", description: "Mark the active session settled", placement: "right", argumentHint: "[outcome]", category: "Chats" },
   { name: "/chat unsettle", description: "Remove the active session's settled state", placement: "right", category: "Chats" },

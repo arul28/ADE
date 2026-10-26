@@ -1,6 +1,7 @@
 import { redactGitOutput } from "../../utils/redaction";
 import { markExpected } from "../../../shared/expectedError";
-import { formatGitExecutionError, gitCommandError, GitTimeoutError, runGit, type GitRunOptions } from "./git";
+import { formatGitExecutionError, gitCommandError, GitTimeoutError, type GitRunOptions } from "./git";
+import { runGitWithGithubAuthFallback } from "./gitTransportAuth";
 
 /**
  * Why a remote refused a `git push`, read from git's output.
@@ -145,13 +146,17 @@ export function gitPushError(raw: string, options: GitPushErrorOptions = {}): Er
   return gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
 }
 
-/** Runs `git push …` and throws {@link gitPushError} when it fails. */
+/**
+ * Runs `git push …` and throws {@link gitPushError} when it fails. Git's own
+ * sign-in goes first; on an https GitHub remote ADE's GitHub credential is
+ * tried when that cannot sign in (see gitTransportAuth).
+ */
 export async function runGitPushOrThrow(
   args: string[],
   opts: GitRunOptions & { branch?: string | null },
 ): Promise<void> {
   const { branch, ...runOpts } = opts;
-  const res = await runGit(args, runOpts);
+  const res = await runGitWithGithubAuthFallback(args, runOpts);
   // Same as runGitOrThrow: a stop or a timeout is not a refusal by the remote.
   if (res.cancelled) throw markExpected(new Error(runOpts.cancelMessage ?? "Git was cancelled."), "user");
   if (res.timedOut) {

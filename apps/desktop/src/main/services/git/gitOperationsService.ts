@@ -4,6 +4,7 @@ import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { runGitPushOrThrow } from "./gitPushFailure";
 import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
+import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -524,7 +525,7 @@ export function createGitOperationsService({
 
     // Sync runs on the default 30 s action budget, so its fetch keeps the
     // short Fetch-button bound.
-    await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
+    await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
 
     const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
       const gitDir = await getAbsoluteGitDir(lane.worktreePath);
@@ -1387,7 +1388,7 @@ export function createGitOperationsService({
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitOrThrow(["fetch", "--prune"], {
+          await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,
@@ -1429,7 +1430,7 @@ export function createGitOperationsService({
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
           }
         });
         return action;

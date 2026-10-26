@@ -1179,6 +1179,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     service.getTurnStatus = (args?: unknown) =>
       agentChatService.getTurnStatus(readStringActionArg(args, "sessionId"));
   }
+  // Actions arrive as one object (`ade chat ask --clear` sends `{ sessionId }`);
+  // the service takes the id itself.
+  if (typeof base.clearAsk === "function") {
+    service.clearAsk = (args?: unknown) =>
+      agentChatService.clearAsk(readStringActionArg(args, "sessionId"));
+  }
   if (typeof base.listScheduledWork === "function") {
     service.listScheduledWork = (args?: unknown) => {
       const record = args === undefined

@@ -83,6 +83,27 @@ ade git commit --lane <lane> -m "message"
 ade git push --lane <lane> --set-upstream --text
 ```
 
+## Push, pull and fetch sign in through ADE
+
+Git signs in on its own (keychain, GitHub CLI, SSH), not with ADE's GitHub
+connection. When this computer's git has no GitHub sign-in, a bare `git push`
+fails with `could not read Username for 'https://github.com'`, even though ADE
+can still open PRs. `ade git push`, `ade git pull`, `ade git fetch`,
+`ade git sync` and `ade prs create` try git's own sign-in first and then retry
+with ADE's GitHub credential (GitHub CLI or the personal access token in
+Settings), the same fallback ADE's GitHub API calls use. This covers GitHub
+HTTPS remotes; an SSH remote signs in with the SSH key only, and a token cannot
+fix it. So:
+
+- Push, pull and fetch with the `ade git` commands, not bare `git`, whenever a
+  bare one fails to sign in. Do not paste a token into a remote URL, write a
+  credential helper, or change git config to get around it.
+- If the `ade` command still fails to sign in, ADE has no credential that can
+  write to the repository. Tell the user; the fix is `gh auth login` or a
+  personal access token in Settings → GitHub (ADE shows a banner for it).
+- `ade github issue …` and `ade prs …` use ADE's GitHub connection the same
+  way, so prefer them over `gh` when `gh` is not signed in.
+
 ## Rebase and conflicts
 
 ```bash

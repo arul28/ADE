@@ -16,7 +16,7 @@ import { inspectProjectPath } from "../../desktop/src/main/services/projects/pro
 import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/chat/handoffGitBundle";
+import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";

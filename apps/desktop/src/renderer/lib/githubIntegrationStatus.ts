@@ -684,6 +684,48 @@ export function describeGithubPatVerification(result: GitHubSetTokenResult): {
   };
 }
 
+/** The command that gives GitHub CLI, and git through it, a GitHub sign-in. */
+export const GH_AUTH_LOGIN_COMMAND = "gh auth login -h github.com -s repo -s workflow";
+
+/**
+ * Git push can't sign in to GitHub, or null. Separate from the API credential
+ * banner: ADE can hold a working token for pull requests while git, which signs
+ * in on its own, still has nothing. Shared by the app banner and the Settings
+ * card so they cannot disagree.
+ */
+export function describeGitTransportFailure(status: GitHubStatus | null): {
+  title: string;
+  detail: string;
+  /** The Settings card's line, which sits above the command and a "Check again" button. */
+  settingsDetail: string;
+  /** Whether signing in with GitHub CLI would fix it (false when GitHub refused ADE's token). */
+  signInFixes: boolean;
+  fingerprint: string;
+} | null {
+  const transport = status?.gitTransport;
+  if (!transport || transport.state !== "auth_failed") return null;
+  const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
+  return {
+    title: "Git can't sign in to GitHub",
+    detail: transport.adeCredentialTried
+      ? `GitHub refused both this computer's git sign-in and ADE's token for ${repoLabel}. Pushes, pulls and new pull requests fail until one of them can write to it.`
+      : "Pushes, pulls and new pull requests from ADE fail until git can sign in. Sign in with GitHub CLI, or add a personal access token.",
+    settingsDetail: transport.adeCredentialTried
+      ? `GitHub refused both this computer's git sign-in and ADE's token for ${repoLabel}. Use a token that can write to it, then check again.`
+      : "Run this in a terminal on the computer this project is on, or add a personal access token, then check again.",
+    signInFixes: !transport.adeCredentialTried,
+    fingerprint: transport.adeCredentialTried ? "refused" : "no-credential",
+  };
+}
+
+/** What signs git in for pushes, for the Settings card; null when ADE has not checked. */
+export function gitTransportPushesWithLabel(status: GitHubStatus | null, adeCredentialLabel: string): string | null {
+  const transport = status?.gitTransport;
+  if (!transport) return null;
+  if (transport.state === "auth_failed") return "Can't sign in";
+  return transport.via === "ade" ? adeCredentialLabel : "This computer's git";
+}
+
 /**
  * Where the banner's single CTA has to land. Everything about GitHub itself is
  * fixed in the GitHub settings card; an unreadable credential store is not a

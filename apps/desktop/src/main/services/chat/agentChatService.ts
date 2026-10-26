@@ -1,3 +1,4 @@
+import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
@@ -891,7 +892,6 @@ import {
   landHandoffGitBundle,
   packHandoffGitBundle,
   readHandoffWorkingTreeSha,
-  githubExtraHeaderGitEnv,
   validateHandoffGitBundle,
 } from "./handoffGitBundle";
 import {
@@ -50290,7 +50290,7 @@ export function createAgentChatService(args: {
     if (!normalizeGitRemoteIdentity(originUrl) || originUrl.length > 2_048 || originUrl.includes("\0")) {
       throw new Error("The project's origin URL is not portable.");
     }
-    const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
+    const remote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
     });
@@ -57811,7 +57811,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    const fetch = await runGit(["fetch", "origin", branchName], {
+    const fetch = await runGitWithGithubAuthFallback(["fetch", "origin", branchName], {
       cwd: worktree,
       timeoutMs: 60_000,
     });
@@ -62126,6 +62126,19 @@ export function createAgentChatService(args: {
       }, { allowPendingInput: isSpawnCompletion });
       if (result.reason === "queue_full") {
         throw new Error("The Claude steer queue is full; the message was not queued.");
+      }
+      // A person-authored delivery clears the lifecycle markers (settled /
+      // attention / turn-failure) here too. `messageSession` is how the CLI
+      // (`ade chat send`), the phone, the hosted web client and drafts reach a
+      // chat, and none of them pass through `steerUserMessage` — so before this,
+      // a message the person sent from any of those landed without taking down
+      // the hand it was answering. Host-authored deliveries (scheduled wake,
+      // subagent report, peer relay) stay excluded by the predicate, exactly as
+      // on the composer paths.
+      if (messageClearsAttentionMarkers(metadata)) {
+        managed.turnFailureMarked = false;
+        sessionService.clearTurnStartMarkers(sessionId);
+        resetSessionActivity(sessionId);
       }
       return {
         sessionId,
@@ -67695,6 +67708,34 @@ export function createAgentChatService(args: {
     if (answeredSession) answeredSession.turnFailureMarked = false;
     sessionService.clearTurnStartMarkers(args.sessionId);
     resetSessionActivity(args.sessionId);
+  };
+
+  /**
+   * Take down a hand this chat raised itself (`ade chat ask --clear`).
+   *
+   * `ade chat ask` writes a marker, not a blocking card, so an agent that asks
+   * and then gets new instructions (a coordinator steer, a peer report, its own
+   * decision) keeps working with the hand still up. The row then says "Needs
+   * you" for the rest of the run about a question nobody is waiting on, and the
+   * only thing that could clear it was a message from the person.
+   *
+   * Only `agent_explicit` is cleared. A hand the person raised, the turn-end
+   * inference, and a provider card all belong to someone else; an open card
+   * keeps the row loud through `pendingInputItemId` even if this had cleared.
+   *
+   * Returns whether a marker was actually taken down, so the CLI can say
+   * "nothing raised" rather than implying it changed something.
+   */
+  const clearAsk = (sessionId: string): { cleared: boolean } => {
+    const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmed) return { cleared: false };
+    const row = sessionService.get(trimmed);
+    if (!row?.attentionRequestedAt || row.attentionSource !== "agent_explicit") {
+      return { cleared: false };
+    }
+    const cleared = sessionService.clearAttentionRequest(trimmed, "agent_explicit");
+    if (cleared) emitTransientChatEnvelope(trimmed, { type: "session_meta_updated" });
+    return { cleared };
   };
 
   /**
@@ -74446,6 +74487,7 @@ export function createAgentChatService(args: {
     isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
+    clearAsk,
     getMcpApp: mcpApps.get,
     mcpAppRequest: mcpApps.request,
     listMcpAppGrants,

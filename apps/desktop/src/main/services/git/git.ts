@@ -734,7 +734,11 @@ export class GitTimeoutError extends Error {
 }
 
 export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promise<string> {
-  const res = await runGit(args, opts);
+  return gitStdoutOrThrow(await runGit(args, opts), args, opts);
+}
+
+/** `runGitOrThrow`'s handling of a result a caller ran itself: stdout, or the error. */
+export function gitStdoutOrThrow(res: GitRunResult, args: string[], opts: GitRunOptions): string {
   if (res.cancelled) throw markExpected(new Error(opts.cancelMessage ?? "Git was cancelled."), "user");
   if (res.timedOut) {
     throw new GitTimeoutError(
@@ -793,7 +797,7 @@ const GIT_REMOTE_SIGN_IN_FAILED =
   /terminal prompts disabled|could not read (?:username|password)|authentication failed for|permission denied \(publickey|host key verification failed/i;
 
 const GIT_REMOTE_SIGN_IN_HINT =
-  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. Sign in on the computer this lane is on. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal there. For SSH, add your key to ssh-agent there and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
+  "Git could not sign in to the remote, and ADE cannot answer a Git sign-in prompt. Sign in on the computer this lane is on. For GitHub over HTTPS, run `gh auth login` and then `gh auth setup-git` in a terminal there, or add a personal access token in Settings → GitHub, which ADE then lends to Git. For SSH, add your key to ssh-agent there and connect once with `ssh -T git@<host>` to accept the host key. Then try again.";
 
 export function formatGitExecutionError(raw: string): string {
   const ownership = describeGitOwnershipProblem(raw);
