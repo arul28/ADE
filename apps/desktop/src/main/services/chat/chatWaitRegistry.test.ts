@@ -165,8 +165,8 @@ describe("chatWaitRegistry", () => {
   });
 
   it.each([
-    ["its caller runs here", () => true, 1],
-    ["its caller runs on another brain", () => false, 0],
+    ["its caller runs here", (): boolean => true, 1],
+    ["its caller runs on another brain", (): boolean => false, 0],
   ] as const)("tells a queued send's caller about a user wait only when %s", async (_label, callerIsLiveHere, expected) => {
     const { registry, arm, sent } = harness(
       { caller: { status: "active" }, worker: userWaiting, target: { status: "active" } },
