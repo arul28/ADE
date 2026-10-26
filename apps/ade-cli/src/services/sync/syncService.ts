@@ -1015,6 +1015,9 @@ export function createSyncService(args: SyncServiceArgs) {
     getLanePresenceStamp: () => hostService?.getLanePresenceStamp() ?? "",
     getModelPickerStore: args.getModelPickerStore,
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    // Without it `computerUse.listArtifacts` is never registered, and the web
+    // client reads every cited proof as "couldn't load".
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
     syncPinStore: pinStore,
     getPairingConnectInfo: buildCurrentPairingConnectInfo,
     issueRuntimeHostPairingGrant: () => pairingStore.issueRuntimeHostGrant(),
