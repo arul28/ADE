@@ -132,6 +132,8 @@ type RepoTransportRecord = {
   checkedAtMs: number;
   /** Whether origin pushes to https GitHub, the only remote ADE's token can sign in to. */
   githubOrigin: boolean | null;
+  /** The same for origin's fetch URL, which can differ (https fetch, SSH push). */
+  githubFetchOrigin: boolean | null;
   githubOriginCheckedAtMs: number;
 };
 
@@ -149,6 +151,7 @@ function record(key: string, patch: Partial<RepoTransportRecord>): void {
     systemFailedAtMs: null,
     checkedAtMs: 0,
     githubOrigin: null,
+    githubFetchOrigin: null,
     githubOriginCheckedAtMs: 0,
   };
   records.set(key, { ...previous, ...patch });
@@ -158,18 +161,34 @@ function statusFor(state: GitHubGitTransportStatus["state"], via: GitHubGitTrans
   return { state, via, adeCredentialTried, checkedAt: new Date().toISOString() };
 }
 
-/** Whether `origin` pushes to https GitHub, cached per repository. */
-async function originIsGithubHttps(key: string, cwd: string): Promise<boolean> {
+/**
+ * Whether `origin` talks to https GitHub for this command, cached per
+ * repository. A push uses origin's push URL and everything else its fetch URL:
+ * an https-fetch / SSH-push setup takes ADE's token for fetches only.
+ */
+async function originIsGithubHttps(key: string, cwd: string, direction: "push" | "fetch"): Promise<boolean> {
   const cached = records.get(key);
-  if (cached?.githubOrigin != null && Date.now() - cached.githubOriginCheckedAtMs < ORIGIN_TTL_MS) {
-    return cached.githubOrigin;
+  if (
+    cached?.githubOrigin != null
+    && cached.githubFetchOrigin != null
+    && Date.now() - cached.githubOriginCheckedAtMs < ORIGIN_TTL_MS
+  ) {
+    return direction === "push" ? cached.githubOrigin : cached.githubFetchOrigin;
   }
-  // The push URL, not the fetch URL: an https-fetch / SSH-push setup must not
-  // be treated as https.
-  const origin = await runGit(["remote", "get-url", "--push", "origin"], { cwd, timeoutMs: 5_000 });
-  const githubOrigin = origin.exitCode === 0 && isGithubHttpsRemote(origin.stdout);
-  record(key, { githubOrigin, githubOriginCheckedAtMs: Date.now() });
-  return githubOrigin;
+  const [pushUrl, fetchUrl] = await Promise.all([
+    runGit(["remote", "get-url", "--push", "origin"], { cwd, timeoutMs: 5_000 }),
+    // `ls-remote --get-url` prints the fetch URL (insteadOf applied) without
+    // touching the network.
+    runGit(["ls-remote", "--get-url", "origin"], { cwd, timeoutMs: 5_000 }),
+  ]);
+  const githubOrigin = pushUrl.exitCode === 0 && isGithubHttpsRemote(pushUrl.stdout);
+  const githubFetchOrigin = fetchUrl.exitCode === 0 && isGithubHttpsRemote(fetchUrl.stdout);
+  record(key, { githubOrigin, githubFetchOrigin, githubOriginCheckedAtMs: Date.now() });
+  return direction === "push" ? githubOrigin : githubFetchOrigin;
+}
+
+function commandDirection(args: string[]): "push" | "fetch" {
+  return args[0] === "push" ? "push" : "fetch";
 }
 
 async function readTokenSafely(readToken: GitTransportTokenReader): Promise<string> {
@@ -204,7 +223,7 @@ export async function runGitWithGithubAuthFallback(
   const readToken = explicitReader === undefined ? registeredTokenReader : explicitReader;
   if (!readToken) return await runGit(args, runOpts);
   const key = await repoKey(runOpts.cwd);
-  if (!(await originIsGithubHttps(key, runOpts.cwd))) return await runGit(args, runOpts);
+  if (!(await originIsGithubHttps(key, runOpts.cwd, commandDirection(args)))) return await runGit(args, runOpts);
 
   // Set when ADE's token already failed to sign in during this call, so it is
   // not run a second time below.
@@ -300,7 +319,7 @@ async function probeGitTransport(
   forceRefresh: boolean,
 ): Promise<GitHubGitTransportStatus | null> {
   record(key, { checkedAtMs: Date.now(), ...(forceRefresh ? { githubOriginCheckedAtMs: 0 } : {}) });
-  if (!(await originIsGithubHttps(key, projectRoot))) {
+  if (!(await originIsGithubHttps(key, projectRoot, "push"))) {
     record(key, { status: null });
     return null;
   }

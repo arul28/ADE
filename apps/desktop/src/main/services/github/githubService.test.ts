@@ -46,10 +46,11 @@ const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 vi.mock("../git/git", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../git/git")>()),
   // The push goes through the GitHub sign-in fallback, which first resolves
-  // the repository and its push URL. Answer those here so each test scripts
+  // the repository and its push and fetch URLs. Answer those here so each test scripts
   // only the commands publishing itself runs.
   runGit: (args: string[], opts: unknown) =>
-    args[0] === "remote" && args[1] === "get-url" && args[2] === "--push"
+    (args[0] === "remote" && args[1] === "get-url" && args[2] === "--push")
+      || (args[0] === "ls-remote" && args[1] === "--get-url")
       ? Promise.resolve({ exitCode: 0, stdout: "https://github.com/alice/proj.git\n", stderr: "" })
       : runGitMock(args, opts),
   gitCommonDirFor: async () => "",

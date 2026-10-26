@@ -28,7 +28,7 @@ type Call = { args: string[]; withToken: boolean };
 function fakeRepo(opts: { pushUrl: string; system: Partial<GitRunResult>; ade?: Partial<GitRunResult> }): Call[] {
   const calls: Call[] = [];
   runGitMock.mockImplementation(async (args: string[], runOpts: { env?: NodeJS.ProcessEnv }) => {
-    if (args[0] === "remote" && args[1] === "get-url") {
+    if ((args[0] === "remote" && args[1] === "get-url") || (args[0] === "ls-remote" && args[1] === "--get-url")) {
       return { exitCode: 0, stdout: `${opts.pushUrl}\n`, stderr: "" };
     }
     const header = runOpts.env?.GIT_CONFIG_VALUE_1 ?? "";
