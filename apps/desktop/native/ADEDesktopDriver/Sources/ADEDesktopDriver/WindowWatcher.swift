@@ -36,7 +36,7 @@ extension WindowControl {
         newWindows.unwatch(pid: pid)
         lock.lock()
         defer { lock.unlock() }
-        offLaneWindows = offLaneWindows.filter { $0.value.pid != pid && $0.value.panelClientPid != pid }
+        offLaneWindows = offLaneWindows.filter { $0.value.pid != pid }
         if let observer = observers.removeValue(forKey: pid) {
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
@@ -259,9 +259,6 @@ extension WindowControl {
                 touchedLanes.insert(record.laneId)
             }
         }
-
-        // Open/Save panels a lane's apps opened on the user's display.
-        touchedLanes.formUnion(sweepOpenSavePanels(watched: newWindows.watchedPids))
 
         for laneId in touchedLanes {
             emitWindowsChanged(laneId: laneId)
