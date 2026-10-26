@@ -1,4 +1,4 @@
-import type { AccountUsage } from "../sdkTypes";
+import type { AccountUsage, AccountUsageWindow } from "../sdkTypes";
 
 export type UsageMeterProps = {
   usage: AccountUsage;
@@ -6,29 +6,37 @@ export type UsageMeterProps = {
   className?: string;
 };
 
+/** One bar per quota window, filled by the share still left. */
 export function UsageMeter({ usage, label = "Usage", className }: UsageMeterProps) {
-  const percent = Number.isFinite(usage.percent)
-    ? Math.max(0, Math.min(100, usage.percent!))
-    : Number.isFinite(usage.used) && Number.isFinite(usage.limit) && usage.limit! > 0
-      ? Math.max(0, Math.min(100, usage.used! / usage.limit! * 100))
-      : null;
-  const summary = usage.used !== undefined && usage.limit !== undefined
-    ? `${format(usage.used)} of ${format(usage.limit)}`
-    : usage.remaining !== undefined ? `${format(usage.remaining)} remaining` : null;
-
   return (
-    <div className={["adechat-usage-meter", className].filter(Boolean).join(" ")}>
-      <div className="adechat-usage-meter-label"><span>{label}</span>{summary ? <span>{summary}</span> : null}</div>
-      {percent !== null ? (
-        <div className="adechat-usage-meter-track" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}>
-          <span style={{ width: `${percent}%` }} />
-        </div>
-      ) : null}
-      {usage.resetAt ? <small className="adechat-usage-meter-reset">Resets {new Date(usage.resetAt).toLocaleString()}</small> : null}
+    <div className={["adechat-usage-meter", className].filter(Boolean).join(" ")} aria-label={label}>
+      {usage.windows.map((window) => <UsageWindow key={window.type} window={window} />)}
+      {usage.state !== "ok" && usage.note ? <small className="adechat-usage-meter-reset">{usage.note}</small> : null}
     </div>
   );
 }
 
-function format(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
+function UsageWindow({ window }: { window: AccountUsageWindow }) {
+  const percent = window.unlimited ? 100 : Math.max(0, Math.min(100, window.percentLeft));
+  const summary = window.unlimited
+    ? "Unlimited"
+    : window.countLeft !== undefined && window.countTotal !== undefined
+      ? `${window.countLeft} of ${window.countTotal} left`
+      : `${Math.round(percent)}% left`;
+  return (
+    <>
+      <div className="adechat-usage-meter-label"><span>{window.label}</span><span>{summary}</span></div>
+      <div
+        className="adechat-usage-meter-track"
+        role="meter"
+        aria-label={`${window.label} left`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(percent)}
+      >
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      {window.resetsAt ? <small className="adechat-usage-meter-reset">Resets {new Date(window.resetsAt).toLocaleString()}</small> : null}
+    </>
+  );
 }

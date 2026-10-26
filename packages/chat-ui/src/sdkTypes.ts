@@ -242,7 +242,8 @@ export type PendingInputResponse = {
 export type QueuedMessage = {
   id: string;
   text: string;
-  attachments?: ChatAttachment[];
+  /** The files sent with it, as the SDK's file references. */
+  attachments?: ReadonlyArray<{ path: string; type?: "file" | "image" }>;
   createdAt?: string;
   dispatched?: boolean;
 };
@@ -258,13 +259,26 @@ export type ThreadQueue = {
   restore?(): Promise<void>;
 };
 
+/** One quota window of an account ("5-hour", "Weekly", …). */
+export type AccountUsageWindow = {
+  type: string;
+  label: string;
+  percentLeft: number;
+  resetsAt: string | null;
+  unlimited?: boolean;
+  /** Exact request meter, for providers that count requests. */
+  countLeft?: number;
+  countTotal?: number;
+};
+
 /** Runtime-reported usage room for one provider account. */
 export type AccountUsage = {
-  used?: number;
-  limit?: number;
-  remaining?: number;
-  percent?: number;
-  resetAt?: string | null;
+  /** `ok` is a fresh reading; the others say why the numbers are old or missing. */
+  state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error" | (string & {});
+  readAt: string | null;
+  /** Why the state is not `ok`, in a few words. */
+  note: string | null;
+  windows: AccountUsageWindow[];
 };
 
 /** Public account summary. Secret values are never part of this shape. */
@@ -272,20 +286,25 @@ export type AccountInfo = {
   id: string;
   provider: ProviderId;
   label: string;
-  email?: string | null;
-  plan?: string | null;
+  email?: string;
+  plan?: string;
   signedIn: boolean;
   isDefault: boolean;
-  usage?: AccountUsage | null;
+  loginBroken?: boolean;
+  usage?: AccountUsage;
 };
 
-/** Update emitted while a provider sign-in flow is waiting for the user. */
+/** A provider sign-in's status, as `@ade-dev/sdk`'s `SignInStatus` reports it. */
 export type SignInUpdate = {
+  loginId?: string;
+  state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | "expired" | (string & {});
+  /** The link to finish signing in, once the provider printed it. */
   url?: string | null;
-  deviceCode?: string | null;
-  needsCode?: boolean;
-  state?: "waiting" | "complete" | "failed" | "cancelled" | (string & {});
-  message?: string | null;
+  /** True while the provider waits for a code pasted back from the browser. */
+  awaitingCode?: boolean;
+  /** A device code to enter on the provider's page, when it uses one. */
+  deviceCode?: string;
+  message?: string;
 };
 
 export interface SignInHandle {
@@ -297,9 +316,11 @@ export interface SignInHandle {
 
 /** Non-secret credential metadata. The API key is deliberately absent. */
 export type ApiCredentialInfo = {
-  id: string;
+  credentialId: string;
   provider: ProviderId;
   label: string;
+  /** The last few characters of the key, so a person can tell keys apart. */
+  maskedTail?: string;
   createdAt?: string;
 };
 
@@ -314,9 +335,13 @@ export type ProviderCapabilities = {
   mcp?: "full" | "partial" | "none";
 };
 
-/** Client-level notification for one thread's usage-limit resume status. */
+/** Client-level notification: one thread's usage-limit state changed. */
 export type UsageLimitEvent = {
-  threadKey: string;
+  /** Thread key. */
+  key: string;
+  sessionId?: string;
+  provider?: ProviderId;
+  /** Null when the limit cleared. */
   status: UsageLimitStatus | null;
 };
 
@@ -351,7 +376,7 @@ export type AccountManagement = {
 export type CredentialManagement = {
   list?(provider?: ProviderId): Promise<readonly ApiCredentialInfo[]>;
   add?(input: { provider: ProviderId; key: string; label?: string }): Promise<ApiCredentialInfo>;
-  remove?(id: string): Promise<void>;
+  remove?(credentialId: string, provider?: ProviderId): Promise<unknown>;
   verify?(provider: ProviderId): Promise<unknown>;
 };
 
@@ -611,8 +636,9 @@ export interface AdeThread {
   slashCommands?(): Promise<readonly SlashCommand[]>;
   /** Per-thread usage-limit controls. */
   usageLimit?: {
-    resumeNow?(): Promise<void>;
-    continueOnAlternate?(): Promise<void>;
+    /** Answers `{ ok: false, message }` when the runtime refuses. */
+    resumeNow?(): Promise<unknown>;
+    continueOnAlternate?(): Promise<unknown>;
   };
   /** Switch this thread to another signed-in provider account. */
   switchAccount?(instanceId: string): Promise<unknown>;

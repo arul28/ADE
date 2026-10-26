@@ -192,8 +192,8 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
     queue?: ThreadQueue;
     slashCommands?(): Promise<readonly SlashCommand[]>;
     usageLimit?: {
-      resumeNow?(): Promise<void>;
-      continueOnAlternate?(): Promise<void>;
+      resumeNow?(): Promise<unknown>;
+      continueOnAlternate?(): Promise<unknown>;
     };
     switchAccount?(instanceId: string): Promise<unknown>;
     /** `@ade-dev/sdk` >= 0.3 `thread.update`. Forwarded only when present. */
@@ -584,8 +584,8 @@ class AdaptedThread implements AdeThread {
   readonly queue?: ThreadQueue;
   readonly slashCommands?: () => Promise<readonly SlashCommand[]>;
   readonly usageLimit?: {
-    resumeNow?: () => Promise<void>;
-    continueOnAlternate?: () => Promise<void>;
+    resumeNow?: () => Promise<unknown>;
+    continueOnAlternate?: () => Promise<unknown>;
   };
   readonly switchAccount?: (instanceId: string) => Promise<unknown>;
 

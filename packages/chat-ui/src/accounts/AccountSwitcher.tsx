@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { requireAccepted } from "../actionResult";
 
 import type { AccountInfo, AdeThread } from "../sdkTypes";
 
@@ -13,7 +14,7 @@ export type AccountSwitcherProps = {
 export function AccountSwitcher({ accounts, currentAccountId, thread, onSwitch, className }: AccountSwitcherProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const switchTo = onSwitch ?? (thread?.switchAccount ? (id: string) => thread.switchAccount!(id).then(() => undefined) : undefined);
+  const switchTo = onSwitch ?? (thread?.switchAccount ? (id: string) => requireAccepted(thread.switchAccount!(id)) : undefined);
   if (!switchTo) return null;
   const choices = accounts.filter((account) => account.signedIn);
   if (choices.length < 2) return null;

@@ -165,6 +165,7 @@ export type {
   AccountInfo,
   AccountManagement,
   AccountUsage,
+  AccountUsageWindow,
   ApiCredentialInfo,
   ApprovalDecision,
   ApprovalKind,

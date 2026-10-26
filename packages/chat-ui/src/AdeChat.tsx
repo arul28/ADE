@@ -33,6 +33,7 @@ import { AdeChatStyles } from "./theme/AdeChatStyles";
 import type { AdeChatTheme } from "./theme/createTheme";
 import { Transcript, type TranscriptProps } from "./transcript/Transcript";
 import { UsageLimitNotice } from "./UsageLimitNotice";
+import { requireAccepted } from "./actionResult";
 import type { UsageLimitEvent } from "./sdkTypes";
 
 /** What `AdeChatProps.onSend` may return. See `onSend`. */
@@ -245,7 +246,7 @@ function AdeChatInner({
     ...(historyPageSize !== undefined ? { historyPageSize } : {}),
   });
   const [usageLimitEvent, setUsageLimitEvent] = useState<UsageLimitEvent | null>(null);
-  const usageLimit = usageLimitEvent?.threadKey === threadKey ? usageLimitEvent.status : null;
+  const usageLimit = usageLimitEvent?.key === threadKey ? usageLimitEvent.status : null;
   const [queueRefreshKey, setQueueRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -253,7 +254,7 @@ function AdeChatInner({
     if (!thread.thread?.usageLimit || typeof client.on !== "function") return;
     try {
       return client.on("usageLimit", (event: UsageLimitEvent) => {
-        if (event.threadKey !== threadKey) return;
+        if (event.key !== threadKey) return;
         setUsageLimitEvent(event);
       });
     } catch {
@@ -449,8 +450,8 @@ function AdeChatInner({
       />
       <UsageLimitNotice
         status={usageLimit}
-        {...(thread.thread?.usageLimit?.resumeNow ? { onResumeNow: () => thread.thread!.usageLimit!.resumeNow!() } : {})}
-        {...(thread.thread?.usageLimit?.continueOnAlternate ? { onContinueOnAlternate: () => thread.thread!.usageLimit!.continueOnAlternate!() } : {})}
+        {...(thread.thread?.usageLimit?.resumeNow ? { onResumeNow: () => requireAccepted(thread.thread!.usageLimit!.resumeNow!()) } : {})}
+        {...(thread.thread?.usageLimit?.continueOnAlternate ? { onContinueOnAlternate: () => requireAccepted(thread.thread!.usageLimit!.continueOnAlternate!()) } : {})}
       />
       {children ? children(thread) : null}
       {thread.thread?.queue ? <QueueStrip key={threadKey} queue={thread.thread.queue} refreshKey={`${queueRefreshKey}:${thread.status.state}`} /> : null}
