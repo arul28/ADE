@@ -96,8 +96,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
@@ -262,8 +261,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
@@ -1072,8 +1070,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
@@ -1342,8 +1339,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
@@ -2103,8 +2099,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
-    $ ade settings action <method>                  Call project config actions
+    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action

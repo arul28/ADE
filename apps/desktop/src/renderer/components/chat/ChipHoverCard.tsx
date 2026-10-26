@@ -76,6 +76,8 @@ import { modelPermissionPresentation } from "../../lib/modelPermissionOptions";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
+import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from "../settings/settingsManifest";
+import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -174,7 +176,8 @@ type ChipCardTarget =
   | { kind: "permission"; provider: string; value: string }
   | { kind: "skill"; name: string }
   | { kind: "branch"; branch: string; repoOwner: string; repoName: string; prNumber?: number }
-  | { kind: "artifact"; artifactId: string };
+  | { kind: "artifact"; artifactId: string }
+  | { kind: "setting"; entryId: string };
 
 function githubPullTarget(url: string): ChipCardTarget | null {
   try {
@@ -260,6 +263,10 @@ export function chipCardTarget(chip: Chip): ChipCardTarget | null {
         : null;
     case "linear_issue":
       return chip.label.trim() ? { kind: "linear", identifier: chip.label.trim().toUpperCase() } : null;
+    case "setting":
+      return source.origin === "deeplink" && source.target.kind === "settings"
+        ? { kind: "setting", entryId: source.target.entryId }
+        : null;
     case "web_page": {
       if (source.origin !== "url") return null;
       try {
@@ -388,6 +395,19 @@ export async function loadChipCardData(
         ? `${label}: allows routine edits while keeping some actions gated.`
         : `${label}: keeps actions limited or asks before higher-impact changes.`;
     return { kind: "permission", meaning, risk };
+  }
+  if (target.kind === "setting") {
+    // Read from this build's own lists, never the chat: nothing to fetch.
+    const entry = settingsEntryById(target.entryId);
+    if (!entry) return null;
+    const access = settingAgentAccess(entry.id);
+    return {
+      kind: "setting",
+      path: settingsEntryLabel(entry),
+      ownerOnly: access.agent === "owner-only" ? access.explanation : null,
+      locked: settingIsProtected(entry.id),
+      unavailable: settingUnavailableReason(entry),
+    };
   }
   if (target.kind === "skill") {
     if (!sources.sessionId) return { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
@@ -527,7 +547,7 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "link") return <LinkCardBody data={data} />;
   if (data.kind === "mcp") return <McpMentionCardBody {...data} />;
   if (data.kind === "machine") return <MachineChipCardBody machineKey={data.machineKey} />;
-  if (data.kind === "terminal" || data.kind === "model" || data.kind === "permission" || data.kind === "skill" || data.kind === "artifact" || data.kind === "branch" || data.kind === "commit") {
+  if (data.kind === "terminal" || data.kind === "model" || data.kind === "permission" || data.kind === "skill" || data.kind === "artifact" || data.kind === "branch" || data.kind === "commit" || data.kind === "setting") {
     return <ExtraChipCardBody data={data} />;
   }
   if (data.kind === "pr") {
