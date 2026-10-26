@@ -7312,6 +7312,7 @@ function AgentChatComposerImpl({
       const hasPrompt = draft.trim().length > 0;
       const hasAttachments = attachments.length > 0 || contextAttachmentCount > 0;
       if (!hasPrompt && !hasAttachments) return;
+      closeCommandMenu();
       onSubmit();
       return;
     }
@@ -7356,8 +7357,12 @@ function AgentChatComposerImpl({
       return;
     }
     if (!linkedCloudReply) recordModelHintSendRef.current();
+    // A send clears the draft from outside the textarea, which never re-runs
+    // the trigger check: close an open `/` menu here, or it stays up over an
+    // empty composer (Send clicked with the menu open, `/usage`, `/context`).
+    closeCommandMenu();
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {

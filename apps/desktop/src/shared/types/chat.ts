@@ -37,6 +37,7 @@ import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
+export type { AgentChatClaudeUsageArgs, ClaudeUsageReport } from "../claudeUsageReport";
 import type { CursorCloudServiceTier } from "./config";
 import type { ExternalSessionProvider } from "./externalSessions";
 
@@ -5970,6 +5971,12 @@ export type AgentChatRestartSessionArgs = {
   sessionId: string;
   /** Stop a running turn first instead of refusing. */
   stopFirst?: boolean;
+  /**
+   * Restart once the running turn ends instead of refusing (or stopping it).
+   * How an agent restarts its own chat: the turn that asked finishes first.
+   * Restarts at once when no turn is running. Ignored with `stopFirst`.
+   */
+  afterTurn?: boolean;
 };
 
 export type AgentChatRestartSessionResult = {
@@ -5978,6 +5985,8 @@ export type AgentChatRestartSessionResult = {
   restarted: boolean;
   stoppedTurn: boolean;
   backgroundJobsStopped: number;
+  /** True when `afterTurn` deferred the restart to the end of the running turn. */
+  scheduled?: boolean;
 };
 
 export type AgentChatStopTaskArgs = {

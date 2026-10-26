@@ -265,6 +265,13 @@ a chat you do not own:
   you need manual control, `ade chat interrupt <session>` first, then
   `ade chat send ...` with the new instruction. Do not send a second normal turn
   into an active chat and hope the provider interprets it as steering.
+- When the user asks you to restart or refresh your session (to pick up new
+  skills, plugins, MCP servers or project instructions), run
+  `ade chat restart`. It restarts your own chat after this turn ends; the
+  conversation is kept. Finish your reply in the same turn: the next message
+  starts the fresh process. Background jobs you started (`run_in_background`,
+  background subagents) stop with the old process, so wait for them or tell
+  the user first. Only restart when the user asks.
 
 ### Checking whether delegated / backgrounded work finished
 

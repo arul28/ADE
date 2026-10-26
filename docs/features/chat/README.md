@@ -1500,8 +1500,21 @@ conversation, so the next message starts a fresh process that resumes the same
 provider thread and picks up skills, plugins, MCP servers, and project
 instructions added since the chat started. Entry points: the session
 right-click menu, the command palette (for the chat in front of you),
-`ade chat restart <session> [--stop]`, the `chat.restartSession` action, and
-the sync remote command of the same name.
+`ade chat restart [<session>] [--stop | --after-turn]`, the
+`chat.restartSession` action, and the sync remote command of the same name.
+
+An agent restarts its own chat with a bare `ade chat restart` (the session
+defaults to `$ADE_CHAT_SESSION_ID`). That call always sends `afterTurn`, never
+`stopFirst`: stopping the turn would cut off the command call itself. With
+`afterTurn` during a turn, the action records `restartAfterTurn` on the managed
+session, posts "The agent session restarts when this turn ends", and returns
+`scheduled: true`. The restart runs at the next turn end that leaves the chat
+idle; a
+queued message that starts the next turn first keeps it waiting for that turn.
+A session-bound agent can aim `restartSession` only at its own chat
+(`SCOPED_CHAT_ACTIONS` in `adeRpcServer.ts`). The hook lives in
+`setSessionIdle`, which every turn end passes through, with the `done` event
+as a backstop.
 
 `restartSession` tears the runtime down with the `restart` reason, which keeps
 the provider resume pointer the way an idle eviction does (Claude session id,
@@ -3989,6 +4002,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude SDK runtime for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
 | `ade.agentChat.getContextUsage` | invoke | Claude-only: return the SDK control-channel context usage breakdown (`AgentChatContextUsage`) for the `/context` panel. Categories are classified by `kind` (`used` / `free` / `buffer` / `deferred`), never by the display name `"free"`. The harness also performs this authoritative read after initialization, each settled turn, and compact completion; streamed estimates remain the responsive in-turn signal. |
+| `ade.agentChat.getClaudeUsage` | invoke | Claude-only: Claude Code's structured `/usage` report through the SDK `get_usage` control request (no typed method; `sendClaudeControlRequest` in `claudeSdkCompat.ts`), normalized by `shared/claudeUsageReport.ts`: session cost and per-model tokens, plan limit windows, and, unless `skipBehaviors`, the local-transcript scan of what is using the plan with Claude's recommendations and `fix` messages. Typing `/usage` in a desktop or web Claude chat opens `ClaudeUsageSheet` (a right-side `Dialog`) instead of sending; the sheet asks with `skipBehaviors` first so limits paint before the scan. Fix applies a `/effort <level>` line through the chat's own effort control (`planClaudeUsageFix`) and sends the rest, queued behind a running turn. Routed with the chat's runtime pin, a `chat` read action, and the `chat.getClaudeUsage` sync command. `ade code` (the TUI) does not intercept `/usage`; it reaches Claude as its text command. |
 | `ade.agentChat.rewindFiles` | invoke | Dry-run and apply provider-backed file rewind for a selected user message. Claude uses SDK file checkpoints and leaves conversation history untouched; `skippedLinks` reports linked paths the SDK could not restore and produces a visible notice rather than silently claiming a complete rewind. Codex restores ADE's git-tracked file plan and moves the app-server thread back — `thread/fork` before the selected turn on servers >= 0.145.0, or `thread/rollback` (latest user message only) on pre-0.156 servers when fork is unavailable or the turn id cannot be resolved; 0.156 removed rollback. The renderer dry-run opens the same confirmation dialog with message context, aggregate stats, per-file rows, and lazy diff previews. |
 | `ade.agentChat.claudePlugins.list` / `.reload` | invoke | Claude-only: enumerate discovered Claude plugins and force a plugin reload. Backs Claude `/plugin`. |
 | `ade.agentChat.codexPlugins.list` | invoke | Codex: `plugin/reconcile` then `plugin/list`. Settings and TUI `/plugin` show installed/enabled plugins only (bundled / local / already-installed remote). Fail-open on missing runtime or `-32601`. No marketplace and no toggle. |
