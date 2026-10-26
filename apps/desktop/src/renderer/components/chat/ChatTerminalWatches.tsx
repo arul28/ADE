@@ -30,6 +30,10 @@ export function useChatTerminalWatches(
   const [reloadNonce, setReloadNonce] = useState(0);
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  // The chat and machine on screen now: a late Stop failure restores its row only here.
+  const scopeKey = `${sessionId?.trim() ?? ""}|${pinKey ?? ""}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
 
   useEffect(() => {
     const chatId = sessionId?.trim();
@@ -39,14 +43,17 @@ export function useChatTerminalWatches(
     // A host without terminal watches (the web client) shows none.
     if (!chatId || typeof list !== "function") return undefined;
     let cancelled = false;
+    // Session changes can start overlapping reads: only the newest one lands.
+    let latest = 0;
     const load = async () => {
+      const request = ++latest;
       try {
         const rows = await list({ chatSessionId: chatId }, pinRef.current);
-        if (cancelled) return;
+        if (cancelled || request !== latest) return;
         setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
         setLoadError(false);
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || request !== latest) return;
         // An older brain does not know the action: it has no watches to show.
         // Any other failure is said, not shown as an empty list.
         const unsupported = isUnsupportedAdeActionError(error);
@@ -72,15 +79,21 @@ export function useChatTerminalWatches(
   const stop = useCallback((watch: TerminalWatchSummary) => {
     const unwatch = window.ade?.terminal?.unwatch;
     if (typeof unwatch !== "function") return;
+    const scope = scopeRef.current;
     // Optimistic: the row goes now; the brain's change event confirms it.
     setWatches((current) => current.filter((row) => row.watchId !== watch.watchId));
     void unwatch({ watchId: watch.watchId, chatSessionId: watch.chatSessionId }, pinRef.current).catch((error: unknown) => {
       console.error("[ChatTerminalWatches] stop failed", { watchId: watch.watchId, error });
-      // It may still be waking the chat: put the row back so Stop can be tried again.
-      setWatches((current) => (current.some((row) => row.watchId === watch.watchId) ? current : [watch, ...current]));
+      // It may still be waking the chat: put the row back so Stop can be tried
+      // again, unless another chat is on screen by now.
+      if (scopeRef.current === scope) {
+        setWatches((current) => (current.some((row) => row.watchId === watch.watchId) ? current : [watch, ...current]));
+      }
       showToast({
         tone: "error",
-        title: `Couldn't stop watching "${watch.terminalTitle}"`,
+        // Not the terminal's title: a `--command` watch is titled with its
+        // command, which may hold a secret, and error toasts reach telemetry.
+        title: "Couldn't stop the terminal watch",
         message: error instanceof Error ? error.message : String(error),
       });
     });

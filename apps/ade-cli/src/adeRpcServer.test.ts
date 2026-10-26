@@ -5458,6 +5458,8 @@ describe("adeRpcServer", () => {
     for (const args of [
       { terminalId: "terminal-2", match: "error" },
       { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
+      // An allowed pty id does not carry another chat's terminal id.
+      { ptyId: "pty-1", terminalId: "terminal-2", match: "error" },
     ]) {
       const deniedWatch = await callTool(handler, "run_ade_action", { domain: "terminal", action: "watch", args });
       expect(deniedWatch.isError).toBe(true);

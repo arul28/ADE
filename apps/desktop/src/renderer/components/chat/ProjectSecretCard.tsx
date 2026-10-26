@@ -248,7 +248,9 @@ export function ProjectSecretRequestComposer({
   fileDeliveryAvailable?: boolean;
 }) {
   const [value, setValue] = useState("");
-  const [delivery, setDelivery] = useState<ProjectSecretDelivery>(card.delivery);
+  const [chosenDelivery, setDelivery] = useState<ProjectSecretDelivery>(card.delivery);
+  // A runtime that cannot write temporary files never asked where: it saves to secrets.
+  const delivery: ProjectSecretDelivery = fileDeliveryAvailable ? chosenDelivery : "secrets";
   const [replacingExisting, setReplacing] = useState(!card.exists);
   // A file never touches the project's secret, so there is nothing to keep.
   const replacing = replacingExisting || delivery === "file";

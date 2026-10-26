@@ -38,6 +38,20 @@ describe("stopChatDevServer on Windows", () => {
     { name: "a listener started outside ADE", listener: OUTSIDER, startedMs: reportedAt - 30_000, record: record("chat-1"), stops: false },
     { name: "a server started long before the report", listener: SERVER, startedMs: reportedAt - 5 * 60_000, record: record("chat-1"), stops: false },
     { name: "a server started after the report", listener: SERVER, startedMs: reportedAt + 60_000, record: record("chat-1"), stops: false },
+    {
+      name: "another chat's server whose address this chat only printed",
+      listener: SERVER,
+      startedMs: reportedAt - 30_000,
+      record: { ...record("chat-1"), previousReport: { sessionId: "chat-2", detectedAt: new Date(reportedAt - 20_000).toISOString() } },
+      stops: false,
+    },
+    {
+      name: "the chat's own server on a port another chat used earlier",
+      listener: SERVER,
+      startedMs: reportedAt - 30_000,
+      record: { ...record("chat-1"), previousReport: { sessionId: "chat-2", detectedAt: new Date(reportedAt - 10 * 60_000).toISOString() } },
+      stops: true,
+    },
   ])("$name: stops=$stops", async ({ listener, startedMs, record: chatRecord, stops }) => {
     const table = [
       { pid: process.pid, ppid: 0, started: 1_000 },

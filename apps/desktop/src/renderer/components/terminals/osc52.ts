@@ -59,3 +59,19 @@ export function parseOsc52Payload(data: string): Osc52Request {
   if (!text) return { kind: "ignore", reason: "empty" };
   return { kind: "write", text };
 }
+
+/** An OSC 52 introducer, 7-bit (`ESC ] 52 ;`) or 8-bit (`0x9d 52 ;`). */
+const OSC52_START = /(?:\x1b\]|\x9d)52;/g;
+/** What ends or aborts an OSC: BEL, ST (7- or 8-bit), CAN, SUB, or a new escape. */
+const OSC_END = /[\x07\x9c\x18\x1a]|\x1b/;
+
+/**
+ * True when `data` stops inside an OSC 52 that is not yet terminated. xterm
+ * keeps an open OSC across writes, so the next write's terminator would
+ * complete a copy whose payload came from here.
+ */
+export function endsInsideOsc52(data: string): boolean {
+  let last = -1;
+  for (const match of data.matchAll(OSC52_START)) last = match.index + match[0].length;
+  return last >= 0 && !OSC_END.test(data.slice(last));
+}

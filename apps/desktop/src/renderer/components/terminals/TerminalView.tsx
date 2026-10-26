@@ -25,7 +25,7 @@ import {
   type TerminalImagePasteIo,
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
-import { parseOsc52Payload } from "./osc52";
+import { endsInsideOsc52, parseOsc52Payload } from "./osc52";
 import { showToast } from "../app/toast/toastStore";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
@@ -173,6 +173,11 @@ type CachedRuntime = {
    * OSC 52 copies are dropped: old output must never reach the clipboard again.
    */
   clipboardReplayWrites: number;
+  /**
+   * History ended inside an OSC 52: the copy that completes next carries
+   * replayed bytes, even though its terminator arrives live.
+   */
+  clipboardReplayOpenOsc: boolean;
   inputWriteChunks: string[];
   inputWriteBytes: number;
   inputFlushTimer: ReturnType<typeof setTimeout> | null;
@@ -1538,6 +1543,7 @@ async function writeTerminalSelectionToClipboard(text: string): Promise<boolean>
 function writeTerminalHistory(runtime: CachedRuntime, data: string): void {
   let queued = true;
   let entered = false;
+  const leavesOsc52Open = endsInsideOsc52(data);
   runtime.term.write("", () => {
     if (!queued) return;
     entered = true;
@@ -1545,7 +1551,9 @@ function writeTerminalHistory(runtime: CachedRuntime, data: string): void {
   });
   try {
     runtime.term.write(data, () => {
-      if (entered) runtime.clipboardReplayWrites = Math.max(0, runtime.clipboardReplayWrites - 1);
+      if (!entered) return;
+      runtime.clipboardReplayWrites = Math.max(0, runtime.clipboardReplayWrites - 1);
+      if (leavesOsc52Open) runtime.clipboardReplayOpenOsc = true;
     });
   } catch (error) {
     queued = false;
@@ -1568,8 +1576,11 @@ function runtimeMayWriteClipboard(runtime: CachedRuntime): boolean {
 
 /** xterm's OSC 52 handler. Always claims the sequence; reads are never answered. */
 function handleTerminalOsc52(runtime: CachedRuntime, data: string): boolean {
+  // The copy history left open ends here, wherever its terminator came from.
+  const replayed = runtime.clipboardReplayOpenOsc;
+  runtime.clipboardReplayOpenOsc = false;
   const request = parseOsc52Payload(data);
-  if (request.kind !== "write" || !runtimeMayWriteClipboard(runtime)) return true;
+  if (replayed || request.kind !== "write" || !runtimeMayWriteClipboard(runtime)) return true;
   void writeTerminalSelectionToClipboard(request.text).then((copied) => {
     if (!copied) return;
     showToast({ id: "terminal-osc52-copy", tone: "neutral", title: "Copied from terminal" });
@@ -3110,6 +3121,7 @@ function createRuntime(args: {
     frameWriteBytes: 0,
     frameWriteDeferred: false,
     clipboardReplayWrites: 0,
+    clipboardReplayOpenOsc: false,
     inputWriteChunks: [],
     inputWriteBytes: 0,
     inputFlushTimer: null,

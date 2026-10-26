@@ -311,6 +311,10 @@ export async function stopChatDevServer(input: {
     const record = input.record ?? null;
     const reportedAt = record ? Date.parse(record.detectedAt) : Number.NaN;
     const reportedByChat = record?.source.sessionId === chatSessionId && record.port === port && Number.isFinite(reportedAt);
+    // Another chat named this port first: a listener already up by then is
+    // that chat's server, which this chat only printed the address of.
+    const earlier = record?.previousReport;
+    const earlierAt = earlier?.sessionId && earlier.sessionId !== chatSessionId ? Date.parse(earlier.detectedAt) : Number.NaN;
     // A report is only the chat printing an address, which it also does for a
     // server it merely called. So the listener must also run under this
     // runtime (an agent or terminal ADE started), never something started
@@ -324,6 +328,7 @@ export async function stopChatDevServer(input: {
         || startedMs == null
         || startedMs > reportedAt + WINDOWS_DETECTION_SLACK_MS
         || startedMs < reportedAt - WINDOWS_REPORT_WINDOW_MS
+        || (Number.isFinite(earlierAt) && startedMs <= earlierAt + WINDOWS_DETECTION_SLACK_MS)
       ) {
         return refuse("not_owned", `Port ${port} is held by something this chat did not start.`);
       }
@@ -359,10 +364,9 @@ export async function stopChatDevServer(input: {
       const groupIsTheChats = pgid > 1
         && !protectedPids.has(pgid)
         && groupMembers.every((entry) => !protectedPids.has(entry.pid))
-        && groupMembers.every((entry) => {
-          const tag = tagOf(entry.pid);
-          return tag === null || tag === chatSessionId;
-        });
+        // Every member must be provably the chat's: an untagged process (its
+        // environment unreadable, or cleared) may be anyone's.
+        && groupMembers.every((entry) => tagOf(entry.pid) === chatSessionId);
       if (groupIsTheChats) {
         if (!plan.groups.includes(pgid)) plan.groups.push(pgid);
         for (const entry of groupMembers) expect(entry.pid);

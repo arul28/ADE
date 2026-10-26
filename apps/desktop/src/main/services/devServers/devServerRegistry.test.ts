@@ -88,8 +88,12 @@ describe("createDevServerRegistry", () => {
     // A different lane serving the same port is genuinely a different server.
     expect(registry.record({ port: 5173, url: "http://localhost:5173/", laneId: "lane-2", sessionId: "s2" }))
       .toMatchObject({ source: { laneId: "lane-2" } });
+    // Another chat naming the same server takes the row, but the earlier
+    // report stays on it: Windows Stop refuses a server that chat only printed.
+    expect(registry.record({ port: 5173, url: "http://localhost:5173/", laneId: "lane-1", sessionId: "s3", detectedAt: "2026-10-26T12:00:00.000Z" }))
+      .toMatchObject({ source: { sessionId: "s3" }, previousReport: { sessionId: "s1" } });
 
-    expect(seen).toHaveBeenCalledTimes(2);
+    expect(seen).toHaveBeenCalledTimes(3);
   });
 
   it("filters by lane and forgets a closed terminal session", () => {

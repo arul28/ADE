@@ -3237,8 +3237,14 @@ function ensurePtyTargetAuthorized(
   if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
   const ptyId = asOptionalTrimmedString(ptyArgs.ptyId);
   const sessionId = asOptionalTrimmedString(ptyArgs.sessionId);
-  const target = findPtySessionByPtyId(runtime, ptyId) ?? getPtySessionForAuthorization(runtime, sessionId);
-  if (!target || !isPtySessionAuthorized(runtime, session, target)) {
+  // Every id the caller names must be one it may use: services resolve the
+  // two in different orders, so authorizing only the first would let an
+  // allowed pty id carry someone else's terminal id.
+  const targets = [
+    ...(ptyId ? [findPtySessionByPtyId(runtime, ptyId)] : []),
+    ...(sessionId ? [getPtySessionForAuthorization(runtime, sessionId)] : []),
+  ];
+  if (targets.length === 0 || targets.some((target) => !target || !isPtySessionAuthorized(runtime, session, target))) {
     ptyAccessDenied(method);
   }
 }

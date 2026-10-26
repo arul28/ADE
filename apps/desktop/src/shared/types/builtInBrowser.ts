@@ -1316,6 +1316,12 @@ export type DevServerRecord = {
     projectRoot: string | null;
   };
   detectedAt: string;
+  /**
+   * The report this one replaced when a different chat named the same port
+   * before. Windows has no other way to tell a chat's own server from one it
+   * only printed the address of.
+   */
+  previousReport?: { sessionId: string | null; detectedAt: string } | null;
 };
 
 /** One dev server per (lane, port): two lanes may serve the same port. */
