@@ -1962,9 +1962,11 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   the request is running win per field. Generate lane name is disabled for the
   primary lane, and a busy session disables duplicate generation.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and **Change status** (see the lifecycle block below). A tracked CLI parked at
-  its own native prompt keeps **Done** disabled — "Resolve the prompt in the
-  terminal first" — because the terminal owns that question.
+  and **Change status** (see the lifecycle block below). A tracked CLI waiting
+  at its own prompt with no recorded hand keeps **Done** disabled — "Resolve the
+  prompt in the terminal first" — because the terminal owns that question. A
+  hand ADE recorded for an idle prompt (`cli_prompt`) can be dismissed with
+  **Done**, since that guess can be a false alarm.
 
 Every row also carries one exhaustive lifecycle block holding each action that
 changes where the sidebar files it: **Stop runtime** where the row owns one, and
@@ -1975,7 +1977,10 @@ settled.
 
 The three column entries are `session.moveOnBoard` — the same action a board
 drag uses — so the menu and the board cannot disagree about what a column means,
-and a refusal ("Answer the question first") reads the same in both.
+and a refusal ("Answer the question first") reads the same in both. Both go
+through `moveSessionOnBoard` (`sessionBoardMoveUi.ts`) for the toast and its
+5-second Undo; a row on another machine is re-read after the move and after
+any undo answer, refused or not.
 `renderer/lib/sessionStatusChange.ts` is the one model for what may be offered,
 and every disabled entry names its reason:
 
@@ -1991,8 +1996,8 @@ and every disabled entry names its reason:
   themselves. On a running chat it steers the live turn with "The user set this
   chat's status to Needs you. Ask them what they need before you continue."
 - **Done** clears the attention hand and settles in one write. It is refused
-  over a live provider card, and on a tracked CLI parked at its own native
-  prompt, where the terminal owns the question.
+  over a live provider card, and on a tracked CLI in Needs you with no recorded
+  hand, where the terminal owns the question.
 - **Snooze** expands in place into the durations resolved by
   `resolveSnoozePresets` (`In 1 hour`, `This evening`, `Tomorrow`, `Next
   week`, `Until I'm asked` — each with a time column beside it, and `This

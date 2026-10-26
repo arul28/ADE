@@ -44,7 +44,14 @@ const runGitMock = vi.hoisted(() => vi.fn());
 const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 
 vi.mock("../git/git", () => ({
-  runGit: runGitMock,
+  // The push goes through the GitHub sign-in fallback, which first resolves
+  // the repository and its push URL. Answer those here so each test scripts
+  // only the commands publishing itself runs.
+  runGit: (args: string[], opts: unknown) =>
+    args[0] === "remote" && args[1] === "get-url" && args[2] === "--push"
+      ? Promise.resolve({ exitCode: 0, stdout: "https://github.com/alice/proj.git\n", stderr: "" })
+      : runGitMock(args, opts),
+  gitCommonDirFor: async () => "",
 }));
 
 // Replace global fetch
@@ -2836,6 +2843,8 @@ describe("githubService.publishCurrentProject", () => {
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "abc\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "Authentication failed" })
+      // git's own sign-in failed, so the push is retried with ADE's token; that fails too
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "Authentication failed" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // best-effort remote remove
 

@@ -87,10 +87,16 @@ describe("sessionStatusChangeModel", () => {
       { working: false, done: true },
     ],
     [
-      "a tracked CLI at its own native prompt",
-      row({ toolType: "codex", runtimeState: "waiting-input", attentionSource: "cli_prompt" }),
+      // ADE's idle-prompt guess can be a false alarm, so its hand stays dismissable.
+      "a tracked CLI whose idle-prompt hand ADE recorded",
+      row({
+        toolType: "codex",
+        runtimeState: "waiting-input",
+        attentionSource: "cli_prompt",
+        attentionRequestedAt: "2026-10-26T13:00:00.000Z",
+      }),
       "Nothing is running — send a message to start it",
-      { working: false, done: false },
+      { working: false, done: true },
     ],
   ])("refuses the moves %s cannot hold", (_label, session, reason, expected) => {
     const model = sessionStatusChangeModel({

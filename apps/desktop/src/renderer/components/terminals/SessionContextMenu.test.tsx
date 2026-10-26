@@ -104,7 +104,7 @@ function renderMenu(
   session: TerminalSessionSummary,
   {
     onSetChatTag = vi.fn(),
-    onSettle = vi.fn(),
+    onChangeStatus = vi.fn(),
     binding,
     laneActions,
     onRegenerateMetadata,
@@ -112,7 +112,7 @@ function renderMenu(
     onOpenChatHandoff = vi.fn(),
   }: {
     onSetChatTag?: ReturnType<typeof vi.fn>;
-    onSettle?: ReturnType<typeof vi.fn>;
+    onChangeStatus?: ReturnType<typeof vi.fn>;
     binding?: OpenProjectBinding | null;
     laneActions?: SessionContextMenuLaneActions | null;
     onRegenerateMetadata?: ReturnType<typeof vi.fn>;
@@ -141,7 +141,7 @@ function renderMenu(
         onRename={onRename}
         onRegenerateMetadata={onRegenerateMetadata}
         onSetChatTag={onSetChatTag}
-        onSettle={onSettle}
+        onChangeStatus={onChangeStatus}
         onOpenChatHandoff={onOpenChatHandoff}
       />
     </MemoryRouter>,
@@ -149,7 +149,7 @@ function renderMenu(
   return {
     onClose,
     onSetChatTag,
-    onSettle,
+    onChangeStatus,
     onCopySessionId,
     onCopySessionDeepLink,
     onGoToLane,
@@ -603,11 +603,11 @@ describe("SessionContextMenu settle safety", () => {
       attentionRequestedAt: "2026-07-23T12:00:00.000Z",
       attentionMessage: "Review this result?",
     });
-    const { onSettle } = renderMenu(session);
+    const { onChangeStatus } = renderMenu(session);
 
     openStatusMenu();
     fireEvent.click(screen.getByTestId("session-menu-status-done"));
-    expect(onSettle).toHaveBeenCalledWith(session, null);
+    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", null);
   });
 
   it("does not infer a provider card from a runtime marker", () => {
@@ -633,12 +633,12 @@ describe("SessionContextMenu settle safety", () => {
       runtimeName: "Studio",
       hostname: "studio.local",
     };
-    const onSettle = vi.fn();
-    renderMenu(session, { onSettle, binding });
+    const onChangeStatus = vi.fn();
+    renderMenu(session, { onChangeStatus, binding });
 
     openStatusMenu();
     fireEvent.click(screen.getByTestId("session-menu-status-done"));
-    expect(onSettle).toHaveBeenCalledWith(session, binding);
+    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", binding);
   });
 });
 
