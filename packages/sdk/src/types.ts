@@ -303,8 +303,18 @@ export type AgentChatEvent = {
  * `"acp"` covers all four ACP dialects, because the permission round trip is
  * one method there. `"ade"` is a request ADE staged itself.
  */
+/**
+ * Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
+ * Devin, Antigravity) all report `"acp"`, not their own name.
+ */
 export type PendingInputSource =
-  | AdeProvider
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "muse"
   | "acp"
   | "ade";
 
