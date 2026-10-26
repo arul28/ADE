@@ -4908,7 +4908,6 @@ export type AgentChatCrossMachineLaneImportResult = {
   setupStatus?: AgentChatCrossMachineLaneSetupStatus;
 };
 
-/** Provider-native session files shipped inside a fork-mode capsule. */
 /**
  * What one Claude session already carries: PDF pages, and base64 bytes of the
  * PDFs and images ADE inlined into it. Persisted per chat, and carried by a
@@ -4919,6 +4918,7 @@ export type ClaudeRetainedMedia = {
   bytes: number;
 };
 
+/** Provider-native session files shipped inside a fork-mode capsule. */
 export type AgentChatCrossMachineForkTransport = {
   provider: AgentChatProvider;
   /** Source provider session/thread id the destination forks from. */

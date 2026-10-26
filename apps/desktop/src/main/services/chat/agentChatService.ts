@@ -3087,9 +3087,9 @@ type ClaudeRuntime = {
   steerBackgroundedBashToolUseIds: Set<string>;
   /** Of those, the ones a Stop ended before their background task showed up: stopped when it does. */
   stopBashOnTaskStart: Set<string>;
-  /** A steer's move of the running Bash calls, while in flight. Stop waits for it. */
-  backgroundingBash: Promise<void> | null;
-  /** Counts Stops, so a steer that waited on the move can tell one landed meanwhile. */
+  /** Bash calls a steer is moving to the background right now. Stop treats them as moved. */
+  backgroundingBashToolUseIds: Set<string>;
+  /** Counts Stops, so a steer in flight can tell one landed meanwhile. */
   stopSeq: number;
   /** Whether the latest Stop cleared queued messages. */
   stopClearedQueue: boolean;
@@ -24324,10 +24324,20 @@ export function createAgentChatService(args: {
   const claudeRetainedMediaBudget = (managed: ManagedChatSession): ClaudeRetainedMedia =>
     (managed.claudeRetainedMedia ??= emptyClaudeRetainedMedia());
 
-  /** Save the budget once a message moved it; text-only sends never write the chat file for it. */
-  const keepClaudeRetainedMedia = (managed: ManagedChatSession, before: ClaudeRetainedMedia): void => {
+  /**
+   * Save the budget once a message may have moved it; text-only sends never
+   * write the chat file for it. A message with attachments always saves: a
+   * compaction during its build can zero the budget and the message refill it
+   * to the same total.
+   */
+  const keepClaudeRetainedMedia = (
+    managed: ManagedChatSession,
+    before: ClaudeRetainedMedia,
+    attachments: readonly unknown[] | undefined,
+  ): void => {
     const now = managed.claudeRetainedMedia;
-    if (!now || (now.pages === before.pages && now.bytes === before.bytes)) return;
+    if (!now) return;
+    if (!attachments?.length && now.pages === before.pages && now.bytes === before.bytes) return;
     persistChatState(managed);
   };
 
@@ -29586,33 +29596,32 @@ export function createAgentChatService(args: {
     const control = getClaudeQueryControl(runtime.query);
     if (typeof control.backgroundTasks !== "function") return;
     const toolUseIds = [...runtime.foregroundBashToolUseIds];
-    const moving = Promise.all(toolUseIds.map(async (toolUseId) => {
+    await Promise.all(toolUseIds.map(async (toolUseId) => {
+      runtime.backgroundingBashToolUseIds.add(toolUseId);
       try {
         const moved = await awaitClaudeControlCall(
           `Moving Claude Bash call '${toolUseId}' to the background`,
           CLAUDE_BACKGROUND_TASKS_TIMEOUT_MS,
           () => control.backgroundTasks!(toolUseId),
         );
-        if (moved) runtime.steerBackgroundedBashToolUseIds.add(toolUseId);
+        // Not in the set any more means a Stop already took the call over.
+        if (runtime.backgroundingBashToolUseIds.delete(toolUseId) && moved) {
+          runtime.steerBackgroundedBashToolUseIds.add(toolUseId);
+        }
         logger.info("agent_chat.claude_steer_backgrounded_bash", {
           sessionId: managed.session.id,
           toolUseId,
           moved,
         });
       } catch (error) {
+        runtime.backgroundingBashToolUseIds.delete(toolUseId);
         logger.warn("agent_chat.claude_steer_background_bash_failed", {
           sessionId: managed.session.id,
           toolUseId,
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    })).then(() => undefined);
-    runtime.backgroundingBash = moving;
-    try {
-      await moving;
-    } finally {
-      if (runtime.backgroundingBash === moving) runtime.backgroundingBash = null;
-    }
+    }));
   };
 
   /**
@@ -29647,18 +29656,23 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Stop the Bash calls a steer moved to the background (see the field). With
-   * `stopRunning` false the running ones are left to the caller, which stops
-   * every background task; only calls with no task yet are marked here.
+   * Stop the Bash calls a steer moved, or is still moving, to the background
+   * (see the field). With `stopRunning` false the running ones are left to the
+   * caller, which stops every background task; only calls with no task yet are
+   * marked here, and stopped when their task starts.
    */
   const stopSteerBackgroundedClaudeBash = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     options: { stopRunning: boolean },
   ): Promise<void> => {
-    if (!runtime.steerBackgroundedBashToolUseIds.size) return;
-    const toolUseIds = new Set(runtime.steerBackgroundedBashToolUseIds);
+    const toolUseIds = new Set([
+      ...runtime.steerBackgroundedBashToolUseIds,
+      ...runtime.backgroundingBashToolUseIds,
+    ]);
     runtime.steerBackgroundedBashToolUseIds.clear();
+    runtime.backgroundingBashToolUseIds.clear();
+    if (!toolUseIds.size) return;
     const tasks = [...runtime.activeSubagents.values()]
       .filter((task) => task.parentToolUseId != null && toolUseIds.has(task.parentToolUseId));
     // A call moved a moment ago may not have its background task yet.
@@ -29674,6 +29688,27 @@ export function createAgentChatService(args: {
         ...(result.reason ? { reason: result.reason } : {}),
       });
     }
+  };
+
+  /** A Stop already ended this task's Bash call; stop the task once it is registered. */
+  const stopClaudeTaskOfStoppedBash = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    parentToolUseId: string | null | undefined,
+    taskId: string,
+  ): void => {
+    if (!parentToolUseId || !runtime.stopBashOnTaskStart.delete(parentToolUseId)) return;
+    queueMicrotask(() => {
+      void stopTask({ sessionId: managed.session.id, taskId }).then((result) => {
+        logger.info("agent_chat.claude_stop_steer_backgrounded_bash", {
+          sessionId: managed.session.id,
+          taskId,
+          stopped: result.stopped,
+          late: true,
+          ...(result.reason ? { reason: result.reason } : {}),
+        });
+      });
+    });
   };
 
   const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
@@ -30067,20 +30102,7 @@ export function createAgentChatService(args: {
       return true;
     }
     if (subtype === "task_started") {
-      if (parentToolUseId && runtime.stopBashOnTaskStart.delete(parentToolUseId)) {
-        // A Stop already ended this call; stop its task once it is registered below.
-        queueMicrotask(() => {
-          void stopTask({ sessionId: managed.session.id, taskId }).then((result) => {
-            logger.info("agent_chat.claude_stop_steer_backgrounded_bash", {
-              sessionId: managed.session.id,
-              taskId,
-              stopped: result.stopped,
-              late: true,
-              ...(result.reason ? { reason: result.reason } : {}),
-            });
-          });
-        });
-      }
+      stopClaudeTaskOfStoppedBash(managed, runtime, parentToolUseId, taskId);
       const background = taskType === "background"
         || taskType === "cron"
         || taskType === "local_workflow"
@@ -31614,7 +31636,7 @@ export function createAgentChatService(args: {
       }
       pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
       settleClaudeInitialInputDispatch(runtime);
-      keepClaudeRetainedMedia(managed, retainedBefore);
+      keepClaudeRetainedMedia(managed, retainedBefore, resolvedAttachments);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
@@ -32578,6 +32600,7 @@ export function createAgentChatService(args: {
           }
           const taskId = String(taskMsg.task_id ?? randomUUID());
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>);
+          stopClaudeTaskOfStoppedBash(managed, runtime, parentToolUseId, taskId);
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
           const description = String(
             taskMsg.description
@@ -45690,6 +45713,7 @@ export function createAgentChatService(args: {
     runtime.scheduledWorkLastEvents.clear();
     runtime.foregroundBashToolUseIds.clear();
     runtime.steerBackgroundedBashToolUseIds.clear();
+    runtime.backgroundingBashToolUseIds.clear();
     runtime.stopBashOnTaskStart.clear();
     // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
@@ -46931,7 +46955,7 @@ export function createAgentChatService(args: {
       foregroundBashToolUseIds: new Set(),
       steerBackgroundedBashToolUseIds: new Set(),
       stopBashOnTaskStart: new Set(),
-      backgroundingBash: null,
+      backgroundingBashToolUseIds: new Set(),
       stopSeq: 0,
       stopClearedQueue: false,
       taskToolInputByToolUseId: new Map(),
@@ -60899,6 +60923,7 @@ export function createAgentChatService(args: {
     const dispatchUuid = steer.uuid;
     const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
     const promptText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
+    const stopSeq = runtime.stopSeq;
     const retainedMedia = claudeRetainedMediaBudget(managed);
     const retainedBefore = { ...retainedMedia };
     const sdkMsg = await buildClaudeV2MessageAsync(promptText, steer.resolvedAttachments, {
@@ -60929,14 +60954,13 @@ export function createAgentChatService(args: {
     // moves it aside (see above). Automatic deliveries (relays, wakes, child
     // reports) keep waiting for the command, as they always have.
     if (mode === "inline" && steer.sentByUser === true) {
-      const stopSeq = runtime.stopSeq;
       await backgroundClaudeForegroundBash(managed, runtime);
-      // A Stop landed while the call was moving. It ended the call; the steer
-      // goes the way a queued message would have: dropped by a Stop that
-      // clears the queue, delivered as the next turn by one that keeps it.
-      if (runtime.stopSeq !== stopSeq && runtime.stopClearedQueue) {
-        throw new Error("Claude was stopped before this message was sent.");
-      }
+    }
+    // A Stop landed while this message was being built or the call moved. The
+    // steer goes the way a queued message would have: dropped by a Stop that
+    // clears the queue, delivered as the next turn by one that keeps it.
+    if (steer.sentByUser === true && runtime.stopSeq !== stopSeq && runtime.stopClearedQueue) {
+      throw new Error("Claude was stopped before this message was sent.");
     }
     if (!runtime.inputPump) {
       throw new Error("Claude's live input stream closed before the steer could be dispatched.");
@@ -60948,7 +60972,7 @@ export function createAgentChatService(args: {
       steer: { ...steer },
     });
     pushClaudeMessage(managed, runtime, runtime.inputPump, sdkMsg);
-    keepClaudeRetainedMedia(managed, retainedBefore);
+    keepClaudeRetainedMedia(managed, retainedBefore, steer.resolvedAttachments);
     onAccepted?.();
 
     emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
@@ -63744,16 +63768,15 @@ export function createAgentChatService(args: {
     runtime.interrupted = true;
     runtime.spareBackgroundOnInterrupt = !stopModeStopsBackground(mode);
     runtime.stopSeq += 1;
-    runtime.stopClearedQueue = stopModeClearsQueue(mode);
+    runtime.stopClearedQueue = stopModeClearsQueue(mode) && !internalOptions.keepProviderQueue;
     // Claude Code drops a detached WebFetch/WebSearch on any interrupt, even in
     // the stop modes that spare background jobs.
     closeDetachedClaudeToolCalls(managed, runtime, "Stopped before the result arrived.");
     // A Stop that spares background jobs still ends the Bash calls a steer
     // moved there: before the steer they were this chat's foreground work.
-    // A move still in flight finishes first (it is bounded), so its calls are
-    // known. The modes that stop background jobs stop their tasks below; a
-    // call whose task has not appeared yet is stopped when it does, either way.
-    if (runtime.backgroundingBash) await runtime.backgroundingBash;
+    // A call still being moved counts as moved. The modes that stop background
+    // jobs stop their tasks below; a call whose task has not appeared yet is
+    // stopped when it does, either way.
     await stopSteerBackgroundedClaudeBash(managed, runtime, {
       stopRunning: !stopModeStopsBackground(mode),
     });

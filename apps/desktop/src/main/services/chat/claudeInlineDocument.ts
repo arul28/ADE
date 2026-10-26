@@ -118,8 +118,10 @@ type PageScan = { pageObjects: number; treeCount: number; indirectCounts: string
 const PAGE_TYPE_RE = /\/Type\s*\/Page(?![A-Za-z0-9#])/g;
 const PAGES_TYPE_RE = /\/Type\s*\/Pages(?![A-Za-z0-9#])/g;
 // A direct count. `/Count 3 0 R` is an indirect reference, read separately.
-const DIRECT_COUNT_RE = /\/Count\s+(\d{1,9})(?!\s*\d+\s+R)(?=[\s/>\]%])/;
+const DIRECT_COUNT_RE = /\/Count\s+(\d{1,9})(?!\s*\d+\s+R)(?=[\s/>\]%]|$)/;
 const INDIRECT_COUNT_RE = /\/Count\s+(\d{1,9})\s+(\d{1,5})\s+R(?![A-Za-z0-9#])/;
+// A plain integer object, `5 0 obj 60 endobj`: what an indirect /Count points at.
+const INTEGER_OBJECT_RE = /(?:^|[^0-9])(\d{1,9})\s+(\d{1,5})\s+obj\s+(\d{1,9})\s+endobj/g;
 
 function scanPages(text: string): PageScan {
   let pageObjects = 0;
@@ -207,16 +209,20 @@ export function countPdfPages(bytes: Buffer): number | null {
   if (!streams) return null;
   let pageObjects = 0;
   let treeCount = 0;
+  const indirectCounts = new Set<string>();
   for (const source of [text, ...streams]) {
     const scan = scanPages(source);
     pageObjects += scan.pageObjects;
     treeCount = Math.max(treeCount, scan.treeCount);
-    for (const ref of scan.indirectCounts) {
-      // `/Count 5 0 R` points at a plain `5 0 obj 60 endobj`. One kept in an
-      // object stream is not resolved; the page objects still count.
-      const [num, gen] = ref.split(" ");
-      const target = new RegExp(`(?:^|[^0-9])${num}\\s+${gen}\\s+obj\\s+(\\d{1,9})\\s+endobj`).exec(text);
-      if (target) treeCount = Math.max(treeCount, Number(target[1]));
+    for (const ref of scan.indirectCounts) indirectCounts.add(ref);
+  }
+  // Resolve `/Count 5 0 R` in one pass over the file. Every definition of the
+  // object counts, the highest wins: an incremental update leaves the old one
+  // earlier in the file. One kept in an object stream is not resolved; the
+  // page objects still count.
+  if (indirectCounts.size) {
+    for (const match of text.matchAll(INTEGER_OBJECT_RE)) {
+      if (indirectCounts.has(`${match[1]} ${match[2]}`)) treeCount = Math.max(treeCount, Number(match[3]));
     }
   }
   // The larger of the two. A tree count can be low when an indirect root
