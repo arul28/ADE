@@ -24,10 +24,13 @@ and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-fil
 | Path | Role |
 |---|---|
 | `apps/desktop/native/ADEDesktopDriverLinux/` | The native helper, `ade-desktop-driver` (Rust, static musl). Same NDJSON wire, ops and error codes as the Mac and Windows drivers. |
-| `.../src/main.rs` | The NDJSON loop and dispatcher: one worker thread per lane (requests for a lane run in order), `ping`/`wait`/cross-lane ops on their own threads, SIGTERM/stdin-close teardown, the orphaned-X-server sweep. |
-| `.../src/lane.rs` | One lane's screen: Xvfb + Xauthority cookie, the lane's `dbus-daemon`, openbox, app launch/quit, observe, input, window verbs, screenshots, the media ops. |
+| `.../src/main.rs` | The NDJSON loop and dispatcher: one worker thread per lane (requests for a lane run in order, and the thread ends with the lane), `ping`/`wait`/cross-lane ops on their own threads, SIGTERM/stdin-close teardown, the orphaned-X-server sweep. |
+| `.../src/lane/mod.rs` | One lane's screen: Xvfb + Xauthority cookie, the lane's `dbus-daemon`, openbox, app launch/quit, teardown, the lease, and the media ops. |
+| `.../src/lane/observe.rs` | The element map for `observe`: the AT-SPI walk, the element list and its JSON, the observation screenshot and map, handle and text resolution. |
+| `.../src/lane/input.rs` | Input dispatch: click, type, `setValue`, press, scroll, drag, move and buttons, and `wait`. |
+| `.../src/lane/windows.rs` | The window list and its JSON, the window verbs (`focus`, `minimize`, `close`), screenshots, and the window signature. |
 | `.../src/xconn.rs` | The X11 connection (x11rb): window list (EWMH), XTEST input, keymap and scratch-keycode typing, `GetImage`/MIT-SHM capture, the XFixes cursor overlay. |
-| `.../src/atspi.rs` | The element map: AT-SPI over the lane's own accessibility bus (zbus), the breadth-first concurrent walk with its node cap and time budget, element actions. |
+| `.../src/atspi.rs` | The AT-SPI client on the lane's own accessibility bus (zbus): the breadth-first concurrent walk with its node cap and time budget, element actions. |
 | `.../src/media.rs` | The live view and recording: XDamage-driven capture, the system `ffmpeg` encoder, access-unit framing, the loopback byte server, the MP4 recorder. |
 | `.../src/launch.rs` | What `app.launch` starts: app name, path, `.desktop` entry or URL; the lane-private browser profile and accessibility switches. |
 | `apps/desktop/scripts/build-linux-desktop-driver.mjs` | Builds the helper for `linux-x64` / `linux-arm64` into `resources/native/<target>/`. |
@@ -46,24 +49,32 @@ and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-fil
    and starts `Xvfb :N -screen 0 WxHx24 -nolisten tcp -auth …`. Only a client
    with the cookie (the helper, the lane's apps) can connect.
 2. Starts the lane's own `dbus-daemon --session` on a socket under
-   `$XDG_RUNTIME_DIR/ade-ld/<N>/`, asks it for the accessibility bus (D-Bus
-   activates `at-spi-bus-launcher`), and switches accessibility on
+   `$XDG_RUNTIME_DIR/ade-ld/<N>/` (or `/tmp/ade-ld-<uid>/<N>/` when
+   `XDG_RUNTIME_DIR` is unset; this directory is created `0700` and refused when
+   it is a link or belongs to another user), asks it for the accessibility bus
+   (D-Bus activates `at-spi-bus-launcher`), and switches accessibility on
    (`org.a11y.Status.IsEnabled` and `ScreenReaderEnabled`).
 3. Starts `openbox`, waits until it manages the screen, and paints a plain
    backdrop.
 
 Every child gets its own process group and a parent-death signal tied to the
-lane's worker thread, which lives as long as the helper; a helper that crashes
-takes its X servers with it, and the next helper kills any orphaned one it
-finds under its ADE home. `display.destroy` quits the lane's apps (SIGTERM to
-each group, SIGKILL after 3 s), then the window manager, the bus and the X
-server; anything still connected to the display goes with it.
+lane's worker thread, which lives as long as the lane: if the lane's worker goes
+away without stopping a child, the child dies with it. A helper that crashes
+takes its X servers with it, and the next helper kills any orphaned one it finds
+under its ADE home. `display.destroy` quits the lane's apps (SIGTERM to each
+group, SIGKILL after 3 s), then the window manager, the bus and the X server;
+anything still connected to the display goes with it.
 
 Each lane has its own X server and its own bus, so lanes cannot see or drive
 each other's windows, and an observation never lists another lane's apps.
 They run as the same Unix user as the brain, which is the trust level Mac
 Desktop has: the isolation is from other lanes and from the user's own
-desktop, not from a hostile process of the same user.
+desktop, not from a hostile process of the same user. The X display enforces
+that with a per-lane MIT-MAGIC-COOKIE-1. The live-view video port does not: it
+is plain loopback TCP with no token of its own, like the Mac driver's byte
+server, so any local account on this machine can connect to it. Clients
+normally read the picture through the brain's token-guarded stream endpoint,
+not that port directly.
 
 ## Input
 
@@ -163,8 +174,10 @@ Only Xvfb is required to start a screen. Without openbox, windows are
 unmanaged (no title bars; Chrome draws its own); without D-Bus or AT-SPI,
 observations carry the screenshot and windows but no elements (the reason is in
 `stalledApps`); without ffmpeg, everything works except the live view and
-recording. A browser is not a dependency; `ade screen open <url>` names what to
-install when none is found.
+recording. An installed ffmpeg that has no H.264 encoder is reported separately
+as `ffmpeg-encoder`, because installing the `ffmpeg` package again would not add
+one; a full build (or one with libopenh264) does. A browser is not a dependency;
+`ade screen open <url>` names what to install when none is found.
 
 `ade connect` on a Linux machine also turns on systemd lingering for the user
 (best effort), so the brain keeps running after logout and comes back after a

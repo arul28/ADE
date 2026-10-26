@@ -1,4 +1,5 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrSummary } from "../../shared/types";
+import { useAppStore } from "../state/appStore";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -28,6 +29,20 @@ function projectKey(
 ): string {
   if (pin?.key) return `pin:${pin.key}`;
   return projectRoot?.trim() || "active";
+}
+
+/**
+ * The scope of an unpinned GitHub snapshot read.
+ *
+ * `getGitHubSnapshot` takes no pin, so the read follows the machine this
+ * window's project tab is bound to — the same path on two machines is two
+ * different credential stores and two different databases. The root alone
+ * cannot say which one a memoized refusal came from, so the window's binding
+ * is part of the key: one machine's "no GitHub credential" must never answer
+ * the other machine's reads.
+ */
+function snapshotReadScopeKey(projectRoot: string | null | undefined): string {
+  return JSON.stringify([projectKey(projectRoot), useAppStore.getState().projectBinding?.key ?? null]);
 }
 
 function summaryFreshness(summary: PrSummary): number {
@@ -84,19 +99,19 @@ export function getGitHubSnapshotCoalesced(
   } = {},
   options?: { projectRoot?: string | null },
 ): Promise<GitHubPrSnapshot> {
-  const rootKey = projectKey(options?.projectRoot);
+  const scopeKey = snapshotReadScopeKey(options?.projectRoot);
   // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
   // answers every snapshot read with the same refusal, and every PR event
   // here used to ask it again over the relay. Remember that answer briefly;
   // a forced read (a person asking) always goes through.
-  const remembered = githubSnapshotAuthRefusals.get(rootKey);
+  const remembered = githubSnapshotAuthRefusals.get(scopeKey);
   if (!args.force && remembered && Date.now() - remembered.at < GITHUB_SNAPSHOT_AUTH_REFUSAL_TTL_MS) {
     return Promise.reject(remembered.error);
   }
   return coalesceInFlight(
     githubSnapshotInFlight,
     JSON.stringify({
-      projectRoot: rootKey,
+      scope: scopeKey,
       force: args.force === true,
       automaticRefresh: args.automaticRefresh === true,
       includeExternalClosed: args.includeExternalClosed === true,
@@ -104,12 +119,12 @@ export function getGitHubSnapshotCoalesced(
     }),
     () => window.ade.prs.getGitHubSnapshot(args).then(
       (snapshot) => {
-        githubSnapshotAuthRefusals.delete(rootKey);
+        githubSnapshotAuthRefusals.delete(scopeKey);
         return snapshot;
       },
       (error: unknown) => {
         if (GITHUB_SNAPSHOT_AUTH_REFUSAL.test(error instanceof Error ? error.message : String(error))) {
-          githubSnapshotAuthRefusals.set(rootKey, { at: Date.now(), error });
+          githubSnapshotAuthRefusals.set(scopeKey, { at: Date.now(), error });
         }
         throw error;
       },

@@ -4186,9 +4186,9 @@ export function scopeMacDesktopAdeActionArgs(
   // under the human's takeover controller id it read off `getStatus`. Refused
   // by caller shape, not role.
   if (isCtoOnlyAdeAction("mac_desktop", action)) {
-    // The Windows steps are the user's; say what the agent does instead.
+    // The setup and password steps are the user's; say what the agent does instead.
     const windowsUserStep: Record<string, string> = {
-      setupWindows: `Windows Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
+      setupWindows: `Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
       takeoverWindows: `taking the private Windows screen from another lane is the user's choice. ${WINDOWS_DESKTOP_NEXT_STEP.held}`,
       useSharedDesktop: WINDOWS_DESKTOP_NEXT_STEP.consent,
     };

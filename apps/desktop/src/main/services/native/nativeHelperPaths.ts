@@ -21,6 +21,83 @@ const MAC_DESKTOP_DRIVER_BINARY = "ade-desktop-driver";
 /** The Windows Desktop helper, beside the capture helper. */
 const WINDOWS_DESKTOP_DRIVER_BINARY = "ade-desktop-driver.exe";
 
+/** True only for a regular file this process is allowed to execute. */
+function isExecutableFile(candidate: string): boolean {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True for anything on disk: the test the Electron resource layouts use. */
+function existsOnDisk(candidate: string): boolean {
+  try {
+    return fs.existsSync(candidate);
+  } catch {
+    return false;
+  }
+}
+
+type DesktopDriverResolution = {
+  /** This process's platform; the helper exists only on `supportedPlatform`. */
+  platform?: NodeJS.Platform;
+  supportedPlatform: NodeJS.Platform;
+  /** The helper's file name inside a `native` directory. */
+  binaryName: string;
+  /** The environment variable a developer override comes from. */
+  overrideEnv: string;
+  /** The debug event logged when that override names nothing usable. */
+  overrideIgnoredEvent: string;
+  /**
+   * A path an Electron layout puts the helper at, answered as the installation
+   * without a search: the packaged build's own file, or the dev app's.
+   */
+  fixedPath?: string | null;
+  /** Host-specific candidates tried before the shared upward search. */
+  extraCandidates?: readonly string[];
+  /** Names searched upward from this module, in order (the daemon case). */
+  searchNames?: readonly string[];
+  /** What counts as a usable helper in the search. */
+  accept: (candidate: string) => boolean;
+  /**
+   * The override's own test where it is stricter than the search: a developer
+   * override that cannot run is ignored, while a packaged file is still named
+   * even when the tree is not built. Defaults to `accept`.
+   */
+  acceptOverride?: (candidate: string) => boolean;
+  env?: NodeJS.ProcessEnv;
+  logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
+};
+
+/**
+ * The one resolver behind the desktop-helper exports.
+ *
+ * It owns the order every helper uses — platform gate, developer override, the
+ * Electron layout, then the upward search from this module — and each caller
+ * supplies only its own facts: the platform it runs on, the binary name, its
+ * candidates, and the predicate that decides what counts as usable. The
+ * predicate stays per caller so moving a resolver here never quietly makes one
+ * host's search stricter than it was.
+ */
+function resolveDesktopDriverBinary(input: DesktopDriverResolution): string | null {
+  if ((input.platform ?? process.platform) !== input.supportedPlatform) return null;
+  const env = input.env ?? process.env;
+  const override = env[input.overrideEnv]?.trim();
+  if (override) {
+    if ((input.acceptOverride ?? input.accept)(override)) return override;
+    input.logger?.debug(input.overrideIgnoredEvent, { path: override });
+  }
+  if (input.fixedPath) return input.fixedPath;
+  const candidates = [
+    ...(input.extraCandidates ?? []),
+    ...(input.searchNames ?? [input.binaryName]).flatMap((name) => daemonNativeCandidates(name)),
+  ];
+  return candidates.find((candidate) => input.accept(candidate)) ?? candidates[0] ?? null;
+}
+
 /**
  * The Windows Desktop native helper.
  *
@@ -37,28 +114,19 @@ export function resolveWindowsDesktopDriverBinary(input: {
   env?: NodeJS.ProcessEnv;
   logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
 } = {}): string | null {
-  if ((input.platform ?? process.platform) !== "win32") return null;
-  const env = input.env ?? process.env;
-  const override = env.ADE_WINDOWS_DESKTOP_DRIVER_PATH?.trim();
-  if (override) {
-    if (fs.existsSync(override)) return override;
-    input.logger?.debug("windows_desktop.driver_path_override_ignored", { path: override });
-  }
-  if (input.isPackaged && input.resourcesPath) {
-    return path.join(input.resourcesPath, "native", WINDOWS_DESKTOP_DRIVER_BINARY);
-  }
-  if (input.appPath) {
-    return path.join(input.appPath, "resources", "native", WINDOWS_DESKTOP_DRIVER_BINARY);
-  }
-  const candidates = daemonNativeCandidates(WINDOWS_DESKTOP_DRIVER_BINARY);
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      // An unreadable candidate is simply not the one.
-    }
-  }
-  return candidates[0] ?? null;
+  return resolveDesktopDriverBinary({
+    ...input,
+    supportedPlatform: "win32",
+    binaryName: WINDOWS_DESKTOP_DRIVER_BINARY,
+    overrideEnv: "ADE_WINDOWS_DESKTOP_DRIVER_PATH",
+    overrideIgnoredEvent: "windows_desktop.driver_path_override_ignored",
+    fixedPath: input.isPackaged && input.resourcesPath
+      ? path.join(input.resourcesPath, "native", WINDOWS_DESKTOP_DRIVER_BINARY)
+      : input.appPath
+        ? path.join(input.appPath, "resources", "native", WINDOWS_DESKTOP_DRIVER_BINARY)
+        : null,
+    accept: existsOnDisk,
+  });
 }
 
 /**
@@ -76,23 +144,21 @@ export function resolveLinuxDesktopDriverBinary(input: {
   env?: NodeJS.ProcessEnv;
   logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
 } = {}): string | null {
-  if ((input.platform ?? process.platform) !== "linux") return null;
   const env = input.env ?? process.env;
-  const override = env.ADE_LINUX_DESKTOP_DRIVER_PATH?.trim();
-  if (override) {
-    if (isExecutableFile(override)) return override;
-    input.logger?.debug("linux_desktop.driver_path_override_ignored", { path: override });
-  }
   const runtimeRoot = env.ADE_RUNTIME_ROOT?.trim();
   // A source checkout builds into `resources/native/linux-<arch>/` (see
   // scripts/build-linux-desktop-driver.mjs); the runtime archive flattens it.
   const archDir = `linux-${process.arch === "arm64" ? "arm64" : "x64"}`;
-  const candidates = [
-    ...(runtimeRoot ? [path.join(runtimeRoot, "native", MAC_DESKTOP_DRIVER_BINARY)] : []),
-    ...daemonNativeCandidates(MAC_DESKTOP_DRIVER_BINARY),
-    ...daemonNativeCandidates(path.join(archDir, MAC_DESKTOP_DRIVER_BINARY)),
-  ];
-  return candidates.find(isExecutableFile) ?? candidates[0] ?? null;
+  return resolveDesktopDriverBinary({
+    ...input,
+    supportedPlatform: "linux",
+    binaryName: MAC_DESKTOP_DRIVER_BINARY,
+    overrideEnv: "ADE_LINUX_DESKTOP_DRIVER_PATH",
+    overrideIgnoredEvent: "linux_desktop.driver_path_override_ignored",
+    extraCandidates: runtimeRoot ? [path.join(runtimeRoot, "native", MAC_DESKTOP_DRIVER_BINARY)] : [],
+    searchNames: [MAC_DESKTOP_DRIVER_BINARY, path.join(archDir, MAC_DESKTOP_DRIVER_BINARY)],
+    accept: isExecutableFile,
+  });
 }
 
 /**
@@ -108,17 +174,6 @@ export function resolveLinuxDesktopDriverBinary(input: {
  * platform, and a resolver that threw would turn "this host cannot host a
  * display" into a crash on a machine that was only ever going to view one.
  */
-/** True only for a regular file this process is allowed to execute. */
-function isExecutableFile(candidate: string): boolean {
-  try {
-    if (!fs.statSync(candidate).isFile()) return false;
-    fs.accessSync(candidate, fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function resolveMacDesktopDriverBinary(input: {
   /** Absent in the ADE runtime daemon, which has no Electron `app`. */
   isPackaged?: boolean;
@@ -129,37 +184,23 @@ export function resolveMacDesktopDriverBinary(input: {
   /** Test seam and the reason `logOverrideIgnored` exists. */
   logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
 } = {}): string | null {
-  if ((input.platform ?? process.platform) !== "darwin") return null;
-  const env = input.env ?? process.env;
-  const override = env.ADE_MAC_DESKTOP_DRIVER_PATH?.trim();
-  // A developer override only counts when it names a file that can actually be
-  // executed. Honouring a stale or misspelled path made the driver look
-  // permanently "missing" with no hint that the environment variable — not the
-  // installation — was the reason, so an unusable override is logged and the
-  // normal search runs instead.
-  if (override) {
-    if (isExecutableFile(override)) return override;
-    input.logger?.debug("mac_desktop.driver_path_override_ignored", { path: override });
-  }
-  if (input.isPackaged && input.resourcesPath) {
-    return path.join(input.resourcesPath, "native", MAC_DESKTOP_DRIVER_BINARY);
-  }
-  if (input.appPath) {
-    return path.join(input.appPath, "resources", "native", MAC_DESKTOP_DRIVER_BINARY);
-  }
-  // The daemon path: no Electron `app`, so walk up from this module to the same
-  // `resources/native` directory the packaged build copies from.
-  const candidates = daemonNativeCandidates(MAC_DESKTOP_DRIVER_BINARY);
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      // An unreadable candidate is simply not the one.
-    }
-  }
-  // Nothing on disk. Name the location the packaged build would use anyway, so
-  // the health card can say which file is missing instead of "unknown".
-  return candidates[0] ?? null;
+  return resolveDesktopDriverBinary({
+    ...input,
+    supportedPlatform: "darwin",
+    binaryName: MAC_DESKTOP_DRIVER_BINARY,
+    overrideEnv: "ADE_MAC_DESKTOP_DRIVER_PATH",
+    overrideIgnoredEvent: "mac_desktop.driver_path_override_ignored",
+    fixedPath: input.isPackaged && input.resourcesPath
+      ? path.join(input.resourcesPath, "native", MAC_DESKTOP_DRIVER_BINARY)
+      : input.appPath
+        ? path.join(input.appPath, "resources", "native", MAC_DESKTOP_DRIVER_BINARY)
+        : null,
+    accept: existsOnDisk,
+    // A developer override that cannot be executed is ignored (the health card
+    // then reports the real installation); the search keeps its historical
+    // `exists` predicate so nothing gets stricter as a side effect.
+    acceptOverride: isExecutableFile,
+  });
 }
 
 /** The demo-video engine, built into the same `resources/native` directory. */

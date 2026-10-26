@@ -68,8 +68,13 @@ impl Driver {
         if lane::atspi_launcher().is_none() {
             missing.push("at-spi2-core");
         }
-        if ff.path.is_none() || ff.codec.is_none() {
-            missing.push("ffmpeg");
+        match (ff.path.is_some(), ff.codec.is_some()) {
+            (false, _) => missing.push("ffmpeg"),
+            // An installed ffmpeg with no H.264 encoder is a different
+            // problem with a different fix, so it carries its own requirement
+            // name: installing the `ffmpeg` package again would not help.
+            (true, false) => missing.push("ffmpeg-encoder"),
+            (true, true) => {}
         }
         json!({
             "version": VERSION,
@@ -112,6 +117,10 @@ impl Driver {
 
     fn destroy(&self, lane_id: &str, reason: &str) -> Value {
         let lane = self.lanes.lock().unwrap().remove(lane_id);
+        // The lane's worker owns nothing once its screen is gone: drop its
+        // queue entry, so its `recv()` ends as soon as the requests already
+        // queued for it are answered and the thread exits with the lane.
+        self.queues.lock().unwrap().remove(lane_id);
         let Some(lane) = lane else {
             return json!({"destroyed": false, "releasedWindows": 0, "quitApps": [], "appsLeftOpen": []});
         };
@@ -334,27 +343,43 @@ fn main() {
         let is_wait = op == "input" && req.get("command").and_then(|c| c.as_str()) == Some("wait");
         let global = matches!(op.as_str(), "ping" | "display.reconcile" | "watch-permissions" | "request-permission")
             || (op == "window.list" && lane_id.is_none());
+        // A lane's worker exists only while the lane does: `display.create`
+        // starts one, and `Driver::destroy` drops its queue entry. A request
+        // for a lane that is already gone (a stale read racing a destroy) joins
+        // no worker, so it runs on its own thread instead of stranding one.
+        let use_worker = op == "display.create"
+            || (!global
+                && !is_wait
+                && lane_id.as_ref().map(|id| driver.queues.lock().unwrap().contains_key(id)).unwrap_or(false));
         match lane_id {
-            Some(lane_id) if !global && !is_wait => {
-                let mut queues = driver.queues.lock().unwrap();
-                let tx = queues.entry(lane_id.clone()).or_insert_with(|| {
-                    let (tx, rx) = channel::<Value>();
-                    let driver = driver.clone();
-                    // The lane's worker: lives as long as the driver, so the
-                    // children it spawns keep their parent-death link.
-                    std::thread::Builder::new()
-                        .name(format!("lane-{}", &lane_id.chars().take(8).collect::<String>()))
-                        .spawn(move || {
-                            while let Ok(req) = rx.recv() {
-                                let id = req.get("id").cloned().unwrap_or(Value::Null);
-                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver.handle(&req)))
-                                    .unwrap_or_else(|_| Err(DriverError::new(code::INTERNAL_ERROR, "The driver hit an internal fault on this request.")));
-                                driver.out.reply(&id, result);
-                            }
+            Some(lane_id) if use_worker => {
+                let tx = {
+                    let mut queues = driver.queues.lock().unwrap();
+                    queues
+                        .entry(lane_id.clone())
+                        .or_insert_with(|| {
+                            let (tx, rx) = channel::<Value>();
+                            let driver = driver.clone();
+                            // The lane's worker: lives as long as the lane it
+                            // serves, so the children it spawns keep their
+                            // parent-death link. `Driver::destroy` drops this
+                            // queue entry, which ends the thread once the
+                            // requests already queued are answered.
+                            std::thread::Builder::new()
+                                .name(format!("lane-{}", &lane_id.chars().take(8).collect::<String>()))
+                                .spawn(move || {
+                                    while let Ok(req) = rx.recv() {
+                                        let id = req.get("id").cloned().unwrap_or(Value::Null);
+                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver.handle(&req)))
+                                            .unwrap_or_else(|_| Err(DriverError::new(code::INTERNAL_ERROR, "The driver hit an internal fault on this request.")));
+                                        driver.out.reply(&id, result);
+                                    }
+                                })
+                                .expect("lane worker");
+                            tx
                         })
-                        .expect("lane worker");
-                    tx
-                });
+                        .clone()
+                };
                 let _ = tx.send(req);
             }
             _ => {

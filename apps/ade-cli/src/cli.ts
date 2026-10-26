@@ -3355,18 +3355,19 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade screen stop --text                        Stop it (quits apps the lane opened)
     $ ade screen show --text                        Show it to the user (--floating: card)
 
-  The user's steps (Windows; an agent asks, it cannot do these):
-    $ ade screen setup --allow-prompt --text        One-time admin step
+  The user's steps (an agent asks, it cannot do these):
+    $ ade screen setup --allow-prompt --text        Windows: one-time admin step.
+                                                    Linux: install the screen's system packages
     $ ade screen setup --allow-prompt --save-password --text   Save the Windows password
-    $ ade screen takeover --text                    Take the private screen from another lane
+    $ ade screen takeover --text                    Windows: take the private screen from another lane
 
   Apps and windows:
     $ ade screen open <app|path|url> --text         Launch onto the screen; prints its windows
     $ ade screen open notepad -- C:\\tmp\\proof.txt --text   App args after --
     $ ade screen windows --text                     List windows
-    $ ade screen focus --window <id> --text         Windows: raise one of this lane's windows
-    $ ade screen minimize --window <id> --text      Windows: minimize it
-    $ ade screen close --window <id> --text         Windows: close it (it may ask to save)
+    $ ade screen focus --window <id> --text         Windows, Linux: raise one of this lane's windows
+    $ ade screen minimize --window <id> --text      Windows, Linux: minimize it
+    $ ade screen close --window <id> --text         Windows, Linux: close it (it may ask to save)
     $ ade screen claim --window <id> --text         Move an existing window here
     $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
     $ ade screen quit [app] --text                  Quit apps the lane opened

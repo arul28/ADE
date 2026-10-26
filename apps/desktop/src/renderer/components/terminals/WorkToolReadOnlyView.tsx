@@ -19,17 +19,16 @@ import { createMacDesktopLeaseHeartbeat } from "../chat/macDesktopLease";
 import { viewPointToDisplayPoint, type ViewRect } from "../chat/macDesktopGeometry";
 import {
   useMacDesktopRealInput,
-  type MacDesktopInputCall,
   type MacDesktopPoint,
 } from "../chat/useMacDesktopRealInput";
 import { cn } from "../ui/cn";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
 import { createBackoffPoller } from "../../lib/backoffPoller";
 import {
-  createMacDesktopStreamSource,
+  createMacDesktopWebInputSender,
   macDesktopWebApi,
-  randomMacDesktopSubscriptionId,
 } from "../chat/macDesktopWebStream";
+import { useMacDesktopStreamSubscription } from "../chat/useMacDesktopStreamSubscription";
 
 export { createMacDesktopStreamSource } from "../chat/macDesktopWebStream";
 
@@ -392,10 +391,6 @@ function MacDesktopPanel({
     && api.input
     && api.supportsMacDesktopControl?.() === true,
   );
-  const [pageVisible, setPageVisible] = useState(
-    () => typeof document === "undefined" || document.visibilityState !== "hidden",
-  );
-  const [connected, setConnected] = useState(true);
   const [retryNonce, setRetryNonce] = useState(0);
   const [streamStatus, setStreamStatus] = useState<H264StreamStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -423,39 +418,23 @@ function MacDesktopPanel({
   /** Guards the lease reconciliation against a poll older than the takeover. */
   const holdingSinceRef = useRef(0);
 
-  useEffect(() => {
-    const onVisibilityChange = () => setPageVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
-
   // A tool switch or a lane change unmounts the panel; the parent's longer
   // poll and skipped still fetch must not outlive the live picture that
   // justified them.
   useEffect(() => () => onLivePlayingChange?.(false), [onLivePlayingChange]);
 
-  useEffect(() => {
-    if (!liveSupported || !api?.onConnectionChange) return undefined;
-    return api.onConnectionChange((next) => setConnected(next));
-  }, [liveSupported, api]);
-
-  const streamKey = `${pageVisible ? "shown" : "hidden"}:${connected ? "on" : "off"}:${retryNonce}`;
-  const subscriptionId = useMemo(
-    () => randomMacDesktopSubscriptionId(laneId),
-    // A reconnect or a manual retry is a new subscription; the old one was
-    // released by the server with the socket or by our own unsubscribe.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [laneId, streamKey],
-  );
-  const source = useMemo(() => {
-    if (!liveSupported || !api || !pageVisible || !connected) return null;
-    return createMacDesktopStreamSource({
-      api,
-      laneId,
-      subscriptionId,
-      viewerLabel: "ADE Web",
-    });
-  }, [liveSupported, api, laneId, subscriptionId, pageVisible, connected]);
+  // The stream plumbing is shared with the full pane; only the recovery
+  // policy differs. This pane re-dials when a person presses Retry or
+  // Reconnect, which is its whole budget, and the hook owns the rest: one
+  // subscription per visible tab and per live socket, on the tab's own
+  // machine here (the full pane passes the session's pin).
+  const { pageVisible, connected, subscriptionId, source } = useMacDesktopStreamSubscription({
+    api,
+    laneId,
+    runtimePin: null,
+    enabled: liveSupported,
+    nonce: retryNonce,
+  });
 
   const display = macDesktop?.display ?? null;
   const lease = macDesktop?.lease ?? null;
@@ -498,17 +477,13 @@ function MacDesktopPanel({
 
   /* ── Real input, only while this tab holds the lease ──────────────────── */
 
-  const sendInputCall = useCallback((call: MacDesktopInputCall) => {
-    if (!api?.input) {
-      return Promise.reject(new Error("The host does not accept input from this client."));
-    }
-    // A remote controller does not lock its pointer, so it never asks the
-    // driver to hold the lane's cursor and has nothing to put back. The call
-    // exists for the desktop takeover; here it is a no-op rather than a wire
-    // message the host would have to understand.
-    if (call.kind === "releaseCursor") return Promise.resolve(null);
-    return api.input({ laneId, call });
-  }, [api, laneId]);
+  // The one web input sender, shared with the full pane: one `macDesktop.input`
+  // call per event, `releaseCursor` answered here, and no wire message when the
+  // host does not accept input.
+  const sendInputCall = useMemo(
+    () => (controlSupported ? createMacDesktopWebInputSender({ laneId, runtimePin: null }) : null),
+    [controlSupported, laneId],
+  );
 
   const realInput = useMacDesktopRealInput({
     laneId,
@@ -517,7 +492,7 @@ function MacDesktopPanel({
     enabled: controlHolderId != null,
     toDisplayPoint,
     runtimePin: null,
-    sender: controlSupported ? sendInputCall : null,
+    sender: sendInputCall,
     // The desktop deliberately does not post hover moves (the warp floods
     // ScreenCaptureKit and its local glyph is the pointer instead); a remote
     // controller needs the lane's pointer to track, so the same pump is opted

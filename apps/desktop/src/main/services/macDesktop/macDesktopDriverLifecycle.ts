@@ -10,7 +10,7 @@ import {
   type MacDesktopRecheckPermissionsArgs,
   type LinuxDesktopHostFacts,
 } from "../../../shared/types/macDesktop";
-import { readLinuxHostFacts } from "../linuxDesktop/linuxDesktopSetup";
+import { readLinuxHostFacts } from "../linuxDesktop/linuxHostFacts";
 import { resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
   createMacDesktopDriverClient,

@@ -385,9 +385,16 @@ function mappedExpressions(plan: DemoPlan, camera: CameraExpressions, nx: string
   };
 }
 
-/** Quotes a filter option value: commas and colons inside expressions stay literal. */
+/**
+ * Quotes a filter option value: commas and colons inside expressions stay literal.
+ *
+ * ffmpeg's filter-option parser treats `\` as an escape even inside single
+ * quotes, so a Windows path (`C:\Users\…`) would lose every separator and name
+ * a file that does not exist. Escaping each backslash first leaves POSIX paths
+ * — which contain none — byte-identical.
+ */
 function q(value: string): string {
-  return `'${value.replace(/'/gu, "")}'`;
+  return `'${value.replace(/\\/gu, "\\\\").replace(/'/gu, "")}'`;
 }
 
 async function writeRenderGraph(plan: DemoPlan, scratch: string): Promise<{ scriptPath: string; inputArgs: string[] }> {
@@ -546,7 +553,24 @@ function wrapCaption(text: string, fontSize: number, maxWidth: number): string[]
 
 let cachedFonts: { regular: string | null; bold: string | null } | null = null;
 
-/** Font files via fontconfig; null leaves drawtext to its own fontconfig lookup. */
+/**
+ * A font file Windows ships, under `%WINDIR%\Fonts`.
+ *
+ * `fc-match` is a fontconfig tool and Windows has no fontconfig, so the
+ * fallback `font=Sans` needs the ffmpeg build to carry one. A real file from
+ * the system font directory always works.
+ */
+function windowsFontFile(names: readonly string[]): string | null {
+  const root = process.env.WINDIR?.trim() || process.env.SystemRoot?.trim();
+  if (!root) return null;
+  for (const name of names) {
+    const candidate = path.join(root, "Fonts", name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Font files via fontconfig (macOS and Linux) or the Windows system fonts. */
 function resolveFonts(): { regular: string | null; bold: string | null } {
   if (cachedFonts) return cachedFonts;
   const match = (pattern: string): string | null => {
@@ -558,7 +582,14 @@ function resolveFonts(): { regular: string | null; bold: string | null } {
       return null;
     }
   };
-  cachedFonts = { regular: match("sans"), bold: match("sans:bold") };
+  const onWindows = process.platform === "win32";
+  const regular = onWindows
+    ? windowsFontFile(["segoeui.ttf", "arial.ttf"]) ?? match("sans")
+    : match("sans");
+  const bold = onWindows
+    ? windowsFontFile(["segoeuib.ttf", "arialbd.ttf"]) ?? match("sans:bold")
+    : match("sans:bold");
+  cachedFonts = { regular, bold };
   return cachedFonts;
 }
 

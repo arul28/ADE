@@ -93,17 +93,89 @@ fn role_name(role: u32) -> &'static str {
     NAMES.get(role as usize).copied().unwrap_or("unknown")
 }
 
+// The AT-SPI role numbers this driver's policy names. `role_name` above holds
+// the full table; a number here must keep matching its row there.
+const ROLE_ALERT: u32 = 2;
+const ROLE_CHECK_BOX: u32 = 7;
+const ROLE_CHECK_MENU_ITEM: u32 = 8;
+const ROLE_COMBO_BOX: u32 = 11;
+const ROLE_DIALOG: u32 = 16;
+const ROLE_FRAME: u32 = 23;
+const ROLE_IMAGE: u32 = 27;
+const ROLE_LABEL: u32 = 29;
+const ROLE_LIST_ITEM: u32 = 32;
+const ROLE_MENU_ITEM: u32 = 35;
+const ROLE_PAGE_TAB: u32 = 37;
+const ROLE_PASSWORD_TEXT: u32 = 40;
+const ROLE_PUSH_BUTTON: u32 = 43;
+const ROLE_RADIO_BUTTON: u32 = 44;
+const ROLE_RADIO_MENU_ITEM: u32 = 45;
+const ROLE_SLIDER: u32 = 51;
+const ROLE_SPIN_BUTTON: u32 = 52;
+const ROLE_TERMINAL: u32 = 60;
+const ROLE_TEXT: u32 = 61;
+const ROLE_TOGGLE_BUTTON: u32 = 62;
+const ROLE_TOOL_TIP: u32 = 64;
+const ROLE_UNKNOWN: u32 = 67;
+const ROLE_WINDOW: u32 = 69;
+const ROLE_APPLICATION: u32 = 75;
+const ROLE_AUTOCOMPLETE: u32 = 76;
+const ROLE_ENTRY: u32 = 79;
+const ROLE_CAPTION: u32 = 81;
+const ROLE_HEADING: u32 = 83;
+const ROLE_LINK: u32 = 88;
+const ROLE_TREE_ITEM: u32 = 91;
+const ROLE_LIST_BOX: u32 = 98;
+const ROLE_NOTIFICATION: u32 = 101;
+const ROLE_TITLE_BAR: u32 = 104;
+const ROLE_STATIC: u32 = 116;
+const ROLE_PUSH_BUTTON_MENU: u32 = 129;
+
 /// Roles an agent acts on.
 fn is_interactive_role(role: u32) -> bool {
     matches!(
         role,
-        7 | 8 | 11 | 32 | 35 | 37 | 40 | 43 | 44 | 45 | 51 | 52 | 60 | 61 | 62 | 79 | 88 | 91 | 129 | 98 | 76
+        ROLE_CHECK_BOX
+            | ROLE_CHECK_MENU_ITEM
+            | ROLE_COMBO_BOX
+            | ROLE_LIST_ITEM
+            | ROLE_MENU_ITEM
+            | ROLE_PAGE_TAB
+            | ROLE_PASSWORD_TEXT
+            | ROLE_PUSH_BUTTON
+            | ROLE_RADIO_BUTTON
+            | ROLE_RADIO_MENU_ITEM
+            | ROLE_SLIDER
+            | ROLE_SPIN_BUTTON
+            | ROLE_TERMINAL
+            | ROLE_TEXT
+            | ROLE_TOGGLE_BUTTON
+            | ROLE_ENTRY
+            | ROLE_LINK
+            | ROLE_TREE_ITEM
+            | ROLE_PUSH_BUTTON_MENU
+            | ROLE_LIST_BOX
+            | ROLE_AUTOCOMPLETE
     )
 }
 
 /// Roles worth listing when they carry text: what an agent reads to orient.
 fn is_text_role(role: u32) -> bool {
-    matches!(role, 29 | 83 | 116 | 27 | 2 | 16 | 101 | 64 | 81 | 104 | 23 | 69)
+    matches!(
+        role,
+        ROLE_LABEL
+            | ROLE_HEADING
+            | ROLE_STATIC
+            | ROLE_IMAGE
+            | ROLE_ALERT
+            | ROLE_DIALOG
+            | ROLE_NOTIFICATION
+            | ROLE_TOOL_TIP
+            | ROLE_CAPTION
+            | ROLE_TITLE_BAR
+            | ROLE_FRAME
+            | ROLE_WINDOW
+    )
 }
 
 fn default_actions(role: u32, editable: bool) -> Vec<String> {
@@ -111,7 +183,7 @@ fn default_actions(role: u32, editable: bool) -> Vec<String> {
     if is_interactive_role(role) {
         actions.push("press".to_string());
     }
-    if editable || matches!(role, 79 | 40 | 61 | 52 | 51) {
+    if editable || matches!(role, ROLE_ENTRY | ROLE_PASSWORD_TEXT | ROLE_TEXT | ROLE_SPIN_BUTTON | ROLE_SLIDER) {
         actions.push("setValue".to_string());
     }
     actions
@@ -325,14 +397,11 @@ async fn walk_async(
 ) -> DResult<Walk> {
     let root = NodeRef { bus: "org.a11y.atspi.Registry".into(), path: "/org/a11y/atspi/accessible/root".into() };
     let apps = children(&conn, &root).await;
-    let mut app_names: Vec<String> = Vec::new();
     let mut app_pids: Vec<i32> = Vec::new();
     let mut frontier: Vec<Pending> = Vec::new();
     for app in apps {
-        let name = prop_string(&conn, &app, IFACE_ACCESSIBLE, "Name").await.unwrap_or_default();
         let pid = pid_of(&conn, &app.bus).await;
-        frontier.push(Pending { node: app, parent: None, depth: 0, app: app_names.len() });
-        app_names.push(name);
+        frontier.push(Pending { node: app, parent: None, depth: 0, app: app_pids.len() });
         app_pids.push(pid);
     }
     let mut candidates: Vec<Candidate> = Vec::new();
@@ -357,9 +426,9 @@ async fn walk_async(
             let conn = &conn;
             async move {
                 if p.depth == 0 {
-                    return (75u32, Vec::new(), children(conn, &p.node).await);
+                    return (ROLE_APPLICATION, Vec::new(), children(conn, &p.node).await);
                 }
-                let role = role_of(conn, &p.node).await.unwrap_or(67);
+                let role = role_of(conn, &p.node).await.unwrap_or(ROLE_UNKNOWN);
                 let states = states_of(conn, &p.node).await;
                 let showing = states.is_empty() || has_state(&states, STATE_SHOWING);
                 let kids = if showing { children(conn, &p.node).await } else { Vec::new() };
@@ -382,13 +451,13 @@ async fn walk_async(
         // what is finished so far for a walk that runs out of time.
         fetch_details(&conn, &candidates[fetched..], &mut details).await;
         fetched = candidates.len();
-        *progress.lock().unwrap() = Some(build(&candidates, &details, &HashMap::new(), &app_names, &app_pids, node_count, Some("timeout")));
+        *progress.lock().unwrap() = Some(build(&candidates, &details, &HashMap::new(), &app_pids, Some("timeout")));
     }
     if truncated.is_none() && !frontier.is_empty() && cancel.load(Ordering::SeqCst) {
         truncated = Some("timeout");
     }
     let values = fetch_values(&conn, &candidates, &details).await;
-    Ok(build(&candidates, &details, &values, &app_names, &app_pids, node_count, truncated))
+    Ok(build(&candidates, &details, &values, &app_pids, truncated))
 }
 type Frame = Option<(i32, i32, i32, i32)>;
 
@@ -410,7 +479,7 @@ async fn fetch_details(conn: &Conn, fresh: &[Candidate], details: &mut HashMap<N
 async fn fetch_values(conn: &Conn, candidates: &[Candidate], details: &HashMap<NodeRef, (String, Frame)>) -> HashMap<NodeRef, String> {
     let wanted: Vec<&Candidate> = candidates
         .iter()
-        .filter(|c| has_state(&c.states, STATE_EDITABLE) || matches!(c.role, 79 | 40 | 11 | 52))
+        .filter(|c| has_state(&c.states, STATE_EDITABLE) || matches!(c.role, ROLE_ENTRY | ROLE_PASSWORD_TEXT | ROLE_COMBO_BOX | ROLE_SPIN_BUTTON))
         .filter(|c| matches!(details.get(&c.node), Some((_, Some((_, _, w, h))))if *w > 0 && *h > 0))
         .collect();
     let mut out = HashMap::new();
@@ -431,9 +500,7 @@ fn build(
     candidates: &[Candidate],
     details: &HashMap<NodeRef, (String, Frame)>,
     values: &HashMap<NodeRef, String>,
-    app_names: &[String],
     app_pids: &[i32],
-    node_count: usize,
     truncated: Option<&'static str>,
 ) -> Walk {
     let mut remap: Vec<Option<usize>> = vec![None; candidates.len()];
@@ -458,7 +525,7 @@ fn build(
             enabled: has_state(&c.states, STATE_ENABLED) || has_state(&c.states, STATE_SENSITIVE),
             focused: has_state(&c.states, STATE_FOCUSED),
             editable,
-            actions: default_actions(c.role, editable || (has_state(&c.states, STATE_FOCUSABLE) && c.role == 61)),
+            actions: default_actions(c.role, editable || (has_state(&c.states, STATE_FOCUSABLE) && c.role == ROLE_TEXT)),
             x,
             y,
             width: w,
@@ -468,6 +535,5 @@ fn build(
             interactive,
         });
     }
-    let _ = (app_names, node_count);
     Walk { elements, truncated_reason: truncated, stalled_apps: Vec::new() }
 }

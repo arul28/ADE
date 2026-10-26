@@ -17,8 +17,8 @@ describe("Apple work tool labels", () => {
     expect(ios?.tabLabel).toBeUndefined();
     expect(ios?.tabTooltip).toBe("Apple simulators and previews");
     expect(ios?.hint).toBe("Open an Apple device");
-    expect(workToolLabel("ios")).toBe("Apple Development");
-    expect(workToolCardLabel("ios")).toBe("Apple Development");
+    expect(workToolLabel("ios", null)).toBe("Apple Development");
+    expect(workToolCardLabel("ios", null)).toBe("Apple Development");
   });
 
   it("wears the Apple mark rather than a generic phone", () => {

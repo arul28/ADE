@@ -217,7 +217,7 @@ export function workToolSummary(
       ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}`
       : definition.hint ?? null)
     : availability.reason;
-  const label = hostPlatform === undefined ? definition.label : workToolCardLabel(definition.id, hostPlatform);
+  const label = workToolCardLabel(definition.id, hostPlatform ?? null);
   return { line, tooltipLabel: line ? `${label} — ${line}` : label };
 }
 

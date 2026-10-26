@@ -23,6 +23,7 @@ import {
 import {
   WORK_TOOL_DEFINITIONS,
   workToolAvailability,
+  workToolCardLabel,
   workToolLabel,
   type WorkToolContext,
 } from "../terminals/workTools";
@@ -512,30 +513,37 @@ export function buildWorkToolCommands({
    */
   context: WorkToolContext;
 }): WorkToolPaletteCommand[] {
+  const hostPlatform = context.hostPlatform ?? null;
   return [
     ...WORK_TOOL_DEFINITIONS.filter(
       (definition) => workToolAvailability(definition.id, context).available,
-    ).map((definition) => ({
-      id: `work-tools-${definition.id}`,
-      title: `Tools: ${workToolLabel(definition.id)}`,
-      hint:
-        definition.hint ??
-        (definition.id === "files" ? "Browse lane files" : "Open this tool"),
-      keywords: [
-        "tools",
-        "pane",
-        "sidebar",
-        definition.id,
-        definition.label,
-        ...(definition.tabLabel ? [definition.tabLabel] : []),
-        ...(definition.tabTooltip ? [definition.tabTooltip] : []),
-      ],
-      group: "Work tools",
-      run: () => {
-        navigate("/work");
-        openTool(definition.id);
-      },
-    })),
+    ).map((definition) => {
+      // The palette is a surface that names the tool, so it reads the same
+      // host-aware name the strip and the card do: on Linux the tool is
+      // "Linux Desktop", and searching for that has to find it here.
+      const cardLabel = workToolCardLabel(definition.id, hostPlatform);
+      return {
+        id: `work-tools-${definition.id}`,
+        title: `Tools: ${workToolLabel(definition.id, hostPlatform)}`,
+        hint:
+          definition.hint ??
+          (definition.id === "files" ? "Browse lane files" : "Open this tool"),
+        keywords: [
+          "tools",
+          "pane",
+          "sidebar",
+          definition.id,
+          cardLabel,
+          ...(definition.tabLabel ? [definition.tabLabel] : []),
+          ...(definition.tabTooltip ? [definition.tabTooltip] : []),
+        ],
+        group: "Work tools",
+        run: () => {
+          navigate("/work");
+          openTool(definition.id);
+        },
+      };
+    }),
     {
       id: "work-tools-picker",
       title: "Tools: Show picker",

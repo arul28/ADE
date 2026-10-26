@@ -1427,7 +1427,12 @@ export type DesktopSeatProviderId =
  * them. Null on every other host and from a helper that predates it.
  */
 export type LinuxDesktopHostFacts = {
-  /** The helper's names: `xvfb`, `openbox`, `dbus`, `at-spi2-core`, `ffmpeg`. */
+  /**
+   * The helper's names: `xvfb`, `openbox`, `dbus`, `at-spi2-core`, `ffmpeg`,
+   * and `ffmpeg-encoder` when ffmpeg itself is installed but its build has no
+   * H.264 encoder. The last one is not installable by re-running the package
+   * install, so `installCommand` is null when it is the only name present.
+   */
   missing: string[];
   /** `x264` or `openh264`: the H.264 encoder the system ffmpeg offers. */
   encoder: string | null;
@@ -1565,6 +1570,17 @@ export type WindowsDesktopSetupArgs = {
   /** Removes only ADE's saved Windows Desktop credential. */
   forgetPassword?: boolean;
 };
+
+/**
+ * `ade screen setup`: one verb on every seat host.
+ *
+ * The Windows fields are the wizard's; a Linux host reads `allowPrompt` and
+ * ignores the password fields.
+ */
+export type DesktopSetupArgs = WindowsDesktopSetupArgs;
+
+/** What `ade screen setup` answers, whichever seat the host runs. */
+export type DesktopSetupResult = WindowsDesktopSetupResult | LinuxDesktopSetupResult;
 
 export type WindowsDesktopSetupResult = {
   /** Setup needs an interactive admin prompt the helper has not raised yet. */
@@ -1726,8 +1742,9 @@ export type DesktopSeatProvider = {
   /** Windows only: the wizard's one admin step, prompt honored only on approval. */
   setupWindows?(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
   /**
-   * Windows only: `window.focus` / `window.minimize` / `window.close` on one of
-   * the lane's windows. Absent on the Mac backend, whose helper has no such op.
+   * Windows and Linux: `window.focus` / `window.minimize` / `window.close` on
+   * one of the lane's windows. Absent on the Mac backend, whose helper has no
+   * such op.
    */
   windowAction?(args: { laneId: string; windowId: number; action: MacDesktopWindowAction }): Promise<DesktopSeatReply>;
 };
@@ -1898,6 +1915,13 @@ export type MacDesktopServiceApi = {
    */
   setupLinuxDesktop(args: { allowPrompt: boolean }): Promise<LinuxDesktopSetupResult>;
   /**
+   * `ade screen setup`: one verb on every seat host. Windows runs the wizard's
+   * admin step; Linux installs the lane screen's system packages. Dispatches on
+   * the seat the host serves, without a status read. A Mac host refuses with
+   * `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+   */
+  setupDesktop(args: DesktopSetupArgs): Promise<DesktopSetupResult>;
+  /**
    * Windows only: the user approved taking the private screen from whichever
    * lane holds it. Signs the old holder out (a clean slate) and starts a fresh
    * private seat for this lane. Never called by an agent's own action.
@@ -1914,8 +1938,8 @@ export type MacDesktopServiceApi = {
   /** Quits apps the lane opened, released ones included. Only on the user's request. */
   quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult>;
   /**
-   * Windows only: raise, minimize or close one of this lane's own windows.
-   * A Mac host refuses with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+   * Windows and Linux: raise, minimize or close one of this lane's own
+   * windows. A Mac host refuses with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
    */
   focusWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;
   minimizeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;

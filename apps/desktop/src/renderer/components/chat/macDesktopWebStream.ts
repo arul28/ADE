@@ -145,6 +145,8 @@ export function createMacDesktopWebInputSender(args: {
       return Promise.reject(new Error("The host does not accept input from this client."));
     }
     if (call.kind === "releaseCursor") return Promise.resolve(null);
-    return api.input({ laneId, call }, pin);
+    // Carry the pin only when there is one: an unpinned call follows the tab's
+    // own machine, and the wire shape stays the one both panes already used.
+    return pin ? api.input({ laneId, call }, pin) : api.input({ laneId, call });
   };
 }

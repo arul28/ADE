@@ -117,11 +117,15 @@ fn parse_desktop(path: &Path) -> Option<DesktopEntry> {
             hidden = true;
         }
     }
+    // A NoDisplay or Hidden entry is a shim or a menu entry the desktop does
+    // not show; launching it is not what a person means by its name.
+    if hidden {
+        return None;
+    }
     let exec = split_exec(&exec?);
     if exec.is_empty() {
         return None;
     }
-    let _ = hidden;
     Some(DesktopEntry {
         name: name.unwrap_or_default(),
         exec,

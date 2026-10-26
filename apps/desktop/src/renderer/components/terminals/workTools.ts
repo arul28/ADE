@@ -191,17 +191,22 @@ export function workToolContextLabel(id: WorkSidebarTab, context: WorkToolHeader
  * On a Linux host the lane-screen tool is the same pane as Mac Desktop (the
  * service, stream and takeover are shared), named for the host it runs on.
  */
-function hostLaneScreenLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null | undefined): string | null {
+function hostLaneScreenLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null): string | null {
   return id === "mac-desktop" && hostPlatform === "linux" ? desktopProductName("linux") : null;
 }
 
-export function workToolLabel(id: WorkSidebarTab, hostPlatform?: NodeJS.Platform | null): string {
+/**
+ * The platform is required, not defaulted: a caller that has the host in hand
+ * and forgets to pass it names the tool for the wrong product on Linux with
+ * no error, and the compiler cannot help if the argument is optional.
+ */
+export function workToolLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null): string {
   const definition = WORK_TOOL_DEFINITIONS_BY_ID.get(id);
   return hostLaneScreenLabel(id, hostPlatform) ?? definition?.tabLabel ?? definition?.label ?? id;
 }
 
 /** Card / picker name. Identical to `workToolLabel` for every tool today. */
-export function workToolCardLabel(id: WorkSidebarTab, hostPlatform?: NodeJS.Platform | null): string {
+export function workToolCardLabel(id: WorkSidebarTab, hostPlatform: NodeJS.Platform | null): string {
   return hostLaneScreenLabel(id, hostPlatform) ?? WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.label ?? id;
 }
 
@@ -396,7 +401,7 @@ export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WOR
   return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context)
     && (definition.id !== "side-chat" || context.hasSideChat === true))
     .map((definition) => {
-      const label = hostLaneScreenLabel(definition.id, context.hostPlatform);
+      const label = hostLaneScreenLabel(definition.id, context.hostPlatform ?? null);
       return label ? { ...definition, label, hint: `${label} is off` } : definition;
     });
 }

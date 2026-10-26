@@ -269,24 +269,16 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       ...chatSessionId(args),
     })),
     /**
-     * Windows only: the wizard's one admin step. CTO-only: it raises a Windows
-     * admin/Remote Desktop prompt at whoever is at the PC, which a session-bound
-     * agent cannot see. A trusted CTO client on any device can approve;
-     * UAC and password entry remain native dialogs on the Windows host.
+     * `ade screen setup`: the one setup verb on every host, CTO-only because it
+     * changes the machine. Windows runs the wizard's admin step; Linux installs
+     * the lane screen's system packages. Which one is the service's decision
+     * from the seat it serves — this table only reads arguments.
      */
-    setupWindows: (args?: unknown) => gated(async () => {
-      // `ade screen setup` is one verb on every host. On Linux it installs
-      // the lane screen's system packages; it is CTO-only for the same
-      // reason (it changes the machine).
-      if ((await service.getStatus()).platform === "linux") {
-        return await service.setupLinuxDesktop({ allowPrompt: optionalBoolean(args, "allowPrompt") ?? false });
-      }
-      return await service.setupWindowsDesktop({
-        allowPrompt: optionalBoolean(args, "allowPrompt") ?? false,
-        savePassword: optionalBoolean(args, "savePassword") ?? false,
-        forgetPassword: optionalBoolean(args, "forgetPassword") ?? false,
-      });
-    }),
+    setupWindows: (args?: unknown) => gated(() => service.setupDesktop({
+      allowPrompt: optionalBoolean(args, "allowPrompt") ?? false,
+      savePassword: optionalBoolean(args, "savePassword") ?? false,
+      forgetPassword: optionalBoolean(args, "forgetPassword") ?? false,
+    })),
     /**
      * Windows only: the user approved taking the private screen from its holder.
      * CTO-only: it signs the old holder out. The pane's Take over button and the
@@ -331,8 +323,9 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       app: optionalString(args, "app"),
     })),
     /**
-     * Windows only: raise, minimize or close one of the lane's own windows.
-     * The service refuses another lane's window and the user's.
+     * Windows and Linux: raise, minimize or close one of the lane's own
+     * windows. The service refuses another lane's window and the user's; a Mac
+     * host refuses the verb.
      */
     focusWindow: (args?: unknown) => gated(() => service.focusWindow(windowActionArgs(args, "focusWindow"))),
     minimizeWindow: (args?: unknown) => gated(() => service.minimizeWindow(windowActionArgs(args, "minimizeWindow"))),

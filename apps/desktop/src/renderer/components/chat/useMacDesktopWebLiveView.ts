@@ -1,11 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { isWebCodecsAvailable, type H264StreamSource, type H264StreamStatus } from "./h264StreamPlayer";
-import {
-  createMacDesktopStreamSource,
-  macDesktopWebApi,
-  randomMacDesktopSubscriptionId,
-} from "./macDesktopWebStream";
+import { isWebCodecsAvailable, type H264StreamStatus } from "./h264StreamPlayer";
+import { macDesktopWebApi } from "./macDesktopWebStream";
+import { useMacDesktopStreamSubscription } from "./useMacDesktopStreamSubscription";
 import {
   RECOVER_DELAY_MS,
   RECOVER_MAX_TRIES,
@@ -47,7 +44,6 @@ export function useMacDesktopWebLiveView(args: {
   const { laneId, runtimePin } = args;
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
-  const pinKey = runtimePin?.key ?? null;
   const api = macDesktopWebApi();
   // The host half and the browser half, both: without WebCodecs there is
   // nothing to decode with, and the full pane is not offered (workToolPanels).
@@ -58,29 +54,19 @@ export function useMacDesktopWebLiveView(args: {
   ) && isWebCodecsAvailable();
   const enabled = args.enabled && supported && Boolean(laneId);
 
-  const [pageVisible, setPageVisible] = useState(
-    () => typeof document === "undefined" || document.visibilityState !== "hidden",
-  );
-  const [connected, setConnected] = useState(true);
   const [nonce, setNonce] = useState(0);
+  const { pageVisible, connected, source } = useMacDesktopStreamSubscription({
+    api,
+    laneId,
+    runtimePin,
+    enabled,
+    nonce,
+  });
   const [status, setStatus] = useState<MacDesktopLiveView["status"]>("idle");
   const [error, setError] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return undefined;
-    const onVisibilityChange = () => setPageVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
-
-  useEffect(() => {
-    const current = macDesktopWebApi();
-    if (!enabled || !current?.onConnectionChange) return undefined;
-    return current.onConnectionChange((next) => setConnected(next), pinRef.current ?? undefined);
-  }, [enabled, pinKey]);
 
   const wanted = enabled && pageVisible && connected;
   const wantedRef = useRef(wanted);
@@ -126,25 +112,6 @@ export function useMacDesktopWebLiveView(args: {
   }, [gaveUp, wanted]);
 
   /* ── The subscription ─────────────────────────────────────────────────── */
-
-  const subscriptionId = useMemo(
-    () => (laneId ? randomMacDesktopSubscriptionId(laneId) : null),
-    // Every re-dial, reconnect and visible-again is a new subscription; the old
-    // one was released by our own unsubscribe or by the host with the socket.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [laneId, nonce, pageVisible, connected],
-  );
-  const source = useMemo<H264StreamSource | null>(() => {
-    const current = macDesktopWebApi();
-    if (!wanted || !laneId || !subscriptionId || !current) return null;
-    return createMacDesktopStreamSource({
-      api: current,
-      laneId,
-      subscriptionId,
-      viewerLabel: "ADE Web",
-      runtimePin: pinRef.current,
-    });
-  }, [laneId, pinKey, subscriptionId, wanted]);
 
   useEffect(() => {
     if (!source) {

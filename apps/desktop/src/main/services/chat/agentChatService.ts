@@ -5154,7 +5154,7 @@ type EpochDirective =
   | "computerUse"
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
   | "appleDevice"
-  /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
+  /** The lane-screen line (Mac, Windows or Linux Desktop), keyed by lane and text. */
   | "laneScreen"
   /**
    * ADE's lane guidance for a provider with no instruction channel, keyed by

@@ -454,6 +454,9 @@ pub struct Recorder {
     pub crop: Option<(i32, i32, u32, u32)>,
     pub last_change_ms: u64,
     pub error: Option<String>,
+    /// Whether `media_loop` has already sent this error as
+    /// `recording-interrupted`.
+    reported: bool,
 }
 
 impl Recorder {
@@ -491,6 +494,7 @@ impl Recorder {
             crop,
             last_change_ms: now_ms(),
             error: None,
+            reported: false,
         })
     }
 
@@ -637,7 +641,7 @@ fn media_loop(state: &Arc<Mutex<MediaState>>, ctx: &MediaCtx) -> DResult<()> {
         if dirty {
             let _ = conn.damage_subtract(damage_id, x11rb::NONE, x11rb::NONE);
         }
-        let (server, fps, cursor_visible, recording, keep_cursor) = {
+        let (server, fps, cursor_visible, recording) = {
             let mut s = state.lock().unwrap();
             if s.server.is_none() && s.recorder.is_none() {
                 // Decided under the lock, so a start that lands right now
@@ -646,10 +650,10 @@ fn media_loop(state: &Arc<Mutex<MediaState>>, ctx: &MediaCtx) -> DResult<()> {
                 break;
             }
             let fps = s.stream_fps.max(s.recorder.as_ref().map(|r| r.fps).unwrap_or(0)).clamp(1, max_fps());
-            (s.server.clone(), fps, s.cursor_visible, s.recorder.is_some(), s.cursor_visible)
+            (s.server.clone(), fps, s.cursor_visible, s.recorder.is_some())
         };
         // The cursor is not in Xvfb's framebuffer: a moved pointer is a change.
-        if keep_cursor {
+        if cursor_visible {
             if let Ok(Ok(p)) = conn.query_pointer(root).map(|c| c.reply()) {
                 if (p.root_x, p.root_y) != last_pointer {
                     last_pointer = (p.root_x, p.root_y);
@@ -701,27 +705,34 @@ fn media_loop(state: &Arc<Mutex<MediaState>>, ctx: &MediaCtx) -> DResult<()> {
         }
         t_encode += t_enc_start.elapsed().as_micros();
         let t_rec_start = Instant::now();
+        let mut interrupted = None;
         if recording {
             let mut s = state.lock().unwrap();
             if let Some(rec) = s.recorder.as_mut() {
-                if changed {
-                    rec.last_change_ms = now;
+                // A recorder whose ffmpeg is gone is not fed again: its error
+                // stays for `record.stop`, and the event goes out once.
+                if rec.error.is_none() {
+                    if changed {
+                        rec.last_change_ms = now;
+                    }
+                    let idle = !rec.keep_idle && now - rec.last_change_ms > IDLE_CUT_AFTER_MS;
+                    if idle {
+                        rec.idle_cut_ms += 1000 / fps as u64;
+                    } else {
+                        rec.write(&frame, w);
+                    }
                 }
-                let idle = !rec.keep_idle && now - rec.last_change_ms > IDLE_CUT_AFTER_MS;
-                if idle {
-                    rec.idle_cut_ms += 1000 / fps as u64;
-                } else {
-                    rec.write(&frame, w);
-                }
-                if rec.error.is_some() {
-                    let message = rec.error.clone().unwrap_or_default();
-                    drop(s);
-                    let mut m = Map::new();
-                    m.insert("laneId".into(), json!(ctx.lane_id));
-                    m.insert("error".into(), json!(message));
-                    ctx.out.event("recording-interrupted", m);
+                if rec.error.is_some() && !rec.reported {
+                    rec.reported = true;
+                    interrupted = rec.error.clone();
                 }
             }
+        }
+        if let Some(message) = interrupted {
+            let mut m = Map::new();
+            m.insert("laneId".into(), json!(ctx.lane_id));
+            m.insert("error".into(), json!(message));
+            ctx.out.event("recording-interrupted", m);
         }
         t_record += t_rec_start.elapsed().as_micros();
         if debug && now - stats_since >= 5_000 {

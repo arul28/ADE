@@ -290,8 +290,8 @@ export function WorkToolHeader({
   /** A tab's tooltip: its status summary, plus the active tool's own one fact. */
   const tabTooltip = (tool: WorkSidebarTab): string => {
     const definition = workToolDefinition(tool);
-    if (!definition) return workToolLabel(tool, context.hostPlatform);
-    if (tool === activeTool && contextLabel) return `${workToolLabel(tool, context.hostPlatform)} · ${contextLabel}`;
+    if (!definition) return workToolLabel(tool, context.hostPlatform ?? null);
+    if (tool === activeTool && contextLabel) return `${workToolLabel(tool, context.hostPlatform ?? null)} · ${contextLabel}`;
     const status = statuses[tool];
     if (definition.tabTooltip && !status?.line) return definition.tabTooltip;
     const { tooltipLabel } = workToolSummary(
@@ -393,7 +393,7 @@ export function WorkToolHeader({
                         onSelect={() => onPick(tool)}
                       >
                         {Glyph ? <Glyph size={12} className="shrink-0 opacity-70" /> : null}
-                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool, context.hostPlatform)}</span>
+                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool, context.hostPlatform ?? null)}</span>
                       </DropdownMenu.Item>
                     );
                   })}

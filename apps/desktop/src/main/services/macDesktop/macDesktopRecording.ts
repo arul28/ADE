@@ -474,6 +474,24 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   return {
     recordings,
 
+    /**
+     * The helper's encoder died mid-recording (ffmpeg exited: disk full, an
+     * OOM kill, a codec error). Run the ordinary stop so the helper drops its
+     * dead recorder (the next start would otherwise be refused as "already
+     * recording") and the failure lands in the status through the stop's own
+     * error path, instead of a running recording whose frames are dropped.
+     */
+    interruptRecording(laneId: string, message: string): void {
+      if (!recordings.get(laneId)?.running) return;
+      deps.logger.warn("mac_desktop.recording.interrupted", { laneId, message });
+      void stopUserRecording(laneId, null, "requested").catch((error: unknown) => {
+        deps.logger.warn("mac_desktop.recording.interrupted_stop_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
+
     async startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus> {
       const laneId = args.laneId.trim();
       deps.requireDisplay(laneId);

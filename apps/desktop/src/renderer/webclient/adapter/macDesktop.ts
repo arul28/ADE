@@ -191,7 +191,7 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
   const chat = (chatSessionId: string | null | undefined) => (chatSessionId ? { chatSessionId } : {});
   // Every window and capture command is a mutation or a controller read whose
   // empty answer would be a lie, so none of them resolves a fallback.
-  const mutation = { fallback: null as never, idempotent: false } as const;
+  const mutation = { idempotent: false } as const;
   return {
     // The literal action strings are scanned by
     // `adapter/__tests__/hostCommandContract.test.ts` against the host's

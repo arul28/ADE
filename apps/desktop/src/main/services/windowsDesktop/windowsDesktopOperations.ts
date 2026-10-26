@@ -1,10 +1,12 @@
 /**
- * The Windows-only parts of the lane-screen service: the interactive operation
+ * The Windows-first parts of the lane-screen service: the interactive operation
  * record every pane reads (setup, saving the password, starting the private
  * screen), the shared seat's per-host lease, and the window-verb gate.
  *
- * Built by `createMacDesktopService` the way the lease flow is: the registries
- * and the gates are passed in, and the service keeps the API surface.
+ * The window verbs answer on Windows and Linux; everything else here is
+ * Windows-only. Built by `createMacDesktopService` the way the lease flow is:
+ * the registries and the gates are passed in, and the service keeps the API
+ * surface.
  */
 
 import {
@@ -22,7 +24,7 @@ import { MAC_DESKTOP_ANONYMOUS_HOLDER_ID } from "../macDesktop/macDesktopLeaseFl
 import type { MacDesktopOwnershipRegistry } from "../macDesktop/macDesktopOwnership";
 
 export type WindowsDesktopOperationsDeps = {
-  /** The seat host. The window verbs and the shared lease are Windows-only. */
+  /** The seat host. The shared lease is Windows-only; the window verbs answer on Windows and Linux. */
   platform: NodeJS.Platform;
   assertSupported: () => void;
   serviceError: (code: string, message: string) => Error;
@@ -132,7 +134,7 @@ export function createWindowsDesktopOperations(deps: WindowsDesktopOperationsDep
       if (deps.platform !== "win32" && deps.platform !== "linux") {
         throw deps.serviceError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
-          `\`ade screen ${verb}\` is Windows-only; this Mac's screen driver has no window ${verb}. Use \`ade screen release\` or \`ade screen quit\` for a lane app instead.`,
+          `\`ade screen ${verb}\` needs Windows or Linux; this Mac's screen driver has no window ${verb}. Use \`ade screen release\` or \`ade screen quit\` for a lane app instead.`,
         );
       }
     },

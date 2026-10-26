@@ -13,11 +13,26 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { LinuxDesktopHostFacts, LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
+import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
 
 /** The helper's names for what it needs, in the order they are installed. */
 export const LINUX_DESKTOP_REQUIREMENTS = ["xvfb", "openbox", "dbus", "at-spi2-core", "ffmpeg"] as const;
 export type LinuxDesktopRequirement = (typeof LINUX_DESKTOP_REQUIREMENTS)[number];
+
+/**
+ * What the helper reports for an ffmpeg that is installed but has no H.264
+ * encoder.
+ *
+ * It is deliberately not in {@link LINUX_DESKTOP_REQUIREMENTS}: it is not a
+ * package, and reinstalling ffmpeg cannot add an encoder the distribution's
+ * build leaves out. `ade screen setup` explains it instead of running the
+ * install again, so the user is not sent round a loop that cannot succeed.
+ */
+export const LINUX_DESKTOP_ENCODER_REQUIREMENT = "ffmpeg-encoder";
+
+/** The installer's message for that state; status names the encoder and why. */
+export const LINUX_DESKTOP_ENCODER_MESSAGE =
+  "The installed ffmpeg has no H.264 encoder, so lane recordings cannot be encoded. Install a full ffmpeg build, or one with libopenh264; reinstalling the same package will not add it.";
 
 type PackageManager = {
   id: "apt" | "dnf" | "pacman" | "zypper" | "apk";
@@ -80,28 +95,52 @@ function packageManager(): PackageManager | null {
 
 const isRoot = (): boolean => typeof process.getuid === "function" && process.getuid() === 0;
 
-/** The helper's `ping.linux` reply, read loosely: an older helper sends none. */
-export function readLinuxHostFacts(value: unknown): LinuxDesktopHostFacts | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const missing = Array.isArray(record.missing)
-    ? record.missing.filter((entry): entry is string => typeof entry === "string")
-    : [];
-  return {
-    missing,
-    encoder: typeof record.encoder === "string" ? record.encoder : null,
-    installCommand: linuxDesktopInstallCommand(missing),
-  };
+/**
+ * The one description of an install: the argv, whether this process may run
+ * it, and the sentence that names it.
+ *
+ * Built once so the command shown for the user to copy is exactly what ADE
+ * runs — `sudo -n` included — and so no `sudo` is printed on a machine that
+ * has none.
+ */
+type LinuxDesktopInstallPlan = {
+  /** The missing requirements a package manager can install. */
+  wanted: LinuxDesktopRequirement[];
+  /** The exact command ADE runs, or the one the user must run as root. */
+  argv: [string, ...string[]] | null;
+  /** The manager that would run the install, or null when none was found. */
+  manager: PackageManager | null;
+  /** True when only the user can run it (no package manager, or no sudo). */
+  needsUser: boolean;
+  /** What to show for `argv`, or the instruction when no manager exists. */
+  command: string | null;
+};
+
+function linuxDesktopInstallPlan(missing: readonly string[]): LinuxDesktopInstallPlan {
+  const wanted = LINUX_DESKTOP_REQUIREMENTS.filter((req) => missing.includes(req));
+  if (!wanted.length) {
+    return { wanted, argv: null, manager: null, needsUser: false, command: null };
+  }
+  const manager = packageManager();
+  if (!manager) {
+    return {
+      wanted,
+      argv: null,
+      manager: null,
+      needsUser: true,
+      command: `Install these packages with your distribution's package manager: ${wanted.join(", ")}`,
+    };
+  }
+  const install: [string, ...string[]] = [manager.binary, ...manager.install, ...wanted.map((req) => manager.packages[req])];
+  if (isRoot()) return { wanted, argv: install, manager, needsUser: false, command: install.join(" ") };
+  if (!onPath("sudo")) return { wanted, argv: install, manager, needsUser: true, command: install.join(" ") };
+  const argv: [string, ...string[]] = ["sudo", "-n", ...install];
+  return { wanted, argv, manager, needsUser: false, command: argv.join(" ") };
 }
 
 /** The one shell command that installs what is missing, or null when nothing is. */
 export function linuxDesktopInstallCommand(missing: readonly string[]): string | null {
-  const wanted = LINUX_DESKTOP_REQUIREMENTS.filter((req) => missing.includes(req));
-  if (!wanted.length) return null;
-  const pm = packageManager();
-  if (!pm) return `Install these packages with your distribution's package manager: ${wanted.join(", ")}`;
-  const args = [pm.binary, ...pm.install, ...wanted.map((req) => pm.packages[req])];
-  return `${isRoot() ? "" : "sudo "}${args.join(" ")}`;
+  return linuxDesktopInstallPlan(missing).command;
 }
 
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -111,31 +150,35 @@ const INSTALL_TIMEOUT_MS = 10 * 60_000;
  * passwordless sudo it answers with the command for the user to run.
  */
 export async function installLinuxDesktopPackages(missing: readonly string[]): Promise<LinuxDesktopSetupResult> {
-  const command = linuxDesktopInstallCommand(missing);
-  const wanted = LINUX_DESKTOP_REQUIREMENTS.filter((req) => missing.includes(req));
-  if (!wanted.length || !command) {
+  const plan = linuxDesktopInstallPlan(missing);
+  const encoderProblem = missing.includes(LINUX_DESKTOP_ENCODER_REQUIREMENT);
+  if (!plan.wanted.length) {
+    if (encoderProblem) {
+      return { installed: false, alreadyInstalled: false, command: null, needsUser: true, message: LINUX_DESKTOP_ENCODER_MESSAGE };
+    }
     return { installed: true, alreadyInstalled: true, command: null, needsUser: false, message: "Everything a Linux lane screen needs is installed." };
   }
-  const pm = packageManager();
-  if (!pm) {
-    return { installed: false, alreadyInstalled: false, command, needsUser: true, message: `No supported package manager was found. ${command}.` };
+  const manager = plan.manager;
+  const argv = plan.argv;
+  if (!manager || !argv) {
+    return { installed: false, alreadyInstalled: false, command: plan.command, needsUser: true, message: `No supported package manager was found. ${plan.command ?? ""}` };
   }
-  const argv = [pm.binary, ...pm.install, ...wanted.map((req) => pm.packages[req])];
-  const runner = isRoot() ? argv : onPath("sudo") ? ["sudo", "-n", ...argv] : null;
-  if (!runner) {
+  if (plan.needsUser) {
     return {
       installed: false,
       alreadyInstalled: false,
-      command,
+      command: plan.command,
       needsUser: true,
       message: `ADE cannot install system packages here (not root, and no sudo). Run as root: ${argv.join(" ")}`,
     };
   }
   const env = { ...process.env, DEBIAN_FRONTEND: "noninteractive" };
-  const refreshFirst = pm.id === "apt" ? [isRoot() ? ["apt-get", "update"] : ["sudo", "-n", "apt-get", "update"]] : [];
+  const aptUpdate: [string, ...string[]] = isRoot() ? ["apt-get", "update"] : ["sudo", "-n", "apt-get", "update"];
+  const refreshFirst: Array<[string, ...string[]]> = manager.id === "apt" ? [aptUpdate] : [];
   let output = "";
-  const run = (cmd: string[]): Promise<number> => new Promise((resolve) => {
-    const child = spawn(cmd[0]!, cmd.slice(1), { env, stdio: ["ignore", "pipe", "pipe"] });
+  const run = (cmd: readonly [string, ...string[]]): Promise<number> => new Promise((resolve) => {
+    const [binary, ...rest] = cmd;
+    const child = spawn(binary, rest, { env, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => child.kill("SIGTERM"), INSTALL_TIMEOUT_MS);
     const keep = (chunk: Buffer) => {
       output = (output + chunk.toString("utf8")).slice(-4000);
@@ -153,18 +196,24 @@ export async function installLinuxDesktopPackages(missing: readonly string[]): P
     });
   });
   for (const cmd of refreshFirst) await run(cmd);
-  const code = await run(runner);
+  const code = await run(argv);
   if (code === 0) {
-    return { installed: true, alreadyInstalled: false, command, needsUser: false, message: `Installed ${wanted.join(", ")}.` };
+    return {
+      installed: true,
+      alreadyInstalled: false,
+      command: plan.command,
+      needsUser: false,
+      message: `Installed ${plan.wanted.join(", ")}.${encoderProblem ? ` ${LINUX_DESKTOP_ENCODER_MESSAGE}` : ""}`,
+    };
   }
   const needsPassword = /a password is required|a terminal is required/i.test(output);
   return {
     installed: false,
     alreadyInstalled: false,
-    command,
+    command: plan.command,
     needsUser: needsPassword,
     message: needsPassword
-      ? `sudo needs a password on this machine, so ADE cannot install the packages itself. Run on that machine: ${command}`
+      ? `sudo needs a password on this machine, so ADE cannot install the packages itself. Run on that machine: ${plan.command}`
       : `The install failed (exit ${code}): ${output.trim().split("\n").slice(-3).join(" ")}`,
   };
 }

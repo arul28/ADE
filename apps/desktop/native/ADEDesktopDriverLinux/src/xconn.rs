@@ -492,15 +492,12 @@ impl XConn {
     // -----------------------------------------------------------------------
 
     /// The whole display as tightly packed RGB.
-    pub fn capture_rgb(&self, with_cursor: bool) -> DResult<(u32, u32, Vec<u8>)> {
+    pub fn capture_rgb(&self) -> DResult<(u32, u32, Vec<u8>)> {
         let (w, h) = (self.width as u32, self.height as u32);
         let bgrx = capture_bgrx(&self.conn, self.root, self.width, self.height)?;
         let mut rgb = Vec::with_capacity((w * h * 3) as usize);
         for px in bgrx.chunks_exact(4) {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
-        }
-        if with_cursor {
-            overlay_cursor_rgb(&self.conn, &mut rgb, w, h);
         }
         Ok((w, h, rgb))
     }
@@ -590,17 +587,8 @@ pub fn capture_bgrx(conn: &RustConnection, root: Window, width: u16, height: u16
     Ok(out)
 }
 
-/// Draws the current cursor (XFixes) onto an RGB frame. Xvfb never draws the
+/// Draws the current cursor (XFixes) onto a BGRX frame. Xvfb never draws the
 /// cursor into its framebuffer, so a viewer would otherwise see none.
-pub fn overlay_cursor_rgb(conn: &RustConnection, rgb: &mut [u8], w: u32, h: u32) {
-    blend_cursor(conn, w, h, |idx, r, g, b, a| {
-        let o = idx * 3;
-        rgb[o] = blend(rgb[o], r, a);
-        rgb[o + 1] = blend(rgb[o + 1], g, a);
-        rgb[o + 2] = blend(rgb[o + 2], b, a);
-    });
-}
-
 pub fn overlay_cursor_bgrx(conn: &RustConnection, bgrx: &mut [u8], w: u32, h: u32) {
     blend_cursor(conn, w, h, |idx, r, g, b, a| {
         let o = idx * 4;

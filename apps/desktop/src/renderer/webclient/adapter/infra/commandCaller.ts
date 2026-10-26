@@ -22,6 +22,18 @@ export type CommandCallOptions<T> = {
   cacheTtlMs?: number;
 };
 
+/**
+ * A mutation's call options: no fallback at all.
+ *
+ * A mutation resolves the host's own answer or rejects — there is no value a
+ * caller could pass that would be honest to resolve when the host never took
+ * the call. `idempotent: false` is what selects this shape, so a call carrying
+ * a fallback stays a read and a mutation cannot quietly inherit one.
+ */
+export type CommandMutationCallOptions = Omit<CommandCallOptions<never>, "fallback" | "cacheTtlMs"> & {
+  idempotent: false;
+};
+
 const RECOVERABLE_CODES = new Set([
   "missing_project",
   "project_not_open",
@@ -109,11 +121,32 @@ export class CommandCaller {
     return Boolean(this.getDescriptor(action));
   }
 
+  /** A read: a host that cannot answer resolves `fallback`. */
+  call<T>(
+    action: string,
+    args: Record<string, unknown> | undefined,
+    options: CommandCallOptions<T>,
+  ): Promise<T>;
+  /** A mutation: the host's answer, or a rejection. Never a fabricated value. */
+  call<T>(
+    action: string,
+    args: Record<string, unknown> | undefined,
+    options: CommandMutationCallOptions,
+  ): Promise<T>;
   async call<T>(
     action: string,
     args: Record<string, unknown> = {},
-    options: CommandCallOptions<T>
+    options: CommandCallOptions<T> | CommandMutationCallOptions,
   ): Promise<T> {
+    /**
+     * A read's offline answer. A mutation has none: every branch below that
+     * would resolve one refuses a mutation first, so reaching this line with
+     * no fallback is a contract error rather than an empty result.
+     */
+    const resolveOfflineAnswer = async (): Promise<T> => {
+      if (!("fallback" in options)) throw new UnsupportedRemoteCommandError(action);
+      return await resolveFallback(options.fallback);
+    };
     const descriptor = this.getDescriptor(action);
     if (!descriptor) {
       // A read the host cannot serve legitimately degrades to its fallback —
@@ -125,16 +158,18 @@ export class CommandCaller {
       if (options.idempotent === false || options.authoritative) {
         throw new UnsupportedRemoteCommandError(action);
       }
-      return await resolveFallback(options.fallback);
+      return await resolveOfflineAnswer();
     }
 
     const requireProject = options.requireProject ?? descriptor.scope === "project";
     const projectId = descriptor.scope === "project" ? this.projectState.getProjectId() : null;
     if (requireProject && descriptor.scope === "project" && !projectId) {
-      if (options.authoritative) {
+      // Same rule as above: nothing was dispatched, so a mutation must reject
+      // rather than resolve an answer the host never gave.
+      if (options.authoritative || options.idempotent === false) {
         throw new Error(`Action '${action}' needs a project open on the connected ADE host.`);
       }
-      return await resolveFallback(options.fallback);
+      return await resolveOfflineAnswer();
     }
 
     const readKey = options.idempotent !== false
@@ -165,7 +200,10 @@ export class CommandCaller {
         // A caller's timeout is part of the request: a short-timeout read never
         // waits on a longer one.
         const flightKey = `${readKey}\u0000${options.authoritative ? "authoritative" : ""}\u0000${options.timeoutMs ?? ""}`;
-        value = await this.readCache.coalesce(flightKey, send, { ttlMs: options.cacheTtlMs ?? 0 });
+        // A mutation has no `cacheTtlMs` (and never takes this branch: it has
+        // no read key); the read's own option decides how long the answer lives.
+        const cacheTtlMs = "fallback" in options ? options.cacheTtlMs : undefined;
+        value = await this.readCache.coalesce(flightKey, send, { ttlMs: cacheTtlMs ?? 0 });
       }
     } catch (error) {
       // noteProjectHostUnavailable ignores anything that is not a
@@ -187,7 +225,7 @@ export class CommandCaller {
         // its current data and render the connection status instead.
         throw error;
       }
-      if (isRecoverable(error)) return await resolveFallback(options.fallback);
+      if (isRecoverable(error)) return await resolveOfflineAnswer();
       throw error;
     } finally {
       if (!readKey) {
