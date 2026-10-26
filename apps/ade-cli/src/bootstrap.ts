@@ -1544,9 +1544,7 @@ export async function createAdeRuntime(args: {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      logger,
-      // The GitHub service is built further down; read it when a push runs.
-      readGitTransportToken: async () => (await githubServiceRef?.getGitTransportTokenOrThrowAsync()) ?? null,
+      logger
     });
 
     const diffService = createDiffService({ laneService });

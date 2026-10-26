@@ -343,11 +343,13 @@ export async function requestSessionAttention(
  * Only the agent's own marker goes down; a hand the person raised and a
  * provider question card are left alone.
  */
+/** Whether a hand this chat raised was actually taken down. */
 export async function clearSessionAsk(
   connection: AdeCodeConnection,
   sessionId: string,
-): Promise<void> {
-  await connection.action("chat", "clearAsk", { sessionId });
+): Promise<{ cleared: boolean }> {
+  const result = await connection.action<{ cleared?: boolean } | null>("chat", "clearAsk", { sessionId });
+  return { cleared: result?.cleared === true };
 }
 
 export async function setSessionStatusNote(

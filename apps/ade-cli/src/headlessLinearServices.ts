@@ -22,7 +22,7 @@ import type { createAutomationSecretService } from "../../desktop/src/main/servi
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
-import { readGitTransportStatus } from "../../desktop/src/main/services/git/gitTransportAuth";
+import { readGitTransportStatus, setGitTransportTokenReader } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -1084,6 +1084,10 @@ export function createHeadlessGitHubService(
       ghAuthError: inventory.ghAuthError,
     };
   };
+
+  /** ADE's GitHub credential for git transport, or null; the git fallback's reader. */
+  const readGitTransportToken = async (): Promise<string | null> => (await readGitTransportTokenAsync()).token;
+  setGitTransportTokenReader(readGitTransportToken, logger);
 
   const getToken = (): string => readToken().token ?? "";
 
@@ -2242,11 +2246,12 @@ export function createHeadlessGitHubService(
         })),
         // Git's own sign-in, a separate leg from the API ladder; cached per
         // repository, so this usually costs nothing.
-        readGitTransportStatus(
-          projectRoot,
-          async () => (await readGitTransportTokenAsync()).token,
-          opts,
-        ).catch(() => null),
+        readGitTransportStatus(projectRoot, readGitTransportToken, opts).catch((error: unknown) => {
+          logger.warn("github.git_transport_check_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }),
       ]);
       return { ...status, gitTransport };
     },

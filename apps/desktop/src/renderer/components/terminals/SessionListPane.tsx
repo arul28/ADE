@@ -2824,7 +2824,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             return next;
           });
         },
-        onUndone: () => {
+        onUndoSettled: () => {
           if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
           setBoardMovePulses((previous) => {
             const next = new Map(previous);

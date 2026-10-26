@@ -5,6 +5,7 @@ import {
   type WorkBoardWaitingReason,
 } from "../../shared/types/chat";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
+import { isChatToolType } from "../../shared/sessionSpawnNesting";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "./terminalAttention";
 
 /**
@@ -83,10 +84,14 @@ export function sessionStatusChangeModel(args: {
   const pendingCard = Boolean(session.pendingInputItemId)
     || session.attentionSource === "provider_structured";
   /**
-   * A tracked CLI parked at its own native prompt. Settling it is not an
-   * answer — the terminal owns that question — so Done keeps the old refusal.
+   * A tracked CLI waiting at its own prompt with no recorded hand: the terminal
+   * owns that question, so settling it would not answer it. The old menu's
+   * rule, kept: a hand ADE recorded (an idle-prompt guess included) can be
+   * dismissed, since it may be a false alarm.
    */
-  const nativePrompt = session.attentionSource === "cli_prompt";
+  const nativePrompt = phase === "needs_you"
+    && !isChatToolType(session.toolType)
+    && !session.attentionRequestedAt;
   const derivedWait = derivedWaitLabel(args.waitingReason);
 
   const workingBlockedReason = pendingCard

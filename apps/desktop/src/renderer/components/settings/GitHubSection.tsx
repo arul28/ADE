@@ -29,7 +29,7 @@ import {
   describeGithubOutage,
   describeGitTransportFailure,
   gitTransportPushesWithLabel,
-  GH_AUTH_LOGIN_GIT_COMMAND,
+  GH_AUTH_LOGIN_COMMAND,
   type GithubAccountAuthState,
 } from "../../lib/githubIntegrationStatus";
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
@@ -56,7 +56,6 @@ import { Banner } from "../ui/notice";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
-const GH_AUTH_LOGIN_COMMAND = "gh auth login -h github.com -s repo -s workflow";
 const GH_AUTH_REFRESH_COMMAND = "gh auth refresh -h github.com -s repo -s workflow";
 const GH_AUTH_LOGIN_WITH_GIST_COMMAND = "gh auth login -h github.com -s repo -s workflow -s gist";
 const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo -s workflow -s gist";
@@ -529,12 +528,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "warning",
               icon: <TerminalWindow size={15} weight="duotone" />,
               title: gitTransportFailure.title,
-              detail: githubStatus?.gitTransport?.adeCredentialTried
-                ? gitTransportFailure.detail
-                : "Run this in Terminal, or use a personal access token, then check again.",
-              extra: githubStatus?.gitTransport?.adeCredentialTried
-                ? undefined
-                : <code className="ade-int-command">{GH_AUTH_LOGIN_GIT_COMMAND}</code>,
+              detail: gitTransportFailure.settingsDetail,
+              extra: gitTransportFailure.signInFixes
+                ? <code className="ade-int-command">{GH_AUTH_LOGIN_COMMAND}</code>
+                : undefined,
               actions: [{ label: "Check again", variant: "primary", onClick: handleRefreshStatus, busy: githubBusy }],
             }}
           />

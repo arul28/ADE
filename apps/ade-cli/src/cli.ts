@@ -2254,9 +2254,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Git commands run in the lane worktree and record ADE operations so the app can
   refresh lane state. Use --lane for anything other than the active workspace.
-  Push, pull, fetch and sync try git's own GitHub sign-in first, then ADE's
-  GitHub credential (GitHub CLI or a personal access token in Settings), so they
-  work where a bare "git push" says "could not read Username".
+  For a GitHub HTTPS remote, push, pull, fetch and sync try git's own sign-in
+  first, then ADE's GitHub credential (GitHub CLI or a personal access token in
+  Settings), so they work where a bare "git push" says "could not read
+  Username". SSH remotes sign in with your SSH key only.
 
     $ ade git status --lane <lane> --text           Show ADE-aware sync status
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
@@ -10406,7 +10407,7 @@ export function formatChatLaunches(value: unknown): string {
  * (project-less) chat they belong to the personal scope, not to whatever
  * project the CLI would otherwise resolve from the cwd.
  */
-const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "note", "activity"]);
+const CHAT_SELF_REPORT_SUBCOMMANDS = new Set(["ask", "unask", "note", "activity"]);
 
 function remoteMcpTurnMetadata(): { remoteMcp: { connectionId: string; label: string } } | null {
   const connectionId = process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim();
@@ -10676,7 +10677,7 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "note" || sub === "activity"
+  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity"
     || sub === "generate-names" || sub === "generate_names" || sub === "names";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
@@ -10695,8 +10696,8 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(sessionId ? { sessionId } : {}),
     });
   const requireSession = () => requireValue(sessionId, "sessionId");
-  if (sub === "ask") {
-    if (args.includes("--clear") || args.includes("--retract")) {
+  if (sub === "ask" || sub === "unask") {
+    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
       return {
         kind: "execute",
         label: "chat ask --clear",
@@ -12917,8 +12918,8 @@ function buildPersonalSelfReportPlan(
     readValue(args, ["--session", "--session-id"]) ?? (process.env.ADE_CHAT_SESSION_ID?.trim() || null),
     "sessionId",
   );
-  if (sub === "ask") {
-    if (args.includes("--clear") || args.includes("--retract")) {
+  if (sub === "ask" || sub === "unask") {
+    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
       return {
         ...base,
         label: "personal chat ask --clear",

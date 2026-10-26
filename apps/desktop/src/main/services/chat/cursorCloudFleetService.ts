@@ -1,3 +1,4 @@
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type {
@@ -484,7 +485,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
 
     await assertCleanWorktree(lane.worktreePath, lane.name);
 
-    const fetchResult = await runGit(["fetch", "origin", safeBranch], {
+    const fetchResult = await runGitWithGithubAuthFallback(["fetch", "origin", safeBranch], {
       cwd: lane.worktreePath,
       timeoutMs: 120_000,
     });

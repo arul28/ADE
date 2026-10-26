@@ -169,7 +169,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
-import { isGitAuthFailure, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
+import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import {
   createGithubReadBackoff,
   isGithubRequestError,
@@ -2513,11 +2513,12 @@ export function createPrService({
       ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
+    const pushOpts = { cwd: lane.worktreePath, timeoutMs: 60_000 };
     if (upstreamCheck.exitCode === 0) {
-      await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      await runGitWithGithubAuthFallbackOrThrow(["push", "--force-with-lease"], pushOpts);
       return;
     }
-    await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    await runGitWithGithubAuthFallbackOrThrow(["push", "-u", "origin", headBranch], pushOpts);
   };
 
   const restoreAutoRebaseChildLane = async (args: {
@@ -4329,7 +4330,7 @@ export function createPrService({
     branch: string;
     headBranch: string;
   }): Promise<void> => {
-    const fetchResult = await runGit([
+    const fetchResult = await runGitWithGithubAuthFallback([
       "fetch",
       "--prune",
       args.remote,
@@ -4409,7 +4410,7 @@ export function createPrService({
       };
     }
 
-    const remoteBranchCheck = await runGit(["ls-remote", "--heads", "origin", headBranch], {
+    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", headBranch], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
       maxOutputBytes: 256 * 1024,
@@ -4478,17 +4479,14 @@ export function createPrService({
     const pushResult = await runGitWithGithubAuthFallback(pushArgs, {
       cwd: lane.worktreePath,
       timeoutMs: 60_000,
-      readToken: () => githubService.getGitTransportTokenOrThrowAsync(),
     });
     if (pushResult.exitCode === 0) return;
 
-    const detail = redactGitOutput((pushResult.stderr || pushResult.stdout).trim());
+    // formatGitExecutionError redacts, and adds the sign-in hint when git
+    // could not sign in even with ADE's credential.
+    const rawDetail = (pushResult.stderr || pushResult.stdout).trim();
+    const detail = rawDetail ? formatGitExecutionError(rawDetail) : "";
     const detailLower = detail.toLowerCase();
-    if (isGitAuthFailure(detail)) {
-      throw new Error(
-        `Git couldn't sign in to GitHub to push "${headBranch}". Run \`gh auth login\` in a terminal, or add a personal access token in Settings → GitHub.${detail ? `\n\n${detail}` : ""}`
-      );
-    }
     if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
       throw new Error(
         `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`
@@ -4759,7 +4757,7 @@ export function createPrService({
     headSha: string | null;
   }): Promise<CreateLaneFromPrBranchBlock | null> => {
     const remoteRef = `origin/${args.headBranch}`;
-    const lsRemote = await runGit(["ls-remote", "--heads", "origin", args.headBranch], {
+    const lsRemote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", args.headBranch], {
       cwd: projectRoot,
       timeoutMs: 30_000,
     });
@@ -4772,7 +4770,7 @@ export function createPrService({
     // settles it, whatever a later fetch says.
     let remoteFailure = "";
     if (!remoteSha) {
-      const fetched = await runGit(["fetch", "--prune", "origin"], {
+      const fetched = await runGitWithGithubAuthFallback(["fetch", "--prune", "origin"], {
         cwd: projectRoot,
         timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
       });
@@ -4825,7 +4823,7 @@ export function createPrService({
     const headRepoLabel = `${args.headRepoOwner}/${args.headRepoName}`;
 
     const localRemoteRef = `refs/remotes/${prHeadImportRef(args.githubPrNumber, args.headBranch)}`;
-    const fetch = await runGit([
+    const fetch = await runGitWithGithubAuthFallback([
       "fetch",
       "origin",
       `+refs/pull/${args.githubPrNumber}/head:${localRemoteRef}`,
@@ -7913,12 +7911,12 @@ export function createPrService({
       if (remoteCheck.exitCode !== 0) {
         result.remoteError = `Remote '${remote}' is not configured for this repository`;
       } else {
-        const remoteRefCheck = await runGit(["ls-remote", "--heads", remote, branchName], {
+        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
           cwd: projectRoot,
           timeoutMs: 12_000,
         });
         if (remoteRefCheck.exitCode === 0 && remoteRefCheck.stdout.trim().length > 0) {
-          const deleted = await runGit(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
+          const deleted = await runGitWithGithubAuthFallback(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
           if (deleted.exitCode === 0) result.remoteDeleted = true;
           else result.remoteError = redactGitOutput(deleted.stderr || deleted.stdout) || `Failed to delete remote branch ${branchName}`;
         }

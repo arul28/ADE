@@ -41,7 +41,7 @@ import type {
   WorkBoardWaitingReason,
 } from "../../../shared/types";
 import { type WorkBoardMoveTarget } from "../../../shared/types/chat";
-import { sessionStatusChangeModel } from "../../lib/sessionStatusChange";
+import { sessionStatusChangeModel, type SessionStatusOption } from "../../lib/sessionStatusChange";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
@@ -191,10 +191,6 @@ type SessionContextMenuProps = {
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
-  onSettle?: (
-    session: TerminalSessionSummary,
-    binding?: OpenProjectBinding | null,
-  ) => void;
   /**
    * Move a row between the Work-board columns it can actually be in.
    *
@@ -204,7 +200,7 @@ type SessionContextMenuProps = {
    * — it is derived from a snooze, a mid-CI PR, an outstanding review, an armed
    * wake, or a busy subagent.
    */
-  onChangeStatus?: (
+  onChangeStatus: (
     session: TerminalSessionSummary,
     target: WorkBoardMoveTarget,
     binding?: OpenProjectBinding | null,
@@ -299,7 +295,6 @@ function SessionContextMenuPanel({
   onCopySessionDeepLink,
   onOpenSessionInWeb,
   onTogglePinned,
-  onSettle,
   onChangeStatus,
   statusWaitingReason,
   onOpenChatHandoff,
@@ -399,14 +394,9 @@ function SessionContextMenuPanel({
     session,
     waitingReason: statusWaitingReason ?? null,
   });
-  /** Done through the menu is the same write as a board drop. */
+  /** Every status entry is the same write as a board drop. */
   const changeStatus = (target: WorkBoardMoveTarget): void => {
-    if (onChangeStatus) {
-      onChangeStatus(session, target, binding);
-      return;
-    }
-    // Hosts that have not wired the move yet keep the settle they had.
-    if (target === "done") onSettle?.(session, binding);
+    onChangeStatus(session, target, binding);
   };
   const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
@@ -470,7 +460,10 @@ function SessionContextMenuPanel({
    *               instead of being moved somewhere it will not stay.
    *   Needs you   always. The write is a person parking the row for themselves.
    *   Done        always, except over a live provider card (the card, not the
-   *               settle, is what has to be answered).
+   *               settle, is what has to be answered) and a terminal waiting at
+   *               its own prompt with no recorded hand.
+   *   Unsettle,   the reverse of Done, shown while the row is declared settled
+   *   Keep active (Keep active also pins it so a clean exit cannot re-settle it).
    *   Snoozed     the presets, or Wake now when the row is snoozed — the reverse
    *               state lives where the way in lives.
    *
@@ -482,7 +475,7 @@ function SessionContextMenuPanel({
   const statusMenuContent = (
     <>
       {statusModel.options
-        .filter((option) => option.target !== "snoozed")
+        .filter((option): option is SessionStatusOption & { target: WorkBoardMoveTarget } => option.target !== "snoozed")
         .map((option) => {
           const Icon = option.target === "working"
             ? Lightning
@@ -500,7 +493,7 @@ function SessionContextMenuPanel({
                 ?? (current ? `Already ${option.label.toLowerCase()}` : undefined)}
               onClick={() => {
                 if (!enabled) return;
-                changeStatus(option.target as WorkBoardMoveTarget);
+                changeStatus(option.target);
                 onClose();
               }}
             >

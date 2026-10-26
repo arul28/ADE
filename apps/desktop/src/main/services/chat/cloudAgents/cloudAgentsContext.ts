@@ -3,6 +3,7 @@
  * lane lookups that link an agent to ADE, and the cloud-lane helpers — make a
  * lane, tag it, push its branch so the VM can check it out.
  */
+import { runGitWithGithubAuthFallback } from "../../git/gitTransportAuth";
 import { runGit } from "../../git/git";
 import type { LaneSummary } from "../../../../shared/types/lanes";
 import type { AgentChatSessionSummary } from "../../../../shared/types/chat";
@@ -169,7 +170,7 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
     lane: LaneSummary,
     options: { onFailure: "throw" | "warn" },
   ): Promise<boolean> => {
-    const pushed = await runGit(["push", "--quiet", "origin", `HEAD:refs/heads/${lane.branchRef}`], {
+    const pushed = await runGitWithGithubAuthFallback(["push", "--quiet", "origin", `HEAD:refs/heads/${lane.branchRef}`], {
       cwd: lane.worktreePath,
       timeoutMs: PUSH_TIMEOUT_MS,
     }).catch((error: unknown) => ({ exitCode: 1, stdout: "", stderr: String(error) }));
@@ -180,7 +181,7 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
     // lacks (the cloud agent pushed past it), since the VM checks out origin.
     // A lane with commits of its own would start the agent without them.
     if (/non-fast-forward|fetch first/i.test(stderr)) {
-      const behindOnly = await runGit(["fetch", "--quiet", "origin", `refs/heads/${lane.branchRef}`], {
+      const behindOnly = await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin", `refs/heads/${lane.branchRef}`], {
         cwd: lane.worktreePath,
         timeoutMs: PUSH_TIMEOUT_MS,
       })

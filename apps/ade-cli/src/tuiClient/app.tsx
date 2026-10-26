@@ -12866,8 +12866,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           await requestSessionAttention(conn, targetSessionId, value);
           addNotice("Escalated the blocking question.", "success");
         } else if (name === "/chat unask") {
-          await clearSessionAsk(conn, targetSessionId);
-          addNotice("Took down this chat's Needs you hand.", "success");
+          const { cleared } = await clearSessionAsk(conn, targetSessionId);
+          addNotice(
+            cleared
+              ? "Took down this chat's Needs you hand."
+              : "Nothing to take down: this chat has no question of its own raised.",
+            cleared ? "success" : "info",
+          );
         } else if (name === "/chat note") {
           await setSessionStatusNote(conn, targetSessionId, value);
           addNotice(value ? "Updated the session status line." : "Cleared the session status line.", "success");

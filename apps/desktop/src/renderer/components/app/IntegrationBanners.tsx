@@ -17,7 +17,7 @@ import {
   describeGithubCliBanner,
   describeGithubOutage,
   describeGitTransportFailure,
-  GH_AUTH_LOGIN_GIT_COMMAND,
+  GH_AUTH_LOGIN_COMMAND,
   githubStatusHasWriteCredential,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
@@ -455,16 +455,16 @@ export function IntegrationBanners({
         detail: gitTransportFailure.detail,
         actions: [
           { label: "Open GitHub settings", variant: "primary", onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE) },
-          ...(githubStatus?.gitTransport?.adeCredentialTried
+          ...(!gitTransportFailure.signInFixes
             ? []
             : [{
                 label: "Copy sign-in command",
                 variant: "secondary" as const,
-                title: GH_AUTH_LOGIN_GIT_COMMAND,
+                title: GH_AUTH_LOGIN_COMMAND,
                 onClick: () => {
-                  void window.ade.app.writeClipboardText(GH_AUTH_LOGIN_GIT_COMMAND).then(
-                    () => showToast({ tone: "success", title: "Command copied", message: "Run it in Terminal, then check again in GitHub settings." }),
-                    () => showToast({ tone: "error", title: "Couldn't copy the command", message: GH_AUTH_LOGIN_GIT_COMMAND }),
+                  void window.ade.app.writeClipboardText(GH_AUTH_LOGIN_COMMAND).then(
+                    () => showToast({ tone: "success", title: "Command copied", message: "Run it in a terminal on the computer this project is on, then check again in GitHub settings." }),
+                    () => showToast({ tone: "error", title: "Couldn't copy the command", message: GH_AUTH_LOGIN_COMMAND }),
                   );
                 },
               }]),

@@ -1,3 +1,4 @@
+import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
@@ -891,7 +892,6 @@ import {
   landHandoffGitBundle,
   packHandoffGitBundle,
   readHandoffWorkingTreeSha,
-  githubExtraHeaderGitEnv,
   validateHandoffGitBundle,
 } from "./handoffGitBundle";
 import {
@@ -57753,7 +57753,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    const fetch = await runGit(["fetch", "origin", branchName], {
+    const fetch = await runGitWithGithubAuthFallback(["fetch", "origin", branchName], {
       cwd: worktree,
       timeoutMs: 60_000,
     });

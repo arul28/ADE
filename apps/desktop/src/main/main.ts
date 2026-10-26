@@ -4999,7 +4999,6 @@ app.whenReady().then(async () => {
       laneService,
       operationService,
       logger,
-      readGitTransportToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },

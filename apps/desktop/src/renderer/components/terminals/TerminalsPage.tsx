@@ -116,9 +116,9 @@ import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
-import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
   cancelCrossMachineOptimisticChatSession,
+  requestCrossMachineLanesForMachine,
   seedCrossMachineOptimisticChatSession,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
@@ -781,26 +781,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
     [resolveSessionRuntimePin, work],
   );
-
-  const handleSettleSession = useCallback((
-    session: TerminalSessionSummary,
-    runtimePin?: OpenProjectBinding | null,
-  ) => {
-    setSessionActionError(null);
-    void (async () => {
-      try {
-        const dismissPendingInput = sessionNeedsYou(canonicalInputFromSummary(session));
-        const opts = dismissPendingInput ? { dismissPendingInput: true } : undefined;
-        const pin = runtimePin ?? resolveSessionRuntimePin(session);
-        await (pin
-          ? window.ade.sessions.settle(session.id, opts, pin)
-          : window.ade.sessions.settle(session.id, opts));
-      } catch (err) {
-        setSessionActionError(formatSessionActionError(err, "Settle"));
-        window.setTimeout(() => setSessionActionError(null), 6000);
-      }
-    })();
-  }, [resolveSessionRuntimePin]);
 
   const handleStopAndDeleteSession = useCallback(
     (
@@ -2187,9 +2167,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => copyToClipboard(id, "session ID")}
-        onSettle={handleSettleSession}
         onChangeStatus={(session, target, runtimePin) => {
-          moveSessionOnBoard({ session, to: target, binding: runtimePin ?? null });
+          // A row on another machine is re-read after the move and after an
+          // undo, as a board drag does, so the card does not sit stale.
+          const refreshForeign = runtimePin
+            ? () => requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin))
+            : undefined;
+          moveSessionOnBoard({
+            session,
+            to: target,
+            binding: runtimePin ?? null,
+            onMoved: refreshForeign,
+            onUndoSettled: refreshForeign,
+          });
         }}
         statusWaitingReason={contextMenu
           ? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null

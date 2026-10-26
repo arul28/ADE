@@ -91,7 +91,9 @@ fails with `could not read Username for 'https://github.com'`, even though ADE
 can still open PRs. `ade git push`, `ade git pull`, `ade git fetch`,
 `ade git sync` and `ade prs create` try git's own sign-in first and then retry
 with ADE's GitHub credential (GitHub CLI or the personal access token in
-Settings), the same fallback ADE's GitHub API calls use. So:
+Settings), the same fallback ADE's GitHub API calls use. This covers GitHub
+HTTPS remotes; an SSH remote signs in with the SSH key only, and a token cannot
+fix it. So:
 
 - Push, pull and fetch with the `ade git` commands, not bare `git`, whenever a
   bare one fails to sign in. Do not paste a token into a remote URL, write a

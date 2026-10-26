@@ -100,6 +100,8 @@ const READ_ONLY_GIT_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
 const READ_ONLY_GIT_FLAGS: Record<string, ReadonlySet<string>> = {
   branch: new Set(["--list", "-l", "-r", "--remotes", "-a", "--all", "--show-current", "--contains", "--points-at", "--merged", "--no-merged"]),
   config: new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"]),
+  // A dry run (the GitHub sign-in check) sends nothing and moves no ref.
+  push: new Set(["--dry-run", "-n"]),
   remote: new Set(["-v", "--verbose"]),
   tag: new Set(["--list", "-l", "--points-at", "--contains"]),
 };

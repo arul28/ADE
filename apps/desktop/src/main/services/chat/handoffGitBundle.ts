@@ -7,7 +7,7 @@ import type {
   AgentChatCrossMachineHandoffCapsule,
 } from "../../../shared/types/chat";
 import { runGit, runGitOrThrow } from "../git/git";
-import { githubExtraHeaderGitEnv } from "../git/gitTransportAuth";
+import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES } from "./crossMachineForkTransport";
 
 /**
@@ -18,8 +18,6 @@ import { CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES } from "./crossMachineForkTrans
  * it did not create (except a clean ADE lane the caller hands it), and undoes
  * every step it took when a later one fails.
  */
-
-export { githubExtraHeaderGitEnv };
 
 /** Raw bundle cap. Past this the branch should simply be pushed. */
 export const HANDOFF_GIT_BUNDLE_MAX_BYTES = 50 * 1024 * 1024;
@@ -396,7 +394,7 @@ export async function applyHandoffGitBundle(args: {
 
     // The bundle builds on commits origin has; fetch them when missing here.
     if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
-      await runGit(["fetch", "--quiet", "origin"], {
+      await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin"], {
         cwd: projectRoot,
         timeoutMs: GIT_TIMEOUT_MS,
         ...(args.fetchEnv ? { env: args.fetchEnv } : {}),

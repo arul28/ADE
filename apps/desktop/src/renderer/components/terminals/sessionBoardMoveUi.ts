@@ -12,15 +12,17 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared
  * waiting" drift apart. `session.moveOnBoard` owns the write and the message;
  * this owns the narration.
  *
- * `onMoved`/`onUndone` are the host surface's local bookkeeping (pulses, a
- * cross-machine refresh). They run only when the write actually landed.
+ * `onMoved`/`onUndoSettled` are the host surface's local bookkeeping (pulses,
+ * a cross-machine refresh). `onMoved` runs only when the write landed;
+ * `onUndoSettled` runs once the host answers an undo, refused or not, since
+ * either way the host's state may have changed under the card.
  */
 export function moveSessionOnBoard(args: {
   session: TerminalSessionSummary;
   to: WorkBoardMoveTarget;
   binding?: OpenProjectBinding | null;
   onMoved?: () => void;
-  onUndone?: () => void;
+  onUndoSettled?: () => void;
 }): void {
   const { session, to, binding } = args;
   const move = window.ade.sessions?.moveOnBoard;
@@ -75,6 +77,7 @@ export function moveSessionOnBoard(args: {
             if (typeof undo !== "function") return;
             void undo(session.id, moveId, binding)
               .then((undone) => {
+                args.onUndoSettled?.();
                 if (undone?.ok === false) {
                   showToast({
                     title: "Too late to undo",
@@ -91,9 +94,7 @@ export function moveSessionOnBoard(args: {
                         : "The agent has already been told about this move.",
                     tone: "error",
                   });
-                  return;
                 }
-                args.onUndone?.();
               })
               .catch((error: unknown) => {
                 showToast({
