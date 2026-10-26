@@ -1222,7 +1222,7 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
         ))}
       </div>
       {progress.overallStatus === "cancelled" ? (
-        <div className="mt-2 text-[11px] text-amber-300">Delete cancelled. The lane was not removed.</div>
+        <div className="mt-2 text-[11px] text-amber-300">Delete stopped. The lane is still here; delete it again to finish.</div>
       ) : null}
       {progress.overallStatus === "completed" ? (
         <div className="mt-2 text-[11px] text-emerald-300">Delete completed. Refreshing lane list...</div>

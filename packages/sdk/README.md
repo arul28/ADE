@@ -21,7 +21,7 @@ and exposes chat as durable named threads.
 npm install @ade-dev/sdk
 ```
 
-Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
+Requires Node 22.13 or newer. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
 SDK 0.6.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The

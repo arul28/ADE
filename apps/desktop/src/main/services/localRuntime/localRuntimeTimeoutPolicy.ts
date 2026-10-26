@@ -1,6 +1,7 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
+import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -90,6 +91,18 @@ export function localRuntimeStartupConnectMaxMs(platform: NodeJS.Platform): numb
   return platform === "win32" ? 30_000 : 10_000;
 }
 export const LOCAL_RUNTIME_STARTUP_CONNECT_MAX_MS = localRuntimeStartupConnectMaxMs(process.platform);
+
+/**
+ * A CLI run from source boots through tsx (4-6 s idle on Node 24, 10-20 s on a
+ * loaded CI runner), so it gets the Windows allowance; a bundled `cli.cjs`
+ * keeps the platform's shorter one. This is the spawn clock only: the read
+ * budgets below stay derived from the platform allowance, so in a from-source
+ * session a brain slower than them reads as a degraded snapshot once and the
+ * next read joins the same pending connect.
+ */
+export function localRuntimeSourceCliStartupConnectMaxMs(platform: NodeJS.Platform): number {
+  return Math.max(localRuntimeStartupConnectMaxMs(platform), 30_000);
+}
 
 /**
  * The longest a machine-scope sync STATUS READ waits for the local runtime
@@ -267,28 +280,45 @@ export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_
 export const LANE_ENV_SETUP_TIMEOUT_MS = 45 * 60_000;
 export const LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS = LANE_ENV_SETUP_TIMEOUT_MS - 30_000;
 
+/**
+ * Archive batches: one lane at its full git bound (LANE_GIT_WRITE_ACTION_TIMEOUT_MS)
+ * plus the time the batch's other items had before this change.
+ */
+export const ARCHIVE_RESTORE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 10 * 60_000;
+export const ARCHIVE_DELETE_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 15 * 60_000;
+/** Cancelling a new-lane launch waits out an in-flight checkout, then deletes the lane. */
+export const CHAT_CANCEL_LAUNCH_TIMEOUT_MS = LANE_GIT_WRITE_ACTION_TIMEOUT_MS + 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
-  // Lane deletion can legitimately include a 60s worktree removal followed by
-  // a 45s remote-branch deletion. The old 30s client budget reported failure
-  // while the daemon kept mutating state to a successful completion.
-  ["lane.delete", 4 * 60_000],
+  // Lane actions that run a checkout, `worktree add` or `worktree remove`; see
+  // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. A shorter budget reported failure while
+  // the daemon kept writing the tree to a successful completion.
+  ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createChild", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.createFromUnstaged", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.unarchive", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.archiveAndReclaim", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["pr.createLaneFromPrBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   // Cancelling a new-lane launch waits out an in-flight checkout, then fully
   // deletes the chat and the lane (worktree + local and remote branch).
-  ["chat.cancelLaunch", 5 * 60_000],
+  ["chat.cancelLaunch", CHAT_CANCEL_LAUNCH_TIMEOUT_MS],
   ["lane.archive", 120_000],
   // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
   // merged PR. The 30s default reported a failure while the merge went on.
   ["pr.land", 120_000],
-  ["lane.unarchive", 120_000],
   // See LANE_ENV_SETUP_TIMEOUT_MS.
   ["lane.initEnv", LANE_ENV_SETUP_TIMEOUT_MS],
   ["lane.applyTemplate", LANE_ENV_SETUP_TIMEOUT_MS],
   // Archive restore/delete walk a batch one item at a time, and a lane in the
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
-  ["archive.restore", 10 * 60_000],
-  ["archive.delete", 15 * 60_000],
+  ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
+  ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
@@ -329,6 +359,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDetach", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.devicePromote", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // Removing runtimes shuts down, moves or erases every simulator on them first.
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
@@ -350,6 +381,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   // Waits on the user's answer to the shared-seat card, then the start.
   ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // Waits on the user's answer to the real-input card (withdrawn at 170 s).
+  ["mac_desktop.requestInputLease", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   // See WINDOWS_DESKTOP_TYPE_TIMEOUT_MS.
   ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_TIMEOUT_MS],
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],

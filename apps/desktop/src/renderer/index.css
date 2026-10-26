@@ -3399,6 +3399,18 @@ button, [role="button"] {
     0 10px 26px -22px rgba(0, 0, 0, 0.52);
 }
 
+/* A chip takes the theme accent; on the accent-coloured bubble that tint is
+   lost, so there it is white glass instead. */
+.ade-chat-message-card-user [data-chip-kind] {
+  border-color: rgba(255, 255, 255, 0.34);
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+.ade-chat-message-card-user [data-chip-kind][role="button"]:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  background-color: rgba(255, 255, 255, 0.26);
+}
+
 .ade-chat-message-card-assistant {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 96%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);

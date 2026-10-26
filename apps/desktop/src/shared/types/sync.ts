@@ -2579,6 +2579,8 @@ export type SyncRemoteCommandAction =
   | "archive.restore"
   | "archive.delete"
   | "lanes.delete"
+  | "lanes.cancelDelete"
+  | "lanes.cancelGitWrite"
   | "lanes.deleteLeftoverWorktree"
   | "lanes.getStackChain"
   | "lanes.getChildren"

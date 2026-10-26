@@ -1,4 +1,4 @@
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { getHeapStatistics } from "node:v8";
 import { app } from "electron";
 import { appendEvent, isRunActive } from "./perfLog";
@@ -7,7 +7,7 @@ const SAMPLE_INTERVAL_MS = 1000;
 const LOOP_DELAY_RESOLUTION_MS = 10;
 
 let timer: NodeJS.Timeout | null = null;
-let loopDelay: IntervalHistogram | null = null;
+let loopDelay: ReturnType<typeof monitorEventLoopDelay> | null = null;
 
 function toMs(nanoseconds: number): number {
   if (!Number.isFinite(nanoseconds)) return 0;

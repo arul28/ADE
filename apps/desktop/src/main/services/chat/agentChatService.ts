@@ -513,6 +513,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
+import { redactGitOutput } from "../../utils/redaction";
 import type {
   AgentChatApprovalDecision,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -1126,7 +1127,7 @@ import {
   type BackgroundLossWake,
   type RestartCancelledWork,
 } from "../../../shared/chatAutoResume";
-import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
+import { isUsageLimitFailureText, isUsageLimitTurn, parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
@@ -5390,6 +5391,8 @@ type ManagedChatSession = {
   continuitySummaryInFlight: boolean;
   /** Completed CTO turns since the last background memory pass. */
   ctoTurnsSinceMemoryCheckpoint?: number;
+  /** When the last background memory pass started (epoch ms), for the age trigger. */
+  ctoLastMemoryCheckpointAt?: number;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -10291,9 +10294,9 @@ function buildSpawnSelfReportGuidance(
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
   const selfReportCommandGuidance = [
-    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Keep report text out of the command source.",
-    "In Bash/zsh, put it in a quoted here-doc (`summary=$(cat <<'REPORT_END' ... REPORT_END)`) using an end marker absent from the report, then run `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text \"$summary\"`.",
-    "In PowerShell, pass it as a single-quoted string and double each embedded apostrophe (`'` becomes `''`), then run `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text '<escaped report>'`; `$()` and backticks stay literal inside the single quotes.",
+    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
+    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text-file $f`.",
   ].join(" ");
   if (session.spawnKind === "subagent") {
     return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
@@ -16512,7 +16515,33 @@ export function createAgentChatService(args: {
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
+  /**
+   * What a scheduled job's row says about the turn it started. A turn that
+   * ended at the usage limit did not do the job; its last text ("You've hit
+   * your session limit") read as the job's result under a "completed" row.
+   * The chat's own auto-resume continues the interrupted turn after the reset,
+   * which is what the row now says.
+   */
+  const scheduledTurnOutcome = (
+    managed: ManagedChatSession,
+    done: Extract<AgentChatEvent, { type: "done" }>,
+  ): string | undefined => {
+    const preview = managed.preview?.trim() || undefined;
+    const limited = isUsageLimitTurn(done, managed.usageLimitResume?.turnId)
+      || (done.status === "failed" && isUsageLimitFailureText(preview));
+    if (!limited) return preview;
+    return `Stopped at the usage limit before the job ran${preview ? ` (${clipText(preview, 120)})` : ""}. `
+      + "ADE continues the chat when the limit resets.";
+  };
+
   const CTO_MEMORY_CHECKPOINT_TURNS = 6;
+  /**
+   * A CTO that runs on scheduled wakes takes one turn every half hour, so six
+   * turns was three hours: long enough for the thread state to name a check
+   * that ran hours ago. A thread state older than this is refreshed on the
+   * next settled turn, whatever the count.
+   */
+  const CTO_MEMORY_CHECKPOINT_MAX_AGE_MS = 45 * 60_000;
 
   /** What the person typed, not the wrapper ADE sent: the memory pass reads this. */
   const collectCaptureEntries = (managed: ManagedChatSession): ContinuityCaptureEntry[] =>
@@ -16744,6 +16773,36 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * True when the durable thread state is older than
+   * `CTO_MEMORY_CHECKPOINT_MAX_AGE_MS` and no checkpoint started within that
+   * window either (a pass that fails keeps the old text, and must not then
+   * run again on every turn).
+   */
+  const ctoThreadStateIsStale = (managed: ManagedChatSession): boolean => {
+    if (!ctoMemoryService) return false;
+    const nowMs = Date.now();
+    if (managed.ctoLastMemoryCheckpointAt != null && nowMs - managed.ctoLastMemoryCheckpointAt < CTO_MEMORY_CHECKPOINT_MAX_AGE_MS) {
+      return false;
+    }
+    let updatedAt: string | null = null;
+    try {
+      updatedAt = ctoMemoryService.threadStateUpdatedAt();
+    } catch (error) {
+      // The memory store is unreadable. The age trigger is the only thing
+      // lost (the turn count still runs it), so the turn goes on; say so.
+      logger.warn("agent_chat.cto_thread_state_age_unreadable", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+    // Never written: the turn count decides, as before.
+    if (!Number.isFinite(epoch)) return false;
+    return nowMs - epoch >= CTO_MEMORY_CHECKPOINT_MAX_AGE_MS;
+  };
+
+  /**
    * Count a settled CTO turn toward the next memory checkpoint.
    *
    * Compaction alone is too rare to be the memory schedule: a long thread on a
@@ -16753,11 +16812,12 @@ export function createAgentChatService(args: {
    */
   const noteCtoTurnForMemoryCheckpoint = (managed: ManagedChatSession): void => {
     const count = (managed.ctoTurnsSinceMemoryCheckpoint ?? 0) + 1;
-    if (count < CTO_MEMORY_CHECKPOINT_TURNS) {
+    if (count < CTO_MEMORY_CHECKPOINT_TURNS && !ctoThreadStateIsStale(managed)) {
       managed.ctoTurnsSinceMemoryCheckpoint = count;
       return;
     }
     managed.ctoTurnsSinceMemoryCheckpoint = 0;
+    managed.ctoLastMemoryCheckpointAt = Date.now();
     void maybeRefreshIdentityContinuitySummary(managed, "checkpoint").catch((error) => {
       logger.warn("agent_chat.cto_memory_checkpoint_failed", {
         sessionId: managed.session.id,
@@ -23837,7 +23897,7 @@ export function createAgentChatService(args: {
           "record_turn_finished",
           scheduledWorkScheduler.recordTurnFinished(
             normalizedEvent.turnId,
-            managed.preview?.trim() || undefined,
+            scheduledTurnOutcome(managed, normalizedEvent),
           ),
         );
       }
@@ -47660,9 +47720,12 @@ export function createAgentChatService(args: {
    *
    * Only questions travel. Approvals and permission prompts stay the person's:
    * an agent approving its child's tool call would be granting itself access.
-   * Secret questions and user-only consent cards stay too. A peer reports to
-   * nobody, and a parent that is not a chat here (a CLI terminal, another
-   * project or machine) has no agent this service can message.
+   * Secret questions and user-only consent cards stay too, but the parent is
+   * told the child waits on the user (`relayChildAwaitingUserToParent`), so it
+   * does not read the silence as "stuck" and start a second chat for the same
+   * work. A peer reports to nobody, and a parent that is not a chat here (a CLI
+   * terminal, another project or machine) has no agent this service can
+   * message a question to.
    */
   const relayedChildQuestionKeys = new Set<string>();
   const relayChildQuestionToParent = (
@@ -47678,17 +47741,25 @@ export function createAgentChatService(args: {
     const request = detail?.request as PendingInputRequest | undefined;
     if (!request || typeof request !== "object" || !Array.isArray(request.questions)) return;
     if (request.blocking === false || !pendingInputIsAnswerable(request)) return;
-    if (request.questions.some((question) => question.isSecret)) return;
-    if (isUserOnlyConsentCard(request.providerMetadata ?? null)) return;
     const itemId = event.itemId?.trim() || pendingInputRequestItemId(request);
     const key = `${child.session.id}:${itemId}`;
     if (relayedChildQuestionKeys.has(key)) return;
-    if (!parentChatStillExists(parentSessionId)) return;
-    relayedChildQuestionKeys.add(key);
-    if (relayedChildQuestionKeys.size > 512) {
-      const [oldest] = relayedChildQuestionKeys;
-      if (oldest) relayedChildQuestionKeys.delete(oldest);
+    const rememberRelayed = (): void => {
+      relayedChildQuestionKeys.add(key);
+      if (relayedChildQuestionKeys.size > 512) {
+        const [oldest] = relayedChildQuestionKeys;
+        if (oldest) relayedChildQuestionKeys.delete(oldest);
+      }
+    };
+    if (
+      request.questions.some((question) => question.isSecret)
+      || isUserOnlyConsentCard(request.providerMetadata ?? null)
+    ) {
+      if (relayChildAwaitingUserToParent(child, parentSessionId, request, itemId)) rememberRelayed();
+      return;
     }
+    if (!parentChatStillExists(parentSessionId)) return;
+    rememberRelayed();
     const childTitle = sessionService.get(child.session.id)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const text = [
@@ -47718,6 +47789,82 @@ export function createAgentChatService(args: {
         itemId,
         error: error instanceof Error ? error.message : String(error),
       }));
+  };
+
+  /**
+   * The child waits on a card only the user can answer: a real-input lease, a
+   * consent, a secret. The parent cannot answer it, so it gets the fact, not
+   * the question: who waits, on what, and not to start a second chat for the
+   * same work. The card itself stays in the child for the user.
+   *
+   * Unlike a question, this also reaches a parent in another project or on
+   * another machine, through the brain's router (`notice: "awaiting_user"`):
+   * a coordinator there can only poll otherwise, and a poll that sees a quiet
+   * child reads it as stuck. True when the notice went out (or was queued).
+   */
+  const relayChildAwaitingUserToParent = (
+    child: ManagedChatSession,
+    parentSessionId: string,
+    request: PendingInputRequest,
+    itemId: string,
+  ): boolean => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    const what = request.questions.some((question) => question.isSecret)
+      ? "a secret only the user can enter"
+      : (request.title?.trim() || request.questions[0]?.question?.trim() || "a permission only the user can give");
+    const summary = `Waiting on the user: ${what}. It has not finished; it continues when the user answers in that chat.`;
+    const text = [
+      `Your subagent "${childTitle}" (${child.session.id}) is waiting on the user: ${what}.`,
+      "Only the user can answer this card; an agent cannot answer or decline it. The subagent stops until they do.",
+      "Do not start another chat for the same work. Tell the user if it is urgent, then carry on with other work.",
+    ].join(" ");
+    if (parentChatStillExists(parentSessionId)) {
+      void messageSession({
+        sessionId: parentSessionId,
+        kind: "wake",
+        text,
+        // ADE wrote this, not the person: it must not clear the parent's "Needs you".
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then(() => logger.info("agent_chat.subagent_awaiting_user_relayed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+        }))
+        .catch((error) => logger.warn("agent_chat.subagent_awaiting_user_relay_failed", {
+          childSessionId: child.session.id,
+          parentSessionId,
+          itemId,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      return true;
+    }
+    const router = getExternalParentRouter();
+    if (!router) return false;
+    // Only subagents get here (`relayChildQuestionToParent` returns for peers).
+    const spawnKind = "subagent" as const;
+    const childTurnId = `awaiting-user:${itemId}`;
+    return router.route({
+      parentSessionId,
+      childSessionId: child.session.id,
+      childTitle,
+      childProvider: child.session.provider,
+      spawnKind,
+      resultStatus: "completed",
+      summary,
+      spawnCompletion: {
+        childSessionId: child.session.id,
+        childTitle,
+        spawnKind,
+        childTurnId,
+        status: "completed",
+        summary,
+      },
+      wakeText: text,
+      childProjectRoot: projectRoot,
+      notice: "awaiting_user",
+    });
   };
 
   const reportChildSpawnEnded = (
@@ -47876,6 +48023,25 @@ export function createAgentChatService(args: {
     wake: Omit<ExternalParentWake, "childProjectRoot">,
   ): Promise<ExternalWakeDeliveryResult> => {
     if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // Not a finished turn: a child elsewhere waits on its user. A message, no
+    // completion, so the parent's card for the child stays open.
+    if (wake.notice === "awaiting_user") {
+      return messageSession({
+        sessionId: wake.parentSessionId,
+        kind: "wake",
+        text: wake.wakeText,
+        metadata: { hostContinuation: { reason: "subagent_awaiting_user" } },
+      }, { trustedSpawnCompletion: true })
+        .then((): ExternalWakeDeliveryResult => "delivered")
+        .catch((error): ExternalWakeDeliveryResult => {
+          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
+            parentSessionId: wake.parentSessionId,
+            childSessionId: wake.childSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return isMissingParentError(error, wake.parentSessionId) ? "parent_gone" : "failed";
+        });
+    }
     // The same turn already being delivered answers nothing; let the outbox
     // try again rather than wait on a callback that never comes.
     const inFlightKey = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
@@ -50075,7 +50241,7 @@ export function createAgentChatService(args: {
       timeoutMs: 30_000,
     });
     if (remote.exitCode !== 0) {
-      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${remote.stderr.trim()}`.trim());
+      throw new Error(`ADE could not read '${branchRef}' on origin. Check remote access. ${redactGitOutput(remote.stderr.trim())}`.trim());
     }
     // A never-pushed branch is fine with changes: its base commits come from
     // origin's history or the bundle.
@@ -50818,7 +50984,7 @@ export function createAgentChatService(args: {
         env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
-        blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
+        blockingErrors.push(`The destination cannot read origin: ${redactGitOutput(remote.stderr.trim()) || "check Git credentials and network access."}`);
       } else {
         remoteBranchHeadSha = remote.stdout.trim().split(/\s+/)[0] || null;
         if (!remoteBranchHeadSha) {
@@ -50840,7 +51006,7 @@ export function createAgentChatService(args: {
             },
           );
           if (fetch.exitCode !== 0) {
-            blockingErrors.push(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+            blockingErrors.push(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
           } else {
             const fetchedHead = await runGit(["rev-parse", `refs/remotes/origin/${branchRef}`], {
               cwd: projectRoot,
@@ -51040,7 +51206,7 @@ export function createAgentChatService(args: {
     );
     if (fetch.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${lane.name}' could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`,
       );
     }
     const fetchedHead = await requireGitOutput(
@@ -51079,7 +51245,7 @@ export function createAgentChatService(args: {
     });
     if (status.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${status.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be checked for local changes: ${redactGitOutput(status.stderr.trim()) || "unknown Git error"}`,
       );
     }
     if (status.stdout.trim()) {
@@ -51110,7 +51276,7 @@ export function createAgentChatService(args: {
     }
     if (ancestor.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${ancestor.stderr.trim() || "unknown Git error"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' ancestry could not be verified: ${redactGitOutput(ancestor.stderr.trim()) || "unknown Git error"}`,
       );
     }
 
@@ -51120,7 +51286,7 @@ export function createAgentChatService(args: {
     });
     if (merge.exitCode !== 0) {
       throw new Error(
-        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${merge.stderr.trim() || "git merge --ff-only failed"}`,
+        `Cross-machine handoff lane '${refreshedLane.name}' could not be fast-forwarded: ${redactGitOutput(merge.stderr.trim()) || "git merge --ff-only failed"}`,
       );
     }
     const head = await requireGitOutput(
@@ -51506,7 +51672,7 @@ export function createAgentChatService(args: {
           env: await destinationGitEnv(),
         });
         if (fetch.exitCode !== 0) {
-          throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);
+          throw new Error(`The destination could not fetch '${branchRef}': ${redactGitOutput(fetch.stderr.trim()) || "unknown Git error"}`);
         }
         const fetchedHead = await requireGitOutput(
           runGit,
@@ -57597,7 +57763,7 @@ export function createAgentChatService(args: {
         agentId,
         laneId,
         branchName,
-        error: fetch.stderr.trim() || "unknown Git error",
+        error: redactGitOutput(fetch.stderr.trim()) || "unknown Git error",
       });
     } else {
       logger.info("agent_chat.cursor_cloud_branch_fetched", {
@@ -64994,6 +65160,9 @@ export function createAgentChatService(args: {
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
+      ...(pendingInputItemId && isUserOnlyPendingInput({ sessionId: row.id, itemId: pendingInputItemId })
+        ? { pendingInputUserOnly: true }
+        : {}),
       ...(hasLiveSteeringInput(liveManaged) ? { steeringInput: true } : {}),
       // Live-only, exactly like `steeringInput`: never persisted, never paired
       // with `awaitingInput` / `pendingInputItemId`.
@@ -65375,6 +65544,7 @@ export function createAgentChatService(args: {
       awaitingInput: summary.awaitingInput === true,
       pendingTitle: pending?.title ?? null,
       pendingDescription: pending?.description ?? null,
+      pendingUserOnly: summary.pendingInputUserOnly === true || isUserOnlyConsentCard(pending?.providerMetadata ?? null),
       queuedMessageCount,
       // Watch-only monitors never make a chat "waiting": nobody waits on them.
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
@@ -73423,6 +73593,9 @@ export function createAgentChatService(args: {
       // retry at the next boundary instead, regardless of which runtime or API
       // created it.
       if (liveManaged?.session.status === "active") return true;
+      // An open card refuses every new turn. Firing now would close the row as
+      // "Not delivered" and lose the wake; keep it armed until the card closes.
+      if (hasLivePendingInput(liveManaged)) return true;
       return schedule.provider === "claude"
         && liveRuntime?.query != null
         && liveRuntime.busy;

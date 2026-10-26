@@ -7011,6 +7011,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         cancelled: false,
         reason: "no active delete",
       }),
+      cancelGitWrite: resolvedArg({ cancelled: false }),
       getDeleteRisk: resolvedArg({
         laneId: "mock",
         branchRef: null,

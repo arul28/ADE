@@ -399,7 +399,7 @@ catch people writing their own proxy:
 
 ## Development
 
-Requires Node 22 (`/opt/homebrew/opt/node@22/bin` on macOS).
+Requires Node 24, the version in the repository's `.nvmrc` (`/opt/homebrew/opt/node@24/bin` on macOS).
 
 ```bash
 npm install            # in packages/chat-ui

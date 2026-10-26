@@ -227,6 +227,8 @@ import type {
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
+  CancelLaneGitWriteResult,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -2209,6 +2211,7 @@ declare global {
         importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneBranchSwitchPreview>;
         switchBranch: (
           args: LaneBranchSwitchArgs,
@@ -2239,9 +2242,15 @@ declare global {
         revealWorktree: (args: { laneId: string }) => Promise<void>;
         revealLeftoverWorktree: (args: { laneId: string }) => Promise<void>;
         deleteLeftoverWorktree: (args: { laneId: string }) => Promise<{ removed: boolean }>;
-        cancelDelete: (args: {
-          laneId: string;
-        }) => Promise<{ cancelled: boolean; reason?: string }>;
+        cancelDelete: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ cancelled: boolean; reason?: string }>;
+        /** Stops the git checkout of a create, child create, import or branch switch started with this `operationId`. */
+        cancelGitWrite: (
+          args: CancelLaneGitWriteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<CancelLaneGitWriteResult>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
         getDeleteRisk: (
           args: { laneId: string },

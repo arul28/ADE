@@ -112,6 +112,8 @@ import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
+import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
+import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
@@ -185,7 +187,6 @@ import type { createProjectSecretService } from "../secrets/projectSecretService
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
-import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
@@ -296,6 +297,7 @@ import type {
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
+  CancelLaneGitWriteArgs,
   CreateLaneArgs,
   CreateChildLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -4075,20 +4077,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
-    clipboard.writeText(text);
+    await clipboard.writeText(text);
   });
 
   ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
     assertTrustedAppControlSender(event, IPC.appReadClipboardText);
-    return clipboard.readText() ?? "";
+    return (await clipboard.readText()) ?? "";
   });
 
   ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
-    return !clipboard.readImage().isEmpty();
+    return !(await readClipboardImage(await readClipboardItem())).isEmpty();
   });
 
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4143,7 +4145,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
-    const image = clipboard.readImage();
+    const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
     if (!encoded) throw new Error(legacyAttachmentCapMessage("Clipboard image"));
@@ -4180,7 +4182,7 @@ export function registerIpc({
     if (image.isEmpty()) {
       throw new Error("Unable to read image.");
     }
-    clipboard.writeImage(image);
+    await writeClipboardFlavors({ image });
   });
 
   ipcMain.handle(
@@ -4521,7 +4523,7 @@ export function registerIpc({
         title: "Open repository",
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) {
         return null;
       }
@@ -4542,7 +4544,7 @@ export function registerIpc({
         defaultPath: args.defaultPath?.trim() || undefined,
         properties: ["openDirectory"]
       };
-      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const result = await showRememberedOpenDialog(win, options);
       if (result.canceled || result.filePaths.length === 0) return null;
       return result.filePaths[0] ?? null;
     }
@@ -5209,7 +5211,7 @@ export function registerIpc({
       properties: ["openDirectory", "createDirectory"],
       ...(typeof arg?.defaultPath === "string" && path.isAbsolute(arg.defaultPath) ? { defaultPath: arg.defaultPath } : {}),
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showRememberedOpenDialog(win, options);
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
@@ -5296,7 +5298,7 @@ export function registerIpc({
       buttonLabel: "Move lanes here",
       properties: ["openDirectory", "createDirectory"],
     };
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const picked = await showRememberedOpenDialog(owner, options);
     return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
@@ -5362,7 +5364,7 @@ export function registerIpc({
       const written = writeDiagnosticReportFile(result.filePath, result.report);
       let copied = false;
       try {
-        clipboard.writeText(result.report);
+        await clipboard.writeText(result.report);
         copied = true;
       } catch {
         copied = false;
@@ -7631,6 +7633,7 @@ export function registerIpc({
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
       githubIssue: arg.githubIssue ?? null,
+      ...(arg.operationId ? { operationId: arg.operationId } : {}),
     });
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -7766,6 +7769,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return ctx.laneService.cancelDelete(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesCancelGitWrite, async (_event, arg: CancelLaneGitWriteArgs) => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.cancelGitWrite(arg);
   });
 
   ipcMain.handle(IPC.lanesListDeleteProgress, async () => {
@@ -11781,52 +11789,14 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
-    const ctx = ensureGitLaneContext();
-    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    const fallback = { remoteUrl: null, branch: null } as const;
-    if (!laneId) return fallback;
-    let worktreePath: string;
-    let knownBranch: string | null = null;
+    const ctx = ensureGitContext();
+    const laneId = typeof arg?.laneId === "string" ? arg.laneId : "";
     try {
-      const info = ctx.laneService.getLaneBaseAndBranch(laneId);
-      worktreePath = info.worktreePath;
-      knownBranch = info.branchRef?.trim() || null;
+      return await ctx.gitService.getOriginRemote({ laneId });
     } catch {
-      return fallback;
+      // A missing lane or a stale worktree reads as "no remote", as it always has.
+      return { remoteUrl: null, branch: null };
     }
-    if (!worktreePath) return fallback;
-    const [remoteRes, branchRes] = await Promise.all([
-      runGit(["remote", "get-url", "origin"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-      knownBranch
-        ? Promise.resolve(null)
-        : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null),
-    ]);
-    const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
-    // Strip embedded credentials/userinfo (e.g. https://user:token@host/...)
-    // before exposing the URL to the renderer, so secrets do not cross the IPC
-    // boundary.
-    const remoteUrl = ((): string | null => {
-      if (!rawRemote) return rawRemote;
-      try {
-        const parsed = new URL(rawRemote);
-        if (parsed.username || parsed.password) {
-          parsed.username = "";
-          parsed.password = "";
-          return parsed.toString();
-        }
-        return rawRemote;
-      } catch {
-        // Non-URL form (e.g. SSH `git@host:owner/repo.git`) — return unchanged;
-        // these never embed user credentials.
-        return rawRemote;
-      }
-    })();
-    let branch = knownBranch;
-    if (!branch && branchRes && branchRes.exitCode === 0) {
-      const out = branchRes.stdout.trim();
-      branch = out && out !== "HEAD" ? out : null;
-    }
-    return { remoteUrl, branch };
   });
 
   ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {

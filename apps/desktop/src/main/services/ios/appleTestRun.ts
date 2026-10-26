@@ -62,8 +62,8 @@ function buildXcodebuildTestArgs(spec: AppleTestRunSpec): string[] {
 function summarizeXcodebuildTestLog(
   output: string,
   run: { timedOut: boolean; timeoutMs: number },
-): { testsExecuted: number | null; testsFailed: number | null; summary: string } {
-  const executed = [...output.matchAll(/Executed (\d+) tests?, with (\d+) failures?/g)].pop();
+): { testsExecuted: number | null; testsFailed: number | null; testsSkipped: number | null; summary: string } {
+  const executed = xcodebuildTestTotal(output);
   const failingLines = output.split(/\r?\n/).filter((line) => (
     /Test Case .* failed|: error:|\*\* TEST (FAILED|BUILD FAILED)|\*\* BUILD FAILED/.test(line)
   ));
@@ -73,10 +73,40 @@ function summarizeXcodebuildTestLog(
     failingLines.length ? null : output.trimEnd().split(/\r?\n/).slice(-15).join("\n"),
   ].filter(Boolean).join("\n");
   return {
-    testsExecuted: executed ? Number(executed[1]) : null,
-    testsFailed: executed ? Number(executed[2]) : null,
+    testsExecuted: executed?.executed ?? null,
+    testsFailed: executed?.failed ?? null,
+    testsSkipped: executed?.skipped ?? null,
     summary,
   };
+}
+
+/**
+ * The run's total from XCTest's `Executed N tests, with M failures` lines.
+ *
+ * XCTest prints one per suite, one per bundle, and one for the whole run
+ * (under `Test Suite 'All tests'` or `'Selected tests'`); the run's line is
+ * the one that counts, and it is also the largest. A run with skips prints
+ * "with 1 test skipped and 0 failures", which the old pattern did not match,
+ * so a 1273-test run reported the last per-suite 48.
+ */
+function xcodebuildTestTotal(output: string): { executed: number; failed: number; skipped: number } | null {
+  const lines = [...output.matchAll(
+    /Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?(\d+) failures?/g,
+  )].map((match) => ({
+    index: match.index ?? 0,
+    executed: Number(match[1]),
+    skipped: Number(match[2] ?? 0),
+    failed: Number(match[3]),
+  }));
+  if (!lines.length) return null;
+  // The line printed after the run-wide suite's own "passed/failed at" line.
+  const runSuite = [...output.matchAll(/Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at/g)].pop();
+  if (runSuite?.index !== undefined) {
+    const after = lines.find((line) => line.index > (runSuite.index ?? 0));
+    if (after) return { executed: after.executed, failed: after.failed, skipped: after.skipped };
+  }
+  const largest = lines.reduce((best, line) => (line.executed > best.executed ? line : best));
+  return { executed: largest.executed, failed: largest.failed, skipped: largest.skipped };
 }
 
 /** Keep the newest `keep` entries of a cache directory, delete the rest. Best effort. */

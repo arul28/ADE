@@ -68,6 +68,7 @@ import { ensureMuseBinary, museProviderOverride, resolveMuseExecutable } from ".
 import { checkMuseVendorFloor } from "../ai/museFallForward";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
+import { redactProcessOutput } from "../../utils/redaction";
 
 /**
  * The params of each view notification ADE models, keyed by method. These are
@@ -258,6 +259,8 @@ const REQUESTED_CAPABILITIES: CapabilityName[] = [
 ];
 
 const STDERR_TAIL_LIMIT = 40;
+/** The longest unfinished stderr line kept for whole-line redaction. */
+const STDERR_LINE_LIMIT = 16_000;
 /** MSP SS2.1.2: the host drains after stdin EOF; past this, the rest is a crash. */
 const CLOSE_GRACE_MS = 5_000;
 const KILL_GRACE_MS = 2_000;
@@ -289,13 +292,34 @@ export function isMuseErrorKind(error: unknown, ...kinds: string[]): boolean {
 
 export async function startMuseHost(options: MuseHostStartOptions): Promise<MuseHost> {
   const stderr: string[] = [];
+  /** The line still being written: a secret split across two chunks is redacted whole. */
+  let stderrPartial = "";
+  let droppingStderrLine = false;
   const pushStderr = (chunk: string) => {
-    for (const line of chunk.split(/\r?\n/)) {
+    let text = chunk;
+    if (droppingStderrLine) {
+      const newline = text.indexOf("\n");
+      if (newline < 0) return;
+      text = text.slice(newline + 1);
+      droppingStderrLine = false;
+    }
+    const lines = `${stderrPartial}${text}`.split(/\r?\n/);
+    stderrPartial = lines.pop() ?? "";
+    // A line this long (a progress bar redrawn with `\r`) is dropped through
+    // its next newline rather than kept or cut: a fragment could hold half a secret.
+    if (stderrPartial.length > STDERR_LINE_LIMIT) {
+      stderrPartial = "";
+      droppingStderrLine = true;
+    }
+    for (const line of lines) {
       if (!line.trim()) continue;
-      stderr.push(line);
+      // The tail reaches the chat's error notice, so its secrets go first.
+      stderr.push(redactProcessOutput(line));
       if (stderr.length > STDERR_TAIL_LIMIT) stderr.shift();
     }
   };
+  const stderrTail = (): string[] =>
+    stderrPartial.trim() ? [...stderr, redactProcessOutput(stderrPartial)].slice(-STDERR_TAIL_LIMIT) : stderr.slice();
   // POSIX: the host leads its own process group so one signal reaches every
   // shell and MCP server it started. Windows has no groups; `taskkill /T`
   // (terminateProcessTree) walks the tree instead.
@@ -314,7 +338,7 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once("exit", (code, signal) => resolve({ code, signal }));
     child.once("error", (error) => {
-      pushStderr(error.message);
+      pushStderr(`${error.message}\n`);
       resolve({ code: null, signal: null });
     });
   });
@@ -447,7 +471,7 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
   } catch (error) {
     await connection.close().catch(() => undefined);
     if (!(await within(KILL_GRACE_MS))) signalTree("SIGKILL");
-    const detail = stderr.slice(-8).join("\n");
+    const detail = stderrTail().slice(-8).join("\n");
     const base = describeMuseError(error);
     throw new Error(detail ? `${base}\n${detail}` : base);
   }
@@ -460,12 +484,13 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
     if (deathReported) return;
     deathReported = true;
     alive = false;
-    const kind = closing ? "clean" : classifyExitKind(stderr, exit.code);
+    const tail = stderrTail();
+    const kind = closing ? "clean" : classifyExitKind(tail, exit.code);
     const payload: MuseHostExit = {
       kind,
       code: exit.code,
       signal: exit.signal ?? null,
-      stderrTail: stderr.slice(),
+      stderrTail: tail,
     };
     options.logger?.info("agent_chat.muse_host_exit", {
       kind,
@@ -519,7 +544,7 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
       exitHandlers.add(handler);
       return () => exitHandlers.delete(handler);
     },
-    stderrTail: () => stderr.slice(),
+    stderrTail,
     async close() {
       if (closing) return;
       closing = true;

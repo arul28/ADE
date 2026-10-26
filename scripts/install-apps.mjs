@@ -71,16 +71,28 @@ for (const target of targets) {
   }
 }
 
-// Electron's postinstall can exit 0 without finishing; verify both its final
-// path marker and the executable it names.
+// Since Electron 42 `npm install` no longer downloads the binary (it comes on
+// first run), so fetch it here the way `npm run dev` does, then verify both
+// its final path marker and the executable it names.
 const electronDir = path.join(repoRoot, "apps", "desktop", "node_modules", "electron");
 const electronPath = path.join(electronDir, "path.txt");
+let ensureElectronStatus = null;
+if (fs.existsSync(path.join(electronDir, "install.js")) && !process.env.ELECTRON_OVERRIDE_DIST_PATH) {
+  // A no-op when the binary is already there.
+  const ensured = spawnSync(process.execPath, [path.join(repoRoot, "apps", "desktop", "scripts", "ensure-electron.cjs")], {
+    cwd: path.join(repoRoot, "apps", "desktop"),
+    stdio: "inherit",
+  });
+  ensureElectronStatus = ensured.error ? ensured.error.message : ensured.status;
+}
 const electronRelativePath = fs.existsSync(electronPath) ? fs.readFileSync(electronPath, "utf8").trim() : "";
 const electronDist = process.env.ELECTRON_OVERRIDE_DIST_PATH || path.join(electronDir, "dist");
 const electronExecutable = electronRelativePath ? path.join(electronDist, electronRelativePath) : null;
 if (!electronExecutable || !fs.existsSync(electronExecutable)) {
   const repair = fs.existsSync(electronDir)
-    ? `run \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
+    ? ensureElectronStatus != null && ensureElectronStatus !== 0
+      ? `retry the download (ensure-electron exited ${ensureElectronStatus}; check the network or proxy) by running \`node install.js\` in ${path.relative(repoRoot, electronDir)}`
+      : `run \`node scripts/ensure-electron.cjs\` in apps/desktop`
     : "run `npm install` again in apps/desktop";
   const missing = !fs.existsSync(electronPath)
     ? `no ${path.relative(repoRoot, electronPath)}`

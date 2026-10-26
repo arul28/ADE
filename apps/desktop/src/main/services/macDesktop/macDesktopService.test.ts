@@ -23,6 +23,10 @@ import {
 import { createMacDesktopService } from "./macDesktopService";
 import type { DesktopSeatAdapter } from "./macDesktopSeatProvider";
 import type { MacDesktopRequestChatInput } from "./macDesktopLeaseFlow";
+import {
+  MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE,
+  MAC_DESKTOP_INPUT_LEASE_WAIT_MS,
+} from "./macDesktopLeaseFlow";
 import { asWindowsDesktopStatus, createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
@@ -413,6 +417,49 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toHaveLength(1);
     } finally {
       late.service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("withdraws the real-input card at its deadline, so a caller that gave up cannot block the chat", async () => {
+    // The owner's 2026-10-24 run: an agent asked for the lease, its CLI call
+    // timed out, and the card stayed open for hours, refusing every later
+    // message and scheduled wake. The card must go when the caller's budget
+    // does, and the caller must be told why.
+    vi.useFakeTimers();
+    const open: Array<{ allow: () => void }> = [];
+    let cardShown: () => void = () => {};
+    const shown = new Promise<void>((resolve) => { cardShown = resolve; });
+    const requestChatInput: MacDesktopRequestChatInput = (input) => new Promise((resolve, reject) => {
+      input.signal?.addEventListener("abort", () => reject(new Error("withdrawn")));
+      open.push({
+        allow: () => resolve({
+          decision: "accept",
+          answers: { [input.questions?.[0]?.id ?? "q"]: ["allow"] },
+          responseText: null,
+        }),
+      });
+      cardShown();
+    });
+    const mac = makeService({ requestChatInput });
+    try {
+      await mac.service.start({ laneId: "lane-1" });
+      let settled: unknown = null;
+      const lease = mac.service.requestInputLease({ laneId: "lane-1", chatSessionId: "chat-1", reason: "drag a file" })
+        .then((value: unknown) => value, (error: { message?: string }) => error);
+      void lease.then((value) => { settled = value; });
+      await shown;
+      await vi.advanceTimersByTimeAsync(MAC_DESKTOP_INPUT_LEASE_WAIT_MS - 1_000);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Refused, with the sentence that says the card was withdrawn, not denied.
+      expect(settled).toMatchObject({ granted: false, message: MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE });
+      // The user's late Allow changes nothing: the lease was already refused.
+      open.at(-1)!.allow();
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await mac.service.getStatus({ laneId: "lane-1" })).lease?.holderId ?? null).toBeNull();
+    } finally {
+      mac.service.dispose();
       vi.useRealTimers();
     }
   });
