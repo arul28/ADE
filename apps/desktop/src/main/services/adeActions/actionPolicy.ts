@@ -719,6 +719,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archiveSession",
     "cancelDispatchedSteer",
     "cancelSteer",
+    // `ade chat ask --clear`: the agent takes back the hand it raised. Fenced
+    // to `agent_explicit` in the service, and scoped to the caller's own chat
+    // by the RPC server's chat guard, so it cannot drop a person's hand.
+    "clearAsk",
     "createSession",
     "deleteSession",
     "dispatchSteer",

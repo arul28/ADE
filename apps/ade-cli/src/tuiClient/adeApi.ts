@@ -338,6 +338,18 @@ export async function requestSessionAttention(
   await connection.action("session", "requestSessionAttention", { sessionId, message });
 }
 
+/**
+ * Take back the "Needs you" hand this chat raised (`ade chat ask --clear`).
+ * Only the agent's own marker goes down; a hand the person raised and a
+ * provider question card are left alone.
+ */
+export async function clearSessionAsk(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("chat", "clearAsk", { sessionId });
+}
+
 export async function setSessionStatusNote(
   connection: AdeCodeConnection,
   sessionId: string,

@@ -42,6 +42,7 @@ import {
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
+import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
 import { showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
@@ -2187,6 +2188,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => copyToClipboard(id, "session ID")}
         onSettle={handleSettleSession}
+        onChangeStatus={(session, target, runtimePin) => {
+          moveSessionOnBoard({ session, to: target, binding: runtimePin ?? null });
+        }}
+        statusWaitingReason={contextMenu
+          ? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null
+          : null}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
           void (async () => {

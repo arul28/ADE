@@ -2559,6 +2559,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
+                                                    --clear takes that hand back down (alias: 'ade chat unask'):
+                                                    only the marker this chat raised, never one the user raised.
+                                                    Clear it when you asked and then kept working anyway, so the
+                                                    row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
@@ -10689,6 +10693,13 @@ function buildChatPlan(args: string[]): CliPlan {
     });
   const requireSession = () => requireValue(sessionId, "sessionId");
   if (sub === "ask") {
+    if (args.includes("--clear") || args.includes("--retract")) {
+      return {
+        kind: "execute",
+        label: "chat ask --clear",
+        steps: [actionStep("result", "chat", "clearAsk", withSession({}))],
+      };
+    }
     const message = requireValue(
       readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
       "question",
@@ -12904,6 +12915,13 @@ function buildPersonalSelfReportPlan(
     "sessionId",
   );
   if (sub === "ask") {
+    if (args.includes("--clear") || args.includes("--retract")) {
+      return {
+        ...base,
+        label: "personal chat ask --clear",
+        steps: [personalChatStep("clearAsk", { sessionId })],
+      };
+    }
     const message = requireValue(
       readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
       "question",
