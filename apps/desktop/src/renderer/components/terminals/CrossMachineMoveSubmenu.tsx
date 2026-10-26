@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   ArrowSquareOut,
   Desktop,
-  Hourglass,
   Prohibit,
   SlidersHorizontal,
   X,
@@ -178,6 +177,17 @@ export function CrossMachineMoveSubmenu({
     }
   };
 
+  const anyQuickBrief = Boolean(
+    result?.machines.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
+  );
+  const quickBriefHint = anyQuickBrief
+    ? [
+      "Quick brief",
+      changeCount > 0 && changesLabel ? `brings ${changesLabel}` : null,
+      busy ? "after this turn" : null,
+    ].filter(Boolean).join(" · ")
+    : null;
+
   // Kept across later attempts, so a cancelled second move still offers it.
   const continuation = crossMachineContinuation(record);
   // A lost confirmation is never replayed blindly: retry it or go look.
@@ -277,23 +287,35 @@ export function CrossMachineMoveSubmenu({
           {hardBlockers.length ? (
             <MenuSubmenuStatus>{hardBlockers[0]!.title}. {hardBlockers[0]!.detail}</MenuSubmenuStatus>
           ) : null}
+          {/* What a click does, said ONCE above the list instead of on every
+              row: rows are just machine + state, so the menu stays narrow. */}
+          {quickBriefHint ? (
+            <div
+              className="whitespace-nowrap px-3 pb-1 pt-1.5 text-[10px] text-muted-fg/60"
+              data-testid="session-menu-move-hint"
+            >
+              {quickBriefHint}
+            </div>
+          ) : null}
           {result?.machines.map((machine) => {
             const available = machine.online && !machine.unavailableReason;
             // No repository there: the full setup asks before cloning.
             const needsClone = machine.hasRepository === false;
-            const hint = needsClone
-              ? "will clone the repo"
-              : [
-                changeCount > 0 && changesLabel ? `brings ${changesLabel}` : null,
-                busy ? "when this turn ends" : null,
-              ].filter(Boolean).join(" · ");
+            // "Offline since yesterday 6:12 PM" reads as "Offline" in the row;
+            // the full reason stays in the tooltip.
+            const reason = machine.unavailableReason ?? "Offline";
+            const state = !available ? compactUnavailableReason(reason)
+              : needsClone
+                ? "clones the repo"
+                : null;
             return (
               <div key={machine.machineKey} className="flex items-center gap-0.5" data-testid="session-menu-move-machine">
                 <button
                   type="button"
                   disabled={!available}
-                  title={available ? undefined : machine.unavailableReason ?? "Offline"}
-                  className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:text-muted-fg/45 disabled:hover:bg-transparent")}
+                  title={available ? (needsClone ? `Set up ${machine.name} first` : `Quick brief to ${machine.name}`) : reason}
+                  aria-label={available ? (needsClone ? `Set up ${machine.name}…` : `Quick brief to ${machine.name}`) : `${machine.name}, ${state}`}
+                  className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
                   onClick={() => {
                     if (needsClone) {
                       onClose();
@@ -306,18 +328,17 @@ export function CrossMachineMoveSubmenu({
                   <span
                     className="kit-dot shrink-0"
                     data-state={available ? "ok" : undefined}
-                    aria-label={available ? "Online" : "Unavailable"}
+                    aria-hidden
                   />
                   <span className="min-w-0 flex-1 truncate">
-                    {!available ? machine.name : needsClone ? `Set up ${machine.name}…` : `Quick brief to ${machine.name}`}
+                    {needsClone && available ? `Set up ${machine.name}…` : machine.name}
                   </span>
-                  {available ? (
-                    hint ? <span className="ml-2 shrink-0 text-[10px] text-muted-fg/55">{hint}</span> : null
-                  ) : (
-                    <span className="ml-2 shrink-0 text-[10px] text-muted-fg/45">{machine.unavailableReason ?? "Offline"}</span>
-                  )}
-                  {busy && available && !needsClone ? <Hourglass size={11} className="shrink-0 text-muted-fg/45" aria-hidden /> : null}
+                  {state ? (
+                    <span className="ml-3 shrink-0 whitespace-nowrap text-[10px] text-muted-fg/60">{state}</span>
+                  ) : null}
                 </button>
+                {/* Fixed trailing slot, filled or not, so every row's right
+                    edge lines up. */}
                 {available ? (
                   <button
                     type="button"
@@ -331,7 +352,9 @@ export function CrossMachineMoveSubmenu({
                   >
                     <SlidersHorizontal size={12} />
                   </button>
-                ) : null}
+                ) : (
+                  <span aria-hidden className="kit-icon-btn shrink-0 invisible" />
+                )}
               </div>
             );
           })}
@@ -346,10 +369,22 @@ export function CrossMachineMoveSubmenu({
             }}
           >
             <MenuRowIcon icon={SlidersHorizontal} />
-            Choose in full setup…
+            More handoff options…
           </button>
         </>
       )}
     </MenuSubmenu>
   );
+}
+
+/**
+ * "Offline since yesterday 6:12 PM" → "Offline · yesterday"; anything that
+ * does not fit that shape stays as written ("Asleep"), and a long date falls
+ * back to "Offline". The full reason stays in the row's tooltip.
+ */
+function compactUnavailableReason(reason: string): string {
+  const since = /^offline since (.+)$/i.exec(reason.trim());
+  if (!since) return /^offline\b/i.test(reason) ? "Offline" : reason;
+  const when = since[1]!.replace(/\s+\d{1,2}:\d{2}(\s*[AP]M)?$/i, "").trim();
+  return when && when.length <= 12 ? `Offline · ${when}` : "Offline";
 }

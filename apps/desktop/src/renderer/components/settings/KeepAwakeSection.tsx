@@ -79,7 +79,7 @@ function levelLimit(
   }
   if (level !== "never") return LEVEL_COPY[level].limit;
   if (machine.platform === "windows") return WINDOWS_NEVER_LIMIT;
-  if (!machine.isThisMachine && machine.platform === "other") return "Turns pause when this computer sleeps";
+  if (machine.platform === "other") return "Turns pause when this computer sleeps";
   return machine.mac ? "Turns pause when this Mac sleeps" : WINDOWS_NEVER_LIMIT;
 }
 
@@ -231,6 +231,17 @@ export function KeepAwakeControls() {
   const systemSleep = current.systemSleep;
   const warn = systemSleepStopsAgents(systemSleep);
 
+  // A machine that can only ever "never" has nothing to pick: one quiet row
+  // says so, instead of a lone selected card that looks like a broken picker.
+  if (levels.length === 1 && levels[0] === "never" && current.preferences.level === "never") {
+    return (
+      <div className="ade-modern-note" style={{ alignItems: "center" }}>
+        <MoonStars size={14} />
+        <span>ADE can't keep {isThisMachine ? "this computer" : machineName} awake here, so turns pause when it sleeps.</span>
+      </div>
+    );
+  }
+
   return (
     <div className="ade-modern-stack">
       <div
@@ -367,7 +378,7 @@ export function KeepAwakeSection() {
         : mac
           ? "Keep this Mac awake while agents work"
           : "Keep this PC awake while agents work"}
-      hint="A sleeping computer pauses every agent turn. Pick how far ADE may go to keep it awake."
+      hint="A sleeping computer pauses every agent turn."
     >
       <KeepAwakeControls />
     </ModernSection>

@@ -58,6 +58,17 @@ same treatment:
 - **Chat ink.** The "No tint" chat palette and anything printed on the user's
   accent bubble use `--chat-ink`; light pages set it to `--color-fg` and the
   bubble pins it back to white.
+- **Faded text has a floor.** On light pages `text-fg/25`–`/79` and
+  `text-muted-fg/30`–`/85` keep their order but resolve to 50–80% and 78–93%
+  (foundation.css), so meta reads at about 3.5 : 1 and secondary text near
+  4.5 : 1. Fades below those ranges are left as written (disabled, decorative).
+  Faint black wells (`bg-black/10`–`/30`) become a light `--color-fg` tint.
+- **Accent as text.** Use `text-accent-text` (`--color-accent-text`): the bright
+  accent on dark pages, the theme's accent darkened to 4.5 : 1 on light ones
+  (`resolve.ts` emits it per theme). Legacy `text-[color:var(--color-accent…)]`
+  classes pick it up on light pages automatically.
+- **Pictures tint only Dark and Light.** "From picture" recolours the plain
+  Dark and Light themes; a named theme keeps its own accent and surfaces.
 
 ## The format
 

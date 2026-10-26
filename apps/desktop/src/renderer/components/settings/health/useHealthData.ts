@@ -75,7 +75,7 @@ const ALL_PARTS: HealthDataParts = { storage: true, diagnostics: true, report: t
 /**
  * What the project and service pages read (Project → Lanes, Storage & cleanup and Location,
  * Computer → ADE service), loaded once when the page opens and again on
- * demand (Measure again, Check again, after a cleanup). No polling.
+ * demand (Check again, after a cleanup). No polling.
  *
  * Remote machines: every storage, lane, config and project-health call carries
  * the Settings machine's `pin`. Disk pressure, resource usage and runtime

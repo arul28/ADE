@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Copy, File as FileIcon, FilePlus, FolderPlus, Path, PencilSimple, TextT, Trash } from "@phosphor-icons/react";
 import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { useAppStore, useRootAppStore } from "../../../state/appStore";
@@ -1510,18 +1510,18 @@ export function FilesWorkbench({
     const name = path.split("/").filter(Boolean).pop() ?? path;
     const items: ContextMenuItem[] = [];
     if (treeMenu.nodeType === "file") {
-      items.push({ type: "item", label: "Open", onClick: () => void openFile(path, { preview: false }) });
+      items.push({ type: "item", label: "Open", icon: <FileIcon size={14} />, onClick: () => void openFile(path, { preview: false }) });
       items.push({ type: "separator" });
     }
-    items.push({ type: "item", label: "New File…", icon: <FilePlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "file", baseDir }) });
-    items.push({ type: "item", label: "New Folder…", icon: <FolderPlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "directory", baseDir }) });
+    items.push({ type: "item", label: "New file…", icon: <FilePlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "file", baseDir }) });
+    items.push({ type: "item", label: "New folder…", icon: <FolderPlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "directory", baseDir }) });
     items.push({ type: "separator" });
     items.push({ type: "item", label: "Rename…", icon: <PencilSimple size={14} />, onClick: () => setInlineRename({ path, nonce: ++renameNonceRef.current }) });
     items.push({ type: "item", label: "Delete", icon: <Trash size={14} />, danger: true, onClick: () => void deletePath(path) });
     items.push({ type: "separator" });
-    items.push({ type: "item", label: "Copy Full Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(fullPath) });
-    items.push({ type: "item", label: "Copy Relative Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(path) });
-    items.push({ type: "item", label: "Copy Name", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(name) });
+    items.push({ type: "item", label: "Copy path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(fullPath) });
+    items.push({ type: "item", label: "Copy relative path", icon: <Path size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(path) });
+    items.push({ type: "item", label: "Copy name", icon: <TextT size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(name) });
     items.push({
       type: "item",
       label: revealLabel,

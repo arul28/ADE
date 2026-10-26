@@ -178,7 +178,7 @@ describe("SessionContextMenu Claude tags", () => {
     const session = makeSession({ claudeTag: "review-ready" });
     const { onClose, onSetChatTag } = renderMenu(session);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set tag…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set tag" }));
     const input = screen.getByRole("textbox", { name: "Set Claude session tag" }) as HTMLInputElement;
     expect(input.value).toBe("review-ready");
     fireEvent.change(input, { target: { value: "   " } });
@@ -192,7 +192,7 @@ describe("SessionContextMenu Claude tags", () => {
     const session = makeSession();
     const { onClose, onSetChatTag } = renderMenu(session);
 
-    fireEvent.click(screen.getByRole("button", { name: "Set tag…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set tag" }));
     const input = screen.getByRole("textbox", { name: "Set Claude session tag" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "review-ready" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -203,13 +203,13 @@ describe("SessionContextMenu Claude tags", () => {
 
   it("does not offer SDK tags for non-Claude chat sessions", () => {
     renderMenu(makeSession({ toolType: "codex-chat" }));
-    expect(screen.queryByRole("button", { name: "Set tag…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set tag" })).toBeNull();
   });
 
   it("does not offer SDK tags for ended Claude sessions", () => {
     // Tag writes need a live Claude SDK runtime; the menu gates on running.
     renderMenu(makeSession({ status: "disposed", endedAt: "2026-07-10T13:00:00.000Z" }));
-    expect(screen.queryByRole("button", { name: "Set tag…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set tag" })).toBeNull();
   });
 });
 
@@ -236,9 +236,9 @@ describe("SessionContextMenu lane section", () => {
     // own menu renders — the assertion is that the submenu is that menu, not a
     // transcription of it.
     expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Manage lane" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Open in web" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /Select All Lanes/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Select all lanes/ })).toBeTruthy();
     // The colour palette is reachable too, one hover further in.
     openSubmenuByHover(screen.getByRole("menuitem", { name: "Color" }));
     expect(screen.getAllByRole("button", { name: /Rainbow|Sky|Amber|Rose/ }).length).toBeGreaterThan(0);
@@ -250,9 +250,9 @@ describe("SessionContextMenu lane section", () => {
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
     openSubmenuByHover(screen.getByRole("menuitem", { name: "Copy" }));
 
-    expect(screen.getByRole("menuitem", { name: "Copy ADE Lane Link" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Copy Branch Link (Cross-Machine)" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Copy Path" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy ADE lane link" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy branch link (any machine)" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Copy path" })).toBeTruthy();
   });
 
   it("falls back to the real lane menu portal for a lane it cannot resolve", () => {
@@ -304,9 +304,9 @@ describe("SessionContextMenu lane section", () => {
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
 
     expect(screen.getByRole("menuitem", { name: "Start chat in lane" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Manage lane" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Open lane menu…" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /Select All Lanes/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Select all lanes/ })).toBeNull();
   });
 
   it("starts a chat draft on the owning machine from the Lane submenu", () => {
@@ -492,7 +492,7 @@ describe("SessionContextMenu grouped actions", () => {
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
 
-    expect(screen.getByRole("button", { name: "Rename…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Generate chat title" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Generate lane name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Generate status line" })).toBeTruthy();
@@ -514,7 +514,7 @@ describe("SessionContextMenu grouped actions", () => {
     const { onClose, onRename } = renderMenu(session, { onRegenerateMetadata });
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
-    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
 
     const input = screen.getByRole("textbox", { name: "Rename session" });
     expect(screen.queryByRole("button", { name: "Generate all three" })).toBeNull();
@@ -532,7 +532,7 @@ describe("SessionContextMenu grouped actions", () => {
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
 
-    expect(screen.queryByRole("button", { name: "Rename…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
     expect(screen.getByRole("button", { name: "Generate status line" })).toBeTruthy();
   });
 

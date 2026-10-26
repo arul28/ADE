@@ -48,9 +48,9 @@ export type CreateLaneSetupStep = {
 };
 
 const MODE_LABEL: Record<CreateLaneMode, string> = {
-  primary: "As new branch",
-  existing: "As existing branch",
-  child: "As child lane",
+  primary: "New branch",
+  existing: "Existing branch",
+  child: "Child lane",
 };
 
 const MODE_HELP: Record<CreateLaneMode, string> = {

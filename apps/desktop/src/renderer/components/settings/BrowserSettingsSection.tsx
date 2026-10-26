@@ -61,7 +61,7 @@ export function BrowserSettingsSection() {
         <ModernRow
           anchor="browser-tab-limit"
           title="Tabs per browser"
-          hint={`How many tabs this browser keeps, ${BUILT_IN_BROWSER_TAB_LIMIT_MIN}–${BUILT_IN_BROWSER_TAB_LIMIT_MAX}. Agents see this as "tabs N of M" and close their own tabs when they are done.`}
+          hint={`How many tabs it keeps open, ${BUILT_IN_BROWSER_TAB_LIMIT_MIN}–${BUILT_IN_BROWSER_TAB_LIMIT_MAX}. Agents close their own.`}
           control={(
             <span
               onBlur={commitLimit}
@@ -155,7 +155,7 @@ export function BrowserAutoGrantSection() {
       group="ADE browser"
       anchor="browser-auto-grant"
       title="Let agents approve these without asking"
-      hint="All off by default. A site you have explicitly blocked still stays blocked, and macOS or Windows can still refuse at the system level."
+      hint="All off by default. Sites you blocked stay blocked."
     >
       <ModernRows>
         {rows.map((row) => (

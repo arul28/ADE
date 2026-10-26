@@ -7,6 +7,7 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
+import { dialogBus } from "../../../lib/dialogBus";
 import { Banner } from "../../ui/notice";
 import {
   COLORS,
@@ -359,7 +360,7 @@ function GitHubTabListColumn({
             fontSize: 12,
             color: COLORS.textMuted,
           }}>
-            {list.loading && !list.hasSnapshot ? "Loading pull requests..." : "No pull requests"}
+            {list.loading && !list.hasSnapshot ? "Loading pull requests…" : "No pull requests"}
           </div>
         ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (
           <GitHubTabVirtualList
@@ -442,7 +443,21 @@ function GitHubTabDetail({
           color: COLORS.textDim,
         }}
       >
-        Select a pull request
+        {detail.displayedItems.length === 0 ? (
+          // Nothing to select: say so, and offer the next step.
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <span>No pull requests yet</span>
+            <button
+              type="button"
+              className="kit-btn"
+              onClick={() => dialogBus.open("prs.create")}
+            >
+              Create pull request
+            </button>
+          </div>
+        ) : (
+          "Select a pull request"
+        )}
       </div>
     );
   }

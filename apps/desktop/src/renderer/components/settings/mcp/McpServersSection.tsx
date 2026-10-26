@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowsClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { REGISTRY_MCP_PROVIDER_IDS, registryMcpSupport } from "../../../../shared/callerMcpServers";
 import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
@@ -228,8 +228,8 @@ export function McpServersSection() {
           title="Found on this computer, not in ADE"
           hint="From your provider tools' own settings. Import one to give it to every agent."
           actions={(
-            <button type="button" className="ade-modern-btn" disabled={registry.phase === "loading"} onClick={() => void registry.reload()}>
-              <ArrowsClockwise size={12} weight="bold" /> Look again
+            <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={registry.phase === "loading"} onClick={() => void registry.reload()}>
+              <ArrowClockwise size={13} /> Check again
             </button>
           )}
         >

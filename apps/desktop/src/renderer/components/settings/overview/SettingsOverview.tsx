@@ -165,24 +165,30 @@ export function SettingsOverview() {
                 return (
                   <li key={item.id} className="ade-attn-row" data-severity={item.severity}>
                     <span className="kit-dot" data-state={DOT_STATE[item.severity]} aria-hidden />
+                    {/* Title over a one-line muted reason, then a fixed trailing
+                        column on every row: scope chip, the fix button when
+                        there is one, and the open arrow always, so chips and
+                        arrows line up down the list. */}
                     <span className="ade-attn-text">
                       <span className="ade-attn-title">{item.title}</span>
                       {item.detail ? <span className="ade-attn-detail" title={item.detail}>{item.detail}</span> : null}
                     </span>
-                    <span className="kit-tag ade-attn-where">{item.where}</span>
-                    {fixLabel ? (
-                      <button
-                        type="button"
-                        className="ade-modern-btn"
-                        data-size="sm"
-                        disabled={busy}
-                        title={item.projectIssue?.fix?.description}
-                        onClick={() => void runFix(item)}
-                      >
-                        {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-                        {fixLabel}
-                      </button>
-                    ) : null}
+                    <span className="ade-attn-where-col"><span className="kit-tag ade-attn-where">{item.where}</span></span>
+                    <span className="ade-attn-fix-col">
+                      {fixLabel ? (
+                        <button
+                          type="button"
+                          className="ade-modern-btn"
+                          data-size="sm"
+                          disabled={busy}
+                          title={item.projectIssue?.fix?.description}
+                          onClick={() => void runFix(item)}
+                        >
+                          {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
+                          {fixLabel}
+                        </button>
+                      ) : null}
+                    </span>
                     {canOpen(item.route) ? (
                       <button
                         type="button"
@@ -193,7 +199,7 @@ export function SettingsOverview() {
                       >
                         <ArrowRight size={13} />
                       </button>
-                    ) : null}
+                    ) : <span aria-hidden />}
                   </li>
                 );
               })}

@@ -162,7 +162,7 @@ function SourceGroup({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="ml-[30px] mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
+          className="ml-0.5 mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
           data-testid={`chat-sources-toggle-${group}`}
         >
           {expanded ? "Show less" : `Show ${hidden} more`}

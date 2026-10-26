@@ -112,6 +112,9 @@ export type BrowserToolbarRowProps = {
   previewControls?: ReactNode;
 };
 
+/** Back, forward and reload with nowhere to go look inactive, not merely dim. */
+const NAV_DISABLED = "disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-fg/80";
+
 export function BrowserToolbarRow({
   rowRef,
   shared,
@@ -175,7 +178,7 @@ export function BrowserToolbarRow({
           type="button"
           disabled={navDisabled || !canGoBack}
           onClick={onBack}
-          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS, NAV_DISABLED)}
           title="Go back"
           aria-label="Go back"
         >
@@ -186,7 +189,7 @@ export function BrowserToolbarRow({
             type="button"
             disabled={navDisabled || !canGoForward}
             onClick={onForward}
-            className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+            className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS, NAV_DISABLED)}
             title="Go forward"
             aria-label="Go forward"
           >
@@ -197,7 +200,7 @@ export function BrowserToolbarRow({
           type="button"
           disabled={navDisabled}
           onClick={loading ? onStop : onReload}
-          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS, NAV_DISABLED)}
           title={loading ? "Stop loading" : "Reload"}
           aria-label={loading ? "Stop loading" : "Reload"}
         >
@@ -363,7 +366,7 @@ export function BrowserToolbarRow({
           type="button"
           disabled={Boolean(busy) || !apiAvailable}
           onClick={selection.onAttach}
-          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS, NAV_DISABLED)}
           title="Insert the selected browser element as context"
           aria-label="Attach the selected browser element"
         >
@@ -416,7 +419,7 @@ export function BrowserToolbarRow({
           type="button"
           disabled={!apiAvailable || !urlField.currentUrl}
           onClick={onOpenExternal}
-          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS)}
+          className={cn(CHROME_GHOST, TOOLBAR_MOTION, TOOLBAR_FOCUS, NAV_DISABLED)}
           title="Open this page in the system browser"
           aria-label="Open this page in the system browser"
         >

@@ -596,13 +596,11 @@ function WorkToolTab({
           // people never find. The 24px icon-only tab keeps its ✕ out of the
           // way (invisible AND untouchable; `opacity-0` alone still hit-tests,
           // which is how the centred ✕ once swallowed the tab's own click)
-          // except on the active tab, where it is the obvious way out.
+          // on hover, active tab included: an always-on ✕ over the active
+          // icon read as a broken badge. It sits just outside the icon's box.
           showLabel
             ? "inset-y-0 right-0 my-auto mr-[2px] h-4 w-4 opacity-60"
-            : cn(
-              "right-0 top-0 h-[13px] w-[13px] bg-[var(--color-surface)]",
-              active ? "opacity-60" : "pointer-events-none opacity-0 group-hover/tab:pointer-events-auto",
-            ),
+            : "-right-[5px] -top-[5px] z-10 h-[13px] w-[13px] rounded-full border border-fg/[0.10] bg-[var(--color-surface)] pointer-events-none opacity-0 group-hover/tab:pointer-events-auto",
         )}
       >
         <X size={10} weight="bold" />

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
@@ -178,10 +178,103 @@ function paneSectionHint(args: {
   activeCount: number;
   runningCount?: number;
   failedCount?: number;
+  needsYouCount?: number;
 }): string {
-  return args.runningCount && args.failedCount
-    ? `${args.runningCount} running · ${args.failedCount} failed`
-    : `${args.activeCount}`;
+  const parts = [
+    args.runningCount ? `${args.runningCount} running` : null,
+    args.needsYouCount ? `${args.needsYouCount} ${args.needsYouCount === 1 ? "needs" : "need"} you` : null,
+    args.failedCount ? `${args.failedCount} failed` : null,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join(" · ") : `${args.activeCount}`;
+}
+
+/**
+ * Shows `full` when it fits its box, else `compact`; the full text stays in
+ * the tooltip. Used for section counts, so the section title never shrinks.
+ */
+function FitText({ full, compact }: { full: string; compact: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [fits, setFits] = useState(true);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    const box = node?.parentElement;
+    if (!node || !box) return;
+    const measure = () => setFits(node.scrollWidth <= box.clientWidth + 0.5);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [full]);
+  return (
+    <>
+      {/* Measured off-screen copy of the full text. */}
+      <span ref={ref} aria-hidden className="pointer-events-none invisible absolute whitespace-nowrap">{full}</span>
+      <span className="whitespace-nowrap" title={fits ? undefined : full}>{fits ? full : compact}</span>
+    </>
+  );
+}
+
+/** Short words for a tight header: "5 running · 1 needs you · 2 failed" → "5 run · 1 you · 2 fail". */
+const COMPACT_PANE_WORD: Record<string, string> = {
+  running: "run",
+  "needs you": "you",
+  "need you": "you",
+  failed: "fail",
+  halted: "halt",
+  done: "done",
+  scheduled: "sched",
+};
+
+function compactPaneHint(parts: Array<{ count: number; text: string }>): { full: string; compact: string } {
+  const shown = parts.filter((part) => part.count > 0);
+  const full = shown.map((part) => `${part.count} ${part.text}`).join(" · ");
+  if (shown.length < 2) return { full, compact: full };
+  return { full, compact: shown.map((part) => `${part.count} ${COMPACT_PANE_WORD[part.text] ?? part.text}`).join(" · ") };
+}
+
+/*
+ * One shared 1s clock for every live timer in the pane. A row subscribes only
+ * while it is running; the interval exists only while someone subscribes.
+ */
+const paneClockListeners = new Set<() => void>();
+let paneClockNow = Date.now();
+let paneClockTimer: number | null = null;
+
+function subscribePaneClock(listener: () => void): () => void {
+  paneClockListeners.add(listener);
+  if (paneClockTimer === null) {
+    paneClockNow = Date.now();
+    paneClockTimer = window.setInterval(() => {
+      paneClockNow = Date.now();
+      for (const notify of paneClockListeners) notify();
+    }, 1000);
+  }
+  return () => {
+    paneClockListeners.delete(listener);
+    if (paneClockListeners.size === 0 && paneClockTimer !== null) {
+      window.clearInterval(paneClockTimer);
+      paneClockTimer = null;
+    }
+  };
+}
+
+const noopUnsubscribe = () => {};
+
+/** While no clock runs, read the wall time to the second, so a row that just
+ * started is not timed against a stale tick (and repeat reads stay equal). */
+function readPaneClock(): number {
+  if (paneClockTimer === null) paneClockNow = Math.floor(Date.now() / 1000) * 1000;
+  return paneClockNow;
+}
+
+/** Now, ticking each second while `live`; a frozen read otherwise. */
+function usePaneClock(live: boolean): number {
+  const subscribe = useCallback(
+    (listener: () => void) => (live ? subscribePaneClock(listener) : noopUnsubscribe),
+    [live],
+  );
+  return useSyncExternalStore(subscribe, () => (live ? readPaneClock() : 0), () => 0) || Date.now();
 }
 
 type GlyphCategory = "subagent" | "background";
@@ -224,7 +317,7 @@ export function SectionHeader({
   onToggle,
 }: {
   label: string;
-  hint?: string;
+  hint?: ReactNode;
   action?: ReactNode;
   tone?: SectionTone;
   emphasized?: boolean;
@@ -236,20 +329,21 @@ export function SectionHeader({
   const wrapperClass = cn(
     "flex items-center justify-between px-3.5",
     emphasized ? "pb-1.5 pt-3" : "pb-1 pt-2.5",
-    sticky && "sticky top-0 z-[5] bg-[color:var(--work-sidebar-bg,#161618)]",
+    // A stuck head fades the row scrolling under it instead of slicing it.
+    sticky && "sticky top-0 z-[5] bg-[color:var(--work-sidebar-bg,#161618)] after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-1.5 after:bg-gradient-to-b after:from-[color:var(--work-sidebar-bg,#161618)] after:to-transparent after:content-['']",
   );
   if (collapsible) {
     return (
       <div className={wrapperClass}>
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center justify-between text-left"
+          className="flex min-w-0 flex-1 items-center text-left"
           onClick={onToggle}
           aria-expanded={!collapsed}
         >
           <span
             className={cn(
-              "flex min-w-0 items-center gap-1.5 font-sans uppercase tracking-[0.06em] text-fg/45",
+              "flex shrink-0 items-center gap-1.5 font-sans uppercase tracking-[0.06em] text-fg/45",
               emphasized ? "text-[10.5px] font-medium" : "text-[10px] font-medium",
             )}
           >
@@ -257,10 +351,10 @@ export function SectionHeader({
               {collapsed ? <CaretRight size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />}
             </span>
             <SectionIcon tone={tone} />
-            <span className="truncate">{label}</span>
+            <span className="whitespace-nowrap">{label}</span>
           </span>
           {hint ? (
-            <span className="ml-2 shrink-0 font-sans text-[10.5px] tabular-nums text-fg/35">
+            <span className="relative ml-2 flex min-w-0 flex-1 justify-end overflow-hidden font-sans text-[10.5px] tabular-nums text-fg/45">
               {hint}
             </span>
           ) : null}
@@ -282,7 +376,7 @@ export function SectionHeader({
       </span>
       <span className="flex items-center gap-1.5">
         {hint ? (
-          <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
+          <span className="font-sans text-[10.5px] tabular-nums text-fg/45">
             {hint}
           </span>
         ) : null}
@@ -326,10 +420,10 @@ function EarlierToggle({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:bg-fg/[0.035] hover:text-fg/60"
+      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
-      Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}
+      <span className="whitespace-nowrap">Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
     </button>
   );
 }
@@ -351,7 +445,7 @@ function PaneTextAction({ children, onClick }: { children: ReactNode; onClick: (
     <button
       type="button"
       onClick={onClick}
-      className="font-sans text-[10px] text-fg/35 transition-colors hover:text-fg/60"
+      className="whitespace-nowrap rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
     >
       {children}
     </button>
@@ -369,7 +463,7 @@ function PaneScalableSection<T>({
 }: {
   sectionKey: ScalablePaneSectionKey;
   label: string;
-  hint: string;
+  hint: ReactNode;
   tone: SectionTone;
   cap: number;
   groups: { active: T[]; earlier: T[]; clearedCount: number };
@@ -394,12 +488,49 @@ function PaneScalableSection<T>({
   subagentTaskIdOf?: (item: T) => string;
 }) {
   const allClear = groups.active.length === 0 && groups.earlier.length === 0 && groups.clearedCount > 0;
-  const collapsible = groups.earlier.length > 0 || groups.active.length > cap;
-  const collapsed = collapsible && paneUi.collapsed[sectionKey] === true;
   const earlierExpanded = paneUi.earlier[sectionKey] === true;
-  const sectionAction = allClear ? (
-    <PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction>
+  // Opening "Completed (N)" keeps the live rows where they are and shows the
+  // first finished row: the region scrolls only as far as it must to bring
+  // it on screen (not at all when it already fits). The list itself is
+  // capped and scrolls inside.
+  const earlierListRef = useRef<HTMLDivElement | null>(null);
+  const prevEarlierExpandedRef = useRef(earlierExpanded);
+  useEffect(() => {
+    const opened = earlierExpanded && !prevEarlierExpandedRef.current;
+    prevEarlierExpandedRef.current = earlierExpanded;
+    if (!opened) return;
+    const timer = window.setTimeout(() => {
+      const list = earlierListRef.current;
+      let scroller = list?.parentElement ?? null;
+      while (scroller && !(scroller.scrollHeight > scroller.clientHeight + 1
+        && /(auto|scroll)/.test(window.getComputedStyle(scroller).overflowY))) {
+        scroller = scroller.parentElement;
+      }
+      if (!list || !scroller) return;
+      // Rects are in zoomed pixels (the app can set a UI zoom); scrollTop is not.
+      const scrollerRect = scroller.getBoundingClientRect();
+      const zoom = scroller.offsetHeight > 0 ? scrollerRect.height / scroller.offsetHeight : 1;
+      const listTop = (list.getBoundingClientRect().top - scrollerRect.top) / (zoom || 1);
+      // One finished row is enough to show the list opened; more would push
+      // live rows out of view on a short pane.
+      const wanted = listTop + Math.min(list.offsetHeight, 32);
+      const overflow = wanted - scroller.clientHeight;
+      if (overflow > 0) scroller.scrollTo({ top: scroller.scrollTop + overflow });
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [earlierExpanded]);
+  // Nothing live, only finished rows: the section folds to its header line
+  // ("Subagents · 3 done"), and the header opens the finished list itself, so
+  // an idle section never spends a second line on "Completed (N)".
+  const onlyEarlier = groups.active.length === 0 && groups.earlier.length > 0;
+  const collapsible = onlyEarlier || groups.earlier.length > 0 || groups.active.length > cap;
+  const collapsed = onlyEarlier ? !earlierExpanded : collapsible && paneUi.collapsed[sectionKey] === true;
+  const clearAction = groups.earlier.length > 0 ? (
+    <PaneTextAction onClick={() => onClear(groups.earlier.map(idOf))}>Clear</PaneTextAction>
   ) : null;
+  const sectionAction = allClear || (onlyEarlier && groups.clearedCount > 0 && !earlierExpanded) ? (
+    <PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction>
+  ) : onlyEarlier && earlierExpanded ? clearAction : null;
   const renderRows = (items: T[], renderRow: (item: T) => ReactNode, animated: boolean) => {
     const rows = items.map((item) => animated ? (
       <motion.div
@@ -418,18 +549,32 @@ function PaneScalableSection<T>({
   };
 
   return (
-    <section className={cn("pb-3", hasPrecedingSection && "border-t border-fg/[0.04]")}>
+    <section
+      data-pane-section={sectionKey}
+      data-pane-section-folded={onlyEarlier && !earlierExpanded ? "" : undefined}
+      className={cn(collapsed ? "pb-1.5" : "pb-3", hasPrecedingSection && "border-t border-fg/[0.04]")}
+    >
       <SectionHeader
         label={label}
-        hint={allClear ? "all clear" : hint}
+        hint={allClear ? "all clear" : onlyEarlier ? `${groups.earlier.length} done` : hint}
         tone={tone}
         emphasized
         sticky={sticky}
         collapsible={collapsible}
         collapsed={collapsed}
-        onToggle={onToggleCollapsed}
+        onToggle={onlyEarlier ? onToggleEarlier : onToggleCollapsed}
         action={extraHeaderAction === undefined ? sectionAction : <>{sectionAction}{extraHeaderAction}</>}
       />
+      {onlyEarlier ? (
+        <SectionDisclosure open={earlierExpanded}>
+          <div className="space-y-px px-2 pb-1">
+            {renderRows(groups.earlier, renderEarlierRow, animateEarlierRows)}
+          </div>
+          {groups.clearedCount > 0 ? (
+            <div className="px-4 pb-1"><PaneTextAction onClick={onRestore}>Restore ({groups.clearedCount})</PaneTextAction></div>
+          ) : null}
+        </SectionDisclosure>
+      ) : (
       <SectionDisclosure open={!collapsed}>
         {allClear ? <div className="px-4 pb-2 text-[11px] text-fg/35">{label} · all clear</div> : null}
         {keepEmptyActiveList || capped.visible.length > 0 ? (
@@ -442,16 +587,20 @@ function PaneScalableSection<T>({
         ) : null}
         {groups.earlier.length > 0 || groups.clearedCount > 0 ? (
           <div className="px-2 pt-0.5">
-            <div className="flex items-center">
+            <div className="flex items-center rounded-md transition-colors hover:bg-fg/[0.035]">
               <EarlierToggle count={groups.earlier.length} clearedCount={groups.clearedCount} expanded={earlierExpanded} onToggle={onToggleEarlier} />
-              {earlierExpanded && groups.earlier.length > 0 ? (
-                <span className="shrink-0 pl-1.5 pr-1">
-                  <PaneTextAction onClick={() => onClear(groups.earlier.map(idOf))}>Clear</PaneTextAction>
-                </span>
+              {earlierExpanded && clearAction ? (
+                <span className="shrink-0 pl-1.5 pr-1">{clearAction}</span>
               ) : null}
             </div>
             <SectionDisclosure open={earlierExpanded}>
-              <div className="space-y-px pb-1">
+              {/* Capped and scrolled on its own, so opening a long finished
+                  list never pushes the live rows above it out of view. */}
+              <div
+                ref={earlierListRef}
+                data-pane-earlier-list=""
+                className="max-h-[120px] space-y-px overflow-y-auto overscroll-contain pb-1 [mask-image:linear-gradient(to_bottom,black_calc(100%-14px),transparent)]"
+              >
                 {renderRows(groups.earlier, renderEarlierRow, animateEarlierRows)}
               </div>
               {groups.clearedCount > 0 ? (
@@ -461,6 +610,7 @@ function PaneScalableSection<T>({
           </div>
         ) : null}
       </SectionDisclosure>
+      )}
     </section>
   );
 }
@@ -595,7 +745,9 @@ function ScheduledWorkRow({
   }, [snapshot.kind, isMuted]);
   const nextFire = isMuted ? null : scheduledNextFireLabel(snapshot, nowMs);
   const lastRun = snapshot.kind === "cron" ? formatScheduleClock(snapshot.lastRunAt) : null;
-  const timing = [lastRun ? `last ran ${lastRun}` : null, nextFire]
+  // One complete time beats two cut ones: the next run when there is one,
+  // else when it last ran.
+  const timing = [nextFire ? null : lastRun ? `last ran ${lastRun}` : null, nextFire]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
 
@@ -603,62 +755,49 @@ function ScheduledWorkRow({
     <div
       data-paused={isPaused || undefined}
       className={cn(
-        "group grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5",
+        "group min-h-[42px] rounded-md px-2 py-1.5",
         "transition-colors duration-150 hover:bg-fg/[0.035]",
         isPaused && "opacity-45",
       )}
       title={prompt || detail || snapshot.title}
     >
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span
-            aria-hidden
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              isActive && "bg-sky-300/75 motion-safe:ade-glow-pulse",
-              isProblem && "bg-rose-300/80",
-              isMuted && "bg-fg/25",
-              !isActive && !isProblem && !isMuted && "bg-sky-300/55",
-            )}
-          />
-          <span
-            className={cn(
-              "min-w-0 truncate font-sans text-[12.5px] leading-5",
-              isActive && "text-sky-100/90",
-              isProblem && "text-rose-200/85",
-              isMuted && "text-fg/45",
-              isPaused && "text-fg/45",
-              !isActive && !isProblem && !isMuted && "text-fg/70",
-            )}
-          >
-            {snapshot.title}
-          </span>
-          <span className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
-            {scheduledKindLabel(snapshot.kind)}
-          </span>
-        </div>
-        {detail || prompt ? (
-          <div className="min-w-0 truncate pl-3.5 font-sans text-[10.5px] leading-4 text-fg/38">
-            {detail ?? prompt}
-          </div>
-        ) : null}
-        {timing ? (
-          <div className="min-w-0 truncate pl-3.5 font-sans text-[10px] leading-4 text-sky-300/45">
-            {timing}
-          </div>
-        ) : null}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          aria-hidden
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            isActive && "bg-sky-300/75 motion-safe:ade-glow-pulse",
+            isProblem && "bg-rose-300/80",
+            isMuted && "bg-fg/25",
+            !isActive && !isProblem && !isMuted && "bg-sky-300/55",
+          )}
+        />
         <span
           className={cn(
-            "font-sans text-[10.5px] tabular-nums",
+            "min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5",
+            isActive && "text-sky-100/90",
+            isProblem && "text-rose-200/85",
+            isMuted && "text-fg/45",
+            isPaused && "text-fg/45",
+            !isActive && !isProblem && !isMuted && "text-fg/70",
+          )}
+        >
+          {snapshot.title}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 whitespace-nowrap font-sans text-[10.5px] tabular-nums",
             isActive && "text-sky-300/75",
             isProblem && "text-rose-300/75",
             isMuted && "text-fg/35",
             !isActive && !isProblem && !isMuted && "text-fg/45",
           )}
         >
-          {isPaused ? "paused" : SCHEDULE_STATUS_LABEL[snapshot.status]}
+          {/* "scheduled" is every row's resting state under a Schedule
+              head; say only what differs from it. */}
+          {isPaused ? "paused" : snapshot.status === "scheduled" ? (
+            <span className="sr-only">scheduled</span>
+          ) : SCHEDULE_STATUS_LABEL[snapshot.status]}
         </span>
         {onCancel && snapshot.cancellable === true && !isMuted ? (
           <button
@@ -666,7 +805,7 @@ function ScheduledWorkRow({
             onClick={onCancel}
             aria-label={`Cancel ${snapshot.title}`}
             title={snapshot.kind === "cron" ? "Cancel through Claude CronDelete" : "Cancel scheduled work"}
-            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <X aria-hidden size={11} weight="bold" />
           </button>
@@ -677,12 +816,22 @@ function ScheduledWorkRow({
             onClick={onStop}
             aria-label={`Stop ${snapshot.title}`}
             title="Stop this background task"
-            className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-rose-500/10 hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-fg/25 opacity-0 transition-all hover:bg-rose-500/10 hover:text-rose-200/80 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <Square aria-hidden size={10} weight="fill" />
           </button>
         ) : null}
       </div>
+      {/* The kind leads the detail line, so the title keeps the full width. */}
+      <div className="min-w-0 truncate pl-3.5 font-sans text-[10.5px] leading-4 text-fg/38">
+        <span className="text-fg/50">{scheduledKindLabel(snapshot.kind)}</span>
+        {detail || prompt ? ` · ${detail ?? prompt}` : null}
+      </div>
+      {timing ? (
+        <div className="min-w-0 truncate pl-3.5 font-sans text-[10px] leading-4 text-sky-300/45">
+          {timing}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -739,12 +888,7 @@ function BackgroundCommandRow({
   const label = backgroundCommandLabel(rawCommand) || rawCommand || "Background command";
   const cwd = backgroundCommandCwd(rawCommand);
   const isRunning = snapshot.status === "running" || snapshot.status === "fired";
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!isRunning) return;
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [isRunning]);
+  const nowMs = usePaneClock(isRunning);
   const duration = backgroundDurationLabel(snapshot, nowMs);
   const isProblem = snapshot.status === "failed" || snapshot.status === "missed";
   const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
@@ -767,10 +911,9 @@ function BackgroundCommandRow({
           <span className="min-w-0 truncate font-mono text-[11.5px] leading-5 text-fg/70">{label}</span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 font-sans text-[10.5px] tabular-nums">
-          {duration ? <span className="text-fg/35">{duration}</span> : null}
           <span
             className={cn(
-              "tracking-[0.01em]",
+              "whitespace-nowrap tracking-[0.01em]",
               isRunning && "text-cyan-300/70",
               isProblem && "text-rose-300/70",
               isMuted && "text-fg/35",
@@ -779,6 +922,7 @@ function BackgroundCommandRow({
           >
             {SCHEDULE_STATUS_LABEL[snapshot.status]}
           </span>
+          <span className="min-w-[38px] whitespace-nowrap text-right font-mono text-[10px] text-fg/35">{duration ?? ""}</span>
         </span>
       </button>
       {isRunning && onStop ? (
@@ -882,13 +1026,8 @@ function SubagentRow({
   const isCompleted = snapshot.status === "completed";
   const isStopped = snapshot.status === "stopped";
   const isFailed = snapshot.status === "failed";
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [filesOpen, setFilesOpen] = useState(false);
-  useEffect(() => {
-    if (!isRunning) return;
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [isRunning]);
+  const nowMs = usePaneClock(isRunning);
   const time = elapsedText(snapshot, nowMs);
   const statusLabel = needsYou ? "needs you" : STATUS_LABEL[snapshot.status];
   const runningLabelTint = category === "background"
@@ -941,14 +1080,14 @@ function SubagentRow({
         title={isSpawnedChat ? "Open the spawned chat" : (snapshot.description || "View subagent details")}
         data-selected={selected || undefined}
         className={cn(
-          "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
+          "group relative flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1 text-left",
           "transition-colors duration-150",
           "hover:bg-fg/[0.04]",
           (selected || expanded)
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
-        <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
+        <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} needsYou={needsYou} emphasis />
 
         <span
           className={cn(
@@ -986,38 +1125,49 @@ function SubagentRow({
           ) : null}
         </span>
 
-        <span className="flex shrink-0 items-center gap-1.5 font-sans text-[10.5px] tabular-nums">
+        {/* The title gets the width. Status lives on the glyph (spinning
+            ring, amber ring, check / x badge); the cell on the right is the
+            time alone, right-aligned in a fixed mono column and tinted by
+            state. The word is in the tooltip and for screen readers. A
+            spawned chat's "open ›" takes the cell's place on hover. */}
+        {probing ? (
+          <span
+            aria-hidden
+            className="h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/55 [animation-duration:0.7s]"
+          />
+        ) : null}
+        <span
+          data-subagent-status={needsYou ? "needs_you" : snapshot.status}
+          title={time ? `${statusLabel} · ${time}` : statusLabel}
+          className="relative grid w-[46px] shrink-0 items-center justify-items-end font-sans text-[10.5px] tabular-nums"
+        >
+          <span
+            className={cn(
+              "col-start-1 row-start-1 whitespace-nowrap font-mono text-[10px]",
+              needsYou
+                ? "text-amber-300/85"
+                : isFailed
+                  ? "text-rose-300/80"
+                  : isStopped
+                    ? "text-amber-300/60"
+                    : isRunning
+                      ? (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80")
+                      : "text-fg/35",
+              isSpawnedChat && "transition-opacity group-hover:opacity-0",
+            )}
+          >
+            <span className="sr-only">{statusLabel} </span>
+            {time ?? ""}
+          </span>
           {isSpawnedChat ? (
             <span
               aria-hidden
-              className="inline-flex items-center gap-0.5 whitespace-nowrap text-fg/0 transition-colors group-hover:text-fg/40"
+              className="col-start-1 row-start-1 inline-flex items-center gap-0.5 whitespace-nowrap text-fg/50 opacity-0 transition-opacity group-hover:opacity-100"
             >
               open
               <CaretRight size={10} weight="bold" />
             </span>
           ) : null}
-          {probing ? (
-            <span
-              aria-hidden
-              className="h-3 w-3 animate-spin rounded-full border border-fg/20 border-t-fg/55 [animation-duration:0.7s]"
-            />
-          ) : null}
-          <span
-            className={cn(
-              "tracking-[0.01em]",
-              needsYou
-                ? "text-amber-300/85"
-                : [
-                    isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
-                    isFailed && "text-rose-300/70",
-                    isStopped && "text-amber-300/55",
-                    isCompleted && "text-fg/35",
-                  ],
-            )}
-          >
-            {statusLabel}
-          </span>
-          {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
         </span>
       </button>
       {isRunning && onStop && !isSpawnedChat && !isSyntheticWorkflowAgent(snapshot) ? (
@@ -1636,8 +1786,16 @@ export function ChatSubagentsPanel({
 
   const taskProgress = taskList ? chatTaskListProgress(taskList.items) : null;
 
-  const subagentRunningCount = subagentGroups.active.filter((item) => item.status === "running").length;
+  const subagentNeedsYou = (snap: ChatSubagentSnapshot) =>
+    snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you";
+  const subagentNeedsYouCount = subagentGroups.active.filter(subagentNeedsYou).length;
+  const subagentRunningCount = subagentGroups.active.filter((item) => item.status === "running" && !subagentNeedsYou(item)).length;
   const subagentFailedCount = subagentGroups.active.filter((item) => item.status === "failed").length;
+  const subagentHintParts = compactPaneHint([
+    { count: subagentRunningCount, text: "running" },
+    { count: subagentNeedsYouCount, text: subagentNeedsYouCount === 1 ? "needs you" : "need you" },
+    { count: subagentFailedCount, text: "failed" },
+  ]);
   const backgroundRunningCount = backgroundGroups.active.filter((item) => item.status === "running").length;
   const backgroundFailedCount = backgroundGroups.active.filter((item) => item.status === "failed").length;
   const scheduleRunningCount = scheduleGroups.active.filter((item) => item.status === "running").length;
@@ -1681,7 +1839,7 @@ export function ChatSubagentsPanel({
           ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
           : null
       }
-      needsYou={snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you"}
+      needsYou={subagentNeedsYou(snap)}
       sessionModelLabel={sessionModelLabel}
       onStop={onStopSubagent}
       onClick={() => handleRowClick(snap)}
@@ -1746,7 +1904,9 @@ export function ChatSubagentsPanel({
       {hasSubagents ? (
         <PaneScalableSection
           sectionKey="subagents" label="Subagents" tone="subagent" cap={SUBAGENTS_ACTIVE_CAP}
-          hint={paneSectionHint({ activeCount: subagentGroups.active.length, runningCount: subagentRunningCount, failedCount: subagentFailedCount })}
+          hint={subagentHintParts.full
+            ? <FitText full={subagentHintParts.full} compact={subagentHintParts.compact} />
+            : `${subagentGroups.active.length}`}
           groups={subagentGroups} capped={cappedSubagents} paneUi={paneUi} sticky={stickyHeaders}
           idOf={(snap) => snap.taskId}
           renderActiveRow={renderSubagentPaneRow} renderEarlierRow={renderSubagentPaneRow}

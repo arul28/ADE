@@ -52,6 +52,7 @@ export function TestRunButton({ disabled, title, onOpen }: { disabled?: boolean;
       <Button
         size="sm"
         variant="outline"
+        casing="sentence"
         className="rounded-r-none border-r-0"
         disabled={disabled}
         title={title ?? "See what this automation would do"}
@@ -65,6 +66,7 @@ export function TestRunButton({ disabled, title, onOpen }: { disabled?: boolean;
         ref={caretRef}
         size="sm"
         variant="outline"
+        casing="sentence"
         className="rounded-l-none px-1.5"
         disabled={disabled}
         aria-label="Choose a kind of test"

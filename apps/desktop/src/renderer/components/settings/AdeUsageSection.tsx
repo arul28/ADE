@@ -342,8 +342,8 @@ function costFootnote(providers: AdeUsageProviderSummary[], pricingUpdatedAt?: s
   const ratesNote = describeRatesSource(providers, pricingUpdatedAt);
   const text =
     estimated.length === 0
-      ? "* if billed at full API rate"
-      : `* if billed at full API rate — ${estimated.length === 1 ? "one provider is" : `${estimated.length} providers are`} estimated`;
+      ? "* API-rate equivalent, not spend"
+      : "* API-rate equivalent, not spend (est.)";
   const title = [
     estimated.length > 0
       ? `Not money spent — subscriptions bill separately.\n\n${estimated.join("\n")}`
@@ -1145,7 +1145,7 @@ export function AdeUsageSection() {
               <section className="kit-card" aria-label="Rate limits">
                 <div className="kit-card-head">
                   <span>Rate limits</span>
-                  <span className="usage-card-sub">Live on this machine · % left, tick marks a steady pace</span>
+                  <span className="usage-card-sub">Live on this machine · % left, tick = steady pace</span>
                 </div>
                 <div className="kit-card-body">
                   <UsageLimitGauges />

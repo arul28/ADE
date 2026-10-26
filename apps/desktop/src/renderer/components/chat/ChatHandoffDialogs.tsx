@@ -2,7 +2,8 @@ import { memo, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { PortalContainerContext } from "../ui/portalContainer";
 
-const OVERLAY_CLASS = "fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-6";
+// Top-anchored so switching Fork/Brief (different heights) does not move the header.
+const OVERLAY_CLASS = "fixed inset-0 z-[80] flex items-start justify-center bg-black/55 p-6 pt-[14vh]";
 const PANEL_CLASS = "rounded-xl border border-fg/[0.08] bg-[var(--color-bg)] shadow-2xl outline-none";
 const CLOSE_BUTTON_CLASS = "rounded-md border border-fg/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/70";
 
@@ -36,7 +37,7 @@ function HandoffDialog({
             // Radix sees Escape first. While a lane list is open in the dialog,
             // Escape must close only the list, which the combobox does itself.
             onEscapeKeyDown={(event) => {
-              if (contentEl?.querySelector(".ade-lane-popover")) event.preventDefault();
+              if (contentEl?.querySelector(".ade-lane-popover, [data-permission-mode-picker-dropdown]")) event.preventDefault();
             }}
           >
             <Dialog.Title className="sr-only">{title}</Dialog.Title>
@@ -73,7 +74,7 @@ export const ChatHandoffDialogs = memo(function ChatHandoffDialogs({
         open={localOpen}
         onClose={onCloseLocal}
         title="Local handoff"
-        className="flex max-h-[min(720px,86vh)] w-[min(460px,94vw)] flex-col overflow-hidden"
+        className="flex max-h-[min(720px,82vh)] w-[min(580px,94vw)] flex-col overflow-hidden"
       >
         {localContent ?? (
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">

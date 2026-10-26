@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
   ArrowLeft,
+  ArrowRight,
   Bell,
   Brain,
   ChartLineUp,
@@ -44,7 +45,6 @@ import {
   setWebMachineBindingResolver,
   setStandaloneSettingsResolver,
   clearStandaloneSettingsResolver,
-  settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
   type SettingsTabId,
@@ -61,7 +61,7 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { COLORS, SANS_FONT, LABEL_STYLE, fgTint } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "./projectSidebar/ProjectSidebarSlot";
 import {
   BOUND_MACHINE_ENTRY_IDS,
@@ -157,46 +157,24 @@ function WebNoMachineNotice() {
 function CrossTabResults({
   results,
   onPick,
+  alsoHere,
 }: {
   results: SettingEntry[];
   onPick: (entry: SettingEntry) => void;
+  /** This page has matches too, so the list is "also" rather than "only". */
+  alsoHere: boolean;
 }) {
   if (results.length === 0) return null;
   return (
-    <div
-      style={{
-        padding: 12,
-        marginBottom: 16,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 10,
-      }}
-    >
-      <div style={{ ...LABEL_STYLE, fontFamily: SANS_FONT, marginBottom: 8 }}>ALSO IN OTHER TABS</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {results.slice(0, 8).map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            onClick={() => onPick(entry)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "5px 10px",
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              background: fgTint(4),
-              border: `1px solid ${COLORS.borderMuted}`,
-              borderRadius: 999,
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ color: COLORS.textPrimary }}>{entry.label}</span>
-            <span style={{ color: COLORS.textDim }}>{settingsTabLabel(entry.tab)}</span>
-          </button>
-        ))}
-      </div>
+    <div className="ade-settings-xresults">
+      <div className="ade-settings-xresults__head">{alsoHere ? "Also on other pages" : "On other pages"}</div>
+      {results.slice(0, 8).map((entry) => (
+        <button key={entry.id} type="button" className="ade-settings-xresults__row" onClick={() => onPick(entry)}>
+          <span className="ade-settings-xresults__label">{entry.label}</span>
+          <span className="ade-settings-xresults__tab">{settingsTabLabel(entry.tab)}</span>
+          <ArrowRight size={12} className="ade-settings-xresults__arrow" />
+        </button>
+      ))}
     </div>
   );
 }
@@ -557,7 +535,7 @@ export function SettingsPage({
     const search = next.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
-  const tabEntryCount = settingsEntriesForTab(section).length;
+  const totalMatches = (matchesThisTab?.length ?? 0) + matchesOtherTabs.length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
   const searchAnchors = useMemo(
     () => (matchesThisTab ? matchesThisTab.map((entry) => entry.anchor) : null),
@@ -702,13 +680,17 @@ export function SettingsPage({
             same measure, so the title and search line up with the content. */}
         <div className={CENTERED_COLUMN_TABS.has(section) ? "ade-settings-page--column" : undefined}>
         <header className="ade-settings-page-header" style={{ marginBottom: 20 }}>
+          {/* One fixed title row on every page: back, machine breadcrumb,
+              title and search share a 32px line, so the title and the search
+              box sit at the same height whichever page is open. The page's
+              one-line description goes under it. */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
               gap: 16,
-              flexWrap: "wrap",
+              minHeight: 32,
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
@@ -734,45 +716,29 @@ export function SettingsPage({
                   <ArrowLeft size={18} weight="bold" />
                 </button>
               ) : null}
-              <div style={{ minWidth: 0 }}>
-                {machinePageScope ? <SettingsMachineEyebrow page={machinePageScope} /> : null}
+              {machinePageScope ? (
+                <>
+                  <SettingsMachineEyebrow page={machinePageScope} />
+                  <span aria-hidden style={{ margin: "0 6px", color: COLORS.textDim, fontFamily: SANS_FONT, fontSize: 13 }}>/</span>
+                </>
+              ) : null}
               <h1
                 style={{
                   margin: 0,
                   fontFamily: SANS_FONT,
                   fontSize: 20,
+                  lineHeight: "32px",
                   fontWeight: 600,
                   letterSpacing: "-0.02em",
                   color: COLORS.textPrimary,
+                  whiteSpace: "nowrap",
                 }}
               >
                 {activeTab.label}
               </h1>
-              {/* No scope badge and no caption. The sidebar already files each
-                  page under where it saves, and a one-line restatement of the
-                  page's own title is the kind of copy that reads as
-                  scaffolding. The search box sits on this same row. */}
-              {activeTab.description ? (
-                <p style={{ margin: "4px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                  {activeTab.description}
-                </p>
-              ) : null}
-              </div>
             </div>
 
-            <label
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                height: 32,
-                padding: "0 10px",
-                minWidth: 240,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                borderRadius: 8,
-              }}
-            >
+            <label className="ade-settings-search">
               <MagnifyingGlass size={14} style={{ color: COLORS.textDim, flexShrink: 0 }} />
               <input
                 type="search"
@@ -780,29 +746,30 @@ export function SettingsPage({
                 placeholder="Search all settings"
                 aria-label="Search all settings"
                 onChange={(event) => setQuery(event.target.value)}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  border: "none",
-                  outline: "none",
-                  background: "transparent",
-                  fontFamily: SANS_FONT,
-                  fontSize: 12,
-                  color: COLORS.textPrimary,
-                }}
+                // Inline so it beats the global input focus ring; the label
+                // draws the one ring this field has.
+                style={{ border: "none", outline: "none", boxShadow: "none", background: "transparent" }}
               />
               {trimmedQuery ? (
                 <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
-                  {matchesThisTab?.length ?? 0}/{tabEntryCount}
+                  {totalMatches === 1 ? "1 match" : `${totalMatches} matches`}
                 </span>
               ) : null}
             </label>
           </div>
+          {/* No scope badge. The sidebar already files each page under where
+              it saves; the description is the page's one hint. */}
+          {activeTab.description ? (
+            <p style={{ margin: "2px 0 0", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {activeTab.description}
+            </p>
+          ) : null}
         </header>
 
         {trimmedQuery ? (
           <CrossTabResults
             results={matchesOtherTabs}
+            alsoHere={(matchesThisTab?.length ?? 0) > 0}
             onPick={(entry) => {
               setQuery("");
               navigateToTab(entry.tab, entry.anchor);
@@ -810,10 +777,12 @@ export function SettingsPage({
           />
         ) : null}
 
-        {noMatchesHere ? (
+        {/* Only say "nothing" when nothing anywhere matches; when other pages
+            match, the result list above already answers the search. */}
+        {noMatchesHere && matchesOtherTabs.length === 0 ? (
           <div
             style={{
-              padding: 16,
+              padding: "12px 16px",
               marginBottom: 16,
               fontFamily: SANS_FONT,
               fontSize: 12,
@@ -823,8 +792,7 @@ export function SettingsPage({
               borderRadius: 10,
             }}
           >
-            Nothing in {activeTab.label} matches “{trimmedQuery}”.
-            {matchesOtherTabs.length > 0 ? " Try one of the results above." : ""}
+            No setting matches “{trimmedQuery}”.
           </div>
         ) : null}
 

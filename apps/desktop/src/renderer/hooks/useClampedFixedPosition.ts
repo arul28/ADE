@@ -4,6 +4,9 @@ import { fixedFrameOf, fixedPoint, fixedRect, fixedViewport } from "../lib/webZo
 
 export type FixedAnchor = { x: number; y: number };
 
+/** Height of the app's top chrome (title bar, tab bar, pane toolbar) an upward-flipped menu must not cover. */
+const TOP_CHROME_CLEARANCE = 145;
+
 export type ClampedFixedPosition = {
   left: number;
   top: number;
@@ -62,11 +65,21 @@ export function useClampedFixedPosition(
     const frame = fixedFrameOf(el.parentElement);
     const point = fixedPoint(frame, anchor.x, anchor.y);
     const size = fixedRect(frame, el.getBoundingClientRect());
+    const viewport = fixedViewport(frame);
+    // A menu that does not fit below the pointer opens upward from it (as
+    // native menus do) instead of being pushed up over the row it targets.
+    // It flips only when it then clears the app's top chrome (title bar, tab
+    // bar, pane toolbar); otherwise it keeps the old below-and-shift placement.
+    const viewportTop = viewport.top;
+    const viewportBottom = viewportTop + viewport.height;
+    const fitsBelow = point.top + size.height + 8 <= viewportBottom;
+    const fitsAbove = point.top - size.height >= viewportTop + TOP_CHROME_CLEARANCE;
+    const y = !fitsBelow && fitsAbove ? point.top - size.height : point.top;
     setPosition(clampFixedPosition(
-      { x: point.left, y: point.top },
+      { x: point.left, y },
       { width: size.width, height: size.height },
       8,
-      fixedViewport(frame),
+      viewport,
     ));
   }, [anchor?.x, anchor?.y, remeasureKey]);
 

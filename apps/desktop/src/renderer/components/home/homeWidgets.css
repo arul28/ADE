@@ -828,3 +828,15 @@
 .ade-home-layouts-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-home-layouts-count { flex: none; font-size: 10.5px; color: var(--kit-text-3); }
 .ade-home-layouts .ade-home-look-foot .kit-btn { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Primary actions on the Home page and in its widget picker use the accent,
+   like the page's own "Add project" and "Done", not the kit's white primary. */
+.ade-picker .kit-btn-primary,
+.ade-home-widget .kit-btn-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+.ade-picker .kit-btn-primary:hover:not(:disabled),
+.ade-home-widget .kit-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg));
+}

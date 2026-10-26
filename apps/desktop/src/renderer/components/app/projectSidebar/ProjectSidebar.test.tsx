@@ -2,7 +2,7 @@
 
 import React, { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../../state/appStore";
 import { ProjectSidebar } from "./ProjectSidebar";
@@ -104,14 +104,19 @@ describe("ProjectSidebar footer", () => {
     expect(screen.getByTestId("location").textContent).toBe("/settings?tab=chat");
   });
 
-  it("keeps the page under CTO selected and turns the footer into one Back button", () => {
+  it("keeps the held page's tab selected while the footer stays reachable", async () => {
     renderSidebar("/cto", "/prs?pr=1292");
     expect(screen.getByRole("button", { name: "PRs" }).getAttribute("aria-current")).toBe("page");
-    // The whole footer row is the way back; CTO and History leave it meanwhile.
-    expect(screen.queryByRole("button", { name: "CTO" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
-    expect(screen.getByTestId("location").textContent).toBe("/prs?pr=1292");
+    // The footer no longer collapses to one Back row: both footer tabs stay
+    // usable, so the page you are on is never the only way out.
+    expect(screen.getByRole("button", { name: "CTO" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("button", { name: "History" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    // Pressing the open item keeps it open; CTO stays on its thread.
+    fireEvent.click(screen.getByRole("button", { name: "CTO" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/cto");
+    });
   });
 
   it("shows no Back chip when nothing is held", () => {

@@ -536,7 +536,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         <button
           type="button"
           data-testid="chat-header-pr-badge"
-          className="inline-flex h-6 shrink-0 items-center gap-1.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
+          className="inline-flex h-6 shrink-0 items-center gap-1.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80 [[data-theme=light]_&]:text-fg [[data-theme=light]_&]:drop-shadow-none"
           onClick={() => {
             if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
             openLinkedPrInPane();

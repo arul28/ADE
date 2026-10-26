@@ -22,7 +22,8 @@ export function deletedChatsWorthReminding(summary: DeletedLaneChatsSummary): bo
 
 export function deletedChatsReminderTitle(summary: DeletedLaneChatsSummary): string {
   const chats = `${summary.chatCount.toLocaleString()} ${summary.chatCount === 1 ? "chat" : "chats"}`;
-  return `${chats} from deleted lanes still take ${formatBytes(summary.bytes)}. ADE no longer tracks them; they are in ${summary.directory}.`;
+  // One short line; where the files live is shown in Storage.
+  return `${chats} from deleted lanes (${formatBytes(summary.bytes)}) are no longer tracked`;
 }
 
 // Unpinned on purpose: the project tab's own machine owns these files.
@@ -50,7 +51,7 @@ export function useDeletedChatsReminderBanner({
     icon: <ChatsCircle size={13} weight="bold" />,
     title: deletedChatsReminderTitle,
     reviewLabel: "Review in Storage",
-    laterLabel: "Remind me in two weeks",
+    laterLabel: "Remind me in 2 weeks",
     onReview,
   });
 }

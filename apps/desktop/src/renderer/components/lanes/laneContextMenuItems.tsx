@@ -26,7 +26,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { Z_LAYERS } from "../ui/zLayers";
-import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "./laneDesignTokens";
 import { colorsInUse } from "./laneColorPalette";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { showToast } from "../app/toast/toastStore";
@@ -87,6 +87,8 @@ export type LaneMenuGroup = {
   entries: LaneMenuEntry[];
   /** Rendered as a hover submenu rather than inline rows. */
   submenu?: boolean;
+  /** No divider above: continues the previous group's block (one-row groups). */
+  joinPrevious?: boolean;
   icon?: Icon;
 };
 
@@ -243,7 +245,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       },
     });
   }
-  if (goTo.length) groups.push({ key: "go-to", label: "Go to", entries: goTo });
+  if (goTo.length) groups.push({ key: "go-to", entries: goTo });
 
   // ── Copy: four near-identical "put a string on the clipboard" rows. They are
   //    the single biggest block in the flat menu and the one nobody reads, so
@@ -253,7 +255,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     copy.push({
       kind: "action",
       key: "copy-lane-link",
-      label: "Copy ADE Lane Link",
+      label: "Copy ADE lane link",
       icon: Link,
       onSelect: () => {
         onClose();
@@ -290,7 +292,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       copy.push({
         kind: "action",
         key: "copy-branch-link",
-        label: "Copy Branch Link (Cross-Machine)",
+        label: "Copy branch link (any machine)",
         icon: GitBranch,
         onSelect: () => {
           onClose();
@@ -316,7 +318,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       copy.push({
         kind: "action",
         key: "copy-linear-link",
-        label: "Copy Linear Issue Link",
+        label: "Copy Linear issue link",
         icon: Link,
         onSelect: () => {
           onClose();
@@ -331,7 +333,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     copy.push({
       kind: "action",
       key: "copy-path",
-      label: isRemoteProject ? "Copy Remote Path" : "Copy Path",
+      label: isRemoteProject ? "Copy remote path" : "Copy path",
       icon: Path,
       ...(isRemoteProject ? { dataTour: "lanes.manageLane" } : {}),
       onSelect: () => {
@@ -345,51 +347,8 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   if (lane && openIn) {
     groups.push({
       key: "open-in",
+      joinPrevious: copy.length > 0,
       entries: [{ kind: "open-in", key: "open-in-editor", ...openIn }],
-    });
-  }
-
-  // ── Tabs: everything about which lanes are on screen.
-  if (!omitTabActions) {
-    const tabs: LaneMenuEntry[] = [];
-    if (!isInSplit) {
-      tabs.push({
-        kind: "action",
-        key: "open-split",
-        label: "Open in Split",
-        icon: Columns,
-        onSelect: () => { onClose(); selectLane(laneId); },
-      });
-    }
-    if (isInSplit && splitCount > 1 && !isPrimary) {
-      tabs.push({
-        kind: "action",
-        key: "remove-split",
-        label: "Remove from Split",
-        icon: X,
-        onSelect: () => { onClose(); onRemoveFromSplit(laneId); },
-      });
-    }
-    if (isInSplit && splitCount > 1) {
-      tabs.push({
-        kind: "action",
-        key: "close-other-tabs",
-        label: "Close Other Tabs",
-        icon: X,
-        onSelect: () => { onClose(); onCloseOtherSplits(laneId); },
-      });
-    }
-    tabs.push({
-      kind: "action",
-      key: "select-all",
-      label: "Select All Lanes",
-      icon: Stack,
-      onSelect: () => { onClose(); onSelectAll(); },
-    });
-    groups.push({
-      key: "tabs",
-      label: splitCount > 1 ? `${splitCount} tabs open` : "Tabs",
-      entries: tabs,
     });
   }
 
@@ -399,6 +358,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       label: "Color",
       icon: Palette,
       submenu: true,
+      joinPrevious: groups.length > 0 && (groups[groups.length - 1]!.key === "copy" || groups[groups.length - 1]!.key === "open-in"),
       entries: [{
         kind: "custom",
         key: "swatches",
@@ -414,8 +374,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     });
     groups.push({
       key: "emoji",
-      label: "Emoji",
-      icon: Smiley,
+      joinPrevious: true,
       entries: [{
         kind: "custom",
         key: "picker",
@@ -430,13 +389,58 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     });
   }
 
+  // ── Tabs: everything about which lanes are on screen.
+  if (!omitTabActions) {
+    const tabs: LaneMenuEntry[] = [];
+    if (!isInSplit) {
+      tabs.push({
+        kind: "action",
+        key: "open-split",
+        label: "Open in split",
+        icon: Columns,
+        onSelect: () => { onClose(); selectLane(laneId); },
+      });
+    }
+    if (isInSplit && splitCount > 1 && !isPrimary) {
+      tabs.push({
+        kind: "action",
+        key: "remove-split",
+        label: "Remove from split",
+        icon: X,
+        onSelect: () => { onClose(); onRemoveFromSplit(laneId); },
+      });
+    }
+    if (isInSplit && splitCount > 1) {
+      tabs.push({
+        kind: "action",
+        key: "close-other-tabs",
+        label: "Close other tabs",
+        icon: X,
+        onSelect: () => { onClose(); onCloseOtherSplits(laneId); },
+      });
+    }
+    tabs.push({
+      kind: "action",
+      key: "select-all",
+      label: "Select all lanes",
+      icon: Stack,
+      onSelect: () => { onClose(); onSelectAll(); },
+    });
+    groups.push({
+      key: "tabs",
+      // Only worth a heading when it says something the rows do not.
+      ...(splitCount > 1 ? { label: `${splitCount} tabs open` } : {}),
+      entries: tabs,
+    });
+  }
+
   // ── Manage: last, because both entries open a surface that can delete.
   const manage: LaneMenuEntry[] = [];
   if (lane && !isPrimary) {
     manage.push({
       kind: "action",
       key: "manage",
-      label: "Manage Lane",
+      label: "Manage lane",
       icon: Gear,
       // Do not call selectLane here. On Work, that action navigates to the
       // Lanes tab (split-open). Manage must stay on the surface that opened it.
@@ -447,24 +451,26 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     manage.push({
       kind: "action",
       key: "batch-manage",
-      label: `Manage ${deletableVisibleIds.length} Open Lanes...`,
+      label: `Manage ${deletableVisibleIds.length} open lanes…`,
       icon: Gear,
       onSelect: () => { onClose(); onBatchManage(deletableVisibleIds); },
     });
   }
-  if (manage.length) groups.push({ key: "manage", label: "Manage", entries: manage });
+  if (manage.length) {
+    // Continues the tab actions' block: two one-row groups read as one.
+    groups.push({ key: "manage", joinPrevious: groups[groups.length - 1]?.key === "tabs" && !groups[groups.length - 1]?.label, entries: manage });
+  }
 
   return groups;
 }
 
 export const laneMenuHeaderStyle: React.CSSProperties = {
-  padding: "5px 14px 3px",
-  fontSize: 9,
-  fontFamily: MONO_FONT,
-  fontWeight: 700,
-  letterSpacing: "0.12em",
-  textTransform: "uppercase",
+  padding: "5px 12px 3px",
+  fontSize: 10.5,
+  fontFamily: SANS_FONT,
+  fontWeight: 500,
   color: COLORS.textDim,
+  whiteSpace: "nowrap",
 };
 
 export function ColorSwatchRow({
@@ -511,6 +517,7 @@ export function ColorSwatchRow({
         usedColors={used}
         usedColorOwners={owners}
         swatchSize={18}
+        maxPerRow={7}
       />
       {error ? (
         <div style={{ marginTop: 2, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
@@ -548,15 +555,28 @@ function LaneEmojiRow({
   };
 
   const laneEmoji = laneEmojiForDisplay(lane.emoji, lane.icon);
+  // A normal menu row (icon, label, current value), so emoji reads like the
+  // Color and Copy rows beside it rather than a boxed control.
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5">
-      <LaneEmojiPicker
-        value={laneEmoji}
-        onChange={(next) => { void apply(next); }}
-        disabled={busy}
-        overlayLayer={Z_LAYERS.contextMenu}
-      />
-      <span className="text-[11px] text-muted-fg">{laneEmoji ?? "No emoji"}</span>
-    </div>
+    <LaneEmojiPicker
+      value={laneEmoji}
+      onChange={(next) => { void apply(next); }}
+      disabled={busy}
+      overlayLayer={Z_LAYERS.contextMenu}
+      label="Lane emoji"
+      trigger={(
+        <button
+          type="button"
+          role="menuitem"
+          disabled={busy}
+          className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] text-fg transition-colors hover:bg-fg/[0.06] disabled:opacity-50"
+          style={{ fontFamily: SANS_FONT }}
+        >
+          <LaneMenuGlyph icon={Smiley} />
+          <span className="flex-1">Emoji</span>
+          <span className={laneEmoji ? "text-[13px] leading-none" : "text-[11px] text-muted-fg"}>{laneEmoji ?? "None"}</span>
+        </button>
+      )}
+    />
   );
 }

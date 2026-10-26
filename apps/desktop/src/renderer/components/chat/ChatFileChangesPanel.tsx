@@ -1,6 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
-  CaretDown,
   CaretRight,
   FileCode,
   FilePlus,
@@ -361,10 +360,10 @@ function NestedFileChangesSection({
   return (
     <details className="group/changes overflow-hidden rounded-lg border border-fg/[0.06] bg-black/[0.16]">
       <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-fg/[0.03]">
-        <CaretDown
+        <CaretRight
           size={12}
           weight="bold"
-          className="shrink-0 text-fg/38 transition-transform group-open/changes:rotate-180"
+          className="shrink-0 text-fg/38 transition-transform group-open/changes:rotate-90"
         />
         <span className="font-sans text-[12px] font-medium text-fg/72">{label}</span>
         <span className="ml-auto">
@@ -404,14 +403,31 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
 }) {
   const thread = threadSummaries.length ? threadSummaries : [turnSummary];
   const turnFiles = useMemo(() => aggregateFiles([turnSummary]), [turnSummary]);
+  const threadFiles = useMemo(
+    () => aggregateFiles(threadSummaries.length ? threadSummaries : [turnSummary]),
+    [threadSummaries, turnSummary],
+  );
+  // When the thread changed exactly what this turn did, a second row with the
+  // same totals is noise: show one.
+  const threadMatchesTurn = threadFiles.length === turnFiles.length
+    && threadFiles.every((file, index) => {
+      const other = turnFiles[index];
+      return other != null
+        && file.path === other.path
+        && file.additions === other.additions
+        && file.deletions === other.deletions;
+    });
   if (!turnFiles.length) return null;
+  const sections = threadMatchesTurn ? (
+    <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
+  ) : (
+    <>
+      <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
+      <NestedFileChangesSection label="Full thread" summaries={thread} sessionId={sessionId} />
+    </>
+  );
   if (variant === "detail") {
-    return (
-      <div className="mt-2 space-y-2">
-        <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
-        <NestedFileChangesSection label="Full thread" summaries={thread} sessionId={sessionId} />
-      </div>
-    );
+    return <div className="mt-2 space-y-2">{sections}</div>;
   }
 
   const additions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
@@ -436,10 +452,7 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
           </ChatCardTitle>
         </ChatCardRow>
       </summary>
-      <div className="mt-2 space-y-2">
-        <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
-        <NestedFileChangesSection label="Full thread" summaries={thread} sessionId={sessionId} />
-      </div>
+      <div className="mt-2 space-y-2">{sections}</div>
     </details>
   );
 });

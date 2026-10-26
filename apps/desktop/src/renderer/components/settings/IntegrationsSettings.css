@@ -4,7 +4,7 @@
  * only carries status; every colour is a theme token.
  */
 
-.ade-int-page { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+.ade-int-page { display: flex; flex-direction: column; gap: 36px; min-width: 0; }
 
 /* The connection card's identity row. */
 .ade-int-hero { display: flex; align-items: center; gap: 12px; padding: 14px; min-width: 0; }

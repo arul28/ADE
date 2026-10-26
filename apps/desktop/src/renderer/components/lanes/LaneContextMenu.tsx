@@ -3,7 +3,7 @@ import type { LaneSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
-import { COLORS, MONO_FONT } from "./laneDesignTokens";
+import { COLORS, SANS_FONT } from "./laneDesignTokens";
 import {
   buildLaneMenuGroups,
   LaneMenuGlyph,
@@ -20,10 +20,11 @@ export const menuItemStyle: React.CSSProperties = {
   alignItems: "center",
   gap: 8,
   width: "100%",
-  padding: "7px 14px",
+  padding: "6px 12px",
   textAlign: "left",
-  fontSize: 11,
-  fontFamily: MONO_FONT,
+  fontSize: 12,
+  fontFamily: SANS_FONT,
+  whiteSpace: "nowrap",
   color: COLORS.textPrimary,
   background: "transparent",
   border: "none",
@@ -124,7 +125,7 @@ export function LaneMenuGroups({
     <>
       {groups.map((group, index) => (
         <React.Fragment key={group.key}>
-          {index > 0 ? (
+          {index > 0 && !group.joinPrevious ? (
             <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
           ) : null}
           {group.submenu ? (

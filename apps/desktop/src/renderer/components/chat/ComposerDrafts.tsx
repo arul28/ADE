@@ -237,7 +237,10 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   const entriesOwnerBindingKey = entriesOwnerBinding?.key ?? null;
   const entries = entriesOwnerBindingKey === currentBindingKey ? draftSnapshot.entries : [];
   const hasComposerContent = draft.trim().length > 0 || draftableComposerAttachments.length > 0;
-  const renderButton = buttonVisible && (hasComposerContent || entries.length > 0);
+  // The slot is always held, so the icons beside it never jump while typing;
+  // with nothing to save and nothing saved, the button sits there inactive.
+  const renderButton = buttonVisible;
+  const nothingToShow = !hasComposerContent && entries.length === 0;
   const attachmentSignature = attachments.map((attachment) => (
     `${attachment.type}:${attachment.path}`
   )).join("\n");
@@ -693,13 +696,17 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   }, []);
 
   return (
-    <div ref={rootRef} className={cn("relative shrink-0", renderButton ? "w-7" : "w-0")}>
+    <div
+      ref={rootRef}
+      className={cn("relative shrink-0", renderButton ? "w-7" : "w-0")}
+      data-composer-drafts-idle={renderButton && nothingToShow && !menuOpen ? "" : undefined}
+    >
       {renderButton ? (
         <SmartTooltip
           forceEnabled
           content={{
-            label: hasComposerContent ? "Save draft" : "Open drafts",
-            description: hasComposerContent
+            label: hasComposerContent || nothingToShow ? "Save draft" : "Open drafts",
+            description: hasComposerContent || nothingToShow
               ? "Save this prompt and its images across connected machines."
               : `Open your drafts and scheduled sends. Press ${shortcutLabel} with text to save one.`,
             shortcut: shortcutLabel,
@@ -711,7 +718,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
               ? "Save draft"
               : `Open ${entries.length} draft${entries.length === 1 ? "" : "s"}`}
             aria-expanded={menuOpen}
-            disabled={disabled || busy}
+            disabled={disabled || busy || nothingToShow}
             className={cn(
               "relative inline-flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color,transform] duration-150",
               "text-muted-fg/38 hover:bg-violet-500/[0.07] hover:text-violet-200/75",

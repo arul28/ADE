@@ -283,7 +283,7 @@ export function SessionHoverCard({
       ref={ref}
       role="tooltip"
       data-testid="session-hover-card"
-      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-fg/[0.08] px-3 py-2.5 shadow-2xl"
+      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[24rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-fg/[0.08] px-3 py-2.5 shadow-2xl"
       initial={false}
       animate={{
         opacity: position ? 1 : 0,

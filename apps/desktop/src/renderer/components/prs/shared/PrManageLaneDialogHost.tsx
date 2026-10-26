@@ -38,7 +38,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   }, [refreshLanes, runtimePin]);
 
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
-  const [deleteForce, setDeleteForce] = useState(true);
+  const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);

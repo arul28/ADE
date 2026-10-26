@@ -196,9 +196,10 @@ export function SettingsMachineEyebrow({ page }: { page: SettingsMachinePage }) 
         display: "flex",
         alignItems: "center",
         gap: 6,
-        marginBottom: 4,
+        flexShrink: 0,
+        whiteSpace: "nowrap",
         fontFamily: SANS_FONT,
-        fontSize: 11.5,
+        fontSize: 13,
         color: COLORS.textMuted,
         opacity: page.online ? 1 : 0.6,
       }}

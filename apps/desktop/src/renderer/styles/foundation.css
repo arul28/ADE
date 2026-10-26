@@ -97,6 +97,9 @@
   --color-accent-fg: #0C0B10;
   --color-accent-muted: rgba(167, 139, 250, 0.20);
   --color-accent-bright: #C4B5FD;
+  /* The accent as text (`text-accent-text`). Dark pages read the bright accent;
+     light pages darken the accent to 4.5 : 1. Themes emit their own. */
+  --color-accent-text: var(--color-accent-bright);
   --color-accent-deep: #7C3AED;
   --color-accent-glow-strong: rgba(168, 130, 255, 0.22);
   --color-surface-raised: #1E1B2E;
@@ -309,6 +312,7 @@
      the tools picker backdrop among them — silently got the DARK theme's
      violets on a green page. */
   --color-accent-bright: #4FC49B;
+  --color-accent-text: #027552;
   --color-accent-deep: #0E9A72;
   --color-surface-raised: #ffffff;
   --color-surface-recessed: #eae7e2;
@@ -607,6 +611,97 @@
   --color-stone-400: oklch(55.3% 0.013 58.071);
 }
 
+/* Light mode raises faded text to a readable floor.
+
+   Secondary text is written as `text-muted-fg/45` or `text-fg/40`: the
+   opacity that reads as "quiet" on a dark page reads as "gone" on a light one
+   (1.7 to 2.7 : 1). On light pages each fade level keeps its order but moves
+   up a band: `text-fg/25`-`/79` map onto 50-80% and `text-muted-fg/30`-`/85`
+   onto 78-93%, so meta text lands at about 3.5 : 1 and secondary text near
+   4.5 : 1. Fades below those ranges stay as written: they are disabled or
+   decorative on purpose. `:where()` keeps each rule at the utility's own
+   weight, so `hover:` and other variants still win. Dark pages never match. */
+@layer utilities {
+  :where([data-theme="light"]) :is(.text-fg\/25) { color: color-mix(in srgb, var(--color-fg) 50%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/26, .text-fg\/27) { color: color-mix(in srgb, var(--color-fg) 51%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/28, .text-fg\/29) { color: color-mix(in srgb, var(--color-fg) 52%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/30, .text-fg\/31) { color: color-mix(in srgb, var(--color-fg) 53%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/32, .text-fg\/33) { color: color-mix(in srgb, var(--color-fg) 54%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/34, .text-fg\/35) { color: color-mix(in srgb, var(--color-fg) 55%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/36) { color: color-mix(in srgb, var(--color-fg) 56%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/37, .text-fg\/38) { color: color-mix(in srgb, var(--color-fg) 57%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/39, .text-fg\/40) { color: color-mix(in srgb, var(--color-fg) 58%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/41, .text-fg\/42) { color: color-mix(in srgb, var(--color-fg) 59%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/43, .text-fg\/44) { color: color-mix(in srgb, var(--color-fg) 60%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/45, .text-fg\/46) { color: color-mix(in srgb, var(--color-fg) 61%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/47) { color: color-mix(in srgb, var(--color-fg) 62%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/48, .text-fg\/49) { color: color-mix(in srgb, var(--color-fg) 63%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/50, .text-fg\/51) { color: color-mix(in srgb, var(--color-fg) 64%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/52, .text-fg\/53) { color: color-mix(in srgb, var(--color-fg) 65%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/54, .text-fg\/55) { color: color-mix(in srgb, var(--color-fg) 66%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/56, .text-fg\/57) { color: color-mix(in srgb, var(--color-fg) 67%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/58) { color: color-mix(in srgb, var(--color-fg) 68%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/59, .text-fg\/60) { color: color-mix(in srgb, var(--color-fg) 69%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/61, .text-fg\/62) { color: color-mix(in srgb, var(--color-fg) 70%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/63, .text-fg\/64) { color: color-mix(in srgb, var(--color-fg) 71%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/65, .text-fg\/66) { color: color-mix(in srgb, var(--color-fg) 72%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/67, .text-fg\/68) { color: color-mix(in srgb, var(--color-fg) 73%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/69) { color: color-mix(in srgb, var(--color-fg) 74%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/70, .text-fg\/71) { color: color-mix(in srgb, var(--color-fg) 75%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/72, .text-fg\/73) { color: color-mix(in srgb, var(--color-fg) 76%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/74, .text-fg\/75) { color: color-mix(in srgb, var(--color-fg) 77%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/76, .text-fg\/77) { color: color-mix(in srgb, var(--color-fg) 78%, transparent); }
+  :where([data-theme="light"]) :is(.text-fg\/78) { color: color-mix(in srgb, var(--color-fg) 79%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/30, .text-muted-fg\/31) { color: color-mix(in srgb, var(--color-muted-fg) 78%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/32, .text-muted-fg\/33, .text-muted-fg\/34, .text-muted-fg\/35) { color: color-mix(in srgb, var(--color-muted-fg) 79%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/36, .text-muted-fg\/37, .text-muted-fg\/38, .text-muted-fg\/39) { color: color-mix(in srgb, var(--color-muted-fg) 80%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/40, .text-muted-fg\/41, .text-muted-fg\/42, .text-muted-fg\/43) { color: color-mix(in srgb, var(--color-muted-fg) 81%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/44, .text-muted-fg\/45, .text-muted-fg\/46) { color: color-mix(in srgb, var(--color-muted-fg) 82%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/47, .text-muted-fg\/48, .text-muted-fg\/49, .text-muted-fg\/50) { color: color-mix(in srgb, var(--color-muted-fg) 83%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/51, .text-muted-fg\/52, .text-muted-fg\/53, .text-muted-fg\/54) { color: color-mix(in srgb, var(--color-muted-fg) 84%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/55, .text-muted-fg\/56, .text-muted-fg\/57, .text-muted-fg\/58) { color: color-mix(in srgb, var(--color-muted-fg) 85%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/59, .text-muted-fg\/60, .text-muted-fg\/61) { color: color-mix(in srgb, var(--color-muted-fg) 86%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/62, .text-muted-fg\/63, .text-muted-fg\/64, .text-muted-fg\/65) { color: color-mix(in srgb, var(--color-muted-fg) 87%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/66, .text-muted-fg\/67, .text-muted-fg\/68, .text-muted-fg\/69) { color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/70, .text-muted-fg\/71, .text-muted-fg\/72, .text-muted-fg\/73) { color: color-mix(in srgb, var(--color-muted-fg) 89%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/74, .text-muted-fg\/75, .text-muted-fg\/76) { color: color-mix(in srgb, var(--color-muted-fg) 90%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/77, .text-muted-fg\/78, .text-muted-fg\/79, .text-muted-fg\/80) { color: color-mix(in srgb, var(--color-muted-fg) 91%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/81, .text-muted-fg\/82, .text-muted-fg\/83, .text-muted-fg\/84) { color: color-mix(in srgb, var(--color-muted-fg) 92%, transparent); }
+  :where([data-theme="light"]) :is(.text-muted-fg\/85) { color: color-mix(in srgb, var(--color-muted-fg) 93%, transparent); }
+}
+
+/* Accent as text on light pages. A theme's accent (and its lighter
+   `--color-accent-bright`) is tuned to fill a button, so as text on a light
+   page it sits near 2 : 1. Text that reads the accent through an arbitrary
+   `text-[color:var(--color-accent…)]` class takes `--color-accent-text`
+   instead: the same hue, darkened per theme until it reads at 4.5 : 1. New
+   code writes `text-accent-text` directly. */
+@layer utilities {
+  :where([data-theme="light"]) :is([class^="text-[color:var(--color-accent,"], [class*=" text-[color:var(--color-accent,"], [class^="text-[color:var(--color-accent)"], [class*=" text-[color:var(--color-accent)"]),
+  :where([data-theme="light"]) :is([class*="hover:text-[color:var(--color-accent,"], [class*="hover:text-[color:var(--color-accent)"]):hover {
+    color: var(--color-accent-text);
+  }
+  :where([data-theme="light"]) :is([class^="text-[color:var(--color-accent-bright"], [class*=" text-[color:var(--color-accent-bright"]),
+  :where([data-theme="light"]) [class*="hover:text-[color:var(--color-accent-bright"]:hover {
+    color: var(--color-accent-text);
+  }
+}
+
+/* Recessed wells on light pages. Dark pages sink a field or well with a faint
+   black wash (`bg-black/20`); on a light page that wash turns into a flat grey
+   slab that reads as disabled. Light mode restates the faint washes (10-30%)
+   as a quarter-strength tint of `--color-fg`. Washes under white text are
+   overlays on a picture and stay as written. */
+@layer utilities {
+  :where([data-theme="light"]) :is(.bg-black\/10, .bg-black\/\[0\.08\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 2%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/11, .bg-black\/12, .bg-black\/13, .bg-black\/\[0\.12\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 3%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/14, .bg-black\/15, .bg-black\/16, .bg-black\/17, .bg-black\/18, .bg-black\/\[0\.14\], .bg-black\/\[0\.16\], .bg-black\/\[0\.18\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/19, .bg-black\/20, .bg-black\/21, .bg-black\/\[0\.2\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 5%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/22, .bg-black\/23, .bg-black\/24, .bg-black\/25, .bg-black\/26):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/27, .bg-black\/28, .bg-black\/29, .bg-black\/\[0\.28\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 7%, transparent); }
+  :where([data-theme="light"]) :is(.bg-black\/30, .bg-black\/\[0\.3\]):not([class*="text-white"]) { background-color: color-mix(in srgb, var(--color-fg) 8%, transparent); }
+}
+
 /* `text-tone-[#hex]`: a status or brand colour used as text, the class form
    of `toneText()` in laneDesignTokens.ts. Dark pages keep the colour whole;
    light pages pull it toward the theme's text colour. Takes an opacity
@@ -648,6 +743,13 @@ body {
    Circles (999px, 50%, rounded-full) keep their shape, and nothing here runs
    unless the active theme asked for sharp corners. */
 html[data-theme-radius="sharp"] :is([style*="border-radius"], [class*="rounded-["]):not([style*="999"], [style*="50%"], [class*="rounded-full"]) {
+  border-radius: var(--radius-sm) !important;
+}
+
+/* The second rule squares the rest: pills (chips, switches, pill buttons) and
+   the cards and buttons whose `ade-*` / `kit-*` class states a pixel radius.
+   Only elements with content: an empty dot, avatar or ring stays round. */
+html[data-theme-radius="sharp"] :is(.rounded-full, [class*="ade-"], [class*="kit-"]):not(:empty, img, svg, video, canvas, input) {
   border-radius: var(--radius-sm) !important;
 }
 
@@ -698,7 +800,8 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "ss01";
-  letter-spacing: 0;
+  /* A monospace theme tightens its tracking (resolve.ts). */
+  letter-spacing: var(--theme-letter-spacing, 0);
 }
 
 button,

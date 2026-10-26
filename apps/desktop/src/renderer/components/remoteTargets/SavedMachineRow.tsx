@@ -230,9 +230,12 @@ export function SavedMachineRow({
               ? "Connecting…"
               : target.lastConnectedAt || statusLabel !== "Not connected"
                 ? [
-                    statusLabel,
+                    // The hollow dot and the section already say "not connected".
+                    statusLabel === "Not connected" ? null : statusLabel,
                     autoConnectOff,
-                    formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                    statusLabel === "Not connected"
+                      ? formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "Last seen ")
+                      : formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That
@@ -355,7 +358,10 @@ export function SavedMachineRow({
               >
                 <Pulse size={15} />
               </button>
-            ) : null}
+            ) : (
+              // Keeps the icon rail in fixed columns across rows.
+              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
+            )}
             {section !== "unavailable" ? (
               <button
                 type="button"
@@ -369,7 +375,9 @@ export function SavedMachineRow({
               >
                 <PencilSimple size={15} />
               </button>
-            ) : null}
+            ) : (
+              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
+            )}
             <button
               type="button"
               aria-label={`Remove ${target.name}`}

@@ -284,8 +284,10 @@ describe("Work-board columns on Activity items", () => {
     { name: "a failure is Needs you", status: "failed", pr: null, wake: null, column: "needs_you", reason: null },
     { name: "a failure ignores its lane's CI", status: "failed", pr: "ci", wake: null, column: "needs_you", reason: null },
     { name: "a running chat is Working", status: "running", pr: null, wake: null, column: "working", reason: null },
-    { name: "a running chat waits on its lane's CI", status: "running", pr: "ci", wake: null, column: "waiting", reason: "ci" },
-    { name: "a running chat waits on a requested review", status: "running", pr: "review", wake: null, column: "waiting", reason: "review" },
+    // A live turn is Working whatever its lane's PR is doing; the PR wait is
+    // not a second, contradictory column.
+    { name: "a running chat works through its lane's CI", status: "running", pr: "ci", wake: null, column: "working", reason: null },
+    { name: "a running chat works through a requested review", status: "running", pr: "review", wake: null, column: "working", reason: null },
     { name: "a resting chat is Done", status: "idle", pr: null, wake: null, column: "done", reason: null },
     { name: "a resting chat waits on a pending wake", status: "idle", pr: null, wake: "2026-08-01T13:00:00.000Z", column: "waiting", reason: "scheduled" },
     { name: "a wake long past is not a wait", status: "idle", pr: null, wake: "2026-08-01T10:00:00.000Z", column: "done", reason: null },
@@ -303,7 +305,7 @@ describe("Work-board columns on Activity items", () => {
   });
 
   it.each([
-    { name: "a running run keeps its lane's CI wait", pr: "ci", wake: null, rosterStatus: "running", runPhase: "running", column: "waiting", reason: "ci" },
+    { name: "a running run ignores its lane's CI wait", pr: "ci", wake: null, rosterStatus: "running", runPhase: "running", column: "working", reason: null },
     { name: "a finished run keeps a pending wake", pr: null, wake: "2026-08-01T13:00:00.000Z", rosterStatus: "idle", runPhase: "completed", column: "waiting", reason: "scheduled" },
     { name: "a question never inherits a wait", pr: "ci", wake: null, rosterStatus: "running", runPhase: "waiting_for_input", column: "needs_you", reason: null },
   ] as const)("$name when a live run replaces the roster row", async ({ pr, wake, rosterStatus, runPhase, column, reason }) => {
@@ -321,27 +323,27 @@ describe("Work-board columns on Activity items", () => {
 
   it("keeps a row's alert identity when only its column changes", async () => {
     // statusSince is part of the alert identity, and the relay clears a
-    // dismissal when that identity changes. A lane starting CI must not bring
-    // back a running row the user dismissed.
+    // dismissal when that identity changes. A resting chat that starts waiting
+    // on a scheduled wake must not bring back a row the user dismissed.
     const rosterPhaseAnchors = new Map();
-    const [working] = await buildAttentionItems(context({
+    const [done] = await buildAttentionItems(context({
       includeRoster: true,
       nowMs: NOW,
       rosterPhaseAnchors,
-      loadRoster: async () => [rosterWith({ status: "running" })],
+      loadRoster: async () => [rosterWith({ status: "idle" })],
     }));
     const [waiting] = await buildAttentionItems(context({
       includeRoster: true,
       nowMs: NOW + 60_000,
       rosterPhaseAnchors,
-      loadRoster: async () => [rosterWith({ status: "running" }, "ci")],
+      loadRoster: async () => [rosterWith({ status: "idle", nextWakeAt: "2026-08-01T13:00:00.000Z" })],
     }));
 
-    expect(working?.boardColumn).toBe("working");
+    expect(done?.boardColumn).toBe("done");
     expect(waiting?.boardColumn).toBe("waiting");
-    expect(waiting?.statusSince).toBe(working?.statusSince);
-    expect(waiting?.alertFingerprint).toBe(working?.alertFingerprint);
+    expect(waiting?.statusSince).toBe(done?.statusSince);
+    expect(waiting?.alertFingerprint).toBe(done?.alertFingerprint);
     // The row's look did change, so it still republishes.
-    expect(waiting?.contentFingerprint).not.toBe(working?.contentFingerprint);
+    expect(waiting?.contentFingerprint).not.toBe(done?.contentFingerprint);
   });
 });
