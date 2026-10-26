@@ -5397,6 +5397,10 @@ button, [role="button"] {
   background: linear-gradient(120deg, #f87171, #facc15, #4ade80, #60a5fa, #c084fc);
 }
 
+.ade-daybreak-switch[data-on="true"] {
+  background: linear-gradient(120deg, #f97316, #fbbf24);
+}
+
 .ade-ultrathink-switch[data-on="true"]::after {
   transform: translateX(12px);
   background: #fff;

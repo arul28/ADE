@@ -90,6 +90,8 @@ export type ModelDescriptor = {
   /** Provider-reported multiplier used for request-cost display when available. */
   billingMultiplier?: number;
   serviceTiers?: string[];
+  /** Codex runtime catalog only: access programs this account may ask for (`shared/codexDaybreak.ts`). */
+  cyberAccessPrograms?: string[];
   color: string;
   providerRoute: string;
   providerModelId: string;

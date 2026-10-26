@@ -39,6 +39,12 @@ export type ReasoningEffortPickerProps = {
    * that stacks on any level. Omitted for providers that do not read it.
    */
   ultrathink?: { active: boolean; onChange: (active: boolean) => void } | null;
+  /**
+   * Codex Daybreak (broader access for authorized cybersecurity work), shown
+   * under the levels only for a model the signed-in account may use it on.
+   * It is a chat setting, not a level, so it stacks on any effort.
+   */
+  daybreak?: { active: boolean; onChange: (active: boolean) => void } | null;
   copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
   copilotAutoTierPending?: boolean;
@@ -222,6 +228,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   catalogScopeKey,
   catalogRevision = 0,
   ultrathink,
+  daybreak,
   copilotAutoTier,
   onCopilotAutoTierChange,
   copilotAutoTierPending = false,
@@ -719,6 +726,28 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                     </span>
                   </span>
                   <span aria-hidden className="ade-ultrathink-switch" data-on={ultrathink.active ? "true" : "false"} />
+                </button>
+              </>
+            ) : null}
+            {daybreak ? (
+              <>
+                <div className="mx-0.5 mt-2.5 h-px bg-fg/[0.06]" />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={daybreak.active}
+                  disabled={disabled}
+                  data-reasoning-daybreak-switch="true"
+                  onClick={() => daybreak.onChange(!daybreak.active)}
+                  className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-fg/25"
+                >
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className="self-start font-sans text-[12px] font-semibold leading-none text-fg/85">Daybreak</span>
+                    <span className="font-sans text-[10px] leading-4 text-muted-fg/60">
+                      Broader access for authorized cybersecurity work in this chat.
+                    </span>
+                  </span>
+                  <span aria-hidden className="ade-ultrathink-switch ade-daybreak-switch" data-on={daybreak.active ? "true" : "false"} />
                 </button>
               </>
             ) : null}

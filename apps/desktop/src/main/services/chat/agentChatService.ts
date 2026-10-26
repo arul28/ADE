@@ -164,6 +164,8 @@ import {
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
+import { codexImageGenerationRefFields, looksLikeInlineBase64Image } from "./codexImageGeneration";
+import { codexDaybreakProgram, readCodexCyberAccessPrograms, type CodexDaybreakProgram } from "../../../shared/codexDaybreak";
 import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import {
   SIDE_CHAT_READ_ONLY_MESSAGE,
@@ -193,7 +195,15 @@ import {
   codexServerSupportsThreadSettings,
   codexServerSupportsUserShell,
   codexServerSupportsForkBeforeTurn,
+  codexServerSupportsThreadSample,
 } from "./codexAppServerFeatures";
+import {
+  buildCodexSamplePrompt,
+  classifyCodexSampleError,
+  codexSampleRateLimitCooldownMs,
+  readCodexSampleResponse,
+  type CodexSampleOutcome,
+} from "./codexThreadSample";
 import {
   CODEX_MEMORY_RESET_RECEIPT,
   parseCodexMemorySlashCommand,
@@ -484,6 +494,7 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
 } from "../../../shared/backgroundUtilityModel";
@@ -2181,6 +2192,8 @@ type PersistedChatState = {
   fastMode?: boolean;
   /** "ultrafast" when Fast asks for Codex's Ultrafast tier; absent is plain Fast. */
   fastTier?: "ultrafast";
+  /** Codex: Daybreak is on for this chat (`shared/codexDaybreak.ts`). */
+  codexDaybreak?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Retained until Cursor accepts a cloud create/follow-up, including across restarts. */
   cursorCloudPendingRequest?: PersistedCursorCloudPendingRequest | null;
@@ -2638,6 +2651,8 @@ type PendingRpc = {
 
 type CodexRequestOptions = {
   timeoutMs?: number | null;
+  /** Called with the JSON-RPC id before the request is written (`thread/sample/cancel` needs it). */
+  onRequestId?: (id: number) => void;
 };
 
 function isCodexRequestTimeoutError(error: unknown): boolean {
@@ -5132,6 +5147,11 @@ type EpochDirective =
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 type ManagedChatSession = {
+  /**
+   * The provider turn id of the chat's latest `done`, whatever its status.
+   * Codex `thread/sample` must name it (`codexThreadSample.ts`).
+   */
+  lastFinishedTurnId?: string | null;
   session: AgentChatSession;
   transcriptPath: string;
   /** Bytes in this chat's dedicated transcript (on disk at load, plus lines queued since). */
@@ -5805,6 +5825,8 @@ const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CODEX_REQUEST_TIMEOUT_MS = 30_000;
+/** A `thread/sample` for a name; Codex itself stops at 30 s, and the helper fallback still needs time. */
+const CODEX_SAMPLE_NAMING_TIMEOUT_MS = 20_000;
 /**
  * How long a Codex app-server keeps a thread loaded after its chat
  * unsubscribed (Codex's default is 30 minutes). Zero: a chat leaving a shared
@@ -6072,6 +6094,8 @@ const QUIET_CODEX_NOTIFICATION_METHODS = new Set([
   "item/commandExecution/terminalInteraction",
   "remoteControl/status/changed",
   "thread/archived",
+  // Codex 0.164 sends its durable read receipt after every turn; ADE keeps its own unread state.
+  "thread/readState/changed",
   "thread/started",
   "thread/tokenUsage/updated",
   "turn/diff/updated",
@@ -6090,7 +6114,7 @@ const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effor
 
 function codexModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
-  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "defaultReasoningEffort" | "serviceTiers">>,
+  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "defaultReasoningEffort" | "serviceTiers" | "cyberAccessPrograms">>,
 ): AgentChatModelInfo {
   const advertisedReasoningEfforts = overrides?.reasoningEfforts ?? (descriptor.reasoningTiers?.length
     ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
@@ -6109,6 +6133,7 @@ function codexModelInfoFromDescriptor(
       : descriptor.serviceTiers?.length
         ? { serviceTiers: descriptor.serviceTiers }
         : {}),
+    ...(overrides?.cyberAccessPrograms !== undefined ? { cyberAccessPrograms: overrides.cyberAccessPrograms } : {}),
     modelId: descriptor.id,
     family: descriptor.family,
     supportsReasoning: descriptor.capabilities.reasoning,
@@ -6358,6 +6383,35 @@ function sessionEffectiveFastMode(
  * is granted per account, so only a live `model/list` can say a model has it.
  */
 const codexCatalogServiceTiersByModel = new Map<string, readonly string[]>();
+
+/**
+ * Access programs the Codex catalog last offered per model for the signed-in
+ * account, keyed like `codexCatalogServiceTiersByModel`. Daybreak is sent
+ * only for a model listed here with a Daybreak program (`shared/codexDaybreak.ts`).
+ */
+const codexCatalogCyberProgramsByModel = new Map<string, readonly string[]>();
+
+function rememberCodexCatalogCyberPrograms(keys: Array<string | null | undefined>, programs: readonly string[] | undefined): void {
+  for (const key of keys) {
+    const trimmed = key?.trim();
+    if (!trimmed) continue;
+    if (programs === undefined) codexCatalogCyberProgramsByModel.delete(trimmed);
+    else codexCatalogCyberProgramsByModel.set(trimmed, programs);
+  }
+}
+
+/** The Daybreak program a Codex turn asks for: only when the chat has it on and its model offers one. */
+function codexDaybreakTurnArgs(session: AgentChatSession): { cyberAccessProgram?: CodexDaybreakProgram } {
+  if (session.provider !== "codex" || session.codexDaybreak !== true) return {};
+  const descriptor = resolveSessionModelDescriptor(session);
+  for (const key of [descriptor?.providerModelId, descriptor?.id, session.modelId, session.model]) {
+    const programs = key ? codexCatalogCyberProgramsByModel.get(key.trim()) : undefined;
+    if (!programs) continue;
+    const program = codexDaybreakProgram(programs);
+    return program ? { cyberAccessProgram: program } : {};
+  }
+  return {};
+}
 
 function rememberCodexCatalogServiceTiers(keys: Array<string | null | undefined>, tiers: readonly string[] | undefined): void {
   for (const key of keys) {
@@ -13247,6 +13301,105 @@ export function createAgentChatService(args: {
   // ADE's next-prompt suggestion for providers without a native one. Runs on
   // the same single model that names the chat: the vendor's cheap helper
   // (Luna, Composer), or the chat's own model, at that model's lowest effort.
+  /**
+   * One answer from a Codex chat's own thread (`thread/sample`, see
+   * `codexThreadSample.ts`), for background work that used to send a
+   * transcript excerpt to the helper model. "unsupported" means the caller
+   * should use its helper; "stale" means the chat moved on and the answer
+   * would be about an old turn.
+   *
+   * Samples count toward the same per-turn rate limit as real turns, so one
+   * chat runs one at a time (a title and a suggestion after the same turn
+   * queue), and a rate-limited sample stops all sampling for its Retry-After.
+   */
+  const codexSampleQueueBySession = new Map<string, Promise<CodexSampleOutcome>>();
+  let codexSampleCooldownUntil = 0;
+  const runCodexThreadSample = (
+    managed: ManagedChatSession,
+    args: { turnId: string; prompt: string; timeoutMs: number; purpose: string },
+  ): Promise<CodexSampleOutcome> => {
+    const sessionId = managed.session.id;
+    const prior = codexSampleQueueBySession.get(sessionId);
+    const run = (prior ? prior.then(() => undefined, () => undefined) : Promise.resolve())
+      .then(() => runCodexThreadSampleNow(managed, args));
+    codexSampleQueueBySession.set(sessionId, run);
+    void run.finally(() => {
+      if (codexSampleQueueBySession.get(sessionId) === run) codexSampleQueueBySession.delete(sessionId);
+    }).catch(() => undefined);
+    return run;
+  };
+  const runCodexThreadSampleNow = async (
+    managed: ManagedChatSession,
+    args: { turnId: string; prompt: string; timeoutMs: number; purpose: string },
+  ): Promise<CodexSampleOutcome> => {
+    if (managed.deleted) return { kind: "stale", reason: "chat is gone" };
+    if (Date.now() < codexSampleCooldownUntil) {
+      return { kind: "failed", reason: "Codex rate-limited a recent sample" };
+    }
+    const runtime = managed.runtime;
+    const threadId = managed.session.threadId?.trim();
+    if (managed.session.provider !== "codex" || runtime?.kind !== "codex" || !threadId) {
+      return { kind: "unsupported", reason: "no live Codex thread" };
+    }
+    if (!codexServerSupportsThreadSample(runtime.serverVersion)) {
+      return { kind: "unsupported", reason: "Codex app-server older than 0.164" };
+    }
+    // The fork runs at the chat's speed, and a background call never pays
+    // Fast rates (`backgroundUtilityModel.ts`): Fast chats keep the helper.
+    const tier = managed.session.codexServiceTier?.trim().toLowerCase();
+    if (codexServiceTierArgs(managed.session).serviceTier || (tier && tier !== "default" && tier !== "standard" && tier !== "auto")) {
+      return { kind: "unsupported", reason: "chat runs on a fast service tier" };
+    }
+    if (runtime.activeTurnId || runtime.awaitingTurnStart) {
+      return { kind: "stale", reason: "a turn is running" };
+    }
+    const effort = backgroundUtilityReasoningEffort(resolveSessionModelDescriptor(managed.session));
+    let requestId: number | null = null;
+    const startedAt = Date.now();
+    try {
+      const response = await runtime.request("thread/sample", {
+        threadId,
+        expectedTurnId: args.turnId,
+        prompt: args.prompt,
+        ...(effort ? { effort } : {}),
+        turnTrigger: `ade_${args.purpose}`,
+      }, {
+        timeoutMs: args.timeoutMs,
+        onRequestId: (id) => { requestId = id; },
+      });
+      const { text, usage } = readCodexSampleResponse(response);
+      const durationMs = Date.now() - startedAt;
+      logger.info("agent_chat.codex_thread_sample", {
+        sessionId: managed.session.id,
+        purpose: args.purpose,
+        durationMs,
+        answered: Boolean(text?.trim()),
+        effort,
+        ...usage,
+      });
+      return { kind: "answered", text, usage, durationMs };
+    } catch (error) {
+      // ADE stopped waiting; tell Codex so the hidden fork is reclaimed now
+      // rather than at its own 30 s limit.
+      if (isCodexRequestTimeoutError(error) && requestId != null && managed.runtime === runtime) {
+        void runtime.request("thread/sample/cancel", { requestId }, { timeoutMs: 5_000 }).catch(() => undefined);
+      }
+      const outcome = isCodexRequestTimeoutError(error)
+        ? { kind: "failed" as const, reason: error instanceof Error ? error.message : String(error) }
+        : classifyCodexSampleError(error);
+      const cooldownMs = codexSampleRateLimitCooldownMs(outcome.reason);
+      if (cooldownMs != null) codexSampleCooldownUntil = Math.max(codexSampleCooldownUntil, Date.now() + cooldownMs);
+      logger.info("agent_chat.codex_thread_sample", {
+        sessionId: managed.session.id,
+        purpose: args.purpose,
+        durationMs: Date.now() - startedAt,
+        outcome: outcome.kind,
+        reason: outcome.reason,
+      });
+      return outcome;
+    }
+  };
+
   const nextPromptSuggestion = createNextPromptSuggestion({
     logger,
     hasPendingInput: (sessionId) => hasLivePendingInput(managedSessions.get(sessionId)),
@@ -13267,6 +13420,11 @@ export function createAgentChatService(args: {
         taskType: "session_summary",
         providerAccount: sessionProviderAccount(managed),
       });
+    },
+    sampleThread: async ({ sessionId, turnId, prompt, timeoutMs }) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return { kind: "unsupported", reason: "chat is gone" };
+      return await runCodexThreadSample(managed, { turnId, prompt, timeoutMs, purpose: "prompt_suggestion" });
     },
     emitSuggestion: (sessionId, suggestion, turnId) => {
       // Straight to the live stream: a suggestion is not chat activity, so it
@@ -17887,6 +18045,39 @@ export function createAgentChatService(args: {
         return;
       }
 
+      // Every helper model failed. After the first run, a Codex chat can still
+      // ask its own thread, which knows the whole conversation. It runs on the
+      // chat's model with all its context, far dearer than the helper, so it
+      // only stands in for a failed helper, before the word-based title.
+      const finishedTurnId = managed.lastFinishedTurnId?.trim();
+      if (args.mode === "refine" && finishedTurnId) {
+        const sample = await runCodexThreadSample(managed, {
+          turnId: finishedTurnId,
+          prompt: buildCodexSamplePrompt(
+            [AUTO_TITLE_SYSTEM_PROMPT, autoTitleInstruction(args.mode, Boolean(managed.autoTitleInheritedContext?.length))].join("\n\n"),
+            titleContext.join("\n"),
+          ),
+          timeoutMs: CODEX_SAMPLE_NAMING_TIMEOUT_MS,
+          purpose: "session_title",
+        });
+        const sampledTitle = sample.kind === "answered" && sample.text?.trim()
+          && !sessionIsManuallyNamed(managed) && !managed.runtimeTitleAdopted && !managed.deleted
+          ? setManagedSessionTitle(managed, sample.text)
+          : null;
+        if (sampledTitle) {
+          logger.info("agent_chat.auto_title_generated", {
+            sessionId: managed.session.id,
+            mode: args.mode,
+            changed: sampledTitle.trim() !== String(titleAfterWait ?? "").trim(),
+            attemptCount: attemptCount + 1,
+            source: "thread_sample",
+          });
+          managed.autoTitleStage = stage;
+          return;
+        }
+        if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted || managed.deleted) return;
+      }
+
       // Every model failed. A chat with a real user prompt must never sit on its
       // provider default title, so derive one from the seed the same way an
       // automatically created lane derives its title.
@@ -17998,6 +18189,16 @@ export function createAgentChatService(args: {
           commits: commits?.exitCode === 0 ? commits.stdout : null,
           uncommitted: uncommitted?.exitCode === 0 ? uncommitted.stdout : null,
         };
+      },
+      sampleThread: async (managed, prompt) => {
+        const turnId = managed.lastFinishedTurnId?.trim();
+        if (!turnId) return { kind: "unsupported", reason: "no finished turn yet" };
+        return await runCodexThreadSample(managed, {
+          turnId,
+          prompt,
+          timeoutMs: CODEX_SAMPLE_NAMING_TIMEOUT_MS,
+          purpose: "session_metadata",
+        });
       },
       runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }, managed) => runSessionIntelligencePrompt({
         cwd,
@@ -19681,6 +19882,7 @@ export function createAgentChatService(args: {
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.fastMode === true ? { fastMode: true } : {}),
       ...(managed.session.fastMode === true && managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+      ...(managed.session.codexDaybreak === true ? { codexDaybreak: true } : {}),
       ...(managed.session.cursorCloudServiceTier !== undefined
         ? { cursorCloudServiceTier: managed.session.cursorCloudServiceTier }
         : prevPersisted?.cursorCloudServiceTier !== undefined
@@ -22232,6 +22434,7 @@ export function createAgentChatService(args: {
         ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
         ...(typeof managed.session.fastMode === "boolean" ? { fastMode: managed.session.fastMode } : {}),
         ...(managed.session.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+        ...(managed.session.codexDaybreak === true ? { codexDaybreak: true } : {}),
         ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
         ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
@@ -22997,7 +23200,12 @@ export function createAgentChatService(args: {
         completed: event.status === "completed",
         isSubagentWithParent: managed.session.spawnKind === "subagent"
           && Boolean(managed.session.orchestrationParentSessionId?.trim()),
-        isEnabled: () => projectConfigService.get().effective.ai?.chat?.promptSuggestionsEnabled === true,
+        isEnabled: () => {
+          const chatConfig = projectConfigService.get().effective.ai?.chat;
+          return managed.session.provider === "codex"
+            ? chatConfig?.codexPromptSuggestionsEnabled !== false
+            : chatConfig?.promptSuggestionsEnabled === true;
+        },
         backgroundWorkCount: totalBackgroundWork(runtimeBackgroundWork(managed.runtime)),
         nativeSuggestions: managed.session.provider === "claude",
         entries: managed.recentConversationEntries,
@@ -23626,6 +23834,7 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
+      if (event.turnId) managed.lastFinishedTurnId = event.turnId;
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
@@ -28009,6 +28218,7 @@ export function createAgentChatService(args: {
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
         ...(persisted?.fastMode === true && persisted.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
+        ...(persisted?.provider === "codex" && persisted.codexDaybreak === true ? { codexDaybreak: true } : {}),
         ...(persisted?.cursorCloudServiceTier !== undefined
           ? { cursorCloudServiceTier: persisted.cursorCloudServiceTier }
           : {}),
@@ -29235,6 +29445,7 @@ export function createAgentChatService(args: {
             }
           : {}),
         ...codexServiceTierArgs(managed.session),
+        ...codexDaybreakTurnArgs(managed.session),
         ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
@@ -41590,6 +41801,8 @@ export function createAgentChatService(args: {
       const looksLikeLocalPath = (value: string | null): boolean => {
         if (!value) return false;
         if (isRemoteOrDataUri(value)) return false;
+        // Inline base64 is not a path, even when it starts with "/" (a JPEG's `/9j/`).
+        if (looksLikeInlineBase64Image(value)) return false;
         return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("~");
       };
       const savedPath = looksLikeLocalPath(localPathField)
@@ -41605,6 +41818,7 @@ export function createAgentChatService(args: {
         revisedPrompt: stringOrNull(item.revisedPrompt ?? item.revised_prompt),
         result,
         savedPath,
+        ...codexImageGenerationRefFields(item),
         status,
       });
       return;
@@ -43795,6 +44009,7 @@ export function createAgentChatService(args: {
           method,
           ...(params !== undefined ? { params } : {})
         };
+        options?.onRequestId?.(id);
 
         if (!proc.stdin.writable) {
           throw new Error("Codex app-server stdin is not writable.");
@@ -44232,6 +44447,7 @@ export function createAgentChatService(args: {
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
       ...(dynamicTools.length ? { dynamicTools } : {}),
+      ...(managed.session.codexDaybreak === true ? { daybreakEnabled: true } : {}),
       experimentalRawEvents: false,
       ...(codexServerSupportsPaginatedHistory(runtime.serverVersion)
         ? { historyMode: "paginated" as const }
@@ -46960,6 +47176,7 @@ export function createAgentChatService(args: {
             row.additionalSpeedTiers,
             row.serviceTiers,
           );
+          const cyberAccessPrograms = readCodexCyberAccessPrograms(row);
 
           return {
             id,
@@ -46968,7 +47185,8 @@ export function createAgentChatService(args: {
             isDefault,
             reasoningEfforts: normalizedEfforts,
             ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
-            ...(serviceTiers ? { serviceTiers } : {})
+            ...(serviceTiers ? { serviceTiers } : {}),
+            ...(cyberAccessPrograms ? { cyberAccessPrograms } : {}),
           } satisfies AgentChatModelInfo;
         })
         .filter((entry): entry is AgentChatModelInfo => entry != null);
@@ -46979,6 +47197,7 @@ export function createAgentChatService(args: {
         for (const entry of appServerModels) {
           const descriptor = resolveModelDescriptorForProvider(entry.id, "codex");
           rememberCodexCatalogServiceTiers([entry.id, descriptor?.id, descriptor?.providerModelId], entry.serviceTiers);
+          rememberCodexCatalogCyberPrograms([entry.id, descriptor?.id, descriptor?.providerModelId], entry.cyberAccessPrograms);
           if (descriptor) {
             byRegistryId.set(descriptor.id, entry);
           } else {
@@ -46998,6 +47217,7 @@ export function createAgentChatService(args: {
                 : undefined,
               defaultReasoningEffort: appServerEntry?.defaultReasoningEffort,
               serviceTiers: appServerEntry?.serviceTiers,
+              cyberAccessPrograms: appServerEntry?.cyberAccessPrograms,
             });
           });
 
@@ -48349,6 +48569,7 @@ export function createAgentChatService(args: {
     fastMode: requestedFastModeArg,
     fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
+    codexDaybreak: requestedCodexDaybreak,
     devinCloud: requestedDevinCloud,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode: requestedInteractionMode,
@@ -49020,6 +49241,7 @@ export function createAgentChatService(args: {
             && codexDescriptorOffersUltrafast(resolvedDescriptor) !== false
             ? { fastTier: "ultrafast" as const }
             : {}),
+          ...(effectiveProvider === "codex" && requestedCodexDaybreak === true ? { codexDaybreak: true } : {}),
           ...(initialCursorCloudServiceTier !== undefined
             ? { cursorCloudServiceTier: initialCursorCloudServiceTier }
             : {}),
@@ -64981,6 +65203,7 @@ export function createAgentChatService(args: {
       // Absent on an older host, which cannot enforce it; clients treat absence
       // as allowed rather than locking a control the host would accept.
       fastModeAllowed: fastModeAllowed(),
+      ...((liveSession ? liveSession.codexDaybreak : persisted?.codexDaybreak) === true ? { codexDaybreak: true } : {}),
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
       ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
@@ -68446,6 +68669,7 @@ export function createAgentChatService(args: {
             : descriptor.serviceTiers?.length
               ? { serviceTiers: descriptor.serviceTiers }
               : {}),
+          ...(info.cyberAccessPrograms !== undefined ? { cyberAccessPrograms: info.cyberAccessPrograms } : {}),
           ...(info.cursorAvailability ? { cursorAvailability: info.cursorAvailability } : descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
           ...(info.cursorCliVariants?.length ? { cursorCliVariants: info.cursorCliVariants } : descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
         };
@@ -68634,6 +68858,9 @@ export function createAgentChatService(args: {
                   : descriptor.serviceTiers?.length
                     ? { serviceTiers: descriptor.serviceTiers }
                     : {}),
+                ...(entry?.info.cyberAccessPrograms !== undefined
+                  ? { cyberAccessPrograms: entry.info.cyberAccessPrograms }
+                  : {}),
                 color: descriptor.color,
                 ...(entry?.info.cursorAvailability
                   ? { cursorAvailability: entry.info.cursorAvailability }
@@ -69645,6 +69872,7 @@ export function createAgentChatService(args: {
     fastMode: requestedFastModeArg,
     fastTier: requestedFastTier,
     cursorCloudServiceTier: requestedCursorCloudServiceTier,
+    codexDaybreak: requestedCodexDaybreak,
     codexFastMode: requestedLegacyFastModeArg,
     interactionMode,
     claudePermissionMode,
@@ -70403,6 +70631,22 @@ export function createAgentChatService(args: {
     // alone (the TUI, the phone, older desktops) resend `fastMode: true` with
     // every model or effort change; reading that as "plain Fast" would drop an
     // Ultrafast choice the user made elsewhere. Fast off already cleared it.
+    if (requestedCodexDaybreak !== undefined && managed.session.provider === "codex") {
+      const enabled = requestedCodexDaybreak === true;
+      if (enabled) managed.session.codexDaybreak = true;
+      else delete managed.session.codexDaybreak;
+      // Saved on the thread too, where Codex keeps it for its own app. Best
+      // effort: the next turn reads ADE's field either way.
+      const daybreakRuntime = managed.runtime;
+      const daybreakThreadId = managed.session.threadId;
+      if (daybreakRuntime?.kind === "codex" && daybreakThreadId) {
+        void daybreakRuntime.request("thread/metadata/update", { threadId: daybreakThreadId, daybreakEnabled: enabled }, { timeoutMs: 10_000 })
+          .catch((error) => logger.warn("agent_chat.codex_daybreak_save_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+      }
+    }
     if (requestedFastTier !== undefined) {
       if (managed.session.fastMode === true && normalizeFastTier(requestedFastTier)
         && managed.session.provider === "codex" && codexModelOffersUltrafast(managed.session) !== false) {
@@ -71519,6 +71763,7 @@ export function createAgentChatService(args: {
               revisedPrompt: typeof item.revisedPrompt === "string" ? item.revisedPrompt : null,
               result: typeof item.result === "string" ? item.result : null,
               savedPath: typeof item.savedPath === "string" ? item.savedPath : null,
+              ...codexImageGenerationRefFields(item),
               ...(turnId ? { turnId } : {}),
             },
             "system",

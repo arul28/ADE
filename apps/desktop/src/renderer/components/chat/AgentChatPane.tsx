@@ -5078,6 +5078,13 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // Codex Daybreak: the selected chat's stored choice, or the draft's own
+  // until it launches. Switching chats (or to a draft) re-reads it.
+  const [codexDaybreak, setCodexDaybreak] = useState(false);
+  const selectedSessionCodexDaybreak = selectedSession?.codexDaybreak === true;
+  useEffect(() => {
+    setCodexDaybreak(selectedSessionCodexDaybreak);
+  }, [selectedSessionId, selectedSessionCodexDaybreak]);
   // The account's Fast permission for this composer. A chat on any machine
   // carries its owning brain's answer (`fastModeAllowed`); a draft uses this
   // window's copy, which is the same account row. Absent means an older host
@@ -11521,6 +11528,7 @@ export function AgentChatPane({
       reasoningEffort: launchReasoningEffort,
       fastMode: launchFastMode,
       ...(launchFastTier ? { fastTier: launchFastTier } : {}),
+      ...(provider === "codex" && codexDaybreak ? { codexDaybreak: true } : {}),
       // The saved preset (or the stored key) the picker named. Sent as an id:
       // the runtime that owns the lane is the one that can read this
       // machine's preset list and key store, so nothing resolved travels.
@@ -11541,7 +11549,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -15518,6 +15526,26 @@ export function AgentChatPane({
     setFastModeState,
   ]);
 
+  const handleCodexDaybreakChange = useCallback((enabled: boolean) => {
+    setCodexDaybreak(enabled);
+    const targetSessionId = selectedSessionId;
+    if (!targetSessionId) return;
+    patchSessionSummary(targetSessionId, { codexDaybreak: enabled });
+    // The chat's own machine stores it: the same pin every other chat update uses.
+    void agentChatApiRef.current.updateSession({
+      sessionId: targetSessionId,
+      codexDaybreak: enabled,
+    }, chatRuntimePinRef.current).then((updatedSession) => {
+      const stored = updatedSession.codexDaybreak === true;
+      patchSessionSummary(targetSessionId, { codexDaybreak: stored });
+      if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(stored);
+    }).catch((err) => {
+      patchSessionSummary(targetSessionId, { codexDaybreak: !enabled });
+      if (selectedSessionIdRef.current === targetSessionId) setCodexDaybreak(!enabled);
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  }, [patchSessionSummary, selectedSessionId]);
+
   const handleFastModeChange = useCallback((enabled: boolean, tier?: FastTier) => {
     const previousFastMode = fastMode;
     const previousFastTier = fastTierRef.current === "ultrafast" ? "ultrafast" as const : null;
@@ -17666,6 +17694,8 @@ export function AgentChatPane({
             reasoningEffort={subagentComposerModel ? subagentComposerModel.effort : reasoningEffort}
             effectiveReasoningEffort={subagentComposerModel ? subagentComposerModel.effort : effectiveReasoningEffort}
             fastMode={subagentComposerModel ? false : fastMode}
+            codexDaybreak={codexDaybreak}
+            {...(subagentComposerModel ? {} : { onCodexDaybreakChange: handleCodexDaybreakChange })}
             fastTier={subagentComposerModel ? null : fastTier}
             // What Codex last reported for this chat's Fast. Codex is the only
             // provider that answers with a service tier, so it is absent

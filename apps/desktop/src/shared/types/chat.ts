@@ -2286,6 +2286,10 @@ export type AgentChatEvent =
       result?: string | null;
       /** Local filesystem path if Codex saved the image to disk; null when the result is purely a URL/data URI. */
       savedPath?: string | null;
+      /** OpenAI attachment-store id (Codex 0.164+). Not viewable here; set when Codex sent no inline result. */
+      fileId?: string | null;
+      /** Local images an edit read, in order (Codex 0.164+). */
+      inputImagePaths?: string[];
       /** Metadata when a large inline data URI was omitted from durable history or mobile sync. */
       resultOriginalBytes?: number;
       resultOmittedBytes?: number;
@@ -3024,6 +3028,12 @@ export type AgentChatSession = PersonalAttachmentRootsField & {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /**
+   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
+   * cybersecurity work) on this chat's turns. Applied only where the model's
+   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
+   */
+  codexDaybreak?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -3268,6 +3278,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /** Codex only: Daybreak is on for this chat (`AgentChatSession.codexDaybreak`). */
+  codexDaybreak?: boolean;
   /** Collaboration mode accepted with the active Codex app-server turn/start. */
   codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
   /** True when a live Codex runtime confirms there is no accepted turn mode. */
@@ -3831,6 +3843,11 @@ export type AgentChatModelInfo = {
   reasoningEfforts?: Array<{ effort: string; description: string }>;
   defaultReasoningEffort?: string | null;
   serviceTiers?: string[];
+  /**
+   * Codex `model/list` `availableAccessPrograms.cyber` for the signed-in
+   * account (camelCase program names). Absent: the catalog said nothing.
+   */
+  cyberAccessPrograms?: string[];
   aliases?: string[];
   maxThinkingTokens?: number | null;
   // OpenCode-backed model metadata
@@ -4187,6 +4204,12 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /**
+   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
+   * cybersecurity work) on this chat's turns. Applied only where the model's
+   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
+   */
+  codexDaybreak?: boolean;
   /**
    * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
    * a Devin VM; `provider` must be `devin`.
@@ -6293,6 +6316,12 @@ export type AgentChatUpdateSessionArgs = {
    */
   fastTier?: "ultrafast" | null;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /**
+   * Codex only: ask for Daybreak (OpenAI's broader access for authorized
+   * cybersecurity work) on this chat's turns. Applied only where the model's
+   * catalog offers it for the signed-in account (`shared/codexDaybreak.ts`).
+   */
+  codexDaybreak?: boolean;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;

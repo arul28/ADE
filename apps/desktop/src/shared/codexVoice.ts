@@ -7,7 +7,11 @@
 // developer message at session start.
 // ---------------------------------------------------------------------------
 
-/** The voices Codex accepts for realtime protocol v3, which ADE uses. */
+/**
+ * The voices Codex accepts for realtime protocol v3, which ADE uses: the nine
+ * original voices, then the sixteen Codex 0.164 added (`RealtimeVoicesList.v3`).
+ * A saved name this list does not know falls back to the default.
+ */
 export const CODEX_VOICE_NAMES = [
   "cove",
   "juniper",
@@ -18,6 +22,22 @@ export const CODEX_VOICE_NAMES = [
   "breeze",
   "arbor",
   "sol",
+  "aube",
+  "bubbie",
+  "haetsal",
+  "hanul",
+  "himari",
+  "leher",
+  "miko",
+  "neer",
+  "porto",
+  "rindo",
+  "rio",
+  "rivage",
+  "selva",
+  "sonna",
+  "tinta",
+  "viola",
 ] as const;
 export type CodexVoiceName = (typeof CODEX_VOICE_NAMES)[number];
 export const DEFAULT_CODEX_VOICE_NAME: CodexVoiceName = "cove";

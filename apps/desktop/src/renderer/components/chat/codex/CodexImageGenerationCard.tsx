@@ -23,6 +23,14 @@ function isHttpOrDataUrl(value: string | null | undefined): boolean {
   return /^(https?:\/\/|data:)/i.test(value);
 }
 
+// Codex's inline `result` is bare base64. A JPEG's starts with `/9j/`, so it
+// must never be mistaken for a path.
+function inlineBase64DataUrl(value: string | null): string | null {
+  if (!value || value.length < 256 || !/^[A-Za-z0-9+/=\s]+$/.test(value)) return null;
+  const mime = value.startsWith("/9j/") ? "image/jpeg" : value.startsWith("UklGR") ? "image/webp" : "image/png";
+  return `data:${mime};base64,${value.replace(/\s+/g, "")}`;
+}
+
 // Plan §B.4: "no `file://` prefix; renderer must handle this." Codex sometimes
 // emits local paths as file:// URLs — `window.ade.app.openPath` expects an OS
 // path, so strip the prefix before passing it through.
@@ -41,8 +49,13 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
   const isRunning = event.status === "running";
   const isFailed = event.status === "failed";
   const result = event.result ?? null;
-  const previewSrc = isHttpOrDataUrl(result) ? result : null;
-  const savedPathRaw = event.savedPath ?? (!isHttpOrDataUrl(result) ? result : null);
+  const inlinePreview = inlineBase64DataUrl(result);
+  const previewSrc = isHttpOrDataUrl(result) ? result : inlinePreview;
+  const savedPathRaw = event.savedPath ?? (!isHttpOrDataUrl(result) && !inlinePreview ? result : null);
+  const inputImagePaths = event.inputImagePaths ?? [];
+  // Codex 0.164+ uploads the image to the OpenAI account and may send only that
+  // reference when it could not save a local copy.
+  const storedOnlyInAccount = !previewSrc && !savedPathRaw && Boolean(event.fileId) && !isFailed;
   const savedPath = stripFileUrlPrefix(savedPathRaw);
   const prompt = (event.prompt ?? "").trim();
   const revised = (event.revisedPrompt ?? "").trim();
@@ -113,6 +126,19 @@ export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProp
                 {basename(savedPath)}
               </span>
             </div>
+          ) : storedOnlyInAccount ? (
+            <p className="mt-2 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
+              Codex kept this image in your OpenAI account and saved no copy on this computer.
+            </p>
+          ) : null}
+
+          {inputImagePaths.length ? (
+            <p
+              className="mt-2 truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55"
+              title={inputImagePaths.join("\n")}
+            >
+              Edited from {inputImagePaths.map(basename).join(", ")}
+            </p>
           ) : null}
 
           {savedPath && savedPathOpensHere ? (
