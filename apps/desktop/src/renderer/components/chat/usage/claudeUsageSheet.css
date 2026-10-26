@@ -1,0 +1,190 @@
+/* `/usage` sheet for Claude chats. Kit cards and meters; layout only here. */
+
+.ade-cu-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ade-cu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ade-cu-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--kit-crit);
+}
+
+.ade-cu-muted {
+  display: block;
+  padding: 2px 0 4px;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+
+.ade-cu-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ade-cu-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ade-cu-limit-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.ade-cu-limit-label { color: var(--color-fg); }
+.ade-cu-limit-left { font-size: 11.5px; color: var(--kit-text-2); }
+.ade-cu-limit-reset { font-size: 11px; color: var(--kit-text-3); }
+
+.ade-cu-stats {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 12px;
+  align-items: end;
+}
+
+.ade-cu-stat-sm {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-fg);
+}
+
+.ade-cu-added { color: var(--kit-ok); }
+.ade-cu-removed { color: var(--kit-crit); }
+
+.ade-cu-models {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+  border-top: 1px solid var(--kit-rule);
+  padding-top: 6px;
+}
+
+.ade-cu-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 4.5rem;
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.ade-cu-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+}
+
+.ade-cu-model-tokens { font-size: 11px; color: var(--kit-text-3); }
+.ade-cu-model-cost { font-size: 11.5px; text-align: right; color: var(--kit-text-2); }
+
+.ade-cu-period { margin-left: auto; }
+
+.ade-cu-scope {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+
+.ade-cu-recs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ade-cu-rec {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.ade-cu-rec + .ade-cu-rec { border-top: 1px solid var(--kit-rule); }
+
+.ade-cu-rec-pct {
+  flex: none;
+  min-width: 38px;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.ade-cu-rec-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ade-cu-rec-title { font-size: 12.5px; color: var(--color-fg); }
+.ade-cu-rec-detail { font-size: 11.5px; color: var(--kit-text-3); overflow-wrap: anywhere; }
+
+.ade-cu-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  border-top: 1px solid var(--kit-rule);
+  padding-top: 10px;
+}
+
+.ade-cu-source-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ade-cu-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.ade-cu-fix {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+  border-top: 1px solid var(--kit-rule);
+  padding-top: 10px;
+}
+
+.ade-cu-fix-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+
+.ade-cu-fix-list q { color: var(--color-fg); }
+
+/* Claude's prompt can run to a paragraph; the full text is the row's tooltip. */
+.ade-cu-fix-message {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+

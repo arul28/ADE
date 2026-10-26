@@ -7995,6 +7995,52 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getMainTranscript: resolvedArg(null),
       getSubagentTranscript: resolvedArg(null),
       getContextUsage: resolvedArg(null),
+      getClaudeUsage: async (args: { skipBehaviors?: boolean }) => ({
+        session: {
+          costUsd: 1.84,
+          apiDurationMs: 312_000,
+          durationMs: 2_460_000,
+          linesAdded: 412,
+          linesRemoved: 96,
+          models: [
+            { model: "claude-opus-5-5", inputTokens: 18_200, outputTokens: 41_900, cacheReadTokens: 2_310_000, cacheWriteTokens: 184_000, costUsd: 1.71 },
+            { model: "claude-haiku-5-5", inputTokens: 9_400, outputTokens: 3_100, cacheReadTokens: 120_000, cacheWriteTokens: 22_000, costUsd: 0.13 },
+          ],
+        },
+        subscriptionType: "max",
+        limitsAvailable: true,
+        limits: [
+          { key: "five_hour", label: "5-hour", usedPercent: 38, resetsAt: new Date(Date.now() + 2.4 * 3_600_000).toISOString() },
+          { key: "seven_day", label: "Weekly", usedPercent: 83, resetsAt: new Date(Date.now() + 3.2 * 86_400_000).toISOString() },
+          { key: "model:Fable", label: "Weekly · Fable", usedPercent: 97, resetsAt: new Date(Date.now() + 3.2 * 86_400_000).toISOString() },
+        ],
+        extraUsage: { enabled: true, monthlyLimit: 50, usedCredits: 12.5, usedPercent: 25, currency: "USD" },
+        behaviors: args?.skipBehaviors ? null : {
+          day: null,
+          week: {
+            requestCount: 4_812,
+            sessionCount: 63,
+            behaviors: [
+              { key: "subagent_heavy", pct: 41, count: 1_920 },
+              { key: "long_context", pct: 28, count: 860 },
+              { key: "max_effort", pct: 19, count: 640 },
+              { key: "cache_miss", pct: 9, count: 410 },
+            ],
+            recommendations: [
+              { key: "subagent_heavy", pct: 41, title: "Brief subagents more tightly", detail: "41% of requests ran in subagents" },
+              { key: "max_effort", pct: 19, title: "Use high effort for routine turns", detail: "/effort high" },
+              { key: "mcp_server", pct: 8, title: "Turn off the figma MCP server when idle", detail: "its tools load on every turn" },
+            ],
+            fix: { keys: ["max_effort", "mcp_server"], messages: ["/effort high", "Turn off the figma MCP server for this session and tell me when it's done."] },
+            sources: {
+              agents: [{ name: "code-reviewer", pct: 22 }, { name: "Explore", pct: 14 }],
+              skills: [{ name: "dataviz", pct: 6 }],
+              plugins: [],
+              mcpServers: [{ name: "figma", pct: 8 }, { name: "linear", pct: 3 }],
+            },
+          },
+        },
+      }),
       rewindFiles: resolvedArg({
         canRewind: false,
         filesChanged: [],

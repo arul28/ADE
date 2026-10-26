@@ -927,6 +927,7 @@ extension WorkSessionDestinationView {
     switch artifactContent[artifact.id] {
     case .none: break
     case .videoOnDemand where intent == .play: break
+    case .error where intent == .retry: break
     default: return
     }
     guard !artifactContentLoadsInFlight.contains(artifact.id) else { return }
@@ -947,7 +948,8 @@ extension WorkSessionDestinationView {
     let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
     let isVideo = workArtifactIsVideo(artifact)
 
-    if !isVideo, let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
+    if !isVideo, let cached = ADEImageCache.shared.cachedData(for: cacheKey),
+       let cachedImage = workDecodedProofImage(cached) {
       publish(.image(cachedImage))
       return
     }
@@ -1019,7 +1021,7 @@ extension WorkSessionDestinationView {
       if isVideo {
         try data.write(to: videoURL, options: .atomic)
         publish(.video(videoURL))
-      } else if let image = UIImage(data: data) {
+      } else if let image = workDecodedProofImage(data) {
         ADEImageCache.shared.store(data, for: cacheKey)
         publish(.image(image))
       } else {
@@ -1027,9 +1029,43 @@ extension WorkSessionDestinationView {
       }
     } catch is CancellationError {
       return
+    } catch where workArtifactIsImage(artifact) && workArtifactHostRefusedWholeFileRead(error) {
+      do {
+        publish(.image(try await loadLargeProofImage(artifact, cacheKey: cacheKey, scope: scope)))
+      } catch is CancellationError {
+        return
+      } catch {
+        publish(.error(artifactLoadErrorMessage(error)))
+      }
     } catch {
       publish(.error(artifactLoadErrorMessage(error)))
     }
+  }
+
+  /// A picture larger than the host's whole-file read (8 MiB; a Retina
+  /// screenshot can be more) is pulled in slices the way a video is. A host
+  /// too old for slices answers that it does not know the read, which shows.
+  @MainActor
+  private func loadLargeProofImage(
+    _ artifact: ComputerUseArtifactSummary,
+    cacheKey: String,
+    scope: WorkArtifactLoadScope
+  ) async throws -> UIImage {
+    let file = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ade-proof-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try await syncService.downloadArtifact(
+      artifactId: artifact.id,
+      uri: artifact.uri,
+      to: file,
+      shouldContinue: { scope.isActive }
+    )
+    let data = try Data(contentsOf: file)
+    guard let image = workDecodedProofImage(data) else {
+      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an unreadable image preview."])
+    }
+    ADEImageCache.shared.store(data, for: cacheKey)
+    return image
   }
 
   private func artifactLoadErrorMessage(_ error: Error) -> String {
@@ -1040,7 +1076,7 @@ extension WorkSessionDestinationView {
       return "Preview isn't available on this device."
     }
     // Older hosts send only the message text for these.
-    if raw.contains("too large to sync") {
+    if workArtifactHostRefusedWholeFileRead(error) {
       return "This recording is too large for the machine's ADE version. Update ADE there to play it."
     }
     let nsError = error as NSError

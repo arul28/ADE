@@ -2701,7 +2701,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
                                                     | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
-    $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
+    $ ade chat restart [<session>] [--stop | --after-turn]
+                                                    Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
+                                                    With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
                                                     --dry-run prints the call without running it
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
@@ -11556,6 +11558,15 @@ function buildChatPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "restart" || sub === "restart-session") {
+    // With no session, an agent restarts its own chat. Its own restart always
+    // waits for the turn that asked to end: stopping that turn would cut off
+    // the very command call, and the agent's work with it. The input is built
+    // here rather than through `withSession`, so no `--arg` can add stopFirst.
+    const ownSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
+    const target = requireValue(sessionId ?? ownSessionId, "sessionId");
+    const ownChat = target === ownSessionId;
+    const stopFirst = !ownChat && readFlag(args, ["--stop", "--stop-first"]);
+    const afterTurn = !stopFirst && (ownChat || readFlag(args, ["--after-turn"]));
     return {
       kind: "execute",
       label: "chat restart session",
@@ -11564,10 +11575,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "restartSession",
-          withSession({
-            sessionId: requireValue(sessionId, "sessionId"),
-            ...(readFlag(args, ["--stop", "--stop-first"]) ? { stopFirst: true } : {}),
-          }),
+          {
+            sessionId: target,
+            ...(stopFirst ? { stopFirst: true } : {}),
+            ...(afterTurn ? { afterTurn: true } : {}),
+          },
         ),
       ],
     };
@@ -27704,6 +27716,8 @@ async function runServe(
   // connection" and "Reconnect this computer": a repair that lands mid-attempt
   // joins it instead of racing a second start against the same lease.
   let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
+  // Each missing project is reported once per brain, not on every retry.
+  const reportedMissingSyncProjectIds = new Set<string>();
   const startSyncHost = (deliberateRepair = false): ReturnType<typeof startSyncHostOnce> => {
     if (deliberateRepair) scopeRegistry.clearSyncHostPhaseBackoff();
     startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
@@ -27721,7 +27735,17 @@ async function runServe(
       // a reader and let the scope's blocker determine whether it is a viewer.
       activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
     } else {
-      activeScope = await scopeRegistry.resolveActiveSyncHost();
+      activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
+        if (reportedMissingSyncProjectIds.has(record.projectId)) return;
+        reportedMissingSyncProjectIds.add(record.projectId);
+        const message = `ADE brain is hosting sync without project "${record.displayName}". ${projectRegistry.projectDataMissingMessage(record, { commandHints: false })}`;
+        process.stderr.write(`${message}\n`);
+        headlessProjectLogger.warn("sync.host_project_missing", {
+          projectId: record.projectId,
+          rootPath: record.rootPath,
+          message,
+        });
+      });
     }
     if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
       // A null here can mean "superseded" rather than "no host"; adopt the

@@ -404,6 +404,8 @@ import type {
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
@@ -2799,6 +2801,10 @@ declare global {
           args: AgentChatContextUsageArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatContextUsage | null>;
+        getClaudeUsage: (
+          args: AgentChatClaudeUsageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ClaudeUsageReport>;
         rewindFiles: (
           args: AgentChatRewindFilesArgs,
           pin?: OpenProjectBinding | null,

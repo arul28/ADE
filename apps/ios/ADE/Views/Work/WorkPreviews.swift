@@ -1279,6 +1279,10 @@ enum WorkProofPreviewData {
   after: proof-2 Inbox with every filter cleared
   caption: The empty state now names the filters to clear. The preview data has no messages.
   ```
+
+  The export screen did not come through this time:
+
+  ![The export screen](ade-proof://proof-5)
   """
 
   @MainActor static let transcript: [WorkChatEnvelope] = {

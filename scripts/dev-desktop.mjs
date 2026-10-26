@@ -244,6 +244,24 @@ function laneUserDataEnv() {
   return { ADE_DESKTOP_USER_DATA_PATH: folder };
 }
 
+/**
+ * A dev app an agent starts from its shell never opens the detached DevTools
+ * window: each one costs memory, a busy machine runs many, and an agent
+ * attaches over CDP instead. An App Control launch passes NO_DEVTOOLS=1 itself. ADE_OPEN_DEVTOOLS=1 opts back in; NO_DEVTOOLS, when already set,
+ * wins either way. A person running this keeps DevTools as before.
+ */
+function devToolsEnv() {
+  const env = process.env;
+  if (env.NO_DEVTOOLS) return {};
+  if (env.ADE_OPEN_DEVTOOLS === "1") return {};
+  // Not App Control's variables: it sets them for a person's launch too.
+  const launchedByAgent = ["ADE_CHAT_SESSION_ID", "ADE_RUN_ID"].some((key) => env[key]?.trim())
+    || env.ADE_DEFAULT_ROLE === "agent";
+  if (!launchedByAgent) return {};
+  process.stdout.write("[ade] devtools   : off (started by an agent; ADE_OPEN_DEVTOOLS=1 opens it)\n");
+  return { NO_DEVTOOLS: "1" };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.keep && !options.firstRun) throw new Error("--keep only applies with --first-run.");
@@ -313,7 +331,12 @@ async function main() {
     if (options.forwardedDebugFlags.length) {
       appControlDebugEnv.ADE_APP_CONTROL_DEBUG_FLAGS = options.forwardedDebugFlags.join(" ");
     }
-    const desktopEnv = { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv };
+    const desktopEnv = {
+      ...devRuntimeEnv(options.socketPath, options.projectRoot),
+      ...laneUserDataEnv(),
+      ...appControlDebugEnv,
+      ...devToolsEnv(),
+    };
     // `--home`: no startup project, so the window opens on Home the way an
     // installed ADE does. The runtime above still uses the project root.
     if (options.home) desktopEnv.ADE_PROJECT_ROOT = "";

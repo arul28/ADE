@@ -2672,6 +2672,7 @@ export type SyncRemoteCommandAction =
   | "chat.retryCrossMachineBatchMove"
   | "chat.resolveCrossMachineBatchMoveApproval"
   | "chat.getContextUsage"
+  | "chat.getClaudeUsage"
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
   | "chat.saveTempAttachment"

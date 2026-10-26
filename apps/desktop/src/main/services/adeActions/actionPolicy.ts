@@ -736,6 +736,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getChatEventHistory",
     "getChatEventHistoryPage",
     "getContextUsage",
+    "getClaudeUsage",
     "getImageDataUrl",
     "getMainTranscript",
     "getSubagentTranscript",

@@ -166,12 +166,152 @@ async function serveLocal(
   });
 }
 
+/**
+ * A paired machine's proof pictures, kept in memory once pulled. A chat shows
+ * the same picture again on every remount, scroll back and lightbox open, and
+ * each of those used to fetch every byte over the other machine's link again.
+ * Stored proof is never rewritten in place (a new capture is a new file), so a
+ * copy cannot go stale. Memory only, bounded, least recently used out first.
+ */
+const REMOTE_IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
+/** Larger pictures stream as before and are not kept. */
+const REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES = 24 * 1024 * 1024;
+const REMOTE_IMAGE_PULLS_AT_ONCE = 3;
+
+type RemoteImageCache = {
+  get: (key: string) => Buffer | null;
+  set: (key: string, bytes: Buffer) => void;
+  /**
+   * One pull per picture at a time: an answer and the proof drawer often show
+   * the same picture at once, and both asked the other machine for every byte.
+   */
+  inFlight: Map<string, InFlightImagePull>;
+  /**
+   * Distinct pictures pulled whole at once. Each holds up to 24 MiB until it
+   * is kept, and a chat scrolled into view asks for all its pictures together.
+   */
+  pullSlots: ReturnType<typeof createSlots>;
+};
+
+function createRemoteImageCache(maxBytes = REMOTE_IMAGE_CACHE_BYTES): RemoteImageCache {
+  const entries = new Map<string, Buffer>();
+  let total = 0;
+  return {
+    inFlight: new Map(),
+    pullSlots: createSlots(REMOTE_IMAGE_PULLS_AT_ONCE),
+    get(key) {
+      const bytes = entries.get(key);
+      if (!bytes) return null;
+      entries.delete(key);
+      entries.set(key, bytes);
+      return bytes;
+    },
+    set(key, bytes) {
+      if (bytes.length > maxBytes) return;
+      const previous = entries.get(key);
+      if (previous) {
+        entries.delete(key);
+        total -= previous.length;
+      }
+      entries.set(key, bytes);
+      total += bytes.length;
+      for (const [oldest, oldBytes] of entries) {
+        if (total <= maxBytes) break;
+        entries.delete(oldest);
+        total -= oldBytes.length;
+      }
+    },
+  };
+}
+
+/** Runs at most `limit` tasks at once; the rest wait their turn. */
+function createSlots(limit: number): { run: <T>(task: () => Promise<T>) => Promise<T> } {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return {
+    async run(task) {
+      if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+      active += 1;
+      try {
+        return await task();
+      } finally {
+        active -= 1;
+        waiting.shift()?.();
+      }
+    },
+  };
+}
+
+/**
+ * A pull and the showings waiting on it. When every one has gone (a fast
+ * scroll past the picture), a pull still queued never starts and a running one
+ * stops at its next chunk, so it does not hold a slot a visible picture needs.
+ */
+type InFlightImagePull = { promise: Promise<WholeImagePull>; viewers: number };
+
+type WholeImagePull =
+  | { kind: "whole"; bytes: Buffer }
+  /** Too big to keep: the first chunk, so the stream does not read it again. */
+  | { kind: "large"; first: { totalSize: number; bytes: Buffer } };
+
+async function pullWholeImage(
+  read: (offset: number, length: number) => Promise<{ totalSize: number; bytes: Buffer }>,
+  imageCache: RemoteImageCache,
+  cacheKey: string,
+  abandoned: () => boolean,
+): Promise<WholeImagePull> {
+  const stopIfAbandoned = () => {
+    if (abandoned()) throw new Error("Nobody is showing this picture any more.");
+  };
+  stopIfAbandoned();
+  const first = await read(0, REMOTE_ARTIFACT_CHUNK_BYTES);
+  if (first.totalSize > REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES) return { kind: "large", first };
+  // One buffer of the final size: no list of chunks and second copy to join them.
+  const whole = Buffer.alloc(first.totalSize);
+  let received = first.bytes.copy(whole, 0);
+  while (received < first.totalSize) {
+    stopIfAbandoned();
+    const chunk = (await read(received, first.totalSize - received)).bytes;
+    if (chunk.length === 0) throw new Error("The file ended early on the other computer.");
+    received += chunk.copy(whole, received);
+  }
+  imageCache.set(cacheKey, whole);
+  return { kind: "whole", bytes: whole };
+}
+
+function isImageFile(fileName: string): boolean {
+  return artifactStreamMimeType(fileName).startsWith("image/");
+}
+
+function serveBuffer(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  bytes: Buffer,
+  fileName: string,
+): void {
+  const range = writeRangeHead(res, parseRangeHeader(req.headers.range), bytes.length, fileName);
+  if (!range) return;
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+  res.end(bytes.subarray(range.start, range.end + 1));
+}
+
 async function serveRemote(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   target: { targetId: string; projectId: string; relativePath: string },
   reader: RemoteArtifactRangeReader | null,
+  imageCache: RemoteImageCache,
 ): Promise<void> {
+  const image = isImageFile(target.relativePath);
+  const cacheKey = `${target.targetId}\u0000${target.projectId}\u0000${target.relativePath}`;
+  const cached = image ? imageCache.get(cacheKey) : null;
+  if (cached) {
+    serveBuffer(req, res, cached, target.relativePath);
+    return;
+  }
   if (!reader) {
     sendText(res, 503, "Paired computers are not ready yet.");
     return;
@@ -186,19 +326,72 @@ async function serveRemote(
     length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES)),
   }));
 
+  // A failed read is the 502 the player shows.
+  const sendReadFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    sendText(res, 502, message || "The other computer did not send this file.");
+  };
+  const readOrFail = async (offset: number, length: number) => {
+    try {
+      return await read(offset, length);
+    } catch (error) {
+      sendReadFailure(error);
+      return null;
+    }
+  };
+
   const range = parseRangeHeader(req.headers.range);
   const head = req.method === "HEAD";
   // When the start is known, the first chunk also carries the size. A suffix
   // or a HEAD asks for one byte to learn the size first.
   const knownStart = range?.kind === "suffix" ? null : (range?.start ?? 0);
-  let probe: { totalSize: number; bytes: Buffer };
-  try {
-    probe = await read(knownStart ?? 0, head || knownStart === null ? 1 : REMOTE_ARTIFACT_CHUNK_BYTES);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendText(res, 502, message || "The other computer did not send this file.");
-    return;
+  let probe: { totalSize: number; bytes: Buffer } | null = null;
+
+  // A picture is read whole, kept, then served, so the next showing costs no
+  // round trip. One too big to keep streams below like a video, starting from
+  // the chunk this already read.
+  if (image && req.method === "GET") {
+    let joined = imageCache.inFlight.get(cacheKey);
+    if (joined) {
+      joined.viewers += 1;
+    } else {
+      // Counted before the pull starts: a free slot runs it at once.
+      const created: InFlightImagePull = { promise: Promise.resolve(null as never), viewers: 1 };
+      created.promise = imageCache.pullSlots
+        .run(() => pullWholeImage(read, imageCache, cacheKey, () => created.viewers === 0))
+        .finally(() => {
+          if (imageCache.inFlight.get(cacheKey) === created) imageCache.inFlight.delete(cacheKey);
+        });
+      imageCache.inFlight.set(cacheKey, created);
+      joined = created;
+    }
+    const pull = joined;
+    let watching = true;
+    const leave = () => {
+      if (!watching) return;
+      watching = false;
+      pull.viewers -= 1;
+    };
+    res.once("close", leave);
+    let pulled: WholeImagePull;
+    try {
+      pulled = await pull.promise;
+    } catch (error) {
+      if (!gone) sendReadFailure(error);
+      return;
+    } finally {
+      leave();
+      res.off("close", leave);
+    }
+    if (pulled.kind === "whole") {
+      if (!gone) serveBuffer(req, res, pulled.bytes, target.relativePath);
+      return;
+    }
+    if (knownStart === 0) probe = pulled.first;
   }
+
+  probe ??= await readOrFail(knownStart ?? 0, head || knownStart === null ? 1 : REMOTE_ARTIFACT_CHUNK_BYTES);
+  if (!probe) return;
 
   const bytes = writeRangeHead(res, range, probe.totalSize, target.relativePath);
   if (!bytes) return;
@@ -238,6 +431,7 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
   /** Bumped by `close()`, so a start still binding knows it was cancelled. */
   let generation = 0;
   let hostHeader = "";
+  const remoteImageCache = createRemoteImageCache();
 
   const handle = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     // `req.url` is the raw request target, never folded, so `..` arrives as sent.
@@ -260,7 +454,7 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
     }
     const served = target.kind === "project"
       ? serveLocal(req, res, target, deps)
-      : serveRemote(req, res, target, deps.remoteReader());
+      : serveRemote(req, res, target, deps.remoteReader(), remoteImageCache);
     served.catch((error: unknown) => {
       deps.warn?.("[artifact-media] request failed", {
         error: error instanceof Error ? error.message : String(error),

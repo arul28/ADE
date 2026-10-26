@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 import AVKit
 
 /// App-wide "last used" chat composer selection — the model + permission/runtime
@@ -2191,6 +2192,9 @@ enum WorkLoadedArtifactContent {
 enum WorkArtifactLoadIntent {
   case preview
   case play
+  /// The person asked again after a failed load. A failure is kept until then,
+  /// so a row that could not load does not re-ask on every redraw.
+  case retry
 }
 
 typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtifactLoadIntent) async -> Void
@@ -2199,6 +2203,27 @@ typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtif
 /// whole-file cap (`MAX_SYNC_ARTIFACT_BYTES`), which bounded every preview
 /// load before videos were read in slices.
 let workArtifactEagerVideoMaxBytes = 8 * 1024 * 1024
+
+/// The longest side a proof picture is decoded at. A 5K screenshot decoded
+/// whole is about 60 MB of pixels, and a chat holds several; this is still
+/// sharper than any phone screen, zoomed to the screen's width.
+let workProofImageMaxPixelSize = 2400
+
+/// Decodes a proof picture no larger than `workProofImageMaxPixelSize`.
+func workDecodedProofImage(_ data: Data) -> UIImage? {
+  let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+  guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+  let thumbnailOptions = [
+    kCGImageSourceCreateThumbnailFromImageAlways: true,
+    kCGImageSourceCreateThumbnailWithTransform: true,
+    kCGImageSourceShouldCacheImmediately: true,
+    kCGImageSourceThumbnailMaxPixelSize: workProofImageMaxPixelSize,
+  ] as [CFString: Any] as CFDictionary
+  guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+    return UIImage(data: data)
+  }
+  return UIImage(cgImage: image)
+}
 
 /// A fresh temp file for one load of a stored video. Each load gets its own,
 /// so a stale load that deletes its file never deletes the one on screen.
@@ -2236,6 +2261,12 @@ func workArtifactVideoLoadFailure(_ error: Error) -> WorkArtifactVideoLoadFailur
 /// phone then uses the whole-file read (`readArtifact`) instead.
 func workArtifactHostLacksRangeRead(_ error: Error) -> Bool {
   error.localizedDescription.contains("Unsupported file action")
+}
+
+/// The host refused a whole-file read because the file is over its cap
+/// (`readArtifact` in the host's `syncFileRequests.ts`); slices still work.
+func workArtifactHostRefusedWholeFileRead(_ error: Error) -> Bool {
+  error.localizedDescription.contains("too large to sync")
 }
 
 /// "34 MB" for the play placeholder.

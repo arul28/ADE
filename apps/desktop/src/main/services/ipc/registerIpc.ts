@@ -604,6 +604,8 @@ import type {
   AgentChatSlashCommandsArgs,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatCopyTempAttachmentArgs,
@@ -9459,6 +9461,7 @@ export function registerIpc({
     return await ctx.agentChatService.restartSession({
       sessionId: record.sessionId,
       ...(record.stopFirst === true ? { stopFirst: true } : {}),
+      ...(record.afterTurn === true ? { afterTurn: true } : {}),
     });
   });
 
@@ -9894,6 +9897,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getContextUsage(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeUsage, async (_event, arg: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getClaudeUsage(arg);
   });
 
   ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {

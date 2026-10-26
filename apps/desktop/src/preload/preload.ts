@@ -720,6 +720,8 @@ import type {
   AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
+  AgentChatClaudeUsageArgs,
+  ClaudeUsageReport,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
@@ -8911,6 +8913,13 @@ const adeBridge = {
     ): Promise<AgentChatContextUsage | null> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "getContextUsage", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
+      ),
+    getClaudeUsage: async (
+      args: AgentChatClaudeUsageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ClaudeUsageReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getClaudeUsage", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetClaudeUsage, args),
       ),
     rewindFiles: async (
       args: AgentChatRewindFilesArgs,
