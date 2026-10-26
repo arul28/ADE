@@ -74320,7 +74320,10 @@ export function createAgentChatService(args: {
         if (!parentId) continue;
         childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), managed.session.id]);
       }
-      const queue = [root];
+      // Walk down from every chat already known to be in the family, not just
+      // the root: the chat that was linked is seeded above, and its own children
+      // hang under it.
+      const queue = [...family];
       while (queue.length > 0) {
         for (const childId of childrenByParent.get(queue.shift()!) ?? []) {
           if (family.has(childId)) continue;
