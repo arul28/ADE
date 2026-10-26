@@ -62,7 +62,7 @@ elsewhere. Trace side effects end-to-end:
 
 It is easy to break the ability to run/build/test locally. Catch:
 
-- **Node version assumptions** — the desktop suite runs under Node 22 (`.nvmrc`;
+- **Node version assumptions** — the desktop suite runs under Node 24 (`.nvmrc`;
   `node:sqlite` is the DB engine). A change that assumes a newer Node, or that
   trips renderer tests on the default toolchain, is a devex break.
 - **Per-app dependency drift** — each app under `apps/` has its own
