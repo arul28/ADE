@@ -1631,11 +1631,17 @@ export function createPrService({
     } catch (error) {
       logger.warn("prs.chat_family_lookup_failed", { prId: linkArgs.prId, sessionId, error: getErrorMessage(error) });
     }
+    let linkedRelative = false;
     for (const relativeId of relatives) {
       // A chat that unlinked this PR keeps it unlinked.
       if (hasChatSessionDismissal(linkArgs.prId, relativeId)) continue;
-      linkPrToChatSession({ prId: linkArgs.prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true });
+      if (linkPrToChatSession({ prId: linkArgs.prId, laneId: linkArgs.laneId, sessionId: relativeId, allowCrossLane: true })) {
+        linkedRelative = true;
+      }
     }
+    // The relatives' lists changed even when this PR's own summary did not, so
+    // a caller that relies on its own refresh to emit would leave them stale.
+    if (linkedRelative) emitPrsUpdated();
     return true;
   };
   const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
@@ -3286,7 +3292,7 @@ export function createPrService({
       return;
     }
     for (const session of sessions) {
-      linkPrToChatSession({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
+      linkPrToChatFamily({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
     }
   };
 
@@ -12649,7 +12655,7 @@ export function createPrService({
           throw new Error(`PR #${pr.github_pr_number} is no longer attached to a lane in this project; there is nothing to watch.`);
         }
         // An explicit watch is an explicit link, even over an earlier unlink.
-        if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+        if (linkPrToChatFamily({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
           emitPrsUpdated();
         }
         record = chatWatchStore.arm({

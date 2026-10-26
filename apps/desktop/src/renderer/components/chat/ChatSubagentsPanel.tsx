@@ -1417,9 +1417,14 @@ export function ChatSubagentsPanel({
     }
     return map;
   }, [annotatedSubagents]);
+  const selectedChildIdentity = useMemo(() => {
+    if (!selectedChildSessionId) return null;
+    const snapshot = subagents.find((candidate) => candidate.childSessionId === selectedChildSessionId);
+    return snapshot ? subagentIdentity(snapshot) : null;
+  }, [selectedChildSessionId, subagents]);
   const pinnedSubagentIds = useMemo(() => new Set(
-    [selectedTaskId, expandedTaskId].filter((id): id is string => Boolean(id)),
-  ), [expandedTaskId, selectedTaskId]);
+    [selectedTaskId, expandedTaskId, selectedChildIdentity].filter((id): id is string => Boolean(id)),
+  ), [expandedTaskId, selectedChildIdentity, selectedTaskId]);
   const hiddenDescendantIds = useMemo(() => {
     const hidden = new Set<string>();
     const byId = new Map(subagents.map((snapshot) => [subagentIdentity(snapshot), snapshot]));
@@ -1489,7 +1494,9 @@ export function ChatSubagentsPanel({
     showAll.subagents
       ? { visible: subagentGroups.active, hiddenCount: 0 }
       : capPaneSectionItems(subagentGroups.active, SUBAGENTS_ACTIVE_CAP, (snapshot) => (
-          snapshot.status === "failed" || pinnedSubagentIds.has(snapshot.taskId)
+          snapshot.status === "failed"
+          || pinnedSubagentIds.has(snapshot.taskId)
+          || pinnedSubagentIds.has(subagentIdentity(snapshot))
         ))
   ), [pinnedSubagentIds, showAll.subagents, subagentGroups.active]);
   const cappedBackground = useMemo(() => (

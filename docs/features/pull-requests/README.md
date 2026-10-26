@@ -995,6 +995,18 @@ never seen is deliberately NOT treated as deleted: it may simply live on
 another machine (see the stacked-PR claim rule), so the purge rides the delete
 cascades rather than a read-time guess.
 
+A PR's links follow the chat's spawn tree. The primary link is written first,
+then every other chat in that tree is linked the same way: the chats above it
+up to the tree's root, and every chat spawned under that root, including chats
+on other lanes. A chat that explicitly unlinked the PR keeps it unlinked
+(`hasChatSessionDismissal` is checked before each family link). A chat spawned
+while its parent holds open or draft PRs starts linked to them; merged and
+closed PRs are not copied. So a PR a subagent opened shows on the chat that
+started it and on its siblings, and the parent's header no longer reads it as
+another chat's claim. Family children come from the chats this machine has
+loaded, so siblings the brain has not opened yet are missed; the parent side
+always resolves from each chat's own lineage.
+
 The edge table is a CRR table with a primary-key-only uniqueness contract and
 is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.
 Do not add a unique secondary index; CRR conversion rejects it. The dismissal
@@ -1002,7 +1014,8 @@ table uses the same PK-only contract.
 
 Creating a new GitHub stack layer from a child lane also attaches that PR to
 parent chats that already linked an earlier layer of the same stack. Child
-chats do not receive the parent's base PR.
+chats do not receive the parent's base PR through that attach; a chat spawned
+while the parent holds open or draft PRs inherits them at spawn time (above).
 
 ### Merge settlement scope
 

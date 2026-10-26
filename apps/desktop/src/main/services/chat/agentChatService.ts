@@ -74306,7 +74306,9 @@ export function createAgentChatService(args: {
       if (!id) return [];
       const family = new Set<string>([id]);
       let root = id;
-      for (let depth = 0; depth < 16; depth += 1) {
+      // No fixed depth: `family.has` ends a cycle, and a real tree ends at a
+      // chat with no parent.
+      for (;;) {
         const lineage = managedSessions.get(root)?.session ?? readPersistedState(root);
         const parentId = lineage?.orchestrationParentSessionId?.trim();
         if (!parentId || family.has(parentId)) break;
