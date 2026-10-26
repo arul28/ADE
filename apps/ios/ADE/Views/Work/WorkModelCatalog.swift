@@ -1978,11 +1978,15 @@ private func workPrioritizeCodex56Models(
     return models
   }
 
+  let visibleModels = models.filter { model in
+    workCanonicalCodexRegistryId(for: model.id) != "openai/gpt-5.6-terra"
+  }
+
   func priority(_ modelId: String) -> Int {
     workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? workCodexUnrankedSortPriority
   }
 
-  return models.enumerated().sorted { lhs, rhs in
+  return visibleModels.enumerated().sorted { lhs, rhs in
     let lhsPriority = priority(lhs.element.id)
     let rhsPriority = priority(rhs.element.id)
     if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }

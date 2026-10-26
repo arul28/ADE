@@ -20991,8 +20991,8 @@ final class ADETests: XCTestCase {
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
-      "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "gpt-5.5",
     ])
     XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6.1-sol")
 
@@ -21017,11 +21017,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sol?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(sol?.defaultReasoningEffort, "low")
     XCTAssertTrue(sol?.supportsCodexFastMode == true)
-
-    let terra = codexModels?.first(where: { $0.id == "gpt-5.6-terra" })
-    XCTAssertEqual(terra?.tier, .balanced)
-    XCTAssertEqual(terra?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
-    XCTAssertEqual(terra?.defaultReasoningEffort, "medium")
 
     let luna = codexModels?.first(where: { $0.id == "gpt-5.6-luna" })
     XCTAssertEqual(luna?.tier, .fast)
@@ -21337,11 +21332,10 @@ final class ADETests: XCTestCase {
       currentProvider: "codex"
     ).first?.providers.first?.models
 
-    XCTAssertEqual(models?.map(\.id), ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
+    XCTAssertEqual(models?.map(\.id), ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"])
     XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
     XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-sol" })?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
-    XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-terra" })?.defaultReasoningEffort, "max")
 
     let legacyListData = try JSONSerialization.data(withJSONObject: [
       "id": "gpt-5.6-luna",
