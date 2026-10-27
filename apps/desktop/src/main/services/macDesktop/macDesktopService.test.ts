@@ -28,6 +28,7 @@ import {
   MAC_DESKTOP_INPUT_LEASE_WAIT_MS,
 } from "./macDesktopLeaseFlow";
 import { asWindowsDesktopStatus, createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
+import { createLinuxDesktopSeatAdapter } from "../linuxDesktop/linuxDesktopSeatProvider";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import { describeDesktopSeat, desktopSeatKind } from "../../../shared/desktopSeat";
@@ -724,6 +725,79 @@ describe("macDesktopService capability gate", () => {
     const { service } = makeService({ platform: "win32" });
     await expect(service.releaseIfOwnedBy("chat-1")).resolves.toEqual({ released: false });
     await expect(service.destroyForLane("lane-1")).resolves.toEqual({ destroyed: false });
+    service.dispose();
+  });
+});
+
+describe("Linux seat through the shared desktop service", () => {
+  /** The Linux seat with the fake transport, which never spawns a helper. */
+  function linuxService(overrides: Record<string, (payload: Record<string, unknown>) => unknown> = {}) {
+    const driver = createFakeDriver(overrides);
+    const seat = {
+      ...createLinuxDesktopSeatAdapter({ logger, adeHome: "/tmp/ade-linux-test" }),
+      createDriverClient: null,
+    };
+    return makeService({ platform: "linux", seat, driver });
+  }
+
+  it.each([
+    // A helper that answered without Linux facts is an older build, not silence.
+    ["a helper that reports no Linux facts", false, /answered but reports no Linux facts/],
+    // A health read that raced the helper's start leaves no facts at all.
+    ["a helper that never answered", true, /did not answer/],
+  ] as const)("setupDesktop refuses to call %s ready", async (_case, silent, message) => {
+    const { service } = silent
+      ? linuxService({ [MAC_DESKTOP_DRIVER_OPS.health]: () => { throw new Error("ETIMEDOUT"); } })
+      : linuxService();
+
+    // "Unknown" is not "nothing missing": told "installed" here, a bare VPS
+    // went on to fail every start with "Xvfb is not installed".
+    await expect(service.setupDesktop({ allowPrompt: false })).resolves.toMatchObject({
+      installed: false,
+      alreadyInstalled: false,
+      needsUser: false,
+      message: expect.stringMatching(message),
+    });
+    service.dispose();
+  });
+
+  it("marks a recording failed when the helper's encoder dies before the start settles", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startRecording]: () => {
+        // The helper starts its media thread inside `record.start`, so an
+        // ffmpeg that dies on the first frame reports before the start has a
+        // status (and reports it once: nothing repeats it).
+        for (const listener of driver.listeners) {
+          listener({ event: "recording-interrupted", laneId: "lane-1", error: "ffmpeg exited with code 1" });
+        }
+        return {};
+      },
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => {
+        throw new Error("The recording could not be finished.");
+      },
+    });
+    const { service } = makeService({ platform: "linux", seat: {
+      ...createLinuxDesktopSeatAdapter({ logger, adeHome: "/tmp/ade-linux-test" }),
+      createDriverClient: null,
+    }, driver });
+    await service.start({ laneId: "lane-1" });
+
+    const failed = new Promise<MacDesktopRecordingStatus>((resolve) => {
+      const unsubscribe = service.subscribe((event) => {
+        if (event.type !== "recording-changed" || event.status.running) return;
+        unsubscribe();
+        resolve(event.status);
+      });
+    });
+    await service.startRecording({ laneId: "lane-1", caption: "the fix" });
+    const status = await failed;
+
+    expect(status.running).toBe(false);
+    expect(status.lastError).toContain("could not be finished");
+    // The dead recorder was dropped through the ordinary stop, so the pane's
+    // next start is not refused with "already recording".
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(1);
+    expect((await service.getStatus({ laneId: "lane-1" })).recording).toMatchObject({ running: false });
     service.dispose();
   });
 });

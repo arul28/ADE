@@ -157,10 +157,18 @@ describe("generated tools manifest", () => {
   it("pins every supported target for every tool", () => {
     expect(manifest.tools.map((tool) => tool.name)).toEqual([
       "codex", "claude-code", "opencode", "copilot", "muse", "droid", "grok", "qwen", "kimi", "devin",
-      "antigravity", "pi", "copilot-cli", "cursor-cli", "node",
+      "antigravity", "pi", "copilot-cli", "cursor-cli", "ffmpeg", "node",
     ]);
+    // ffmpeg is the one tool with a partial target set: BtbN publishes no
+    // macOS build, and macOS renders demos with ade-media, so a darwin pin
+    // would be a dead download. Every target it does name is installed.
+    const ffmpeg = manifest.tools.find((tool) => tool.name === "ffmpeg")!;
+    expect(Object.keys(ffmpeg.targets).sort()).toEqual(["linux-arm64", "linux-x64", "win32-x64"]);
     for (const tool of manifest.tools) {
-      expect(Object.keys(tool.targets).sort()).toEqual([...TOOL_TARGETS].sort());
+      const targets = Object.keys(tool.targets);
+      expect(targets.length, `${tool.name} pins no target`).toBeGreaterThan(0);
+      for (const target of targets) expect(TOOL_TARGETS).toContain(target);
+      if (tool.name !== "ffmpeg") expect([...targets].sort()).toEqual([...TOOL_TARGETS].sort());
     }
   });
 

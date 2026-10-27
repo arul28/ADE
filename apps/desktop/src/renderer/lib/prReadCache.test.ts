@@ -94,6 +94,46 @@ describe("prReadCache", () => {
     await expect(second).resolves.toMatchObject({ repoPullRequests: [{ id: "fresh" }] });
   });
 
+  it("keeps each machine's GitHub snapshot reads and auth refusals to itself", async () => {
+    const snapshotB = {
+      repoPullRequests: [{ id: "pr-b" }],
+      externalPullRequests: [],
+      repo: null,
+      viewerLogin: "b",
+      syncedAt: "now",
+    };
+    let rejectA!: (error: unknown) => void;
+    const machineARejects = new Promise<never>((_resolve, reject) => {
+      rejectA = reject;
+    });
+    getGitHubSnapshot.mockResolvedValue(snapshotB);
+    getGitHubSnapshot.mockReturnValueOnce(machineARejects);
+    const refused = new Error("GitHub auth missing on this machine.");
+
+    // The same checkout path on two machines is two credential stores and two
+    // databases; the window's binding is what tells them apart.
+    const first = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" });
+    const firstOutcome = expect(first).rejects.toThrow(/auth missing/);
+    const second = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" });
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(2);
+
+    rejectA(refused);
+    await firstOutcome;
+    await expect(second).resolves.toMatchObject({ viewerLogin: "b" });
+
+    // A's refusal is remembered for A alone: B's next automatic read still asks.
+    await getGitHubSnapshotCoalesced(
+      { automaticRefresh: true },
+      { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" },
+    );
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
+    await expect(getGitHubSnapshotCoalesced(
+      { automaticRefresh: true },
+      { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" },
+    )).rejects.toThrow(/auth missing/);
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
+  });
+
   it("coalesces PR refreshes with the same id set regardless of order", async () => {
     const request = deferred<any[]>();
     refresh.mockReturnValueOnce(request.promise);

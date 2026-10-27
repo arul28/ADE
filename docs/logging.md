@@ -1046,9 +1046,16 @@ action, a person's pointer, and a scratch recording that was not filed emit
 nothing.
 
 Windows shares this frozen `mac_desktop` taxonomy and the same service emitter.
-The closed Work-tool outcome list also includes `tool_windows_desktop`, so
-opening the Windows pane is retained through sanitization. Password entry,
-credential contents, and native-dialog interactions are never product events.
+Linux Desktop is the same pane and the same service on a Linux seat (its lane's
+own X display), so its starts, agent drives and recordings are the same three
+outcomes too. The closed Work-tool outcome list also includes
+`tool_windows_desktop`, so opening the Windows pane is retained through
+sanitization; a Linux host's pane is the `mac-desktop` tool and reports
+`tool_mac_desktop`. Password entry, credential contents, and native-dialog
+interactions are never product events. `ade screen setup` (Windows admin step
+or Linux package install) emits nothing: the outcome a person acts on is the
+pane's use and the recording, and a setup that changes this machine is a
+mutation with no product question attached.
 
 The product question is only whether the lane screen is used at all, and
 whether agents drive it or file it. Nothing finer crosses the boundary: no
