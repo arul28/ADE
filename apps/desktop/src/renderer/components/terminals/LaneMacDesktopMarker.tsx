@@ -13,7 +13,7 @@ import { desktopToolProductName, type DesktopWorkTool } from "./workTools";
  */
 export function LaneMacDesktopMarker({ laneId, kind = "mac" }: { laneId: string; kind?: DesktopSeatKind }) {
   const label = LANE_DESKTOP_LABELS[kind];
-  const Icon = kind === "mac" ? Monitor : WindowsLogo;
+  const Icon = kind === "mac" || kind === "linux" ? Monitor : WindowsLogo;
   return (
     <PaneTooltip label={label} className="shrink-0 items-center">
       <span
@@ -44,8 +44,8 @@ export function LaneDesktopHeaderButton({
   const kind = useLaneDesktopSeat(laneId);
   if (!kind) return null;
   const label = LANE_DESKTOP_LABELS[kind];
-  const Icon = kind === "mac" ? Monitor : WindowsLogo;
-  const tool: DesktopWorkTool = kind === "mac" ? "mac-desktop" : "windows-desktop";
+  const Icon = kind === "mac" || kind === "linux" ? Monitor : WindowsLogo;
+  const tool: DesktopWorkTool = kind === "mac" || kind === "linux" ? "mac-desktop" : "windows-desktop";
   return (
     <button
       type="button"
@@ -53,7 +53,7 @@ export function LaneDesktopHeaderButton({
       data-lane-desktop-kind={kind}
       className={WORK_HEADER_ICON_BUTTON_CLASS}
       title={label}
-      aria-label={`Open ${desktopToolProductName(tool)}`}
+      aria-label={`Open ${desktopToolProductName(tool, kind === "linux" ? "linux" : null)}`}
       onClick={() => onOpen(tool)}
     >
       <Icon size={16} weight="bold" />

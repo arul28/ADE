@@ -1,6 +1,6 @@
 ---
 name: ade-computer-use
-description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows — `ade app-control`, `ade browser`) and covers the lane's own screen on both hosts, so you never drive the user's screen by accident.
+description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows, Linux Desktop on Linux — `ade app-control`, `ade browser`) and covers the lane's own screen on every host, so you never drive the user's screen by accident.
 ---
 
 # ADE computer use
@@ -18,7 +18,7 @@ Go down this list and stop at the first step that answers the question:
    `ade browser`. An Electron app → `ade app-control`. An iOS app or an iOS
    SwiftUI view → `ade apple`. They run in the background and never touch the user's
    screen, pointer or focus.
-3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows),
+3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows and Linux),
    only for what steps 1 and 2 cannot reach:
    - a native or custom-drawn Mac app: the Mac app you are building, a DAW
      (FL Studio, Ableton, Logic), a game, a canvas or an OpenGL/Unity build;
@@ -45,6 +45,7 @@ stop it when you are done (see **Rules that will bite you**).
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
 | Step 3 above, on a Mac | `ade mac-desktop` (the lane's private display) | this skill, below |
 | A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
+| Any GUI app on a Linux host — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux specifics** below |
 
 App Control acts through an Electron app's DOM, so labels, selectors, test ids
 and hover work, and it records and proves the app's own window without a lane
@@ -57,9 +58,9 @@ ADE's browser is the default for web work. Attach to the user's own browser
 only when they ask for it, never on your own, and tell them which machine and
 tab you attached to.
 
-Lane screens (`ade screen`) exist on macOS and Windows hosts only. On a Linux
-host, `ade screen status` says "Lane screens are not supported on Linux yet";
-use `ade browser` and `ade app-control` there.
+Lane screens (`ade screen`) exist on macOS, Windows and Linux hosts. On Linux
+each lane gets its own X display, so nothing you do there touches anyone's
+screen; see **Linux specifics** below.
 
 **Only ADE's surfaces stay off the user's screen.** Anything else that clicks,
 types or captures — an MCP server, `osascript` or System Events,
@@ -228,6 +229,35 @@ you pass is stripped.
   windows; ids come from `ade screen windows --text`.
 - **Paths** print with backslashes; quote them. `--out` must be in the lane
   worktree or `%TEMP%`.
+
+## Linux specifics
+
+- **The screen is the lane's own X display.** No human pointer is on it, so
+  point clicks, drags, keys and `--real` need no lease. A person who takes
+  control from a viewer still wins; wait for them to hand it back.
+- **Missing packages:** a plain server may lack Xvfb, the window manager,
+  AT-SPI or ffmpeg. `ade screen status --text` lists them with the install
+  command (`missing packages`, `install with`). You cannot install them: ask
+  the user to run `ade screen setup --allow-prompt` from their ADE client, or
+  the printed command on that machine.
+- **Browsers:** `ade screen open https://…` starts the machine's Chrome or
+  Chromium (Firefox if that is all there is) with a lane-private profile and
+  its accessibility tree on. `ade screen open chrome` works too. If no browser
+  is installed, `open` says so; ask the user to install one.
+- **Electron and desktop apps:** `ade screen open <app or path>`; Electron
+  apps get `--force-renderer-accessibility` so their elements appear in
+  `observe`. For an Electron app whose DOM you need, add
+  `-- --remote-debugging-port=9333` and attach with `ade app-control connect`.
+- **No elements?** `observe` lists `stalledApps` with the reason (no
+  accessibility bus, an app that stopped answering). Act by point from the
+  screenshot (`ade screen click 640,400`) until it answers again.
+- **Modifier keys:** `--ctrl`, `--alt`, `--shift`, `--win` (Super). `--cmd`
+  is sent as Ctrl, so the shortcuts you know from a Mac work.
+- **Windows:** `focus`, `minimize` and `close --window <id>` work as on
+  Windows. There is no `claim`, `release` or "Bring to my screen": every window
+  on the lane's screen is already the lane's.
+- **Recording and the live view need ffmpeg.** Without it, everything else
+  works and `record start` says what is missing.
 
 ## Proof on Windows
 

@@ -483,6 +483,9 @@ export function createAttentionNamespace(
 ): Window["ade"]["attention"] {
   let lastSnapshotScope: AttentionSnapshot["scope"] | null = null;
   let lastSnapshotAccountOwnerId: string | null = null;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the call site.
+  const mutation = { idempotent: false } as const;
 
   const rememberSnapshot = (snapshot: AttentionSnapshot): AttentionSnapshot => {
     lastSnapshotScope = snapshot.scope ?? null;
@@ -677,15 +680,7 @@ export function createAttentionNamespace(
           await infra.commands.call(
             "attention.acknowledgeMachine",
             chunkRequest(chunk) as unknown as Record<string, unknown>,
-            {
-              fallback: () => {
-                throw new Error(
-                  "The connected ADE host could not acknowledge this machine item.",
-                );
-              },
-              idempotent: false,
-              requireProject: false,
-            },
+            { ...mutation, requireProject: false },
           );
           return [];
         });

@@ -225,6 +225,7 @@ import {
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
+import { createLinuxDesktopSeatAdapter } from "../../desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
@@ -2108,6 +2109,11 @@ export async function createAdeRuntime(args: {
         // helper's host mode takes as `--ade-home`.
         seat: process.platform === "win32"
           ? createWindowsDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: resolveMachineAdeLayout().adeDir,
+          })
+          : process.platform === "linux"
+          ? createLinuxDesktopSeatAdapter({
             logger: macDesktopLogger,
             adeHome: resolveMachineAdeLayout().adeDir,
           })

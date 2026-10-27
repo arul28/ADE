@@ -290,14 +290,15 @@ export function WorkToolHeader({
   /** A tab's tooltip: its status summary, plus the active tool's own one fact. */
   const tabTooltip = (tool: WorkSidebarTab): string => {
     const definition = workToolDefinition(tool);
-    if (!definition) return workToolLabel(tool);
-    if (tool === activeTool && contextLabel) return `${workToolLabel(tool)} · ${contextLabel}`;
+    if (!definition) return workToolLabel(tool, context.hostPlatform ?? null);
+    if (tool === activeTool && contextLabel) return `${workToolLabel(tool, context.hostPlatform ?? null)} · ${contextLabel}`;
     const status = statuses[tool];
     if (definition.tabTooltip && !status?.line) return definition.tabTooltip;
     const { tooltipLabel } = workToolSummary(
       definition,
       statuses[tool],
       workToolAvailability(tool, context),
+      context.hostPlatform ?? null,
     );
     return tooltipLabel;
   };
@@ -345,6 +346,7 @@ export function WorkToolHeader({
             <WorkToolTab
               key={tool}
               tool={tool}
+              hostPlatform={context.hostPlatform ?? null}
               active={tool === activeTool}
               // Roving tabindex: one stop for the whole strip, and Tab lands on
               // the tool you are looking at rather than walking six tabs to
@@ -391,7 +393,7 @@ export function WorkToolHeader({
                         onSelect={() => onPick(tool)}
                       >
                         {Glyph ? <Glyph size={12} className="shrink-0 opacity-70" /> : null}
-                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool)}</span>
+                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool, context.hostPlatform ?? null)}</span>
                       </DropdownMenu.Item>
                     );
                   })}
@@ -441,6 +443,7 @@ export function WorkToolHeader({
               entry,
               status,
               workToolAvailability(entry.id, context),
+              context.hostPlatform ?? null,
             );
             return (
               <PaneTooltip key={entry.id} label={label} side="bottom">
@@ -496,6 +499,7 @@ export function WorkToolHeader({
  */
 function WorkToolTab({
   tool,
+  hostPlatform,
   active,
   focusable,
   showLabel,
@@ -505,6 +509,7 @@ function WorkToolTab({
   onCloseTool,
 }: {
   tool: WorkSidebarTab;
+  hostPlatform: NodeJS.Platform | null;
   active: boolean;
   /** Holds the strip's single tab stop; the rest are reached with arrows. */
   focusable: boolean;
@@ -552,7 +557,7 @@ function WorkToolTab({
             className="shrink-0"
           />
           {showLabel ? (
-            <span className="min-w-0 truncate">{workToolLabel(tool)}</span>
+            <span className="min-w-0 truncate">{workToolLabel(tool, hostPlatform)}</span>
           ) : null}
           {dotState !== "idle" && !active ? (
             <span
@@ -579,7 +584,7 @@ function WorkToolTab({
         // tabs themselves keep. The keyboard closes with Delete/Backspace on
         // the focused tab, or through the overflow menu.
         tabIndex={-1}
-        aria-label={`Close ${workToolLabel(tool)}`}
+        aria-label={`Close ${workToolLabel(tool, hostPlatform)}`}
         data-tool-tab-close={tool}
         // The layout contract, named rather than left to be read back out of
         // the class string: `corner` is the 24px tab's top-right badge,

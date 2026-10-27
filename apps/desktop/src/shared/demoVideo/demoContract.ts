@@ -15,7 +15,7 @@
  *    into the demo MP4. The raw file is then deleted: ADE never keeps two
  *    files of one recording.
  *
- * Two engines execute the same plan, so a demo looks the same on every OS:
+ * The engines execute the same plan, so a demo looks the same on every OS:
  *
  * - `swift`: `ade-media` (`native/ADEMedia`), macOS only. It reads MP4/MOV
  *   (the Apple helper, the Mac Desktop driver and App Control's window
@@ -23,6 +23,9 @@
  * - `chromium`: a hidden renderer in the ADE desktop app, any OS. It reads
  *   the {@link DEMO_RAW_FILE_EXTENSION} capture that the browser recorder and
  *   App Control's screencast recorder write.
+ * - `ffmpeg`: the system's ffmpeg, any OS that has it. It reads MP4/MOV/MKV
+ *   and works in the headless brain, so a Linux box with no desktop app
+ *   attached (its lane screen records MP4) still files a demo.
  *
  * Pure types and constants: imported by the brain, the desktop main process,
  * the hidden renderer and tests. No Node or DOM imports here.
@@ -267,7 +270,7 @@ export type DemoPlan = {
 // Engines
 // ---------------------------------------------------------------------------
 
-export type DemoEngineId = "swift" | "chromium";
+export type DemoEngineId = "swift" | "chromium" | "ffmpeg";
 
 /**
  * The raw capture the Chromium-side recorders write, readable by the chromium

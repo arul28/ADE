@@ -75,7 +75,7 @@ import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
-import { usePreferLocalCheckout } from "./usePreferLocalCheckout";
+import { forgetExplicitRemotePicks, usePreferLocalCheckout } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -1702,6 +1702,10 @@ export function TopBar({
         for (const binding of affectedTabs) {
           evictForAction(binding.key);
         }
+        // A closed tab takes its deliberate pick with it: these bindings are no
+        // longer open here, so the local preference must win the next time one
+        // of these projects is opened from Home.
+        forgetExplicitRemotePicks(affectedKeys);
       };
 
       const latestState = useAppStore.getState();

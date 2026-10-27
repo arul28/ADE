@@ -118,6 +118,8 @@ export function GitHubTab({
     optimisticTerminalStates = {},
   } = usePrs();
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The snapshot read is unpinned, so it follows the window's binding.
+  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
 
@@ -202,7 +204,7 @@ export function GitHubTab({
     /** A timer or a `prs-updated` reaction, not a person pressing Refresh. */
     automaticRefresh?: boolean;
   }) => {
-    const requestKey = snapshotRequestKey(options);
+    const requestKey = snapshotRequestKey(projectBindingKey, options);
     const inFlightSnapshot = inFlightSnapshotRef.current;
     if (options?.force !== true && inFlightSnapshot && snapshotRequestSatisfies(inFlightSnapshot, requestKey)) {
       return inFlightSnapshot.request;
@@ -217,6 +219,7 @@ export function GitHubTab({
     let pending!: Promise<GitHubPrSnapshot>;
     const isCurrentSnapshotRequest = () =>
       inFlightSnapshotRef.current?.request === pending
+      && inFlightSnapshotRef.current.bindingKey === requestKey.bindingKey
       && inFlightSnapshotRef.current.includeExternalClosed === requestKey.includeExternalClosed
       && inFlightSnapshotRef.current.historyPageLimit === requestKey.historyPageLimit;
     pending = (async () => {
@@ -231,7 +234,7 @@ export function GitHubTab({
             historyPageLimit: requestKey.historyPageLimit,
           } : {}),
         },
-        { projectRoot: requestProjectRoot },
+        { projectRoot: requestProjectRoot, bindingKey: projectBindingKey },
       );
     })()
       .then((next) => {
@@ -272,7 +275,7 @@ export function GitHubTab({
       });
     inFlightSnapshotRef.current = { request: pending, ...requestKey };
     return pending;
-  }, [setContextViewerLogin, setContextWriteViewerLogin]);
+  }, [projectBindingKey, setContextViewerLogin, setContextWriteViewerLogin]);
 
   React.useEffect(() => {
     if (projectRootRef.current === projectRoot) return;

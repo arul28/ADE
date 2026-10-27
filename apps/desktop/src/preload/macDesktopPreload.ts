@@ -21,6 +21,8 @@ import type {
   MacDesktopRecordingStatus,
   MacDesktopRecheckPermissionsArgs,
   MacDesktopReleaseArgs,
+  MacDesktopWindowActionArgs,
+  MacDesktopWindowActionResult,
   MacDesktopRequestPermissionArgs,
   MacDesktopScreenshotArgs,
   MacDesktopScreenshotResult,
@@ -133,6 +135,8 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
     open: call<MacDesktopOpenArgs, MacDesktopOpenResult>("open", IPC.macDesktopOpen),
     claimWindow: call<MacDesktopClaimArgs, MacDesktopWindow>("claimWindow", IPC.macDesktopClaimWindow),
     releaseWindow: call<MacDesktopReleaseArgs, { released: number }>("releaseWindow", IPC.macDesktopReleaseWindow),
+    /** A lane-owned window's close button, for a screen whose windows cannot leave it (Linux). */
+    closeWindow: call<MacDesktopWindowActionArgs, MacDesktopWindowActionResult>("closeWindow", IPC.macDesktopCloseWindow),
     observe: call<MacDesktopObserveArgs, MacDesktopObservation>("observe", IPC.macDesktopObserve),
     click: call<MacDesktopClickArgs, MacDesktopActionResult>("click", IPC.macDesktopClick),
     type: call<MacDesktopTypeArgs, MacDesktopActionResult>("type", IPC.macDesktopType),

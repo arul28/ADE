@@ -41,6 +41,12 @@ export type GitHubTabWarmCache = {
 };
 
 export type GitHubSnapshotRequestKey = {
+  /**
+   * The machine the read is scoped to (`projectBinding.key`), or null for this
+   * computer. Two machines can show the same checkout path, so the path alone
+   * does not identify what a request asks for.
+   */
+  bindingKey: string | null;
   includeExternalClosed: boolean;
   historyPageLimit: number;
 };
@@ -72,12 +78,16 @@ export function normalizeHistoryPageLimit(value: unknown): number {
   );
 }
 
-export function snapshotRequestKey(options?: {
-  includeExternalClosed?: boolean;
-  historyPageLimit?: number;
-}): GitHubSnapshotRequestKey {
+export function snapshotRequestKey(
+  bindingKey: string | null,
+  options?: {
+    includeExternalClosed?: boolean;
+    historyPageLimit?: number;
+  },
+): GitHubSnapshotRequestKey {
   const includeExternalClosed = options?.includeExternalClosed === true;
   return {
+    bindingKey,
     includeExternalClosed,
     historyPageLimit: includeExternalClosed ? normalizeHistoryPageLimit(options?.historyPageLimit) : 0,
   };
@@ -88,6 +98,9 @@ export function snapshotRequestSatisfies(
   requested: GitHubSnapshotRequestKey,
 ): boolean {
   if (!current) return false;
+  // A read scoped to another machine never answers this one, even when both
+  // machines show a checkout at the same path.
+  if (current.bindingKey !== requested.bindingKey) return false;
   if (!requested.includeExternalClosed) return true;
   return current.includeExternalClosed && current.historyPageLimit >= requested.historyPageLimit;
 }

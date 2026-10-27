@@ -438,7 +438,7 @@ export function groupRecentProjects(args: {
         machineId: summary.remote.targetId,
         machineName: summary.remote.runtimeName,
         connectionState,
-        reachable: connectionState === "connected",
+        reachable: connectionState === "connected" && summary.exists !== false,
       };
     }
     return {
@@ -457,9 +457,16 @@ export function groupRecentProjects(args: {
     const origin = cachedGitRemoteIdentity(
       summary.gitOriginUrl ?? live?.project.gitOriginUrl ?? null,
     );
+    // The live catalog is the truth about the host's folder: a recent saved
+    // while the checkout existed must not stay openable once the host says
+    // it is gone (a deleted clone, a /tmp the machine wiped).
     const location = toLocation(
-      live && !summary.gitOriginUrl
-        ? { ...summary, gitOriginUrl: live.project.gitOriginUrl }
+      live
+        ? {
+          ...summary,
+          gitOriginUrl: summary.gitOriginUrl ?? live.project.gitOriginUrl,
+          ...(live.project.exists === false ? { exists: false } : {}),
+        }
         : summary,
       key,
     );
@@ -495,7 +502,14 @@ export function groupRecentProjects(args: {
       const origin = cachedGitRemoteIdentity(project.gitOriginUrl);
       if (!origin) continue;
       const group = byOrigin.get(origin);
-      if (!group || group.claimedMachines.has(connection.target.id)) continue;
+      if (!group || project.exists === false) continue;
+      // A machine already in the card keeps its entry, unless that entry's
+      // folder is gone there: then this live checkout of the same repository
+      // takes its place, so picking the machine opens something that exists.
+      const claimedIndex = group.claimedMachines.has(connection.target.id)
+        ? group.locations.findIndex((location) => location.machineId === connection.target.id)
+        : -1;
+      if (claimedIndex >= 0 && group.locations[claimedIndex]!.summary.exists !== false) continue;
       const summary: RecentProjectSummary = {
         rootPath: project.rootPath,
         displayName: project.displayName,
@@ -514,7 +528,8 @@ export function groupRecentProjects(args: {
           iconDataUrl: project.icon?.dataUrl ?? null,
         },
       };
-      group.locations.push(toLocation(summary, null));
+      if (claimedIndex >= 0) group.locations[claimedIndex] = toLocation(summary, null);
+      else group.locations.push(toLocation(summary, null));
       group.claimedMachines.add(connection.target.id);
       if (recentTimestamp(summary) > isoTimestamp(group.lastOpenedAt)) {
         group.lastOpenedAt = summary.lastOpenedAt;

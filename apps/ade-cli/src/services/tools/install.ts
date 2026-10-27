@@ -702,7 +702,7 @@ async function installArchivePin(
   stagingDir: string,
   payloadDir: string,
 ): Promise<Record<string, string>> {
-  const archivePath = path.join(stagingDir, targetPin.archive === "zip" ? "archive.zip" : "archive.tar.gz");
+  const archivePath = path.join(stagingDir, `archive.${targetPin.archive}`);
   const downloaded = await downloadWithPreflight(args, {
     url: targetPin.url,
     destPath: archivePath,

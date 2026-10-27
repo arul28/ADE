@@ -16,7 +16,10 @@ import { MAC_DESKTOP_CURSOR_FADE_MS } from "./macDesktopGeometry";
 import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import { macDesktopApi } from "./macDesktopApi";
+import { createBackoffPoller } from "../../lib/backoffPoller";
+import { isWebClientMode } from "../../lib/webClientMode";
 import {
+  MAC_DESKTOP_NOT_ANSWERING,
   MAC_DESKTOP_STOP_WAIT_MS,
   macDesktopPendingStop,
   macDesktopStatusKey,
@@ -63,6 +66,15 @@ export const MAC_DESKTOP_START_TOO_LONG = "Mac Desktop is taking too long to sta
  * that never came.
  */
 export const MAC_DESKTOP_REVALIDATE_MIN_MS = 3_000;
+
+/**
+ * The hosted web client's status poll, which stands in for the events a
+ * browser tab never receives. The same cadence as the watch-only pane's
+ * (`WORK_TOOL_READ_ONLY_POLL_MS`): every few seconds while the lane changes,
+ * backing off to the ceiling while it does not, and nothing while hidden.
+ */
+export const MAC_DESKTOP_WEB_POLL_MS = 4_000;
+export const MAC_DESKTOP_WEB_MAX_POLL_MS = 30_000;
 
 /**
  * Re-reads the status every `MAC_DESKTOP_LOADING_RECHECK_MS` while `waiting`.
@@ -220,6 +232,11 @@ export type UseMacDesktopStatus = {
    */
   unconfirmed: boolean;
   refresh: () => Promise<MacDesktopStatus>;
+  /**
+   * Reads already out may no longer write the status: the caller just wrote
+   * a newer answer of its own (a takeover's lease), which they predate.
+   */
+  discardReadsInFlight: () => void;
   /** Stops the lane's display, then reads the truth. */
   stop: () => Promise<boolean>;
   /** A stop is in flight, from this pane or from closing the tab. */
@@ -255,6 +272,7 @@ export function useMacDesktopStatus(args: {
   machineVersion?: string | null;
 }): UseMacDesktopStatus {
   const { laneId, sessionId, runtimePin } = args;
+  const webClient = isWebClientMode();
   const laneName = args.laneName ?? null;
   const machineName = args.machineName ?? null;
   const machineVersion = args.machineVersion ?? null;
@@ -317,8 +335,15 @@ export function useMacDesktopStatus(args: {
       const next = await withMacDesktopTimeout(
         macDesktopApi().getStatus({ laneId, chatSessionId: sessionId }, runtimePin),
       );
+      // The web client's read degrades to null when the host cannot answer
+      // for a project. That is a failed read, not a status.
+      if (!next) throw new Error(MAC_DESKTOP_NOT_ANSWERING);
       if (newest()) {
-        if (epoch === eventEpochRef.current) setStatus(next);
+        if (epoch === eventEpochRef.current) {
+          // A poll that found nothing new keeps the same object, so the pane
+          // does not re-render for it. Only the web client polls.
+          setStatus((current) => (webClient && sameMacDesktopStatus(current, next) ? current : next));
+        }
         setReadError(null);
         setUnconfirmed(false);
       }
@@ -330,9 +355,12 @@ export function useMacDesktopStatus(args: {
       }
       throw caught;
     }
-  }, [laneId, runtimePin, sessionId]);
+  }, [laneId, runtimePin, sessionId, webClient]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  const discardReadsInFlight = useCallback(() => {
+    eventEpochRef.current += 1;
+  }, []);
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -490,6 +518,28 @@ export function useMacDesktopStatus(args: {
     };
   }, []);
 
+  // The web client has no event channel to a tab, so it polls. Each read
+  // reports whether the status moved, which is what backs the poll off on an
+  // idle lane and brings it back the moment something happens.
+  useEffect(() => {
+    if (!webClient) return undefined;
+    let last: string | null = null;
+    const poller = createBackoffPoller({
+      baseMs: MAC_DESKTOP_WEB_POLL_MS,
+      maxMs: MAC_DESKTOP_WEB_MAX_POLL_MS,
+      isActive: () => true,
+      read: async () => {
+        const next = await refreshRef.current();
+        const signature = JSON.stringify(next);
+        const changed = signature !== last;
+        last = signature;
+        return changed;
+      },
+    });
+    poller.start();
+    return () => poller.stop();
+  }, [laneId, webClient]);
+
   useEffect(() => {
     const api = window.ade.macDesktop;
     if (!api) return;
@@ -578,6 +628,7 @@ export function useMacDesktopStatus(args: {
     readError,
     unconfirmed,
     refresh,
+    discardReadsInFlight,
     stop,
     stopping,
     start,
@@ -589,4 +640,10 @@ export function useMacDesktopStatus(args: {
     appsLeftOpen,
     dismissAppLeftOpen,
   };
+}
+
+/** Whether two status reads say the same thing, for the web poll's no-op reads. */
+function sameMacDesktopStatus(a: MacDesktopStatus | null, b: MacDesktopStatus): boolean {
+  if (!a) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
 }

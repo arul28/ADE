@@ -38,6 +38,7 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
+  workToolCardLabel,
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
@@ -208,13 +209,16 @@ export function workToolSummary(
   definition: WorkToolDefinition,
   status: WorkToolStatus | undefined,
   availability: WorkToolAvailability,
+  /** The lane's host, for a tool named per host (Linux Desktop). */
+  hostPlatform?: NodeJS.Platform | null,
 ): { line: string | null; tooltipLabel: string } {
   const line = availability.available
     ? (status?.line
       ? `${status.line}${workToolErrorSuffix(status.errorCount ?? 0)}`
       : definition.hint ?? null)
     : availability.reason;
-  return { line, tooltipLabel: line ? `${definition.label} — ${line}` : definition.label };
+  const label = workToolCardLabel(definition.id, hostPlatform ?? null);
+  return { line, tooltipLabel: line ? `${label} — ${line}` : label };
 }
 
 /**
@@ -592,12 +596,14 @@ export function useWorkToolStatuses(args: {
     The lane's Apple device, for the card's one line. Polled here rather than
     added to the feed provider because it is a lanes-DB read keyed by LANE, and
     the feeds are keyed by machine — different lifetimes, and the card is the
-    only reader.
+    only reader. A host that has answered with another platform has no Apple
+    card and no simulators, so it is not polled; an unanswered host still is.
   */
+  const appleHostPossible = context.hostPlatform == null || context.hostPlatform === "darwin";
   const appleDevice = useAppleLaneDeviceCard({
     laneId,
     runtimePin,
-    enabled: enabled && !offline,
+    enabled: enabled && !offline && appleHostPossible,
     refreshKey: appleDeviceRefreshKey,
   });
 
@@ -661,7 +667,7 @@ export function useWorkToolStatuses(args: {
   const issueTabsProjectRoot = useActiveProjectRoot();
   const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool);
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool, context.hostPlatform ?? null);
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],

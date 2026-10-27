@@ -77,11 +77,11 @@ final class MacDesktopLiveSession: ObservableObject {
       let status = try await service.macDesktopGetStatus(laneId: laneId)
       guard token == generation else { return }
       guard status.supported else {
-        phase = .failed("This Mac can't host a desktop.")
+        phase = .failed("This machine can't host a lane screen.")
         return
       }
       guard let display = status.display else {
-        phase = .failed("The macOS desktop is off.")
+        phase = .failed("The lane's screen is off.")
         return
       }
       pictureWidth = display.width
@@ -566,7 +566,7 @@ struct MacDesktopControlPicture: View {
   private var controls: some View {
     if syncService.supportsMacDesktopControl {
       if geometry == nil {
-        Text("This Mac's ADE doesn't say where the screen sits, so clicks stay off.")
+        Text("This machine's ADE doesn't say where the screen sits, so clicks stay off.")
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
       } else if controlling {

@@ -73,6 +73,9 @@ export const WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT = "Take control here, or watch 
 export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
   "Tools run on the desktop. Open ADE on your Mac to see them here.";
 
+/** A lane-state read failed: the machine dropped or its brain is restarting. */
+export const WORK_TOOLS_UNREACHABLE_MESSAGE = "Can't reach this machine right now. Retrying…";
+
 /**
  * Why `browser` is null. The browser lives in the desktop's Electron main
  * process and the daemon proxies it over `desktop-bridge.sock`, so "no desktop

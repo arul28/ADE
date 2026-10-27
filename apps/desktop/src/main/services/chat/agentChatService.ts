@@ -5182,7 +5182,7 @@ type EpochDirective =
   | "computerUse"
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
   | "appleDevice"
-  /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
+  /** The lane-screen line (Mac, Windows or Linux Desktop), keyed by lane and text. */
   | "laneScreen"
   /**
    * ADE's lane guidance for a provider with no instruction channel, keyed by
@@ -9395,6 +9395,8 @@ export function buildComputerUseDirective(
      * "tell the agent" rule as above, for the Windows seat.
      */
     windowsDesktopAvailable?: boolean;
+    /** This host can give the lane a Linux screen (Linux Desktop). */
+    linuxDesktopAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -9407,8 +9409,11 @@ export function buildComputerUseDirective(
   // screenshot anything.
   const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
-  // No backends and no local fallback → skip the directive entirely.
-  if (!hasExternalBackends && !hasLocalFallback) {
+  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable || options.linuxDesktopAvailable);
+  // No backends, no local fallback and no lane screen → skip the directive
+  // entirely. A headless Linux brain has neither of the first two, and its
+  // lane screen is the only screen an agent there can use.
+  if (!hasExternalBackends && !hasLocalFallback && !ownScreen) {
     return null;
   }
 
@@ -9418,7 +9423,6 @@ export function buildComputerUseDirective(
   // skills; this block is only what must hold before the agent opens them. It
   // rides the first turn of every chat on every provider, so every line here
   // is paid by chats that never touch a screen (it was ~9.4k chars).
-  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
   // --- Header (always when we have any capability) ---
   sections.push(
     [
@@ -9470,7 +9474,7 @@ export function buildComputerUseDirective(
     [
       "### Proof Capture",
       "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
-        + (options.windowsDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
         + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
         + (ownScreen
           ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
@@ -54310,8 +54314,9 @@ export function createAgentChatService(args: {
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform !== "win32",
+        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
         windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
+        linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`

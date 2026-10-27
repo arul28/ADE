@@ -8435,6 +8435,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       open: resolvedArg(null as never),
       claimWindow: resolvedArg(null as never),
       releaseWindow: resolvedArg({ released: 0 }),
+      closeWindow: resolvedArg(null as never),
       observe: resolvedArg(null as never),
       click: resolvedArg(null as never),
       type: resolvedArg(null as never),

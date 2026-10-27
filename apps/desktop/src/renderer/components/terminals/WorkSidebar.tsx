@@ -786,7 +786,7 @@ export function WorkSidebar({
               key={effectiveTool}
               role="tabpanel"
               id={workToolPanelId(effectiveTool)}
-              aria-label={workToolLabel(effectiveTool)}
+              aria-label={workToolLabel(effectiveTool, toolContext.hostPlatform ?? null)}
               className="absolute inset-0 z-[1] min-h-0"
               initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
               animate={{ opacity: 1, y: 0 }}

@@ -46,7 +46,7 @@ promotes any of them after the fact.
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the "N proof filed" count (`ChatProofCount`) that opens the drawer narrowed to a turn. |
 | `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
-| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the two engine clients, and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
+| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the three engine clients (`swiftDemoEngine.ts`, `chromiumDemoEngine.ts`, `ffmpegDemoEngine.ts`), and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
 
 ## Runtime ownership
@@ -377,7 +377,7 @@ recorded.
    what was cut and sped up, and the steps with their times in the video.
    ADE's player lists the steps as chapters on the desktop and on iOS.
 
-Two engines execute the same plan (`demoContract.ts`), so a demo looks the
+Three engines execute the same plan (`demoContract.ts`), so a demo looks the
 same on every OS:
 
 - **`ade-media`** (`apps/desktop/native/ADEMedia`), macOS only. It reads MP4
@@ -396,6 +396,19 @@ same on every OS:
   Electron main give the Mac/Windows Desktop service this engine after
   `ade-media`, so on Windows a lane recording becomes a demo whenever the
   desktop app is attached; on macOS `ade-media` still goes first.
+- **`ffmpeg`** (`ffmpegDemoEngine.ts`), the machine's own ffmpeg, last. It
+  reads MP4, MOV and MKV and runs in the headless brain, so a Linux box with
+  only the brain — a lane screen records MP4 there — still files a demo.
+  Captions and badges are written to files and passed as `textfile=`, never
+  as `text=`, so no text is parsed as a filter expression. When the machine
+  has no ffmpeg, ADE downloads its pinned static build on demand
+  (`apps/ade-cli/scripts/pins/ffmpeg.json`; Linux x64/arm64 and Windows x64,
+  verified by sha256) as the recording starts, so the stop does not wait on
+  a download; `ade` never fetches it for any other reason.
+
+One recording is tried on every engine that reads it, in that order: an
+engine that fails hands the recording to the next instead of filing it
+uncut, which is what covers a desktop bridge that was offered and then gone.
 
 When no engine can read the raw file, an MP4 is filed as recorded and the
 metadata says why (`fallbackReason`); its length comes from the movie's own

@@ -14,6 +14,7 @@ export const VENDOR_DOWNLOAD_HOSTS = {
   antigravity: ["dl.google.com"],
   kimi: GITHUB_RELEASE_HOSTS,
   qwen: GITHUB_RELEASE_HOSTS,
+  ffmpeg: GITHUB_RELEASE_HOSTS,
   "cursor-cli": ["downloads.cursor.com"],
   node: ["nodejs.org"],
 };

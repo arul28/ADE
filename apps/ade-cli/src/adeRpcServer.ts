@@ -24,6 +24,7 @@ import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
   desktopProductName,
+  LINUX_DESKTOP_SETUP_USER_STEP,
   MAC_DESKTOP_USER_CLI_HOLDER_ID,
   USER_ONLY_CONSENT_CARD_REFUSAL,
   WINDOWS_DESKTOP_NEXT_STEP,
@@ -4190,9 +4191,14 @@ export function scopeMacDesktopAdeActionArgs(
   // under the human's takeover controller id it read off `getStatus`. Refused
   // by caller shape, not role.
   if (isCtoOnlyAdeAction("mac_desktop", action)) {
-    // The Windows steps are the user's; say what the agent does instead.
+    // The setup and password steps are the user's; say what the agent does instead.
+    // `setupWindows` is the one setup verb on every seat, so on a Linux host the
+    // refusal must describe the packages that verb installs, not the Windows
+    // wizard and a password Linux does not have (and a pane named differently).
     const windowsUserStep: Record<string, string> = {
-      setupWindows: `Windows Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
+      setupWindows: process.platform === "linux"
+        ? LINUX_DESKTOP_SETUP_USER_STEP
+        : `Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
       takeoverWindows: `taking the private Windows screen from another lane is the user's choice. ${WINDOWS_DESKTOP_NEXT_STEP.held}`,
       useSharedDesktop: WINDOWS_DESKTOP_NEXT_STEP.consent,
     };

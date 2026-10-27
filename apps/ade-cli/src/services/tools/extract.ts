@@ -25,10 +25,15 @@ function extractError(message: string, cause?: unknown): ToolError {
   return new ToolError(message, { kind: "extract", cause });
 }
 
-async function runTar(archivePath: string, destDir: string, stripComponents: number): Promise<void> {
+async function runTar(
+  archivePath: string,
+  destDir: string,
+  stripComponents: number,
+  compression: "gzip" | "xz" = "gzip",
+): Promise<void> {
   await fsp.mkdir(destDir, { recursive: true });
   const command = resolveTarCommand(process.platform);
-  const args = ["-xzf", archivePath, "-C", destDir];
+  const args = [compression === "xz" ? "-xJf" : "-xzf", archivePath, "-C", destDir];
   if (stripComponents > 0) args.push("--strip-components", String(stripComponents));
 
   const failure = await new Promise<string | null>((resolve) => {
@@ -112,19 +117,19 @@ export const extractNpmTarball: ToolExtractor = async (archivePath, destDir) => 
 
 /**
  * Unpack a vendor release archive (`archive` pins) into `destDir`, which must
- * not exist yet or be empty. `.tar.gz` goes through the system tar like an npm
+ * not exist yet or be empty. `.tar.gz` and `.tar.xz` go through the system tar like an npm
  * tarball. `.zip` is read by {@link extractZip} on every OS: GNU tar on Linux
  * cannot read zips, and one reader everywhere keeps the guards identical.
  */
 export async function extractArchive(
   archivePath: string,
   destDir: string,
-  options: { archive: "tar.gz" | "zip"; stripComponents: number },
+  options: { archive: "tar.gz" | "tar.xz" | "zip"; stripComponents: number },
 ): Promise<void> {
   if (options.archive === "zip") {
     await extractZip(archivePath, destDir, options.stripComponents);
   } else {
-    await runTar(archivePath, destDir, options.stripComponents);
+    await runTar(archivePath, destDir, options.stripComponents, options.archive === "tar.xz" ? "xz" : "gzip");
   }
   await auditExtractedTree(destDir);
 }

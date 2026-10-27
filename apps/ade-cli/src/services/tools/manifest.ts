@@ -87,7 +87,7 @@ export type FileTargetPin = {
 };
 
 /**
- * A vendor release archive (`.tar.gz` or `.zip`) from the vendor's own host:
+ * A vendor release archive (`.tar.gz`, `.tar.xz` or `.zip`) from the vendor's own host:
  * Devin, Kimi, Qwen's standalone bundle, Antigravity. Checked against the
  * pinned sha256 and size before a single entry is unpacked.
  */
@@ -97,7 +97,7 @@ export type ArchiveTargetPin = {
   package: string;
   version: string;
   url: string;
-  archive: "tar.gz" | "zip";
+  archive: "tar.gz" | "tar.xz" | "zip";
   /** Leading path segments dropped from every member, like tar's `--strip-components`. */
   stripComponents: number;
   /** Lowercase hex sha256 of the whole archive. */
@@ -157,6 +157,7 @@ const VENDOR_DOWNLOAD_HOSTS: Readonly<Record<string, readonly string[]>> = {
   antigravity: ["dl.google.com"],
   kimi: GITHUB_RELEASE_HOSTS,
   qwen: GITHUB_RELEASE_HOSTS,
+  ffmpeg: GITHUB_RELEASE_HOSTS,
   "cursor-cli": ["downloads.cursor.com"],
   node: ["nodejs.org"],
 };
@@ -396,8 +397,8 @@ function parseTargetPin(raw: unknown, toolName: string, target: string): ToolTar
   }
   if (format === "archive") {
     const archive = raw.archive;
-    if (archive !== "tar.gz" && archive !== "zip") {
-      throw manifestError(`${label}.archive must be "tar.gz" or "zip".`, context);
+    if (archive !== "tar.gz" && archive !== "tar.xz" && archive !== "zip") {
+      throw manifestError(`${label}.archive must be "tar.gz", "tar.xz" or "zip".`, context);
     }
     const stripComponents = raw.stripComponents;
     if (

@@ -260,7 +260,9 @@ import type {
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
   SyncMacDesktopStatus,
+  SyncMacDesktopRecordingState,
   MacDesktopClickArgs,
+  MacDesktopRecordingStatus,
   MacDesktopDragArgs,
   MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
@@ -6412,6 +6414,118 @@ function assertMacDesktopSyncPointsInDisplay(
   check(args.to);
 }
 
+/** A recording's status with its one host path removed, for a sync client. */
+function redactMacDesktopRecording(
+  recording: MacDesktopRecordingStatus | null | undefined,
+): SyncMacDesktopRecordingState | null {
+  return recording ? { ...recording, filePath: null } : null;
+}
+
+/** A window id off the wire: a finite integer, or the action's own refusal. */
+function requireMacDesktopWindowId(value: unknown, action: string): number {
+  const windowId = asOptionalNumber(value);
+  if (windowId === undefined || !Number.isInteger(windowId)) {
+    throw new Error(`${action} requires windowId.`);
+  }
+  return windowId;
+}
+
+/**
+ * The full Work-tools pane's remaining controls, for the hosted web client.
+ *
+ * The desktop app reaches the same service methods through its pinned
+ * `mac_desktop` runtime actions; these mirror those calls and their argument
+ * checks (`macDesktopActionDomain.ts`). All of them act on the host's screen —
+ * they open and close apps, move windows between the user's screen and the
+ * lane's, and write capture files — so, like `start` / `stop` and the takeover
+ * calls, they are controller-only: a watch-only viewer never reaches them.
+ * `present` (bring the lane's windows to the user's own screen) is not here:
+ * it means the screen the person is sitting at, which a browser tab is not.
+ *
+ * Identity never comes off the wire. A browser has no chat session or holder
+ * id of its own, and both decide lease ownership on a shared Windows seat, so
+ * the window calls drop every caller-asserted id. The captures keep the chat
+ * id the pane names, because that is only where the proof is filed. Host file
+ * paths are removed from every answer, the same rule `getStatus` follows.
+ */
+function registerMacDesktopPaneRemoteCommands(
+  macDesktopService: NonNullable<SyncRemoteCommandServiceArgs["macDesktopService"]>,
+  register: RemoteCommandRegistrar,
+): void {
+  const controllerOnly = { viewerAllowed: false, controllerAllowed: true, queueable: false } as const;
+  const chatSessionId = (payload: Record<string, unknown>): { chatSessionId?: string } => {
+    const value = asTrimmedString(payload.chatSessionId);
+    return value ? { chatSessionId: value } : {};
+  };
+
+  // No lane lists every window on the host's screen, which is what the claim
+  // picker shows. That is the user's whole desktop, so it is a controller's
+  // read even though it changes nothing.
+  register("macDesktop.listWindows", controllerOnly, async (payload) =>
+    await macDesktopService.listWindows({ laneId: asTrimmedString(payload.laneId) }));
+
+  register("macDesktop.open", controllerOnly, async (payload) => {
+    const rawArgs = payload.args;
+    return await macDesktopService.open({
+      laneId: requireString(payload.laneId, "macDesktop.open requires laneId."),
+      target: requireString(payload.target, "macDesktop.open requires target."),
+      args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
+    });
+  });
+
+  register("macDesktop.claimWindow", controllerOnly, async (payload) =>
+    await macDesktopService.claimWindow({
+      laneId: requireString(payload.laneId, "macDesktop.claimWindow requires laneId."),
+      windowId: requireMacDesktopWindowId(payload.windowId, "macDesktop.claimWindow"),
+    }));
+
+  // No window releases every window the lane borrowed, as on the desktop.
+  register("macDesktop.releaseWindow", controllerOnly, async (payload) => {
+    const windowId = asOptionalNumber(payload.windowId);
+    if (windowId !== undefined && !Number.isInteger(windowId)) {
+      throw new Error("macDesktop.releaseWindow windowId must be a window id.");
+    }
+    return await macDesktopService.releaseWindow({
+      laneId: requireString(payload.laneId, "macDesktop.releaseWindow requires laneId."),
+      windowId: windowId ?? null,
+    });
+  });
+
+  register("macDesktop.closeWindow", controllerOnly, async (payload) =>
+    await macDesktopService.closeWindow({
+      laneId: requireString(payload.laneId, "macDesktop.closeWindow requires laneId."),
+      windowId: requireMacDesktopWindowId(payload.windowId, "macDesktop.closeWindow"),
+    }));
+
+  // A captioned screenshot is filed as proof, like the desktop pane's. The
+  // `out` path is not accepted: a browser has no say in where the host writes.
+  register("macDesktop.screenshot", controllerOnly, async (payload) => {
+    const shot = await macDesktopService.screenshot({
+      laneId: requireString(payload.laneId, "macDesktop.screenshot requires laneId."),
+      windowId: asOptionalNumber(payload.windowId) ?? null,
+      caption: asTrimmedString(payload.caption),
+      ...chatSessionId(payload),
+    });
+    return { ...shot, filePath: null };
+  });
+
+  register("macDesktop.startRecording", controllerOnly, async (payload) =>
+    redactMacDesktopRecording(await macDesktopService.startRecording({
+      laneId: requireString(payload.laneId, "macDesktop.startRecording requires laneId."),
+      caption: asTrimmedString(payload.caption),
+      fps: asOptionalNumber(payload.fps) ?? null,
+      keepIdle: asOptionalBoolean(payload.keepIdle) ?? null,
+      maxSeconds: asOptionalNumber(payload.maxSeconds) ?? null,
+      ...chatSessionId(payload),
+    })));
+
+  register("macDesktop.stopRecording", controllerOnly, async (payload) =>
+    redactMacDesktopRecording(await macDesktopService.stopRecording({
+      laneId: requireString(payload.laneId, "macDesktop.stopRecording requires laneId."),
+      ...chatSessionId(payload),
+    })));
+}
+
 /**
  * The lane's private macOS screen, over the sync socket.
  *
@@ -6443,13 +6557,23 @@ function registerMacDesktopRemoteCommands({
   if (macDesktopService) {
     // `MacDesktopStatus` is already token-free; only the recording's host file
     // path is outside what a read-only client may carry.
+    //
+    // `recording` stays null for the clients that already read it that way (the
+    // phone's fixture pins it). `recordingState` is the same answer with its one
+    // host path removed, so the web pane's Record button can say whether a
+    // recording is running without seeing where the file goes.
     const redact = (status: Awaited<ReturnType<typeof macDesktopService.getStatus>>): SyncMacDesktopStatus => ({
       ...status,
       recording: null,
+      recordingState: redactMacDesktopRecording(status.recording),
     });
+    // The lane is optional: a viewer asks once with no lane to learn which
+    // lane-screen tool this host has (its platform and support), before any
+    // lane's pane is open. Requiring one left the web client unable to tell a
+    // Linux or Windows host from a Mac.
     register("macDesktop.getStatus", { viewerAllowed: true }, async (payload) =>
       redact(await macDesktopService.getStatus({
-        laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
+        laneId: asTrimmedString(payload.laneId) || null,
       })));
 
     // Frozen inspect from a phone or the hosted web viewer: one accessibility
@@ -6553,8 +6677,8 @@ function registerMacDesktopRemoteCommands({
     // EITHER seat: the private screen, or the user's main desktop ("Using your
     // main Windows desktop"), so the user always has the way out from any
     // trusted device. `stopPrivate` above stays for phones that predate this.
-    // A Mac lane's display is still not a viewer's to stop: that takes the
-    // controller-only `macDesktop.stop`.
+    // A Linux lane's screen too. A Mac lane's display is still not a viewer's
+    // to stop: that takes the controller-only `macDesktop.stop`.
     register("macDesktop.stopSeat", {
       viewerAllowed: true,
       controllerAllowed: true,
@@ -6562,10 +6686,13 @@ function registerMacDesktopRemoteCommands({
     }, async (payload) => {
       const laneId = requireString(payload.laneId, "macDesktop.stopSeat requires laneId.");
       const status = await macDesktopService.getStatus({ laneId });
-      if (status.platform !== "win32" || !status.windowsDesktop) {
-        throw new Error("Only a Windows screen can be stopped by a watch-only viewer.");
+      // A Linux lane screen is the lane's own X display on a remote machine,
+      // like the private Windows screen: any trusted viewer may stop it.
+      const linux = status.platform === "linux";
+      if (!linux && (status.platform !== "win32" || !status.windowsDesktop)) {
+        throw new Error("Only a Windows or Linux screen can be stopped by a watch-only viewer.");
       }
-      if (!status.display) throw new Error("This lane has no Windows screen to stop.");
+      if (!status.display) throw new Error(`This lane has no ${linux ? "Linux" : "Windows"} screen to stop.`);
       return await macDesktopService.stop({ laneId });
     });
 
@@ -6675,6 +6802,7 @@ function registerMacDesktopRemoteCommands({
           return await macDesktopService.releaseInput(inputArgs as unknown as MacDesktopReleaseInputArgs);
       }
     });
+    registerMacDesktopPaneRemoteCommands(macDesktopService, register);
   }
   if (macDesktopService && macDesktopSyncStream) {
     register("macDesktop.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {

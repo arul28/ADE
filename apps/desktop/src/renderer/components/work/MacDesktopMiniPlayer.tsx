@@ -242,6 +242,7 @@ export function MacDesktopMiniPlayer({
   runtimePin,
   supported,
   desktopTool = "mac-desktop",
+  hostPlatform = null,
   onOpenInPane,
 }: {
   /** The Work route is on screen. Everything here is torn down when it is not. */
@@ -266,6 +267,8 @@ export function MacDesktopMiniPlayer({
    * pane's toggle and this player always read the same marker.
    */
   desktopTool?: DesktopTool;
+  /** The lane's machine's platform: a Linux host's screen is "Linux Desktop". */
+  hostPlatform?: NodeJS.Platform | null;
   onOpenInPane: () => void;
 }) {
   const runtimePinRef = useRef(runtimePin);
@@ -374,7 +377,7 @@ export function MacDesktopMiniPlayer({
     macDesktopControl: { leaseHolder: macScope.leaseHolderKind, recording: macScope.recording },
   }), [macScope.displayKey, macScope.leaseHolderKind, macScope.recording, storedFrame]);
 
-  const desktopName = desktopToolProductName(desktopTool);
+  const desktopName = desktopToolProductName(desktopTool, hostPlatform);
   /** The Off state's Start: the same explicit start as the pane's Off card. */
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -446,6 +449,7 @@ export function MacDesktopMiniPlayer({
       capture={capture}
       off={off}
       desktopTool={desktopTool}
+      hostPlatform={hostPlatform}
       starting={starting}
       startError={startError}
       onStart={start}
@@ -467,6 +471,7 @@ function MacDesktopMiniPlayerBox({
   capture,
   off,
   desktopTool,
+  hostPlatform,
   starting,
   startError,
   onStart,
@@ -475,6 +480,7 @@ function MacDesktopMiniPlayerBox({
 }: {
   laneId: string;
   desktopTool: DesktopTool;
+  hostPlatform: NodeJS.Platform | null;
   /** The `workToolOnScreen` key for this card on this lane and machine. */
   onScreenKey: string;
   /** False while hidden (the pane shows the desktop): mounted, so it keeps its place. */
@@ -528,7 +534,7 @@ function MacDesktopMiniPlayerBox({
       concealed={pip.active}
       attrPrefix="mac-mini"
       playerId={laneId}
-      ariaLabel={`${desktopToolProductName(desktopTool)}, floating`}
+      ariaLabel={`${desktopToolProductName(desktopTool, hostPlatform)}, floating`}
       recording={recording}
       capture={capture}
       onStartDrag={startDrag}
@@ -628,7 +634,7 @@ function MacDesktopMiniPlayerBox({
           className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
         >
           <p className="font-sans text-[12px] text-fg/85">
-            {`${desktopToolProductName(desktopTool)} is off`}
+            {`${desktopToolProductName(desktopTool, hostPlatform)} is off`}
           </p>
           <button
             type="button"

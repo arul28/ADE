@@ -10677,6 +10677,7 @@ export function registerIpc({
   ipcMain.handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
   ipcMain.handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
   ipcMain.handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
+  ipcMain.handle(IPC.macDesktopCloseWindow, async (_event, arg) => ensureMacDesktop().closeWindow(arg));
   ipcMain.handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
   ipcMain.handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
   ipcMain.handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));

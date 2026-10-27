@@ -218,7 +218,12 @@ client.
   pane says so in the machine's own terms — "<Machine name> runs ADE
   <version>, which has no Mac Desktop. Update ADE there." — instead of printing
   the action-domain refusal.
-- **Non-Mac runtime.** `getStatus` answers `supported: false`. Every other
+- **Windows and Linux runtimes.** The same service with another seat
+  backend: [Windows Desktop](../windows-desktop/README.md) and
+  [Linux Desktop](../linux-desktop/README.md) (one Xvfb display per lane). The
+  pane, the stream and takeover are shared; on Linux the tool is this pane,
+  named Linux Desktop.
+- **Any other runtime.** `getStatus` answers `supported: false`. Every other
   method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`. The renderer hides the
   tab.
 - **Phone and hosted web client.** Both read the `macDesktop` slice of
@@ -1124,12 +1129,9 @@ this run's own bookkeeping, not about orphans on disk.
 
 ## Not in scope
 
-On a Linux runtime host there is no lane screen: `ade screen status` (and
-`ade mac-desktop status`) says "Lane screens are not supported on Linux yet."
-and points at `ade browser` and `ade app-control`.
+Linux and Windows hosts have their own seat backends: see
+[Linux Desktop](../linux-desktop/README.md) and
+[Windows Desktop](../windows-desktop/README.md).
 
-The Linux seat backend, nested macOS virtual machines, replacing the built-in
-Browser, App Control, or the iOS Simulator tool, and any change to how Codex
-Computer Use is launched. `DesktopSeatProvider` in
-`apps/desktop/src/shared/types/macDesktop.ts` is shaped so a seat backend can be
-added later; only the Mac backend exists today.
+Nested macOS virtual machines, replacing the built-in Browser, App Control, or
+the iOS Simulator tool, and any change to how Codex Computer Use is launched.

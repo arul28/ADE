@@ -210,6 +210,20 @@ const VENDOR_PINNED_TOOLS = [
     },
   },
   {
+    // Fetched only when a recording needs a demo and the machine has no ffmpeg
+    // of its own (agentToolDemand has no rule for it, so launch never fetches it).
+    name: "ffmpeg",
+    // BtbN publishes no macOS build, and macOS renders demos with ade-media.
+    targets: ["linux-arm64", "linux-x64", "win32-x64"],
+    description: "Static FFmpeg (BtbN GPL build) that renders demo videos where neither ade-media nor the desktop app's engine exists.",
+    entry: {
+      kind: "binary",
+      path: "bin/ffmpeg",
+      windowsPath: "bin/ffmpeg.exe",
+      files: { ffprobe: { path: "bin/ffprobe", windowsPath: "bin/ffprobe.exe", executable: true } },
+    },
+  },
+  {
     name: "node",
     description: "Official Node.js runtime for JS-only CLIs ADE runs in terminals (Pi's `dist/bundle/cli.js`).",
     entry: { kind: "binary", path: "bin/node", windowsPath: "node.exe" },
@@ -356,7 +370,7 @@ function copyVendorTargetPin(toolName, pin, label, version) {
   if (pin.format === "archive") {
     const hosts = VENDOR_DOWNLOAD_HOSTS[toolName];
     if (!hosts) fail(`${toolName} has no vendor download host in file-pin-host.mjs.`);
-    if (pin.archive !== "tar.gz" && pin.archive !== "zip") fail(`${label}.archive must be tar.gz or zip.`);
+    if (pin.archive !== "tar.gz" && pin.archive !== "tar.xz" && pin.archive !== "zip") fail(`${label}.archive must be tar.gz, tar.xz or zip.`);
     if (!Number.isInteger(pin.stripComponents) || pin.stripComponents < 0) fail(`${label}.stripComponents must be >= 0.`);
     if (!SHA256_PATTERN.test(pin.sha256 ?? "")) fail(`${label} has no lowercase hex sha256.`);
     return {
@@ -403,7 +417,9 @@ function readVendorPin(tool) {
     fail(`${relative} is not a ${tool.name} pin.`);
   }
   const targets = {};
-  for (const target of TARGETS) {
+  // A tool that names its targets is pinned only there; elsewhere it resolves
+  // as "unavailable" and its consumer falls back.
+  for (const target of tool.targets ?? TARGETS) {
     const pin = pinFile.targets?.[target];
     if (!pin) fail(`${relative} has no ${tool.name} build for supported target ${target}.`);
     targets[target] = copyVendorTargetPin(tool.name, pin, `${relative} ${target}`, pinFile.version);

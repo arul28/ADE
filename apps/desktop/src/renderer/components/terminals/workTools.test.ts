@@ -17,8 +17,8 @@ describe("Apple work tool labels", () => {
     expect(ios?.tabLabel).toBeUndefined();
     expect(ios?.tabTooltip).toBe("Apple simulators and previews");
     expect(ios?.hint).toBe("Open an Apple device");
-    expect(workToolLabel("ios")).toBe("Apple Development");
-    expect(workToolCardLabel("ios")).toBe("Apple Development");
+    expect(workToolLabel("ios", null)).toBe("Apple Development");
+    expect(workToolCardLabel("ios", null)).toBe("Apple Development");
   });
 
   it("wears the Apple mark rather than a generic phone", () => {
@@ -125,7 +125,8 @@ describe("Mac Desktop tool availability", () => {
     // [case, context, the host-bound cards shown]
     ["a Mac whose driver is missing", { hostPlatform: "darwin", supportsMacDesktop: false, macDesktopUnsupportedReason: "The native desktop driver is missing.", supportsIosSimulator: true }, ["ios", "mac-desktop"]],
     ["a Windows host", { hostPlatform: "win32", supportsWindowsDesktop: true, supportsMacDesktop: false }, ["windows-desktop"]],
-    ["a Linux host", { hostPlatform: "linux", supportsMacDesktop: false, supportsWindowsDesktop: false }, []],
+    // A Linux host's lane screen is the same pane, so its card shows.
+    ["a Linux host", { hostPlatform: "linux", supportsMacDesktop: true, supportsWindowsDesktop: false }, ["mac-desktop"]],
     ["a host that has not answered", { hostPlatform: null }, ["ios", "mac-desktop", "windows-desktop"]],
   ] as const)("shows a lane-screen card only on its own host platform: %s", (_case, overrides, shown) => {
     const ctx = context(overrides as Partial<WorkToolContext>);

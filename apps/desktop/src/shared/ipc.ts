@@ -639,6 +639,7 @@ export const IPC = {
   macDesktopOpen: "ade.macDesktop.open",
   macDesktopClaimWindow: "ade.macDesktop.claimWindow",
   macDesktopReleaseWindow: "ade.macDesktop.releaseWindow",
+  macDesktopCloseWindow: "ade.macDesktop.closeWindow",
   macDesktopObserve: "ade.macDesktop.observe",
   macDesktopClick: "ade.macDesktop.click",
   macDesktopType: "ade.macDesktop.type",
