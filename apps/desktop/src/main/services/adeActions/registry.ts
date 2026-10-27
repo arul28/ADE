@@ -6,7 +6,7 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
 import {
@@ -1249,9 +1249,13 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const { sessionId, options } = readChatHistoryActionArgs(actionArgs, "chat.getChatEventHistory");
       const maxEvents = readOptionalIntegerActionField(options.maxEvents, "maxEvents");
       const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
+      const afterOffset = readOptionalIntegerActionField(options.afterOffset, "afterOffset");
+      const historyGeneration = readOptionalIntegerActionField(options.historyGeneration, "historyGeneration");
       return agentChatService.getChatEventHistory(sessionId, {
         ...(maxEvents !== undefined ? { maxEvents } : {}),
         ...(maxBytes !== undefined ? { maxBytes } : {}),
+        ...(afterOffset !== undefined ? { afterOffset } : {}),
+        ...(historyGeneration !== undefined ? { historyGeneration } : {}),
       });
     };
   }
@@ -3399,6 +3403,23 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
 
   return {
     ...(prService as unknown as OpaqueService),
+    // `conditional: true` (newer desktops): `{ prs, signature, notModified }`,
+    // so a chat switch whose machine's PR list did not change downloads a
+    // signature instead of every PR (half a megabyte on a busy project). Other
+    // callers, and every client before this, get the bare array.
+    listAll(args?: unknown) {
+      const actionArgs = args && typeof args === "object" && !Array.isArray(args)
+        ? args as Record<string, unknown>
+        : {};
+      const laneId = typeof actionArgs.laneId === "string" ? actionArgs.laneId : undefined;
+      const prs = prService.listAll(laneId ? { laneId } : {});
+      if (actionArgs.conditional !== true) return prs;
+      const signature = createHash("sha256").update(JSON.stringify(prs)).digest("hex");
+      const ifNoneMatch = typeof actionArgs.ifNoneMatch === "string" ? actionArgs.ifNoneMatch : null;
+      return ifNoneMatch === signature
+        ? { signature, notModified: true }
+        : { prs, signature, notModified: false };
+    },
     aiResolutionGetSession(args?: unknown) {
       return getPrAiRuntimeBridge(runtime).getSession(args);
     },

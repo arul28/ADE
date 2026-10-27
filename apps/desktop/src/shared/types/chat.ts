@@ -2702,6 +2702,21 @@ export type AgentChatEventHistorySnapshot = {
    */
   tailStartOffset?: number | null;
   /**
+   * Byte offset of the end of the transcript this snapshot read, and the chat's
+   * history generation (a rewind or import rewrites the file and moves it).
+   * A client that keeps the events can pass both back as `afterOffset` and
+   * `historyGeneration` to receive only what came after. Optional: older hosts
+   * omit them.
+   */
+  tailEndOffset?: number;
+  historyGeneration?: number;
+  /**
+   * Set when the host honored `afterOffset`: `events` then holds the last
+   * transcript event before that offset (for the client to join on) and
+   * everything after it, not a full window. Absent means a full snapshot.
+   */
+  resumedFromOffset?: number;
+  /**
    * Unresolved `approval_request` envelopes older than the window, reported
    * separately instead of re-admitted into `events`. Only set when the caller
    * asked for `separatePinnedEvents`.
@@ -5327,6 +5342,12 @@ export type AgentChatListArgs = {
   includeArchived?: boolean;
   /** Include identity-bound sessions for dedicated surfaces such as CTO. */
   includeIdentity?: boolean;
+  /**
+   * Summarize only these chats (of the same 500-row window). A brain that
+   * predates this returns the whole list, so a caller must still pick the
+   * named chats out of the reply.
+   */
+  sessionIds?: string[];
 };
 
 export type AgentChatSuggestLaneNameArgs = {

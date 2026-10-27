@@ -604,8 +604,9 @@ vs 1.3 s / 17 KB.
   re-rendering (TerminalsPage, the chat composer) and the chat list's
   virtualizer forcing layout (`getBoundingClientRect`) when you switch to
   Files.
-- **First Work open after launch:** a long chat backfills its older history
-  in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
+- **First Work open after launch:** (2026-10-26: older history now loads
+  only on the reader's intent; see the perf-p2-chats section) a long chat
+  backfilled its older history in idle slots: 114–171 pages over 8–14 s, at about 350 ms/s of main-thread
   work, once per chat per session. A page is 256 KB of raw JSONL
   (`CHAT_HISTORY_PAGE_MAX_BYTES`), and the batch reader stops at the first page
   that holds a `user_message`, which a full page almost always does — so one
@@ -2082,3 +2083,114 @@ ignore the new fields. The switch time is not bandwidth: it stays at about
 Every usage reader (header, balance indicator, suggestions) re-read the
 machine's usage snapshot, about 460 KB, when the tab changed machine; they now
 share one read while it is in flight, never across a binding change.
+
+## Mac Studio (M4 Max): opening chats and streaming (2026-10-26, perf-p2-chats)
+
+Mac16,9, M4 Max, 36 GB, Node 26.3; main at `e2f42f44c`, before → after on the
+`ade/perf-p2-chats` branch. Other agents were running (load average 10–30).
+Every number is the median of three interleaved before/after runs unless it
+says otherwise. UI rows: the browser-mock renderer (`npx vite`, headless
+Chrome) replaying an 8,600-event real Claude chat, and an isolated dev app
+(own `ADE_HOME`, socket, CDP port, sync off) on a throwaway project with a
+synthetic 1,000-turn chat (16,000 events, 12 MB of JSONL).
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Open a 1,000-turn chat: time until it stops changing | dev app, CDP: park on a small chat, reload, open the big one | 1,729 ms | 79 ms | 1,500 ms |
+| Open a 1,000-turn chat: main-thread work in the first 15 s | same, `TaskDuration` | 1,578 ms | 170 ms | 400 ms |
+| Open a 1,000-turn chat: renderer heap it adds | same, after GC | +22.4 MB | +2.6 MB | +8 MB |
+| Open a 1,000-turn chat: first rows | same | 83 ms | 79 ms | 150 ms |
+| Streaming: component renders per event (8,600-event chat, 400 events at 30/s) | browser mock, render hook | 133.6 | 106.5 | 154 (row above) |
+| Streaming: transcript row re-renders per event | same | 3.99 | 2.82 | — |
+| Streaming: script per event | same | 4.74 ms | 4.47 ms | — |
+| Streaming: main-thread task time per event | same | 7.45 ms | 7.20 ms | — |
+| Typing: transcript list renders per keystroke | browser mock, 40 keys | 0.03 | 0.03 (unchanged) | 0.1 |
+| Lanes page while a chat streams: LanesPage renders in 11 s | browser mock, 300 text events at 30/s | 28 | 0 | 2 |
+| Lanes page while a chat streams: component renders in 11 s | same | 9,494 | 283 | 1,000 |
+| Lanes page refresh: brain cost per refresh (617-chat fixture) | `session-list.bench.mts` fixture, `listSessions` all vs one named chat | 108.5 ms | 7.7 ms | 20 ms |
+| Live command output: row cost per 4 KB chunk at 8 MB of output | `collapseChatTranscriptEventsIncrementalWithContext`, 2,048 chunks | 1.54 ms (grows 0.19 ms per MB) | 0.011 ms (flat) | 0.05 ms |
+| Codex plan streaming: events for a 400-delta plan | `agentChatServiceInteractionMode` harness | 401 events, 2.75 MB | 6 events, 54 KB | one per 100 ms |
+| Scene-fence scan per reveal frame, 100 KB reply | `openFence` micro-bench | 0.13 ms | ~0 (tail only) | — |
+
+What changed:
+
+- **Older history loads on intent.** A long chat no longer pages its whole
+  transcript in after it opens. The rest loads when the reader scrolls up
+  (wheel, keys, touch, scrollbar drag), opens find, points at or focuses the
+  prompt rail, or recalls a prompt from the composer; a deep link pages on
+  its own as before. Find opened on the 1,000-turn chat still reports
+  "1000 of 1000". Until then the prompt rail shows only the prompts already
+  loaded.
+- **Live command output** keeps the newest 512 K characters of a running
+  command and says how many earlier ones it dropped; localhost URLs are read
+  one chunk at a time and kept across the trim; the row builds its detail
+  text only when opened.
+- **Lanes page:** no chat subscription while parked; a chat starting,
+  ending, asking or changing state re-reads every chat, any other event of a
+  listed chat re-reads that chat alone (`agentChat.list({ sessionIds })`; a
+  brain without it returns the full list and the page picks the chat out).
+  The map keeps its identity when nothing a row shows changed.
+- **Codex plan deltas** coalesce on the 100 ms text clock (each carries the
+  whole plan) and flush before any other event, so order is unchanged.
+- **Rows:** turn-end fold and wake-chain props keep their identity; the
+  streaming tail stays out of the markdown parse cache; the scene-fence scan
+  reads only the tail when the settled half ends at depth zero.
+
+Measured and dropped: `normalizePreview` per 100 ms flush (0.046 ms at a
+50 KB reply; a 5× faster scan is not a real win); the 1,000-file changed-files
+card (rare, not measured). Still open: the chat pane itself renders once per
+streamed event and per keystroke (1.08 per event; its own render is about
+15% of streaming main-thread time, most of it per-event `useMemo` folds such
+as `deriveChatSources` over the whole transcript).
+
+## Mac Studio (M4 Max): chats against T3's published numbers, real data (2026-10-27, perf-p2-chats)
+
+Branch `ade/perf-p2-chats` at `e4541ff72` against main `e2f42f44c`, the same machine, interleaved runs.
+Data: the owner's real ADE project (P0's frozen golden copy, cloned with `make-real-load-copy --clone`):
+the biggest real chat `0ae9fe83` (8,600 events, 8.7 MB) and real Claude/Codex chats for the micro-benches.
+UI rows: the browser-mock renderer (same renderer code) replaying those transcripts in headless Chrome.
+Each cell is the median of 5 runs, with the worst run in brackets. T3's side is its published numbers
+(`/Volumes/Dev/t3triage/perf/t3-published.md`, section D), measured T3's way.
+
+| # | T3 (source) | How (T3's method) | ADE main | ADE branch |
+|---|---|---|---|---|
+| D1 | Chat view renders per streamed reply: 18 short / 18 long (#23117) | AgentChatPane renders per whole reply; real 15-line and 33-line replies streamed live | 83 (83) / 206 (209) | **10 (10) / 12 (13)** |
+| D2 | A background stream re-renders only its own sidebar row (#22730: 27 sidebar renders in 15 s) | another chat streams 450 events over 15 s, big chat open; Work sidebar component renders | 16 (16) | **16 (16)**; chat pane 3 → 1 |
+| D3 | 500 streamed replacements into 10,000 items: 15.3 ms (#24264) | 500 live tool-call resends into the last 10,000 events of a real 3,620-tool-call chat | 5.47 ms (10.6) | **5.41 ms (10.1)** |
+| D4 | Timeline scan, 1,000 items: 15.48 ms (#23739) | one collapse + group pass over 1,000 real events | 1.07 ms (9.2) | **1.15 ms (8.5)** |
+| D5 | Coalescing: −49.9% bytes at a 25 ms delta cadence (#24267) | a 4,000-character reply as 25 ms deltas vs ADE's 100 ms coalescing, serialized envelope bytes | −72.8% | **−72.8%** |
+| D6 | Scroll a large thread: 70.5 ms stopped / 111.6 ms streaming, scroll → frame p95 (#23942) | wheel through the whole real big chat, wheel input → next frame, p95, first pass | 29.2 (29.3) / 43.0 (44.9) ms | **30.4 (40.0) / 42.6 (44.6) ms** |
+| D7 | Typing key p99: 32–39 ms (#23601, Linux/Xvfb) | 300 keys at 40 ms into the composer of the real big chat, Event Timing keydown p99 | 24 (40) ms | **24 (32) ms** (macOS) |
+
+Remote chats (P0's three-machine rig: this Mac as the MacBook, real-data Studio and Windows
+clones, 30 ms RTT links; median of warm rounds 2-5, worst in brackets):
+
+| Row | main | branch (`af68102dd`) |
+|---|---|---|
+| Warm switch back to a Studio chat, small / big | 204 / 249 KB | **7.2 (7.5) / 11 (26) KB** |
+| Same, every switch after the 30 s PR cache expires | — | **5 (45) / 10 (11) KB** |
+| First open of the big Studio / Windows chat | 1,786 / 1,755 KB | **102 / 102 KB** |
+| Warm switch time, Studio small / big | 33 / 53 ms | 36 / 57 ms (unchanged) |
+
+Notes:
+- D2: ADE's Work sidebar already re-rendered only the streaming chat's status label on main.
+- D6: in three of the branch's five scroll runs the replayed chat filled to a shorter height; their
+  timings match the full-height runs. A dedicated trace loaded the full chat.
+- D7: ADE measured on macOS, T3 on Linux under Xvfb.
+- D6 in Electron: the isolated dev app on this branch (`NO_DEVTOOLS=1`), the same real big chat
+  fully loaded, native wheel input over CDP, wheel event → next animation frame, five valid runs:
+  p95 12.4 ms (worst 15.1) on the first pass and 8.2 ms (8.2) on a repeat pass (p50 6.5 / 6.4 ms),
+  against T3's 70.5 ms stopped. Streaming into the real app needs a provider, so the streaming half
+  stays the browser-mock number.
+
+Two more chat rows (isolated dev app on this branch, the real big chat, 5 or 10 interleaved A/B rounds, median with the worst run in brackets):
+
+| Row | Before | After |
+|---|---|---|
+| Typing, per key (60 keys at 40 ms): chat pane renders | 1 | **0** |
+| Typing: component renders / script / main-thread task per key | 104.5 / 3.15 ms (3.83) / 4.57 ms (5.63) | **63.4 / 1.84 ms (3.04) / 3.34 ms (5.31)** |
+| Reload into Work with the big chat: composer usable (10 rounds) | 592 ms (891) | **486 ms (802)** |
+| Same: main-thread task until then | 619 ms (690) | **553 ms (636)** |
+
+The second pair comes from loading the iOS simulator panel (three.js and the device models), the
+provider sign-in modal and the turn diff viewer only when they are opened.

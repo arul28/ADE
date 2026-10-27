@@ -112,6 +112,8 @@ export function closeWorkToolTab(
  * publish and for the lane strip's storage key; null means the tab's bound
  * runtime. Pane openness stays tab-owned.
  */
+const EMPTY_OPEN_TOOLS: WorkSidebarTab[] = [];
+
 export function useWorkSidebarTool(
   laneId: string | null,
   runtimePin: OpenProjectBinding | null = null,
@@ -139,13 +141,18 @@ export function useWorkSidebarTool(
   closeTool: (tool: WorkSidebarTab) => void;
 } {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const laneWorkViewByScope = useAppStore((state) => state.laneWorkViewByScope);
-  const workViewByProject = useAppStore((state) => state.workViewByProject);
   const setLaneWorkViewState = useAppStore((state) => state.setLaneWorkViewState);
   const setWorkViewState = useAppStore((state) => state.setWorkViewState);
   const toolStateKey = projectStateKeyForBinding(runtimePin, projectStateKey) || projectStateKey;
 
   const scopeKey = laneWorkViewScopeKey(toolStateKey, laneId);
+  // Only the one record this lane resolves to: subscribing to the whole maps
+  // re-rendered every chat pane whenever any lane's or project's view changed.
+  const view = useAppStore((state): WorkProjectViewState | undefined => (
+    (scopeKey ? state.laneWorkViewByScope?.[scopeKey] : undefined)
+    ?? (toolStateKey ? state.workViewByProject?.[toolStateKey] : undefined)
+    ?? (projectStateKey ? state.workViewByProject?.[projectStateKey] : undefined)
+  ));
 
   // Both fields come from ONE resolved record: reading the active tool from the
   // lane scope and the strip from the project fallback would produce a strip
@@ -154,14 +161,8 @@ export function useWorkSidebarTool(
     tool: WorkSidebarTab | null;
     openTools: WorkSidebarTab[];
   }>(() => {
-    const scoped: WorkProjectViewState | undefined = scopeKey
-      ? laneWorkViewByScope?.[scopeKey]
-      : undefined;
-    const view = scoped
-      ?? (toolStateKey ? workViewByProject?.[toolStateKey] : undefined)
-      ?? (projectStateKey ? workViewByProject?.[projectStateKey] : undefined);
     const active = view?.workSidebarTool ?? null;
-    const strip = view?.workSidebarOpenTools ?? [];
+    const strip = view?.workSidebarOpenTools ?? EMPTY_OPEN_TOOLS;
     // A tool on screen is open by definition. State written before the strip
     // existed has an active tool and no strip at all, and a lane that inherited
     // its tool from the project scope has the same shape — both become the
@@ -170,7 +171,7 @@ export function useWorkSidebarTool(
       tool: active,
       openTools: active && !strip.includes(active) ? [...strip, active] : strip,
     };
-  }, [laneWorkViewByScope, projectStateKey, scopeKey, toolStateKey, workViewByProject]);
+  }, [view]);
 
   // The setters are pointer-driven and must not close over a stale render's
   // strip: two clicks inside one commit would otherwise both write against the

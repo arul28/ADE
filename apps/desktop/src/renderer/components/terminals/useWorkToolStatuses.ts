@@ -10,6 +10,7 @@ import type {
 import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
+import { invalidatePrListCache, listPrsCached } from "../../lib/prReadCache";
 import { browserHostLabel } from "../../lib/browserUrl";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneDevServers } from "../../lib/laneDevServers";
@@ -544,6 +545,8 @@ export function useWorkToolStatuses(args: {
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
+  // Scopes the cached PR list when there is no pin (the tab's own machine).
+  const prListProjectRoot = useActiveProjectRoot();
   // The store's status is this tab's machine's; a pinned lane carries its own.
   const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
   const runtimePinRef = useRef(runtimePin);
@@ -643,8 +646,8 @@ export function useWorkToolStatuses(args: {
         if (!cancelled) setPrCount(0);
         return;
       }
-      const read = prs.listAll
-        ? prs.listAll(runtimePinRef.current).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
+      const read = typeof prs.listAll === "function"
+        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
         : prs.getForLane(laneId, runtimePinRef.current).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
       void read.then((count) => {
         if (!cancelled) setPrCount(count);
@@ -656,13 +659,14 @@ export function useWorkToolStatuses(args: {
     // An issue webhook says nothing about this lane's pull requests.
     const dispose = window.ade?.prs?.onEvent?.((event) => {
       if (event?.type === "github-issue-changed") return;
+      invalidatePrListCache({ projectRoot: prListProjectRoot, pin: runtimePinRef.current });
       load();
     });
     return () => {
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
+  }, [enabled, lane, laneId, prListProjectRoot, prSessionId, runtimePinKey]);
 
   const issueTabsProjectRoot = useActiveProjectRoot();
   const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;

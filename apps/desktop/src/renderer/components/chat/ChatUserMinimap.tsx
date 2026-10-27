@@ -34,6 +34,8 @@ type ChatUserMinimapProps = {
   keyboardFocusIndex?: number | null;
   /** Changes for every keyboard-navigation request, including repeated entries. */
   keyboardFocusRequestId?: number | null;
+  /** The reader pointed at or focused the rail: the list pages the rest of the chat in. */
+  onReach?: () => void;
 };
 
 /**
@@ -85,6 +87,7 @@ export function ChatUserMinimap({
   columnWidthPx,
   keyboardFocusIndex = null,
   keyboardFocusRequestId = null,
+  onReach,
 }: ChatUserMinimapProps) {
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -249,10 +252,14 @@ export function ChatUserMinimap({
               height: resolveMinimapRailHeightStyle(windowCount, availablePx),
               width: previewEntry ? CHAT_USER_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : hitStripWidth,
             }}
+            onMouseEnter={onReach}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleClear}
             onBlur={handleClear}
-            onFocus={handleFocus}
+            onFocus={() => {
+              onReach?.();
+              handleFocus();
+            }}
             onMouseDown={(event) => {
               if (targetsPreviewCard(event.target)) return;
               // Keeps the rail from flashing focus styles and from starting a

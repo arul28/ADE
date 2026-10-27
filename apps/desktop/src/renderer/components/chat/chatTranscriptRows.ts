@@ -94,6 +94,8 @@ export type ChatWorkLogEntry = {
   args?: unknown;
   result?: unknown;
   output?: string;
+  /** Characters cut from the front of a long live `output` (`LIVE_WORK_LOG_OUTPUT_MAX_CHARS`). */
+  outputOmittedChars?: number;
   localUrls?: ReadonlyArray<ChatLocalhostUrl>;
   cwd?: string;
   query?: string;
@@ -1446,10 +1448,18 @@ function appendLocalhostUrls(
 }
 
 export function deriveLocalhostUrlsForWorkLogEntry(entry: ChatWorkLogEntry): ChatLocalhostUrl[] {
+  return deriveLocalhostUrls(entry, extractLocalhostUrlsFromText(entry.output ?? ""));
+}
+
+function deriveLocalhostUrls(entry: ChatWorkLogEntry, outputUrls: ReadonlyArray<ChatLocalhostUrl>): ChatLocalhostUrl[] {
   const urls: ChatLocalhostUrl[] = [];
   const seen = new Set<string>();
   appendLocalhostUrls(urls, seen, entry.command);
-  appendLocalhostUrls(urls, seen, entry.output);
+  for (const url of outputUrls) {
+    if (seen.has(url.href)) continue;
+    seen.add(url.href);
+    urls.push(url);
+  }
   appendLocalhostUrls(urls, seen, entry.detail);
   appendLocalhostUrls(urls, seen, entry.label);
   for (const value of collectTextValues(entry.args)) appendLocalhostUrls(urls, seen, value);
@@ -1457,10 +1467,112 @@ export function deriveLocalhostUrlsForWorkLogEntry(entry: ChatWorkLogEntry): Cha
   return urls;
 }
 
-function withLocalhostUrls(entry: ChatWorkLogEntry): ChatWorkLogEntry {
-  const localUrls = deriveLocalhostUrlsForWorkLogEntry(entry);
+/**
+ * The localhost URLs a row's output has printed so far, read one appended
+ * chunk at a time. A URL never contains whitespace, `<`, `>` or a quote, so
+ * the text up to the last of those can hold no URL that a later chunk
+ * extends: its URLs are final (`urls`), and only the token after it (`tail`)
+ * is read again with the next chunk. The URLs of the whole output, trimmed
+ * or not, are `urls` plus the tail's; a dev server's "ready on
+ * http://localhost:3000" stays on the row after its line scrolls out of the
+ * kept output.
+ */
+type OutputUrlScan = { readonly urls: ReadonlyArray<ChatLocalhostUrl>; readonly tail: string };
+
+const EMPTY_OUTPUT_URL_SCAN: OutputUrlScan = { urls: [], tail: "" };
+/** A token longer than this with no break in it is not a URL anyone prints. */
+const OUTPUT_URL_TAIL_MAX_CHARS = 8 * 1024;
+const URL_BREAK_PATTERN = /[\s<>"']/u;
+
+/** Per entry object; an entry is never edited in place (see `mergeWorkLogEntries`). */
+const outputUrlScanByEntry = new WeakMap<ChatWorkLogEntry, OutputUrlScan>();
+
+function scanAppendedOutputUrls(previous: OutputUrlScan, appended: string): OutputUrlScan {
+  if (!appended.length) return previous;
+  const text = `${previous.tail}${appended}`;
+  let lastBreak = text.length - 1;
+  while (lastBreak >= 0 && !URL_BREAK_PATTERN.test(text[lastBreak]!)) lastBreak -= 1;
+  let tail = lastBreak >= 0 ? text.slice(lastBreak + 1) : text;
+  if (tail.length > OUTPUT_URL_TAIL_MAX_CHARS) tail = tail.slice(-OUTPUT_URL_TAIL_MAX_CHARS);
+  if (lastBreak < 0) return { urls: previous.urls, tail };
+  const found = extractLocalhostUrlsFromText(text.slice(0, lastBreak + 1));
+  if (!found.length) return { urls: previous.urls, tail };
+  const seen = new Set(previous.urls.map((url) => url.href));
+  const urls = previous.urls.slice();
+  for (const url of found) {
+    if (seen.has(url.href)) continue;
+    seen.add(url.href);
+    urls.push(url);
+  }
+  return { urls, tail };
+}
+
+function outputUrlsOf(scan: OutputUrlScan): ReadonlyArray<ChatLocalhostUrl> {
+  const pending = extractLocalhostUrlsFromText(scan.tail);
+  if (!pending.length) return scan.urls;
+  const seen = new Set(scan.urls.map((url) => url.href));
+  return [...scan.urls, ...pending.filter((url) => !seen.has(url.href))];
+}
+
+function withLocalhostUrls(entry: ChatWorkLogEntry, outputScan?: OutputUrlScan): ChatWorkLogEntry {
+  const scan = outputScan ?? scanAppendedOutputUrls(EMPTY_OUTPUT_URL_SCAN, entry.output ?? "");
+  const localUrls = deriveLocalhostUrls(entry, outputUrlsOf(scan));
   const { localUrls: _previousLocalUrls, ...rest } = entry;
-  return localUrls.length > 0 ? { ...rest, localUrls } : rest;
+  const next: ChatWorkLogEntry = localUrls.length > 0 ? { ...rest, localUrls } : rest;
+  if (scan !== EMPTY_OUTPUT_URL_SCAN) outputUrlScanByEntry.set(next, scan);
+  return next;
+}
+
+/**
+ * How much of a live command's output a row keeps. Output streams in as
+ * deltas and each one makes a new row, so a row holding all of a dev server's
+ * output re-read megabytes per chunk and grew without end. The row keeps the
+ * newest part and counts what it dropped (`outputOmittedChars`). The stored
+ * transcript keeps far less than this (16 KB once a command finishes), so a
+ * reopened chat already showed only a tail.
+ */
+export const LIVE_WORK_LOG_OUTPUT_MAX_CHARS = 512 * 1024;
+/** Trimmed in steps, so a row over the cap is not copied on every chunk. */
+const LIVE_WORK_LOG_OUTPUT_TRIM_AT_CHARS = LIVE_WORK_LOG_OUTPUT_MAX_CHARS + LIVE_WORK_LOG_OUTPUT_MAX_CHARS / 4;
+
+type MergedWorkLogOutput = { output: string; omitted: number; scan: OutputUrlScan };
+
+/**
+ * `mergeStreamingText` for a row's output, aware of the part a trim already
+ * dropped: a provider that resends the whole output so far still reads as a
+ * resend, not as new text to append.
+ */
+function mergeWorkLogOutput(previous: ChatWorkLogEntry, incoming: string): MergedWorkLogOutput {
+  const existing = previous.output ?? "";
+  const omitted = previous.outputOmittedChars ?? 0;
+  const previousScan = outputUrlScanByEntry.get(previous)
+    ?? scanAppendedOutputUrls(EMPTY_OUTPUT_URL_SCAN, existing);
+  let output: string;
+  let outputOmitted = omitted;
+  let appended: string;
+  if (!existing.length && !omitted) {
+    output = incoming;
+    appended = incoming;
+  } else if (!incoming.length) {
+    output = existing;
+    appended = "";
+  } else if (incoming.length >= omitted + existing.length && incoming.startsWith(existing, omitted)) {
+    output = incoming;
+    outputOmitted = 0;
+    appended = incoming.slice(omitted + existing.length);
+  } else {
+    output = `${existing}${incoming}`;
+    appended = incoming;
+  }
+  if (output.length > LIVE_WORK_LOG_OUTPUT_TRIM_AT_CHARS) {
+    let cut = output.length - LIVE_WORK_LOG_OUTPUT_MAX_CHARS;
+    // Start the kept part on a line of its own when one starts close by.
+    const lineStart = output.indexOf("\n", cut);
+    if (lineStart >= 0 && lineStart - cut < 1024) cut = lineStart + 1;
+    output = output.slice(cut);
+    outputOmitted += cut;
+  }
+  return { output, omitted: outputOmitted, scan: scanAppendedOutputUrls(previousScan, appended) };
 }
 
 function mergeStreamingText(existing: string, incoming: string): string {
@@ -1955,10 +2067,10 @@ function mergeFileChanges(
 }
 
 function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry): ChatWorkLogEntry {
-  const mergedOutput = (() => {
-    if (typeof previous.output !== "string" && typeof next.output !== "string") return undefined;
-    return mergeStreamingText(previous.output ?? "", next.output ?? "");
-  })();
+  const merged = typeof previous.output !== "string" && typeof next.output !== "string"
+    ? undefined
+    : mergeWorkLogOutput(previous, next.output ?? "");
+  const mergedOutput = merged?.output;
 
   const changedFiles = mergeFileChanges(previous.changedFiles, next.changedFiles);
   const detail = next.detail ?? previous.detail;
@@ -1971,8 +2083,9 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
     ? previous.label
     : (next.label || previous.label);
 
+  const { outputOmittedChars: _previousOmitted, ...previousRest } = previous;
   return withLocalhostUrls({
-    ...previous,
+    ...previousRest,
     ...next,
     createdAt: previous.createdAt,
     label,
@@ -1982,8 +2095,9 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
     ...(command ? { command } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(mergedOutput ? { output: mergedOutput } : {}),
+    ...(merged?.omitted ? { outputOmittedChars: merged.omitted } : {}),
     ...(result !== undefined ? { result } : {}),
-  });
+  }, merged?.scan);
 }
 
 function findMatchingWorkLogEntryIndex(

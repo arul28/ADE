@@ -13,6 +13,12 @@ const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>()
 
 export const INITIAL_SELECTED_CHAT_HISTORY_EVENTS = 1_000;
 export const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
+/**
+ * Page size for the background fill. Every page re-runs the row pipeline over
+ * the whole resident transcript, so fewer, larger pages cost less in total; a
+ * reader waiting at the top still gets the smaller page above.
+ */
+export const CHAT_HISTORY_BACKFILL_PAGE_MAX_BYTES = 512 * 1024;
 export const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 export const MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES = 32 * 1024 * 1024;
 export const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;

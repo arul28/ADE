@@ -61,6 +61,17 @@ export type MergeStateStatus =
 /** GitHub GraphQL `reviewDecision` for a PR; null when no reviews are required. */
 export type PrReviewDecision = "approved" | "changes_requested" | "review_required" | null;
 
+/**
+ * `pr.listAll` asked with `conditional: true`: the list with its signature, or,
+ * when `ifNoneMatch` names the current signature, only `notModified: true`.
+ * Hosts older than this send the bare array whatever was asked.
+ */
+export type PrListConditionalReply = {
+  prs?: PrSummary[];
+  signature: string;
+  notModified: boolean;
+};
+
 export type PrSummary = {
   id: string;
   /** True when this summary is synthesized from GitHub projection data and has no pull_requests row. */

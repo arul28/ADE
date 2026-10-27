@@ -417,12 +417,22 @@ export function subagentSummaryPlainText(value: string | null | undefined): stri
 const SUBAGENT_SUMMARY_PLAIN_TEXT_CACHE_LIMIT = 256;
 const subagentSummaryPlainTextCache = new Map<string, string | null>();
 
+/**
+ * Plain text past this is never shown: the card is one line and the pane three.
+ * A long report (hundreds of KB from some providers) stops being read here.
+ */
+const SUBAGENT_SUMMARY_MAX_PLAIN_CHARS = 1_000;
+
 function reduceSubagentSummaryToPlainText(value: string): string | null {
-  const source = value.replace(/\r\n?/g, "\n").trim();
-  if (!source) return null;
   const parts: string[] = [];
+  let produced = 0;
   let pendingSeparator: string | null = null;
-  for (const rawLine of source.split("\n")) {
+  const lineBreak = /\r\n?|\n/g;
+  let lineStart = 0;
+  while (lineStart <= value.length && produced < SUBAGENT_SUMMARY_MAX_PLAIN_CHARS) {
+    const match = lineBreak.exec(value);
+    const rawLine = value.slice(lineStart, match ? match.index : value.length);
+    lineStart = match ? match.index + match[0].length : value.length + 1;
     let line = rawLine.trim();
     // Fence lines, horizontal rules, and table separator rows carry no text.
     if (/^(`{3,}|~{3,})/.test(line)) continue;
@@ -449,6 +459,7 @@ function reduceSubagentSummaryToPlainText(value: string): string | null {
     if (!line) continue;
     if (parts.length) parts.push(pendingSeparator ?? " ");
     parts.push(line);
+    produced += line.length + 1;
     pendingSeparator = kind !== "text" && !TERMINAL_PUNCTUATION.test(line)
       ? (kind === "heading" ? ": " : "; ")
       : null;

@@ -9176,14 +9176,18 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const sessionIds = Array.isArray(arg?.sessionIds)
+      ? arg.sessionIds.filter((id): id is string => typeof id === "string")
+      : null;
     const listOptions = {
       includeAutomation: Boolean(arg?.includeAutomation),
       ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
     };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean; sessionIds?: string[] },
       ) => Promise<AgentChatSessionSummary[]>;
     }).listSessions(laneId || undefined, listOptions);
   });
@@ -9990,7 +9994,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
     _event,
-    arg: { sessionId?: string; maxEvents?: number; maxBytes?: number },
+    arg: { sessionId?: string; maxEvents?: number; maxBytes?: number; afterOffset?: number; historyGeneration?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
@@ -10015,10 +10019,13 @@ export function registerIpc({
       rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
         ? rawMaxBytes
         : undefined;
-    const options = maxEvents != null || maxBytes != null
+    const afterOffset = Number.isSafeInteger(arg?.afterOffset) && (arg.afterOffset as number) > 0 ? arg.afterOffset : undefined;
+    const historyGeneration = Number.isSafeInteger(arg?.historyGeneration) ? arg.historyGeneration : undefined;
+    const options = maxEvents != null || maxBytes != null || afterOffset != null
       ? {
           ...(maxEvents != null ? { maxEvents } : {}),
           ...(maxBytes != null ? { maxBytes } : {}),
+          ...(afterOffset != null && historyGeneration != null ? { afterOffset, historyGeneration } : {}),
         }
       : undefined;
     return await service.getChatEventHistory(sessionId, options);

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 import {
   CaretRight,
   FileCode,
@@ -12,7 +12,9 @@ import type {
   TurnDiffFile,
   TurnDiffSummary,
 } from "../../../shared/types";
-import { AdeDiffViewer } from "../shared/AdeDiffViewer";
+/** The diff viewer (and its highlighter) loads when a file's diff is first opened. */
+const AdeDiffViewer = lazy(() => import("../shared/AdeDiffViewer")
+  .then((module) => ({ default: module.AdeDiffViewer })));
 import { cn } from "../ui/cn";
 import { useAgentChatApi } from "./agentChatApi";
 import { BottomDrawerSection } from "./BottomDrawerSection";
@@ -151,7 +153,9 @@ function renderDiffPane({
   if (activeDiff) {
     return (
       <div className="h-full min-h-[200px]" style={{ maxHeight: 400 }}>
-        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact persistKey="chat-turn-diff" className="h-full rounded-none border-0" />
+        <Suspense fallback={null}>
+          <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact persistKey="chat-turn-diff" className="h-full rounded-none border-0" />
+        </Suspense>
       </div>
     );
   }
@@ -211,6 +215,13 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   const [activeDiffLoadState, setActiveDiffLoadState] = useState<DiffLoadState>("idle");
 
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
+  // A turn can touch tens of thousands of files (a generated tree, a vendored
+  // dependency); mounting a row for each froze the chat. The first rows draw,
+  // and the rest one click away, as in the Lanes changes list.
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const shownFiles = showAllFiles || files.length <= MAX_RENDERED_FILE_ROWS
+    ? files
+    : files.slice(0, MAX_RENDERED_FILE_ROWS);
   const handleSelectFile = useCallback(
     async (filePath: string) => {
       if (typeof getTurnFileDiff !== "function") return;
@@ -272,7 +283,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
     <div className={cn("flex min-h-[220px] overflow-hidden", className)} style={{ maxHeight }}>
       {/* File list (left pane) */}
       <div className="w-[220px] shrink-0 overflow-y-auto border-r border-fg/[0.04] max-sm:w-[150px]">
-        {files.map((file) => {
+        {shownFiles.map((file) => {
           const isSelected = selectedPath === file.path;
           return (
             <button
@@ -305,6 +316,18 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
             </button>
           );
         })}
+        {shownFiles.length < files.length ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-[11px] text-fg/40">
+            <span>Showing first {shownFiles.length.toLocaleString()} of {files.length.toLocaleString()} files.</span>
+            <button
+              type="button"
+              className="text-accent hover:underline"
+              onClick={() => setShowAllFiles(true)}
+            >
+              Show all
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {/* Diff viewer (right pane) */}
@@ -316,6 +339,9 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
     </div>
   );
 });
+
+/** Rows a file list draws before "Show all" (the Lanes changes list uses the same). */
+const MAX_RENDERED_FILE_ROWS = 300;
 
 export const ChatFileChangesPanel = React.memo(function ChatFileChangesPanel({
   summaries,
@@ -356,9 +382,17 @@ function NestedFileChangesSection({
   sessionId: string;
 }) {
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
+  // The browser mounts on first open: a closed section drew every file row
+  // into the page for nothing.
+  const [opened, setOpened] = useState(false);
   if (!files.length) return null;
   return (
-    <details className="group/changes overflow-hidden rounded-lg border border-fg/[0.06] bg-black/[0.16]">
+    <details
+      className="group/changes overflow-hidden rounded-lg border border-fg/[0.06] bg-black/[0.16]"
+      onToggle={(event) => {
+        if (event.currentTarget.open) setOpened(true);
+      }}
+    >
       <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-fg/[0.03]">
         <CaretRight
           size={12}
@@ -370,13 +404,15 @@ function NestedFileChangesSection({
           <FileChangesSummary files={files} muted />
         </span>
       </summary>
-      <div className="border-t border-fg/[0.05]">
-        <FileChangesBrowser
-          summaries={summaries}
-          sessionId={sessionId}
-          maxHeight={360}
-        />
-      </div>
+      {opened ? (
+        <div className="border-t border-fg/[0.05]">
+          <FileChangesBrowser
+            summaries={summaries}
+            sessionId={sessionId}
+            maxHeight={360}
+          />
+        </div>
+      ) : null}
     </details>
   );
 }
@@ -417,6 +453,9 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
         && file.additions === other.additions
         && file.deletions === other.deletions;
     });
+  // Mounted on first open, like the sections inside it (every done row of a
+  // long chat carries one of these).
+  const [opened, setOpened] = useState(false);
   if (!turnFiles.length) return null;
   const sections = threadMatchesTurn ? (
     <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
@@ -434,7 +473,12 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
   const deletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);
 
   return (
-    <details className={cn("group", CHAT_CARD_WIDTH_CLASS)}>
+    <details
+      className={cn("group", CHAT_CARD_WIDTH_CLASS)}
+      onToggle={(event) => {
+        if (event.currentTarget.open) setOpened(true);
+      }}
+    >
       <summary className="cursor-pointer list-none border-b border-fg/[0.06] px-0.5 py-2 outline-none">
         <ChatCardRow
           icon={GitDiff}
@@ -452,7 +496,7 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
           </ChatCardTitle>
         </ChatCardRow>
       </summary>
-      <div className="mt-2 space-y-2">{sections}</div>
+      {opened ? <div className="mt-2 space-y-2">{sections}</div> : null}
     </details>
   );
 });

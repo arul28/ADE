@@ -20,7 +20,7 @@ import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { chatRunsOnThisComputer, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
-import { refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
+import { invalidatePrListCache, listPrsCached, refreshLinkedPrCoalesced, requestMachinePrReconcile } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
@@ -227,7 +227,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     try {
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
-        const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
+        const allPrs = await listPrsCached({ projectRoot, pin: runtimePinRef.current });
         lanePrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
       } else {
         // Older web-preview/test bridges only expose the original single-PR
@@ -298,10 +298,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   useEffect(() => {
     if (prevBusy.current && !runtime.busyAction) {
       if (!isRemote) void refreshStatus();
+      // The action may have opened or changed a PR: read the list again
+      // rather than the cached copy.
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [isRemote, runtime.busyAction, refreshStatus, refreshPr]);
+  }, [isRemote, projectRoot, runtime.busyAction, refreshStatus, refreshPr]);
 
   // Backend reconcile-on-focus, in its OWN subscription keyed only on stable
   // deps (laneId/projectRoot via refreshPr) — NOT linkedPr, so the idle branch's
@@ -313,6 +316,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (event.type !== "pr-reconcile") return;
       if (event.state === "running") return;
       // A reconcile just healed backend state — re-read the linked PR.
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
       void refreshPr();
     }, runtimePinRef.current);
     return () => {
@@ -339,10 +343,14 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     const unsubscribe = window.ade.prs.onEvent((event) => {
       const current = linkedPrRef.current;
       if (event.type === "pr-notification") {
-        if (event.laneId === laneId || event.prId === current?.id) void refreshPr();
+        if (event.laneId === laneId || event.prId === current?.id) {
+          invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
+          void refreshPr();
+        }
         return;
       }
       if (event.type !== "prs-updated") return;
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
       const eventIncludesLanePr = event.prs.some((pr) => (
         pr.laneId === laneId && (!sessionId || !prClaimedByOtherChat(pr, sessionId))
       ));

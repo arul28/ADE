@@ -568,6 +568,7 @@ import type {
   PrReviewThread,
   PrReviewThreadComment,
   PrStatus,
+  PrListConditionalReply,
   PrSummary,
   PrDetail,
   PrFile,
@@ -8033,6 +8034,7 @@ const adeBridge = {
           {
             includeAutomation: args.includeAutomation === true,
             includeIdentity: args.includeIdentity === true,
+            ...(Array.isArray(args.sessionIds) ? { sessionIds: args.sessionIds } : {}),
           },
         ],
       };
@@ -9226,12 +9228,18 @@ const adeBridge = {
         sessionId: string;
         maxEvents?: number;
         maxBytes?: number;
+        /** Resume from a held snapshot; see `AgentChatEventHistorySnapshot.tailEndOffset`. */
+        afterOffset?: number;
+        historyGeneration?: number;
       },
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatEventHistorySnapshot> => {
       const historyOptions = {
         ...(args.maxEvents != null ? { maxEvents: args.maxEvents } : {}),
         ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
+        ...(args.afterOffset != null && args.historyGeneration != null
+          ? { afterOffset: args.afterOffset, historyGeneration: args.historyGeneration }
+          : {}),
       };
       if (pin) {
         return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
@@ -13075,6 +13083,21 @@ const adeBridge = {
     listAll: async (pin?: OpenProjectBinding | null): Promise<PrSummary[]> =>
       callPrReadRuntimeActionOr(pin, "listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),
+      ),
+    /**
+     * `listAll` that can answer "unchanged": pass the signature of the list you
+     * hold. Resolves to the bare array when the host predates this (or for the
+     * local IPC fallback), so callers must accept both shapes.
+     */
+    listAllConditional: async (
+      ifNoneMatch: string | null,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrSummary[] | PrListConditionalReply> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "listAll",
+        { args: { conditional: true, ...(ifNoneMatch ? { ifNoneMatch } : {}) } },
+        () => ipcRenderer.invoke(IPC.prsListAll),
       ),
     listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
       callPrReadRuntimeActionOr(null, "listOpenPullRequests", {}, () =>

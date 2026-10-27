@@ -141,6 +141,32 @@ function workspaceFilePathOf(code: string): string | null {
  * this memo bails out and only the short tail is re-parsed at 60 Hz — the
  * whole-message re-parse per paint is what made pacing unaffordable.
  */
+const OPEN_CODE_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
+/** Fences drawn by their own components, never through the plain code path. */
+const SPECIAL_FENCE_LANGUAGES = new Set(["math", "mermaid", SCENE_FENCE_LANGUAGE, PROOF_COMPARE_FENCE_LANGUAGE]);
+
+/**
+ * The code block a markdown tail draws when the whole tail is one fenced code
+ * block that has not closed yet: the same text and language the parser hands
+ * the `code` component (the body, ending in one line break). Null for anything
+ * else, which parses as usual.
+ */
+export function streamingOpenCodeFence(tail: string): { code: string; language: string } | null {
+  const opening = OPEN_CODE_FENCE.exec(tail);
+  if (!opening) return null;
+  const fence = opening[1]!;
+  const info = opening[2]!;
+  if (fence[0] === "`" && info.includes("`")) return null;
+  const language = info.trim().split(/\s+/)[0] ?? "";
+  if (SPECIAL_FENCE_LANGUAGES.has(language)) return null;
+  const body = tail.slice(opening[0].length);
+  const closing = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
+  for (const line of body.split("\n")) {
+    if (closing.test(line)) return null;
+  }
+  return { code: `${body.replace(/\n$/, "")}\n`, language: language || "text" };
+}
+
 const MarkdownBody = React.memo(function MarkdownBody({
   markdown,
   components,
@@ -216,7 +242,19 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // Every scene in the body is held while the last one is open; a message with
   // two scenes mounts both a tick later rather than mounting one against a
   // document that is still arriving.
-  const openTail = sceneLive ? openFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown) : null;
+  //
+  // The settled half keeps its identity between reveal frames, so its scan is
+  // memoized. When it ends on a line break with no fence open, the open fence
+  // of the whole body is the tail's alone, and a frame reads only the tail
+  // rather than the whole reply.
+  const settledOpenFence = useMemo(() => (sceneLive ? openFence(markdown) : null), [markdown, sceneLive]);
+  const openTail = !sceneLive
+    ? null
+    : !tailMarkdown
+      ? settledOpenFence
+      : settledOpenFence === null && (markdown.length === 0 || markdown.endsWith("\n"))
+        ? openFence(tailMarkdown)
+        : openFence(`${markdown}${tailMarkdown}`);
   const sceneStreaming = openTail?.language === SCENE_FENCE_LANGUAGE;
   // The reader's message that followed this row, when its scene was answered.
   const sceneAnswers = useContext(SceneAnswerContext);
@@ -244,10 +282,22 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     () => [remarkCachedParse, remarkGfm, [remarkMath, { singleDollarTextMath: false }], [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
     [entityLookup],
   );
+  // The growing tail is new text on every reveal frame and is never read
+  // again, so it stays out of the parse cache: stored, it cost a tree clone
+  // per frame, and a few seconds of streaming pushed every other chat's
+  // settled trees out.
+  const tailRemarkPlugins = useMemo(
+    () => remarkPlugins?.filter((plugin) => plugin !== remarkCachedParse),
+    [remarkPlugins],
+  );
 
   // Memoized per body, so the settled half is rewritten once, not per tick.
   const mathMarkdown = useMemo(() => normalizeMathDelimiters(markdown), [markdown]);
   const mathTail = useMemo(() => (tailMarkdown ? normalizeMathDelimiters(tailMarkdown) : tailMarkdown), [tailMarkdown]);
+  // A tail that is one code fence still open draws the code block the parser
+  // would, without parsing it on every reveal frame (a 300-line fence costs
+  // about 1 ms a frame to parse).
+  const openFenceTail = useMemo(() => (tailMarkdown ? streamingOpenCodeFence(tailMarkdown) : null), [tailMarkdown]);
 
   const components: MarkdownComponents = useMemo(() => ({
     ...(thought
@@ -487,7 +537,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       )}
     >
       <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />
-      {mathTail ? <MarkdownBody markdown={mathTail} components={components} remarkPlugins={remarkPlugins} /> : null}
+      {openFenceTail
+        ? <HighlightedCode code={openFenceTail.code} language={openFenceTail.language} />
+        : mathTail ? <MarkdownBody markdown={mathTail} components={components} remarkPlugins={tailRemarkPlugins} /> : null}
       {linkContextMenu}
     </div>
   );

@@ -5206,6 +5206,12 @@ type ManagedChatSession = {
   laneWorktreePath: string;
   runtime: ChatRuntime | null;
   preview: string | null;
+  /**
+   * The preview row write, at most one per PREVIEW_WRITE_INTERVAL_MS: when the
+   * last one landed, and the trailing write that carries the newest preview.
+   */
+  previewWrittenAtMs?: number;
+  previewWriteTimer?: NodeJS.Timeout | null;
   closed: boolean;
   endedNotified: boolean;
   /** Set when deleteSession begins — persistence paths bail to avoid re-creating deleted files. */
@@ -5394,6 +5400,15 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
     summaryIndex?: number;
+    timer: NodeJS.Timeout | null;
+  } | null;
+  /**
+   * The newest Codex plan delta, not yet emitted. Each delta carries the whole
+   * plan so far, so only the newest of a burst matters; it goes out on the
+   * 100 ms text clock, or before any other event of the session.
+   */
+  bufferedPlanDelta?: {
+    event: Extract<AgentChatEvent, { type: "plan" }>;
     timer: NodeJS.Timeout | null;
   } | null;
   previewTextBuffer: {
@@ -5874,6 +5889,12 @@ const CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS: ReadonlySet<string> = new Set(["WebFe
 const CLAUDE_POST_TOOL_HOOK_MATCHER = `^(?!${[...CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS].map((tool) => `${tool}$`).join("|")}).*`;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
+/**
+ * Longest a chat's stored preview line trails its stream. Every streamed text
+ * flush and command chunk moves the preview, and each write is a synchronous
+ * SQLite update plus a sync change every connected phone downloads.
+ */
+const PREVIEW_WRITE_INTERVAL_MS = 1_000;
 const TRANSCRIPT_WRITE_FLUSH_MS = 100;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
@@ -16364,6 +16385,13 @@ export function createAgentChatService(args: {
       turnBoundaryAligned?: boolean;
       /** Report unresolved approvals older than the window in `pinnedEvents`. */
       separatePinnedEvents?: boolean;
+      /**
+       * Resume: the `tailEndOffset` of a snapshot the caller still holds, with
+       * its `historyGeneration`. Answered with only the events after it when
+       * the generation still matches and the gap fits in this window.
+       */
+      afterOffset?: number;
+      historyGeneration?: number;
     },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const trimmedId = sessionId.trim();
@@ -16383,7 +16411,7 @@ export function createAgentChatService(args: {
       options?.turnBoundaryAligned ? tailBytes * 2 : tailBytes,
       options?.signal,
     );
-    return buildChatEventHistorySnapshot({
+    const snapshot = buildChatEventHistorySnapshot({
       sessionId: trimmedId,
       maxEvents,
       requestedMaxBytes,
@@ -16392,6 +16420,41 @@ export function createAgentChatService(args: {
       separatePinnedEvents: options?.separatePinnedEvents === true,
       transcriptHistory,
     });
+    const historyGeneration = getChatLogState(trimmedId)?.historyGeneration;
+    const withCursor: AgentChatEventHistorySnapshot = {
+      ...snapshot,
+      tailEndOffset: transcriptHistory.endOffset,
+      ...(historyGeneration != null ? { historyGeneration } : {}),
+    };
+    const afterOffset = options?.afterOffset;
+    if (
+      afterOffset == null
+      || !Number.isSafeInteger(afterOffset)
+      || afterOffset <= 0
+      || afterOffset > transcriptHistory.endOffset
+      || historyGeneration == null
+      || options?.historyGeneration !== historyGeneration
+    ) {
+      return withCursor;
+    }
+    // The client holds everything up to `afterOffset`. Send the last event that
+    // starts before it (the seam it joins on) and all that follows; when that
+    // seam is not inside this window, the gap is too big and the full window
+    // goes out as usual.
+    let seam = -1;
+    for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
+      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(snapshot.events[index]!);
+      if (offset != null && offset < afterOffset) {
+        seam = index;
+        break;
+      }
+    }
+    if (seam < 0) return withCursor;
+    return {
+      ...withCursor,
+      events: snapshot.events.slice(seam),
+      resumedFromOffset: afterOffset,
+    };
   };
 
   /**
@@ -21587,19 +21650,38 @@ export function createAgentChatService(args: {
     }, metadata);
   }
 
-  const setSessionPreview = (managed: ManagedChatSession, candidate: string): void => {
-    const next = normalizePreview(candidate);
-    if (!next) return;
-    if (next === managed.preview) return;
-    managed.preview = next;
+  const writeSessionPreview = (managed: ManagedChatSession): void => {
+    const preview = managed.preview;
+    if (!preview || managed.deleted) return;
+    managed.previewWrittenAtMs = Date.now();
     try {
-      sessionService.setLastOutputPreview(managed.session.id, next);
+      sessionService.setLastOutputPreview(managed.session.id, preview);
     } catch (error) {
       logger.warn("agent_chat.preview_update_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const setSessionPreview = (managed: ManagedChatSession, candidate: string): void => {
+    const next = normalizePreview(candidate);
+    if (!next) return;
+    if (next === managed.preview) return;
+    managed.preview = next;
+    // A write is already scheduled; it reads the newest preview when it runs.
+    if (managed.previewWriteTimer) return;
+    const sinceLastWriteMs = Date.now() - (managed.previewWrittenAtMs ?? 0);
+    if (sinceLastWriteMs >= PREVIEW_WRITE_INTERVAL_MS) {
+      writeSessionPreview(managed);
+      return;
+    }
+    const timer = setTimeout(() => {
+      managed.previewWriteTimer = null;
+      writeSessionPreview(managed);
+    }, PREVIEW_WRITE_INTERVAL_MS - sinceLastWriteMs);
+    timer.unref?.();
+    managed.previewWriteTimer = timer;
   };
 
   const clearAcceptedStartWatch = (sessionId: string): void => {
@@ -23152,6 +23234,12 @@ export function createAgentChatService(args: {
         setSessionPreview(managed, storedEvent.report.summary);
       }
     }
+    // A finished turn stores its last line now, not up to a second later.
+    if (storedEvent.type === "done" && managed.previewWriteTimer) {
+      clearTimeout(managed.previewWriteTimer);
+      managed.previewWriteTimer = null;
+      writeSessionPreview(managed);
+    }
 
     // Durable turn health. The error text is remembered as it streams past and
     // spent on the `done` — the same two signals the blocking-turn collector
@@ -23585,10 +23673,39 @@ export function createAgentChatService(args: {
     }
   };
 
+  const flushBufferedPlanDelta = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedPlanDelta;
+    if (!buffered) return;
+    if (buffered.timer) clearTimeout(buffered.timer);
+    managed.bufferedPlanDelta = null;
+    commitChatEvent(managed, buffered.event);
+  };
+
+  const isBufferablePlanDelta = (event: AgentChatEvent): event is Extract<AgentChatEvent, { type: "plan" }> =>
+    event.type === "plan" && event.state === "delta" && event.streamingText !== undefined && event.steps.length === 0;
+
+  const queuePlanDelta = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "plan" }>,
+  ): void => {
+    const buffered = managed.bufferedPlanDelta;
+    if (buffered && (buffered.event.itemId !== event.itemId || buffered.event.turnId !== event.turnId)) {
+      flushBufferedPlanDelta(managed);
+    }
+    const timer = managed.bufferedPlanDelta?.timer ?? setTimeout(() => {
+      if (managed.bufferedPlanDelta) managed.bufferedPlanDelta.timer = null;
+      flushBufferedPlanDelta(managed);
+    }, BUFFERED_TEXT_FLUSH_MS);
+    managed.bufferedPlanDelta = { event, timer };
+  };
+
   const flushBufferedText = (
     managed: ManagedChatSession,
     perfReason: ChatTextFlushReason = "other",
   ): void => {
+    // A plan delta was emitted the moment it arrived before it was buffered,
+    // so it goes out ahead of text buffered alongside it.
+    flushBufferedPlanDelta(managed);
     const buffered = managed.bufferedText;
     if (!buffered) return;
     if (buffered.timer) {
@@ -23643,6 +23760,11 @@ export function createAgentChatService(args: {
   };
 
   const flushBufferedReasoning = (managed: ManagedChatSession): void => {
+    flushBufferedPlanDelta(managed);
+    flushBufferedReasoningOnly(managed);
+  };
+
+  const flushBufferedReasoningOnly = (managed: ManagedChatSession): void => {
     const buffered = managed.bufferedReasoning;
     if (!buffered) return;
     if (buffered.timer) {
@@ -24178,6 +24300,15 @@ export function createAgentChatService(args: {
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
     }
+
+    if (isBufferablePlanDelta(normalizedEvent)) {
+      // Unchanged from before it was buffered: a plan delta flushes reasoning
+      // and leaves buffered text alone.
+      flushBufferedReasoningOnly(managed);
+      queuePlanDelta(managed, normalizedEvent);
+      return;
+    }
+    flushBufferedPlanDelta(managed);
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);

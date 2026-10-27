@@ -171,3 +171,25 @@ export function useStateSkippingSameValue<T>(initial: T): [T, (next: SetStateAct
   });
   return [value, set];
 }
+
+/**
+ * Functional updates for "clear it": the current value when it is already
+ * empty, so a reset that finds nothing to clear (every chat switch runs several)
+ * does not re-render the pane with an equal new array or record.
+ */
+export function keepEmptyArray<T>(previous: T[]): T[] {
+  return previous.length === 0 ? previous : [];
+}
+
+export function keepEmptyRecord<V>(previous: Record<string, V>): Record<string, V> {
+  return Object.keys(previous).length === 0 ? previous : {};
+}
+
+/** Like keepEmptyArray, for a restored value: `next`, unless both it and the current value are empty. */
+export function orKeepEmptyArray<T>(next: T[]): (previous: T[]) => T[] {
+  return (previous) => (next.length === 0 && previous.length === 0 ? previous : next);
+}
+
+export function orKeepEmptyRecord<V>(next: Record<string, V>): (previous: Record<string, V>) => Record<string, V> {
+  return (previous) => (Object.keys(next).length === 0 && Object.keys(previous).length === 0 ? previous : next);
+}
