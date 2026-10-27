@@ -137,8 +137,10 @@ import { createWindowsDesktopOperations } from "../windowsDesktop/windowsDesktop
 import {
   installLinuxDesktopPackages,
   linuxDesktopInstallCommand,
+  linuxPackageManagerId,
   LINUX_DESKTOP_ENCODER_MESSAGE,
 } from "../linuxDesktop/linuxDesktopSetup";
+import { logLinuxScreenFact, reportLinuxScreenProblem } from "../linuxDesktop/linuxScreenTelemetry";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -829,7 +831,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // every later frame is dropped, and only a stop reveals the loss. The
         // helper sends it once; a stop already running ignores a repeat.
         if (!laneId) return;
-        recording.interruptRecording(laneId, asNullableString(event.error) ?? "The lane's recording stopped unexpectedly.");
+        const interruption = asNullableString(event.error) ?? "The lane's recording stopped unexpectedly.";
+        if (isLinuxSeat) reportLinuxScreenProblem("recording_interrupted", interruption);
+        recording.interruptRecording(laneId, interruption);
         return;
       }
       case "window-not-parked": {
@@ -942,6 +946,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return;
     }
     deps.logger.warn("mac_desktop.driver_lost", { reason, lanes: ownership.laneIds() });
+    if (isLinuxSeat) reportLinuxScreenProblem("helper_lost", reason, { lanes: ownership.laneIds().length });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
     recording.clear();
@@ -999,6 +1004,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const linuxDesktopStatusFacts = (): LinuxDesktopHostFacts | null => {
     const report = driverLifecycle.linuxHostReport();
     if (!report) return null;
+    // What Linux hosts lack before setup, by distribution: the inventory that
+    // says whether the package names and the encoder fallback hold up.
+    logLinuxScreenFact(
+      "host_report",
+      { missing: report.missing.join(","), encoder: report.encoder ?? "none", packageManager: linuxPackageManagerId() ?? "none" },
+      `${report.missing.join(",")}|${report.encoder ?? ""}`,
+    );
     return { ...report, installCommand: linuxDesktopInstallCommand(report.missing) };
   };
 
@@ -1397,6 +1409,37 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // The API
   // -------------------------------------------------------------------------
 
+  /**
+   * A setup that did not leave the screen ready, reported with the host it ran
+   * on: wrong package names, an install that left something missing, an
+   * ffmpeg with no encoder. A sudo that wants a password is the machine's
+   * policy, so it is a log line, not an issue.
+   */
+  const reportLinuxSetupOutcome = (
+    missingBefore: readonly string[],
+    result: LinuxDesktopSetupResult,
+    missingAfter: readonly string[] | null,
+  ): void => {
+    const extra = {
+      packageManager: linuxPackageManagerId() ?? "none",
+      missingBefore: missingBefore.join(","),
+      missingAfter: missingAfter?.join(",") ?? "unknown",
+      message: result.message.slice(0, 500),
+    };
+    if (!result.installed) {
+      if (result.needsUser && result.command) {
+        logLinuxScreenFact("setup_needs_user", extra, missingBefore.join(","));
+        return;
+      }
+      const why = result.command ? "install failed" : "no supported package manager or encoder";
+      reportLinuxScreenProblem("setup_failed", why, extra, `${why}|${missingBefore.join(",")}`);
+      return;
+    }
+    if (missingAfter?.length) {
+      reportLinuxScreenProblem("setup_failed", "still missing after install", extra, `after|${missingAfter.join(",")}`);
+    }
+  };
+
   const api: MacDesktopServiceApi = {
     async getStatus(args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> {
       // The one method that answers on every platform. It must never spawn,
@@ -1411,9 +1454,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // rather than a permanent "starting". A failure to start is health,
         // not an exception.
         await driverLifecycle.ensureDriver().catch((error) => {
-          deps.logger.warn("mac_desktop.status_driver_start_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn("mac_desktop.status_driver_start_failed", { error: message });
+          if (isLinuxSeat) reportLinuxScreenProblem("helper_start_failed", message);
         });
       } else if (driverLifecycle.isDriverRunning()) {
         await driverLifecycle.refreshDriverHealth();
@@ -1557,6 +1600,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const result = await installLinuxDesktopPackages(missing);
       // The helper re-checks what is on the machine on every ping.
       await driverLifecycle.refreshDriverHealth();
+      reportLinuxSetupOutcome(missing, result, driverLifecycle.linuxHostReport()?.missing ?? null);
       return result;
     },
 

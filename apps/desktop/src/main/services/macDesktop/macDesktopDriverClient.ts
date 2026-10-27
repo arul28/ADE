@@ -736,7 +736,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       let spawned: ChildProcessWithoutNullStreams;
       try {
         spawned = spawnProcess(launchPath, [...driverArgs], {
-          env: { ...process.env, ...deps.env, LC_ALL: "en_US.UTF-8" },
+          // The Linux helper passes its environment to every app on the lane's
+          // screen, and many Linux machines have no en_US locale (Arch until
+          // one is generated, minimal servers, containers): forcing it there
+          // made each app warn and fall back. They keep the machine's locale.
+          env: { ...process.env, ...deps.env, ...(platform === "linux" ? {} : { LC_ALL: "en_US.UTF-8" }) },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         }) as ChildProcessWithoutNullStreams;

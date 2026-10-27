@@ -36,6 +36,7 @@ import {
   type DemoPlan,
   type DemoTrack,
 } from "../../../shared/demoVideo/demoContract";
+import { captureProblem } from "../../../shared/sentry/capture";
 import { demoMetadataFor, planDemo, planPlainDemo, refitPlanForSize } from "../../../shared/demoVideo/demoPlanner";
 import type { Logger } from "../logging/logger";
 import { type DemoMp4Inspection, inspectDemoMp4 } from "./demoMp4Source";
@@ -243,5 +244,13 @@ export async function produceDemoVideo(args: {
     }
     lastReason = `the video could not be rendered (${errorText(lastError)})`;
   }
+  // Every engine that could read the file failed: the user gets the uncut
+  // recording, and nothing else would tell ADE the demo pipeline is broken here.
+  captureProblem(`demo_video.all_engines_failed: ${lastReason}`, {
+    level: "warning",
+    tags: { feature: "demo_video", platform: process.platform, arch: process.arch },
+    extra: { engines: engines.map((engine) => engine.id).join(",") },
+    fingerprint: ["demo_video", "all_engines_failed", process.platform, engines.map((engine) => engine.id).join(",")],
+  });
   return await fileRawAsIs(lastReason, lastAnalysis);
 }

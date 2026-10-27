@@ -19,7 +19,9 @@
  * corners and no accent bar (drawtext cannot size a box to its text and draw a
  * second shape against it), and wrapped caption lines are left-aligned.
  *
- * ffmpeg is the machine's own when it has one. Otherwise ADE downloads its
+ * ffmpeg is the machine's own when it has one that can render the plan (the
+ * libx264 encoder and the drawtext filter: Fedora's ffmpeg-free has no
+ * libx264, a minimal build no drawtext). Otherwise ADE downloads its
  * pinned static build (Linux and Windows) the first time a recording needs a
  * demo — `prefetchFfmpegTools` starts that when the recording starts — and
  * never at launch.
@@ -77,14 +79,56 @@ export type FfmpegDemoEngineDeps = {
 /** The tools-cache name of ADE's pinned static ffmpeg (Linux and Windows only). */
 const FFMPEG_TOOL = "ffmpeg";
 
+/** ffmpeg binary path → whether it has what `render` uses. Asked once per path per process. */
+const renderCapable = new Map<string, boolean>();
+
 /**
- * ffmpeg and ffprobe already on this machine: the system's own first, then
- * ADE's pinned copy if an earlier demo downloaded it. Null when neither is.
+ * True when this ffmpeg has the libx264 encoder and the drawtext filter.
+ * A system build without them is passed over for ADE's pinned copy rather
+ * than offered as an engine that fails every render.
+ */
+function canRenderDemos(ffmpegPath: string): boolean {
+  const known = renderCapable.get(ffmpegPath);
+  if (known !== undefined) return known;
+  const list = (what: string): string => {
+    const result = spawnSync(ffmpegPath, ["-hide_banner", what], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+    return result.status === 0 ? result.stdout : "";
+  };
+  const capable = /\blibx264\b/u.test(list("-encoders")) && /\bdrawtext\b/u.test(list("-filters"));
+  renderCapable.set(ffmpegPath, capable);
+  return capable;
+}
+
+/** ffmpeg binary path → its major version, or null when it would not say. */
+const majorVersions = new Map<string, number | null>();
+
+/**
+ * The option that reads the filter graph from a file. ffmpeg 7 added
+ * `-/filter_complex <file>` and ffmpeg 9 removed `-filter_complex_script`, so
+ * Arch's ffmpeg 9 refuses the old one and Ubuntu 24.04's 6.1 knows only it. A
+ * git build (`N-…`) or an unreadable version is new enough for the new form.
+ */
+function filterScriptArgs(ffmpegPath: string, scriptPath: string): string[] {
+  if (!majorVersions.has(ffmpegPath)) {
+    const result = spawnSync(ffmpegPath, ["-hide_banner", "-version"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+    const match = /ffmpeg version n?(\d+)\./u.exec(result.stdout ?? "");
+    majorVersions.set(ffmpegPath, match ? Number(match[1]) : null);
+  }
+  const major = majorVersions.get(ffmpegPath);
+  return major !== null && major !== undefined && major < 7
+    ? ["-filter_complex_script", scriptPath]
+    : ["-/filter_complex", scriptPath];
+}
+
+/**
+ * ffmpeg and ffprobe already on this machine: the system's own first when it
+ * can render a demo, then ADE's pinned copy if an earlier demo downloaded it.
+ * Null when neither is.
  */
 export function resolveFfmpegTools(): FfmpegTools | null {
   const ffmpeg = resolveExecutableFromKnownLocations("ffmpeg");
   const ffprobe = resolveExecutableFromKnownLocations("ffprobe");
-  if (ffmpeg && ffprobe) return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
+  if (ffmpeg && ffprobe && canRenderDemos(ffmpeg.path)) return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
   const pinned = resolvePinnedTool(FFMPEG_TOOL);
   const pinnedProbe = pinned?.files.ffprobe;
   return pinned && pinnedProbe ? { ffmpegPath: pinned.entryPath, ffprobePath: pinnedProbe } : null;
@@ -227,7 +271,7 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
             "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
             "-i", request.input,
             ...graph.inputArgs,
-            "-filter_complex_script", graph.scriptPath,
+            ...filterScriptArgs(tools.ffmpegPath, graph.scriptPath),
             "-map", "[out]",
             "-an",
             "-t", plan.durationSeconds.toFixed(3),

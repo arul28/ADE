@@ -85,6 +85,11 @@ function packageManager(): PackageManager | null {
   return PACKAGE_MANAGERS.find((pm) => onPath(pm.binary)) ?? null;
 }
 
+/** The package manager setup would use, for reports; null when none is found. */
+export function linuxPackageManagerId(): PackageManager["id"] | null {
+  return packageManager()?.id ?? null;
+}
+
 const isRoot = (): boolean => typeof process.getuid === "function" && process.getuid() === 0;
 
 /**

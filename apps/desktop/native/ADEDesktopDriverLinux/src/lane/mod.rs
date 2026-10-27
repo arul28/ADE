@@ -212,6 +212,8 @@ pub fn atspi_launcher() -> Option<PathBuf> {
         "/usr/lib/aarch64-linux-gnu/at-spi2-core/at-spi-bus-launcher",
         "/usr/lib64/at-spi2-core/at-spi-bus-launcher",
         "/usr/libexec/at-spi2/at-spi-bus-launcher",
+        // Arch keeps its helpers directly under /usr/lib.
+        "/usr/lib/at-spi-bus-launcher",
     ])
 }
 
