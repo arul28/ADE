@@ -181,6 +181,12 @@ is open, actions fail with `handoff_active`: do not retry or open a second tab,
 and never hand the tab back yourself. ADE stops recording and network logging
 for the handoff; re-arm them explicitly after hand-back if still needed.
 
+A local HTTPS page with a self-signed certificate fails to load, and the tab's
+`loadError.certificate` names the host and fingerprint. Only the person can
+trust it (ADE shows **Trust and reload** above the page); agents cannot. Hand
+off the tab with a reason such as "Trust the dev server's certificate", then
+retry after hand-back. A public site's certificate error is never trustable.
+
 ### 6. Sign in as a test account in an isolated tab
 
 A normal tab uses the user's own sign-ins. Signing in there as another
@@ -241,7 +247,9 @@ To show them a page, use `ade --socket browser open <url> --panel`. Writing
 machine's port in their ADE browser. A `localhost` page you open reaches their
 browser through a tunnel, and the first use of a port asks them to allow it.
 Dev servers you start are found on their own, even in the background:
-`ade --socket browser dev-servers --text` lists them.
+`ade --socket browser dev-servers --text` lists them, and
+`ade --socket browser dev-servers stop <port>` stops one this chat started
+(it refuses anything else on the port).
 
 On a machine without ADE Desktop, and with no desktop connected to this chat,
 only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane

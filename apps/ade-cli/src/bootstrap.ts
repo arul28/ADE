@@ -47,6 +47,7 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
+import { terminalShellPreferenceStoreFor } from "../../desktop/src/main/services/pty/terminalShells";
 import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
 import type { SearchService } from "../../desktop/src/main/services/search/searchService";
 import {
@@ -103,6 +104,7 @@ import {
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
+import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -253,6 +255,8 @@ import {
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
 import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
+import { stopChatDevServer } from "../../desktop/src/main/services/devServers/devServerStop";
+import { machineSecretTempFiles } from "../../desktop/src/main/services/secrets/secretTempFiles";
 import {
   getSessionInputOrigin,
   RECENT_INPUT_ORIGIN_MS,
@@ -474,6 +478,8 @@ export type AdeRuntime = {
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
   ptyService: ReturnType<typeof createPtyService>;
+  /** Wakes a chat on new terminal output. Null where no chat service runs. */
+  terminalWatchService?: TerminalWatchService | null;
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   /** Jev decisions (`ai.jevDecide`); absent on runtimes that never ask. */
@@ -1632,6 +1638,8 @@ export async function createAdeRuntime(args: {
       },
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
       releaseChatBrowser,
+      appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+      terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
@@ -2292,6 +2300,23 @@ export async function createAdeRuntime(args: {
             return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
           },
           probePort: (port) => probeLocalhostPort(port),
+          stop: async (stopArgs) => {
+            const record = devServerRegistry.list().find((entry) =>
+              devServerWatcher.ownsRecord(entry)
+              && entry.port === stopArgs.port
+              && entry.source.sessionId === stopArgs.chatSessionId
+              && (!stopArgs.laneId || entry.source.laneId === stopArgs.laneId)) ?? null;
+            const result = await stopChatDevServer({ ...stopArgs, record, logger });
+            // A stopped (or already gone) server leaves the list now, not on the next scan.
+            if (result.ok) {
+              for (const entry of devServerRegistry.list()) {
+                if (devServerWatcher.ownsRecord(entry) && entry.port === stopArgs.port && entry.source.sessionId === stopArgs.chatSessionId) {
+                  devServerRegistry.forget(entry.source.laneId, entry.port);
+                }
+              }
+            }
+            return result;
+          },
         }
         : null,
       logger,
@@ -2484,6 +2509,14 @@ export async function createAdeRuntime(args: {
         // from under the account publisher, or vice versa.
         hostPowerSource: borrowSharedMachinePowerSource(),
         getTestService: () => testService,
+        // Built after this service (it wakes chats through it); until then, absent.
+        getTerminalWatchService: () => {
+          try {
+            return terminalWatchService;
+          } catch {
+            return null;
+          }
+        },
         ptyService,
         getAutomationService: () => automationServiceRef,
         getGitService: () => gitService,
@@ -2691,6 +2724,18 @@ export async function createAdeRuntime(args: {
       logEvent: "app_control.release_on_chat_end_failed",
       logger,
     });
+    // An archived or deleted chat takes its temporary secret files with it.
+    // Getting the store also sweeps files an earlier run left past their time.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: agentChatService
+        ? { releaseIfOwnedBy: async (sessionId: string) => machineSecretTempFiles(logger).removeForChat(sessionId) }
+        : null,
+      logEvent: "project_secret.temp_files_chat_end_failed",
+      logger,
+    });
+    // Startup sweep: one directory read; arms a timer only while a file exists.
+    if (agentChatService) machineSecretTempFiles(logger);
     if (agentChatService) {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
@@ -3171,6 +3216,21 @@ export async function createAdeRuntime(args: {
       : null;
     if (prWatchService) teardown.push(() => prWatchService.dispose());
 
+    // Terminal watch: wakes a chat on this brain when one of its terminals prints.
+    const chatForTerminalWatch = agentChatService;
+    const terminalWatchService = chatForTerminalWatch
+      ? createTerminalWatchService({
+        logger,
+        ptyService,
+        sessionService,
+        messageSession: (args) => chatForTerminalWatch.messageSession(args),
+        getChatLiveness: chatLivenessReader(chatForTerminalWatch),
+        // The headless chat stand-in (no agent chat runtime) has no move locks.
+        isChatMovedAway: (sessionId) => Boolean(chatForTerminalWatch.getCrossMachineMoveLock?.(sessionId, "terminal_watch")),
+      })
+      : null;
+    if (terminalWatchService) teardown.push(() => terminalWatchService.dispose());
+
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own
     // the background polling loop that emits `prs-updated` — otherwise PR state
@@ -3390,6 +3450,8 @@ export async function createAdeRuntime(args: {
         logger,
         onUpdate: (snapshot) => {
           pushEvent("runtime", { type: "usage", snapshot });
+          // A chat waiting out a usage limit may resume early on this reading.
+          agentChatService?.noteUsageSnapshot?.(snapshot);
           if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
           const target = completedDailyUsageAnalyticsTarget();
           if (!target || lastDailyAnalyticsDay === target.day) return;
@@ -3741,6 +3803,7 @@ export async function createAdeRuntime(args: {
       syncHostService: syncService?.getHostService() ?? null,
       laneWorktreeLockService,
       ptyService,
+      terminalWatchService,
       testService,
       searchService,
       externalSessionsService,

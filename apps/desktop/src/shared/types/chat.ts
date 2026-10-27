@@ -607,6 +607,16 @@ export type AgentChatSpawnDispatchMetadata = {
 export type AgentChatAgentRelayMetadata = {
   /** Trusted caller session, derived from its bound identity. */
   fromSessionId: string;
+  /** The sending chat's title when it was sent, for the folded row. Absent on older messages. */
+  fromTitle?: string;
+};
+
+/** Marks a prompt an automation run sent. Host-stamped; never accepted from a caller. */
+export type AgentChatAutomationRunMetadata = {
+  automationId: string;
+  runId?: string;
+  /** The automation's name when it ran. */
+  name: string;
 };
 
 export type AgentChatHostContinuationMetadata = {
@@ -1361,6 +1371,16 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   boardMove?: AgentChatBoardMoveMetadata;
   /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
   prWatchWake?: AgentChatPrWatchWakeMetadata;
+  /** Marks a prompt an automation run sent. Renders folded, like a relay. */
+  automationRun?: AgentChatAutomationRunMetadata;
+  /** Marks a terminal watch wake. Renders as its card, never as a user bubble. */
+  terminalWatchWake?: AgentChatTerminalWatchWakeMetadata;
+};
+
+export type AgentChatTerminalWatchWakeMetadata = {
+  watchId: string;
+  terminalId: string;
+  card: AdeCardPayload;
 };
 
 export type AgentChatPrWatchWakeMetadata = {
@@ -4939,6 +4959,16 @@ export type AgentChatCrossMachineLaneImportResult = {
   setupStatus?: AgentChatCrossMachineLaneSetupStatus;
 };
 
+/**
+ * What one Claude session already carries: PDF pages, and base64 bytes of the
+ * PDFs and images ADE inlined into it. Persisted per chat, and carried by a
+ * fork, whose history carries the same documents.
+ */
+export type ClaudeRetainedMedia = {
+  pages: number;
+  bytes: number;
+};
+
 /** Provider-native session files shipped inside a fork-mode capsule. */
 export type AgentChatCrossMachineForkTransport = {
   provider: AgentChatProvider;
@@ -4956,6 +4986,8 @@ export type AgentChatCrossMachineForkTransport = {
     contentBase64Gzip: string;
     uncompressedBytes: number;
   }>;
+  /** Claude only: what the moved history already carries. Absent from older sources. */
+  claudeRetainedMedia?: ClaudeRetainedMedia;
 };
 
 export type AgentChatPrepareCrossMachineHandoffArgs = AgentChatCrossMachineTargetConfig & {
@@ -5633,8 +5665,9 @@ export type AgentChatSteerArgs = {
    * A person typed this message in a composer (desktop, or a paired phone over
    * sync). Claude only: a person's interrupt keeps a slow WebFetch or
    * WebSearch running and moves a running Bash command to the background,
-   * instead of cancelling the fetch or waiting for the command. Agent and CLI
-   * senders leave it unset.
+   * instead of cancelling the fetch or waiting for the command, and a person's
+   * inline steer moves a running Bash command to the background too. Agent and
+   * CLI senders leave it unset.
    */
   sentByUser?: boolean;
   /** See `AgentChatSendArgs.includeThreadComments`. */

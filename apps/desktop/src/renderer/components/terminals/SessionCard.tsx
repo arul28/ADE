@@ -105,6 +105,8 @@ import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLin
 import { useComposerDraftPresence } from "../../state/composerDraftPresenceStore";
 import { deriveSessionRowIndicators } from "../../../shared/sessionDraftIndicators";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
+import { SessionDevServerBadge } from "./SessionDevServerBadge";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { SideChatBadge } from "../chat/SideChatBadge";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
@@ -1393,6 +1395,14 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const browserPresenceGlyph = (
     <>
       <AgentBrowserPresenceBadge chatSessionId={session.id} size={11} />
+      {/* The dev servers this chat (or terminal) started; nothing until it has one. */}
+      <SessionDevServerBadge
+        sessionId={session.id}
+        runtimePin={runtimePin}
+        canStop={isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)}
+        disabled={Boolean(disabledReason)}
+        size={11}
+      />
       <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
     </>
   );

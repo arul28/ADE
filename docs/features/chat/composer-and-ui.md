@@ -605,7 +605,11 @@ chat pane mount, which happens either way.
   resumes in …` with **Cancel**, `auto-resume off` with **Resume in …**,
   `paused after 2 tries` with **Try again**, `resuming…`, or just the
   provider's name when it published no reset. **Continue on <account>** shows
-  when the host publishes another account with room. The clock and the
+  when the host publishes another account with room, and continues *this* chat
+  on that account: the provider thread is copied into that login and the same
+  conversation resumes there. A chat whose thread cannot move continues in a
+  new chat in the same lane instead, except after a compaction-only turn, which
+  reports the failure. The clock and the
   provider's own sentence are in the tooltip, and the chip disappears when the
   host clears the resume state.
   The `usageLimitResume` state, not the deprecated parked-until mirror, is the
@@ -1044,6 +1048,10 @@ chat pane mount, which happens either way.
   the shared `ModelPicker` rather than as a separate composer chip — every
   surface that mounts the picker gets it, and the composer toolbar keeps one
   control where it used to spend two.
+  When a Claude chat asks for Fast and Claude Code answers at standard speed
+  anyway, the transcript shows one quiet info notice saying why (from the
+  turn result's `fast_mode_disabled_reason`, or a rate-limit cooldown), once
+  per reason; the toggle keeps showing the user's choice.
   **The account gate comes first.** When the account has not allowed Fast
   (`fastModeAllowed === false`), the composer toolbar shows no Fast control:
   Fast is rarely used, so it stays out of sight. The popover's per-row Fast
@@ -2989,6 +2997,21 @@ hex; the agent's `--generate` marks it as suggested), and one line of copy —
 "Saved encrypted to this project's secrets. The agent only sees the name." Enter
 saves, Esc declines. When the name already exists the card opens on "Keep
 existing" (Enter) with "Replace" one click away.
+
+**Temporary private file.** The card also asks where the value goes: "Save to
+ADE secrets" or "Temporary private file" (`--delivery file` on the request makes
+the file the default; the person decides). A file answer is written on the
+chat's machine to `<ADE home>/secrets/temp-files/<random>` (0600 in a 0700 dir,
+created with `wx`, owner-only ACL on Windows) with a value-free `<id>.json`
+sidecar, and the agent gets only `{saved: true, delivery: "file", file,
+expiresAt}`. The value never enters the project's secrets, the transcript,
+events or logs; the agent's own commands can read the file, and the card says
+so. Files go when the chat is archived or deleted, after the TTL (24 h, the
+maximum), and in the next runtime start's sweep (`secretTempFiles.ts`). A
+retry with the same `--request-id` returns the same file without a second card
+(or joins the card still open). The pick is the `secret_delivery` question, so
+a client with no native card (the phone, the TUI) shows it as a normal choice;
+an answer with no pick (an older desktop) goes where the agent asked.
 
 The card is an ordinary pending-input request (`requestChatInput`, kind
 `question`) marked by `providerMetadata.projectSecretRequest` (`name`, `reason`,

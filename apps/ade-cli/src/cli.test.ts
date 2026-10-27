@@ -6927,7 +6927,7 @@ describe("ADE CLI", () => {
     expect(plan.exitCodeFromResult?.({ ok: false, reason: "busy", message: "Wait for this turn to finish." })).toBe(1);
   });
 
-  it("formats chat continue-on-account as the new chat, or the host's refusal", () => {
+  it("formats chat continue-on-account as the chat it continues on, or the host's refusal", () => {
     expect(formatChatContinueOnAccount({ ok: true, sessionId: "chat-10" }))
       .toBe("Continuing on the other account · chat chat-10");
     expect(formatChatContinueOnAccount({

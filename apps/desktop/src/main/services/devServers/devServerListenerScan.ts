@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
@@ -33,6 +34,15 @@ export type ProcessLocation = {
    * but the shell or script that launched it often does.
    */
   ancestors?: Array<{ pid: number; commandLine: string | null }>;
+  /**
+   * The ADE chat whose agent started this process: `ADE_CHAT_SESSION_ID` in its
+   * own environment (macOS, Linux). Every process a chat's agent starts
+   * inherits it, even after the shell that started it exits and the server is
+   * re-parented. Absent on Windows, which exposes no other process's env.
+   */
+  chatSessionId?: string | null;
+  /** The environment could not be read (ps failed): the next scan reads it again. */
+  chatSessionIdUnread?: boolean;
 };
 
 
@@ -138,6 +148,113 @@ type WindowsListenerRow = {
   ancestors?: unknown;
 };
 
+/** The env key every process a chat's agent starts carries (see `buildAgentRuntimeEnv`). */
+const CHAT_SESSION_ENV_KEY = "ADE_CHAT_SESSION_ID";
+/** A chat session id as ADE writes it: no spaces, no `=`. Anything else is not ours. */
+const CHAT_SESSION_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/**
+ * `ADE_CHAT_SESSION_ID` from one `ps -E` command column. macOS prints the
+ * environment after the arguments with no separator a command cannot also
+ * contain, so the LAST `ADE_CHAT_SESSION_ID=` token wins: the environment
+ * comes after anything a command line spelled out.
+ */
+export function chatSessionIdFromPsEnvironment(text: string): string | null {
+  const pattern = new RegExp(`(?:^|\\s)${CHAT_SESSION_ENV_KEY}=(\\S+)`, "g");
+  let last: string | null = null;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) last = match[1] ?? null;
+  return last && CHAT_SESSION_ID_SHAPE.test(last) ? last : null;
+}
+
+/** `ADE_CHAT_SESSION_ID` from a NUL-separated `/proc/<pid>/environ`. */
+export function chatSessionIdFromProcEnviron(text: string): string | null {
+  const prefix = `${CHAT_SESSION_ENV_KEY}=`;
+  for (const entry of text.split("\0")) {
+    if (!entry.startsWith(prefix)) continue;
+    const value = entry.slice(prefix.length);
+    return CHAT_SESSION_ID_SHAPE.test(value) ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Which ADE chat each process belongs to, read from its own environment.
+ * Pids that exited, belong to another user, or carry no tag map to null; a
+ * failed read is never a guess. Windows: always null (no env access).
+ */
+export async function readProcessChatSessionIds(
+  pids: readonly number[],
+  platform: NodeJS.Platform = process.platform,
+  onError?: (error: unknown) => void,
+): Promise<Map<number, string | null>> {
+  const result = new Map<number, string | null>();
+  const unique = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))];
+  for (const pid of unique) result.set(pid, null);
+  if (unique.length === 0 || platform === "win32") return result;
+  if (platform === "linux") {
+    await Promise.all(unique.map(async (pid) => {
+      try {
+        const environ = await fs.promises.readFile(`/proc/${pid}/environ`, "utf8");
+        result.set(pid, chatSessionIdFromProcEnviron(environ));
+      } catch {
+        // Exited, or not ours to read.
+      }
+    }));
+    return result;
+  }
+  try {
+    const text = await runText("ps", ["-E", "-ww", "-o", "pid=,command=", "-p", unique.join(",")], SCAN_TIMEOUT_MS);
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (result.has(pid)) result.set(pid, chatSessionIdFromPsEnvironment(match[2] ?? ""));
+    }
+  } catch (error) {
+    // ps failed: nothing is attributed, which only hides a server from its chat.
+    onError?.(error);
+  }
+  return result;
+}
+
+/** The pids listening on one TCP port right now. Null when the OS could not be asked. */
+export async function listeningPidsOnPort(
+  port: number,
+  platform: NodeJS.Platform = process.platform,
+  onError?: (error: unknown) => void,
+): Promise<number[] | null> {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return [];
+  if (platform === "win32") {
+    try {
+      const raw = await runText(
+        resolveTrustedWindowsTool("powershell"),
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `$ErrorActionPreference = 'SilentlyContinue'; [Console]::Out.Write((ConvertTo-Json -InputObject @(@(Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess | Sort-Object -Unique) | ForEach-Object { [int]$_ }) -Compress))`,
+        ],
+        WINDOWS_SCAN_TIMEOUT_MS,
+      );
+      const parsed: unknown = raw.trim() ? JSON.parse(raw) : [];
+      const values = Array.isArray(parsed) ? parsed : [parsed];
+      return [...new Set(values.map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))];
+    } catch (error) {
+      onError?.(error);
+      return null;
+    }
+  }
+  try {
+    const text = await runText("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-F", "pcn"], SCAN_TIMEOUT_MS);
+    return [...new Set(parseLsofListeners(text).filter((socket) => socket.port === port).map((socket) => socket.pid))];
+  } catch (error) {
+    // lsof exits 1 with no output when nothing matched: nothing is listening.
+    if ((error as { code?: unknown } | null)?.code === 1) return [];
+    onError?.(error);
+    return null;
+  }
+}
+
 /**
  * Every listening socket on this machine, plus where each owner runs from.
  * Null when the platform's tool is missing or failed, so the caller can tell
@@ -208,22 +325,30 @@ export async function scanListeningProcesses(input: {
   const unknown: number[] = [];
   for (const pid of new Set(sockets.map((socket) => socket.pid))) {
     const known = input.knownLocations?.get(pid);
-    if (known) locations.set(pid, known);
+    if (known && !known.chatSessionIdUnread) locations.set(pid, known);
     else unknown.push(pid);
   }
   if (unknown.length > 0) {
-    try {
-      const cwdText = await runText(
-        "lsof",
-        ["-a", "-d", "cwd", "-F", "pn", "-p", unknown.join(",")],
-        SCAN_TIMEOUT_MS,
-      );
-      for (const [pid, cwd] of parseLsofCwds(cwdText)) {
-        locations.set(pid, { cwd, commandLine: null });
-      }
-    } catch {
-      // A process that exited between the two queries has no cwd; it is
-      // simply not attributed to a lane.
+    // The chat tag is read once per new pid, beside its cwd; known pids keep
+    // theirs. A process's environment never changes, so a tag read is final,
+    // unless the read itself failed: then the next scan asks again.
+    let tagReadFailed = false;
+    const [cwdText, chatSessionIds] = await Promise.all([
+      runText("lsof", ["-a", "-d", "cwd", "-F", "pn", "-p", unknown.join(",")], SCAN_TIMEOUT_MS)
+        // A process that exited between the two queries has no cwd; it is
+        // simply not attributed to a lane.
+        .catch(() => ""),
+      readProcessChatSessionIds(unknown, platform, () => {
+        tagReadFailed = true;
+      }),
+    ]);
+    for (const [pid, cwd] of parseLsofCwds(cwdText)) {
+      locations.set(pid, {
+        cwd,
+        commandLine: null,
+        chatSessionId: chatSessionIds.get(pid) ?? null,
+        ...(tagReadFailed ? { chatSessionIdUnread: true } : {}),
+      });
     }
   }
   return { sockets, locations };

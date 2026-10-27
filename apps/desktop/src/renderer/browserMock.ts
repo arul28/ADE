@@ -1,4 +1,5 @@
 import { createBrowserMockMusic } from "./browserMockMusic";
+import type { TerminalShellSettings } from "../shared/types/terminalShells";
 import { playDemoReply, startManualDemoClock, type DemoChildChat } from "./browserMockDemoReplies";
 import { getAppearanceState } from "./state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES } from "./scene/scenePreferences";
@@ -166,6 +167,17 @@ import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
+/** Mutable, so a pick in the mock's Settings sticks for the session. */
+const MOCK_TERMINAL_SHELL_SETTINGS: TerminalShellSettings = {
+  defaultShellId: null,
+  savedShellMissing: false,
+  automaticShell: "/bin/zsh",
+  shells: [
+    { id: "/bin/zsh", label: "zsh", path: "/bin/zsh" },
+    { id: "/bin/bash", label: "bash", path: "/bin/bash" },
+    { id: "/opt/homebrew/bin/fish", label: "fish", path: "/opt/homebrew/bin/fish" },
+  ],
+};
 
 const noop = () => () => {};
 /**
@@ -8488,6 +8500,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      listTrustedCertificates: resolved({ certificates: [] }),
+      revokeTrustedCertificates: resolvedArg({ certificates: [] }),
       browserSettings: createMockBrowserSettings(),
       agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
@@ -9068,6 +9082,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       write: resolvedArg(undefined),
       resize: resolvedArg(undefined),
       dispose: resolvedArg(undefined),
+      getShellSettings: async () => ({ ...MOCK_TERMINAL_SHELL_SETTINGS }),
+      setDefaultShell: async (args: { shellId?: string | null } | null | undefined) => {
+        MOCK_TERMINAL_SHELL_SETTINGS.defaultShellId = args?.shellId ?? null;
+        return { ...MOCK_TERMINAL_SHELL_SETTINGS };
+      },
       setDataSubscriptions: resolvedArg(undefined),
       onData: noop,
       onExit: noop,

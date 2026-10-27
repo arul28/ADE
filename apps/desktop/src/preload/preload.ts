@@ -33,6 +33,14 @@ import type {
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
+import type {
+  TerminalListWatchesArgs,
+  TerminalUnwatchArgs,
+  TerminalUnwatchResult,
+  TerminalWatchArgs,
+  TerminalWatchResult,
+  TerminalWatchSummary,
+} from "../shared/terminalWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
   type AppOpenSystemSettingsPaneResult,
@@ -177,6 +185,7 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
+import type { SetDefaultTerminalShellArgs, TerminalShellSettings } from "../shared/types/terminalShells";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -1174,6 +1183,9 @@ import type {
   BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserSettings,
   BuiltInBrowserSettingsPatch,
+  BuiltInBrowserRevokeCertificatesArgs,
+  BuiltInBrowserTrustCertificateArgs,
+  BuiltInBrowserTrustedCertificatesResult,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -1188,6 +1200,8 @@ import type {
   BuiltInBrowserFindInPageArgs,
   DevServersArgs,
   DevServersResult,
+  DevServerStopArgs,
+  DevServerStopResult,
   BuiltInBrowserFindInPageResult,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserNetworkLoggingResult,
@@ -10524,6 +10538,19 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // Trusting a local HTTPS certificate is the person's answer: human-only,
+    // no `pin` overload, and the browser it trusts is this desktop's.
+    trustCertificate: async (args: BuiltInBrowserTrustCertificateArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserTrustCertificate, args),
+      ),
+    listTrustedCertificates: async (): Promise<BuiltInBrowserTrustedCertificatesResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserListTrustedCertificates),
+    revokeTrustedCertificates: async (
+      args: BuiltInBrowserRevokeCertificatesArgs = {},
+    ): Promise<BuiltInBrowserTrustedCertificatesResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserRevokeTrustedCertificates, args),
     // Machine-wide browser settings (tab limit, download folder, standing
     // permission grants). Human-only, like agentAccess: no `pin` overload.
     browserSettings: {
@@ -10982,6 +11009,43 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.terminalReattachChatCli, args),
       ),
+    /**
+     * A chat's terminal watches. The pin is the CHAT's machine: the watch runs
+     * on the brain that runs the chat, and only sees terminals there.
+     */
+    watch: async (
+      args: TerminalWatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalWatchResult> =>
+      callPinnedOrBoundRuntimeActionOr<TerminalWatchResult>(
+        pin,
+        "terminal",
+        "watch",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalWatch, args),
+      ),
+    unwatch: async (
+      args: TerminalUnwatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalUnwatchResult> =>
+      callPinnedOrBoundRuntimeActionOr<TerminalUnwatchResult>(
+        pin,
+        "terminal",
+        "unwatch",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalUnwatch, args),
+      ),
+    listWatches: async (
+      args: TerminalListWatchesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalWatchSummary[]> =>
+      callPinnedOrBoundRuntimeActionOr<TerminalWatchSummary[]>(
+        pin,
+        "terminal",
+        "listWatches",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalListWatches, args),
+      ),
   },
   localhost: {
     /**
@@ -11439,6 +11503,27 @@ const adeBridge = {
       if (runtime.handled) return runtime.result;
       return await ipcRenderer.invoke(IPC.ptyDispose, arg);
     },
+    // The terminal machine's shells and default shell. A pin reaches that
+    // machine; without one the tab's own machine answers.
+    getShellSettings: async (pin?: OpenProjectBinding | null): Promise<TerminalShellSettings> =>
+      callPinnedOrBoundRuntimeActionOr<TerminalShellSettings>(
+        pin,
+        "pty",
+        "getShellSettings",
+        {},
+        () => ipcRenderer.invoke(IPC.ptyShellSettingsGet),
+      ),
+    setDefaultShell: async (
+      args: SetDefaultTerminalShellArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<TerminalShellSettings> =>
+      callPinnedOrBoundRuntimeActionOr<TerminalShellSettings>(
+        pin,
+        "pty",
+        "setDefaultShell",
+        { args },
+        () => ipcRenderer.invoke(IPC.ptySetDefaultShell, args),
+      ),
     setDataSubscriptions: setPtyDataSubscriptions,
     onData: subscribePtyDataEvents,
     onExit: subscribePtyExitEvents,
@@ -13758,6 +13843,22 @@ const adeBridge = {
       args: DevServersArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<DevServersResult> => listDevServersForPin(args, pin),
+    /** Stop a server a chat's agent started, on the chat's machine. Runtime-only. */
+    stopDevServer: async (
+      args: DevServerStopArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<DevServerStopResult> => callPinnedOrBoundRuntimeActionOr<DevServerStopResult>(
+      pin,
+      "work_tools",
+      "stopDevServer",
+      { args },
+      async () => ({
+        ok: false,
+        port: args.port,
+        reason: "failed",
+        error: "Stopping a server needs the ADE runtime that runs this chat.",
+      }),
+    ),
     /** A dev server started or stopped on the lane's machine. */
     onDevServer: (
       cb: (event: DevServerEvent) => void,

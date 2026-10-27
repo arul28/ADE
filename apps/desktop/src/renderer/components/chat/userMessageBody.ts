@@ -12,12 +12,15 @@ import { parseThreadReviewBlock, type ParsedThreadReviewComment } from "../../..
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 type BoardMove = NonNullable<NonNullable<UserMessageEvent["metadata"]>["boardMove"]>;
 type PrWatchWake = NonNullable<NonNullable<UserMessageEvent["metadata"]>["prWatchWake"]>;
+type TerminalWatchWake = NonNullable<NonNullable<UserMessageEvent["metadata"]>["terminalWatchWake"]>;
+/** A watch wake (PR or terminal): only its id and card are drawn. */
+type WatchWake = { watchId: string; card: NonNullable<PrWatchWake["card"] | TerminalWatchWake["card"]> };
 
 type UserMessageBody =
   /** A board move ADE sent on the user's behalf: one centred line, not a bubble. */
   | { kind: "board-move"; move: BoardMove; line: string }
-  /** ADE woke the agent for a PR change: a card, with the agent's text folded away. */
-  | { kind: "wake-card"; wake: PrWatchWake & { card: NonNullable<PrWatchWake["card"]> } }
+  /** ADE woke the agent for a PR change or terminal output: a card, with the agent's text folded away. */
+  | { kind: "wake-card"; wake: WatchWake }
   /** A hidden prompt (a brief, a handoff): only its short display line shows. */
   | { kind: "brief"; text: string }
   /** A send that carried thread comments: the review card, then what the user typed. */
@@ -27,7 +30,84 @@ type UserMessageBody =
   /** Plain or markdown text. */
   | { kind: "text"; text: string; markdown: boolean }
   /** Leading context chips (iOS) and/or quote cards, then the rest as plain text. */
-  | { kind: "chips"; chips: string[]; rest: string; segments: ChatOutputContextSegment[] | null };
+  | { kind: "chips"; chips: string[]; rest: string; segments: ChatOutputContextSegment[] | null }
+  /**
+   * A message another agent, an automation, or a scheduled wake sent. Not the
+   * reader speaking, and often long and repeated, so it folds to one line.
+   */
+  | { kind: "folded"; fold: FoldedMessage };
+
+export type FoldedMessageSource = "agent" | "automation" | "schedule";
+
+export type FoldedMessage = {
+  source: FoldedMessageSource;
+  /** Who sent it: the sending chat's title, the automation's name, or the kind of schedule. */
+  sender: string;
+  /** The first line worth reading, for the folded row. */
+  preview: string;
+  /** Everything the agent received, for the open row. */
+  text: string;
+  markdown: boolean;
+  /** The chat that sent it, when it is a chat this one can open. */
+  fromSessionId: string | null;
+};
+
+const SCHEDULE_SENDER: Record<string, string> = {
+  cron: "Scheduled task",
+  loop: "Loop",
+  wakeup: "Scheduled wake-up",
+};
+
+/** The first non-empty line, without markdown heading or list marks. */
+function firstLine(text: string): string {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s*)/, "").trim();
+    if (line.length) return line;
+  }
+  return "";
+}
+
+function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
+  const metadata = event.metadata;
+  if (!metadata) return null;
+  const text = event.text;
+  const shown = event.displayText?.trim() || "";
+  // The preview is the display line, unless it only repeats the sender; then
+  // the prompt itself.
+  const make = (
+    source: FoldedMessageSource,
+    sender: string,
+    fromSessionId: string | null,
+    line = shown,
+  ): FoldedMessage => ({
+    source,
+    sender,
+    preview: firstLine((line !== sender && line) || text),
+    text,
+    markdown: userTextLooksLikeMarkdown(text),
+    fromSessionId,
+  });
+  const relay = metadata.agentRelay;
+  if (relay && typeof relay.fromSessionId === "string") {
+    const title = typeof relay.fromTitle === "string" ? relay.fromTitle.trim() : "";
+    return make("agent", title || "Another agent", relay.fromSessionId);
+  }
+  const automation = metadata.automationRun;
+  if (automation && typeof automation.name === "string") {
+    // A bound chat's display line is "Rule · what set it off"; the rule is
+    // already the sender, so the preview keeps only what set it off.
+    const name = automation.name.trim() || "Automation";
+    const trigger = shown.startsWith(`${name} · `) ? shown.slice(name.length + 3) : shown;
+    return make("automation", name, null, trigger);
+  }
+  const wake = metadata.scheduledWake;
+  if (wake && typeof wake.kind === "string") {
+    // The "Woke on schedule" divider above already names the reason, so the
+    // row previews the prompt itself.
+    return make("schedule", SCHEDULE_SENDER[wake.kind] ?? "Scheduled wake-up", null);
+  }
+  return null;
+}
 
 const MARKDOWN_HEADING_LINE = /^#{1,6}\s+\S/m;
 const MARKDOWN_FENCE_LINE = /^\s*(```|~~~)/m;
@@ -92,8 +172,11 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
 export function resolveUserMessageBody(event: UserMessageEvent): UserMessageBody {
   const boardMove = event.metadata?.boardMove;
   if (boardMove) return { kind: "board-move", move: boardMove, line: event.displayText?.trim() || event.text };
-  const wake = event.metadata?.prWatchWake;
-  if (wake?.card) return { kind: "wake-card", wake: { ...wake, card: wake.card } };
+  const wake = event.metadata?.prWatchWake ?? event.metadata?.terminalWatchWake;
+  if (wake?.card) return { kind: "wake-card", wake: { watchId: wake.watchId, card: wake.card } };
+  // A hidden prompt keeps its brief: its display line is the whole point.
+  const fold = event.metadata?.hideFullPrompt === true ? null : foldedMessage(event);
+  if (fold) return { kind: "folded", fold };
   const displayText = event.displayText?.trim() ?? "";
   if (event.metadata?.hideFullPrompt === true) return { kind: "brief", text: displayText };
   const pastedPrompt = userMessageHasPastedPrompt(event);
@@ -143,5 +226,8 @@ export function userMessageBodySearchText(body: UserMessageBody): { text: string
       return { text: body.text, markdown: body.markdown };
     case "chips":
       return { text: [...body.chips, body.segments ? segmentsText(body.segments) : body.rest].join("\n"), markdown: false };
+    case "folded":
+      // What the folded row shows; the full text is behind a click.
+      return { text: `${body.fold.sender}\n${body.fold.preview}`, markdown: false };
   }
 }

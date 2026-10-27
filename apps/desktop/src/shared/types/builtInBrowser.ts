@@ -84,6 +84,56 @@ export type BuiltInBrowserTabLoadError = {
   code: number;
   description: string;
   url: string | null;
+  /**
+   * Set only when the failure was an untrusted certificate the person may
+   * choose to trust: a local or private address, and an error a self-signed
+   * dev certificate produces. A public host never gets one. Absent on a main
+   * process that predates certificate trust.
+   */
+  certificate?: BuiltInBrowserCertificateProblem | null;
+};
+
+/** The certificate a local HTTPS page presented, as the trust prompt names it. */
+export type BuiltInBrowserCertificateProblem = {
+  /** Lowercase hostname without brackets: `localhost`, `192.168.1.20`, `::1`. */
+  host: string;
+  port: number;
+  /** Chromium's fingerprint, `sha256/<base64>` of the certificate. */
+  fingerprint: string;
+  /** The same SHA-256 as colon-separated hex, the form `openssl x509 -fingerprint -sha256` prints. */
+  fingerprintHex: string;
+  /** Chromium's error name, e.g. `net::ERR_CERT_AUTHORITY_INVALID`. */
+  error: string;
+  subjectName: string | null;
+  issuerName: string | null;
+  /** When the certificate expires, ISO, or null when it did not say. */
+  validUntil: string | null;
+};
+
+/** One certificate the person chose to trust in the ADE browser. */
+export type BuiltInBrowserTrustedCertificate = BuiltInBrowserCertificateProblem & {
+  /** Stable id for revoking this one approval. */
+  id: string;
+  /** `shared` is the signed-in profile; `isolated` is an agent's throwaway sign-in. */
+  profile: "shared" | "isolated";
+  /** Saved across restarts (shared profile) or kept in memory only (isolated). */
+  remembered: boolean;
+  trustedAt: string;
+};
+
+export type BuiltInBrowserTrustCertificateArgs = BuiltInBrowserProjectScopeArgs & {
+  tabId: string;
+  /** The fingerprint the person was shown; a different certificate is refused. */
+  fingerprint: string;
+};
+
+export type BuiltInBrowserRevokeCertificatesArgs = {
+  /** One approval; omitted clears every approval. */
+  id?: string | null;
+};
+
+export type BuiltInBrowserTrustedCertificatesResult = {
+  certificates: BuiltInBrowserTrustedCertificate[];
 };
 
 export type BuiltInBrowserTab = {
@@ -469,6 +519,13 @@ export type BuiltInBrowserSettings = {
   downloadDir: string | null;
   /** Standing permission grants for agent use. All off by default. */
   autoGrant: BuiltInBrowserAutoGrant;
+  /** What the address bar searches with when the text is not a URL. */
+  searchEngine: BuiltInBrowserSearchEngineId;
+  /**
+   * The Custom engine's URL, `%s` where the query goes. Kept when another
+   * engine is picked so switching back restores it. Null when never set.
+   */
+  customSearchUrl: string | null;
 };
 
 /** What is on disk: every field optional, older files predate some of them. */
@@ -476,18 +533,98 @@ export type BuiltInBrowserSettingsPersisted = {
   tabLimit?: number;
   downloadDir?: string | null;
   autoGrant?: Partial<BuiltInBrowserAutoGrant>;
+  searchEngine?: string;
+  customSearchUrl?: string | null;
 };
 
 export type BuiltInBrowserSettingsPatch = {
   tabLimit?: number;
   downloadDir?: string | null;
   autoGrant?: Partial<BuiltInBrowserAutoGrant>;
+  searchEngine?: BuiltInBrowserSearchEngineId;
+  customSearchUrl?: string | null;
 };
+
+/**
+ * Address bar search engines. Google stays the default because it is what the
+ * address bar always searched with.
+ */
+export const BUILT_IN_BROWSER_SEARCH_ENGINES = [
+  { id: "google", label: "Google", template: "https://www.google.com/search?q=%s" },
+  { id: "duckduckgo", label: "DuckDuckGo", template: "https://duckduckgo.com/?q=%s" },
+  { id: "bing", label: "Bing", template: "https://www.bing.com/search?q=%s" },
+  { id: "brave", label: "Brave Search", template: "https://search.brave.com/search?q=%s" },
+  { id: "kagi", label: "Kagi", template: "https://kagi.com/search?q=%s" },
+  { id: "ecosia", label: "Ecosia", template: "https://www.ecosia.org/search?q=%s" },
+] as const;
+
+export type BuiltInBrowserSearchEngineId = (typeof BUILT_IN_BROWSER_SEARCH_ENGINES)[number]["id"] | "custom";
+
+export const BUILT_IN_BROWSER_DEFAULT_SEARCH_ENGINE = "google" satisfies BuiltInBrowserSearchEngineId;
+/** Long enough for any real search URL; a pasted page of text is not one. */
+export const BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX = 2_048;
+
+function isBuiltInBrowserSearchEngineId(value: unknown): value is BuiltInBrowserSearchEngineId {
+  return value === "custom" || BUILT_IN_BROWSER_SEARCH_ENGINES.some((engine) => engine.id === value);
+}
+
+/**
+ * Whether a custom search URL can be used: an http(s) URL with `%s` after the
+ * host, so the query can only ever land in the path, query or fragment.
+ *
+ * Checked by substituting two different words and comparing the results: the
+ * host, port and credentials must not change (a `%s` there would let the
+ * typed text pick the server), and the URL must change (a `%s` that vanished
+ * while parsing is no placeholder at all).
+ */
+export function isValidBrowserSearchTemplate(value: string | null | undefined): boolean {
+  const template = (value ?? "").trim();
+  if (!template || template.length > BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX || !template.includes("%s")) return false;
+  try {
+    const first = new URL(template.replaceAll("%s", "adeprobeone"));
+    const second = new URL(template.replaceAll("%s", "adeprobetwo"));
+    if (first.protocol !== "https:" && first.protocol !== "http:") return false;
+    if (first.host !== second.host || !first.hostname) return false;
+    if (first.username !== second.username || first.password !== second.password) return false;
+    // `%s` inside the credentials changes nothing above when both words are
+    // swallowed the same way, so reject any credentials outright.
+    if (first.username || first.password) return false;
+    return first.href !== second.href;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The template the address bar should use, and whether a Custom engine fell
+ * back to the default because its URL cannot be used.
+ */
+export function resolveBrowserSearchTemplate(
+  settings: Pick<BuiltInBrowserSettings, "searchEngine" | "customSearchUrl"> | null | undefined,
+): { template: string; customInvalid: boolean } {
+  const fallback = BUILT_IN_BROWSER_SEARCH_ENGINES[0].template;
+  if (!settings) return { template: fallback, customInvalid: false };
+  if (settings.searchEngine === "custom") {
+    const custom = (settings.customSearchUrl ?? "").trim();
+    return isValidBrowserSearchTemplate(custom)
+      ? { template: custom, customInvalid: false }
+      : { template: fallback, customInvalid: true };
+  }
+  const preset = BUILT_IN_BROWSER_SEARCH_ENGINES.find((engine) => engine.id === settings.searchEngine);
+  return { template: preset?.template ?? fallback, customInvalid: false };
+}
+
+/** A search URL for typed words. The template must already be resolved. */
+export function browserSearchUrl(template: string, query: string): string {
+  return template.replaceAll("%s", encodeURIComponent(query));
+}
 
 export const BUILT_IN_BROWSER_SETTINGS_DEFAULTS: BuiltInBrowserSettings = {
   tabLimit: BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT,
   downloadDir: null,
   autoGrant: { camera: false, microphone: false, geolocation: false },
+  searchEngine: BUILT_IN_BROWSER_DEFAULT_SEARCH_ENGINE,
+  customSearchUrl: null,
 };
 
 export function normalizeBuiltInBrowserSettings(value: unknown): BuiltInBrowserSettings {
@@ -501,6 +638,9 @@ export function normalizeBuiltInBrowserSettings(value: unknown): BuiltInBrowserS
   const grantRecord = record.autoGrant && typeof record.autoGrant === "object"
     ? record.autoGrant as Record<string, unknown>
     : {};
+  const rawCustom = typeof record.customSearchUrl === "string" && record.customSearchUrl.trim()
+    ? record.customSearchUrl.trim().slice(0, BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX)
+    : null;
   return {
     tabLimit: Math.min(BUILT_IN_BROWSER_TAB_LIMIT_MAX, Math.max(BUILT_IN_BROWSER_TAB_LIMIT_MIN, rawLimit)),
     downloadDir: rawDir,
@@ -509,6 +649,11 @@ export function normalizeBuiltInBrowserSettings(value: unknown): BuiltInBrowserS
       microphone: grantRecord.microphone === true,
       geolocation: grantRecord.geolocation === true,
     },
+    // An engine a newer build added, read by an older one, is Google again.
+    searchEngine: isBuiltInBrowserSearchEngineId(record.searchEngine)
+      ? record.searchEngine
+      : BUILT_IN_BROWSER_DEFAULT_SEARCH_ENGINE,
+    customSearchUrl: rawCustom,
   };
 }
 
@@ -521,6 +666,8 @@ export function applyBuiltInBrowserSettingsPatch(
     tabLimit: patch.tabLimit ?? current.tabLimit,
     downloadDir: patch.downloadDir === undefined ? current.downloadDir : patch.downloadDir,
     autoGrant: { ...current.autoGrant, ...(patch.autoGrant ?? {}) },
+    searchEngine: patch.searchEngine ?? current.searchEngine,
+    customSearchUrl: patch.customSearchUrl === undefined ? current.customSearchUrl : patch.customSearchUrl,
   });
 }
 
@@ -560,6 +707,24 @@ export function parseBuiltInBrowserSettingsPatch(value: unknown): BuiltInBrowser
       grant[key] = grantRecord[key] as boolean;
     }
     patch.autoGrant = grant;
+  }
+  if ("searchEngine" in record) {
+    if (!isBuiltInBrowserSearchEngineId(record.searchEngine)) {
+      throw new Error("Browser settings: searchEngine is not a known search engine.");
+    }
+    patch.searchEngine = record.searchEngine;
+  }
+  if ("customSearchUrl" in record) {
+    if (record.customSearchUrl !== null && typeof record.customSearchUrl !== "string") {
+      throw new Error("Browser settings: customSearchUrl must be a string or null.");
+    }
+    if (typeof record.customSearchUrl === "string" && record.customSearchUrl.length > BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX) {
+      throw new Error(`Browser settings: customSearchUrl is longer than ${BUILT_IN_BROWSER_CUSTOM_SEARCH_URL_MAX} characters.`);
+    }
+    // Saved even when it cannot be used yet: the row says so, and searches
+    // use the default until it is fixed. Refusing the save would throw away
+    // a URL the person is halfway through typing.
+    patch.customSearchUrl = record.customSearchUrl as string | null;
   }
   return patch;
 }
@@ -1151,6 +1316,12 @@ export type DevServerRecord = {
     projectRoot: string | null;
   };
   detectedAt: string;
+  /**
+   * The report this one replaced when a different chat named the same port
+   * before. Windows has no other way to tell a chat's own server from one it
+   * only printed the address of.
+   */
+  previousReport?: { sessionId: string | null; detectedAt: string } | null;
 };
 
 /** One dev server per (lane, port): two lanes may serve the same port. */
@@ -1165,6 +1336,42 @@ export type DevServersArgs = {
 export type DevServersResult = {
   servers: DevServerRecord[];
 };
+
+/**
+ * `work_tools.stopDevServer`: stop a dev server one chat's agent started. The
+ * runtime that runs the chat decides again, at stop time, that the process on
+ * the port is that chat's (see `devServerStop.ts`).
+ */
+export type DevServerStopArgs = {
+  /** The chat whose agent started the server. An agent caller is pinned to its own chat. */
+  chatSessionId: string;
+  port: number;
+  laneId?: string | null;
+};
+
+export type DevServerStopResult =
+  | {
+      ok: true;
+      port: number;
+      /** Pids that were signalled. Empty when nothing was listening any more. */
+      stopped: number[];
+      /** Something ignored SIGTERM (or `taskkill /T`) and was killed outright. */
+      forced: boolean;
+      /** Nothing was listening on the port by the time ADE looked. */
+      alreadyStopped?: boolean;
+    }
+  | {
+      ok: false;
+      port: number;
+      /**
+       * `not_owned`: the port is held by something this chat did not start.
+       * `protected`: it is ADE, a chat's agent CLI or a terminal, or stopping it
+       * would stop one of them. `failed`: ADE could not look or the kill did
+       * not take. `invalid`: bad arguments.
+       */
+      reason: "invalid" | "not_owned" | "protected" | "failed";
+      error: string;
+    };
 
 /**
  * Published by the runtime that runs a lane's processes when one of its dev

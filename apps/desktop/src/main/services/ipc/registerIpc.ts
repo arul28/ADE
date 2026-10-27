@@ -992,6 +992,8 @@ import {
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
+import type { TerminalWatchService } from "../pty/terminalWatchService";
+import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createSearchService } from "../search/searchService";
@@ -1388,6 +1390,7 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prWatchService: PrWatchService | null;
+  terminalWatchService?: TerminalWatchService | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -10912,6 +10915,34 @@ export function registerIpc({
     );
   });
 
+  // Local HTTPS certificate trust. Trusted-renderer only, and never on the
+  // desktop bridge: only the person at this desktop can approve a certificate.
+  ipcMain.handle(IPC.builtInBrowserTrustCertificate, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserTrustCertificate, { windowMs: 10_000, max: 10 });
+    const tabId = isRecord(arg) && typeof arg.tabId === "string" ? arg.tabId.trim() : "";
+    const fingerprint = isRecord(arg) && typeof arg.fingerprint === "string" ? arg.fingerprint.trim() : "";
+    if (!tabId || !fingerprint) {
+      throw new Error(`${IPC.builtInBrowserTrustCertificate}: expected { tabId, fingerprint }.`);
+    }
+    // Keep the tab's scope (project or personal collection) like every other
+    // tab action, so the tab is looked up in the browser that owns it.
+    return ensureBuiltInBrowser().trustCertificate(
+      { ...parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserTrustCertificate), tabId, fingerprint },
+      win,
+    );
+  });
+
+  ipcMain.handle(IPC.builtInBrowserListTrustedCertificates, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserListTrustedCertificates, { windowMs: 10_000, max: 30 });
+    return ensureBuiltInBrowser().listTrustedCertificates();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserRevokeTrustedCertificates, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserRevokeTrustedCertificates, { windowMs: 10_000, max: 20 });
+    const id = isRecord(arg) && typeof arg.id === "string" && arg.id.trim() ? arg.id.trim() : null;
+    return ensureBuiltInBrowser().revokeTrustedCertificates({ id });
+  });
+
   // "Agents can use the ADE browser". Trusted-renderer only, and never on the
   // desktop bridge: an agent must not be able to answer its own prompt.
   ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
@@ -11370,6 +11401,12 @@ export function registerIpc({
     return requirePtyService().dispose(arg);
   });
 
+  ipcMain.handle(IPC.ptyShellSettingsGet, async () => requirePtyService().getShellSettings());
+
+  ipcMain.handle(IPC.ptySetDefaultShell, async (_event, arg: { shellId?: unknown }) =>
+    requirePtyService().setDefaultShell(arg ?? {}),
+  );
+
   ipcMain.handle(IPC.terminalList, async (_event, arg) =>
     requirePtyService().listTerminals(parseTerminalListArgs(arg)),
   );
@@ -11396,6 +11433,23 @@ export function registerIpc({
 
   ipcMain.handle(IPC.terminalReattachChatCli, async (_event, arg) =>
     await requirePtyService().reattachChatCli(parseTerminalReattachArgs(arg)),
+  );
+
+  // Terminal watches (in-process desktop only; a runtime-bound window routes
+  // these to its brain as `terminal.*` actions).
+  const requireTerminalWatchService = (): TerminalWatchService => {
+    const service = getCtx().terminalWatchService;
+    if (!service) throw new Error("Terminal watches are not available in this window.");
+    return service;
+  };
+  ipcMain.handle(IPC.terminalWatch, async (_event, arg) =>
+    await requireTerminalWatchService().watch(readTerminalWatchArgs(arg)),
+  );
+  ipcMain.handle(IPC.terminalUnwatch, async (_event, arg) =>
+    requireTerminalWatchService().unwatch(readTerminalUnwatchArgs(arg)),
+  );
+  ipcMain.handle(IPC.terminalListWatches, async (_event, arg) =>
+    getCtx().terminalWatchService?.listWatches(readTerminalListWatchesArgs(arg)) ?? [],
   );
 
   const ensureDiffContext = (): AppContextWith<"diffService"> => {

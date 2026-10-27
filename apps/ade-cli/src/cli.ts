@@ -726,6 +726,7 @@ export type FormatterId =
   | "browser-attach"
   | "browser-status"
   | "browser-dev-servers"
+  | "browser-dev-server-stop"
   | "browser-text"
   | "browser-sessions"
   | "browser-observation"
@@ -2440,6 +2441,24 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control logs --text                   Read the active App Control launch terminal
     $ ade terminal write --terminal <session-id> --data "y\\n"
     $ ade terminal signal --terminal <session-id> --signal SIGINT
+
+  Watch a terminal instead of polling it. ADE wakes your chat when the
+  terminal prints something new (after it goes quiet for a few seconds), with
+  the last ~4 KB cleaned of colors and redraws. Output already on screen when
+  the watch starts never wakes you. The terminal exiting ends the watch with
+  one last wake that carries the exit code.
+
+    $ ade terminal watch <terminal-id> --text        Wake this chat on new output
+    $ ade terminal watch <terminal-id> --match error Only on lines containing "error"
+    $ ade terminal watch <terminal-id> --match "ready|listening" --lifetime 30m
+    $ ade terminal watch --command "npm run dev" --match "error|ready"
+                                                    Start a shell in the chat's lane and watch it
+    $ ade terminal watches --text                   This chat's watches (--all for every chat)
+    $ ade terminal unwatch <watch-id>               Stop one quietly (no id: all of this chat's)
+
+  Lifetime defaults to 2h (max 24h). A watch stops itself after 20 wakes in
+  an hour. Watches run on the machine that runs the chat, watch only that
+  machine's terminals, and end if that machine's ADE restarts.
 `,
   files: `${ADE_BANNER}
   Files
@@ -3571,6 +3590,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
     $ ade --socket browser dev-servers --text      Dev servers running in this lane
+    $ ade --socket browser dev-servers stop 5173   Stop a server this chat started
     $ ade --socket browser actions --text          List built_in_browser actions
 
   "dev-servers" lists the dev servers this machine's runtime knows for the
@@ -3578,7 +3598,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE terminals or in an agent's own shell, plus listening ports whose process
   runs from the lane's worktree (a server started in the background shows up a
   few seconds after the command that started it returns). It needs no desktop.
-  ADE never connects to a port to find it.
+  ADE never connects to a port to find it. "dev-servers stop <port>" stops a
+  server this chat's agent started (SIGTERM to its process group, SIGKILL after
+  3s; taskkill /T on Windows). It refuses a port held by anything else, and
+  never stops ADE, an agent CLI or a terminal.
 
   No desktop on this machine
 
@@ -4117,6 +4140,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
       Prints {name, saved: true} | {name, saved: false, kept: true} | {name, saved: false, declined: true}
+
+    $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
+      For a token a shell CLI needs once, not kept in ADE. The person picks
+      "Temporary private file" or "Save to ADE secrets" (your --delivery is the
+      default). A file answer prints {name, saved: true, delivery: "file",
+      file, expiresAt}: an owner-only file on this chat's machine. Read it only
+      inside a command: CLOUDFLARE_API_TOKEN="$(cat <file>)" wrangler deploy.
+      Your commands can read it, so never print it. Deleted when the chat is
+      archived or deleted, or after --ttl (24h, the maximum). Re-running with
+      the same --request-id returns the same file without asking again.
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -9989,6 +10022,74 @@ function buildTerminalPlan(args: string[]): CliPlan {
           }),
         ),
       ],
+    };
+  }
+  if (sub === "watch") {
+    // The chat to wake: an agent's own shell names it in ADE_CHAT_SESSION_ID.
+    const explicitChat = readValue(args, ["--chat", "--chat-session", "--chat-session-id"]);
+    const chat = explicitChat ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    const input: JsonObject = {
+      chatSessionId: requireValue(chat, "chatSessionId (--chat, or run from a chat's shell)"),
+      // From an agent's own shell the agent armed it.
+      armedBy: explicitChat ? "user" : "agent",
+    };
+    maybePut(input, "match", readValue(args, ["--match", "--grep"]) ?? undefined);
+    maybePut(input, "lifetime", readValue(args, ["--lifetime", "--for"]) ?? undefined);
+    maybePut(input, "command", readValue(args, ["--command", "-c"]) ?? undefined);
+    maybePut(input, "laneId", readValue(args, ["--lane", "--lane-id"]) ?? undefined);
+    maybePut(input, "ptyId", readValue(args, ["--pty", "--pty-id"]) ?? undefined);
+    maybePut(
+      input,
+      "terminalId",
+      readValue(args, ["--terminal", "--terminal-id"]) ?? firstStandalonePositional(args) ?? undefined,
+    );
+    return {
+      kind: "execute",
+      label: "terminal watch",
+      steps: [actionStep("result", "terminal", "watch", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
+    };
+  }
+  if (sub === "unwatch") {
+    const chat =
+      readValue(args, ["--chat", "--chat-session", "--chat-session-id"])
+      ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    const terminal = readValue(args, ["--terminal", "--terminal-id"]);
+    const watchId = readValue(args, ["--watch", "--watch-id"]) ?? firstStandalonePositional(args);
+    const input: JsonObject = {};
+    maybePut(input, "watchId", watchId ?? undefined);
+    maybePut(input, "terminalId", terminal ?? undefined);
+    if (!watchId) {
+      // No id: this chat's watch on --terminal, or every watch it has.
+      input.chatSessionId = requireValue(chat, "a watch id, or --chat (or run from a chat's shell)");
+    }
+    return {
+      kind: "execute",
+      label: "terminal unwatch",
+      steps: [actionStep("result", "terminal", "unwatch", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
+    };
+  }
+  if (sub === "watches" || sub === "list-watches") {
+    const input: JsonObject = {};
+    if (!readFlag(args, ["--all"])) {
+      maybePut(
+        input,
+        "chatSessionId",
+        readValue(args, ["--chat", "--chat-session", "--chat-session-id"])
+          ?? asString(process.env.ADE_CHAT_SESSION_ID)
+          ?? undefined,
+      );
+    }
+    maybePut(input, "terminalId", readValue(args, ["--terminal", "--terminal-id"]) ?? undefined);
+    return {
+      kind: "execute",
+      label: "terminal watches",
+      steps: [actionStep("result", "terminal", "listWatches", input)],
+      // Watches live in the running brain; an in-process runtime would drop them on exit.
+      needsLiveRuntime: "Terminal watches",
     };
   }
   if (sub === "signal" || sub === "interrupt" || sub === "stop") {
@@ -17089,6 +17190,40 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     sub === "servers" ||
     sub === "localhost"
   ) {
+    // `dev-servers stop <port>`: stop a server this chat's agent started. The
+    // runtime checks the process on the port is still this chat's, and an
+    // agent can only name its own chat; a human names one with --session.
+    // Peek, so a list call keeps every argument it had.
+    const mode = firstStandalonePositional([...args], BROWSER_VALUE_CARRIER_FLAGS) ?? tail[0] ?? null;
+    if (mode === "stop" || mode === "kill") {
+      // Value flags first, so their values are not read as the port.
+      const sessionId = readValue(args, ["--session", "--session-id", "--chat"]);
+      const laneId = readValue(args, ["--lane", "--lane-id"]);
+      const portFlag = readValue(args, ["--port"]);
+      if (firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS) == null) tail.shift();
+      const portText = portFlag
+        ?? firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS)
+        ?? tail.shift()
+        ?? null;
+      const port = parseOptionalPort(portText, "dev-servers stop <port>");
+      if (port == null) throw new CliUsageError("dev-servers stop needs the server's port: ade browser dev-servers stop 5173");
+      return {
+        kind: "execute",
+        label: "browser dev server stop",
+        // A refusal (not this chat's, port shared, kill did not take) fails the command.
+        exitCodeFromResult: (result) => {
+          const record = firstRecord(result, ["result"]) ?? (isRecord(result) ? result : {});
+          return record.ok === false ? 1 : 0;
+        },
+        steps: [
+          actionStep("result", "work_tools", "stopDevServer", {
+            port,
+            ...(sessionId ? { chatSessionId: sessionId } : {}),
+            ...(laneId ? { laneId } : {}),
+          }),
+        ],
+      };
+    }
     return {
       kind: "execute",
       label: "browser dev servers",
@@ -19322,6 +19457,14 @@ function buildSecretsPlan(args: string[]): CliPlan {
     const generate = readFlag(args, ["--generate"]);
     const timeoutValue = readValue(args, ["--timeout"]);
     const sessionId = readValue(args, ["--session", "--session-id"]);
+    // `--delivery file` (or `--file`): the person may pick a temporary private
+    // file instead of the project's secrets, and the agent gets only its path.
+    const deliveryValue = readValue(args, ["--delivery"]) ?? (readFlag(args, ["--file", "--temp-file"]) ? "file" : null);
+    if (deliveryValue != null && deliveryValue !== "file" && deliveryValue !== "secrets") {
+      throw new CliUsageError("--delivery must be `secrets` or `file`.");
+    }
+    const requestId = readValue(args, ["--request-id"]);
+    const ttlValue = readValue(args, ["--ttl"]);
     const name = nameFlag ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
     if (!reason?.trim()) {
@@ -19338,6 +19481,9 @@ function buildSecretsPlan(args: string[]): CliPlan {
         timeoutMs,
         ...(generate ? { generate: true } : {}),
         ...(sessionId ? { chatSessionId: sessionId } : {}),
+        ...(deliveryValue ? { delivery: deliveryValue } : {}),
+        ...(requestId ? { requestId } : {}),
+        ...(ttlValue ? { ttlMs: parseSnoozeDurationMs(ttlValue) } : {}),
       })],
       // The wait for the person is the point of the command; the transport
       // must outlive it.
@@ -24615,7 +24761,8 @@ function buildInitializeParams(
 
 function parseOptionalPort(value: string | null, label: string): number | null {
   if (value == null) return null;
-  const parsed = Number.parseInt(value, 10);
+  // The whole operand: `5173oops` is a typo, not port 5173.
+  const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65_535) {
     throw new CliUsageError(`${label} must be a TCP port between 1 and 65535.`);
   }
@@ -33140,6 +33287,17 @@ function formatBrowserDevServers(value: unknown): string {
   );
 }
 
+function formatBrowserDevServerStop(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const port = result.port;
+  if (result.ok !== true) {
+    return `Did not stop the server on port ${String(port)}: ${String(result.error ?? "unknown error")}`;
+  }
+  if (result.alreadyStopped === true) return `Nothing is listening on port ${String(port)} any more.`;
+  const stopped = Array.isArray(result.stopped) ? result.stopped.length : 0;
+  return `Stopped the server on port ${String(port)} (${stopped} process${stopped === 1 ? "" : "es"}${result.forced === true ? ", forced after it ignored SIGTERM" : ""}).`;
+}
+
 function formatWorkToolShow(value: unknown): string {
   const result = isRecord(value) ? value : {};
   return renderKeyValues("ADE show", [
@@ -33753,6 +33911,15 @@ function formatProjectSecrets(value: unknown): string {
   }
   if (typeof record.name === "string" && typeof record.saved === "boolean") {
     // `secrets request`: the outcome only. The value never comes back.
+    if (record.saved && record.delivery === "file" && typeof record.file === "string") {
+      // Quoted for the shell the agent pastes it into.
+      const quoted = `'${record.file.replace(/'/g, "'\\''")}'`;
+      return [
+        `${record.reused ? "Still in" : "Saved to"} a private file: ${record.file}`,
+        `Use it inside a command, e.g. TOKEN="$(cat ${quoted})" your-cli …; never print it.`,
+        `ADE deletes it ${typeof record.expiresAt === "string" ? `at ${record.expiresAt}` : "after 24 hours"} or when this chat is archived.`,
+      ].join("\n");
+    }
     if (record.saved) {
       return `${record.replaced ? "Replaced" : "Saved"} project secret ${record.name}. The value stays hidden; use it by name.`;
     }
@@ -34609,6 +34776,8 @@ function formatTextOutput(
       return formatBrowserAttach(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
+    case "browser-dev-server-stop":
+      return formatBrowserDevServerStop(value);
     case "browser-text":
       return formatBrowserText(value);
     case "work-tools-state":
@@ -34852,6 +35021,7 @@ function inferFormatter(
   )
     return "browser-status";
   if (label === "browser dev servers") return "browser-dev-servers";
+  if (label === "browser dev server stop") return "browser-dev-server-stop";
   if (label === "browser text") return "browser-text";
   if (label === "work tools state") return "work-tools-state";
   if (

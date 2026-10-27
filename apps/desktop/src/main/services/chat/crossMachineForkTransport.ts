@@ -187,6 +187,20 @@ export function validateForkTransport(capsule: AgentChatCrossMachineHandoffCapsu
     throw new Error("The handoff capsule fork main file exceeds its portable limit.");
   }
 
+  // Optional (an older source sends none), but a value that is present must be
+  // well formed: a bad one would start the fork at a zero PDF budget.
+  const retainedMedia = forkTransport.claudeRetainedMedia;
+  if (
+    retainedMedia !== undefined
+    && (
+      !retainedMedia
+      || typeof retainedMedia !== "object"
+      || ![retainedMedia.pages, retainedMedia.bytes].every((value) => Number.isFinite(value) && value >= 0)
+    )
+  ) {
+    throw new Error("The handoff capsule has an invalid Claude media budget.");
+  }
+
   if (forkTransport.sideFiles === undefined) return;
   if (!Array.isArray(forkTransport.sideFiles) || forkTransport.sideFiles.length > 1_000) {
     throw new Error("The handoff capsule has too many fork side files.");

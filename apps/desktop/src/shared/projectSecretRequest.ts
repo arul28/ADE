@@ -33,12 +33,40 @@ export const PROJECT_SECRET_REQUEST_METADATA_KEY = "projectSecretRequest" as con
 export const PROJECT_SECRET_VALUE_QUESTION_ID = "secret_value" as const;
 /** Present only when the name already exists: `keep` or `replace`. */
 export const PROJECT_SECRET_ACTION_QUESTION_ID = "secret_action" as const;
+/**
+ * Where the value goes: `secrets` (the project's encrypted secrets) or `file`
+ * (a temporary owner-only file; the agent gets its path). Always asked, so a
+ * client that draws no native card still lets the person choose.
+ */
+export const PROJECT_SECRET_DELIVERY_QUESTION_ID = "secret_delivery" as const;
+
+export type ProjectSecretDelivery = "secrets" | "file";
+
+export function readProjectSecretDelivery(value: unknown): ProjectSecretDelivery | null {
+  return value === "file" || value === "secrets" ? value : null;
+}
 
 export const PROJECT_SECRET_REASON_MAX_CHARS = 500;
 
 /** The one line of copy every surface uses to say where the value goes. */
 export const PROJECT_SECRET_WHERE_IT_GOES =
   "Saved encrypted to this project's secrets. The agent only sees the name.";
+
+/**
+ * The same line for a temporary file. Honest about the trade: the value stays
+ * out of chat and logs, but the agent's commands can read the file.
+ */
+export const PROJECT_SECRET_FILE_WHERE_IT_GOES =
+  "Kept out of chat and logs, in a private file this agent's commands can read. Deleted when the chat is archived or after 24 hours.";
+
+export const PROJECT_SECRET_DELIVERY_OPTIONS: ReadonlyArray<{
+  value: ProjectSecretDelivery;
+  label: string;
+  description: string;
+}> = [
+  { value: "secrets", label: "Save to ADE secrets", description: PROJECT_SECRET_WHERE_IT_GOES },
+  { value: "file", label: "Temporary private file", description: PROJECT_SECRET_FILE_WHERE_IT_GOES },
+];
 
 export type ProjectSecretRequestCard = {
   name: string;
@@ -47,11 +75,26 @@ export type ProjectSecretRequestCard = {
   generate: boolean;
   /** The name already holds a value when the card was raised. */
   exists: boolean;
+  /**
+   * Where the agent asked for the value to go: the card's default. The person
+   * decides; a card from before this field reads as `secrets`.
+   */
+  delivery: ProjectSecretDelivery;
 };
 
 /** What `project_secret.request` returns. Never the value. */
 export type ProjectSecretRequestResult =
   | { name: string; saved: true; replaced: boolean }
+  | {
+      name: string;
+      saved: true;
+      delivery: "file";
+      /** Absolute path of the owner-only file holding the value. */
+      file: string;
+      expiresAt: string;
+      /** A retry with the same request id: the file from the first answer. */
+      reused?: boolean;
+    }
   | { name: string; saved: false; kept: true }
   | { name: string; saved: false; declined: true };
 
@@ -74,6 +117,7 @@ export function readProjectSecretRequestCard(
     reason: typeof record.reason === "string" ? record.reason.trim() : "",
     generate: record.generate === true,
     exists: record.exists === true,
+    delivery: readProjectSecretDelivery(record.delivery) ?? "secrets",
   };
 }
 

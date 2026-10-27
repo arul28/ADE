@@ -3762,21 +3762,23 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 let agentChatSideChatMetadataKey = "sideChat"
 
 let agentChatAdeAuthoredMetadataKeys = [
-  "boardMove", "prWatchWake", "scheduledWake", "spawnCompletion",
-  "agentRelay", "hostContinuation", "usageLimitResume",
+  "boardMove", "prWatchWake", "terminalWatchWake", "scheduledWake", "spawnCompletion",
+  "agentRelay", "hostContinuation", "usageLimitResume", "automationRun",
 ]
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?
 }
 
-/// `metadata.prWatchWake` on a PR Watch / Ship wake. Only the card matters
+/// `metadata.prWatchWake` on a PR Watch / Ship wake, or
+/// `metadata.terminalWatchWake` on a terminal watch wake. Only the card matters
 /// here: the wake renders as that card, never as a user bubble.
 private struct AgentChatPrWatchWakeContainer: Decodable {
   struct Wake: Decodable {
     var card: AgentChatAdeCardPayload?
   }
   var prWatchWake: Wake?
+  var terminalWatchWake: Wake?
 }
 
 enum AgentChatEvent: Decodable, Equatable {
@@ -4204,7 +4206,8 @@ extension AgentChatEvent {
       let text = try container.decode(String.self, forKey: .text)
       // A PR Watch / Ship wake: ADE wrote this message, not the user. It shows
       // as its card, with the exact text the agent read folded underneath.
-      if let wakeCard = (try? container.decodeIfPresent(AgentChatPrWatchWakeContainer.self, forKey: .metadata))?.prWatchWake?.card {
+      let wakeContainer = try? container.decodeIfPresent(AgentChatPrWatchWakeContainer.self, forKey: .metadata)
+      if let wakeCard = wakeContainer?.prWatchWake?.card ?? wakeContainer?.terminalWatchWake?.card {
         var card = makeWorkAdeCardModel(from: wakeCard)
         card.wakeText = text
         self = .adeCard(card: card)
