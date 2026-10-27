@@ -1915,3 +1915,155 @@ on its event loop for the account lease, Linear and session reads), 3 runs:
 The owner's installed brain logged an 11.1 s freeze at idle with 123 ms of
 CPU and no page faults: a sleeping wait, which is what this lock wait is
 (25 ms sleeps until the holder, often an `ade` CLI call, lets go).
+
+## Mac Studio (M4 Max): project switch and launch (2026-10-26)
+
+Lane `ade/perf-p3-switch-startup`, before is main at `e2f42f44c`. Not the
+baseline machine; other lanes' agents and benches were running (1-minute load
+average 11-36), and every run held the machine-wide perf lock. A/B runs were
+interleaved (before, after, before, after) on the same machine.
+
+**Project switch.** A dev app on its own `ADE_HOME`, user data, socket (sync
+off) and CDP port, with four throwaway git projects open as tabs, each with six
+lanes (five worktrees with an untracked file). `press-to-paint.mjs projects 4`
+with `GAP_MS=3000`, 16 warm switches per run, so each window also holds the
+work a switch schedules after it (the 1.2-1.8 s lane reads). The counts come
+from `spawn-trace.cjs` in the app and its brain, a dev-only `--require` that
+logs `ipcMain.handle` calls and writes of `ade-state.json`, and the app's own
+`project-open.jsonl`.
+
+| Metric (per warm switch) | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Main process: `project.open.done`, reused context (median) | `project-open.jsonl` | 27-28 ms | 7-17 ms | 25 ms |
+| Git processes started (app and brain) | `spawn-trace.cjs` | 45.6-47.4 | 21.3-22.6 | 30 |
+| Of those, lane status reads (`computeLaneStatus`) | same | 28.1 | 13.1 (first visit of each project only; 0 once a project was measured in the last 30 s) | — |
+| Writes of `ade-state.json` (each one fsync'd, plus a directory fsync) | tracer | 3.75 | 0.94 | 1 |
+| Renderer to main IPC calls | tracer | 45.9-46.5 | 44.4-44.8 | 50 |
+| Press to content (median) | `press-to-paint.mjs projects` | 54-60 ms | 53-55 ms | 70 ms (the switch-pass row) |
+
+**Under real load (2026-10-26).** The same bench on a `--clone` of P0's golden
+copy of the owner's ADE project (49 lanes, 46 worktrees, 3,526 chat records,
+78.5 M database versions) plus three synthetic projects as tabs; the dev app
+started on Home (`--home`). Five interleaved pairs, 24 warm switches per run
+(`press-to-paint.mjs projects 6`, `GAP_MS=3000`); before is `e2f42f44c`, after
+is this branch. Medians of the five runs, with their range; "slowest" is the
+slowest single switch across all five runs. Load average 6-21.
+
+| Metric (per warm switch, real load) | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Press to content | `press-to-paint.mjs projects` | 57.6 ms (53.7-61.5); slowest 76 ms | 48.8 ms (46.9-54.0); slowest 62 ms | 70 ms |
+| Page settled | same | 117 ms (108-120) | 69 ms (66-74) | 300 ms (the four-project row) |
+| Main process, reused context | `project-open.jsonl` | 31 ms (26-32); slowest 93 ms | 9 ms (8-10); slowest 37 ms | 25 ms |
+| Git processes (app and brain; includes each project's first visit, warm switches start none) | `spawn-trace.cjs` | 122 (122-125) | 69 (56-71) | 90 |
+| Writes of `ade-state.json` | tracer | 4 | 1 | 1 |
+| Renderer to main IPC calls | tracer | 47 (46.5-48) | 37 (36.4-37.5) | 50 |
+| Closed project open (existing project, real ADE copy) | `project-open.jsonl` | 854 ms (779-1,064) | 287 ms (273-328) | not set (new row; ceilings are the owner's call) |
+
+T3 publishes no project-switch time (only render counts for thread
+switches, #21123 and #21130).
+
+The owner's installed app logs the same switch: over 809 reused-context
+switches in its `project-open.jsonl` (2026-08-19 to 2026-10-24) the main
+process took 39 ms at the median and 58 ms at p90, of which `git rev-parse` was
+12 ms and three of the state writes were in the 27 ms `bind_window_reused`
+step; a base-ref detection (44 ms, two git runs) ran beside every one of them
+and was thrown away.
+
+What changed: a switch to a project that is already open skips `git rev-parse`
+and the base-ref detection (`switchProjectFromDialog`), writes the recent
+entry and the workspace roots in one state write (`bindWindowToProject`), and
+the renderer keeps when it last measured lane status per project, so the
+1.8 s all-lanes status read after a switch runs only when that project's
+status is older than 30 s (it used to run every time, beside a second read at
+1.2 s).
+
+Open items: every mounted Work surface republishes its active tool on any
+binding change (8 `work_tools.setActiveTool` calls per switch, 0-1 ms each);
+the root store and the project's own store each read lane status once when a
+project is first visited (two reads where one would do).
+
+**Launch.** `desktop-main-start.mjs --mode warm --keep-user-data` (7 runs) and
+the same with `--project <throwaway repo>` (5 runs), two interleaved pairs.
+`--keep-user-data` reuses one user-data folder across launches, as a relaunch
+does; `--project` opens a startup project (`ADE_PROJECT_ROOT`), the path a
+relaunch after an update (every restored tab) and `ade open` take. The bench
+now passes `--use-mock-keychain`: without it the unsigned dev Electron waits on
+a login-keychain prompt until the run times out.
+
+| Metric | Bench | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Process start to bundle evaluated, relaunch (median) | `desktop-main-start.mjs --mode warm --keep-user-data` | 410-413 ms | 355-362 ms | not set (new row; ceilings are the owner's call) |
+| Process start to first window, relaunch (median) | same | 693-720 ms | 648-661 ms | not set (new row; ceilings are the owner's call) |
+| Process start to first window, relaunch with a startup project (median) | `... --keep-user-data --project <dir>` | 852-855 ms | 642-648 ms | not set (new row; ceilings are the owner's call) |
+
+What changed: the login and interactive shell probes (`-lc`, `-ic`, up to
+1.5 s each) no longer run before the first window once one launch has saved
+their answers (`shell-path-cache.json` in user data); the saved PATH is used at
+once and refreshed in the background. The first window is created before the
+startup project opens and shows the "Starting ADE" splash; its window session
+answers once the project is open, so there is no welcome-screen flash. On this
+Mac the shells take 20 ms (`-lc`) and 40-190 ms (`-ic`); a heavier shell setup
+saves more, and a startup project behind a cold brain saves its whole open
+(about 0.8 s at the median in the owner's log), per restored tab.
+
+The closed-project open lost two waits: the brain's `projects.add` no longer
+waits up to 750 ms on an icon worker the desktop never reads (the desktop asks
+`withoutIcon`), and the desktop opens the project database beside the brain
+registration instead of after it.
+
+**Head to head with T3 (2026-10-26).** T3's published numbers, measured the
+way T3 measured them, on a `--clone` of P0's golden copy of the owner's ADE
+project. Five runs each unless noted; worst is the slowest run. Before is main
+at `e2f42f44c`.
+
+| Row | T3 | Before | Baseline | Ceiling |
+|---|---:|---:|---:|---:|
+| Project database open, 74 MB `ade.db` (`openKvDb`, a fresh APFS clone per open, 3 alternated rounds of 7) | 50-66 ms (11 GB DB, #21122) | 147 ms, worst 185 | 55 ms, worst 61 | not set (new row; ceilings are the owner's call) |
+| Startup JS (static imports of the renderer entry, production build) | 3.94 MB (#25295) | 9.19 MB | 3.88 MB | not set (new row; ceilings are the owner's call) |
+| Process start to a usable composer, production build, unpackaged, startup project | 20.6 / 24.5 s (packaged Linux, #23805) | 2,687 ms, worst 3,055 | 1,839 ms, worst 2,400 | not set (new row; ceilings are the owner's call) |
+| Process start to first window, same runs | — | 2,132 ms | 851 ms | not set (new row; ceilings are the owner's call) |
+| Thread switch L>M>S x3, 2 s each, rendered fibers (T3's probe rule) | 13,970 (#21123) | 16,765, worst 16,988 | 14,138, worst 14,257 (13,620, worst 13,694, with P2's chat-pane half) | not set (new row; ceilings are the owner's call) |
+
+Notes on the rows:
+
+- The database open repaired nothing on an up-to-date database, but looked the
+  schema up one table at a time: a correlated shadow-table subquery (22 ms per
+  call, three calls) and several full `sqlite_master` scans per table in the
+  CRR passes (1,582 schema rows here). One materialized user-tables query and
+  one CRR-state read per pass give the same answers. `lane_worktree_locks`,
+  local-only, was also rebuilt on every open (the PK retrofit stripped its
+  unique index and the schema created it again).
+- Startup JS: the renderer entry is a small loader; the old body loads as one
+  dynamic chunk, issue/Linear/onboarding views load when first shown, and the
+  Vite preload helper has its own chunk instead of sitting in the Monaco
+  vendor chunk.
+- The thread switch uses the owner's real chats, about 2,000 / 175 / 40
+  messages, not T3's seeded 2,662 / 149 / 45, in Electron instead of headless
+  Chromium. A switch used to render the Work page twice: once for the
+  selection, once for the "seen" stamp a layout effect wrote right after. The
+  selection's own write now stamps the row it leaves.
+
+**Cross-machine (the three-machine rig, 2026-10-26).** P0's rig: this
+branch's dev app on the "MacBook", measurement brains for "Studio" (a clone
+of the owner's ADE project) and "Windows" behind proxies at 30 ms RTT; five
+rounds each. KB is what the proxies carried down during the step.
+
+| Metric | Scenario | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Studio-only project tab, switch back: KB down | `rig-scenarios.mjs projects` (unique origins) | 300 KB (worst 356) | 22 KB (worst 22) | not set (new row; ceilings are the owner's call) |
+| Studio-only project tab: press to content | same | 266 ms (worst 317) | 261 ms (worst 304) | not set (new row; ceilings are the owner's call) |
+| Renderer reload: KB from the Studio | `rig-scenarios.mjs start` (shared origin) | 198 KB | 0.3 KB | not set (new row; ceilings are the owner's call) |
+| Idle on the local tab, other machines' polls: KB down per minute (Studio + Windows) | `rig-idle.mjs`, 2 min after a 30 s settle (shared origin) | 508 + 67 KB | 0.8 + 1.7 KB | not set (new row; ceilings are the owner's call) |
+| Local tab switch (from a remote tab): usage snapshot reads, IPC bytes | `rig-scenarios.mjs projects` + main-process IPC tracer | 3 reads, 1.39 MB | 1 read, 0.46 MB | not set (new row; ceilings are the owner's call) |
+
+What changed: remote action reads are conditional. The desktop keeps the last
+large result of each call (8 KB and up, 48 kept) with the hash its host gave
+it and sends the hash back; the host still runs the action and answers "not
+modified" when the result would be the same bytes. The kept copies live in the
+main process, so a renderer reload reuses them too. Older hosts and desktops
+ignore the new fields. The switch time is not bandwidth: it stays at about
+260 ms.
+
+Every usage reader (header, balance indicator, suggestions) re-read the
+machine's usage snapshot, about 460 KB, when the tab changed machine; they now
+share one read while it is in flight, never across a binding change.

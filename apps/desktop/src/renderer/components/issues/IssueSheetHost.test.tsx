@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useAppStore } from "../../state/appStore";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -68,6 +68,12 @@ function openDeeplink(identifier: string) {
 }
 
 describe("IssueSheetHost", () => {
+  // The host loads the viewer lazily; load it once up front so a busy machine
+  // does not spend a test's wait on the module import.
+  beforeAll(async () => {
+    await import("./IssueViewer");
+  });
+
   beforeEach(() => {
     window.location.hash = "#/lanes";
     useAppStore.setState({

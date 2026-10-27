@@ -10,7 +10,7 @@
  * Everything is read through the chat's runtime pin: the report comes from
  * the machine the chat runs on, and so does the Fix.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowClockwise, ChartBar, Gauge, Lightning, Receipt } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import {
@@ -93,7 +93,11 @@ function SourceChips({ window }: { window: ClaudeUsageBehaviorWindow }) {
   );
 }
 
-export function ClaudeUsageSheet({
+/**
+ * Memoized: it sits under the chat pane, which re-renders many times per chat
+ * switch, and a closed sheet with the same props has nothing to redraw.
+ */
+export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
   open,
   onOpenChange,
   sessionId,
@@ -400,4 +404,4 @@ export function ClaudeUsageSheet({
       </div>
     </Dialog>
   );
-}
+});

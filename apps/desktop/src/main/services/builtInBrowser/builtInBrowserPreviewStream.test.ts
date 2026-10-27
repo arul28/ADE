@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  BUILT_IN_BROWSER_PREVIEW_CAPTURE_STALL_MS,
   createBuiltInBrowserPreviewStreams,
   type BuiltInBrowserPreviewCapture,
   type BuiltInBrowserPreviewFrame,
@@ -9,6 +10,7 @@ type Harness = ReturnType<typeof harness>;
 
 function harness(options: {
   capture?: (tabId: string, maxWidth: number) => Promise<BuiltInBrowserPreviewCapture | null>;
+  now?: () => number;
 } = {}) {
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
   const frames: BuiltInBrowserPreviewFrame[] = [];
@@ -28,7 +30,7 @@ function harness(options: {
     isTabAlive: (tabId) => aliveTabs.has(tabId),
     isVisible: () => visible,
     onError: (_tabId, error) => errors.push(error),
-    now: () => 1_700_000_000_000,
+    now: options.now ?? (() => 1_700_000_000_000),
     setLoopTimer: (fn, ms) => {
       const entry = { fn, ms, cleared: false };
       timers.push(entry);
@@ -118,6 +120,42 @@ describe("createBuiltInBrowserPreviewStreams", () => {
     h.fire();
     await flush();
     expect(h.captureCalls).toHaveLength(2);
+  });
+
+  it("gives up on a capture that never answers, and drops its late answer", async () => {
+    let clock = 1_700_000_000_000;
+    const pending: ((frame: BuiltInBrowserPreviewCapture) => void)[] = [];
+    const h = harness({
+      now: () => clock,
+      capture: () => new Promise<BuiltInBrowserPreviewCapture | null>((resolve) => {
+        pending.push(resolve);
+      }),
+    });
+    h.streams.start("tab-1");
+
+    h.fire();
+    clock += BUILT_IN_BROWSER_PREVIEW_CAPTURE_STALL_MS - 1;
+    h.fire();
+    await flush();
+    expect(h.captureCalls).toHaveLength(1);
+
+    clock += 1;
+    h.fire();
+    await flush();
+    expect(h.captureCalls).toHaveLength(2);
+    expect(h.errors).toHaveLength(1);
+
+    pending[0]?.({ dataUrl: "data:image/jpeg;base64,stale", width: 480, height: 300 });
+    await flush();
+    expect(h.frames).toHaveLength(0);
+    // The stale capture settling does not free the loop while the new one is out.
+    h.fire();
+    await flush();
+    expect(h.captureCalls).toHaveLength(2);
+
+    pending[1]?.({ dataUrl: "data:image/jpeg;base64,fresh", width: 480, height: 300 });
+    await flush();
+    expect(h.frames.map((frame) => frame.dataUrl)).toEqual(["data:image/jpeg;base64,fresh"]);
   });
 
   it("pauses while the window is hidden and resumes without a re-subscribe", async () => {

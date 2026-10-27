@@ -931,6 +931,27 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     };
   }, [deeplinkViewOverride, projectStateKey, workViewByProject]);
 
+  // Set by the undo of a press-open (`selectionRestorer`): the row that the
+  // press opened, and the seen stamps of the two rows as they were before it.
+  // The press stamped the row it left, and the undo is about to leave the
+  // pressed row; neither was a visit.
+  const undonePressSeenRef = useRef<{
+    pressedId: string;
+    seenBefore: Record<string, string | undefined>;
+  } | null>(null);
+  // The selection as last rendered, kept by the seen-stamp layout effect below.
+  const lastSelectionRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
+    projectStateKey: null,
+    sessionId: null,
+  });
+  // A selection write that already stamped the row it left (see the seen-stamp
+  // layout effect below), so the effect does not write a second time.
+  const leaveStampedInWriteRef = useRef<{
+    projectStateKey: string;
+    leftId: string;
+    selectedId: string | null;
+  } | null>(null);
+
   const setProjectViewState = useCallback(
     (
       next:
@@ -938,7 +959,35 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         | ((prev: WorkProjectViewState) => WorkProjectViewState),
     ) => {
       if (!projectStateKey) return;
-      setWorkViewState(projectStateKey, next);
+      if (typeof next !== "function" && !("selectedItemId" in next)) {
+        setWorkViewState(projectStateKey, next);
+        return;
+      }
+      setWorkViewState(projectStateKey, (prev) => {
+        const updated = typeof next === "function" ? next(prev) : { ...prev, ...next };
+        // Leaving a row stamps it seen. Doing it in the selection's own write
+        // saves the layout effect's second write, which rendered the whole
+        // Work page and chat pane again before paint on every switch.
+        // Only the row on screen is being left: a write that moves a project's
+        // stored selection before it ever rendered (restoring the selection
+        // after a project switch) leaves nothing.
+        const leftId = prev.selectedItemId;
+        const shown = lastSelectionRef.current;
+        if (
+          !leftId
+          || updated.selectedItemId === leftId
+          || shown.projectStateKey !== projectStateKey
+          || shown.sessionId !== leftId
+          || undonePressSeenRef.current?.pressedId === leftId
+        ) {
+          return updated;
+        }
+        leaveStampedInWriteRef.current = { projectStateKey, leftId, selectedId: updated.selectedItemId };
+        return {
+          ...updated,
+          workSeenAtBySessionId: stampWorkSeenAt(updated.workSeenAtBySessionId ?? {}, [leftId], new Date().toISOString()),
+        };
+      });
     },
     [projectStateKey, setWorkViewState],
   );
@@ -1307,18 +1356,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // clean finish does not consult it at all. A layout effect, so the stamp lands
   // before paint and the lane does not flicker for a frame. A row left by
   // switching projects is stamped into the project it belongs to.
-  const lastSelectionRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
-    projectStateKey: null,
-    sessionId: null,
-  });
-  // Set by the undo of a press-open (`selectionRestorer`): the row that the
-  // press opened, and the seen stamps of the two rows as they were before it.
-  // The press stamped the row it left, and the undo is about to leave the
-  // pressed row; neither was a visit.
-  const undonePressSeenRef = useRef<{
-    pressedId: string;
-    seenBefore: Record<string, string | undefined>;
-  } | null>(null);
   useLayoutEffect(() => {
     const previous = lastSelectionRef.current;
     lastSelectionRef.current = { projectStateKey, sessionId: selectedSessionId };
@@ -1336,6 +1373,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         }
         return { ...prev, workSeenAtBySessionId: seen };
       });
+      return;
+    }
+    const stampedInWrite = leaveStampedInWriteRef.current;
+    leaveStampedInWriteRef.current = null;
+    if (
+      stampedInWrite?.projectStateKey === previous.projectStateKey
+      && stampedInWrite.leftId === leftId
+      && stampedInWrite.selectedId === selectedSessionId
+      && previous.projectStateKey === projectStateKey
+    ) {
       return;
     }
     const at = new Date().toISOString();

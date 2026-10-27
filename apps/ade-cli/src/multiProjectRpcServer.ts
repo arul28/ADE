@@ -2,6 +2,8 @@ import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeServi
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import { conditionalActionResult } from "./conditionalActionResult";
+import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -3086,9 +3088,13 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return await decorateProjectWithIcon(
-        projectRegistry.add(rootPath, readProjectRegistrationIntent(params)),
-      );
+      const added = projectRegistry.add(rootPath, readProjectRegistrationIntent(params));
+      // A caller that only needs the project id (the desktop opening a project)
+      // asks for no icon: resolving one starts a worker process, and a cold one
+      // held every project open for up to its 750 ms budget. Every other
+      // caller, and every older client, still gets the icon.
+      if (params.withoutIcon === true) return { ...added, icon: EMPTY_PROJECT_ICON };
+      return await decorateProjectWithIcon(added);
     }
 
     if (method === "projects.setCatalogVisibility") {
@@ -3574,6 +3580,9 @@ export function createMultiProjectRpcRequestHandler(
     if (childWakeTokenFromCaller) {
       const childSessionId = createdChatSessionId(result);
       if (childSessionId) rememberChildWakeToken(childSessionId, childWakeTokenFromCaller);
+    }
+    if (actionEnvelope && params[CONDITIONAL_ACTION_PARAM] === true) {
+      return conditionalActionResult(result, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]);
     }
     return result;
   }) as JsonRpcHandler & {

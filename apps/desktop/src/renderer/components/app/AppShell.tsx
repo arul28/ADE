@@ -51,7 +51,7 @@ import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { cn } from "../ui/cn";
-import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
+import { disposeTerminalRuntimesForProjectChange } from "../terminals/terminalRuntimeLifecycle";
 import { ToastViewport } from "./toast/ToastViewport";
 import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";

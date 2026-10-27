@@ -48,6 +48,7 @@ import { macDesktopParkedWindows } from "./macDesktopStrip";
 import { Z_LAYERS } from "../ui/zLayers";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { useTicker } from "../../lib/ticker";
 
 export const MAC_DESKTOP_FULLSCREEN_Z = Z_LAYERS.macDesktop;
 
@@ -793,14 +794,8 @@ export function useMacDesktopPanelController({
   }, [errorText, laneHostIsLocal]);
 
   /* The pill's clock. Ticks only while something is recording. */
-  const [nowTick, setNowTick] = useState(() => Date.now());
   const recordingRunning = Boolean(recording?.running);
-  useEffect(() => {
-    if (!recordingRunning) return undefined;
-    setNowTick(Date.now());
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [recordingRunning]);
+  const nowTick = useTicker(1000, recordingRunning);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);

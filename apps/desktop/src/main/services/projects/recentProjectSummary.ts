@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
@@ -347,7 +348,69 @@ const GIT_ORIGIN_CACHE_LIMIT = 256;
 const gitOriginCache = new Map<string, GitOriginCacheEntry>();
 
 /**
- * Reads `origin` straight out of the repo's git config, as written there.
+ * The origin URL from the checkout's git config file, without starting git.
+ * `undefined` whenever the file alone may not give git's answer: no readable
+ * config, no origin URL in it (a global config can still name one), more than
+ * one (git takes the last), a value git would decode (quotes, an inline
+ * comment, an escape), includes (an `[include]` or `[includeIf]` can replace
+ * it), or per-worktree config (`extensions.worktreeConfig`).
+ */
+export function readGitOriginUrlWithoutGit(projectRoot: string): string | undefined {
+  try {
+    const gitDir = resolveGitMetadataDirectory(projectRoot);
+    if (!gitDir) return undefined;
+    const text = fs.readFileSync(path.join(resolveGitConfigDirectory(gitDir), "config"), "utf8");
+    if (/^\s*\[\s*include/im.test(text) || /^\s*worktreeConfig\s*=\s*true\b/im.test(text)) return undefined;
+    const urls = originUrlLines(text);
+    // A quoted value, an inline comment or an escape needs git's own decoding.
+    return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every `url` value in the config's `[remote "origin"]` sections, in order. */
+function originUrlLines(configText: string): string[] {
+  const urls: string[] = [];
+  let inOrigin = false;
+  for (const rawLine of configText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const section = line.match(/^\[([^\]]+)\]$/);
+    if (section) {
+      inOrigin = /^remote\s+"origin"$/i.test(section[1]?.trim() ?? "");
+      continue;
+    }
+    const url = inOrigin ? line.match(/^url\s*=\s*(.+)$/i)?.[1]?.trim() : undefined;
+    if (url) urls.push(url);
+  }
+  return urls;
+}
+
+/**
+ * The origin URL from the checkout's git config file, or from `git config`
+ * when the file alone cannot settle it; null when there is none. The brain's
+ * project registration takes this path: starting `git` there blocked its event
+ * loop for 50-160 ms per new project.
+ */
+export function readGitOriginUrlFromConfigOrGit(projectRoot: string): string | null {
+  const fromFile = readGitOriginUrlWithoutGit(projectRoot);
+  if (fromFile !== undefined) return fromFile;
+  const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  if (result.status !== 0) return null;
+  const value = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  return value || null;
+}
+
+/**
+ * Reads `origin` straight out of the repo's git config, as written there,
+ * cached by the config file's mtime.
  *
  * Deliberately a plain file read rather than `git remote get-url`: spawning
  * `git` once per recent would not be free. Identity code wants

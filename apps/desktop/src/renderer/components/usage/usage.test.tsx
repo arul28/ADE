@@ -26,6 +26,14 @@ import { UsageLimitsBand } from "./UsageLimitsBand";
 import { UsagePooledLimits } from "./UsagePooledLimits";
 import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
+
+/** A switch to a project on another machine: the usage readers re-read that machine's numbers. */
+const OTHER_MACHINE_BINDING = {
+  kind: "remote",
+  key: "remote:target-studio:project-a",
+  targetId: "target-studio",
+  projectId: "project-a",
+} as unknown as Parameters<Parameters<Window["ade"]["app"]["onProjectBindingChanged"]>[0]>[0];
 import { providerColor } from "./providerColors";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
@@ -1209,7 +1217,7 @@ describe("usage components", () => {
 
       currentSnapshot = reboundSnapshot;
       await act(async () => {
-        onBindingChanged?.(null);
+        onBindingChanged?.(OTHER_MACHINE_BINDING);
       });
       expect((await screen.findAllByText("58%")).length).toBeGreaterThan(0);
 
@@ -1462,7 +1470,7 @@ describe("usage components", () => {
       expect(await screen.findByRole("button", { name: /Claude wk …, 5h …/ })).toBeTruthy();
 
       await act(async () => {
-        onBindingChanged?.(null);
+        onBindingChanged?.(OTHER_MACHINE_BINDING);
       });
 
       expect(await screen.findByRole("button", { name: /Codex wk 58% left, 5h 58% left/ })).toBeTruthy();
@@ -1545,7 +1553,7 @@ describe("usage components", () => {
 
       currentSnapshot = reboundSnapshot;
       await act(async () => {
-        for (const callback of bindingCallbacks) callback(null);
+        for (const callback of bindingCallbacks) callback(OTHER_MACHINE_BINDING);
       });
       expect(await screen.findByRole("button", { name: /Codex wk 58% left, 5h 58% left/ })).toBeTruthy();
 

@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import {
   clearPendingIssueCreateRequest,
   subscribeIssueCreateRequests,
   takePendingIssueCreateRequest,
   type IssueCreateRequest,
 } from "../../lib/issueCreateRequests";
-import { IssueCreateDialog } from "./IssueCreateDialog";
+// The composer (and its issue-template parsing) loads when someone first asks for it.
+const IssueCreateDialog = lazy(() => import("./IssueCreateDialog").then((module) => ({ default: module.IssueCreateDialog })));
 
 /** The "New issue" composer, mounted once in the app shell. */
 export function IssueCreateHost() {
@@ -20,5 +21,9 @@ export function IssueCreateHost() {
     });
   }, []);
   if (!request) return null;
-  return <IssueCreateDialog key={request.id} request={request.value} onClose={() => setRequest(null)} />;
+  return (
+    <Suspense fallback={null}>
+      <IssueCreateDialog key={request.id} request={request.value} onClose={() => setRequest(null)} />
+    </Suspense>
+  );
 }

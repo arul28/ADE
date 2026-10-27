@@ -47,6 +47,8 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
+import { ConditionalActionCache } from "./conditionalActionCache";
+import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../../shared/conditionalActionResult";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
@@ -464,6 +466,7 @@ export class RemoteConnectionPool {
     Promise<LocalPortForwardEntry>
   >();
   private readonly unsupportedOptionalActionKeys = new Set<string>();
+  private readonly conditionalResults = new ConditionalActionCache();
   private readonly pendingDisconnects = new Set<string>();
   private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
   private readonly connectFailureBackoffByTargetId = new Map<
@@ -1040,26 +1043,37 @@ export class RemoteConnectionPool {
     ) {
       return optionalFallback;
     }
-    const params = {
-      projectId,
-      name: "run_ade_action",
-      ...callerReportsFailureParam(),
-      arguments: {
-        domain: request.domain,
-        action: request.action,
-        ...(request.args ? { args: request.args } : {}),
-        ...(Object.prototype.hasOwnProperty.call(request, "arg")
-          ? { arg: request.arg }
-          : {}),
-        ...(request.argsList ? { argsList: request.argsList } : {}),
-      },
-    };
+    // Only reads go conditional: the host runs the action before it answers
+    // "not modified", and asking again in full must never run a write twice.
+    const conditionalKey = isReplaySafeAdeAction(request.domain, request.action)
+      ? this.conditionalResults.key(entry.result.target.id, projectId, request)
+      : null;
     const callOptions = remoteRuntimeActionCallOptions(request);
+    // `etag`: the hash of the copy this side kept, so the host can answer "not modified".
+    const callWith = (etag: string | null): Promise<unknown> => {
+      const params = {
+        projectId,
+        name: "run_ade_action",
+        ...callerReportsFailureParam(),
+        ...(conditionalKey ? { [CONDITIONAL_ACTION_PARAM]: true } : {}),
+        ...(etag ? { [CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]: etag } : {}),
+        arguments: {
+          domain: request.domain,
+          action: request.action,
+          ...(request.args ? { args: request.args } : {}),
+          ...(Object.prototype.hasOwnProperty.call(request, "arg")
+            ? { arg: request.arg }
+            : {}),
+          ...(request.argsList ? { argsList: request.argsList } : {}),
+        },
+      };
+      return callOptions
+        ? entry.client.call("ade/actions/call", params, callOptions)
+        : entry.client.call("ade/actions/call", params);
+    };
     let value: unknown;
     try {
-      value = callOptions
-        ? await entry.client.call("ade/actions/call", params, callOptions)
-        : await entry.client.call("ade/actions/call", params);
+      value = await callWith(conditionalKey ? this.conditionalResults.etagFor(conditionalKey) : null);
     } catch (error) {
       if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableError(error)) {
         this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
@@ -1069,7 +1083,21 @@ export class RemoteConnectionPool {
     }
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      const record = value as Record<string, unknown>;
+      let record = value as Record<string, unknown>;
+      if (conditionalKey && record.ok !== false) {
+        const kept = this.conditionalResults.resolve(entry.result.target.id, conditionalKey, record);
+        if (kept) {
+          record = kept;
+        } else {
+          // "Not modified" for a result this side has since dropped: ask again in full.
+          const full = await callWith(null);
+          if (!full || typeof full !== "object" || Array.isArray(full)) {
+            return { domain: request.domain, action: request.action, result: full, statusHints: {} };
+          }
+          const fullRecord = full as Record<string, unknown>;
+          record = this.conditionalResults.resolve(entry.result.target.id, conditionalKey, fullRecord) ?? fullRecord;
+        }
+      }
       if (record.ok === false) {
         const error =
           record.error &&
@@ -1249,6 +1277,7 @@ export class RemoteConnectionPool {
 
   async disconnect(targetId: string): Promise<void> {
     this.bumpDisconnectGeneration(targetId);
+    this.conditionalResults.forgetTarget(targetId);
     this.relayAccountOwnerByTargetId.delete(targetId);
     const forwardsClosed = this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);

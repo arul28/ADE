@@ -207,7 +207,17 @@ import { createTranscriptionService } from "./services/transcription/transcripti
 import { installEditableContextMenu } from "./editorContextMenu";
 import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
-import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
+import {
+  augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
+  mergePathEntries,
+  onShellPathRefreshed,
+  primeShellPathCache,
+  readSavedShellPaths,
+  saveShellPaths,
+  setPathEnvValue,
+  SHELL_PATH_CACHE_FILE,
+} from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
@@ -660,17 +670,35 @@ function resolveAutoUpdaterCacheDir(): string {
  * the AI SDK can locate the CLI.
  */
 function fixElectronShellPath(): void {
-  const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
-    env: process.env,
-    includeInteractiveShell: true,
-    timeoutMs: 1_500,
+  // The shells' answers from the last launch are used at once, and refreshed
+  // in the background: a login and an interactive shell no longer run before
+  // the first window (only the first launch, with nothing saved, waits).
+  const cacheFile = path.join(app.getPath("userData"), SHELL_PATH_CACHE_FILE);
+  primeShellPathCache(readSavedShellPaths(cacheFile));
+  const launchEnv = { ...process.env };
+  const apply = (): void => {
+    const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
+      env: launchEnv,
+      includeInteractiveShell: true,
+      timeoutMs: 1_500,
+    });
+    if (nextPath) {
+      // Use setPathEnvValue so Windows processes inheriting a `Path` key collapse
+      // to a single canonical entry (direct `process.env.PATH = …` can leave a
+      // stale `Path` behind that later readers pick up instead).
+      setPathEnvValue(process.env, nextPath);
+    }
+  };
+  apply();
+  saveShellPaths(cacheFile);
+  onShellPathRefreshed(() => {
+    // Directories added to PATH since launch (an ADE CLI bin dir, say) stay:
+    // the refreshed shell answer goes first, the current entries after it.
+    const current = getPathEnvValue(process.env);
+    apply();
+    setPathEnvValue(process.env, mergePathEntries(getPathEnvValue(process.env), current));
+    saveShellPaths(cacheFile);
   });
-  if (nextPath) {
-    // Use setPathEnvValue so Windows processes inheriting a `Path` key collapse
-    // to a single canonical entry (direct `process.env.PATH = …` can leave a
-    // stale `Path` behind that later readers pick up instead).
-    setPathEnvValue(process.env, nextPath);
-  }
 }
 
 // Must run before any service or child process is created.
@@ -681,6 +709,20 @@ configureOutboundProxyFromEnv(process.env, getMachineMainLogger());
 void trustSystemCertificates(getMachineMainLogger());
 
 let adeCliAutoInstallScheduled = false;
+
+/**
+ * Set while the launch opens its startup project, after the first window is
+ * already on screen. That window's session (and the launch's recovery
+ * question) answer once it settles, so its renderer shows the "Starting ADE"
+ * splash meanwhile instead of the welcome screen.
+ */
+let startupProjectOpen: Promise<void> | null = null;
+/**
+ * How long the first window waits on the launch's project opens before it
+ * shows what has opened. Under the 30 s IPC default, so the window's session
+ * read answers instead of timing out.
+ */
+const STARTUP_PROJECT_WINDOW_WAIT_MS = 20_000;
 
 /**
  * Makes `ade` exist for a user who never opens Settings. Every guard that
@@ -2583,7 +2625,22 @@ app.whenReady().then(async () => {
     return projectsForWindowTabs(windowId);
   };
 
+  /** A recent-project entry for `project`; a local project replaces any saved remote binding. */
+  const withRecentProject = (
+    current: GlobalState,
+    project: ProjectInfo,
+    options: { recordLastProject?: boolean; recordRecent?: boolean; preserveRecentOrder?: boolean },
+  ): GlobalState => {
+    const state = upsertRecentProject(current, project, options);
+    delete state.lastRemoteProjectBinding;
+    return state;
+  };
+
   const persistUpdateWorkspace = (): void => {
+    writeGlobalState(globalStatePath, withUpdateWorkspace(readGlobalState(globalStatePath)));
+  };
+
+  const withUpdateWorkspace = (current: GlobalState): GlobalState => {
     const localRoots: string[] = [];
     let fallbackActiveRoot: string | null = null;
     for (const [windowId, tabRoots] of windowProjectTabRoots) {
@@ -2596,14 +2653,13 @@ app.whenReady().then(async () => {
     const activeLocalRoot = activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))
       ? activeProjectRoot
       : fallbackActiveRoot;
-    const current = readGlobalState(globalStatePath);
-    writeGlobalState(globalStatePath, {
+    return {
       ...current,
       updateWorkspace: {
         localRoots,
         activeLocalRoot,
       },
-    });
+    };
   };
 
   const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
@@ -2714,7 +2770,10 @@ app.whenReady().then(async () => {
     return next;
   };
 
-  const setForegroundProject = (projectRoot: string | null): void => {
+  const setForegroundProject = (
+    projectRoot: string | null,
+    options: { persistRecent?: boolean } = {},
+  ): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     void reconcileSyncHostContexts().then(() => {
       notifyMobileSyncProjectCatalogChanged();
@@ -2722,7 +2781,7 @@ app.whenReady().then(async () => {
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       const activeCtx = projectContexts.get(activeProjectRoot);
-      if (activeCtx) {
+      if (activeCtx && options.persistRecent !== false) {
         persistRecentProject(activeCtx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
       try {
@@ -2782,14 +2841,14 @@ app.whenReady().then(async () => {
         builtInBrowserService.attachToWindow(win);
       }
     }
+    const ctx = normalizedRoot ? projectContexts.get(normalizedRoot) ?? null : null;
     if (options.foreground ?? true) {
-      setForegroundProject(normalizedRoot);
+      // The recent entry is written below, in one write with the workspace roots.
+      setForegroundProject(normalizedRoot, { persistRecent: false });
     }
     if (normalizedRoot) {
       projectLastActivatedAt.set(normalizedRoot, Date.now());
-      const ctx = projectContexts.get(normalizedRoot);
       if (ctx) {
-        persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
         // Fire-and-forget catch-up reconcile on warm-reuse / deep-link focus.
         // Throttled per-project + globally capped, so this never blocks focus.
         // The runner routes in-process vs. daemon and re-resolves the live
@@ -2809,6 +2868,17 @@ app.whenReady().then(async () => {
         });
       }
     }
+    // One read and one fsync'd write of the global state for the whole bind:
+    // the recent entry and the window's workspace roots used to be written
+    // separately, three times per project switch.
+    const updatesWorkspace = windowId != null && normalizedRoot != null;
+    if (ctx || updatesWorkspace) {
+      let state = readGlobalState(globalStatePath);
+      if (ctx) state = withRecentProject(state, ctx.project, { recordLastProject: false, preserveRecentOrder: true });
+      if (updatesWorkspace) state = withUpdateWorkspace(state);
+      writeGlobalState(globalStatePath, state);
+      if (ctx) mirrorDesktopRecentProjectToMachineCatalog(ctx.project.rootPath);
+    }
     if (previousRemoteBinding) {
       const remainingRemoteBinding =
         Array.from(windowProjectBindings.values()).at(-1) ?? null;
@@ -2823,7 +2893,6 @@ app.whenReady().then(async () => {
       emitProjectChangedToWindow(windowId, project);
       emitProjectBindingChangedToWindow(windowId, bindingForLocalProject(project));
     }
-    if (windowId != null && normalizedRoot) persistUpdateWorkspace();
   };
 
   const persistLastRemoteProjectBinding = (
@@ -6541,12 +6610,25 @@ app.whenReady().then(async () => {
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
-    const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
-    const db = await openKvDb(adePaths.dbPath, logger, {
-      // The machine runtime owns sync and the real storage doctor in this mode;
-      // this dormant fallback has no authoritative local peer signal.
-      hasSyncPeers: () => true,
-    });
+    // The brain's registration and this window's own database open do not
+    // depend on each other; a project open waited for one, then the other.
+    const [registered, opened] = await Promise.allSettled([
+      localRuntimePool.ensureProject(projectRoot),
+      openKvDb(adePaths.dbPath, logger, {
+        // The machine runtime owns sync and the real storage doctor in this mode;
+        // this dormant fallback has no authoritative local peer signal.
+        hasSyncPeers: () => true,
+      }),
+    ]);
+    if (registered.status === "rejected") {
+      if (opened.status === "fulfilled") {
+        try { opened.value.close(); } catch { /* the registration error is the one to report */ }
+      }
+      throw registered.reason;
+    }
+    if (opened.status === "rejected") throw opened.reason;
+    const runtimeProject = registered.value;
+    const db = opened.value;
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
@@ -7781,13 +7863,7 @@ app.whenReady().then(async () => {
     project: ProjectInfo,
     options: { recordLastProject?: boolean; recordRecent?: boolean; preserveRecentOrder?: boolean } = {},
   ): void => {
-    const state = upsertRecentProject(
-      readGlobalState(globalStatePath),
-      project,
-      options,
-    );
-    delete state.lastRemoteProjectBinding;
-    writeGlobalState(globalStatePath, state);
+    writeGlobalState(globalStatePath, withRecentProject(readGlobalState(globalStatePath), project, options));
     if (options.recordRecent !== false) {
       mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
     }
@@ -7922,7 +7998,14 @@ app.whenReady().then(async () => {
     projectOpenLogger.info("project.open.begin", { selectedPath });
     try {
       const resolveStartedAt = Date.now();
-      repoRoot = normalizeProjectRoot(
+      // A switch to a project that is already open names its root, which git
+      // resolved when it opened. Asking git again (and detecting its base ref,
+      // which only a new context uses) is work every tab switch threw away.
+      const openRoot = normalizeProjectRoot(selectedPath);
+      const reusesOpenRoot = options.trustGitOwnership !== true
+        && projectContexts.has(openRoot)
+        && isLikelyRepoRoot(openRoot);
+      repoRoot = reusesOpenRoot ? openRoot : normalizeProjectRoot(
         await resolveRepoRootForUserOpen(
           selectedPath,
           options.trustGitOwnership === true,
@@ -7947,10 +8030,10 @@ app.whenReady().then(async () => {
       // Kick off base-ref detection IN PARALLEL with the existing-context
       // check and any recent-project bookkeeping. For a cold open this shaves
       // 200-600ms off (git symbolic-ref + rev-parse run during work we'd be
-      // doing anyway). For the fast "context already warm" path we simply
-      // discard the in-flight promise.
+      // doing anyway). A context that is already open needs no base ref, so
+      // its fast path starts none.
       const baseRefStartedAt = Date.now();
-      const baseRefPromise = detectDefaultBaseRef(repoRoot)
+      const detectBaseRef = () => detectDefaultBaseRef(repoRoot!)
         .then((value) => {
           projectOpenLogger.info("project.open.base_ref_detected", {
             selectedPath,
@@ -7969,6 +8052,7 @@ app.whenReady().then(async () => {
           });
           return "main";
         });
+      const baseRefPromise = reusesOpenRoot ? null : detectBaseRef();
       const isKnownRecentProject = readLocalRecentProjects().some((entry) => {
         if (typeof entry?.rootPath !== "string") return false;
         return normalizeProjectRoot(entry.rootPath) === repoRoot;
@@ -7981,20 +8065,20 @@ app.whenReady().then(async () => {
       const existing = projectContexts.get(repoRoot);
       if (existing) {
         existing.hasUserSelectedProject = true;
-        scheduleOpenRecentPersist(existing.project, {
-          recordLastProject: false,
-          preserveRecentOrder: isKnownRecentProject,
-        }, "persist_recent_reused");
+        // `bindWindowToProject` writes a listed project's recent entry in
+        // place; only a project missing from the list still needs this write.
+        if (!isKnownRecentProject) {
+          scheduleOpenRecentPersist(existing.project, {
+            recordLastProject: false,
+            preserveRecentOrder: false,
+          }, "persist_recent_reused");
+        }
         const bindStartedAt = Date.now();
         bindWindowToProject(windowId, repoRoot, { emit: true, foreground: true });
         logOpenStep("bind_window_reused", bindStartedAt);
         const rebalanceStartedAt = Date.now();
         scheduleProjectContextRebalance();
         logOpenStep("schedule_rebalance_reused", rebalanceStartedAt);
-        // Drop the unused base-ref promise so it doesn't leak as an unhandled
-        // rejection if detectDefaultBaseRef threw between the .catch above
-        // and this point (already neutralized by .catch, but keep tidy).
-        void baseRefPromise;
         projectOpenLogger.info("project.open.done", {
           selectedPath,
           repoRoot,
@@ -8007,7 +8091,7 @@ app.whenReady().then(async () => {
       let initPromise = projectInitPromises.get(repoRoot);
       if (!initPromise) {
         initPromise = (async () => {
-          const baseRef = await baseRefPromise;
+          const baseRef = await (baseRefPromise ?? detectBaseRef());
           const initStartedAt = Date.now();
           const ctx = shouldUseInProcessProjectRuntime()
             ? await initContextForProjectRoot({
@@ -9045,23 +9129,31 @@ app.whenReady().then(async () => {
     return null;
   };
 
-  const registerWindowSession = (
-    win: BrowserWindow,
-    projectRoot: string | null = null,
-    remoteBinding: RemoteOpenProjectBinding | null = null,
+  const assignWindowSession = (
+    windowId: number,
+    projectRoot: string | null,
+    remoteBinding: RemoteOpenProjectBinding | null,
   ): void => {
     let normalizedRoot: string | null = null;
     if (!remoteBinding && projectRoot) {
       normalizedRoot = normalizeProjectRoot(projectRoot);
     }
-    windowProjectRoots.set(win.id, normalizedRoot);
-    windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
-    rememberWindowKnownLocalProjectRoot(win.id, normalizedRoot);
+    windowProjectRoots.set(windowId, normalizedRoot);
+    windowProjectTabRoots.set(windowId, normalizedRoot ? new Set([normalizedRoot]) : new Set());
+    rememberWindowKnownLocalProjectRoot(windowId, normalizedRoot);
     if (remoteBinding) {
-      windowProjectBindings.set(win.id, remoteBinding);
+      windowProjectBindings.set(windowId, remoteBinding);
     } else {
-      windowProjectBindings.delete(win.id);
+      windowProjectBindings.delete(windowId);
     }
+  };
+
+  const registerWindowSession = (
+    win: BrowserWindow,
+    projectRoot: string | null = null,
+    remoteBinding: RemoteOpenProjectBinding | null = null,
+  ): void => {
+    assignWindowSession(win.id, projectRoot, remoteBinding);
     win.on("focus", () => {
       const focusedRemoteBinding = windowProjectBindings.get(win.id) ?? null;
       const focusedRoot = windowProjectRoots.get(win.id) ?? null;
@@ -9076,11 +9168,13 @@ app.whenReady().then(async () => {
         // switches projects. The per-project 90s throttle + single-flight guard
         // collapses refocus storms into at most one reconcile per window.
         scheduleReconcile(buildReconcileRunner(focusedRoot));
-      } else if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
+      } else if (!startupProjectOpen && (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot))) {
         // Focusing an unscoped window (e.g. a brand-new File > New Window) must
         // not clobber the foreground project — that would tear down background
         // services and break running work in other windows. Only re-derive the
         // foreground when the current one is no longer bound to any window.
+        // The first window is unscoped while the launch opens its project; that
+        // project is the foreground one, and the window is bound to it next.
         setForegroundProject(firstOpenWindowProjectRoot());
       }
       builtInBrowserService.attachToWindow(win);
@@ -10063,6 +10157,7 @@ app.whenReady().then(async () => {
     runWithIpcWindow: (event, fn) =>
       ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
     getWindowSession,
+    waitForStartupProjectOpen: () => startupProjectOpen ?? Promise.resolve(),
     getProjectContext: (projectRoot) =>
       projectContexts.get(normalizeProjectRoot(projectRoot)) ?? null,
     setWindowProjectTabs: rememberWindowProjectTabs,
@@ -10158,88 +10253,103 @@ app.whenReady().then(async () => {
   // it guards read the same names, so the two cannot drift apart.
   const restoresUpdateWorkspace = updateWorkspaceRestore.localRoots.length > 0;
   const armsResume = resumedAfterUpdate.length > 0;
-  // The post-update transaction refuses every project while its update window is
-  // open: opened during it, a project comes back as "ADE is applying an update"
-  // and does not open at all. That costs the tab it was restoring and leaves the
-  // resume with no project to ask — which is how a checked "resume chats" box
-  // disappears without a trace. Only a launch that reaches a project waits; the
-  // machine the transaction owns past the wait is one this launch cannot fix.
-  if (postUpdateTransactionDone && (shouldOpenStartupProject || restoresUpdateWorkspace || armsResume)) {
-    const transactionFinished = await settledWithin(
-      postUpdateTransactionDone.then(() => true),
-      POST_UPDATE_TRANSACTION_WAIT_MS,
-      false,
-    );
-    if (!transactionFinished) {
-      // An install slower than the wait. Everything below opens a project and
-      // will be refused by the pool's still-open window, so this launch falls
-      // back to what it did before the wait — the tabs the renderer restores
-      // itself, and a project to open by hand — rather than holding a window
-      // nobody has seen yet for as long as that install takes. The resume is
-      // not part of that fallback: it opens no project, so it is still armed
-      // below, the moment the transaction lets the pool go.
-      updateLogger.warn("autoUpdate.post_update_transaction_wait_timeout", {
-        waitMs: POST_UPDATE_TRANSACTION_WAIT_MS,
-      });
-    }
-  }
-
-  // Restore the startup project before the renderer boots so packaged launches
-  // do not flash into the welcome state and lose the previous project context.
-  if (shouldOpenStartupProject && startupProject.rootPath) {
-    try {
-      await switchProjectFromDialog(startupProject.rootPath);
-    } catch (error) {
-      // The window asks for this once it loads and shows the recovery
-      // screen, instead of a bare welcome screen with no word of why.
-      if (isCodedError(error, "project_data_missing")) {
-        machineRecoveryService.noteStartupProjectDataMissing(normalizeProjectRoot(startupProject.rootPath));
-      }
-      setForegroundProject(null);
-      replaceDormantContext();
-    }
-  }
-
-  if (restoresUpdateWorkspace) {
-    const warmOrder = [
-      ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
-      ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
-    ];
-    for (const root of warmOrder) {
-      try {
-        await switchProjectFromDialog(root);
-      } catch {
-        // A checkout that is gone stays off the restored tab strip.
-      }
-    }
-  }
-  if (armsResume) {
-    // Armed once, when the pool can answer: with no update transaction running
-    // that is now, and otherwise it is the moment that transaction lets go —
-    // the same instant everything above needed, however long the install took.
-    void (postUpdateTransactionDone ?? Promise.resolve())
-      .then(() => armOwedResumes(resumedAfterUpdate))
-      .catch((error: unknown) => {
-        // The arm step logs its own failures, and the consume is best-effort
-        // by design; this guards a throw neither expects. A resume is the last
-        // thing that should go unsaid.
-        localRuntimeLogger.warn("update_resume.arm_chain_failed", {
-          error: error instanceof Error ? error.message : String(error),
+  // The launch's projects open while the first window is already on screen:
+  // its renderer shows the "Starting ADE" splash until they settle (its window
+  // session waits on `startupProjectOpen`), so there is no welcome-screen
+  // flash, and no launch without a window while a project opens.
+  const opensProjectsAtLaunch = shouldOpenStartupProject || restoresUpdateWorkspace || armsResume;
+  const openLaunchProjects = async (): Promise<void> => {
+    // The post-update transaction refuses every project while its update window is
+    // open: opened during it, a project comes back as "ADE is applying an update"
+    // and does not open at all. That costs the tab it was restoring and leaves the
+    // resume with no project to ask — which is how a checked "resume chats" box
+    // disappears without a trace. Only a launch that reaches a project waits; the
+    // machine the transaction owns past the wait is one this launch cannot fix.
+    if (postUpdateTransactionDone && (shouldOpenStartupProject || restoresUpdateWorkspace || armsResume)) {
+      const transactionFinished = await settledWithin(
+        postUpdateTransactionDone.then(() => true),
+        POST_UPDATE_TRANSACTION_WAIT_MS,
+        false,
+      );
+      if (!transactionFinished) {
+        // An install slower than the wait. Everything below opens a project and
+        // will be refused by the pool's still-open window, so this launch falls
+        // back to what it did before the wait — the tabs the renderer restores
+        // itself, and a project to open by hand — rather than holding the
+        // window on its splash for as long as that install takes. The resume is
+        // not part of that fallback: it opens no project, so it is still armed
+        // below, the moment the transaction lets the pool go.
+        updateLogger.warn("autoUpdate.post_update_transaction_wait_timeout", {
+          waitMs: POST_UPDATE_TRANSACTION_WAIT_MS,
         });
+      }
+    }
+
+    if (shouldOpenStartupProject && startupProject.rootPath) {
+      try {
+        await switchProjectFromDialog(startupProject.rootPath);
+      } catch (error) {
+        // The window asks for this once it loads and shows the recovery
+        // screen, instead of a bare welcome screen with no word of why.
+        if (isCodedError(error, "project_data_missing")) {
+          machineRecoveryService.noteStartupProjectDataMissing(normalizeProjectRoot(startupProject.rootPath));
+        }
+        setForegroundProject(null);
+        replaceDormantContext();
+      }
+    }
+
+    if (restoresUpdateWorkspace) {
+      const warmOrder = [
+        ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
+        ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
+      ];
+      for (const root of warmOrder) {
+        try {
+          await switchProjectFromDialog(root);
+        } catch {
+          // A checkout that is gone stays off the restored tab strip.
+        }
+      }
+    }
+    if (armsResume) {
+      // Armed once, when the pool can answer: with no update transaction running
+      // that is now, and otherwise it is the moment that transaction lets go —
+      // the same instant everything above needed, however long the install took.
+      void (postUpdateTransactionDone ?? Promise.resolve())
+        .then(() => armOwedResumes(resumedAfterUpdate))
+        .catch((error: unknown) => {
+          // The arm step logs its own failures, and the consume is best-effort
+          // by design; this guards a throw neither expects. A resume is the last
+          // thing that should go unsaid.
+          localRuntimeLogger.warn("update_resume.arm_chain_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+  };
+  // Handled at once: the window is created while this runs, and a failure here
+  // must be a log line, not an unhandled rejection.
+  const startupProjectOpenTask = opensProjectsAtLaunch
+    ? openLaunchProjects().catch((error: unknown) => {
+      getActiveContext().logger.warn("startup.project_open_failed", {
+        error: error instanceof Error ? error.message : String(error),
       });
+    })
+    : null;
+  // Released only once the first window is bound, so no window session can
+  // answer between the opens settling and the bind.
+  let releaseStartupWindow: () => void = () => {};
+  if (startupProjectOpenTask) {
+    startupProjectOpen = new Promise<void>((resolve) => {
+      releaseStartupWindow = resolve;
+    });
   }
 
-  const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
-  const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
-    ?? restoredLocalRoots[0]
-    ?? null;
-  const restoringUpdateWorkspace = restoredLocalRoots.length > 0;
-
+  // Before the opens settle this is the saved remote binding when the launch
+  // opens no local project; `bindLaunchWindow` corrects it afterwards.
   const initialRemoteProjectBinding =
-    shouldOpenStartupProject || restoringUpdateWorkspace ? null : savedRemoteProjectBinding;
-  const initialWindowProjectRoot = shouldOpenStartupProject
-    ? activeProjectRoot
-    : restoredActiveRoot;
+    shouldOpenStartupProject || restoresUpdateWorkspace ? null : savedRemoteProjectBinding;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     restoreState: readSavedMainWindowState(),
@@ -10247,17 +10357,58 @@ app.whenReady().then(async () => {
     onRendererRecovery: reportRendererRecovery,
     onCreated: (createdWindow) => {
       attachWheelZoom(createdWindow);
-      registerWindowSession(
-        createdWindow,
-        initialWindowProjectRoot,
-        initialRemoteProjectBinding,
-      );
-      if (restoredLocalRoots.length > 0) {
-        rememberWindowProjectTabs(createdWindow.id, restoredLocalRoots);
-      }
+      registerWindowSession(createdWindow, null, initialRemoteProjectBinding);
     },
     onCloseRequested: handleMainWindowCloseRequested,
   });
+  // Binds the first window to what the launch opened, as it was bound when it
+  // was created after the opens.
+  const bindLaunchWindow = (): void => {
+    const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
+    const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
+      ?? restoredLocalRoots[0]
+      ?? null;
+    const remoteBinding =
+      shouldOpenStartupProject || restoredLocalRoots.length > 0 ? null : savedRemoteProjectBinding;
+    const windowProjectRoot = remoteBinding
+      ? null
+      : shouldOpenStartupProject ? activeProjectRoot : restoredActiveRoot;
+    if (initialWindow.isDestroyed()) return;
+    assignWindowSession(initialWindow.id, windowProjectRoot, remoteBinding);
+    if (restoredLocalRoots.length > 0) {
+      rememberWindowProjectTabs(initialWindow.id, restoredLocalRoots);
+    }
+    // The opens made their project the foreground one already; this only
+    // matters when another window's focus moved it meanwhile.
+    if (windowProjectRoot && activeProjectRoot !== normalizeProjectRoot(windowProjectRoot)) {
+      setForegroundProject(windowProjectRoot, { persistRecent: false });
+    }
+  };
+  if (startupProjectOpenTask) {
+    try {
+      // Bounded: a project open that hangs (an unreachable mount, a brain that
+      // stopped answering) must not hold the window on its splash. Past the
+      // wait the window binds what has opened and the open finishes on its own.
+      const opened = await settledWithin(
+        startupProjectOpenTask.then(() => true),
+        STARTUP_PROJECT_WINDOW_WAIT_MS,
+        false,
+      );
+      if (!opened) {
+        getActiveContext().logger.warn("startup.project_open_wait_exceeded", { waitMs: STARTUP_PROJECT_WINDOW_WAIT_MS });
+        // The window answered without the project; give it the project once
+        // the open lands, unless the user picked something meanwhile.
+        void startupProjectOpenTask.then(() => {
+          if (initialWindow.isDestroyed() || windowProjectRoots.get(initialWindow.id) || !activeProjectRoot) return;
+          bindWindowToProject(initialWindow.id, activeProjectRoot, { emit: true, foreground: false });
+        });
+      }
+      bindLaunchWindow();
+    } finally {
+      startupProjectOpen = null;
+      releaseStartupWindow();
+    }
+  }
   builtInBrowserService.attachToWindow(initialWindow);
   initialWindowNavigationReady = true;
   drainPendingAppNavigationRequests();

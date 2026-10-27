@@ -6,7 +6,8 @@ import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { GitHubIssueStateIcon } from "../lanes/githubBrand";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
-import { IssueViewer } from "./IssueViewer";
+// The viewer (and its markdown) loads with the first selected issue.
+const IssueViewer = React.lazy(() => import("./IssueViewer").then((module) => ({ default: module.IssueViewer })));
 import {
   useGitHubIssueList,
   type GitHubIssueDetail,
@@ -259,12 +260,14 @@ export function GitHubIssuesPane({
       </div>
       <div className="min-h-0 min-w-0">
         {selectedIssue ? (
+          <React.Suspense fallback={null}>
           <IssueViewer
             key={selectedIssue.number}
             issueRef={{ provider: "github", owner: repo.owner, repo: repo.name, number: selectedIssue.number, url: selectedIssue.url }}
             variant="pane"
             onOpenRelated={() => undefined}
           />
+          </React.Suspense>
         ) : (
           <div className="grid h-full place-items-center text-[12px] text-[color:var(--kit-text-3)]">Select an issue.</div>
         )}

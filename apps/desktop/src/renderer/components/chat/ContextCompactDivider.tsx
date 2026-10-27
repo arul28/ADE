@@ -3,6 +3,7 @@ import { ArrowRight, ArrowsInLineVertical, CaretDown, CircleNotch, WarningCircle
 import type { AgentChatEvent } from "../../../shared/types";
 import { compactionFailLabel, formatCompactTokenCount, formatCompactDuration } from "../../../shared/contextCompaction";
 import { cn } from "../ui/cn";
+import { useTicker } from "../../lib/ticker";
 
 /** English ordinal suffix: 1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st. */
 function ordinalSuffix(n: number): "st" | "nd" | "rd" | "th" {
@@ -38,18 +39,13 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
   onRetry?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [now, setNow] = useState(Date.now());
   const running = event.state === "started";
+  const now = useTicker(1000, running);
   const failed = event.state === "failed";
   // One click per failure: the retry starts a new compaction, which replaces
   // this row as the latest one and removes its Retry.
   const [retrying, setRetrying] = useState(false);
   useEffect(() => setRetrying(false), [event.compactionId, event.state]);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, [running]);
   const elapsed = startedAt ? Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000)) : 0;
   const pre = formatCompactTokenCount(event.preTokens);
   const post = formatCompactTokenCount(event.postTokens);

@@ -2097,7 +2097,9 @@ export class LocalRuntimeConnectionPool {
       try {
         const project = await entry.client.call(
           "projects.add",
-          { rootPath: normalizedRoot, ...registration },
+          // This pool keeps a project's id and origin, never its icon (the
+          // window asks for icons on its own). An older brain ignores the flag.
+          { rootPath: normalizedRoot, ...registration, withoutIcon: true },
           { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
         );
         this.assertNotDisposed();

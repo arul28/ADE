@@ -151,6 +151,7 @@ import {
 import { isInParkedSurface } from "../../lib/parkedSurface";
 import { useAgentChatApi } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -461,7 +462,6 @@ export function ChatBuiltInBrowserPanel({
   const [linkMode, setLinkModeState] = useState<BrowserLinkOpenMode>(() => getLinkOpenMode());
   const [recordingFps, setRecordingFps] = useState<BuiltInBrowserRecordingFps>(30);
   // Re-rendered once a second while recording so the REC pill's clock ticks.
-  const [recordingClock, setRecordingClock] = useState(() => Date.now());
   const [importOpen, setImportOpen] = useState(false);
   const [bootedSimulatorName, setBootedSimulatorName] = useState<string | null>(null);
   const [devServers, setDevServers] = useState<BrowserDevServer[]>([]);
@@ -2304,13 +2304,7 @@ export function ChatBuiltInBrowserPanel({
   /* ── Ambient reads ──────────────────────────────────────────────────────── */
 
   const recordingStartedAt = recording?.startedAt ?? null;
-  useEffect(() => {
-    if (!recordingStartedAt) return undefined;
-    setRecordingClock(Date.now());
-    // `steps(1)` in spirit: one repaint a second, not one a frame.
-    const timer = window.setInterval(() => setRecordingClock(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [recordingStartedAt]);
+  const recordingClock = useTicker(1000, Boolean(recordingStartedAt));
 
   useEffect(() => {
     void refreshLinkOpenMode().then(() => setLinkModeState(getLinkOpenMode()));
