@@ -2194,3 +2194,25 @@ Two more chat rows (isolated dev app on this branch, the real big chat, 5 or 10 
 
 The second pair comes from loading the iOS simulator panel (three.js and the device models), the
 provider sign-in modal and the turn diff viewer only when they are opened.
+
+### E3 and E4 after the rebase onto P3 (2026-10-27, perf-p2-chats)
+
+Branch rebased onto main `025ed6aeb` (P0, P1, P3, P4 merged). P3's harnesses: `startup-js.mjs` for E3
+(entry + static-import closure of the production renderer, bytes on disk) and `e4-switch.mjs` for E4
+(T3 #21123: L→M→S ×3, 2 s each, fiber renders over the sequence). E4: production build on the owner's
+golden copy, two warm-up launches, then one launch with 5 measured runs, same method on both sides.
+
+| Row | T3 | Main `025ed6aeb` | Branch |
+|---|---:|---:|---:|
+| E3 startup JS | 3.94 MB | 3.93 MB (3,934,233 B) | **3.39 MB (3,394,834 B)** |
+| E4 renders, median (worst) | 13,970 | 14,593 (15,556) | **13,657 (13,760)** |
+
+E4 runs on the branch: 13,760 / 13,708 / 13,643 / 13,641 / 13,657. Main: 15,556 / 15,301 / 14,502 /
+14,503 / 14,593. The first two runs after a launch carried ~800–900 extra renders: the top bar's
+resource-pressure chip shows the live terminal CPU figure while the launch's shells are busy, and every
+new figure re-rendered the whole top bar. The chip now samples on its own. The startup cut moves
+`humanizeAgentIdentity` and `resolveUsageLimitResumeState` out of `chatSubagents` / `chatAutoResume` and
+lazy-loads the Jira pane's issue viewer (as the GitHub pane does): 876 → 797 startup modules.
+
+Left: the Work list's section headers still redraw (new inline handlers and children) when a session's
+data changes right after launch, ~200 renders in the first run on a fresh home.

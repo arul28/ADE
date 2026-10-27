@@ -296,8 +296,7 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
         .then((snapshot) => {
           if (cancelled || version !== requestVersion) return;
           // Every sample is a new object with fresh CPU numbers. Keep the old
-          // one unless the indicator would draw something different: a new
-          // object re-renders the whole top bar every 2 s.
+          // one unless the indicator would draw something different.
           setUsage((previous) => (
             resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
           ));
@@ -325,7 +324,12 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
   return usage;
 }
 
-function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot | null }) {
+/**
+ * Samples on its own: under load its numbers change every sample, and only
+ * this chip needs to redraw for that, not the whole top bar.
+ */
+function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
+  const usage = useResourcePressureUsage(enabled);
   const view = resourcePressureView(usage);
   if (!view) return null;
   const { level, description } = view;
@@ -870,7 +874,6 @@ export function TopBar({
     isNewTabOpen !== true &&
     Boolean(project?.rootPath) &&
     !remoteBinding;
-  const resourceUsage = useResourcePressureUsage(workspaceProjectOpen);
   // The sidebar toggle only shows while a project surface is on screen: not on
   // the welcome page, a new tab, Chats, or the account page.
   const projectSurfaceVisible =
@@ -2653,7 +2656,7 @@ export function TopBar({
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
         {!webMode ? <AutoUpdateControl /> : null}
         {!webMode ? <AccountBalanceIndicator /> : null}
-        <ResourcePressureIndicator usage={resourceUsage} />
+        <ResourcePressureIndicator enabled={workspaceProjectOpen} />
         <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
