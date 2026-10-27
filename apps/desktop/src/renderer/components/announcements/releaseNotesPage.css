@@ -9,8 +9,8 @@
 .ade-rn {
   display: flex;
   flex-direction: column;
-  height: clamp(420px, calc(90vh - 120px), 620px);
-  padding: 56px 56px 8px 64px;
+  height: clamp(400px, calc(86vh - 130px), 570px);
+  padding: 70px 48px 8px 48px;
   animation: ade-rn-in 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 

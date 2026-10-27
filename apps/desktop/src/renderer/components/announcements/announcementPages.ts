@@ -39,16 +39,22 @@ export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
     Page: lazy(() => import("./pages/SideChatsAnnouncement")),
   },
   {
-    id: "open-any-file",
-    added: "2026-10-27",
-    title: "Open any file",
-    Page: lazy(() => import("./pages/OpenAnyFileAnnouncement")),
-  },
-  {
     id: "issues",
     added: "2026-10-27",
     title: "Jira, Linear and GitHub issues",
     Page: lazy(() => import("./pages/IssuesAnnouncement")),
+  },
+  {
+    id: "music",
+    added: "2026-10-27",
+    title: "Apple Music and Spotify",
+    Page: lazy(() => import("./pages/MusicAnnouncement")),
+  },
+  {
+    id: "open-any-file",
+    added: "2026-10-27",
+    title: "Open any file",
+    Page: lazy(() => import("./pages/OpenAnyFileAnnouncement")),
   },
   {
     id: "chats-every-machine",

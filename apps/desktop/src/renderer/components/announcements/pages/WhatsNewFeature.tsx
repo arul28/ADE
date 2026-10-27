@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useAppStore } from "../../../state/appStore";
 import { useAppearanceStore } from "../../../state/appearanceStore";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
@@ -17,12 +17,14 @@ import "./whatsNewFeature.css";
  * - a GIF recording (a page renders only while it is on screen), with a still
  *   frame under either reduce-motion switch;
  * - two to four screenshots that crossfade (they hold still under reduce
- *   motion; the dots under them switch by hand);
+ *   motion; the dots under them switch by hand). One can be a short video: it
+ *   plays through once, then the next screenshot fades in;
  * - up to three phone screenshots side by side.
  */
 
 type GifMedia = { kind?: "gif"; gif: string; still: string; width: number; height: number; alt: string };
-type Shot = { src: string; alt: string };
+/** `src` is the picture; with `video`, it is the still shown under reduce motion. */
+type Shot = { src: string; alt: string; video?: string };
 type ImagesMedia = { kind: "images"; images: readonly Shot[]; width: number; height: number };
 type PhonesMedia = { kind: "phones"; images: readonly Shot[]; width: number; height: number };
 
@@ -123,29 +125,37 @@ function Crossfade({ media }: { media: ImagesMedia }) {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const count = media.images.length;
+  const activeIsVideo = Boolean(media.images[index]?.video) && !reduceMotion;
+  const next = useCallback(() => setIndex((current) => (current + 1) % count), [count]);
 
   useEffect(() => {
-    if (reduceMotion || paused || count < 2) return undefined;
+    // A video moves on when it ends, not on the timer.
+    if (reduceMotion || paused || count < 2 || activeIsVideo) return undefined;
     const timer = window.setTimeout(() => {
-      if (!document.hidden) setIndex((current) => (current + 1) % count);
+      if (!document.hidden) next();
     }, CROSSFADE_HOLD_MS);
     return () => window.clearTimeout(timer);
-  }, [count, index, paused, reduceMotion]);
+  }, [activeIsVideo, count, index, next, paused, reduceMotion]);
 
   return (
     <div className="ade-wnf-crossfade" onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>
       <div className="ade-wnf-plate ade-wnf-stack" style={{ aspectRatio: `${media.width} / ${media.height}` }}>
-        {media.images.map((shot, shotIndex) => (
-          <img
-            key={shot.src}
-            src={shot.src}
-            alt={shotIndex === index ? shot.alt : ""}
-            aria-hidden={shotIndex === index ? undefined : true}
-            data-active={shotIndex === index ? "true" : undefined}
-            decoding="async"
-            draggable={false}
-          />
-        ))}
+        {media.images.map((shot, shotIndex) => {
+          const active = shotIndex === index;
+          return shot.video && !reduceMotion ? (
+            <ShotVideo key={shot.src} shot={shot} active={active} loop={count < 2 || paused} onEnded={next} />
+          ) : (
+            <img
+              key={shot.src}
+              src={shot.src}
+              alt={active ? shot.alt : ""}
+              aria-hidden={active ? undefined : true}
+              data-active={active ? "true" : undefined}
+              decoding="async"
+              draggable={false}
+            />
+          );
+        })}
       </div>
       {count > 1 ? (
         <div className="ade-wnf-shots" role="group" aria-label="Screenshots">
@@ -163,6 +173,35 @@ function Crossfade({ media }: { media: ImagesMedia }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** A video in the crossfade: it plays from the start each time it fades in, and stops when it fades out. */
+function ShotVideo({ shot, active, loop, onEnded }: { shot: Shot; active: boolean; loop: boolean; onEnded: () => void }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    if (active) {
+      video.currentTime = 0;
+      void video.play().catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  }, [active]);
+  return (
+    <video
+      ref={ref}
+      src={shot.video}
+      aria-label={active ? shot.alt : undefined}
+      aria-hidden={active ? undefined : true}
+      data-active={active ? "true" : undefined}
+      muted
+      playsInline
+      preload="auto"
+      loop={loop}
+      onEnded={onEnded}
+    />
   );
 }
 

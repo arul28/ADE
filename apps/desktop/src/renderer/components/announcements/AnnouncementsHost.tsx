@@ -211,7 +211,7 @@ function AnnouncementsModal({
       title={`What's new: ${item.title}`}
       hideHeader
       hideClose
-      width={1180}
+      width={1080}
       maxHeight="min(92vh, 900px)"
       bodyPadding={false}
       panelClassName="ade-whats-new"

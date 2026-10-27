@@ -70,36 +70,37 @@ html[data-motion="reduced"] .ade-whats-new-glow > span::before { animation: none
 /* ADE's mark and the modal's name, top left; the close button sits opposite. */
 .ade-whats-new-brand {
   position: absolute;
-  top: 19px;
-  left: 24px;
+  top: 18px;
+  left: 26px;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 11px;
   margin: 0;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--kit-text-2);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
   pointer-events: none;
   user-select: none;
 }
 .ade-whats-new-brand img {
-  height: 15px;
+  height: 22px;
   width: auto;
 }
 
 .ade-whats-new-close.kit-icon-btn {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 15px;
+  right: 15px;
   z-index: 2;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   background: color-mix(in srgb, var(--color-bg) 60%, transparent);
 }
 
 .ade-whats-new-loading {
-  height: clamp(420px, calc(90vh - 120px), 620px);
+  height: clamp(400px, calc(86vh - 130px), 570px);
 }
 
 .ade-whats-new-foot {
