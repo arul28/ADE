@@ -8880,8 +8880,14 @@ export function AgentChatPane({
       );
 
       // A resumed read is only the newest events; the older-history cursor the
-      // pane already holds is still the right one.
-      const historyCursor = resumed
+      // pane already holds is still the right one, unless the resident cap just
+      // dropped the head it described. Then it is resolved as a full read would
+      // (the reply still reports the window's own start).
+      const keptHeldHead = resumed
+        && existing.length > 0
+        && merged.length > 0
+        && agentChatEventIdentityKey(merged[0]!) === agentChatEventIdentityKey(existing[0]!);
+      const historyCursor = keptHeldHead
         ? (olderHistoryCursorRef.current[sessionId] ?? null)
         : usedSnapshotPath
         ? resolveMergedSnapshotHistoryCursor({

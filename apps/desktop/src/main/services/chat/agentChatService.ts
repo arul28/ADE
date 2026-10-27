@@ -21685,6 +21685,7 @@ export function createAgentChatService(args: {
     }
     const timer = setTimeout(() => {
       managed.previewWriteTimer = null;
+      if (managed.endedNotified) return;
       writeSessionPreview(managed);
     }, PREVIEW_WRITE_INTERVAL_MS - sinceLastWriteMs);
     timer.unref?.();
@@ -28443,6 +28444,12 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
+    // The last preview lands before the row ends, never after it.
+    if (managed.previewWriteTimer) {
+      clearTimeout(managed.previewWriteTimer);
+      managed.previewWriteTimer = null;
+      writeSessionPreview(managed);
+    }
     await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });

@@ -160,7 +160,7 @@ export function streamingOpenCodeFence(tail: string): { code: string; language: 
   const language = info.trim().split(/\s+/)[0] ?? "";
   if (SPECIAL_FENCE_LANGUAGES.has(language)) return null;
   const body = tail.slice(opening[0].length);
-  const closing = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*$`);
+  const closing = new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}[ \\t]*\\r?$`);
   for (const line of body.split("\n")) {
     if (closing.test(line)) return null;
   }
