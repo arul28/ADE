@@ -1,6 +1,7 @@
-// Ported from t3code apps/web/src/components/device/DeviceStreamView.tsx and
-// useDeviceControls.ts (MIT, T3 Tools Inc.) — the pointer-capture gesture shape
-// and the normalise-against-the-drawn-frame rule.
+// Portions adapted from T3 Code (https://github.com/pingdotgg/t3code),
+// MIT License, Copyright (c) 2026 T3 Tools Inc. See NOTICE.
+// Adapted: the pointer-capture gesture shape and the
+// normalise-against-the-drawn-frame rule.
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AppleDeviceInput } from "./AppleDeviceFlatView";

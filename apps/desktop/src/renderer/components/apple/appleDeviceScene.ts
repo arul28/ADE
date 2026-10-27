@@ -1,7 +1,7 @@
-// Ported from t3code packages/client-runtime/src/device/{modelScene,phoneScene}.ts
-// (MIT, T3 Tools Inc.): the normalized-GLB display contract (one
-// `device-screen` mesh, portrait, front +Z, height 2.2) and the planar display
-// UVs.
+// Portions adapted from T3 Code (https://github.com/pingdotgg/t3code),
+// MIT License, Copyright (c) 2026 T3 Tools Inc. See NOTICE.
+// Adapted: the normalized-GLB display contract (one `device-screen` mesh,
+// portrait, front +Z, height 2.2) and the planar display UVs.
 import type {
   BufferGeometry,
   Group,

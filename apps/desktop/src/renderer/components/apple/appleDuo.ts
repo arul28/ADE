@@ -41,7 +41,7 @@ export const APPLE_DUO_PINCH_DEGREES_PER_SCALE = 120;
 export const APPLE_DUO_NUDGE_DEGREES = 15;
 
 /**
- * The named postures t3code ships, in the order the control lists them. Open
+ * The named postures, in the order the control lists them. Open
  * and Closed are the extremes; every stance folds both halves the same way.
  */
 export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [

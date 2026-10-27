@@ -18,7 +18,7 @@ import { windowLabel } from "./usageWindowPresentation";
 /**
  * The identity two machines' readings of one login pool under.
  *
- * Provider + email is the rule (t3 pools by provider + email too): the same
+ * Provider + email is the rule: the same
  * login on two machines may have different local instance ids, so keying by id
  * would count it twice. A login with no email cannot be matched across machines
  * and stays keyed by its own id — a deliberate under-pool rather than a guess.

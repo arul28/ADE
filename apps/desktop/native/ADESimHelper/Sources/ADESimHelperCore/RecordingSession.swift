@@ -29,9 +29,9 @@ import ImageIO
 ///    wall-clock, as it always did.
 /// 3. **Overlays never touch the live stream.** They are drawn here, into the
 ///    pixel buffer handed to `AVAssetWriter`, and the bytes the renderer is
-///    decoding never pass through this file. (t3code #12779 calls this a
-///    "detached compositor"; the reason is the same — a human driving the
-///    device must not see decorations for the agent's benefit.)
+///    decoding never pass through this file: a detached compositor, because a
+///    human driving the device must not see decorations for the agent's
+///    benefit.
 ///
 /// ## Why JPEG is in the path
 ///

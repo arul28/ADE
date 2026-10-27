@@ -1,9 +1,10 @@
+// Portions adapted from T3 Code (https://github.com/pingdotgg/t3code),
+// MIT License, Copyright (c) 2026 T3 Tools Inc. See NOTICE.
 /**
  * Where a floating player sits, and how big it is.
  *
  * Shared by the floating Apple device and the floating Mac Desktop, so the two
- * move, resize and park the same way. Ported from t3's preview mini player:
- * width is the only free dimension, height always follows the picture's aspect
+ * move, resize and park the same way. Width is the only free dimension, height always follows the picture's aspect
  * so the picture fills the frame without letterboxing, and the clamp runs on
  * every layout pass rather than being written back to the store — so a
  * temporarily narrow window can never destroy the size the user chose.

@@ -2131,7 +2131,7 @@ describe("SessionCard where line", () => {
           kind: "local",
           key: "local:/repo",
           rootPath: "/repo",
-          displayName: "t3code-6754bb34",
+          displayName: "studio-6754bb34",
         }}
       />,
     );
@@ -2139,7 +2139,7 @@ describe("SessionCard where line", () => {
     expect(container.querySelector("[data-session-machine]")).toBeNull();
     openRowTooltip(container);
     expect(hoverRow("machine").textContent).toContain(THIS_MACHINE_NAME);
-    expect(hoverRow("machine").textContent).not.toContain("t3code-6754bb34");
+    expect(hoverRow("machine").textContent).not.toContain("studio-6754bb34");
   });
 
   it("dims the badge for a lane whose machine has gone unreachable", () => {

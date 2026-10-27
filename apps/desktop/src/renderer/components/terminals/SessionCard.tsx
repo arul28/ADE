@@ -1606,8 +1606,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       data-session-row-action=""
       data-onboarding-anchor="session-row"
       /* A native <button> cannot legally host the status slot's snooze/settle
-         buttons, and the swap only works with those controls in flow. t3code's
-         row makes the same trade. */
+         buttons, and the swap only works with those controls in flow. */
       className={cn(
         // Both properties in ONE transition declaration: a second
         // `transition-opacity` on the recede branch would override

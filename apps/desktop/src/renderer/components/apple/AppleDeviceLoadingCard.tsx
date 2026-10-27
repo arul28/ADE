@@ -73,7 +73,7 @@ const FAMILY_GLYPH: Record<AppleDeviceFamilyId, Icon> = {
 /**
  * The one screen between pressing Start and seeing the device (§B5).
  *
- * Ported shape from t3code's `DeviceLoadingView` — two named steps with the
+ * Two named steps with the
  * device you picked above them, so the wait is a place rather than a blank
  * column — restyled in round 3 as a gradient card on the picker's own page, so
  * pressing Start does not drop you from a lit page onto a black one. The copy

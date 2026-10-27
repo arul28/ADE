@@ -388,8 +388,7 @@ export function BrowserStage({
               className="absolute inset-0 overflow-y-auto"
             >
               {/*
-                Optically centred against the whole surface, the way t3code
-                centres its picker: a column pinned to the top of an 800px pane
+                Optically centred against the whole surface: a column pinned to the top of an 800px pane
                 reads as a page that failed to load rather than as an offer.
               */}
               <div className="flex min-h-full w-full items-center justify-center px-5 py-8">

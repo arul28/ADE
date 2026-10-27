@@ -31,14 +31,14 @@ Locked (do not re-open):
   simulators/runtimes — ADE never downloads one. The clone is deleted on lane
   archive.
 - **Families.** iPhone and iPad first. Watch later.
-- **3D body viewer** (t3code PR #12787 shape): real Apple body models, Three.js,
+- **3D body viewer**: real Apple body models, Three.js,
   orbit + pinch, flat mode always available. "Realistic body" toggle, default ON;
   off = plain procedural body.
 - **Web client:** full interact. **Phone (native iOS app):** view only, streams
   on cellular, no gating.
 - **Recording.** Agents auto-record for their own verification and may delete
   their own recordings. Proof-requested recordings stay. Overlays (tap rings +
-  typed-text badges, t3 #12779 pattern) ON by default, each switchable in
+  typed-text badges) ON by default, each switchable in
   Settings. No auto-delete.
 - **Stream health.** Frame-time watchdog, first-frame timeout, Reconnect on every
   viewer. No MJPEG, ever. Stream only while visible. Per-remote-viewer bitrate cap
@@ -61,9 +61,9 @@ Locked (do not re-open):
 - **Windows desktop bound to a remote Mac runtime** can watch and drive over the
   H.264 path.
 
-### What t3 #12787 contributes, restated in ADE terms
+### The reference viewer, restated in ADE terms
 
-| t3 (`apps/web/src/components/device/`) | ADE equivalent |
+| Reference | ADE equivalent |
 |---|---|
 | `DeviceWorkspace` — stage + rail + drawer, drawer is `absolute inset-y-0 right-0 max-w-72` below `@700px`, `static w-72` above | `AppleDeviceColumn` — same three parts; drawer overlays below 700px column width, docks beside above it |
 | `DeviceControlsRail` — `pointer-events-none absolute inset-y-0 right-0 w-14`, pill of icon buttons, vertically centred, overlays the stage with no reserved gutter | `AppleDeviceToolbar` — same geometry, ADE `.ade-shell-control` skin instead of shadcn `Button variant=ghost` |
@@ -74,7 +74,7 @@ Locked (do not re-open):
 | "Float device over chat" in the More menu | Corner card + PiP (§2e) |
 | Pinch zoom removed from the stage | Same: pinch orbits in 3D, does nothing in flat |
 
-Not copied: t3's device-hub discovery model, its host/environment concepts, its
+Not copied: the reference's device-hub discovery model, its host/environment concepts, its
 Magic Keyboard accessory, and any of its code.
 
 ---
@@ -153,7 +153,7 @@ Toolbar order, top to bottom:
 | View | 3D, Flat, Reset view (3D only) |
 
 Every button is a `PaneTooltip` with the action name; a disabled button whose
-reason is known shows the reason instead of the name (t3's `description`
+reason is known shows the reason instead of the name (a `description`
 pattern — e.g. "3D view needs WebGL", "Inspect is flat-view only").
 
 **Quick controls** (`h-9` strip under the stage, `WORK_TOOL_CHROME_ROW`): the
@@ -259,7 +259,7 @@ Rules:
 - Each change writes an event-log row carrying the `ade apple …` command that
   repeats it, and the row's `[copy]` copies that command. This already exists.
 - **Push notification** is disabled with the line "Open an app first" when there
-  is no foreground app (t3's rule).
+  is no foreground app.
 - **Delete clone** is destructive-tone and confirms. It is disabled when the
   device was attached rather than cloned — an attached simulator is the user's,
   and ADE never deletes it.
@@ -543,7 +543,7 @@ Rules:
    └────────────────┘
 ```
 
-- **Live viewers never show the overlays.** Following t3 #12779, a detached
+- **Live viewers never show the overlays.** A detached
   compositor adds tap rings and typed-text badges to the recording only. The
   live stream stays the untouched decode path, so overlays cost a viewer nothing.
 - **Secure text entry is excluded before it is forwarded.** A badge is never

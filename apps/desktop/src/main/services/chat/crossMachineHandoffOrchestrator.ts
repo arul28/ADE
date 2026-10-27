@@ -14,7 +14,7 @@
  * which together make resuming a `sending` move and retrying an `unknown` one
  * safe: the same capsule under the same id reconciles instead of duplicating.
  *
- * Rules that came from T3 Code's thread handoff and the ADE review of it:
+ * Rules for a safe handoff:
  * - A busy chat moves only when asked to wait (`whenTurnEnds`), and then any
  *   newer message from the person cancels the move: new instructions win.
  * - An agent may move its own chat or a descendant it started without

@@ -29,7 +29,7 @@ import {
  * hover actions in its place on hover/focus, and NO layout shift between the
  * two.
  *
- * The trick (ported from t3code's SidebarV2 row) is that exactly one of the two
+ * The trick is that exactly one of the two
  * states is in flow at a time. At rest the label is in flow and the action
  * cluster is absolutely positioned and transparent; on hover they swap — the
  * cluster goes `static` and claims the width, the label goes absolute. Because

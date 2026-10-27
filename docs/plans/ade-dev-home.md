@@ -122,7 +122,7 @@ store) and classify each one as hide, route or n/a.
   chats: rename, pin, auto-title, archive, delete, and undo.
 - `ade search` and the command palette cover them.
 
-**D. T3-style extras** (seen in pingdotgg/t3code `docs/user/thread-sidebar.md`).
+**D. Extras.**
 - **Per-chat scratch folder:** each chat gets
   `$ADE_HOME/personal-chats/workspaces/<yyyy-mm-dd>-<slug-of-first-message>-<id8>`.
   It is kept when the chat is deleted, so whatever the agent made stays findable.

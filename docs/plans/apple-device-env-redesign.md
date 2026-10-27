@@ -3,9 +3,7 @@
 Supersedes the UI sections of `apple-device-env.md`. The transport, the
 helper, the per-lane device registry, recording, the relay pipe, the web
 client, and the phone viewer stay as built. Everything the user sees in the
-desktop Work tab is rebuilt to the shape below. Reference: t3code PR 12813
-(`apps/web/src/components/device/*`), checked out at `$TMPDIR/t3code-ref`
-on branch `pr12813`. Copy its structure and restraint, not its code.
+desktop Work tab is rebuilt to the shape below.
 
 ## 0. Verdict on round 1 (what must not survive)
 

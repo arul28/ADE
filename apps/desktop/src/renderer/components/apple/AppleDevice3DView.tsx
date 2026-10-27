@@ -1,7 +1,7 @@
-// Ported from t3code packages/client-runtime/src/device/phoneScene.ts and
-// apps/web/src/components/device/phoneTrackpad.ts (MIT, T3 Tools Inc.) — the
-// trackpad rule that ctrl-wheel and pinch are camera zoom while a plain wheel
-// is the DEVICE's scroll. The body and display live in `appleDeviceScene.ts`.
+// Portions adapted from T3 Code (https://github.com/pingdotgg/t3code),
+// MIT License, Copyright (c) 2026 T3 Tools Inc. See NOTICE.
+// Adapted: the phone scene and the trackpad rule that ctrl-wheel and pinch
+// are camera zoom while a plain wheel is the DEVICE's scroll. The body and display live in `appleDeviceScene.ts`.
 import type { AppleRenderLighting } from "../../../shared/types/iosSimulator";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { CanvasTexture, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
@@ -167,7 +167,7 @@ export function appleDragIntent(input: {
 }
 
 /**
- * §A3's wheel rule, ported from t3code's `phoneTrackpad.ts`: ctrl (or cmd)
+ * §A3's wheel rule (adapted, see the file header): ctrl (or cmd)
  * plus wheel, and the Safari pinch gesture, are the CAMERA's zoom; a plain
  * wheel over the glass is the DEVICE's scroll. Round 3 sent every wheel to the
  * camera, so nothing on the simulator could be scrolled in 3D at all.
@@ -1080,7 +1080,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     };
 
     /*
-     * Ported from t3code's `phoneTrackpad.ts`: ctrl-wheel and the Safari pinch
+     * The trackpad rule: ctrl-wheel and the Safari pinch
      * gesture are the CAMERA's zoom, a plain wheel is the DEVICE's scroll.
      * Round 3 sent every wheel to the camera, so a list on the simulator could
      * not be scrolled in 3D at all.

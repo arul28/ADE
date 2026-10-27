@@ -1,6 +1,6 @@
 # Jira Cloud, one tracker layer, and one launcher for every tracker
 
-Status: built on branch `ade/context-skill-improvements-from-t3code`. All four workstreams (W1–W4) are in that branch. This plan does not record the live check on a Jira Cloud site or the "Done means" checks (typecheck, lint, on-screen proof); those are not confirmed here. The user-facing description is in [features/issues/README.md](../features/issues/README.md).
+Status: built on the context-skill-improvements branch. All four workstreams (W1–W4) are in that branch. This plan does not record the live check on a Jira Cloud site or the "Done means" checks (typecheck, lint, on-screen proof); those are not confirmed here. The user-facing description is in [features/issues/README.md](../features/issues/README.md).
 
 ## Goal
 
@@ -14,7 +14,7 @@ Status: built on branch `ade/context-skill-improvements-from-t3code`. All four w
    work the same way from Linear, GitHub and Jira.
 4. Settings, the top bar and the docs cover all three.
 
-Learned from t3code's stack (pingdotgg/t3code #19259–#19406): a capability-
+Learned from an open-source tracker stack: a capability-
 declaring tracker port, one error vocabulary (`not-connected | unauthenticated
 | forbidden | rate-limited(retryAt) | not-found | invalid | failed`), a
 permission re-check before writes, cursor paging that keeps loaded pages, and

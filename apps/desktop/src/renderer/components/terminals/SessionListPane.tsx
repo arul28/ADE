@@ -474,7 +474,7 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
 }
 
 /**
- * Non-lane shelf tones, following t3's Sidebar V2 convention: Snoozed is blue
+ * Non-lane shelf tones: Snoozed is blue
  * (hidden for now, still yours), Settled is muted (done, out of the way), and
  * Working carries the board's Working accent on its label only. Everything else
  * is the neutral hairline.
@@ -3471,7 +3471,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   };
 
   /**
-   * Fully-quiet lanes leave the inbox for a shelf at the bottom, in t3's order:
+   * Fully-quiet lanes leave the inbox for a shelf at the bottom, in this order:
    * inbox → Snoozed → Settled. A lane is demoted only when EVERY row agrees on
    * one tier (`laneShelfFor`); anything mixed keeps its place upstairs.
    *

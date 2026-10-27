@@ -2058,7 +2058,7 @@ export function formatElapsedSeconds(totalSeconds: number): string {
  * The single, calm "model is working" indicator (replaces the prior tangle of
  * shimmer-text / emerald + violet dot variants). Three violet pulses + a
  * concise verb + a self-ticking elapsed timer that mutates textContent via a
- * ref — no per-second React commit (t3code / Codex desktop reference).
+ * ref — no per-second React commit.
  *
  * Elapsed is anchored to the turn's real start timestamp (wall clock), so
  * leaving the chat and coming back keeps the true elapsed instead of resetting
@@ -3280,7 +3280,7 @@ function renderEvent(
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
+        {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex reference). */}
         <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 text-[length:var(--chat-font-size)] leading-[1.7]">
           <AssistantTextBody
             text={shownText}

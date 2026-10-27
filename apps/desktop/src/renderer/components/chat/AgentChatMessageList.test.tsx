@@ -3977,7 +3977,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     const streaming = renderMessageList(sharedEvents, { showStreamingIndicator: true });
 
     // The single working indicator surfaces the concise activity label, never
-    // the raw tool detail (kept calm — t3code / Codex reference).
+    // the raw tool detail (kept calm).
     expect(streaming.container.textContent).toContain("Running command");
     expect(streaming.container.textContent).not.toContain("npm test");
     // Elapsed reads as "working for <duration>" so the timer is attributed to

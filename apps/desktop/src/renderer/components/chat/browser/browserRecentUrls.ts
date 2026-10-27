@@ -45,7 +45,7 @@ export type BrowserRecentUrl = {
   visitedAt: number;
 };
 
-/** t3code's `PREVIEW_RECENT_URL_LIMIT`, and for the same reason: a list, not a history. */
+/** A list, not a history. */
 export const BROWSER_RECENT_URL_LIMIT = 10;
 
 const STORAGE_PREFIX = "ade.browser.recentUrls";

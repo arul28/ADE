@@ -7,8 +7,7 @@ import { normalizeBranchName } from "../shared/utils";
  * Auto-pull the default (primary) branch so a clean checkout stays current
  * without a manual pull prompt.
  *
- * Ported in spirit from t3code's `VcsAutoPullPolicy` / `projects.auto-pull`
- * (pingdotgg/t3code #9277): the trigger is project startup plus a background
+ * The trigger is project startup plus a background
  * refresh, the pull is **fast-forward only**, and every gate below has to pass
  * or the run is a silent no-op. ADE has no opt-in setting for it; the desired
  * outcome is "main stays up to date", so the safety gates carry the risk

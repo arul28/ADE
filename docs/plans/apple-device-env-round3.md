@@ -7,11 +7,8 @@ not usable. This round fixes function first, then makes every surface solid
 and consistent with the tools grid the user likes (the purple gradient page
 with translucent cards).
 
-Reference code you MAY port (t3code is MIT; keep a `// Ported from t3code
-<path> (MIT, T3 Tools Inc.)` header on any file that carries their code):
-`$TMPDIR/t3code-ref` branch `pr12813`, `apps/web/src/components/device/*`,
-`apps/web/src/components/preview/ThreadPreviewMiniPlayer.tsx`,
-`previewMiniPlayerLayout.ts`, `phoneTrackpad.ts`. Port the pieces that work
+MIT reference code may be ported; keep its license credit header (see
+`NOTICE`) on any file that carries ported code. Port the pieces that work
 there instead of re-deriving them: DeviceStreamView's fit + pointer
 normalisation + keyboard forwarding, the controls rail, the mini player
 layout and hover chrome, the tools drawer section grid.

@@ -277,7 +277,7 @@ standard deviation of the 18 values. Command: `scripts/perf/desktop-main-start.m
 
 #### Electron 41.5.0 → 44.9.3
 
-Measured 2026-10-25 on the `ade/t3-electron-network-c64e8985` branch, Mac Studio
+Measured 2026-10-25 on a test branch, Mac Studio
 M4 Max (not the baseline machine), the same branch code on both, only the
 Electron binary swapped (`ELECTRON_OVERRIDE_DIST_PATH`), `--use-mock-keychain`.
 Start-up: `desktop-main-start.mjs --mode warm --runs 9`. Processes: an
@@ -314,8 +314,8 @@ eight other agent lanes building at once; every run held the machine-wide
 heavy lock, so builds did not overlap runs, but idle agents did). Sync **ON**:
 a measurement brain on its own fake HOME, socket and loopback port
 (`scripts/perf/net/measure-brain.mjs`), never the installed brain. Links are
-shaped by `scripts/perf/net/slow-proxy.mjs`: **3G** = T3's condition (400 kbps
-each way, 400 ms RTT), **LTE** = 10 Mbps / 60 ms, **LAN** = unshaped. Dataset:
+shaped by `scripts/perf/net/slow-proxy.mjs`: **3G** = 400 kbps
+each way, 400 ms RTT, **LTE** = 10 Mbps / 60 ms, **LAN** = unshaped. Dataset:
 the seeded synthetic project (`make-synthetic-project.mts`: 1,000 chats, 20
 lanes, a 1,000-turn chat of 10 MB). Medians of 3–6 runs, interleaved by profile.
 How to run each: `scripts/perf/net/README.md`.
@@ -445,7 +445,7 @@ against an older brain falling back). Medians of 3, load average 10–14. Both
 brains still stall ~2 s every ~32 s (P4's); a run that lands on a stall is
 kept in the median.
 
-| Metric (phone, new app) | Round 1 | Round 2 | T3 |
+| Metric (phone, new app) | Round 1 | Round 2 | Target |
 |---|---|---|---|
 | Reconnect 3G: chat shows | 3,219 ms | **1,359 ms** (chat first in the hello) | 1.3 s |
 | Reconnect 3G: hello_ok | 1,413 ms | 1,334 ms (catalog left out when unchanged) | — |
@@ -467,7 +467,7 @@ older-app wire, which round 2 leaves alone.
 Brain A runs round 2 (`2b52adc0a`), brain B round 3; new-app mode on both.
 Medians of 3, load average 9–13.
 
-| Metric (phone, new app, 3G) | Round 2 | Round 3 | T3 |
+| Metric (phone, new app, 3G) | Round 2 | Round 3 | Target |
 |---|---|---|---|
 | Reconnect: hello_ok | 1,334–1,404 ms | **944 ms** (hello in the upgrade request: one round trip less) | — |
 | Reconnect: chat shows | 1,359–1,429 ms | **973 ms** | 1.3 s |
@@ -487,13 +487,13 @@ trip after Work, the user's tap, plus its 16 KB page). Today's app against the
 round-3 brain gets today's wire (cold 3G chat 6.6 s in one run that hit a
 stall; LTE 1.18 s, LAN 0.98 s).
 
-Still open after this pass (gaps against T3's 3G numbers):
-- None of the four T3 rows is lost on the bench any more. Work usable on a
+Still open after this pass (gaps against the 3G targets):
+- None of the four target rows is missed on the bench any more. Work usable on a
   reconnect still waits on the ~300 ms `lanes.refreshSnapshots` (P4).
 - Cold bytes: the whole replica is now delivered (~705 KB on 3G for 42k rows);
   the change volume is the cost (P4's idle writes and terminal rows).
 - The whole cold replica is ~710 KB on 3G (42k rows), downloaded in the
-  background over ~21 s; T3 has no replica to compare.
+  background over ~21 s; there is no target for it.
 
 #### P1 under real load (golden clone of the owner's ADE project, 2026-10-26)
 
@@ -505,7 +505,7 @@ new-app mode, desktop bench with the pipelined connect. Medians of 5, worst
 run in brackets. `wan30` is a real two-Mac tailnet link
 (`tailscale ping` 29 ms; 50 Mbps assumed). Load average 13-48 (a shared Mac).
 
-| Scenario | 3G | wan30 | LAN | T3 (3G, published) |
+| Scenario | 3G | wan30 | LAN | Target (3G) |
 |---|---|---|---|---|
 | Phone cold: Work screen (work list) | 1.54 s (1.54) | 0.11 s | 0.61 s ¹ | — |
 | Phone cold: big chat first page | 3.36 s (3.64) | 0.20 s (0.21) | 0.80 s ¹ | 3.6 s |
@@ -568,7 +568,7 @@ after a database write 4.8 ms, unchanged 0 ms.
 #### P1 final real-load pass (golden clone, 2026-10-26 evening)
 
 P0's combined run, P1 `1bdc084d5` + P4 `41f0da44b` (median of 5, worst in
-brackets): 3G cold → big chat 2.57 s (2.61) vs T3 3.6 s; 3G cold bytes at
+brackets): 3G cold → big chat 2.57 s (2.61) vs the 3.6 s target; 3G cold bytes at
 the chat 85.3 KB (85.5) vs 89 KB; 3G reconnect → chat 0.98 s (0.99) / 5.9 KB
 vs 1.3 s / 17 KB; LTE reconnect hello 145 ms (160). With `cbc32aa15` (a full
 lane list waits behind the first chat page on a weak link), P1's own runs with
@@ -576,7 +576,7 @@ P4's fixes: 3G cold chat 2.40-2.43 s, 56.9-57.8 KB at the chat in all 5.
 
 After the rebase onto main with P4 (`bf6bfe605`), P1 `68c349ed1`, a fresh
 golden clone, the headless phone on 3G, median of 5 (worst), load average
-6-15: cold → chat 2.53 s (2.65) vs T3 3.6 s; 61.8 KB at the chat (61.9) vs
+6-15: cold → chat 2.53 s (2.65) vs the 3.6 s target; 61.8 KB at the chat (61.9) vs
 89 KB; reconnect → chat 0.99 s (1.02), 4.0 KB at the chat and 8.3 KB in all
 vs 1.3 s / 17 KB.
 
@@ -595,8 +595,8 @@ vs 1.3 s / 17 KB.
 - A freshly started brain: first phone hello 5-6 ms, chat 0.17 s on LAN.
 - Dropped with numbers: repeated bodies on the chat page (2 KB of 284 KB);
   an ID table (43 KB decoded, folded by deflate on the wire); remote desktop
-  on 3G (2.0 / 5.3 / 7.5 s; on the owner's 29 ms link 0.16 / 0.28 / 0.34 s; T3
-  has no number).
+  on 3G (2.0 / 5.3 / 7.5 s; on the owner's 29 ms link 0.16 / 0.28 / 0.34 s; no
+  target).
 
 ### Open items (measured, over budget or unbudgeted)
 
@@ -744,6 +744,58 @@ Production-build chat streaming and typing:
 To profile the brain, start its inspector with `process._debugProcess(<pid>)`
 and record with the `cdp.mjs profile` command, pointing `CDP_WS` at the
 inspector's WebSocket URL.
+
+### Real-data passes
+
+The 2026-10-26 and 2026-10-27 rows were measured on a copy of the owner's
+real ADE project (78 M database versions, 47 lanes with worktrees, 132 chats,
+one 8.7 MB chat) and on a three-machine setup. To repeat or extend them:
+
+1. **Copy, never touch the live project.** `scripts/perf/net/make-real-load-copy.mts`
+   reads a real project without changing it and writes a runnable copy:
+   the database by SQLite backup, transcripts as APFS clones, the repo by
+   `git clone --local`, one worktree per active lane. Keep one frozen copy
+   and `--clone` it per run. Report numbers only: never commit, upload or
+   show a copy's content, and delete copies when done.
+2. **Leave the installed app alone.** Measure on isolated brains
+   (`scripts/perf/net/measure-brain.mjs`: own HOME, socket and loopback port)
+   and dev apps with their own `ADE_HOME` and `NO_DEVTOOLS=1`. Never bind 8787,
+   write to `~/.ade`, or restart the installed brain.
+3. **One heavy run at a time.** Hold one machine-wide lock (`lockf` on a
+   shared file; `run-phone-matrix.sh` reads `ADE_PERF_HEAVY_LOCK`) for every
+   measurement, and start only with at least 30% memory free and under 4 GB
+   of swap. Run builds and tests beside it at low priority (`nice -n 15`).
+   Record the load average next to the numbers.
+4. **Phone:** `slow-proxy.mjs` (`3g` = 400 kbps each way, 400 ms RTT; `lte`;
+   `lan`) in front of the brain, then `phone-sync.bench.mts`, or
+   `run-phone-matrix.sh` for every profile. Each connect opens a fresh
+   connection.
+5. **Several machines:** `rig.sh up`, then `rig-scenarios.mjs`, then always
+   `rig.sh down`, all inside one lock (see the header of `rig.sh`).
+6. **Desktop:** the UI scripts above against a dev app on the copy, and the
+   service benches (`db-reads`, `chat-transcript`, `chat-backfill`) on it.
+7. **How a number counts.** Measure before and after on the same machine,
+   the same copy and the same session, alternating A/B rounds. Two warm-ups,
+   then five measured runs; report the median with the slowest run in
+   brackets. A change wins only when its slowest run wins too.
+
+Four rows came from one-off harnesses that are not kept. They are defined
+here so they can be rebuilt the same way:
+
+- **Project database first open:** a fresh process opens a fresh APFS clone
+  of the 74 MB `ade.db` with `openKvDb`; time the open. One open per process,
+  7 processes per round, 3 rounds alternated with the other side.
+- **Startup JS:** build the production renderer, then sum the bytes on disk of
+  the renderer entry and every module it imports statically (dynamic imports
+  excluded).
+- **Thread switch renders:** production build on the real copy. Switch
+  long → medium → short chat three times, 2 s per chat, and count every
+  React fiber render over the sequence with `scripts/perf/ui/render-hook.js`
+  (skip bailed-out subtrees). Two warm-up launches, then five runs in one
+  launch.
+- **Scroll a long chat:** open the 8.7 MB chat fully loaded, send native
+  wheel input over CDP through the whole chat, and time each wheel event to
+  the next animation frame; report the p95 of the first pass.
 
 ## Updating this table
 
@@ -1403,7 +1455,7 @@ columns; that wait is not the app-server's.
 ## Mac Studio (M4 Max), PRs tab: GitHub requests (2026-10-26)
 
 Dev app on its own socket, pointed at a throwaway shallow clone of
-`pingdotgg/t3code` (1,400+ open PRs, so every list walk hits the 10-page
+a large public repo (1,400+ open PRs, so every list walk hits the 10-page
 budget), warm project database. The app starts on Lanes, waits 25 s, then
 opens `#/prs?pr=23706` (42 files, 28 commits, CI finished) and sits idle for
 5 minutes. Every GitHub request the brain sends is logged by a temporary
@@ -1866,20 +1918,20 @@ Only the dirty/ahead/behind numbers can be old; lane names, archive state,
 parents and deleted lanes are read live. Without the option (desktop, older
 phones) the answer is the exact one.
 
-Brain, database and git against T3 Code's published numbers (ledger section
-F): ADE measured the way each T3 PR did, on the real-load clone (47 lanes, 505
+Brain, database and git against outside reference numbers, each measured
+the way its source measured it, on the real-load clone (47 lanes, 505
 PRs, 1,012 PR projections), `main` e2f42f44c vs this branch, 5 runs per side,
 load 7-38. A statement timer and a sync-wait recorder were preloaded into the
 measurement brain for F2 and the near-miss check.
 
-| T3 measurement | T3 | Before (`main`) | Baseline | Ceiling |
+| Measurement | Target | Before (`main`) | Baseline | Ceiling |
 |---|---:|---:|---:|---:|
-| F1 PR discovery reads, one pass (T3 #25443, 500 threads) | 4.32 ms | 3.2-3.6 ms | 3.3 ms (worst run 3.9) | 5 ms |
-| F3 one `git rev-parse HEAD` through runGit, 200 runs (T3 #22759) | 2.7-3.0 ms | 6.9 ms (Xcode shim) | 3.0 ms (worst run 3.4; bare spawn here 2.6-3.2) | 4 ms |
-| F4 git processes, 1 + 4 overlapping `git status --full` (T3 #24478) | 46 | 35 | 22 | 30 |
-| F5 startup recovery read, 20 warm runs (T3 #22554) | 0.8 ms | 0.06 ms | 0.04-0.12 ms | 1 ms |
-| F2 longest database step on the event loop while a phone connects (T3 #23689) | 12.7 ms | 73 ms (runs 52-106) | 11.1 ms (runs 9.7-52) | 60 ms |
-| F2 a read beside the slowest read (T3 #24762) | 181-220 ms | <= 106 ms | <= 52 ms | 250 ms |
+| F1 PR discovery reads, one pass (500 threads) | 4.32 ms | 3.2-3.6 ms | 3.3 ms (worst run 3.9) | 5 ms |
+| F3 one `git rev-parse HEAD` through runGit, 200 runs | 2.7-3.0 ms | 6.9 ms (Xcode shim) | 3.0 ms (worst run 3.4; bare spawn here 2.6-3.2) | 4 ms |
+| F4 git processes, 1 + 4 overlapping `git status --full` | 46 | 35 | 22 | 30 |
+| F5 startup recovery read, 20 warm runs | 0.8 ms | 0.06 ms | 0.04-0.12 ms | 1 ms |
+| F2 longest database step on the event loop while a phone connects | 12.7 ms | 73 ms (runs 52-106) | 11.1 ms (runs 9.7-52) | 60 ms |
+| F2 a read beside the slowest read | 181-220 ms | <= 106 ms | <= 52 ms | 250 ms |
 
 F2's long step on `main` is the phone's sync export (`crsql_changes`), 75-147
 ms per batch on this database. The host now reads it on a second connection
@@ -1960,8 +2012,8 @@ slowest single switch across all five runs. Load average 6-21.
 | Renderer to main IPC calls | tracer | 47 (46.5-48) | 37 (36.4-37.5) | 50 |
 | Closed project open (existing project, real ADE copy) | `project-open.jsonl` | 854 ms (779-1,064) | 287 ms (273-328) | not set (new row; ceilings are the owner's call) |
 
-T3 publishes no project-switch time (only render counts for thread
-switches, #21123 and #21130).
+There is no outside target for project-switch time (only render counts for
+thread switches).
 
 The owner's installed app logs the same switch: over 809 reused-context
 switches in its `project-open.jsonl` (2026-08-19 to 2026-10-24) the main
@@ -2012,19 +2064,19 @@ waits up to 750 ms on an icon worker the desktop never reads (the desktop asks
 `withoutIcon`), and the desktop opens the project database beside the brain
 registration instead of after it.
 
-**Head to head with T3 (2026-10-26).** T3's published numbers, measured the
-way T3 measured them, on a `--clone` of P0's golden copy of the owner's ADE
+**Against outside targets (2026-10-26).** Each target measured the way its
+source measured it, on a `--clone` of P0's golden copy of the owner's ADE
 project. Five runs each unless noted; worst is the slowest run. Before is main
 at `e2f42f44c`.
 
-| Row | T3 | Before | Baseline | Ceiling |
+| Row | Target | Before | Baseline | Ceiling |
 |---|---:|---:|---:|---:|
-| Project database open, 74 MB `ade.db` (`openKvDb`, a fresh APFS clone per open, 3 alternated rounds of 7) | 50-66 ms (11 GB DB, #21122) | 147 ms, worst 185 | 55 ms, worst 61 | not set (new row; ceilings are the owner's call) |
-| Project database first open in a fresh process (P0's E1 harness, one open per process, 7 processes x 3 alternated rounds; 2026-10-27, before is main at `025ed6aeb`) | 50-66 ms (a single open, #21122) | 54.8 ms, worst 74.8 | 37.1 ms, worst 39.4 | not set (new row; ceilings are the owner's call) |
-| Startup JS (static imports of the renderer entry, production build) | 3.94 MB (#25295) | 9.19 MB | 3.88 MB | not set (new row; ceilings are the owner's call) |
-| Process start to a usable composer, production build, unpackaged, startup project | 20.6 / 24.5 s (packaged Linux, #23805) | 2,687 ms, worst 3,055 | 1,839 ms, worst 2,400 | not set (new row; ceilings are the owner's call) |
+| Project database open, 74 MB `ade.db` (`openKvDb`, a fresh APFS clone per open, 3 alternated rounds of 7) | 50-66 ms (11 GB DB) | 147 ms, worst 185 | 55 ms, worst 61 | not set (new row; ceilings are the owner's call) |
+| Project database first open in a fresh process (one open per process, 7 processes x 3 alternated rounds; 2026-10-27, before is main at `025ed6aeb`) | 50-66 ms (a single open) | 54.8 ms, worst 74.8 | 37.1 ms, worst 39.4 | not set (new row; ceilings are the owner's call) |
+| Startup JS (static imports of the renderer entry, production build) | 3.94 MB | 9.19 MB | 3.88 MB | not set (new row; ceilings are the owner's call) |
+| Process start to a usable composer, production build, unpackaged, startup project | 20.6 / 24.5 s (packaged Linux) | 2,687 ms, worst 3,055 | 1,839 ms, worst 2,400 | not set (new row; ceilings are the owner's call) |
 | Process start to first window, same runs | — | 2,132 ms | 851 ms | not set (new row; ceilings are the owner's call) |
-| Thread switch L>M>S x3, 2 s each, rendered fibers (T3's probe rule) | 13,970 (#21123) | 16,765, worst 16,988 | 14,138, worst 14,257 (13,620, worst 13,694, with P2's chat-pane half) | not set (new row; ceilings are the owner's call) |
+| Thread switch L>M>S x3, 2 s each, rendered fibers | 13,970 | 16,765, worst 16,988 | 14,138, worst 14,257 (13,620, worst 13,694, with P2's chat-pane half) | not set (new row; ceilings are the owner's call) |
 
 Notes on the rows:
 
@@ -2054,7 +2106,7 @@ Notes on the rows:
   Vite preload helper has its own chunk instead of sitting in the Monaco
   vendor chunk.
 - The thread switch uses the owner's real chats, about 2,000 / 175 / 40
-  messages, not T3's seeded 2,662 / 149 / 45, in Electron instead of headless
+  messages, not the target's seeded 2,662 / 149 / 45, in Electron instead of headless
   Chromium. A switch used to render the Work page twice: once for the
   selection, once for the "seen" stamp a layout effect wrote right after. The
   selection's own write now stamps the row it leaves.
@@ -2143,24 +2195,24 @@ streamed event and per keystroke (1.08 per event; its own render is about
 15% of streaming main-thread time, most of it per-event `useMemo` folds such
 as `deriveChatSources` over the whole transcript).
 
-## Mac Studio (M4 Max): chats against T3's published numbers, real data (2026-10-27, perf-p2-chats)
+## Mac Studio (M4 Max): chats against outside targets, real data (2026-10-27, perf-p2-chats)
 
 Branch `ade/perf-p2-chats` at `e4541ff72` against main `e2f42f44c`, the same machine, interleaved runs.
 Data: the owner's real ADE project (P0's frozen golden copy, cloned with `make-real-load-copy --clone`):
 the biggest real chat `0ae9fe83` (8,600 events, 8.7 MB) and real Claude/Codex chats for the micro-benches.
 UI rows: the browser-mock renderer (same renderer code) replaying those transcripts in headless Chrome.
-Each cell is the median of 5 runs, with the worst run in brackets. T3's side is its published numbers
-(`/Volumes/Dev/t3triage/perf/t3-published.md`, section D), measured T3's way.
+Each cell is the median of 5 runs, with the worst run in brackets. Each target is measured the way its
+source measured it.
 
-| # | T3 (source) | How (T3's method) | ADE main | ADE branch |
+| # | Target | How | ADE main | ADE branch |
 |---|---|---|---|---|
-| D1 | Chat view renders per streamed reply: 18 short / 18 long (#23117) | AgentChatPane renders per whole reply; real 15-line and 33-line replies streamed live | 83 (83) / 206 (209) | **10 (10) / 12 (13)** |
-| D2 | A background stream re-renders only its own sidebar row (#22730: 27 sidebar renders in 15 s) | another chat streams 450 events over 15 s, big chat open; Work sidebar component renders | 16 (16) | **16 (16)**; chat pane 3 → 1 |
-| D3 | 500 streamed replacements into 10,000 items: 15.3 ms (#24264) | 500 live tool-call resends into the last 10,000 events of a real 3,620-tool-call chat | 5.47 ms (10.6) | **5.41 ms (10.1)** |
-| D4 | Timeline scan, 1,000 items: 15.48 ms (#23739) | one collapse + group pass over 1,000 real events | 1.07 ms (9.2) | **1.15 ms (8.5)** |
-| D5 | Coalescing: −49.9% bytes at a 25 ms delta cadence (#24267) | a 4,000-character reply as 25 ms deltas vs ADE's 100 ms coalescing, serialized envelope bytes | −72.8% | **−72.8%** |
-| D6 | Scroll a large thread: 70.5 ms stopped / 111.6 ms streaming, scroll → frame p95 (#23942) | wheel through the whole real big chat, wheel input → next frame, p95, first pass | 29.2 (29.3) / 43.0 (44.9) ms | **30.4 (40.0) / 42.6 (44.6) ms** |
-| D7 | Typing key p99: 32–39 ms (#23601, Linux/Xvfb) | 300 keys at 40 ms into the composer of the real big chat, Event Timing keydown p99 | 24 (40) ms | **24 (32) ms** (macOS) |
+| D1 | Chat view renders per streamed reply: 18 short / 18 long | AgentChatPane renders per whole reply; real 15-line and 33-line replies streamed live | 83 (83) / 206 (209) | **10 (10) / 12 (13)** |
+| D2 | A background stream re-renders only its own sidebar row (27 sidebar renders in 15 s) | another chat streams 450 events over 15 s, big chat open; Work sidebar component renders | 16 (16) | **16 (16)**; chat pane 3 → 1 |
+| D3 | 500 streamed replacements into 10,000 items: 15.3 ms | 500 live tool-call resends into the last 10,000 events of a real 3,620-tool-call chat | 5.47 ms (10.6) | **5.41 ms (10.1)** |
+| D4 | Timeline scan, 1,000 items: 15.48 ms | one collapse + group pass over 1,000 real events | 1.07 ms (9.2) | **1.15 ms (8.5)** |
+| D5 | Coalescing: −49.9% bytes at a 25 ms delta cadence | a 4,000-character reply as 25 ms deltas vs ADE's 100 ms coalescing, serialized envelope bytes | −72.8% | **−72.8%** |
+| D6 | Scroll a large thread: 70.5 ms stopped / 111.6 ms streaming, scroll → frame p95 | wheel through the whole real big chat, wheel input → next frame, p95, first pass | 29.2 (29.3) / 43.0 (44.9) ms | **30.4 (40.0) / 42.6 (44.6) ms** |
+| D7 | Typing key p99: 32–39 ms (Linux/Xvfb) | 300 keys at 40 ms into the composer of the real big chat, Event Timing keydown p99 | 24 (40) ms | **24 (32) ms** (macOS) |
 
 Remote chats (P0's three-machine rig: this Mac as the MacBook, real-data Studio and Windows
 clones, 30 ms RTT links; median of warm rounds 2-5, worst in brackets):
@@ -2176,11 +2228,11 @@ Notes:
 - D2: ADE's Work sidebar already re-rendered only the streaming chat's status label on main.
 - D6: in three of the branch's five scroll runs the replayed chat filled to a shorter height; their
   timings match the full-height runs. A dedicated trace loaded the full chat.
-- D7: ADE measured on macOS, T3 on Linux under Xvfb.
+- D7: ADE measured on macOS, the target on Linux under Xvfb.
 - D6 in Electron: the isolated dev app on this branch (`NO_DEVTOOLS=1`), the same real big chat
   fully loaded, native wheel input over CDP, wheel event → next animation frame, five valid runs:
   p95 12.4 ms (worst 15.1) on the first pass and 8.2 ms (8.2) on a repeat pass (p50 6.5 / 6.4 ms),
-  against T3's 70.5 ms stopped. Streaming into the real app needs a provider, so the streaming half
+  against the 70.5 ms stopped target. Streaming into the real app needs a provider, so the streaming half
   stays the browser-mock number.
 
 Two more chat rows (isolated dev app on this branch, the real big chat, 5 or 10 interleaved A/B rounds, median with the worst run in brackets):
@@ -2197,12 +2249,12 @@ provider sign-in modal and the turn diff viewer only when they are opened.
 
 ### E3 and E4 after the rebase onto P3 (2026-10-27, perf-p2-chats)
 
-Branch rebased onto main `025ed6aeb` (P0, P1, P3, P4 merged). P3's harnesses: `startup-js.mjs` for E3
-(entry + static-import closure of the production renderer, bytes on disk) and `e4-switch.mjs` for E4
-(T3 #21123: L→M→S ×3, 2 s each, fiber renders over the sequence). E4: production build on the owner's
+Branch rebased onto main `025ed6aeb` (P0, P1, P3, P4 merged). E3 is the entry plus
+the static-import closure of the production renderer, bytes on disk; E4 is L→M→S ×3, 2 s each, fiber
+renders over the sequence (see "Real-data passes"). E4: production build on the owner's
 golden copy, two warm-up launches, then one launch with 5 measured runs, same method on both sides.
 
-| Row | T3 | Main `025ed6aeb` | Branch |
+| Row | Target | Main `025ed6aeb` | Branch |
 |---|---:|---:|---:|
 | E3 startup JS | 3.94 MB | 3.93 MB (3,934,233 B) | **3.39 MB (3,394,834 B)** |
 | E4 renders, median (worst) | 13,970 | 14,593 (15,556) | **13,657 (13,760)** |

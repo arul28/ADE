@@ -127,14 +127,13 @@ export type AppleDevice3DViewProps = {
 ```
 Rules: load Three.js lazily (dynamic import) so the flat view never pays for it;
 orbit with trackpad drag + pinch zoom, spring release that latches the nearest
-screen-facing view (t3 #12787 feel: gain ~0.006 rad/pt, limits 7.5–9 rad/s,
-release prediction 85 ms, response/damping 0.5/0.78 — see t3 #12813 text);
+screen-facing view (gain ~0.006 rad/pt, limits 7.5–9 rad/s, release
+prediction 85 ms, response/damping 0.5/0.78);
 render on demand only (frame, interaction, resize); raycast pointer to the
 screen node's UV and convert to device points; dispose everything on unmount;
 GLB load failure or unknown device => procedural body and `onReady({procedural:true})`.
-Assets: fetch the four GLBs and `sources.json` from
-`https://raw.githubusercontent.com/pingdotgg/t3code/playful-device-panel/apps/web/src/components/device/models/<file>`
-into `renderer/assets/apple-device-models/`; import with Vite `?url`. Map:
+Assets: the four GLBs and `sources.json` in
+`renderer/assets/apple-device-models/` (source in its README); import with Vite `?url`. Map:
 iPhone Pro Max names -> `iphone-18-pro-max`, other iPhones -> `iphone-18-pro`,
 any iPad -> `ipad-pro-13-m5` (keyboard accessory out of scope for now).
 

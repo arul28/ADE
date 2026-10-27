@@ -5,8 +5,7 @@ Companion to `apple-device-env.md` (the UI spec) and
 sitting in front of the app: how to run the branch, what to click, and what
 each step should look like when it is working.
 
-Everything below assumes the lane worktree
-`/.ade/worktrees/github-pingdotgg-t3code-pull-12813-dca9f144` and a Mac with at
+Everything below assumes the lane's worktree and a Mac with at
 least one **already-installed** iOS simulator runtime. ADE never downloads one.
 
 ---

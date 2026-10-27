@@ -326,7 +326,7 @@ describe("Claude TaskCreate and TaskUpdate todo tracking", () => {
   // dropped every background-turn completion (pane frozen at 0/N complete).
   it("applies a background-turn TaskUpdate completion streamed via content_block deltas", async () => {
     const { service, events } = createHarness([
-      taskToolUse("toolu_A", "TaskCreate", { subject: "Research t3code PRs" }),
+      taskToolUse("toolu_A", "TaskCreate", { subject: "Research upstream PRs" }),
       taskToolUse("toolu_B", "TaskUpdate", { taskId: "1", status: "in_progress" }),
     ]);
     // Messages AFTER the result marker are consumed by the post-turn idle
@@ -374,7 +374,7 @@ describe("Claude TaskCreate and TaskUpdate todo tracking", () => {
           event.type === "todo_update",
         );
       expect(todoEvents.at(-1)?.items).toEqual([
-        { id: "1", description: "Research t3code PRs", status: "completed" },
+        { id: "1", description: "Research upstream PRs", status: "completed" },
       ]);
     });
     await service.disposeAll();

@@ -9,7 +9,7 @@ set -euo pipefail
 out=$1; runs=$2; profiles=$3; shift 3
 [[ ${1:-} == "--" ]] && shift
 here=$(cd "$(dirname "$0")" && pwd)
-lock=${ADE_PERF_HEAVY_LOCK:-/tmp/t3triage/perf/heavy.lock}
+lock=${ADE_PERF_HEAVY_LOCK:-/tmp/ade-perf-heavy.lock}
 IFS=, read -r -a list <<< "$profiles"
 for ((run = 1; run <= runs; run++)); do
   for profile in "${list[@]}"; do

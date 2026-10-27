@@ -25,7 +25,7 @@ Files: `renderer/components/apple/{AppleDeviceFlatView,AppleDeviceStage,AppleDev
 `terminals/workToolPanels.tsx` ONLY for the context-prop trace in V4.
 
 V1. **Orientation reaches the flat view.** Transpose the picture when the
-device is landscape, the way t3code's `DeviceStreamView.tsx` does — rotate the
+device is landscape — rotate the
 media inside a swapped box rather than distorting it, because the helper
 streams the raw portrait framebuffer. Pointer mapping, inspect frames and the
 fit rule must all follow the rotation. Port with the usual attribution header.

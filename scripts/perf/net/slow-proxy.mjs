@@ -14,7 +14,7 @@
 // Not modelled: packet loss, TCP slow start, a bandwidth pool shared across connections (each
 // connection gets the full rate, like separate flows on an uncongested link).
 //
-// Profiles: 3g = T3's published condition (400 kbps each way, 400 ms RTT); lte = 10 Mbps / 60 ms;
+// Profiles: 3g = slow 3G (400 kbps each way, 400 ms RTT); lte = 10 Mbps / 60 ms;
 // lan = no shaping (still counts bytes). Override with --kbps / --rtt.
 import net from "node:net";
 import { pathToFileURL } from "node:url";

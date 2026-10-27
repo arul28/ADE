@@ -45,8 +45,8 @@ import { getApiCredentialKey } from "./apiKeyStore";
  * Credential and routing variables the agent reads. ADE removes all of them
  * from the agent's environment and adds back only what the chosen method
  * needs, so an ambient `GEMINI_API_KEY` or ADC project cannot quietly decide
- * which account a chat bills. (T3 Code's list, less its private-profile keys:
- * ADE keeps the default GEMINI_HOME.)
+ * which account a chat bills. (No private-profile keys: ADE keeps the default
+ * GEMINI_HOME.)
  */
 export const ANTIGRAVITY_CREDENTIAL_ENV_KEYS = [
   "GEMINI_API_KEY",

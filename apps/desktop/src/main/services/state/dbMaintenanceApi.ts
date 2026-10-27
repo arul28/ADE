@@ -130,7 +130,7 @@ export const EVENT_LOG_RETENTION_DAYS = 30;
  * DELETE runs to completion on the event loop with nothing else able to
  * proceed. Synced tables run cr-sqlite triggers per row: on the owner's real
  * project a 2,000-row batch held the loop 14-76 ms. 250 rows keeps a batch to
- * a few milliseconds (T3 paces compaction to the same scale) while the yield
+ * a few milliseconds while the yield
  * between batches lets everything else run.
  */
 export const MAINTENANCE_DELETE_BATCH_ROWS = 250;
