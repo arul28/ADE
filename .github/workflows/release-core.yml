@@ -977,7 +977,7 @@ jobs:
         run: |
           target="${{ matrix.target }}"; dist="${target/darwin/mac}"; dist="${dist/win32/win}"
           node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "$dist" \
-            --dir "apps/ade-cli/dist-static/.sea/$target/sentry"
+            --dir "apps/ade-cli/dist-static/.sentry/$target"
 
   smoke-mac-x64:
     # build-mac-release packages x64 on Apple Silicon, where running the x64 app

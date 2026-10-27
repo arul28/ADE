@@ -278,7 +278,7 @@ async function assertStaticRuntimeVersion(binaryPath, expectedVersion, target) {
   }
 }
 
-async function writeSeaEntry(workDir) {
+async function writeSeaEntry(workDir, sentryDir) {
   const cliPath = path.join(packageRoot, "dist", "cli.cjs");
   const seaEntryPath = path.join(workDir, "cli-sea.cjs");
   const cliSource = await fs.readFile(cliPath, "utf8");
@@ -426,7 +426,7 @@ if (!/(^|[/\\\\])cli\\.(?:ts|js|cjs)$/.test(__adeSeaArgv1)) {
     : cliSource;
   const prefix = `${banner}\n`;
   await fs.writeFile(seaEntryPath, `${prefix}${source}`, "utf8");
-  if (sourceMapsRequested()) await writeSeaSourceMap(workDir, seaEntryPath, cliPath, prefix, droppedShebang);
+  if (sourceMapsRequested()) await writeSeaSourceMap(sentryDir, seaEntryPath, cliPath, prefix, droppedShebang);
   return seaEntryPath;
 }
 
@@ -446,10 +446,11 @@ function stampBundleDebugId() {
  * shim, so every line sits lower by the shim's line count (less the dropped
  * shebang); the map moves the bundle's by the same amount and keeps its debug
  * ID, which the stamped code still reports. Written with a copy of the entry
- * to `sentry/`, the pair `sentry-release.mjs upload --dir` sends. Never fails
+ * to `<out-dir>/.sentry/<target>/`, outside the SEA work folder the build
+ * removes, as the pair `sentry-release.mjs upload --dir` sends. Never fails
  * the build.
  */
-async function writeSeaSourceMap(workDir, seaEntryPath, cliPath, prefix, droppedShebang) {
+async function writeSeaSourceMap(outDir, seaEntryPath, cliPath, prefix, droppedShebang) {
   try {
     const map = JSON.parse(await fs.readFile(`${cliPath}.map`, "utf8"));
     if (!map.debugId && !map.debug_id) throw new Error("the bundle's map has no debug ID");
@@ -459,7 +460,6 @@ async function writeSeaSourceMap(workDir, seaEntryPath, cliPath, prefix, dropped
     if (droppedShebang && lines[0]) throw new Error("the bundle's map has mappings on its shebang line");
     map.mappings = ";".repeat(prefix.split("\n").length - 1) + lines.slice(droppedShebang ? 1 : 0).join(";");
     map.file = "cli-sea.cjs";
-    const outDir = path.join(workDir, "sentry");
     await fs.mkdir(outDir, { recursive: true });
     const entry = await fs.readFile(seaEntryPath, "utf8");
     await fs.writeFile(
@@ -495,9 +495,11 @@ async function main() {
   if (sourceMapsRequested()) stampBundleDebugId();
 
   const workDir = path.join(args.outDir, ".sea", args.target);
+  const sentryDir = path.join(args.outDir, ".sentry", args.target);
   await fs.rm(workDir, { recursive: true, force: true });
+  await fs.rm(sentryDir, { recursive: true, force: true });
   await fs.mkdir(workDir, { recursive: true });
-  const seaEntryPath = await writeSeaEntry(workDir);
+  const seaEntryPath = await writeSeaEntry(workDir, sentryDir);
   const sourceNodeBinary = process.env.ADE_STATIC_NODE_BINARY || process.execPath;
   await assertSeaCapableNodeBinary(sourceNodeBinary);
 
