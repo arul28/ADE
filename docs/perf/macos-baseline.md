@@ -2019,6 +2019,7 @@ at `e2f42f44c`.
 | Row | T3 | Before | Baseline | Ceiling |
 |---|---:|---:|---:|---:|
 | Project database open, 74 MB `ade.db` (`openKvDb`, a fresh APFS clone per open, 3 alternated rounds of 7) | 50-66 ms (11 GB DB, #21122) | 147 ms, worst 185 | 55 ms, worst 61 | not set (new row; ceilings are the owner's call) |
+| Project database first open in a fresh process (P0's E1 harness, one open per process, 7 processes x 3 alternated rounds; 2026-10-27, before is main at `025ed6aeb`) | 50-66 ms (a single open, #21122) | 54.8 ms, worst 74.8 | 37.1 ms, worst 39.4 | not set (new row; ceilings are the owner's call) |
 | Startup JS (static imports of the renderer entry, production build) | 3.94 MB (#25295) | 9.19 MB | 3.88 MB | not set (new row; ceilings are the owner's call) |
 | Process start to a usable composer, production build, unpackaged, startup project | 20.6 / 24.5 s (packaged Linux, #23805) | 2,687 ms, worst 3,055 | 1,839 ms, worst 2,400 | not set (new row; ceilings are the owner's call) |
 | Process start to first window, same runs | — | 2,132 ms | 851 ms | not set (new row; ceilings are the owner's call) |
@@ -2033,6 +2034,20 @@ Notes on the rows:
   one CRR-state read per pass give the same answers. `lane_worktree_locks`,
   local-only, was also rebuilt on every open (the PK retrofit stripped its
   unique index and the schema created it again).
+- The first open in a process paid more than later ones: about 330
+  single-table `sqlite_master` lookups (orphan-clock and PK-retrofit loops,
+  retired-table checks) and 228 `pragma table_info` statements prepared one per
+  table, now one name read per pass and one cached `pragma_table_info(?)`
+  query. A database whose stored site id differs from the local
+  `sync-site-id` file (a copied project; P0's harness copies no `secrets/`)
+  wrote the id after cr-sqlite loaded, then closed, reopened and loaded the
+  extension again; the id is now written before the load. What is left is
+  SQLite parsing the 1,585-object schema (about 11 ms), cr-sqlite's first call
+  loading its table info (about 7 ms) and the migration's data clean-ups. A
+  cold `dlopen` of the extension after the machine sits idle adds 6-20 ms to
+  the first process; loading it on a worker thread finished after the main
+  thread did, and skipping `create ... if not exists` for names already
+  present was slower than letting SQLite do it, so neither is kept.
 - Startup JS: the renderer entry is a small loader; the old body loads as one
   dynamic chunk, issue/Linear/onboarding views load when first shown, and the
   Vite preload helper has its own chunk instead of sitting in the Monaco
