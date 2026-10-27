@@ -12,6 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
 
+## [1.2.124] - 2026-10-27
+
+### Desktop and web
+
+- What's new after each update: the newest features, then the release notes (#1939).
+- Much faster long chats, project switching, launch, phone connects and lane refreshes (#1931, #1932, #1933, #1934, #1937).
+- Linux lane screens (#1927); PR filters by label, author and assignee, a code/tests/docs size split and fewer GitHub requests (#1921).
+- Terminal watch, default shell choice, browser certificate trust and dev-server stop (#1912); settings chips (#1910); company proxy and system CA trust on Electron 44, macOS 13+ (#1905).
+- GPT-6.1 Terra and Sol (#1920); Claude Code 2.1.310, Codex 0.164.0, Cursor SDK 1.0.40 (#1649, #1650, #1578).
+- Fixes across accounts, remote machines, git, the window, chat and automations (#1899, #1901, #1902, #1903, #1904, #1906, #1909, #1914, #1915, #1916, #1918, #1923, #1926).
+
+### iOS
+
+- PR reactions, comment edits, live checks, closing browser tabs and chat link menus (#1924), in TestFlight build 117.
+
+### Windows
+
+- Agent commands can use cmd switches; the sandbox never opens network paths (#1917).
+
 ## [1.2.123] - 2026-10-25
 
 ### Desktop and web
@@ -2755,7 +2774,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.123...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.124...HEAD
+[1.2.124]: https://github.com/arul28/ADE/compare/v1.2.123...v1.2.124
 [1.2.123]: https://github.com/arul28/ADE/compare/v1.2.122...v1.2.123
 [1.2.122]: https://github.com/arul28/ADE/compare/v1.2.121...v1.2.122
 [1.2.121]: https://github.com/arul28/ADE/compare/v1.2.120...v1.2.121

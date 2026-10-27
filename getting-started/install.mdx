@@ -90,6 +90,10 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
   </Card>
 </CardGroup>
 
+<Note>
+Behind a company proxy, set `HTTPS_PROXY` (and `NO_PROXY` for hosts that skip it) before you start ADE; the app and the brain both use it, and local addresses always go direct. ADE also trusts the root certificates your operating system trusts, so a company CA or a TLS-inspecting proxy works without extra setup.
+</Note>
+
 ## Launch and explore
 
 Open ADE and you land on the welcome screen, then the sign-in card. ADE needs a free account: it is what connects your machines, your phone, and the web client to each other.

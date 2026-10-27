@@ -18,7 +18,7 @@ Every Work session is the same kind of tracked record under the hood, which is w
     The provider's CLI running inside ADE in a tracked terminal. It runs ADE's own downloaded copy of the CLI, with your existing sign-in; open a plain shell to run a CLI you installed yourself. ADE knows how to resume it, so an ended CLI session can be continued.
   </Card>
   <Card title="Shell" icon="rectangle-terminal">
-    A plain interactive shell (a PTY) in the lane's worktree, for running commands by hand.
+    A plain interactive shell (a PTY) in the lane's worktree, for running commands by hand. Pick the shell new ones start with in Settings › Computer › Behaviour.
   </Card>
 </CardGroup>
 
@@ -35,6 +35,8 @@ Every session is a row that ADE keeps so you can revisit it later. A session rec
 - **Lifecycle** — running, completed, failed, disposed, or detached, with start/end times and exit code.
 - **Content** — a transcript and a last-output preview.
 - **Provenance** — the commit range the session spanned and links to its diff.
+
+An agent can watch a terminal (`ade terminal watch`) and is woken when it prints something new; the terminal's Watching pane lists every watcher, with Stop.
 
 Tracked provider CLI sessions also store enough resume metadata that, after one exits, you can **Resume** the TUI or send a follow-up prompt and ADE rebuilds the right `claude --resume`, `codex resume`, or equivalent command — continuing in the same durable session.
 
