@@ -940,6 +940,10 @@ export async function createAdeRuntime(args: {
     throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
+  // Before the first read inside the folder: everything below reads it
+  // synchronously, and one macOS holds behind a permission prompt must fail
+  // here, off the event loop. Existence checks above only stat it.
+  await assertProjectRootReadable(projectRoot);
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   // On Windows each project's credential store is sealed with its own DPAPI
@@ -953,9 +957,6 @@ export async function createAdeRuntime(args: {
     process.platform === "win32"
       ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
       : null,
-    // Everything below reads the folder synchronously; one that macOS is
-    // holding behind a permission prompt must fail here, off the event loop.
-    assertProjectRootReadable(projectRoot),
   ]);
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"

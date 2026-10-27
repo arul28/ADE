@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 
 /**
@@ -27,22 +27,26 @@ const PROJECT_ROOT_READ_TIMEOUT_MS = 15_000;
 export async function assertProjectRootReadable(projectRoot: string): Promise<void> {
   if (process.platform !== "darwin") return;
   const failure = await new Promise<string | null>((resolve) => {
-    execFile(
-      "/bin/ls",
-      ["-a", projectRoot],
-      { timeout: PROJECT_ROOT_READ_TIMEOUT_MS, killSignal: "SIGKILL" },
-      (error, _stdout, stderr) => {
-        if (!error) {
-          resolve(null);
-          return;
-        }
-        if (error.killed) {
-          resolve(`it did not answer within ${PROJECT_ROOT_READ_TIMEOUT_MS / 1000} seconds`);
-          return;
-        }
-        resolve(String(stderr ?? "").trim() || error.message);
-      },
-    );
+    // The listing itself is discarded: only whether it finishes matters.
+    const child = spawn("/bin/ls", ["-a", projectRoot], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, PROJECT_ROOT_READ_TIMEOUT_MS);
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 2_000) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve(error.message);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) resolve(`it did not answer within ${PROJECT_ROOT_READ_TIMEOUT_MS / 1000} seconds`);
+      else resolve(code === 0 ? null : stderr.trim() || `ls exited with ${code}`);
+    });
   });
   if (!failure) return;
   throw codedError(
