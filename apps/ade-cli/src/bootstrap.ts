@@ -1,4 +1,5 @@
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
+import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -952,6 +953,9 @@ export async function createAdeRuntime(args: {
     process.platform === "win32"
       ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
       : null,
+    // Everything below reads the folder synchronously; one that macOS is
+    // holding behind a permission prompt must fail here, off the event loop.
+    assertProjectRootReadable(projectRoot),
   ]);
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
