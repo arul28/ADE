@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { captureError } from "../../../shared/sentry/capture";
 
 type ResolutionSource = "path" | "known-dir";
 const PATH_MARKER_START = "__ADE_PATH_START__";
@@ -699,7 +700,7 @@ export function readSavedShellPaths(cacheFile: string): PersistedShellPath[] {
   } catch (error) {
     // No file yet is the first launch; anything else is worth a line.
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      console.warn("[ade] shell PATH cache unreadable; probing the shells", error);
+      captureError(error, { fingerprint: ["shell-path-cache", "read"] });
     }
     return [];
   }
@@ -721,7 +722,7 @@ export function saveShellPaths(cacheFile: string): void {
     fs.renameSync(tempPath, cacheFile);
   } catch (error) {
     // The next launch probes the shells itself.
-    console.warn("[ade] shell PATH cache write failed", error);
+    captureError(error, { fingerprint: ["shell-path-cache", "write"] });
   }
 }
 
@@ -768,7 +769,7 @@ function refreshShellPathInBackground(
               listener();
             } catch (error) {
               // A listener's failure must not stop the others.
-              console.warn("[ade] shell PATH refresh listener failed", error);
+              captureError(error, { fingerprint: ["shell-path-cache", "refresh-listener"] });
             }
           }
         }
