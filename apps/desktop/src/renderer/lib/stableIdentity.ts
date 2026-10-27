@@ -147,6 +147,28 @@ export function memoWithLatestHandlers<P extends object>(
 }
 
 /**
+ * A render-time value kept until one of its inputs changes, for code below an
+ * early return where `useMemo` cannot go. The map comes from a `useRef` above
+ * the return. Like `useMemo`, every value the builder reads belongs in `deps`.
+ */
+export type RenderCache = Map<string, { deps: readonly unknown[]; value: unknown }>;
+
+export function cachedForRender<T>(
+  cache: RenderCache,
+  key: string,
+  deps: readonly unknown[],
+  build: () => T,
+): T {
+  const hit = cache.get(key);
+  if (hit && hit.deps.length === deps.length && hit.deps.every((dep, index) => Object.is(dep, deps[index]))) {
+    return hit.value as T;
+  }
+  const value = build();
+  cache.set(key, { deps, value });
+  return value;
+}
+
+/**
  * `useState` whose setter drops a plain value equal to the one most recently
  * asked for. React cannot drop a same-value write early while the component
  * has other updates queued, so each such write renders the component again.

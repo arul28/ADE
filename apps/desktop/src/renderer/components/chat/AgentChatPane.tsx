@@ -16,6 +16,8 @@ import {
   useLatestCallback,
   useStableIdentity,
   useStateSkippingSameValue,
+  cachedForRender,
+  type RenderCache,
 } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowBendUpRight, ArrowLeft, CaretDown, CircleNotch, ClockCountdown, CloudArrowUp, Desktop, DeviceMobile, DownloadSimple, GitDiff, GitFork, Hourglass, Lightning, Plus, Terminal, Trash, TreeStructure, X } from "@phosphor-icons/react";
@@ -4677,6 +4679,9 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(() => hasWarmChatModelCatalog(projectRoot));
   const preferencesProjectRootRef = useRef<string | null | undefined>(projectRoot);
   const [error, setError] = useState<string | null>(null);
+  // The header's slot contents, rebuilt only when what they show changes, so
+  // the header (and its buttons and tooltips) can skip the pane's renders.
+  const headerSlotCacheRef = useRef<RenderCache>(new Map());
   /**
    * The lane recipe configured from the composer's "+" — held, never created,
    * until the chat is sent. Rides the auto-create target but swaps the lane
@@ -17336,7 +17341,30 @@ export function AgentChatPane({
       </div>
     </>
   );
-  const chatHeaderTrailingActions = (
+  const chatHeaderTrailingActions = cachedForRender(headerSlotCacheRef.current, "trailing", [
+    chatTerminalVisible,
+    selectedSessionId,
+    showClaudeLoginPrompt,
+    laneId,
+    renderedChatRuntimePin,
+    revealChatTerminal,
+    iosSimulatorSessionChip,
+    effectiveIosSimulatorOpen,
+    laneToolsVisible,
+    iosSimulatorAvailable,
+    openIosSimulatorDrawer,
+    selectedSession?.laneId,
+    composerRuntimePin,
+    iosSimulatorOpen,
+    iosElementContextItems.length,
+    appControlAvailable,
+    appControlOpen,
+    appControlContextItems.length,
+    headerChips,
+    lockedSingleSessionMode,
+    handleDeleteSelectedChat,
+    deletingChatSessionId,
+  ], () => (
     <>
       {chatTerminalVisible && selectedSessionId ? (
         <ClaudeLoginPromptButton
@@ -17472,8 +17500,21 @@ export function AgentChatPane({
             </button>
           ) : null}
     </>
-  );
-  const chatActionsToggle = (
+  ));
+  const chatActionsToggle = cachedForRender(headerSlotCacheRef.current, "actions", [
+    selectedSessionId,
+    workSidebar.setTool,
+    selectedSession?.sideChatParentSessionId,
+    selectedSession?.sideChatSessionId,
+    laneId,
+    hasAttachedTerminal,
+    chatActionsAvailable,
+    chatActionsOpen,
+    proofArtifactCount,
+    runningSubagentCount,
+    selectedTaskProgress?.done,
+    selectedTaskProgress?.total,
+  ], () => (
     <>
       <AgentBrowserPresenceHeaderButton
         chatSessionId={selectedSessionId}
@@ -17538,7 +17579,7 @@ export function AgentChatPane({
     </button>
       ) : null}
     </>
-  );
+  ));
   // One way back from any subagent on screen: a runtime subagent's view
   // closes back to this chat; a spawned chat goes to the chat that started it.
   const headerBack = subagentView
@@ -17550,7 +17591,12 @@ export function AgentChatPane({
         onBack: backToSpawnParent,
       }
       : null;
-  const headerBackAction = headerBack ? (
+  const headerBackAction = cachedForRender(headerSlotCacheRef.current, "leading", [
+    subagentView,
+    spawnLineage,
+    chatActionsOpen,
+    chatRuntimePin,
+  ], () => headerBack ? (
     <button
       type="button"
       data-testid="chat-header-back"
@@ -17561,15 +17607,11 @@ export function AgentChatPane({
       <ArrowLeft size={12} weight="bold" aria-hidden className="shrink-0" />
       <span className="min-w-0 truncate">{headerBack.label}</span>
     </button>
-  ) : null;
-  const shellHeader = (
-    <div className={CHAT_SHELL_HEADER_CLASS}>
-      <CenteredWorkSurfaceHeader
-        title={resolvedTitle}
-        laneId={laneId}
-        prBadgeOnly
-        leadingAction={headerBackAction}
-        titleAccessory={<>
+  ) : null);
+  const headerTitleAccessory = cachedForRender(headerSlotCacheRef.current, "title", [
+    selectedSession?.cursorCloudAgentId,
+    selectedSession?.devinSessionId,
+  ], () => <>
         {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
             type="button"
@@ -17604,7 +17646,15 @@ export function AgentChatPane({
             <span>Devin Cloud</span>
           </button>
         ) : null}
-        </>}
+        </>);
+  const shellHeader = (
+    <div className={CHAT_SHELL_HEADER_CLASS}>
+      <CenteredWorkSurfaceHeader
+        title={resolvedTitle}
+        laneId={laneId}
+        prBadgeOnly
+        leadingAction={headerBackAction}
+        titleAccessory={headerTitleAccessory}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         promptCache={selectedSession?.promptCache ?? null}
