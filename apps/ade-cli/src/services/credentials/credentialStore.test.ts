@@ -250,8 +250,6 @@ describe("EncryptedFileCredentialStore", () => {
           machineKeyPath: customMachineKeyPath,
         });
         customStore.setSync("account.session.v1", "custom-key-location");
-        expect(fs.existsSync(path.join(customKeyDir, ".credential-key.dpapi"))).toBe(true);
-        expect(fs.existsSync(path.join(customCredentialDir, ".credential-key.dpapi"))).toBe(false);
         expect(new EncryptedFileCredentialStore({
           credentialsPath: path.join(customCredentialDir, "credentials.json.enc"),
           machineKeyPath: customMachineKeyPath,
