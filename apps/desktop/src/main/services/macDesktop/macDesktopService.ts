@@ -949,7 +949,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return;
     }
     deps.logger.warn("mac_desktop.driver_lost", { reason, lanes: ownership.laneIds() });
-    if (isLinuxSeat) reportLinuxScreenProblem("helper_lost", reason, { lanes: ownership.laneIds().length });
+    // Only a loss that took a lane's screen: an idle exit would use up the
+    // once-per-process report before a real one.
+    const lostLanes = ownership.laneIds().length;
+    if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", reason, { lanes: lostLanes });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
     recording.clear();

@@ -132,19 +132,24 @@ export function reportLinuxSetupOutcome(
   missingAfter: readonly string[] | null,
 ): void {
   const before = missingBefore.join(",");
+  const packageManager = linuxPackageManagerId();
   // Not `result.message`: on a failed install it carries the package
   // manager's output, and terminal output never goes to Sentry.
   const extra = {
-    packageManager: linuxPackageManagerId() ?? "none",
+    packageManager: packageManager ?? "none",
     missingBefore: before,
     missingAfter: missingAfter?.join(",") ?? "unknown",
   };
   if (!result.installed) {
-    if (result.needsUser && result.command) {
+    // Only a known package manager's install can be the user's to run; with
+    // none, `command` is advice, and the distribution is one ADE lacks.
+    if (result.needsUser && result.command && packageManager) {
       logLinuxScreenFact("setup_needs_user", extra, before);
       return;
     }
-    const why = result.command ? "install failed" : "no supported package manager or encoder";
+    const why = !result.command
+      ? "no encoder available"
+      : packageManager ? "install failed" : "no supported package manager";
     reportLinuxScreenProblem("setup_failed", why, extra, `${why}|${before}`);
     return;
   }
