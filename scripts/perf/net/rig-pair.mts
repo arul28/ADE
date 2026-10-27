@@ -18,6 +18,8 @@ if (!via) throw new Error("--via host:port (the proxy in front of the brain) is 
 const [host, portText] = [via.slice(0, via.lastIndexOf(":")), via.slice(via.lastIndexOf(":") + 1)];
 const port = Number(portText);
 if (!host || !Number.isInteger(port) || port === 8787) throw new Error(`bad --via ${via}`);
+// The rig is one computer: the link must point at a local proxy, never at another machine.
+if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(host)) throw new Error(`--via must be a loopback address, got ${host}`);
 const status = JSON.parse(fs.readFileSync(0, "utf8"));
 const device = status.localDevice ?? {};
 const info = status.pairingConnectInfo ?? {};

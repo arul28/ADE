@@ -10,6 +10,7 @@
 //          for each chat in --chats, round-robin; and the bytes each proxy carried during the switch.
 // --machines: {"mac":{"ids":[...]},"studio":{"ids":[...],"proxyPid":123,"proxyLog":"…"},"win":{…}}
 // Env: CDP_PORT (9470), HOVER_MS (250), HOLD_MS (90), GAP_MS (900).
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { findPage, navigateStatement } from "../ui/target.mjs";
@@ -17,7 +18,9 @@ import { findPage, navigateStatement } from "../ui/target.mjs";
 const argv = process.argv.slice(2);
 const mode = argv[0] ?? "chats";
 const read = (name, fallback = null) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] ?? fallback : fallback; };
-const machines = JSON.parse(fs.readFileSync(read("--machines"), "utf8"));
+const machinesPath = read("--machines");
+if (!machinesPath) throw new Error("--machines <rig dir>/machines.json is required (written by rig.sh up)");
+const machines = JSON.parse(fs.readFileSync(machinesPath, "utf8"));
 const rounds = Number(read("--rounds", "5"));
 const out = read("--json");
 const HOVER_MS = Number(process.env.HOVER_MS ?? 250), HOLD_MS = Number(process.env.HOLD_MS ?? 90), GAP_MS = Number(process.env.GAP_MS ?? 900);
@@ -42,6 +45,10 @@ async function proxyTotals() {
   for (const [name, m] of Object.entries(machines)) {
     if (!m.proxyPid) continue;
     const before = fs.statSync(m.proxyLog).size;
+    // SIGUSR2's default action ends a process: signal the pid only while it is still the rig's slow proxy.
+    let command = "";
+    try { command = execFileSync("ps", ["-p", String(m.proxyPid), "-o", "command="], { encoding: "utf8" }); } catch { /* gone */ }
+    if (!command.includes("slow-proxy.mjs")) { totals[name] = null; continue; }
     process.kill(m.proxyPid, "SIGUSR2");
     for (let i = 0; i < 50 && fs.statSync(m.proxyLog).size === before; i++) await sleep(10);
     const last = fs.readFileSync(m.proxyLog, "utf8").trim().split("\n").reverse().find((l) => l.includes('"totals"'));

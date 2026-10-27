@@ -16,7 +16,8 @@
 # RIG_ORIGINS=shared (default) gives all three copies one git origin (the same repo on every machine, so
 # Work merges their chats); RIG_ORIGINS=unique keeps a project on its own machine (cross-machine tab switches).
 # RIG_OWNER_LOG (optional, read-only): the installed brain's log, checked for event-loop near-misses per run.
-# CDP for the app: 127.0.0.1:${RIG_CDP:-9470}.
+# CDP for the app: 127.0.0.1:${RIG_CDP:-9470}. macOS only (APFS clonefile copies, process groups); always run
+# `rig.sh down` after `up`, even when `up` fails part way, so no brain, proxy or app is left behind.
 set -e
 REPO=${0:A:h:h:h:h}
 RIG=${RIG_DIR:?set RIG_DIR to a scratch directory}
@@ -57,11 +58,9 @@ installed_brain_check() {
 up() {
   ${RIG_MEMGATE:-true}
   date -u +%Y-%m-%dT%H:%M:%S > $RIG/window-start
-  
   [ -f $RIG/studio-proj/.ade/real-load-copy.json ] || reset
   : > $RIG/up.json
-  # Each machine's copy gets its own fake origin (a path that doesn't exist). With one shared origin, the
-  # desktop's "prefer local checkout" (matched by git origin) moves every remote tab back to the local copy.
+  # Git origins decide how the desktop treats the copies ("prefer local checkout" matches by origin).
   # RIG_ORIGINS=shared (default): one origin for all three copies, like one repo checked out on every machine,
   # so the Work list merges every machine's chats and a same-repo project switch goes local by design.
   # RIG_ORIGINS=unique: a project that exists only on the other machine stays remote (cross-machine tab switch).
@@ -87,7 +86,7 @@ up() {
   export ADE_APP_CONTROL_DEBUG_FLAGS="--use-mock-keychain --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-background-timer-throttling"
   export ADE_HOME=$RIG/mac-home ADE_DEV_ALLOW_ALT_HOME=1 ADE_DESKTOP_USER_DATA_PATH=$RIG/mac-userdata ADE_ELECTRON_REMOTE_DEBUGGING_PORT=$CDP ADE_APP_CONTROL_CDP_PORT=$CDP
   export NODE_OPTIONS="$EXTRA_NODE_OPTIONS"
-  unset ADE_PROJECT_ROOT ADE_LANE_ID ADE_CHAT_SESSION_ID ADE_CHAT_SESSION_ID ADE_PARENT_CHAT_SESSION_ID
+  unset ADE_PROJECT_ROOT ADE_LANE_ID ADE_CHAT_SESSION_ID ADE_PARENT_CHAT_SESSION_ID
   # Setup at low priority (it once coincided with an installed-brain freeze): the first
   # launch of a worktree builds main and warms Vite's dep cache. Do it once under nice 10, stop it,
   # then start the measured app at normal priority.
@@ -113,7 +112,7 @@ up() {
   for m in studio win; do
     pport=$(node -e 'for (const l of require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n")){const r=JSON.parse(l); if(r.machine===process.argv[2]) console.log(r.proxyPort)}' $RIG/up.json $m)
     name=$([ $m = studio ] && echo "Rig studio" || echo "Rig win")
-    url=$(mb cli --dir $RIG/$m-brain --n $m --cwd $RIG/$m-proj -- sync status --json 2>/dev/null | (cd $REPO/apps/ade-cli && npx tsx ../../scripts/perf/net/rig-pair.mts --via 127.0.0.1:$pport --name "$name"))
+    url=$(mb cli --dir $RIG/$m-brain --n $m --cli $BRAIN_CLI --cwd $RIG/$m-proj -- sync status --json 2>/dev/null | (cd $REPO/apps/ade-cli && npx tsx ../../scripts/perf/net/rig-pair.mts --via 127.0.0.1:$pport --name "$name"))
     tid=$(c "window.ade.remoteRuntime.pairWithMachine({input:'$url',pin:'$PIN',deviceName:'Rig local desktop'}).then(r=>r.targetId)")
     c "window.ade.remoteRuntime.setAutoConnect('$tid',true).then(()=>window.ade.remoteRuntime.connect('$tid')).then(()=>'ok')" > /dev/null
     echo "{\"machine\":\"$m\",\"targetId\":\"$tid\"}" >> $RIG/up.json
