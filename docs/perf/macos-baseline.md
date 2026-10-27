@@ -574,6 +574,12 @@ vs 1.3 s / 17 KB; LTE reconnect hello 145 ms (160). With `cbc32aa15` (a full
 lane list waits behind the first chat page on a weak link), P1's own runs with
 P4's fixes: 3G cold chat 2.40-2.43 s, 56.9-57.8 KB at the chat in all 5.
 
+After the rebase onto main with P4 (`bf6bfe605`), P1 `68c349ed1`, a fresh
+golden clone, the headless phone on 3G, median of 5 (worst), load average
+6-15: cold → chat 2.53 s (2.65) vs T3 3.6 s; 61.8 KB at the chat (61.9) vs
+89 KB; reconnect → chat 0.99 s (1.02), 4.0 KB at the chat and 8.3 KB in all
+vs 1.3 s / 17 KB.
+
 - Weak-link first chat page (owner-approved): the phone times its own
   handshake (dial to hello_ok); at 700 ms or more the first page is 96 KB, not
   256 KB (13.5 KB wire instead of 57 KB on the 8.7 MB chat). The next older
