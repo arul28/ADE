@@ -23,9 +23,11 @@ export const NETWORK_PROFILES = Object.freeze({
   "3g": { name: "3g", kbps: 400, rttMs: 400 },
   lte: { name: "lte", kbps: 10_000, rttMs: 60 },
   lan: { name: "lan", kbps: 0, rttMs: 0 },
-  // The owner's MacBook to this Mac Studio over the tailnet (direct, across the internet):
-  // `tailscale ping` measured 29 ms on 2026-10-26; bandwidth assumed 50 Mbps.
+  // A laptop away from home reaching a desktop at home over a direct tailnet path: about 30 ms RTT
+  // (a measured median, 2026-10-26). Bandwidth was not measured; 50 Mbps stands in for a home uplink.
   wan30: { name: "wan30", kbps: 50_000, rttMs: 30 },
+  // Two machines on one home LAN over a tailnet: about 7 ms RTT.
+  lan7: { name: "lan7", kbps: 0, rttMs: 7 },
 });
 
 /** Largest piece scheduled as one unit, so a big write is paced instead of landing at once. */
@@ -195,6 +197,8 @@ async function main(argv) {
     await proxy.close();
     process.exit(0);
   };
+  // SIGUSR2 prints the running totals without stopping (a rig reads bytes per scenario this way).
+  process.on("SIGUSR2", () => console.log(JSON.stringify({ at: Date.now(), totals: proxy.stats() })));
   process.on("SIGINT", finish);
   process.on("SIGTERM", finish);
 }

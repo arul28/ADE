@@ -1,7 +1,7 @@
 // cd apps/ade-cli && npx tsx ../../scripts/perf/net/make-real-load-copy.mts --source <project root> --out <empty dir> [--no-worktrees]
 //
-// A runnable copy of one real ADE project, for measuring under real load (the owner's heavy
-// databases) without touching the original. Read-only on the source:
+// A runnable copy of one real ADE project, for measuring under real load (a heavy user's
+// database) without touching the original. Read-only on the source:
 //   - the project database through SQLite's backup API (`sqlite3 ... .backup`, safe while a brain
 //     writes it);
 //   - chat transcripts, chat-session records and project icons as APFS clones (`cp -c`);
@@ -35,8 +35,8 @@ if (copyRoot.startsWith(`${sourceRoot}${path.sep}`) || copyRoot === sourceRoot) 
 if (fs.existsSync(copyRoot) && fs.readdirSync(copyRoot).length > 0) throw new Error(`${copyRoot} is not empty`);
 const withWorktrees = !argv.includes("--no-worktrees");
 // --clone: the source is a copy this script made (a "golden" copy no brain opens). The whole tree is
-// cloned with APFS clonefile (instant, no load on the owner's disk), then paths and git worktree links
-// are rewritten. Copying the owner's live database again is what this mode avoids.
+// cloned with APFS clonefile (instant, no load on the source's disk), then paths and git worktree links
+// are rewritten. Copying a live database again is what this mode avoids.
 const cloneMode = argv.includes("--clone");
 const markerName = "real-load-copy.json";
 if (cloneMode && !fs.existsSync(path.join(sourceRoot, ".ade", markerName))) throw new Error("--clone needs a source made by make-real-load-copy (no .ade/real-load-copy.json)");
@@ -56,7 +56,9 @@ if (cloneMode) {
   execFileSync("chmod", ["-R", "u+w", copyRoot], { stdio: "inherit" });
 } else {
 // 1. Repository: a local clone (hard links on one volume, the source is only read).
-quietGit(["clone", "--quiet", "--local", sourceRoot, copyRoot], path.dirname(copyRoot));
+// Hard links only work on one volume (e.g. a project on the system disk, copies on another volume).
+const sameVolume = fs.statSync(sourceRoot).dev === fs.statSync(path.dirname(copyRoot)).dev;
+quietGit(["clone", "--quiet", "--local", ...(sameVolume ? [] : ["--no-hardlinks"]), sourceRoot, copyRoot], path.dirname(copyRoot));
 quietGit(["remote", "set-url", "origin", path.join(os.tmpdir(), "ade-real-load-copy-no-origin")], copyRoot);
 
 // 2. Project state: database by backup API, transcripts and chat records as clones.
@@ -95,9 +97,9 @@ for (const { name } of tables) {
     }
   }
 }
-// The copied cluster record names the owner's brain, so a measurement brain would treat the copy as
+// The copied cluster record names the source machine's brain, so a measurement brain would treat the copy as
 // following that machine (and refuse to host it). Without a record, the brain that opens the copy
-// becomes its host; it never dials the owner's machine.
+// becomes its host; it never dials the source machine.
 db.run("delete from sync_cluster_state");
 const sessionsDir = path.join(copyAde, "cache", "chat-sessions");
 let rewrittenRecords = 0;
