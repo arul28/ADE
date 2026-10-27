@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - What's new after each update: the newest features, then the release notes (#1939).
 - Much faster long chats, project switching, launch, phone connects and lane refreshes (#1931, #1932, #1933, #1934, #1937).
-- Linux lane screens (#1927); PR filters by label, author and assignee, a code/tests/docs size split and fewer GitHub requests (#1921).
+- Linux lane screens on Ubuntu, Debian, Fedora and Arch, x64 and arm64 (#1927, #1935); PR filters by label, author and assignee, a code/tests/docs size split and fewer GitHub requests (#1921).
 - Terminal watch, default shell choice, browser certificate trust and dev-server stop (#1912); settings chips (#1910); company proxy and system CA trust on Electron 44, macOS 13+ (#1905).
 - GPT-6.1 Terra and Sol (#1920); Claude Code 2.1.310, Codex 0.164.0, Cursor SDK 1.0.40 (#1649, #1650, #1578).
 - Fixes across accounts, remote machines, git, the window, chat and automations (#1899, #1901, #1902, #1903, #1904, #1906, #1909, #1914, #1915, #1916, #1918, #1923, #1926).
