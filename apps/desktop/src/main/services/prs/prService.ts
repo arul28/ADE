@@ -30,6 +30,12 @@ import type {
   IntegrationLaneOrigin,
   IntegrationLaneSnapshot,
   GitHubRepoRef,
+  ListGitHubPrFilterOptionsArgs,
+  ListGitHubPrFilterOptionsResult,
+  SearchGitHubPrsArgs,
+  SearchGitHubPrsResult,
+  SetPrAssigneesArgs,
+  SetPrAssigneesResult,
   IntegrationLaneSummary,
   IntegrationPairwiseResult,
   IntegrationProposal,
@@ -147,11 +153,15 @@ import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
+import { createPrListFilterOps } from "./prListFilters";
+import { createPrGithubReadCache } from "./prGithubReadCache";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
+import { createGithubMediaResolver } from "../github/githubMediaResolver";
+import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -200,6 +210,7 @@ import {
   type GetPrChatWatchArgs,
   type PrChatWatchSummary,
   type SetPrChatWatchArgs,
+  type PrMergeQueueRemoval,
 } from "../../../shared/prWatch";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
@@ -1281,6 +1292,21 @@ function githubRateLimitResetAtMsOf(error: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** What linking a PR that a chat's shell command created or merged came to. */
+export type ShellPrLinkResult =
+  | { status: "linked" | "already_linked"; prId: string }
+  | { status: "skipped"; reason: string };
+
+/** A PR number a chat's `gh pr create` / `gh pr merge` printed, to link to that chat. */
+export type ShellPrLinkArgs = {
+  sessionId: string;
+  kind: "create" | "merge";
+  /** From the command's `--repo`, when it named one. */
+  repoOwner: string | null;
+  repoName: string | null;
+  prNumber: number;
+};
+
 /**
  * Whether GitHub rejected the GraphQL `stack` field itself, as opposed to
  * refusing the request. Only this failure is fixable by re-asking without the
@@ -1598,6 +1624,7 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
+  let mediaResolver: ReturnType<typeof createGithubMediaResolver> | null = null;
   const chatLinks = createPrChatLinkStore({
     db,
     projectId,
@@ -2083,6 +2110,113 @@ export function createPrService({
   });
 
   /**
+   * Repositories whose GitHub has no merge-queue schema (GitHub Enterprise
+   * Server, which ADE does not otherwise support either). Asked once, then
+   * never again for the life of the process.
+   */
+  const mergeQueueUnsupportedRepos = new Set<string>();
+  /** One shell-created PR is checked once at a time, however many events name it. */
+  const shellPrLinksInFlight = new Map<string, Promise<ShellPrLinkResult>>();
+
+  const linkShellPrActionOnce = async (args: ShellPrLinkArgs): Promise<ShellPrLinkResult> => {
+    const skip = (reason: string): ShellPrLinkResult => {
+      logger.info("prs.shell_link_skipped", { sessionId: args.sessionId, kind: args.kind, prNumber: args.prNumber, reason });
+      return { status: "skipped", reason };
+    };
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return skip("session_missing");
+    const session = db.get<{ lane_id: string | null; tool_type: string | null }>(
+      "select lane_id, tool_type from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    if (!session?.lane_id || !isChatToolType(session.tool_type)) return skip("not_a_lane_chat");
+    const lane = (await laneService.list({ includeArchived: false, includeStatus: false }))
+      .find((entry) => entry.id === session.lane_id);
+    if (!lane) return skip("lane_missing");
+    let repo: GitHubRepoRef;
+    try {
+      repo = await githubService.getRepoOrThrow();
+    } catch {
+      return skip("no_github_repo");
+    }
+    const sameRepo = (owner: unknown, name: unknown) =>
+      String(owner ?? "").toLowerCase() === repo.owner.toLowerCase()
+      && String(name ?? "").toLowerCase() === repo.name.toLowerCase();
+    // A bare number from `gh pr merge 42` means this project's repository.
+    if (args.repoOwner && args.repoName && !sameRepo(args.repoOwner, args.repoName)) return skip("other_repo");
+
+    let pull: any;
+    try {
+      pull = await fetchPr(repo, args.prNumber, { fresh: true });
+    } catch (error) {
+      // The branch auto-map on the next PR sweep still finds an open PR.
+      logger.warn("prs.shell_link_github_read_failed", { prNumber: args.prNumber, error: getErrorMessage(error) });
+      return { status: "skipped", reason: "github_unreadable" };
+    }
+    const headRef = normalizeBranchName(asString(pull?.head?.ref));
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+    if (!sameRepo(pull?.base?.repo?.owner?.login, pull?.base?.repo?.name)) return skip("other_repo");
+    if (!sameRepo(pull?.head?.repo?.owner?.login, pull?.head?.repo?.name)) return skip("fork_head");
+    if (!headRef || headRef !== laneBranch) return skip("head_not_lane_branch");
+    if (headRef === normalizeBranchName(asString(pull?.base?.ref))) return skip("head_is_base");
+
+    let row = getLiveRowForRepoPr(repo.owner, repo.name, args.prNumber);
+    let linkedLane = false;
+    if (!row) {
+      if (listAutoLinkIgnores(repo).has(autoLinkIgnoreKey({
+        owner: repo.owner,
+        repo: repo.name,
+        prNumber: args.prNumber,
+        laneId: lane.id,
+      }))) {
+        return skip("unmapped_by_user");
+      }
+      const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: `https://github.com/${repo.owner}/${repo.name}/pull/${args.prNumber}` });
+      row = getLiveRowForRepoPr(repo.owner, repo.name, args.prNumber) ?? (linked.id ? requireRow(linked.id) : null);
+      linkedLane = true;
+      if (row && (pull?.state === "open")) {
+        try {
+          emitPrEvent?.({
+            type: "pr-auto-linked",
+            timestamp: nowIso(),
+            prId: row.id,
+            laneId: lane.id,
+            laneName: lane.name,
+            prNumber: args.prNumber,
+            prTitle: asString(pull?.title),
+            repoOwner: repo.owner,
+            repoName: repo.name,
+            headBranch: headRef,
+            githubUrl: asString(pull?.html_url),
+          });
+        } catch (error) {
+          logger.warn("prs.auto_map_event_emit_failed", { prNumber: args.prNumber, laneId: lane.id, error: getErrorMessage(error) });
+        }
+      }
+    }
+    if (!row) return skip("row_missing");
+    // An unlink is the user saying "not this chat's PR"; a later command does not overrule it.
+    if (hasChatSessionDismissal(row.id, sessionId)) return skip("unlinked_by_user");
+    const alreadyLinked = Boolean(db.get<{ id: string }>(
+      "select id from pull_request_chat_sessions where project_id = ? and pr_id = ? and session_id = ? limit 1",
+      [projectId, row.id, sessionId],
+    ));
+    if (alreadyLinked && !linkedLane) return { status: "already_linked", prId: row.id };
+    const ok = alreadyLinked || linkPrToChatSession({ prId: row.id, laneId: lane.id, sessionId, allowCrossLane: true });
+    if (!ok) return skip("link_failed");
+    emitPrsUpdated();
+    logger.info("prs.shell_linked", {
+      sessionId,
+      laneId: lane.id,
+      prId: row.id,
+      prNumber: args.prNumber,
+      kind: args.kind,
+      linkedLane,
+    });
+    return { status: "linked", prId: row.id };
+  };
+
+  /**
    * Repo + PR number for any PR mutation, from either a real DB row (mapped PR)
    * or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
    *
@@ -2143,6 +2277,13 @@ export function createPrService({
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     options: { hot?: boolean } = {},
   ): Promise<void> => {
+    readCache.forgetRepo(target.repo);
+    // A mutation can change what a filter search matches — labels, title,
+    // body, state, assignees — and the mapped PR path below only clears the
+    // list snapshot on a hot refresh or a material summary change. Drop the
+    // filtered-search cache here so the next read cannot answer with the
+    // pre-mutation rows for its 60-second lifetime.
+    prListFilterOps?.invalidateSearchCache();
     if (!target.row) {
       forgetActivityInputs(target.repo, target.prNumber);
       invalidateGithubSnapshotCache();
@@ -2483,8 +2624,11 @@ export function createPrService({
   const HOT_REFRESH_INTERVAL_PHASE_ONE_MS = 15_000;
   const HOT_REFRESH_INTERVAL_PHASE_TWO_MS = 30_000;
   const hotRefreshStartedAtByPrId = new Map<string, number>();
+  /** GitHub tab filter search; assigned once the row builders below exist. */
+  let prListFilterOps: ReturnType<typeof createPrListFilterOps> | null = null;
 
   const invalidateGithubSnapshotCache = (): void => {
+    prListFilterOps?.invalidateSearchCache();
     cachedGithubSnapshot = null;
     cachedGithubSnapshotAt = 0;
     cachedGithubSnapshotIncludesClosed = false;
@@ -2497,6 +2641,7 @@ export function createPrService({
     // lets an invalidated list be rebuilt from pulls read before the mutation.
     rawPullMemo.clear();
     activityInputMemo.clear();
+    readCache.clearLive();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4543,6 +4688,9 @@ export function createPrService({
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
+  /** GitHub answers kept between the reads below; see prGithubReadCache.ts. */
+  const readCache = createPrGithubReadCache();
+
   /**
    * Opening one PR fans out into detail, status, checks, reviews and activity,
    * and each of those independently re-fetched `GET /pulls/{n}` — five or more
@@ -4649,6 +4797,7 @@ export function createPrService({
     for (const kind of ["comments", "reviews", "checks"] as const) {
       activityInputMemo.delete(activityInputMemoKey(kind, repo, prNumber));
     }
+    readCache.forgetRepo(repo);
   };
 
   const forgetActivityInputsForPr = (prId: string): void => {
@@ -5591,6 +5740,11 @@ export function createPrService({
   };
 
   const fetchReviews = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
+    const reviews = await readCache.shared(repo, `reviews:${prNumber}`, () => fetchReviewsUncached(repo, prNumber));
+    return reviews.map((review) => ({ ...review }));
+  };
+
+  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
     const data = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
     });
@@ -5635,6 +5789,18 @@ export function createPrService({
       entry,
       `review:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
     ));
+  };
+
+  /**
+   * The review threads the detail pane polls. A reply or a new review bumps
+   * the pull's last update, so they are reused while it is quiet; resolving a
+   * thread on github.com may not, and shows within the 3-minute ceiling.
+   * Writes through ADE (and `assertThreadBelongsToPr`) read fresh.
+   */
+  const fetchReviewThreadsWhileQuiet = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
+    const pull = await fetchPr(repo, prNumber).catch(() => null);
+    if (!pull) return await fetchReviewThreads(repo, prNumber);
+    return await readCache.whileQuiet(repo, `threads:${prNumber}`, pull, () => fetchReviewThreads(repo, prNumber));
   };
 
   const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
@@ -5767,27 +5933,35 @@ export function createPrService({
     });
   };
 
-  const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<{
+  type CombinedStatus = {
     state: string;
     statuses: Array<{ context: string; state: string; description: string | null; target_url: string | null; created_at: string | null; updated_at: string | null }>;
-  }> => {
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/status`
+  };
+
+  const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<CombinedStatus> => {
+    const combined = await readCache.shared(repo, `status:${sha}`, async (): Promise<CombinedStatus> => {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/status`
+      });
+      return {
+        state: asString(data?.state),
+        statuses: Array.isArray(data?.statuses) ? data.statuses : []
+      };
     });
-    return {
-      state: asString(data?.state),
-      statuses: Array.isArray(data?.statuses) ? data.statuses : []
-    };
+    return { state: combined.state, statuses: [...combined.statuses] };
   };
 
   const fetchCheckRuns = async (repo: GitHubRepoRef, sha: string): Promise<any[]> => {
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
-      query: { per_page: 100 }
+    const runs = await readCache.shared(repo, `checkRuns:${sha}`, async (): Promise<any[]> => {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
+        query: { per_page: 100 }
+      });
+      return Array.isArray(data?.check_runs) ? data.check_runs : [];
     });
-    return Array.isArray(data?.check_runs) ? data.check_runs : [];
+    return [...runs];
   };
 
   /** Last-known rollup for a PR row, so a failed checks fetch can hold it. */
@@ -6276,7 +6450,13 @@ export function createPrService({
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
       bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
-      fetchMergeStateViaGraphql(repo, prNumber),
+      readCache.whileQuiet(
+        repo,
+        `merge:${prNumber}`,
+        pr,
+        () => fetchMergeStateViaGraphql(repo, prNumber),
+        (value) => !value?.mergeableUnknown && value?.mergeStateStatus != null && value.mergeStateStatus !== "unknown",
+      ),
     ]);
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
@@ -6759,6 +6939,39 @@ export function createPrService({
    */
   const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
   const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
+  const COMMIT_CHECK_ROLLUP_QUERY = `query($owner: String!, $name: String!, $number: Int!, $last: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        commits(last: $last) { nodes { commit { oid statusCheckRollup { state } } } }
+      }
+    }
+  }`;
+  const fetchCommitCheckRollups = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    last: number,
+  ): Promise<Map<string, "success" | "failure" | "pending" | "none">> => {
+    const data = await graphqlRequest<{
+      repository?: { pullRequest?: { commits?: { nodes?: Array<{ commit?: { oid?: unknown; statusCheckRollup?: { state?: unknown } | null } }> } } | null } | null;
+    }>(COMMIT_CHECK_ROLLUP_QUERY, { owner: repo.owner, name: repo.name, number: prNumber, last: Math.min(100, Math.max(1, last)) }, { repo });
+    const nodes = data.repository?.pullRequest?.commits?.nodes;
+    if (!Array.isArray(nodes)) throw new Error("GitHub returned no commits for the check rollup.");
+    const out = new Map<string, "success" | "failure" | "pending" | "none">();
+    for (const node of nodes) {
+      const oid = asString(node?.commit?.oid);
+      if (!oid) continue;
+      const state = asString(node?.commit?.statusCheckRollup?.state).toUpperCase();
+      out.set(
+        oid,
+        state === "SUCCESS" ? "success"
+          : state === "FAILURE" || state === "ERROR" ? "failure"
+            : state === "PENDING" || state === "EXPECTED" ? "pending"
+              : "none",
+      );
+    }
+    return out;
+  };
+
   const getCommitsSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrCommit[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prId = String(coords.githubPrNumber);
@@ -6792,18 +7005,52 @@ export function createPrService({
       };
     });
 
+    // The head is never kept: read seconds after a push, before CI has
+    // registered, it says nothing ran, and that would stick once it becomes
+    // an older commit.
+    const headSha = baseCommits[baseCommits.length - 1]?.sha ?? "";
+    const remember = (sha: string, status: "success" | "failure" | "pending" | "none"): void => {
+      if (sha !== headSha) readCache.noteCommitCheck(repo, sha, status);
+    };
+    const knownStatus = (sha: string) => readCache.commitCheck(repo, sha);
+
+    // One GraphQL read gives every commit GitHub's own check rollup (what its
+    // commit list shows), where the REST path below costs a request per
+    // commit. Used when any older commit is not already known; a failure
+    // falls through to REST.
+    const olderUnknown = baseCommits.slice(0, -1).some((commit) => commit.sha && knownStatus(commit.sha) == null);
+    if (olderUnknown && baseCommits.length > 1) {
+      const rollups = await fetchCommitCheckRollups(repo, Number(coords.githubPrNumber), baseCommits.length)
+        .catch((err: unknown) => {
+          logger.warn("prs.commit_check_rollup_failed", { prId, error: getErrorMessage(err) });
+          return null;
+        });
+      if (rollups) {
+        return baseCommits.map((commit) => {
+          const status = rollups.get(commit.sha) ?? "none";
+          if (commit.sha) remember(commit.sha, status);
+          return { ...commit, checkStatus: status };
+        });
+      }
+    }
+
     // Fetch per-commit check-runs in parallel (capped to 5 concurrent).
     // Each 404/403 is caught and downgraded to "none" for that commit.
     const started = Date.now();
     const results = await mapConcurrent(
       baseCommits,
       COMMIT_CHECK_STATUS_CONCURRENCY,
-      async (commit): Promise<"success" | "failure" | "pending" | "none"> => {
+      async (commit, index): Promise<"success" | "failure" | "pending" | "none"> => {
         if (!commit.sha) return "none";
+        const isHead = index === baseCommits.length - 1;
+        const settled = isHead ? null : knownStatus(commit.sha);
+        if (settled) return settled;
         if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
         try {
           const runs = await fetchCheckRuns(repo, commit.sha);
-          return aggregateCommitCheckStatus(runs);
+          const status = aggregateCommitCheckStatus(runs);
+          remember(commit.sha, status);
+          return status;
         } catch (err) {
           logger.warn("prs.commit_check_runs_failed", {
             prId,
@@ -6855,8 +7102,11 @@ export function createPrService({
     const runs: PrActionRun[] = await Promise.all(
       rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
         const runId = Number(run?.id);
-        let jobs: PrActionJob[] = [];
-        if (runId > 0 && jobFetchAllowed[index]) {
+        const runAttempt = Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1;
+        const runFinished = toRunStatus(run?.status) === "completed";
+        const knownJobs = runFinished ? readCache.finishedJobs(repo, runId, runAttempt) : null;
+        let jobs: PrActionJob[] = knownJobs ?? [];
+        if (runId > 0 && jobFetchAllowed[index] && !knownJobs) {
           try {
             const { data: jobsData } = await githubService.apiRequest<any>({
               method: "GET",
@@ -6883,6 +7133,11 @@ export function createPrService({
                   }))
                 : []
             }));
+            // Kept only once every job has finished too; a run marked done
+            // while a job still reports running is read again next time.
+            if (runFinished && jobs.every((job) => job.status === "completed")) {
+              readCache.noteFinishedJobs(repo, runId, runAttempt, jobs);
+            }
           } catch {
             // Jobs fetch failed; return empty jobs array
           }
@@ -6900,7 +7155,7 @@ export function createPrService({
           htmlUrl: asString(run?.html_url) || "",
           createdAt: asString(run?.created_at) || "",
           updatedAt: asString(run?.updated_at) || "",
-          runAttempt: Number(run?.run_attempt) > 0 ? Number(run.run_attempt) : 1,
+          runAttempt,
           jobs
         };
       })
@@ -10668,7 +10923,18 @@ export function createPrService({
     // the moment the repo goes quiet, and never revisit the rows the truncated
     // walk missed. Leaving the older cursor in place makes the next sweep walk
     // deeper instead, which is how this heals itself.
-    if (!sweepBudgetExhausted) lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
+    //
+    // A FULL walk of the OPEN list that the budget cut short is the
+    // exception: that budget is a fixed ten pages, so no open walk ever
+    // reaches past it, and a full one already fetched everything any open
+    // sweep can see. On a repo with more than a thousand open PRs every walk
+    // hits the budget, and holding the cursor back there meant every
+    // automatic sweep re-walked all ten pages, every couple of minutes. The
+    // closed sweep keeps the rule: its budget grows when the user pages
+    // further into history, so a later walk can reach rows this one missed.
+    if (!sweepBudgetExhausted || (deltaBoundaryMs == null && options.includeExternalClosed !== true)) {
+      lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
+    }
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
     // throws into snapshot building. The legacy backfill below then adopts any
@@ -10724,6 +10990,14 @@ export function createPrService({
     const githubStatus = await requireGithubSnapshotAuth();
     if (cachedGithubSnapshot && !githubSnapshotMatchesStatus(cachedGithubSnapshot, githubStatus)) {
       invalidateGithubSnapshotCache();
+    }
+    // An automatic forced sweep (the poller's discovery, the on-focus
+    // reconcile) only needs a list fetched from GitHub around now, and a sweep
+    // already on the wire is exactly that. At launch three of them used to
+    // start together, and each walked every page (and the stacks list) on its own.
+    if (force && options.automaticRefresh === true) {
+      const running = githubSnapshotInFlight;
+      if (running && githubSnapshotRequestSatisfies(running, options)) return running.request;
     }
     const forceRequestEpoch = githubSnapshotCacheEpoch;
     /**
@@ -10827,7 +11101,13 @@ export function createPrService({
       if (revalidationOptions.revalidate === false) return;
       if (snapshotBackoffError()) return;
       if (githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) return;
-      void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
+      // Nobody waits on a background revalidation of the open list, so it is
+      // automatic: it takes the delta walk once a sweep cursor exists, where
+      // passing the reader's own options made each one a full ten-page walk.
+      // A history revalidation keeps the full walk: a delta stop there would
+      // claim older history exists when it was all loaded.
+      const automaticRefresh = revalidationOptions.includeExternalClosed !== true || revalidationOptions.automaticRefresh === true;
+      void startSnapshotRequest(githubStatus, { ...revalidationOptions, automaticRefresh }).catch((error) => {
         logger.warn("prs.github_snapshot_revalidation_failed", { error: getErrorMessage(error) });
       });
     };
@@ -12197,6 +12477,20 @@ export function createPrService({
     return { status, checks, reviews, comments };
   };
 
+  const filterOps = createPrListFilterOps({
+    githubService,
+    graphqlRequest,
+    logger,
+    buildItems: async (rawPulls, repo) => {
+      if (rawPulls.length === 0) return [];
+      const metadata = await loadGithubSnapshotMetadata();
+      return rawPulls.map((rawPull) => gitHubItemFromRawPull(rawPull, repo, metadata, "repo"));
+    },
+    resolvePrTarget: (prId) => resolvePrTarget(prId),
+    refreshAfterMutation,
+  });
+  prListFilterOps = filterOps;
+
   return {
     setLinearPrPublishedHandler(handler: LinearPrPublishedHandler | null): void {
       linearPrPublishedHandler = handler;
@@ -12404,7 +12698,7 @@ export function createPrService({
     async getReviewThreads(prId: string): Promise<PrReviewThread[]> {
       const row = requireRow(prId);
       const repo = repoFromRow(row);
-      return await fetchReviewThreads(repo, Number(row.github_pr_number));
+      return await fetchReviewThreadsWhileQuiet(repo, Number(row.github_pr_number));
     },
 
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
@@ -12517,6 +12811,21 @@ export function createPrService({
       return await getGithubSnapshot(options);
     },
 
+    /** Labels / people for the GitHub tab's filter pickers (user-initiated, cached). */
+    async listGithubFilterOptions(args: ListGitHubPrFilterOptionsArgs): Promise<ListGitHubPrFilterOptionsResult> {
+      return await filterOps.listFilterOptions(args);
+    },
+
+    /** The GitHub tab's list while a label / author / assignee filter is on. */
+    async searchGithubPrs(args: SearchGitHubPrsArgs): Promise<SearchGitHubPrsResult> {
+      return await filterOps.searchGitHubPrs(args);
+    },
+
+    /** Assign / unassign people; works for a synthetic `gh:` id like every PR mutation. */
+    async setAssignees(args: SetPrAssigneesArgs): Promise<SetPrAssigneesResult> {
+      return await filterOps.setAssignees(args);
+    },
+
     async listGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
       const repo = await resolveGithubStackRepo(args.repo);
       return githubStackStore.list(repo);
@@ -12589,6 +12898,30 @@ export function createPrService({
         if (linkPrToChatSession({ prId: row.id, laneId: row.lane_id, sessionId: args.sessionId, allowCrossLane: true })) linked = true;
       }
       if (linked) emitPrsUpdated();
+    },
+
+    /**
+     * Link a PR that a chat's own shell command created or merged (`gh pr
+     * create`, `gh pr merge`) to that chat, and to its lane when no lane holds
+     * the PR yet. Internal seam for the shell-command watcher, not a renderer
+     * action: the session id comes from the chat event, never from a caller.
+     *
+     * Nothing is linked on the command's word alone. GitHub must confirm the PR
+     * is in this project's repository, comes from that repository (no fork),
+     * and has the chat lane's current branch as its head. A PR the user
+     * unlinked from this chat, or unmapped from this lane, stays unlinked.
+     * `github.autoMapByBranch` does not apply: that setting stops ADE guessing
+     * a PR's lane from its branch, and this is the chat's own verified PR,
+     * linked the way `ade prs create` links one.
+     */
+    async linkShellPrAction(args: ShellPrLinkArgs): Promise<ShellPrLinkResult> {
+      if (!Number.isSafeInteger(args.prNumber) || args.prNumber <= 0) return { status: "skipped", reason: "bad_number" };
+      const key = `${args.sessionId}:${(args.repoOwner ?? "").toLowerCase()}/${(args.repoName ?? "").toLowerCase()}#${args.prNumber}`;
+      const running = shellPrLinksInFlight.get(key);
+      if (running) return await running;
+      const work = linkShellPrActionOnce(args).finally(() => shellPrLinksInFlight.delete(key));
+      shellPrLinksInFlight.set(key, work);
+      return await work;
     },
 
     /**
@@ -12698,6 +13031,21 @@ export function createPrService({
         watch: summary && summary.status === "active" ? summary : null,
       });
       return summary;
+    },
+
+    /**
+     * A private repository's PR picture or video, as a short-lived signed URL
+     * the renderer loads directly. A read on this machine's GitHub credential;
+     * see githubMediaResolver.ts.
+     */
+    async resolveMedia(args: ResolvePrMediaArgs): Promise<ResolvePrMediaResult> {
+      mediaResolver ??= createGithubMediaResolver({
+        getReadToken: () => githubService.getReadTokenOrThrowAsync(),
+        apiRequest: (request) => githubService.apiRequest(request),
+        credentialRevision: () => githubService.getCredentialRevision(),
+        logger,
+      });
+      return await mediaResolver.resolve(args);
     },
 
     /** A chat's (or a PR's) live watches. */
@@ -12935,6 +13283,57 @@ export function createPrService({
       return await getActionRunsByCoords(coordsFromRow(row));
     },
 
+    /**
+     * The newest time GitHub's merge queue let go of this PR, for PR Watch.
+     * `null` when it was never dropped or the host has no merge queue; a
+     * failed read throws, so the watch can tell "none" from "unknown". A drop
+     * that GitHub already followed with a fresh enqueue is not reported: the
+     * PR is back in the queue.
+     */
+    async getMergeQueueRemoval(prId: string): Promise<PrMergeQueueRemoval | null> {
+      const target = resolvePrTarget(prId);
+      const repoKey = `${target.repo.owner.toLowerCase()}/${target.repo.name.toLowerCase()}`;
+      if (mergeQueueUnsupportedRepos.has(repoKey)) return null;
+      type MergeQueueGraphqlData = {
+        repository?: {
+          pullRequest?: {
+            mergeQueueEntry?: { enqueuedAt?: unknown } | null;
+            timelineItems?: { nodes?: Array<{ id?: unknown; createdAt?: unknown; reason?: unknown } | null> | null } | null;
+          } | null;
+        } | null;
+      };
+      let data: MergeQueueGraphqlData;
+      try {
+        data = await graphqlRequest<MergeQueueGraphqlData>(
+          `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      mergeQueueEntry { enqueuedAt }
+      timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT], last:1){
+        nodes { ... on RemovedFromMergeQueueEvent { id createdAt reason } }
+      }
+    }
+  }
+}`,
+          { owner: target.repo.owner, name: target.repo.name, number: target.prNumber },
+        );
+      } catch (error) {
+        if (isGraphqlUndefinedFieldError(error) || /REMOVED_FROM_MERGE_QUEUE_EVENT|mergeQueueEntry|invalid value/i.test(getErrorMessage(error))) {
+          mergeQueueUnsupportedRepos.add(repoKey);
+          logger.info("prs.merge_queue_unsupported", { repo: repoKey, error: getErrorMessage(error) });
+          return null;
+        }
+        throw error;
+      }
+      const pull = data?.repository?.pullRequest ?? null;
+      const node = pull?.timelineItems?.nodes?.find((entry) => entry && asString(entry.id).trim()) ?? null;
+      if (!node) return null;
+      const createdAt = asString(node.createdAt).trim() || null;
+      const enqueuedAt = asString(pull?.mergeQueueEntry?.enqueuedAt).trim();
+      if (enqueuedAt && createdAt && Date.parse(enqueuedAt) > Date.parse(createdAt)) return null;
+      return { id: asString(node.id).trim(), createdAt, reason: asString(node.reason).trim() || null };
+    },
+
     async getActionRunsByGithub(coords: PrGithubCoords): Promise<PrActionRun[]> {
       return await getActionRunsByCoords(coords);
     },
@@ -13028,7 +13427,7 @@ export function createPrService({
 
     async getReviewThreadsByGithub(coords: PrGithubCoords): Promise<PrReviewThread[]> {
       const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
-      return await fetchReviewThreads(repo, Number(coords.githubPrNumber));
+      return await fetchReviewThreadsWhileQuiet(repo, Number(coords.githubPrNumber));
     },
 
 
@@ -13168,6 +13567,9 @@ export function createPrService({
         { threadId: args.threadId },
         { repo },
       );
+      // Resolving may not bump the pull's updated_at, so the quiet-reuse
+      // fingerprint would keep serving the unresolved thread.
+      readCache.forgetRepo(repo);
     },
 
     async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
@@ -13236,6 +13638,7 @@ export function createPrService({
           { threadId: args.threadId },
           { repo },
         );
+        readCache.forgetRepo(repo);
         const thread = data.resolveReviewThread?.thread ?? null;
         return {
           threadId: asString(thread?.id) || args.threadId,
@@ -13255,6 +13658,7 @@ export function createPrService({
         { threadId: args.threadId },
         { repo },
       );
+      readCache.forgetRepo(repo);
       const thread = data.unresolveReviewThread?.thread ?? null;
       return {
         threadId: asString(thread?.id) || args.threadId,

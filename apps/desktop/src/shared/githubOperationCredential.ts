@@ -25,6 +25,16 @@ import { getGitHubTokenAccessState } from "./githubScopes";
  */
 export const GITHUB_CREDENTIAL_CACHE_TTL_MS = 30_000;
 
+/**
+ * How long a GitHub status (who is signed in, which repo, which scopes) is
+ * reused before the token is checked with GitHub again. Each check is a
+ * `GET /user` per stored credential; at 30 s the PRs tab's one-minute refresh
+ * paid two of them on every tick. A cache hit still re-reads each
+ * credential's health, so a token GitHub starts refusing is noticed at once,
+ * and signing in or out clears the cache.
+ */
+export const GITHUB_STATUS_CACHE_TTL_MS = 120_000;
+
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 /**
  * `issue-write` is a write the ADE GitHub App may also serve: changing an

@@ -1094,6 +1094,32 @@ chat, an approval, and an interrupt left the other chats on the process alone.
 Some resumed turns waited 30–50 s for the model's first output in both
 columns; that wait is not the app-server's.
 
+## Mac Studio (M4 Max), PRs tab: GitHub requests (2026-10-26)
+
+Dev app on its own socket, pointed at a throwaway shallow clone of
+`pingdotgg/t3code` (1,400+ open PRs, so every list walk hits the 10-page
+budget), warm project database. The app starts on Lanes, waits 25 s, then
+opens `#/prs?pr=23706` (42 files, 28 commits, CI finished) and sits idle for
+5 minutes. Every GitHub request the brain sends is logged by a temporary
+trace in its request wrapper (not committed). Before is `a2659aa41`; after is
+this branch's PRs speed commits; both runs on the same clone and database,
+minutes apart. Not the baseline machine.
+
+| Metric | Before | After | Ceiling |
+|---|---|---|---|
+| Opening the PR: GitHub requests in its first 60 s | 57 (29 per-commit check reads) | 22 (one GraphQL rollup for the commit checks) | not set yet; needs approval |
+| Opening the PR: most requests in flight at once | 19 | 6 (the process-wide cap) | 6 |
+| Opening the PR: time until the overview body shows | 1,118 ms | 710–896 ms | not set yet; needs approval |
+| Launch to the PRs tab: PR-list pages read | 29 (three full walks) | 14 (one full walk, then one page per refresh) | not set yet; needs approval |
+| Idle with the PR open: GitHub requests per hour | 1,680 (40+ list pages, 24 CI job reads and 12 `GET /user` per 5 min) | 600 (no list walks, no job reads, 4 `GET /user`) | not set yet; needs approval |
+| Idle with the PR open: requests per hour that count against the rate limit (not `304`) | 540 | 144 (merge box and review threads GraphQL reused while the PR is quiet) | not set yet; needs approval |
+
+The list rows paint from the local cache in 80–130 ms in both, so time to
+rows did not move. Most idle requests are `304 Not Modified` answers, which
+GitHub does not count against the rate limit. The tab still loads the first
+PR's detail when it opens without a deep link: that PR is the one on screen,
+so its reads are the point, not waste.
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio

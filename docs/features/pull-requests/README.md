@@ -540,6 +540,32 @@ Caching layers:
 
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
+
+**Label / author / assignee filters search GitHub.** The list chrome's
+**Filter** control (`shared/GitHubPrFilters.tsx`) has Label, Author and
+Assignee pickers; each lists what the loaded rows show first, then what
+`pr.listGithubFilterOptions` returns (GraphQL `labels(query:)`,
+`mentionableUsers` for authors because fork contributors are not assignable,
+`assignableUsers` for assignees; 5-minute cache, single-flight, asked only
+while a picker is open, 250 ms after typing stops). `label:"a b" author:x
+assignee:@me no:assignee` typed in the search box become chips once the token
+is finished (`shared/githubPrSearch.ts` parses and builds the `q`). While any
+filter is on, the list is `pr.searchGithubPrs` (`prListFilters.ts`): GraphQL
+`search(type: ISSUE)` scoped to this repo and the tab's state, 50 per page with
+**Load more**, rows built by the snapshot's own row builder so lane context
+still shows; 60 s cache in the service and the renderer, 300 ms debounce, stale
+answers dropped. GraphQL rather than REST `/search/issues` because the REST hit
+has no head/base branch and spends the 30/min search bucket. Until GitHub
+answers, or when it is rate limited, failing, or the host is an older ADE, the
+list narrows the loaded rows by label and author and says so in one quiet line
+(loaded rows carry no assignees). Clearing the filters returns to the snapshot
+list with no request. Filters persist in the tab's in-memory warm cache, not
+the URL. The Assignees card assigns and unassigns through `pr.setAssignees`
+(issue `/assignees` POST/DELETE, write credential, serialized per PR, works for
+a synthetic `gh:` id), optimistic with rollback and a toast; it is read-only
+when `writeViewerLogin` is `null` or the host lacks the action. GitHub answers
+201 and silently drops a person it cannot assign, so the result names them in
+`notAssigned`.
 History-enabled snapshots also carry `repoPullRequestsMayHaveMore` and the
 applied `pageLimit`. The mobile caller opts into
 `history.repoPullRequestCounts`: one GraphQL query fetches exact Open / Merged /
@@ -1044,6 +1070,24 @@ history — it records a `pull_request_chat_sessions` edge for each agent sessio
 (up to three, never a plain shell) that was open in the lane when the PR was
 created. That edge is what settles the chat that opened a PR with `gh pr
 create` once the PR merges.
+
+That guess is now the fallback. A chat's own shell commands are read as they
+settle (`main/services/prs/prShellLinkWatcher.ts`, pure parsing in
+`shared/ghPrShellCommands.ts`): Codex reports a shell run as one `command`
+event, Claude and ACP harnesses as a `tool_call` plus its `tool_result`. When
+the command ran `gh pr create` and printed a PR URL on a line of its own, or
+ran `gh pr merge` on a PR, `prService.linkShellPrAction` links that PR to that
+exact chat. The parser reads nothing it cannot be sure of: a `gh pr create`
+inside quotes, a heredoc body or a comment is not a command; a PR the command
+names itself is not the new PR; more PR URLs than create commands is no answer
+(`gh pr create && gh pr list`). Then GitHub must confirm the PR is in this
+project's repository, comes from that repository (not a fork) and has the chat
+lane's current branch as its head. An unlink from that chat, or an unmap from
+that lane, is never overruled. When no lane holds the PR yet it is linked to
+the chat's lane through `linkToLane`, exactly like the branch auto-map (so the
+ADE footer is added to the description the same way). A `gh pr merge` from the
+chat links the merged PR to it, so the `linked` scope settles that chat even in
+a lane where another PR is still open, instead of `ambiguous` settling nothing.
 
 Declared sessions are resolved **by id** (`sessionService.get`), not found
 inside a paged lane listing: the PR named them, so a long-lived lane whose
@@ -1668,6 +1712,28 @@ fetch and write cannot skip a window. Only automatic sweeps
 (`options.automaticRefresh`) take the early exit; user-driven history paging
 walks untruncated, and a truncated closed-inclusive walk forces
 `repoPullRequestsMayHaveMore: true` so the pagination affordance never lies.
+A background revalidation (a reader served cached or projected data) counts as
+automatic. A walk the page budget cut short advances no cursor, with one
+exception: a full walk of the open list. Its budget is a fixed ten pages, so it
+already saw everything any open walk can. Without that exception a repo with
+more than a thousand open PRs re-walked all ten pages on every sweep.
+
+**Fewer reads per PR.** Every GitHub request in a process passes one gate of
+six in flight (`githubRequestGate.ts`). A request waits for a slot before its
+timeout starts. Opening a PR reads its status, checks and reviews together,
+so those reads are shared: a read in flight is joined, and a settled one is
+reused for 5 s (`readCache.shared`, `prs/prGithubReadCache.ts`). Jobs of a finished CI run
+attempt are kept, since they never change. The commit list's check dots come
+from one GraphQL `statusCheckRollup` read, not one check-runs read per commit,
+and settled results of older commits are kept for 30 minutes. A healthy GitHub
+status is reused for 2 minutes (`GITHUB_STATUS_CACHE_TTL_MS`), so the detail
+refresh no longer checks the token with `GET /user` on every tick. GraphQL is
+never a free `304`, so the merge box and the review threads are reused while
+the PR is quiet (`readCache.whileQuiet`): the pull's last update, head, base and
+merge state are unchanged, for at most 3 minutes. A merge state GitHub is still
+computing is never reused, and any write through ADE clears them. The detail
+refresh and the mergeability re-poll skip their ticks while the window is
+hidden.
 
 ## Background polling
 
@@ -2179,8 +2245,17 @@ are how a chat asks to be woken when its PR changes. Source:
   people and agent reviewers (deploy, CI, and dependency bots are ignored); a
   review bot's edit of its old comment, which is how such a bot reports a new
   review of a push (a person's edit does not wake the agent); the
-  branch starting to conflict; the PR merging or closing. A new head resets the
-  check state. The first pass reports the PR's current state, so arming Watch
+  branch starting to conflict; the PR merging or closing. A head that no CI
+  check reported on for 10 minutes (`PR_WATCH_NO_CHECKS_GRACE_MS`; a docs-only
+  push whose workflows skip it), told once per head and never as a pass —
+  review bots and deploy previews do not count as CI, and a head where CI
+  already reported never reads as "no CI" later. GitHub's merge queue dropping
+  the PR without merging it (`prService.getMergeQueueRemoval`, the newest
+  `RemovedFromMergeQueueEvent`), told once with GitHub's reason; a removal from
+  before the watch began, one GitHub followed with a re-enqueue, and the
+  `merged` removal the queue writes when it lands the PR are not news. Hosts
+  without the merge-queue schema are asked once and then skipped. A new head
+  resets the check state. The first pass reports the PR's current state, so arming Watch
   on a red PR tells the agent what is red right away.
 - **What never wakes it.** Comments ADE posted (`addComment`,
   `replyToReviewThread`, `postReviewComment`, `submitReview` record their ids
@@ -2357,6 +2432,38 @@ side-by-side figure (`PrCompare`), whoever wrote the table. A citation that
 was never uploaded still shows on the machine that holds the proof. Anyone who
 can comment can write these forms, so `parsePrCompareFence` and
 `prProofIdFromTitle` accept only an https URL and a well-formed proof id.
+
+#### Private repository media
+
+A private repository's attachment (`github.com/user-attachments/assets/<uuid>`
+or the older `github.com/<owner>/<repo>/assets/<n>/<uuid>`) answers 404 to a
+reader without a GitHub credential. `PrImage` and `PrRemoteMedia` show the
+original URL first, so a public repository costs nothing extra. Only after it
+fails to load, and only for one of those two URL shapes inside a `PrMarkdown`
+that knows its repository, `useGithubMediaSrc` calls `prs.resolveMedia` once
+on the machine that owns the PR (the `PrRuntimePinProvider` pin, else the
+chat's pin, else the tab's machine), swaps in the signed copy it returns, and
+keeps the alt text in place meanwhile. When that fails too, today's fallback
+applies (alt text; the "open on GitHub" link).
+
+`githubMediaResolver.ts` runs on that machine. It sends the read token only to
+an attachment URL that `githubAttachmentCanonicalUrl` (`shared/githubMedia.ts`)
+accepted and rebuilt, with manual redirects, and takes the 302's `Location`
+only if `githubSignedMediaUrl` accepts it (the asset bucket with an
+`X-Amz-Signature`, or `private-user-images` with a `jwt`); the signed URL is
+never fetched with the token. An HTML answer (SAML SSO / EMU) or a 401/403/404
+falls back to `POST /markdown` with an image markdown document (empty alt text,
+the attachment URL) in the PR's own repository and the signed `src` GitHub
+renders. The content type comes from the bucket's
+`response-content-type` or a tokenless one-byte ranged GET, and must be an
+image or a video (SVG is refused). Results are cached until a minute before
+the signed URL expires, failures for two minutes, 500 entries, with one
+request in flight per URL; the renderer keeps the same cache per machine. No
+media bytes cross IPC or the remote-runtime socket, so seeking works and a
+laptop driving a remote brain loads the signed URL directly. A video that
+fails after its URL expired (paused past five minutes) re-resolves, at most
+once a minute. An older machine without the action answers "unknown action",
+which reads as unavailable.
 
 ### Add to chat
 

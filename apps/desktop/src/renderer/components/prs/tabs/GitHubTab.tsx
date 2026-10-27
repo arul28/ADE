@@ -56,6 +56,7 @@ import { useCreateLaneFromPrBranch } from "./useCreateLaneFromPrBranch";
 import { GitHubTabView } from "./GitHubTabView";
 import { normalizeGitHubTabSort, type GitHubTabSort } from "./prBlockedSort";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
+import { useGitHubTabListFilters } from "./useGitHubTabListFilters";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
@@ -143,7 +144,14 @@ export function GitHubTab({
   const [loadingOlderHistory, setLoadingOlderHistory] = React.useState(false);
   const [loadingFilter, setLoadingFilter] = React.useState<GitHubFilter | null>(null);
   const [renderedHydrationItems, setRenderedHydrationItems] = React.useState<GitHubPrListItem[]>([]);
-  const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
+  const {
+    searchQuery,
+    listFilters,
+    restore: restoreListFilters,
+    listSource,
+    refreshFilterSearchRef,
+    chrome: listFilterChrome,
+  } = useGitHubTabListFilters({ projectRoot, filter, snapshot, initial: initialWarmCacheRef.current });
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
   );
@@ -291,13 +299,13 @@ export function GitHubTab({
     setSort(normalizeGitHubTabSort(warmCache?.sort));
     setSelectedItemId(warmCache?.selectedItemId ?? null);
     setSelectedItemIdsByFilter(initialGitHubFilterSelections(warmCache));
-    setSearchQuery(warmCache?.searchQuery ?? "");
+    restoreListFilters(warmCache);
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
     if (!warmCache?.snapshot) {
       void loadSnapshot({ silent: false });
     }
-  }, [loadSnapshot, projectRoot]);
+  }, [loadSnapshot, projectRoot, restoreListFilters]);
 
   // The route is the durable source for a shared/deep-linked `sort=blocked`;
   // when it changes (back/forward, a pasted link), follow it. Guarded by a ref
@@ -371,10 +379,11 @@ export function GitHubTab({
       selectedItemId,
       selectedItemIdsByFilter,
       searchQuery,
+      listFilters,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot, sort]);
+  }, [externalHistoryLoaded, filter, listFilters, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot, sort]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -453,6 +462,7 @@ export function GitHubTab({
     currentHistoryPageLimit,
     prsByCoordinateMap,
     optimisticTerminalByCoord,
+    listSource,
   });
   useGitHubTargetHistory({
     displayedItems,
@@ -603,6 +613,7 @@ export function GitHubTab({
       if (targeted) {
         await onRefreshAll(args).catch(() => {});
       } else {
+        refreshFilterSearchRef.current?.();
         await Promise.all([
           onRefreshAll().catch(() => {}),
           loadSnapshot({
@@ -894,8 +905,7 @@ export function GitHubTab({
     <PrMachineIndexProvider value={machineIndex}>
       <GitHubTabView
         chrome={{
-          searchQuery,
-          onSearchQueryChange: setSearchQuery,
+          ...listFilterChrome,
           repoLabel,
           syncing,
           syncedAt: snapshot?.syncedAt ?? null,

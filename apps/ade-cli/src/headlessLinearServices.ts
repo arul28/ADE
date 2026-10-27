@@ -80,6 +80,7 @@ import {
   type GithubRequestAccountingContext,
   type GithubRequestTokenSource,
 } from "../../desktop/src/main/services/github/githubRequestAccounting";
+import { acquireGithubRequestSlot } from "../../desktop/src/main/services/github/githubRequestGate";
 import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
@@ -112,6 +113,7 @@ import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/
 import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  GITHUB_STATUS_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -772,6 +774,9 @@ async function fetchGitHub(
   fetchImpl: typeof fetch = fetch,
   accounting?: GithubRequestAccountingContext,
 ): Promise<Response> {
+  // Waiting for a slot happens before the timeout starts: the timeout is for
+  // GitHub's answer, not for ADE's own queue.
+  const releaseSlot = await acquireGithubRequestSlot(init.signal);
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
@@ -799,6 +804,7 @@ async function fetchGitHub(
     throw error;
   } finally {
     clearTimeout(timer);
+    releaseSlot();
   }
   // `release` now runs when the body settles, not here — the upstream abort has
   // to stay wired through the body phase for it to be cancellable at all.
@@ -847,6 +853,8 @@ export function createHeadlessGitHubService(
   // this a remote runtime reports a corrupted store as "GitHub was never
   // connected" — identical to a fresh install. See GitHubStatus.credentialStoreUnreadable.
   let credentialStoreUnreadable = false;
+  /** Bumped whenever a stored GitHub credential is written or cleared. */
+  let credentialRevision = 0;
   let statusLookupGeneration = 0;
   let statusLookupInFlight: {
     generation: number;
@@ -1917,7 +1925,7 @@ export function createHeadlessGitHubService(
       !forceRefresh
       && cachedStatus
       && cachedStatusBinding === binding
-      && now - cachedAt < 30_000
+      && now - cachedAt < GITHUB_STATUS_CACHE_TTL_MS
     ) {
       const cachedReadCandidate = cachedStatus.authSource === "none"
         ? null
@@ -2286,6 +2294,7 @@ export function createHeadlessGitHubService(
         const currentToken = appUserAuth.getStoredTokenForHealth();
         if (previousToken) clearGithubCredentialHealth(previousToken);
         if (currentToken && currentToken !== previousToken) clearGithubCredentialHealth(currentToken);
+        credentialRevision += 1;
         invalidateStatusCache();
       }
       return result;
@@ -2294,6 +2303,7 @@ export function createHeadlessGitHubService(
       const previousToken = appUserAuth.getStoredTokenForHealth();
       const status = appUserAuth.clearAuth();
       if (previousToken) clearGithubCredentialHealth(previousToken);
+      credentialRevision += 1;
       invalidateStatusCache();
       return status;
     },
@@ -2362,6 +2372,7 @@ export function createHeadlessGitHubService(
       credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
+      credentialRevision += 1;
       invalidateStatusCache();
       emitStatusChanged();
     },
@@ -2374,8 +2385,19 @@ export function createHeadlessGitHubService(
       // this process holds, so the previous unreadable verdict is stale.
       credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
+      credentialRevision += 1;
       invalidateStatusCache();
       emitStatusChanged();
+    },
+    /** See the desktop service: a signed-URL cache keys on the effective token. */
+    async getCredentialRevision(): Promise<string> {
+      const revision = credentialRevision;
+      try {
+        const { token } = await readTokenAsync("read");
+        return `${revision}:${token ? githubCredentialTokenDigest(token) : "none"}`;
+      } catch {
+        return `${revision}:unknown`;
+      }
     },
     requestRawWithCredentialFallback,
     /** Runtime-owned twin of the desktop service's star check. */

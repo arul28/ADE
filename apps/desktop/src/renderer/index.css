@@ -2094,8 +2094,10 @@ body.ade-project-sidebar-resizing {
   box-shadow: var(--shadow-card-hover), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1), 0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
 }
 
-/* Global input focus ring (ensures all inputs get consistent treatment) */
-input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):not(.ade-palette-search):focus,
+/* Global input focus ring (ensures all inputs get consistent treatment).
+   A field drawn inside its own focusable frame (the PR filter search) rings
+   the frame instead. */
+input:not([type="checkbox"]):not([type="radio"]):not(.xterm-helper-textarea):not(.ade-palette-search):not(.ade-prf-search-input):focus,
 textarea:focus,
 select:focus {
   border-color: var(--color-accent);

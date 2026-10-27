@@ -1,0 +1,161 @@
+/* The code / tests / docs / generated split of a PR's diff stat.
+   One ink at falling strengths: code is the hero, the skimmable buckets step
+   down, and generated output is hatched rather than given a hue. */
+
+/* The card is portalled, so it needs the tones as much as the stat does. */
+.ade-pr-change-stat,
+.ade-pr-change-card {
+  --pr-change-code: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  --pr-change-tests: color-mix(in srgb, var(--color-fg) 44%, transparent);
+  --pr-change-mocks: color-mix(in srgb, var(--color-fg) 30%, transparent);
+  --pr-change-docs: color-mix(in srgb, var(--color-fg) 20%, transparent);
+}
+
+.ade-pr-change-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  border-radius: 4px;
+  outline: none;
+}
+
+.ade-pr-change-stat[data-size="row"] {
+  gap: 4px;
+  font-size: 10px;
+}
+
+.ade-pr-change-stat[data-interactive="true"] {
+  margin: -2px -5px;
+  padding: 2px 5px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.ade-pr-change-stat[data-interactive="true"]:hover,
+.ade-pr-change-stat[data-pinned="true"] {
+  background: var(--kit-hover);
+}
+
+.ade-pr-change-stat[data-interactive="true"]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.ade-pr-change-add { color: var(--color-success); }
+.ade-pr-change-del { color: var(--color-error); }
+
+.ade-pr-change-bar {
+  display: inline-flex;
+  gap: 1.5px;
+  width: 52px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--kit-track);
+  flex: none;
+}
+
+.ade-pr-change-bar[data-size="row"] {
+  width: 28px;
+  height: 3px;
+  gap: 1px;
+}
+
+.ade-pr-change-bar[data-size="card"] {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  gap: 2px;
+  margin: 8px 0 10px;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.ade-pr-change-bar[data-size="card"] > i {
+  min-width: 3px;
+  border-radius: 2px;
+}
+
+.ade-pr-change-bar > i {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.ade-pr-change-bar > i[data-kind="code"],
+.ade-pr-change-swatch[data-kind="code"] { background: var(--pr-change-code); }
+.ade-pr-change-bar > i[data-kind="tests"],
+.ade-pr-change-swatch[data-kind="tests"] { background: var(--pr-change-tests); }
+.ade-pr-change-bar > i[data-kind="mocks"],
+.ade-pr-change-swatch[data-kind="mocks"] { background: var(--pr-change-mocks); }
+.ade-pr-change-bar > i[data-kind="docs"],
+.ade-pr-change-swatch[data-kind="docs"] { background: var(--pr-change-docs); }
+.ade-pr-change-bar > i[data-kind="generated"],
+.ade-pr-change-swatch[data-kind="generated"] {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-fg) 34%, transparent) 0 1.5px,
+    transparent 1.5px 3px
+  );
+}
+
+/* A hover card on the tooltip layer, placed like the app's tooltips. */
+.ade-pr-change-card {
+  position: fixed;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  padding: 10px 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--color-popup-bg, #151325);
+  box-shadow: var(--shadow-popup, 0 24px 64px -24px rgba(0, 0, 0, 0.8));
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-fg);
+}
+
+.ade-pr-change-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ade-pr-change-card-head > .kit-num { font-size: 11.5px; }
+
+.ade-pr-change-card-rows {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto auto auto;
+  column-gap: 10px;
+  row-gap: 6px;
+  align-items: center;
+}
+
+.ade-pr-change-card-rows .kit-num {
+  font-size: 11px;
+  text-align: right;
+}
+
+.ade-pr-change-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.ade-pr-change-card-label { color: var(--kit-text-2); }
+.ade-pr-change-card-share { color: var(--color-fg); }
+.ade-pr-change-card-dim { color: var(--kit-text-3); }
+.ade-pr-change-card-rows [data-zero] { opacity: 0.35; }
+
+.ade-pr-change-card-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--kit-rule);
+  color: var(--kit-text-3);
+  font-size: 11px;
+}
+
+.ade-pr-change-card-foot .kit-num { color: var(--color-fg); }

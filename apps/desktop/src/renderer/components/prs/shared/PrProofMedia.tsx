@@ -6,6 +6,7 @@ import { CitedProofSlot, ProofCitationProvider } from "../../chat/ChatProofCitat
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { useAppStore } from "../../../state/appStore";
+import { useGithubMediaSrc } from "./useGithubMediaSrc";
 
 /**
  * Proof in a pull request's text.
@@ -25,8 +26,10 @@ function openExternal(url: string | null | undefined) {
  * GitHub's copy. An attachment's URL does not say what it is, so one kind is
  * tried and then the other: a picture first, or a video first for an
  * attachment GitHub stores as a bare link (`likely="video"`). A copy that loads
- * as neither (a private repository this window is not signed in to, a host the
- * content policy does not name) becomes a link that opens it on GitHub.
+ * as neither is asked for again as a signed copy from the machine that owns
+ * the PR (a private repository; see useGithubMediaSrc), and only when that
+ * fails too (no access, an older machine, a host the content policy does not
+ * name) becomes a link that opens it on GitHub.
  */
 export function PrRemoteMedia({
   url,
@@ -41,8 +44,29 @@ export function PrRemoteMedia({
 }) {
   const [failed, setFailed] = useState<{ image: boolean; video: boolean }>({ image: false, video: false });
   useEffect(() => setFailed({ image: false, video: false }), [url]);
+  const media = useGithubMediaSrc(url);
   const order = likely === "video" ? (["video", "image"] as const) : (["image", "video"] as const);
-  const kind = order.find((entry) => !failed[entry]) ?? null;
+  // A signed copy says what it is; the original URL does not, so it tries
+  // each element kind in turn (also after a signed copy could not be had).
+  const kind = media.phase === "resolved"
+    ? media.kind
+    : order.find((entry) => !failed[entry]) ?? null;
+  const onError = (entry: "image" | "video") => () => {
+    if (media.phase !== "resolved") setFailed((current) => ({ ...current, [entry]: true }));
+    media.reportError();
+  };
+  if (media.phase === "resolving") {
+    // Same footprint as the link it may become, so nothing jumps.
+    return (
+      <span
+        data-testid="pr-remote-media-pending"
+        className="my-2 inline-flex max-w-full items-center gap-1.5 rounded-[6px] border px-2 py-1 text-[12px]"
+        style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
+      >
+        <span className="min-w-0 truncate">{alt || "Attachment"}</span>
+      </span>
+    );
+  }
   if (kind === null) {
     return (
       <button
@@ -62,14 +86,14 @@ export function PrRemoteMedia({
     return (
       <video
         data-testid="pr-remote-video"
-        src={url}
+        src={media.src}
         controls
         playsInline
         // Metadata only: a thread can hold several videos, and none may start
         // to download in full before the reader presses play.
         preload="metadata"
         aria-label={alt || "Video"}
-        onError={() => setFailed((current) => ({ ...current, video: true }))}
+        onError={onError("video")}
         className="my-2 block max-w-full rounded-[8px] border"
         style={{ borderColor: COLORS.border, maxHeight, background: "#000" }}
       />
@@ -77,13 +101,13 @@ export function PrRemoteMedia({
   }
   return (
     <img
-      src={url}
+      src={media.src}
       alt={alt}
       loading="lazy"
       // GitHub's image hosts refuse a request that carries a referrer from
       // another origin; see PrImage.
       referrerPolicy="no-referrer"
-      onError={() => setFailed((current) => ({ ...current, image: true }))}
+      onError={onError("image")}
       onClick={(event) => {
         event.preventDefault();
         openExternal(url);

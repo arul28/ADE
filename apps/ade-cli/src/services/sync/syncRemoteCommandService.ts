@@ -4,6 +4,7 @@ import { createProjectNotesService } from "../../../../desktop/src/main/services
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
 import type {
   LinearIssueCreateInput,
@@ -8200,6 +8201,23 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
         ? { historyPageLimit: Math.max(1, Math.floor(payload.historyPageLimit)) }
         : {}),
     }));
+  register("prs.listGitHubFilterOptions", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listGithubFilterOptions({
+      kind: payload.kind === "author" || payload.kind === "assignee" ? payload.kind : "label",
+      query: typeof payload.query === "string" ? payload.query : null,
+      repoOwner: typeof payload.repoOwner === "string" ? payload.repoOwner : null,
+      repoName: typeof payload.repoName === "string" ? payload.repoName : null,
+    }));
+  register("prs.searchGitHubPrs", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.searchGithubPrs({
+      state: payload.state === "closed" || payload.state === "merged" || payload.state === "all" ? payload.state : "open",
+      filters: normalizeGitHubPrListFilters(payload.filters),
+      text: typeof payload.text === "string" ? payload.text : null,
+      cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+      force: payload.force === true,
+      repoOwner: typeof payload.repoOwner === "string" ? payload.repoOwner : null,
+      repoName: typeof payload.repoName === "string" ? payload.repoName : null,
+    }));
   register("prs.listGithubStacks", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listGithubStacks(parseListGithubStacksArgs(payload, "prs.listGithubStacks")));
   register("prs.syncGithubStacks", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -8265,6 +8283,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.setChatWatch(parseSetPrChatWatchArgs(payload)));
   register("prs.getChatWatches", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getChatWatches(parseGetPrChatWatchArgs(payload)));
+  // A read: the signed URL of a private repo's PR picture or video. The token
+  // stays on this machine; never queued, since a stale signed URL is useless.
+  register("prs.resolveMedia", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.resolveMedia({
+      url: requireString(payload.url, "prs.resolveMedia requires url."),
+      repoOwner: requireString(payload.repoOwner, "prs.resolveMedia requires repoOwner."),
+      repoName: requireString(payload.repoName, "prs.resolveMedia requires repoName."),
+    }));
   register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
   register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>
@@ -8319,6 +8345,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.setLabels(parseSetPrLabelsArgs(payload));
     return { ok: true };
   });
+  // Not queueable: the caller shows the assignees GitHub answered with and
+  // rolls back its optimistic change on failure, so a late replay helps nobody.
+  register("prs.setAssignees", { viewerAllowed: true }, async (payload) =>
+    args.prService.setAssignees({
+      prId: requirePrId(payload, "prs.setAssignees"),
+      add: asStringArray(payload.add),
+      remove: asStringArray(payload.remove),
+    }));
   register("prs.submitReview", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.submitReview(parseSubmitPrReviewArgs(payload));
     return { ok: true };

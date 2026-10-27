@@ -2398,6 +2398,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
+    $ ade prs assignees <pr> --add alice --remove bob
+                                                    Add or remove assignees; anyone not named is kept
     $ ade prs reviewers request <pr> alice bob      Request reviewers
 `,
   shell: `${ADE_BANNER}
@@ -9170,6 +9172,37 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
           collectGenericObjectArgs(args, {
             prId: id,
             labels: args.filter((entry) => !entry.startsWith("-")),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "assignees") {
+    // Add/remove people, like `gh pr edit --add-assignee`: naming the whole
+    // list would have to read it first and could drop someone another tool added.
+    const readLogins = (names: string[]): string[] =>
+      readRepeatedValues(args, names)
+        .flatMap((value) => value.split(","))
+        .map((login) => login.trim())
+        .filter(Boolean);
+    const add = readLogins(["--add", "--add-assignee"]);
+    const remove = readLogins(["--remove", "--remove-assignee"]);
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    if (add.length === 0 && remove.length === 0) {
+      throw new CliUsageError("prs assignees needs --add or --remove, e.g. 'ade prs assignees <pr> --add alice'.");
+    }
+    return {
+      kind: "execute",
+      label: "PR assignees",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setAssignees",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            ...(add.length > 0 ? { add } : {}),
+            ...(remove.length > 0 ? { remove } : {}),
           }),
         ),
       ],

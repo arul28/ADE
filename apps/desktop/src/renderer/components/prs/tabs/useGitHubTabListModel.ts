@@ -1,5 +1,6 @@
 import React from "react";
 import type {
+  GitHubPrListFilters,
   GitHubPrListItem,
   GitHubPrSnapshot,
   PrSummary,
@@ -21,11 +22,24 @@ import {
   countGitHubItemsByState,
   githubCoordKey,
   matchesFilter,
+  matchesListFiltersLocally,
   mergeGitHubListItems,
   reconcileLinkedPrState,
   type GitHubFilter,
   type GitHubFilterCounts,
 } from "./githubTabModel";
+
+/**
+ * What the label / author / assignee filters make the list:
+ * - `search`: GitHub's answer is the list (selection still finds snapshot
+ *   rows). `totalCount` is GitHub's total, shown as the active tab's count;
+ *   `matchesText` means GitHub already matched the free text.
+ * - `local`: until GitHub answers, or when it cannot, the loaded rows are
+ *   narrowed here.
+ */
+export type GitHubTabListSource =
+  | { kind: "search"; items: GitHubPrListItem[]; totalCount: number | null; matchesText: boolean }
+  | { kind: "local"; filters: GitHubPrListFilters; viewerLogin: string | null };
 
 export function useGitHubTabListModel({
   snapshot,
@@ -38,6 +52,7 @@ export function useGitHubTabListModel({
   lastSeenRowByCoordRef,
   currentHistoryPageLimit,
   optimisticTerminalByCoord,
+  listSource = null,
 }: {
   snapshot: GitHubPrSnapshot | null;
   searchQuery: string;
@@ -50,8 +65,18 @@ export function useGitHubTabListModel({
   currentHistoryPageLimit: () => number;
   /** Merges/closes GitHub has confirmed but the snapshot has not caught up to. */
   optimisticTerminalByCoord?: ReadonlyMap<string, OptimisticTerminalState> | null;
+  /** What the label / author / assignee filters make the list; null is the snapshot. */
+  listSource?: GitHubTabListSource | null;
 }) {
+  const searchSource = listSource?.kind === "search" ? listSource : null;
+  const searchItems = searchSource?.items ?? null;
+  const searchTotalCount = searchSource?.totalCount ?? null;
+  const searchMatchesText = searchSource?.matchesText ?? false;
+  const localSource = listSource?.kind === "local" ? listSource : null;
+  const localListFilters = localSource?.filters ?? null;
+  const viewerLogin = localSource?.viewerLogin ?? null;
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
+    if (searchMatchesText) return true;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.trim().toLowerCase();
     return (
@@ -60,26 +85,31 @@ export function useGitHubTabListModel({
       || (item.headBranch?.toLowerCase().includes(q) ?? false)
       || String(item.githubPrNumber).includes(q)
     );
-  }, [searchQuery]);
+  }, [searchMatchesText, searchQuery]);
 
   const allItems = React.useMemo(
     () => (snapshot ? mergeGitHubListItems(snapshot) : []),
     [snapshot],
   );
+  const reconcileItem = React.useCallback((item: GitHubPrListItem) => {
+    const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null;
+    const coordinatePr = prsByCoordinateMap.get(githubCoordKey(item));
+    // Row reconciliation first, then the local optimistic layer. A PR with no
+    // local row has nothing in `prsByIdMap` to reconcile against, so the
+    // optimistic layer is the only thing that moves it out of Open before the
+    // next snapshot lands.
+    return applyOptimisticTerminalState(
+      reconcileLinkedPrState(item, linkedPr ?? coordinatePr),
+      optimisticTerminalByCoord,
+    );
+  }, [optimisticTerminalByCoord, prsByCoordinateMap, prsByIdMap]);
   const reconciledItems = React.useMemo(
-    () => allItems.map((item) => {
-      const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null;
-      const coordinatePr = prsByCoordinateMap.get(githubCoordKey(item));
-      // Row reconciliation first, then the local optimistic layer. A PR with no
-      // local row has nothing in `prsByIdMap` to reconcile against, so the
-      // optimistic layer is the only thing that moves it out of Open before the
-      // next snapshot lands.
-      return applyOptimisticTerminalState(
-        reconcileLinkedPrState(item, linkedPr ?? coordinatePr),
-        optimisticTerminalByCoord,
-      );
-    }),
-    [allItems, optimisticTerminalByCoord, prsByCoordinateMap, prsByIdMap],
+    () => allItems.map(reconcileItem),
+    [allItems, reconcileItem],
+  );
+  const reconciledSearchItems = React.useMemo(
+    () => (searchItems ? searchItems.map(reconcileItem) : null),
+    [reconcileItem, searchItems],
   );
 
   React.useEffect(() => {
@@ -93,10 +123,18 @@ export function useGitHubTabListModel({
     () => computeTerminalOverlayItems(reconciledItems, prsByIdMap, lastSeenRowByCoordRef.current),
     [lastSeenRowByCoordRef, reconciledItems, prsByIdMap],
   );
-  const displayedItems = React.useMemo(
+  const snapshotDisplayedItems = React.useMemo(
     () => (overlayItems.length === 0 ? reconciledItems : [...reconciledItems, ...overlayItems]),
     [reconciledItems, overlayItems],
   );
+  // While GitHub search drives the list, selection and the stack inspector
+  // still find a selected PR the search did not return.
+  const displayedItems = React.useMemo(() => {
+    if (!reconciledSearchItems) return snapshotDisplayedItems;
+    const ids = new Set(reconciledSearchItems.map((item) => item.id));
+    return [...reconciledSearchItems, ...snapshotDisplayedItems.filter((item) => !ids.has(item.id))];
+  }, [reconciledSearchItems, snapshotDisplayedItems]);
+  const listSourceItems = reconciledSearchItems ?? snapshotDisplayedItems;
   // "Blocked on me" tiers, keyed by row id. Built once per list change from the
   // linked local rows; no network/diff work is triggered by sorting. A row with
   // no linked status at all is "nothing outstanding" (tier 2).
@@ -118,14 +156,16 @@ export function useGitHubTabListModel({
     return tiers;
   }, [displayedItems, prsByIdMap, prsByCoordinateMap, sort]);
   const filteredItems = React.useMemo(
-    () => displayedItems
-      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
+    () => listSourceItems
+      .filter((item) => matchesFilter(item, filter)
+        && matchesSearch(item)
+        && (!localListFilters || matchesListFiltersLocally(item, localListFilters, viewerLogin)))
       // A live search keeps relevance order: the blocked sort is a browse aid,
       // not a way to override what the query matched.
       .sort((a, b) => blockedTierByItemId && !searchQuery.trim()
         ? compareGitHubRows(a, b, (item) => blockedTierByItemId.get(item.id) ?? 2)
         : compareGitHubRowsByUpdated(a, b)),
-    [blockedTierByItemId, displayedItems, filter, matchesSearch, searchQuery],
+    [blockedTierByItemId, filter, listSourceItems, localListFilters, matchesSearch, searchQuery, viewerLogin],
   );
   const hydrationItems = filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT
     ? renderedHydrationItems
@@ -135,6 +175,12 @@ export function useGitHubTabListModel({
     [filteredItems, filter],
   );
   const filterCounts = React.useMemo(() => {
+    if (reconciledSearchItems) {
+      // Only the active tab's total is known; the view hides the others.
+      const counts: GitHubFilterCounts = { open: 0, closed: 0, merged: 0 };
+      counts[filter] = searchTotalCount ?? reconciledSearchItems.length;
+      return counts;
+    }
     const listedCounts = countGitHubItemsByState(displayedItems);
     const snapshotCounts = snapshot?.history?.repoPullRequestCounts;
     const rawCounts = countGitHubItemsByState(allItems);
@@ -148,8 +194,9 @@ export function useGitHubTabListModel({
       closed: withReconcileDelta(snapshotCounts?.closed, "closed", listedCounts.closed),
       merged: withReconcileDelta(snapshotCounts?.merged, "merged", listedCounts.merged),
     };
-  }, [allItems, displayedItems, snapshot?.history?.repoPullRequestCounts]);
-  const canLoadOlderHistory = filter !== "open"
+  }, [allItems, displayedItems, filter, reconciledSearchItems, searchTotalCount, snapshot?.history?.repoPullRequestCounts]);
+  const canLoadOlderHistory = !reconciledSearchItems
+    && filter !== "open"
     && Boolean(snapshot?.history?.repoPullRequestsMayHaveMore)
     && currentHistoryPageLimit() < GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT;
 

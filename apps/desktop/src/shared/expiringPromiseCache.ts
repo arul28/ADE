@@ -45,3 +45,63 @@ export function createExpiringPromiseCache<T>(args: {
     },
   };
 }
+
+/**
+ * The keyed form: one in-flight or settled read per key. A read in flight is
+ * joined; a settled one is reused for `ttlMs` from when it settled; a
+ * rejected one is evicted so the next caller retries. Past `maxEntries`, the
+ * oldest settled entries go first; a read still in flight is never dropped,
+ * so its callers keep sharing it.
+ */
+export function createKeyedPromiseCache<T>(args: {
+  ttlMs: number;
+  maxEntries: number;
+  now?: () => number;
+}): {
+  read(key: string, load: () => Promise<T>): Promise<T>;
+  delete(key: string): void;
+  /** Drops every entry whose key matches. */
+  forget(match: (key: string) => boolean): void;
+  clear(): void;
+} {
+  const now = args.now ?? (() => Date.now());
+  type Entry = { settledAt: number | null; promise: Promise<T> };
+  const entries = new Map<string, Entry>();
+  return {
+    read(key, load) {
+      const hit = entries.get(key);
+      if (hit && (hit.settledAt == null || now() - hit.settledAt < args.ttlMs)) return hit.promise;
+      const entry: Entry = { settledAt: null, promise: Promise.resolve() as Promise<T> };
+      entry.promise = load().then(
+        (value) => {
+          entry.settledAt = now();
+          return value;
+        },
+        (error: unknown) => {
+          if (entries.get(key) === entry) entries.delete(key);
+          throw error;
+        },
+      );
+      entries.delete(key);
+      entries.set(key, entry);
+      if (entries.size > args.maxEntries) {
+        for (const [staleKey, stale] of entries) {
+          if (entries.size <= args.maxEntries) break;
+          if (stale.settledAt != null) entries.delete(staleKey);
+        }
+      }
+      return entry.promise;
+    },
+    delete(key) {
+      entries.delete(key);
+    },
+    forget(match) {
+      for (const key of Array.from(entries.keys())) {
+        if (match(key)) entries.delete(key);
+      }
+    },
+    clear() {
+      entries.clear();
+    },
+  };
+}

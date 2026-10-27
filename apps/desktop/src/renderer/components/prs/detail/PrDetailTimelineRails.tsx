@@ -18,6 +18,7 @@ import type {
   PrTimelineEvent,
   PrWithConflicts,
   ReviewerRequest,
+  SetPrAssigneesResult,
   UpdateBranchStrategy,
 } from "../../../../shared/types";
 import { PrTimeline, type PrTimelineRef } from "../shared/PrTimeline";
@@ -29,7 +30,6 @@ import { buildDigestTimelineModel, type DigestPushTick } from "../shared/prDiges
 import { PrPushTickRail } from "../shared/PrPushTickRail";
 import {
   NEXT_STEP_TONE_COLOR,
-  PrAssigneesCard,
   PrCommentCard,
   PrFloatingDock,
   PrLabelsCard,
@@ -41,6 +41,8 @@ import {
   type PrMergeCardActions,
   type PrMergeCardButton,
 } from "../shared/PrFloatingDock";
+import { PrAssigneesCard, type PrAssigneeChange } from "../shared/PrAssigneesCard";
+import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import { buildUnifiedChecks, summarizePipelineStates } from "../shared/prUnifiedChecks";
 import { buildPrChatPrompt, prFailingCheckNames, prOpenFindings } from "../shared/prChatActions";
 import { resolvePrNextStepFromStatus, type PrNextStepAction } from "../../../../shared/prNextStep";
@@ -135,6 +137,9 @@ type Props = {
   updateBranchNotice?: { tone: "success" | "error"; text: string } | null;
   onRequestReviewers: (request: ReviewerRequest) => void;
   onSetLabels: (labels: string[]) => void;
+  /** Absent: the Assignees card is read-only (older host or no write account). */
+  onSetAssignees?: (change: PrAssigneeChange) => Promise<SetPrAssigneesResult>;
+  searchAssignableUsers?: GitHubFilterOptionsLoader | null;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;
   onReopen?: () => void;
@@ -698,6 +703,8 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       updateBranchNotice,
       onRequestReviewers,
       onSetLabels,
+      onSetAssignees,
+      searchAssignableUsers,
       onDeleteBranch,
       deleteBranchBusy,
       onReopen,
@@ -1181,10 +1188,17 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           label: "Assignees",
           icon: UserCircle,
           badge: detail?.assignees?.length || null,
-          content: <PrAssigneesCard detail={detail} onClose={closeDock} />,
+          content: (
+            <PrAssigneesCard
+              detail={detail}
+              onClose={closeDock}
+              onSetAssignees={onSetAssignees}
+              searchAssignableUsers={searchAssignableUsers}
+            />
+          ),
         },
       ];
-    }, [actionBusy, closeDock, commentDraft, commitSnapshots, detail, handleDialogMerge, mergeActions, mergeBlockedReason, mergeMethod, nextStep, onAddComment, onRequestReviewers, onSetLabels, onSubmitReview, pr, reviewers, reviews, setCommentDraft, status, updateBranchNotice]);
+    }, [actionBusy, closeDock, commentDraft, commitSnapshots, detail, handleDialogMerge, mergeActions, mergeBlockedReason, mergeMethod, nextStep, onAddComment, onRequestReviewers, onSetAssignees, onSetLabels, onSubmitReview, pr, reviewers, reviews, searchAssignableUsers, setCommentDraft, status, updateBranchNotice]);
 
     return (
       <>

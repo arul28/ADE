@@ -41,6 +41,7 @@ import type {
   TerminalWatchResult,
   TerminalWatchSummary,
 } from "../shared/terminalWatch";
+import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../shared/githubMedia";
 import {
   type AppOpenSystemSettingsPaneArgs,
   type AppOpenSystemSettingsPaneResult,
@@ -592,6 +593,12 @@ import type {
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
+  SetPrAssigneesArgs,
+  SetPrAssigneesResult,
+  ListGitHubPrFilterOptionsArgs,
+  ListGitHubPrFilterOptionsResult,
+  SearchGitHubPrsArgs,
+  SearchGitHubPrsResult,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
   SubmitPrReviewResult,
@@ -13337,6 +13344,15 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.prsGetChatWatches, args),
       ),
+    // The GitHub credential lives on the machine that owns the project, so the
+    // signed URL is asked for there; only the URL comes back.
+    resolveMedia: (args: ResolvePrMediaArgs, pin?: OpenProjectBinding | null): Promise<ResolvePrMediaResult> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "resolveMedia",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsResolveMedia, args),
+      ),
     getStackLinkOffer: (
       args: {
         sessionId: string;
@@ -13571,6 +13587,21 @@ const adeBridge = {
     setLabels: async (args: SetPrLabelsArgs, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "setLabels", { args }, () =>
         ipcRenderer.invoke(IPC.prsSetLabels, args),
+      ),
+    setAssignees: (args: SetPrAssigneesArgs, pin?: OpenProjectBinding | null): Promise<SetPrAssigneesResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "pr", "setAssignees", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetAssignees, args),
+      ),
+    listGitHubFilterOptions: (
+      args: ListGitHubPrFilterOptionsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ListGitHubPrFilterOptionsResult> =>
+      callPrReadRuntimeActionOr(pin, "listGithubFilterOptions", { args }, () =>
+        ipcRenderer.invoke(IPC.prsListGitHubFilterOptions, args),
+      ),
+    searchGitHubPrs: (args: SearchGitHubPrsArgs, pin?: OpenProjectBinding | null): Promise<SearchGitHubPrsResult> =>
+      callPrReadRuntimeActionOr(pin, "searchGithubPrs", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSearchGitHubPrs, args),
       ),
     requestReviewers: async (args: RequestPrReviewersArgs, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "requestReviewers", { args }, () =>

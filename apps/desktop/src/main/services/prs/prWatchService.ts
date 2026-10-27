@@ -5,6 +5,7 @@ import {
   evaluatePrWatch,
   summarizePrWatchChanges,
   type PrChatWatchSummary,
+  type PrMergeQueueRemoval,
   type PrWatchRemark,
 } from "../../../shared/prWatch";
 import type { AgentChatMessageSessionArgs } from "../../../shared/types/chat";
@@ -42,6 +43,8 @@ export type PrWatchServiceDeps = {
     getReviews: (prId: string) => Promise<PrReview[]>;
     /** Ship reads the head from the newest run when the PR row lags a push. */
     getActionRuns?: (prId: string) => Promise<PrActionRun[]>;
+    /** Absent on an older PR service: the watch then never reports a merge-queue drop. */
+    getMergeQueueRemoval?: (prId: string) => Promise<PrMergeQueueRemoval | null>;
     chatWatchStore: PrChatWatchStore;
   };
   /** The chat's row; a missing or non-chat row ends its watch. */
@@ -192,11 +195,19 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     let checks: PrCheck[] | null = null;
     let comments: PrComment[] | null = null;
     let reviews: PrReview[] | null = null;
+    // `undefined` = not read this pass. A draft cannot be queued, so it is not asked.
+    let mergeQueueRemoval: PrMergeQueueRemoval | null | undefined;
     if (!terminal) {
-      [checks, comments, reviews] = await Promise.all([
+      [checks, comments, reviews, mergeQueueRemoval] = await Promise.all([
         prService.getChecks(pr.id).catch(() => null),
         prService.getComments(pr.id).catch(() => null),
         prService.getReviews(pr.id).catch(() => null),
+        pr.state === "open" && prService.getMergeQueueRemoval
+          ? prService.getMergeQueueRemoval(pr.id).catch((error: unknown) => {
+            logger.debug("prs.watch_merge_queue_read_failed", { prId: pr!.id, error: getErrorMessage(error) });
+            return undefined;
+          })
+          : Promise.resolve(undefined),
       ]);
     } else {
       // The last word before a merge or close still counts.
@@ -229,6 +240,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       checks,
       remarks,
       ignoredRemarkIds: ignored,
+      mergeQueueRemoval,
+      watchStartedAt: record.startedAt,
       nowMs,
     });
 
