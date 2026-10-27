@@ -470,7 +470,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return result;
     },
-    listGitHubFilterOptions: async (args: unknown) => {
+    listGitHubFilterOptions: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.listGitHubFilterOptions", pin, infra);
       if (!commands.hasAction("prs.listGitHubFilterOptions")) throw new Error("This machine's ADE cannot search GitHub filters yet.");
       return await read<ListGitHubPrFilterOptionsResult>("prs.listGitHubFilterOptions", args, {
         kind: "label",
@@ -479,7 +480,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
         complete: false,
       });
     },
-    searchGitHubPrs: async (args: unknown) => {
+    searchGitHubPrs: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.searchGitHubPrs", pin, infra);
       if (!commands.hasAction("prs.searchGitHubPrs")) throw new Error("This machine's ADE cannot search GitHub yet.");
       return await call<SearchGitHubPrsResult>("prs.searchGitHubPrs", args, {
         items: [],

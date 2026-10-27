@@ -55,10 +55,10 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
       repoName: action.repo,
       prNumber: action.number,
     }))).then((results) => {
-      let failed = false;
+      let retry = false;
       for (const [index, result] of results.entries()) {
         if (result.status === "rejected") {
-          failed = true;
+          retry = true;
           const action = actions[index]!;
           deps.logger.warn("prs.shell_link_failed", {
             sessionId,
@@ -66,12 +66,15 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
             prNumber: action.number,
             error: getErrorMessage(result.reason),
           });
+          continue;
         }
+        // A GitHub read that failed is transient: a later delivered result for
+        // this item should try again. Every other skip is a decision about the
+        // PR itself and would skip again.
+        if (result.value?.status === "skipped" && result.value.reason === "github_unreadable") retry = true;
       }
-      // Only a fully linked event is settled. A harness can deliver the same
-      // result again after a failure, and that retry must not be suppressed;
-      // a repeat of the already-linked actions is harmless ("already_linked").
-      if (!failed) setBounded(handled, key, true, HANDLED_CAP);
+      // Only a settled event is marked handled; see the note above.
+      if (!retry) setBounded(handled, key, true, HANDLED_CAP);
     }).finally(() => {
       inFlightKeys.delete(key);
     });

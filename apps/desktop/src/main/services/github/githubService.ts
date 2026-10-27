@@ -2697,13 +2697,20 @@ export function createGithubService({
     },
 
     /**
-     * Bumps whenever the credential set changes (a new PAT, a sign-out, a
-     * GitHub App auth change). A cache that holds anything derived from a
-     * credential — a signed media URL carries one — keys on this so it cannot
-     * hand out the previous account's answer.
+     * A non-secret identity of the effective read credential: the credential
+     * revision plus a digest of the token a media resolve would use. A signed
+     * media URL belongs to the account that asked for it, so a PAT or App
+     * change (the revision) and a `gh auth switch` (the digest) both move it.
      */
-    getCredentialRevision(): number {
-      return sharedGhAuth.credentialInventoryRevision;
+    async getCredentialRevision(): Promise<string> {
+      const revision = sharedGhAuth.credentialInventoryRevision;
+      try {
+        const inventory = await readCredentialInventory();
+        const token = githubOperationCredentialCandidates(inventory.candidates, "read")[0]?.token ?? "";
+        return `${revision}:${token ? githubCredentialTokenDigest(token) : "none"}`;
+      } catch {
+        return `${revision}:unknown`;
+      }
     },
 
     clearToken(): void {

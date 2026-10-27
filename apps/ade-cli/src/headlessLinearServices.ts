@@ -2389,9 +2389,15 @@ export function createHeadlessGitHubService(
       invalidateStatusCache();
       emitStatusChanged();
     },
-    /** See the desktop service: a signed-URL cache keys on this. */
-    getCredentialRevision(): number {
-      return credentialRevision;
+    /** See the desktop service: a signed-URL cache keys on the effective token. */
+    async getCredentialRevision(): Promise<string> {
+      const revision = credentialRevision;
+      try {
+        const { token } = await readTokenAsync("read");
+        return `${revision}:${token ? githubCredentialTokenDigest(token) : "none"}`;
+      } catch {
+        return `${revision}:unknown`;
+      }
     },
     requestRawWithCredentialFallback,
     /** Runtime-owned twin of the desktop service's star check. */
