@@ -94,6 +94,9 @@ export const ChatFindLayer = memo(function ChatFindLayer({
   });
   const { open, openRef, surfaceId, openBar, closeBar, schedulePaint } = session;
   const { matches, matchesRef, partial, rowsStillFolding, recountNow } = useChatFindIndex({ source, open, queryRef });
+  useEffect(() => {
+    if (open) source.requestCompleteHistory?.();
+  }, [open, source]);
 
   const select = useCallback((next: FindSelection | null) => {
     selectionRef.current = next;

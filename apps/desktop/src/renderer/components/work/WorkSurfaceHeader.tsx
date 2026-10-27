@@ -12,6 +12,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { NamingPendingLabel } from "../terminals/LaneNamingLabel";
 import { toLayoutPx } from "../../lib/webZoom";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -300,7 +301,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
  * backdrop, and the git toolbar, snooze and cache chips move to the right
  * cluster. It has no lane chip.
  */
-export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps) {
+function CenteredWorkSurfaceHeaderView(props: CenteredWorkSurfaceHeaderProps) {
   const {
     title,
     titleAccessory,
@@ -396,3 +397,10 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     </div>
   );
 }
+
+/**
+ * Memoized, with its handlers always the latest: the chat pane renders it on
+ * every pane render, and its buttons, tooltips and icons only need to redraw
+ * when what they show changes.
+ */
+export const CenteredWorkSurfaceHeader = memoWithLatestHandlers(CenteredWorkSurfaceHeaderView);

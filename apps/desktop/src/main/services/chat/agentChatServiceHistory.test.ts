@@ -1777,6 +1777,48 @@ describe("createAgentChatService", () => {
       expect(aligned.pinnedEvents).toEqual([]);
     });
 
+    it("resumes from the seam only when the gap fits the window, never from an older pinned approval", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const transcript = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const approval = {
+        sessionId: session.id,
+        timestamp: "2026-09-23T09:59:00.000Z",
+        sequence: 1,
+        event: { type: "approval_request", itemId: "approval-old", kind: "command", description: "Run it", turnId: "turn-1" },
+      } as AgentChatEventEnvelope;
+      const write = (count: number) => fs.writeFileSync(
+        transcript,
+        [approval, ...Array.from({ length: count }, (_, index) => paddedTextEnvelope(session.id, index + 2, 250))]
+          .map((envelope) => `${JSON.stringify(envelope)}\n`).join(""),
+        "utf8",
+      );
+      vi.mocked(parseAgentChatTranscript).mockImplementation((text) => String(text)
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as AgentChatEventEnvelope));
+
+      // The client took a snapshot after two text events.
+      write(2);
+      const held = await service.getChatEventHistory(session.id, { maxEvents: 4 });
+      expect(held.tailEndOffset).toBeGreaterThan(0);
+      const resume = { afterOffset: held.tailEndOffset, historyGeneration: held.historyGeneration };
+
+      // One more event: the reply is the seam plus what is new.
+      write(3);
+      const small = await service.getChatEventHistory(session.id, { maxEvents: 4, ...resume });
+      expect(small.resumedFromOffset).toBe(held.tailEndOffset);
+      expect(small.events.map((entry) => entry.sequence)).toEqual([3, 4]);
+
+      // Many more: the window no longer reaches the held tail. The old approval
+      // re-admitted ahead of it is not a seam; the full window goes out.
+      write(12);
+      const big = await service.getChatEventHistory(session.id, { maxEvents: 4, ...resume });
+      expect(big.resumedFromOffset).toBeUndefined();
+      expect(big.events[0]?.event.type).toBe("approval_request");
+      expect(big.events.map((entry) => entry.sequence).slice(1)).toEqual([10, 11, 12, 13]);
+    });
+
     it("reports the chat log state: generation 1 and the live sequence high-water", async () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });

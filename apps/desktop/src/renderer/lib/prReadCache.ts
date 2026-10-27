@@ -1,4 +1,4 @@
-import type { GitHubPrSnapshot, OpenProjectBinding, PrSummary } from "../../shared/types";
+import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -86,6 +86,103 @@ export function listPrsCoalesced(options?: {
     projectKey(options?.projectRoot, options?.pin),
     () => window.ade.prs.listAll(options?.pin ?? null),
   );
+}
+
+/**
+ * The project's PR list, kept for a short while per machine. A chat's header
+ * and the Work tools both read it to find one lane's PRs, on every chat switch;
+ * on a large remote project that list is half a megabyte, re-downloaded each
+ * time. A surface that hears a PR event drops the entry first
+ * (`invalidatePrListCache`), so a change still shows at once while it is open.
+ */
+const PR_LIST_TTL_MS = 30_000;
+const prListSettled = new Map<string, { value: PrSummary[]; at: number; signature: string | null; stale?: boolean }>();
+/**
+ * Bumped by `invalidatePrListCache`. A read started before a PR event neither
+ * answers a read started after it nor writes its older list back.
+ */
+const prListGeneration = new Map<string, number>();
+
+/**
+ * The settled list's scope. A pin names its machine; an unpinned read goes to
+ * the machine this window's tab is bound to, so the binding is part of the key
+ * (the same root on two machines is two databases).
+ */
+function prListKey(options?: PrListCacheOptions): string {
+  if (options?.pin?.key) return projectKey(null, options.pin);
+  return JSON.stringify([projectKey(options?.projectRoot), options?.bindingKey ?? null]);
+}
+
+type PrListCacheOptions = {
+  projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
+  /** The window's `projectBinding.key`, for an unpinned read. */
+  bindingKey?: string | null;
+};
+const prListRevalidateInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
+
+function isConditionalPrListReply(value: unknown): value is PrListConditionalReply {
+  return Boolean(value)
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof (value as { signature?: unknown }).signature === "string";
+}
+
+/**
+ * One read of the list that can come back "unchanged". A machine's brain that
+ * knows `conditional` answers with a signature (and nothing else when it
+ * matches the one held); an older one, the web client and the local IPC path
+ * answer with the bare list, which is always taken whole.
+ */
+function readPrListConditional(
+  key: string,
+  held: { value: PrSummary[]; signature: string | null } | undefined,
+  pin: OpenProjectBinding | null,
+): Promise<PrSummary[]> {
+  const prs = window.ade.prs;
+  const listAllConditional = prs.listAllConditional;
+  const generation = prListGeneration.get(key) ?? 0;
+  const flightKey = `${generation}:${key}`;
+  if (typeof listAllConditional !== "function") {
+    return coalesceInFlight(prListInFlight, flightKey, () => prs.listAll(pin));
+  }
+  const settle = (value: PrSummary[], signature: string | null) => {
+    if ((prListGeneration.get(key) ?? 0) !== generation) return;
+    prListSettled.set(key, { value, at: Date.now(), signature });
+  };
+  return coalesceInFlight(prListRevalidateInFlight, flightKey, async () => {
+    const reply = await listAllConditional(held?.signature ?? null, pin);
+    if (Array.isArray(reply)) {
+      settle(reply, null);
+      return reply;
+    }
+    if (!isConditionalPrListReply(reply)) throw new Error("Unexpected PR list reply.");
+    if (reply.notModified && held) {
+      settle(held.value, reply.signature);
+      return held.value;
+    }
+    const value = reply.prs ?? [];
+    settle(value, reply.signature);
+    return value;
+  });
+}
+
+export function listPrsCached(options?: PrListCacheOptions): Promise<PrSummary[]> {
+  const key = prListKey(options);
+  const settled = prListSettled.get(key);
+  if (settled && !settled.stale && Date.now() - settled.at < PR_LIST_TTL_MS) return Promise.resolve(settled.value);
+  // Past its time (or dropped by a PR event): ask whether it changed. An
+  // unchanged list costs a signature, not the whole list again.
+  return readPrListConditional(key, settled, options?.pin ?? null);
+}
+
+export function invalidatePrListCache(options?: PrListCacheOptions): void {
+  // Keep the list and its signature for the conditional re-read; only its
+  // freshness goes, and any read already under way is superseded.
+  const key = prListKey(options);
+  prListGeneration.set(key, (prListGeneration.get(key) ?? 0) + 1);
+  const entry = prListSettled.get(key);
+  if (entry) entry.stale = true;
 }
 
 export function getGitHubSnapshotCoalesced(
@@ -264,6 +361,9 @@ export function requestMachinePrReconcile(
 
 export function clearPrReadInFlightForTest(): void {
   prListInFlight.clear();
+  prListSettled.clear();
+  prListRevalidateInFlight.clear();
+  prListGeneration.clear();
   githubSnapshotInFlight.clear();
   prRefreshInFlight.clear();
   prSurfaceWarmInFlight.clear();

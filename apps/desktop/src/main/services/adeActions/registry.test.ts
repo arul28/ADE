@@ -944,7 +944,7 @@ describe("runtime domain services behind the allowlist", () => {
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
 
     const chat = getAdeActionDomainServices(runtime).chat as {
-      listSessions?: (args?: unknown) => Promise<unknown>;
+      listSessions?: (args?: unknown, options?: unknown) => Promise<unknown>;
     };
 
     await expect(chat.listSessions?.({
@@ -953,6 +953,13 @@ describe("runtime domain services behind the allowlist", () => {
     })).resolves.toEqual([]);
     expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("listSessions");
     expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
+
+    // The desktop sends `argsList [laneId?, options]`; the options, including
+    // the named-chat filter, must reach the service.
+    await chat.listSessions?.(undefined, { includeIdentity: true, sessionIds: ["chat-1", 7] });
+    expect(listSessions).toHaveBeenLastCalledWith(undefined, { includeIdentity: true, sessionIds: ["chat-1"] });
+    await chat.listSessions?.("lane-2", { includeAutomation: false });
+    expect(listSessions).toHaveBeenLastCalledWith("lane-2", { includeAutomation: false });
   });
 
   it("reads chat images from the project, its lanes, temp and the user's drop folders, and nowhere else", async () => {

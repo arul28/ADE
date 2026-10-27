@@ -5919,9 +5919,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
     const maxBytes = asOptionalNumber(payload.maxBytes);
+    const afterOffset = asOptionalNumber(payload.afterOffset);
+    const historyGeneration = asOptionalNumber(payload.historyGeneration);
     const options = {
       ...(maxEvents != null ? { maxEvents } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
+      ...(afterOffset != null && historyGeneration != null ? { afterOffset, historyGeneration } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     };
     const historyOptions = Object.keys(options).length > 0 ? options : undefined;

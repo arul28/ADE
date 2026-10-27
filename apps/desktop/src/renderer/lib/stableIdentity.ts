@@ -147,6 +147,28 @@ export function memoWithLatestHandlers<P extends object>(
 }
 
 /**
+ * A render-time value kept until one of its inputs changes, for code below an
+ * early return where `useMemo` cannot go. The map comes from a `useRef` above
+ * the return. Like `useMemo`, every value the builder reads belongs in `deps`.
+ */
+export type RenderCache = Map<string, { deps: readonly unknown[]; value: unknown }>;
+
+export function cachedForRender<T>(
+  cache: RenderCache,
+  key: string,
+  deps: readonly unknown[],
+  build: () => T,
+): T {
+  const hit = cache.get(key);
+  if (hit && hit.deps.length === deps.length && hit.deps.every((dep, index) => Object.is(dep, deps[index]))) {
+    return hit.value as T;
+  }
+  const value = build();
+  cache.set(key, { deps, value });
+  return value;
+}
+
+/**
  * `useState` whose setter drops a plain value equal to the one most recently
  * asked for. React cannot drop a same-value write early while the component
  * has other updates queued, so each such write renders the component again.
@@ -170,4 +192,26 @@ export function useStateSkippingSameValue<T>(initial: T): [T, (next: SetStateAct
     requested.current = { pending: false, value };
   });
   return [value, set];
+}
+
+/**
+ * Functional updates for "clear it": the current value when it is already
+ * empty, so a reset that finds nothing to clear (every chat switch runs several)
+ * does not re-render the pane with an equal new array or record.
+ */
+export function keepEmptyArray<T>(previous: T[]): T[] {
+  return previous.length === 0 ? previous : [];
+}
+
+export function keepEmptyRecord<V>(previous: Record<string, V>): Record<string, V> {
+  return Object.keys(previous).length === 0 ? previous : {};
+}
+
+/** Like keepEmptyArray, for a restored value: `next`, unless both it and the current value are empty. */
+export function orKeepEmptyArray<T>(next: T[]): (previous: T[]) => T[] {
+  return (previous) => (next.length === 0 && previous.length === 0 ? previous : next);
+}
+
+export function orKeepEmptyRecord<V>(next: Record<string, V>): (previous: Record<string, V>) => Record<string, V> {
+  return (previous) => (Object.keys(next).length === 0 && Object.keys(previous).length === 0 ? previous : next);
 }

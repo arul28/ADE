@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { ArrowClockwise, CheckCircle, CopySimple, DownloadSimple, Play, Terminal, Warning } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { ProviderSignInModal } from "../settings/providers/ProviderSignInModal";
+/**
+ * The sign-in terminal loads when someone opens it, not with every chat: it
+ * brings the settings-side provider code with it.
+ */
+const ProviderSignInModal = lazy(() => import("../settings/providers/ProviderSignInModal")
+  .then((module) => ({ default: module.ProviderSignInModal })));
 import { acpLoginCommand } from "../settings/providers/acpProviders";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinnedToolLine, usePinnedToolStatus } from "../../hooks/usePinnedToolStatus";
@@ -411,6 +416,7 @@ export function AgentCliAuthCard({
         </div>
       </div>
       {signInOpen && embeddedSignInCommand ? (
+        <Suspense fallback={null}>
         <ProviderSignInModal
           providerId={agentCli.agent}
           providerLabel={agentCli.displayName}
@@ -429,6 +435,7 @@ export function AgentCliAuthCard({
             return connection?.authAvailable === true;
           }}
         />
+        </Suspense>
       ) : null}
     </div>
   );

@@ -729,6 +729,7 @@ import type {
   PrReviewThreadComment,
   PrSnapshotHydration,
   PrStatus,
+  PrListConditionalReply,
   PrSummary,
   PrWithConflicts,
   UnstackGitHubPrStackArgs,
@@ -4707,6 +4708,8 @@ declare global {
         /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
         reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
         listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
+        /** See preload `listAllConditional`; optional so bridges that predate it type-check. */
+        listAllConditional?: (ifNoneMatch: string | null, pin?: OpenProjectBinding | null) => Promise<PrSummary[] | PrListConditionalReply>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (
           args?: {

@@ -8,6 +8,7 @@ import {
 } from "./types/chat";
 import { modelMentionEffortLabel } from "./modelMentions";
 import { resolveModelDescriptor } from "./modelRegistry";
+import { humanizeAgentIdentity } from "./agentIdentity";
 
 export type SubagentSnapshot = {
   id: string;
@@ -417,12 +418,22 @@ export function subagentSummaryPlainText(value: string | null | undefined): stri
 const SUBAGENT_SUMMARY_PLAIN_TEXT_CACHE_LIMIT = 256;
 const subagentSummaryPlainTextCache = new Map<string, string | null>();
 
+/**
+ * Plain text past this is never shown: the card is one line and the pane three.
+ * A long report (hundreds of KB from some providers) stops being read here.
+ */
+const SUBAGENT_SUMMARY_MAX_PLAIN_CHARS = 1_000;
+
 function reduceSubagentSummaryToPlainText(value: string): string | null {
-  const source = value.replace(/\r\n?/g, "\n").trim();
-  if (!source) return null;
   const parts: string[] = [];
+  let produced = 0;
   let pendingSeparator: string | null = null;
-  for (const rawLine of source.split("\n")) {
+  const lineBreak = /\r\n?|\n/g;
+  let lineStart = 0;
+  while (lineStart <= value.length && produced < SUBAGENT_SUMMARY_MAX_PLAIN_CHARS) {
+    const match = lineBreak.exec(value);
+    const rawLine = value.slice(lineStart, match ? match.index : value.length);
+    lineStart = match ? match.index + match[0].length : value.length + 1;
     let line = rawLine.trim();
     // Fence lines, horizontal rules, and table separator rows carry no text.
     if (/^(`{3,}|~{3,})/.test(line)) continue;
@@ -447,8 +458,13 @@ function reduceSubagentSummaryToPlainText(value: string): string | null {
     }
     line = plainInlineMarkdown(line).replace(/\s+/g, " ").trim();
     if (!line) continue;
-    if (parts.length) parts.push(pendingSeparator ?? " ");
+    // One long line stops at the budget too, separator included.
+    const separator = parts.length ? pendingSeparator ?? " " : "";
+    line = line.slice(0, Math.max(0, SUBAGENT_SUMMARY_MAX_PLAIN_CHARS - produced - separator.length));
+    if (!line) break;
+    if (separator) parts.push(separator);
     parts.push(line);
+    produced += separator.length + line.length;
     pendingSeparator = kind !== "text" && !TERMINAL_PUNCTUATION.test(line)
       ? (kind === "heading" ? ": " : "; ")
       : null;
@@ -581,60 +597,7 @@ export function preferredSubagentAgentType(
   return existing;
 }
 
-export type AgentIdentityLabel = {
-  /** Human role, sentence case — "Ship poller". */
-  label: string;
-  /** Trailing issue/PR number lifted out of the path, e.g. "#927". */
-  ref: string | null;
-  /** The raw value, kept for the `title` tooltip. */
-  raw: string;
-};
-
-/**
- * Words an agent id spells in lower case that read wrong in sentence case:
- * `ios_shared_scan` is "iOS shared scan", not "Ios shared scan". Mirrored on
- * iOS in `WorkStatusAndFormattingHelpers.swift`.
- */
-const AGENT_IDENTITY_ACRONYMS: ReadonlyMap<string, string> = new Map(
-  ["iOS", "CLI", "TUI", "UI", "UX", "API", "IPC", "PR", "CI", "SDK", "MCP", "DB", "JSON", "URL", "HTTP", "SQL", "CSS", "HTML", "AI", "ID"]
-    .map((word) => [word.toLowerCase(), word] as const),
-);
-
-/**
- * Turn a runtime's internal agent path into a role.
- *
- * Codex hands us `/ROOT/SHIP_POLL_927` — an id, not an identity. Identity
- * should read as role + intent, so the last segment becomes sentence case
- * ("Ship poll") and a trailing issue/PR number is lifted into `ref`.
- * Runtimes that never set an agent type (OpenCode, Droid) get `null`.
- */
-export function humanizeAgentIdentity(value: string | null | undefined): AgentIdentityLabel | null {
-  const raw = (value ?? "").trim();
-  if (!raw) return null;
-  // `background` is a flag the spawn card renders as its own chip.
-  if (raw.toLowerCase() === "background") return null;
-  const segments = raw.split(/[/\\]+/).filter((segment) => segment.length > 0);
-  let tail = segments.length ? segments[segments.length - 1]! : raw;
-  // A bare "/root" (or an all-separator value) carries no role at all.
-  if (segments.length === 1 && /^root$/i.test(tail)) return null;
-  let ref: string | null = null;
-  const numberMatch = tail.match(/[_\-\s](\d{2,})$/);
-  if (numberMatch) {
-    ref = `#${numberMatch[1]}`;
-    tail = tail.slice(0, numberMatch.index);
-  }
-  const words = tail.split(/[_\-\s]+/).filter((word) => word.length > 0);
-  if (!words.length) return ref ? { label: raw, ref, raw } : null;
-  const label = words
-    .map((word, index) => {
-      const acronym = AGENT_IDENTITY_ACRONYMS.get(word.toLowerCase());
-      if (acronym) return acronym;
-      const lower = word.toLowerCase();
-      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
-    })
-    .join(" ");
-  return { label, ref, raw };
-}
+export { humanizeAgentIdentity, type AgentIdentityLabel } from "./agentIdentity";
 
 /**
  * Values runtimes stamp where no real name exists: placeholder agent types

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPrReadInFlightForTest,
   getGitHubSnapshotCoalesced,
+  invalidatePrListCache,
+  listPrsCached,
   listPrsCoalesced,
   refreshLinkedPrCoalesced,
   refreshPrsCoalesced,
@@ -74,6 +76,36 @@ describe("prReadCache", () => {
     projectA.resolve([{ id: "pr-from-a" }]);
     await expect(a).resolves.toEqual([{ id: "pr-from-a" }]);
     await expect(b).resolves.toEqual([{ id: "pr-from-b" }]);
+  });
+
+  it("keeps each machine's settled PR list to itself and lets a PR event supersede a read in flight", async () => {
+    const listAllConditional = vi.fn();
+    (window as any).ade.prs.listAllConditional = listAllConditional;
+
+    // Same root, two machines: the second must ask its own machine.
+    listAllConditional
+      .mockResolvedValueOnce({ signature: "a1", prs: [{ id: "pr-on-a" }] })
+      .mockResolvedValueOnce({ signature: "b1", prs: [{ id: "pr-on-b" }] });
+    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-a" })).resolves.toEqual([{ id: "pr-on-a" }]);
+    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-b" })).resolves.toEqual([{ id: "pr-on-b" }]);
+    expect(listAllConditional).toHaveBeenCalledTimes(2);
+
+    // A read is under way when a PR event lands. The read after the event
+    // does not join it, and the older answer is not kept as fresh.
+    const scope = { projectRoot: "/repo", bindingKey: "machine-a" };
+    invalidatePrListCache(scope);
+    const beforeEvent = deferred<any>();
+    listAllConditional
+      .mockReturnValueOnce(beforeEvent.promise)
+      .mockResolvedValueOnce({ signature: "a3", prs: [{ id: "pr-on-a" }, { id: "pr-new" }] });
+    const early = listPrsCached(scope);
+    invalidatePrListCache(scope);
+    const late = listPrsCached(scope);
+    expect(listAllConditional).toHaveBeenCalledTimes(4);
+    await expect(late).resolves.toEqual([{ id: "pr-on-a" }, { id: "pr-new" }]);
+    beforeEvent.resolve({ signature: "a2", prs: [{ id: "pr-on-a" }] });
+    await expect(early).resolves.toEqual([{ id: "pr-on-a" }]);
+    await expect(listPrsCached(scope)).resolves.toEqual([{ id: "pr-on-a" }, { id: "pr-new" }]);
   });
 
   it("keeps forced and non-forced GitHub snapshots isolated", async () => {
