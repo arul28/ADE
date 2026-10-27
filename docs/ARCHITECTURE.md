@@ -440,7 +440,7 @@ Build outputs (configured in `apps/desktop/tsup.config.ts`):
 | `main/packagedRuntimeSmoke.cjs` | `src/main/packagedRuntimeSmoke.ts` | Post-package smoke test for PTY spawn, Claude SDK init, Codex availability, and ADE CLI readiness. |
 | `preload/preload.cjs` | `src/preload/preload.ts` | Renderer bridge. |
 
-Both this build and `apps/ade-cli`'s run `scripts/build/asciiBundleSource.ts`, which keeps every bundle pure ASCII (V8 holds a script's source for the life of the process, at two bytes per character once one character is past ASCII) and returns a source map for the escapes it adds.
+Both this build and `apps/ade-cli`'s run `scripts/build/asciiBundleSource.ts`, which keeps every bundle pure ASCII (V8 holds a script's source for the life of the process, at two bytes per character once one character is past ASCII) and returns esbuild's map with its columns moved past the escapes it adds. It returns the final map rather than one for tsup to compose: tsup's composition matched the chunk by a path that `source-map` lowercases on Windows, so Windows releases shipped maps from each bundle to itself.
 
 ### 2.3 ADE Code terminal client (`ade code`)
 
