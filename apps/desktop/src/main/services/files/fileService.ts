@@ -1366,11 +1366,22 @@ export function createFileService({
 
     createDirectory(args: FilesCreateDirectoryArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
-      assertMutablePathAllowed(workspace.rootPath, args.path);
+      const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       secureMkdirWithinRoot(workspace.rootPath, args.path);
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
-      indexService.invalidateWorkspace(args.workspaceId);
+      // A new folder holds no files, so the index gains the folder (and any
+      // parent the mkdir made) rather than being thrown away and rebuilt.
+      const segments = normalizedRel.split("/").filter((segment) => segment && segment !== ".");
+      for (let depth = 1; depth <= segments.length; depth += 1) {
+        indexService.onFileChanged({
+          workspaceId: args.workspaceId,
+          rootPath: workspace.rootPath,
+          path: segments.slice(0, depth).join("/"),
+          type: "created",
+          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
+        });
+      }
       emitLaneMutation(args.workspaceId, "directory_create");
     },
 

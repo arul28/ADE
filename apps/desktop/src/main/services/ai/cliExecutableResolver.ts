@@ -616,11 +616,34 @@ function readShellPath(
     return cached.value;
   }
   // A null is a timeout or a broken rc file -- most likely under exactly the
-  // load this cache is for -- so it is not kept: the next agent env retries.
+  // load this cache is for. It is not kept as an answer, but for a short while
+  // the retry runs in the background instead of synchronously on every agent
+  // env build: a timing-out shell blocked the brain for its whole timeout each.
+  const failedAt = shellPathFailedAt.get(key);
+  if (failedAt !== undefined && Date.now() - failedAt < SHELL_PATH_FAILURE_BACKOFF_MS) {
+    // At most one background retry per few seconds: a shell that keeps failing
+    // is not respawned on every agent env build.
+    if (Date.now() - failedAt >= SHELL_PATH_RETRY_GAP_MS) {
+      refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    }
+    return null;
+  }
   const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
-  if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
+  if (resolved !== null) {
+    rememberProbe(shellPathCache, key, resolved);
+    shellPathFailedAt.delete(key);
+  } else {
+    if (shellPathFailedAt.size >= ENVIRONMENT_PROBE_CACHE_MAX && !shellPathFailedAt.has(key)) shellPathFailedAt.clear();
+    shellPathFailedAt.set(key, Date.now());
+  }
   return resolved;
 }
+
+/** How long after a failed synchronous shell probe its retries run in the background only. */
+const SHELL_PATH_FAILURE_BACKOFF_MS = 30_000;
+/** The shortest gap between background retries of a shell probe that failed. */
+const SHELL_PATH_RETRY_GAP_MS = 2_000;
+const shellPathFailedAt = new Map<string, number>();
 
 const shellPathRefreshesInFlight = new Set<string>();
 
@@ -644,8 +667,13 @@ function refreshShellPathInBackground(
         const entry = shellPathCache.get(key);
         // A failed refresh keeps the last answer; it is tried again after
         // another TTL rather than on every call.
-        if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
-        else if (entry) entry.at = Date.now();
+        if (resolved !== null) {
+          rememberProbe(shellPathCache, key, resolved);
+          shellPathFailedAt.delete(key);
+        } else if (entry) entry.at = Date.now();
+        // A shell that never answers keeps its retries in the background
+        // instead of earning a synchronous probe again after each window.
+        else if (shellPathFailedAt.has(key)) shellPathFailedAt.set(key, Date.now());
       },
     );
     // execFile cannot take `stdio`; an rc file that reads stdin must see EOF,

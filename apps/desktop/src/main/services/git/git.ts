@@ -27,8 +27,10 @@ import {
 } from "../ai/cliExecutableResolver";
 import {
   cachedGitRepoValue,
+  gitRepoCacheEpoch,
   invalidateGitRepoCache,
   isRefAffectingGitCommand,
+  rememberGitRepoValue,
   type GitRepoCacheClass,
 } from "./gitRepoCache";
 import {
@@ -102,7 +104,7 @@ async function resolveGitExecutableUncached(): Promise<string> {
       const out = stdout.trim();
       const isIndependentMacGit = process.platform !== "darwin" || out !== "/usr/bin/git";
       if (out && fs.existsSync(out) && (isIndependentMacGit || !resolvedCandidate)) {
-        cachedGitExecutable = out;
+        cachedGitExecutable = isIndependentMacGit ? out : await resolveAppleGitBehindShim() ?? out;
         return cachedGitExecutable;
       }
     } catch {
@@ -110,13 +112,48 @@ async function resolveGitExecutableUncached(): Promise<string> {
     }
   }
   if (resolvedCandidate) {
-    cachedGitExecutable = resolvedCandidate;
+    cachedGitExecutable = process.platform === "darwin" && resolvedCandidate === "/usr/bin/git"
+      ? await resolveAppleGitBehindShim() ?? resolvedCandidate
+      : resolvedCandidate;
     return cachedGitExecutable;
   }
   // Fall back to bare "git" — spawn will surface the original ENOENT with a
   // clearer pre-check error message wrapped around it.
   cachedGitExecutable = process.platform === "win32" ? "git.exe" : "git";
   return cachedGitExecutable;
+}
+
+/**
+ * `/usr/bin/git` on macOS is Apple's xcrun shim: every run looks up the
+ * developer directory before it starts the real git, which doubled a
+ * `git rev-parse HEAD` here (12.5 ms through the shim, 6.2 ms direct). Ask
+ * xcrun once where that git is and spawn it directly. When xcrun cannot answer
+ * (no Command Line Tools, the Xcode license not accepted), keep the shim so
+ * its own message still explains what to install or accept.
+ */
+async function resolveAppleGitBehindShim(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/xcrun", ["--find", "git"], {
+      encoding: "utf8",
+      timeout: 3_000,
+    });
+    const found = stdout.trim();
+    if (!path.isAbsolute(found) || found === "/usr/bin/git" || !fs.existsSync(found)) return null;
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Forget a resolved git that has gone away (Xcode moved or deleted,
+ * `xcode-select` switched), so the next run resolves again instead of failing
+ * until restart.
+ */
+function forgetMissingGitExecutable(executable: string): void {
+  if (cachedGitExecutable === executable && path.isAbsolute(executable) && !fs.existsSync(executable)) {
+    cachedGitExecutable = null;
+  }
 }
 
 /**
@@ -503,6 +540,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
         return;
       }
       const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetMissingGitExecutable(executable);
       finish({
         exitCode: 1,
         stdout,
@@ -586,6 +624,28 @@ export function parseNameStatusRecords(stdout: string): Array<{ letter: string; 
     if (first) records.push({ letter, path: first, oldPath: null });
   }
   return records;
+}
+
+/**
+ * Refresh a just-created worktree's index once, in the background.
+ *
+ * `git worktree add` writes the files and then the index in the same second,
+ * so git cannot trust any entry's timestamp ("racily clean") and re-reads
+ * every file on each status and diff. ADE's reads never write the index back
+ * (`GIT_OPTIONAL_LOCKS=0`), so a new lane kept paying that until its first
+ * `git add`: measured on this repository (7,800 files), every
+ * `status --porcelain` on a new lane took 660 ms, 20-30 ms after the refresh.
+ * The refresh waits until just past the second the checkout ended, or its own
+ * index would be racy too. A failure (another git holds `index.lock`, the
+ * lane was removed meanwhile) changes nothing; the next index write fixes it.
+ */
+export function refreshNewWorktreeIndexSoon(worktreePath: string): void {
+  const msIntoSecond = Date.now() % 1_000;
+  const timer = setTimeout(() => {
+    if (!fs.existsSync(worktreePath)) return;
+    void runGit(["update-index", "-q", "--refresh"], { cwd: worktreePath, timeoutMs: 60_000 }).catch(() => undefined);
+  }, 1_000 - msIntoSecond + 50);
+  timer.unref?.();
 }
 
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
@@ -717,6 +777,54 @@ export async function runGitRepoCached(
     cacheClass: cache.cacheClass,
     load: () => runGit(args, opts),
   });
+}
+
+/**
+ * The file a worktree's index lives in. Read from disk when the layout is the
+ * plain one git itself writes (a `.git` folder, or a `.git` file whose one
+ * `gitdir:` line names the worktree's admin folder) and the index is there;
+ * otherwise (an environment that redirects git, anything unusual) asked of
+ * git once per worktree. Empty when neither knows.
+ */
+export async function resolveWorktreeIndexPath(worktreePath: string): Promise<string> {
+  if (!process.env.GIT_DIR && !process.env.GIT_INDEX_FILE && !process.env.GIT_COMMON_DIR) {
+    try {
+      const dotGit = path.join(worktreePath, ".git");
+      const stat = await fs.promises.lstat(dotGit);
+      let gitDir: string | null = null;
+      if (stat.isDirectory()) gitDir = dotGit;
+      else if (stat.isFile()) {
+        const match = /^gitdir: (.+)$/.exec((await fs.promises.readFile(dotGit, "utf8")).trim());
+        if (match?.[1] && !match[1].includes("\n")) gitDir = path.resolve(worktreePath, match[1].trim());
+      }
+      if (gitDir) {
+        const indexPath = path.join(gitDir, "index");
+        if ((await fs.promises.stat(indexPath)).isFile()) return indexPath;
+      }
+    } catch {
+      // Fall through to git.
+    }
+  }
+  const res = await runGitRepoCached(
+    ["rev-parse", "--git-path", "index"],
+    { cwd: worktreePath, timeoutMs: 10_000 },
+    { key: `index-path:${worktreePath}`, cacheClass: "stable" },
+  ).catch(() => null);
+  // Relative to the worktree (`--path-format=absolute` needs git 2.31).
+  return res && res.exitCode === 0 && res.stdout.trim() ? path.resolve(worktreePath, res.stdout.trim()) : "";
+}
+
+/** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */
+export type GitRepoObservation = { commonGitDir: string; epoch: number; askedAtMs: number };
+
+export async function beginGitRepoObservation(cwd: string): Promise<GitRepoObservation> {
+  const commonGitDir = await gitCommonDirFor(cwd);
+  return { commonGitDir, epoch: gitRepoCacheEpoch(commonGitDir), askedAtMs: Date.now() };
+}
+
+/** Serve `key` from `result` for the volatile window of the read that produced it. */
+export function rememberGitRepoResult(observation: GitRepoObservation, key: string, result: GitRunResult): void {
+  rememberGitRepoValue({ ...observation, key, cacheClass: "volatile", value: result });
 }
 
 export function resetGitCommonDirCacheForTests(): void {

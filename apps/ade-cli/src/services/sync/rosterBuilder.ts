@@ -531,11 +531,52 @@ function resumeMetadataLineage(
 const positiveInteger = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 
+/**
+ * Sidecars read before, kept while the file is unchanged: a roster build reads
+ * every visible chat's sidecar, and on a reconnect almost none have changed.
+ * The rule is createStampedJsonCache's (durableFile.ts): a hit needs the same
+ * inode, size, mtime and ctime, and only a file unchanged for SIDECAR_SETTLE_MS
+ * before the read is kept, so two writes in one timestamp tick cannot share a
+ * stamp. A wall clock stepped back drops every entry.
+ */
+const SIDECAR_SETTLE_MS = 2_000;
+const SIDECAR_CACHE_MAX = 5_000;
+const sidecarCache = new Map<string, { stamp: string; sidecar: Sidecar }>();
+let sidecarClockLead: number | null = null;
+
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
 // A missing or unparsable sidecar leaves those fields null — never throws.
 function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | null {
+  const filePath = path.join(chatSessionsDir, `${sessionId}.json`);
+  const wallNow = Date.now();
+  const clockLead = wallNow - performance.now();
+  if (sidecarClockLead !== null && clockLead < sidecarClockLead - 500) sidecarCache.clear();
+  sidecarClockLead = clockLead;
+  let stat: fs.Stats | null = null;
   try {
-    const raw = fs.readFileSync(path.join(chatSessionsDir, `${sessionId}.json`), "utf8");
+    stat = fs.statSync(filePath);
+  } catch {
+    sidecarCache.delete(filePath);
+    return null;
+  }
+  const stamp = stat.ino ? `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : null;
+  const cached = sidecarCache.get(filePath);
+  if (stamp !== null && cached?.stamp === stamp) return { ...cached.sidecar };
+  sidecarCache.delete(filePath);
+  const sidecar = parseChatSidecar(filePath);
+  if (sidecar && stamp !== null && Math.max(stat.mtimeMs, stat.ctimeMs) <= wallNow - SIDECAR_SETTLE_MS) {
+    sidecarCache.set(filePath, { stamp, sidecar: { ...sidecar } });
+    if (sidecarCache.size > SIDECAR_CACHE_MAX) {
+      const oldest = sidecarCache.keys().next().value;
+      if (oldest !== undefined) sidecarCache.delete(oldest);
+    }
+  }
+  return sidecar;
+}
+
+function parseChatSidecar(filePath: string): Sidecar | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       provider: typeof parsed.provider === "string" ? parsed.provider : null,

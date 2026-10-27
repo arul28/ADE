@@ -403,6 +403,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `route-sweep.mjs <runId> <route>,... [idleSecs]` | Per tab: long tasks after switching, IPC calls and time (perf run only), then idle task time, style recalcs, heap, page elements and running animations |
 | `process-cpu.sh <secs> <runtime-socket>` | CPU % and RSS for the main, GPU, renderer and brain processes |
 | `spawn-trace.cjs` (load with `NODE_OPTIONS="--require <abs path>"`) and `spawn-report.mjs <dir> <fromMs> <toMs>` | Every child process the app and its brain start, with the call site that started it, grouped over a time window. For the Idle background-work rows |
+| `loop-delay-trace.cjs` (load like `spawn-trace.cjs`) | Each process's event-loop delay (p50, p99, max at 10 ms resolution) and CPU time, one line per 5 s window in `$ADE_SPAWN_TRACE_DIR/loopdelay-<pid>.log`. For the brain loop-delay rows |
 | `gpu-trace.mjs <secs>` | Frames drawn, GPU swap time and rendering phases, for the whole browser |
 | `render-count.mjs <secs> reload` | React commits and which components re-render, and why (changed props or hooks) |
 | `chat-switch.mjs [rounds]` | Clicks through the chat list; time until each transcript settles, and long tasks |
@@ -421,7 +422,10 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
 `file-index`, `registry-read`, `roster`, `rpc-read`, `shell-path`,
-`search-fanout`, `chat-transcript`, `chat-backfill`, `tree-watcher` (plus `tree-watcher-parity.mts`, a
+`search-fanout`, `chat-transcript`, `chat-backfill`, `spawn`, `conflict-sweep`
+(the conflict predictor's sweep over scratch lane worktrees: git processes,
+wall time and synced row changes), `db-reads <ade.db>` (the heaviest reads
+on a copy of a project database), `tree-watcher` (plus `tree-watcher-parity.mts`, a
 comparison and not a timing), `codex-app-server` (macOS: Codex app-server
 memory and thread start, one process per chat vs one shared). They read temp
 copies of state and never write to `~/.ade`.
@@ -1360,3 +1364,253 @@ software compositing, which draws the same pixels for about a quarter of the
 CPU at the same delivered frame rate (25 fps), and WebGL still works. Over the ADE account relay from a Mac, the
 desktop app pinned to the box decoded 38 H.264 frames in a 9 s scroll window
 at ~0.8 Mb/s.
+
+## Mac Studio (M4 Max): brain, git and database (2026-10-26)
+
+Lane `perf-p4-brain-git`. Before is `e2f42f44c`; baseline is this branch.
+Not the baseline machine: a Mac Studio with only Apple's git (`/usr/bin/git`,
+Git 2.54.0 Apple Git-157), load average 17-30 from other agents throughout,
+so every pair was run interleaved (before, after, before, after) and each
+cell is the range over the runs. Service benches run from `apps/ade-cli`
+with `npx tsx ../../scripts/perf/service/<name>`; the repository rows use a
+clone of this repository (7,800 files).
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| One git process through `runGit` (`rev-parse HEAD`, median of 200), macOS with only Apple's git | `spawn.bench.mts` (runGit row; `ADE_GIT_EXECUTABLE=/usr/bin/git` for before) | 9.5-11.7 ms | 4.2-6.0 ms | 8 ms |
+| Lane status read on a just-created lane (`status --porcelain=v2 --branch`, each of 5 reads) | `runGit` after `worktree add` on the clone | 1,202-1,288 ms | 26-40 ms | 100 ms |
+| Conflict sweep (`runPrediction({})`, 8 lanes) with no commit since the last sweep: git processes / wall / synced row changes | `conflict-sweep.bench.mts 8` | 169 / 917-1,006 ms / 72 | 25 / 40-42 ms / 0 | 40 / 150 ms / 0 |
+| Same, after one lane commits | same | 169 / 919 ms / 72 | 57 / 251 ms / 16 | 80 / 500 ms / 20 |
+| Turn-end change capture on a lane with 300 edited and 3,000 new files (median of 5) | `collectTurnDiffSummary`, one-off loop on the clone | 211-228 ms, 4 git processes | 129-133 ms, 3 | 200 ms |
+| Terminal snapshot, one busy 160×48 terminal with 2,000 colored lines: serialize + JSON / file write (every 5 s while output flows) | one-off loop over `@xterm/headless` + `addon-serialize` | 9.5 ms (max 18) / 0.3 ms | unchanged | 30 ms |
+
+A dev brain end to end: an isolated brain (own `ADE_HOME` and socket,
+`--no-sync`, `spawn-trace.cjs` and `loop-delay-trace.cjs` loaded) on a
+scratch clone of this repository with 6 new lanes and one shell printing
+`date; ls -la` every 0.2 s, while a CLI asks for the lane list every 3 s for
+3 minutes (an open Lanes tab's pattern). Two interleaved runs per side, load
+average 13-27; the brain's database versions are read from the scratch
+project's cr-sqlite clock tables.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Child processes the brain started per lane-list request | 22.2 (both runs) | 14.0-14.1 | 18 |
+| Same, per minute (the after runs answered 29% more requests in the window) | 255-259 | 210 | 260 |
+| Git processes per lane status refresh | 7 | 4 | 5 |
+| Project-icon worker processes (a node and a CLI process each) per minute | 23-24 | 0 | 2 |
+| `ade lanes list` from a CLI, median | 1,577-1,592 ms | 767-850 ms | 1,200 ms |
+| Synced database versions per second (one busy shell) | 1.85-1.86 | 0.94-0.96 | 1.2 |
+| Brain event-loop delay, p99 (median 5 s window / worst window) | 12.9-13.7 / 15.6-16.2 ms | 13.1-13.4 / 18-39.5 ms | 50 ms / 100 ms |
+| Brain event-loop delay, max | 92-109 ms | 79-107 ms | 250 ms |
+| Brain CPU over the window | 3.7-3.9% | 4.0-4.3% (29% more requests) | 10% (Processes table) |
+
+The icon workers: every `projects.list` (each CLI call, each desktop and
+phone connect) resolved up to 24 project icons, each in a new node process
+loading the whole CLI bundle. On this machine one took 775 ms, past its
+750 ms budget, so it was killed every time: no icon was ever shown and every
+list paid for another worker. The worker now finishes (up to 15 s) after the
+caller stops waiting, and the brain keeps its answer while the same signature
+the in-process resolver trusts still holds. The database versions were the
+busy shell's row: every 0.9 s output tick wrote `last_output_at` and then the
+preview with `last_output_at` again, two versions sent to every synced
+device; a tick that writes a preview now writes once.
+
+The racy-index row is git distrusting every file of a checkout written in the
+same second as its index. ADE's reads never write the index back
+(`GIT_OPTIONAL_LOCKS=0`), so before, every status and diff on a new lane
+re-read all its files until the first `git add`. ADE now refreshes the index
+once, just past that second (`refreshNewWorktreeIndexSoon`).
+
+Project database reads, `db-reads.bench.mts` (new) on a copy of this
+repository's own `ade.db` (74 MB, 640 PR snapshots holding 30 MB), median of
+8 after a first run:
+
+| Read | Default pragmas | 64 MB page cache + 256 MB mmap | mmap only | 16 MB cache |
+|---|---:|---:|---:|---:|
+| Usage stats, all time (Stats page) | 28.6-49.8 ms | 29.7-30.7 ms | 27.1-27.6 ms | 28.5-29.8 ms |
+| Every PR snapshot (the PRs tab reads a bounded set) | 65-83 ms | 28-31 ms | 66-68 ms | 66-69 ms |
+| History, newest 500 operations | 0.5 ms | 0.5 ms | 0.5 ms | 0.5 ms |
+| Conflict matrix rows | 0.3-0.4 ms | 0.3 ms | 0.3 ms | 0.3-0.4 ms |
+| A phone's first sync export, 5,000 changes | 124-147 ms | 120-130 ms | 122-123 ms | 113-118 ms |
+| `openKvDb` on the copy (migrations included) | 417 ms | - | - | - |
+
+No pragma change shipped: only a cache big enough to hold the whole PR table
+helped, on a read no surface makes, and a page cache is per connection, so it
+would be paid once per open project in a brain that opens dozens. Moving reads
+to a read-only worker connection (measured with a one-off probe on the same
+copy) took the main-thread block of every-PR-snapshot from 75 ms (459 ms cold)
+to 1-2 ms and of 7,800 history rows from 16-69 ms to 1-3 ms, but the longest
+real read, the sync export, needs cr-sqlite's virtual table, which a plain
+read-only connection does not have.
+
+Brain event loop with sync ON, idle: P0's isolated measurement brain
+(`scripts/perf/net/measure-brain.mjs` on lane `perf-p0-scoreboard`: fake
+`HOME`, loopback, guard preload) on its seeded 1,000-chat project, 5 idle
+minutes after the project is added, `loop-delay-trace.cjs` loaded (its
+`gapMaxMs` is the longest a 50 ms timer fired late; the delay histogram alone
+reported 23 ms for some of these 2 s blocks). Two interleaved runs per side.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Brain event-loop max, idle, sync ON | 2,048-2,052 ms | 22-40 ms | 250 ms |
+| Freezes of 100 ms or more in 5 idle minutes | 8-9 (every ~32 s) | 0 | 1 |
+| Brain watchdog `event_loop_near_miss` lines in that window | 9 | 0 | 0 |
+| Brain event-loop p99, median 5 s window | 13.2 ms | 13.1 ms | 50 ms |
+
+The freeze was the account lease refresh (every ~32 s) reading the encrypted
+credential store, whose synchronous read asked the macOS keychain for key
+material every time its 30 s miss backoff ran out: `security
+find-generic-password`, then `add-generic-password` killed at its 2 s
+timeout, then `find` again, on the main thread. Wherever the keychain cannot
+answer (the measurement brain's fake home has none; a locked or unreachable
+keychain does the same) that is 2 s every cycle. Stores are sealed with the
+machine key alone now, so a read asks the keychain only when the machine key
+does not open the store.
+
+Phone reconnect's lane refresh: `lanes.refreshSnapshots` with the phone's
+iOS arguments and its last signature (so every answer is `notModified`), 10
+timed calls on LAN after a reconnect, P0's measurement brain on the seeded
+project (20 lanes, 1,000 chats), two interleaved runs per side, load 10-11.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| `lanes.refreshSnapshots`, not modified, median per call | 161.5-165 ms | 90.5-93.5 ms | 130 ms |
+| Git processes per call | 54.9 | 15.8 | 25 |
+
+Per lane, a refresh re-ran five git processes whose answers cannot change
+without their input changing: HEAD's commit date (now keyed by the commit
+the status names), ahead/behind (keyed by the two commits), the worktree
+root (keyed by the folder's and its `.git` entry's identity), and the
+conflict check (`ls-files -u`, keyed by the index file's identity). Only
+`git status` runs every time, so edits, commits and base moves show at once.
+SQLite statements are now compiled once per connection and reused; before,
+compiling them was the largest single cost on the brain's main thread during
+these calls (628 ms of a 40 s profile). The rest is the chat list the
+snapshot builds (per-row lookups in `agentChatService.listSessions`, chat
+state files) and the 500-row session list: about 44 ms of main-thread time
+per call.
+
+Chat and session lists (`b109c1239`): `scripts/perf/service/session-list.bench.mts`
+(the real chat service over 617 chat metadata files, 8.1 MB), five interleaved
+runs per side against `66d671759`, load 30-104, the fixture's files left 2.5 s
+to settle first so both sides read them from the state-file cache. (Without
+the pause the faster build finishes inside the cache's 2 s settle window and
+reads every file again; that is the bench, not the brain.)
+
+| `sessions.list` (median of 7 per run; range of 5 runs) | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| 500-row window | 75-84 ms | 19-28 ms | 40 ms |
+| One lane, 200 rows | 33-46 ms | 9-11 ms | 20 ms |
+| Every row (764) | 105-141 ms | 28-39 ms | 60 ms |
+
+Within one listing each row's Claude resume pointer, parent chat and move
+record are read once (not once or twice per row), a non-running OpenCode
+chat's `/compact` check walks the prompt folders once per listing instead of
+once per row, the chat tool types come from one statement instead of one query
+per type, and a row whose columns are unchanged reuses its mapped form.
+
+Phone reconnect's lane refresh on the owner's real project: a clone of P0's
+golden copy (47 active lanes, 46 worktrees of the 7,600-file repo, 78 M db
+versions), P0's sync-ON measurement brain, a reconnect then 5 not-modified
+`lanes.refreshSnapshots` and 5 refresh + `work.listSessions` pairs on LAN,
+five interleaved runs per side (`main` e2f42f44c vs `744f102c3`), load 11-77.
+
+| Real load, 47 lanes | Before (`main`) | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Not-modified lane refresh, median of the 5 run medians | 1,975 ms (runs 1,901-2,399) | 1,579 ms (runs 1,515-1,766) | 2,000 ms |
+| Slowest single refresh in 25 | 4,759 ms | 2,472 ms | 3,000 ms |
+| Git processes per measured window | ~5,000 | ~1,100 | 1,500 |
+
+What is left is `git status` itself: ~50 ms per real worktree (33 ms for the
+tracked files, ~20 ms for the untracked walk), so 46 lanes are ~1.5 s of git
+whatever the order. The untracked cache and the fsmonitor daemon do not help
+while ADE reads with `GIT_OPTIONAL_LOCKS=0` (41-58 ms per status with the
+daemon). The conflict and rebase summaries now reuse the HEAD each lane's
+status printed, behind counts are kept per commit pair, and the search index
+lists the lanes once per pass instead of once per lane.
+
+Brain event loop under real load while a phone connects, measured by P0
+(`perf_hooks.monitorEventLoopDelay` inside the brain, 5 s windows, golden
+clones of the owner's ADE project, machine load 30-50): windows holding a real
+main-thread block over 1 s.
+
+| Real load, phone connecting | Before (`main`) | Baseline (`744f102c3`) | Ceiling |
+|---|---:|---:|---:|
+| Windows with a block > 1 s | 51 of 352 (25 of 169 on a rerun) | 1 of 295 | 1% of windows |
+| Longest block | 3.1 s | 1.1 s | 1.5 s |
+
+The ~2 s blocks every ~30 s on `main` are the keychain read (`0224073ec`)
+and synchronous shell probes that never cached a failure (`744f102c3`).
+
+The first lane refresh after a brain starts is slower than the warm one
+above (Work usable 2.2-2.7 s): each lane also fills its one-time caches (the
+HEAD date, the index path, the conflict check, behind counts), 288 processes
+on 47 lanes. The index path now comes from the worktree's `.git` file
+(`ff8d90ce2`), 49 fewer.
+
+Lane refresh answered from each lane's last status (`93ccf2adb`, the
+owner-approved option): same real-load clone and brain, the phone asks with
+the status allowed to be up to 5 minutes old, the brain answers from each
+lane's last check and re-checks git behind it. The follow-up waits for that
+re-check. Five interleaved runs per side, 5 refreshes each, load 12-62.
+
+| Real load, 47 lanes | Exact status | Baseline (last status) | Ceiling |
+|---|---:|---:|---:|
+| First answer, median of the 5 run medians | 1,753 ms (runs 1,600-1,871) | 45 ms (runs 44-126) | 300 ms |
+| Slowest first answer in 25 | 3,008 ms | 300 ms (load 62) | 1,000 ms |
+| Background re-check, median | n/a | 1,700 ms (one 7.7 s at load 62) | 3,000 ms |
+
+Only the dirty/ahead/behind numbers can be old; lane names, archive state,
+parents and deleted lanes are read live. Without the option (desktop, older
+phones) the answer is the exact one.
+
+Brain, database and git against T3 Code's published numbers (ledger section
+F): ADE measured the way each T3 PR did, on the real-load clone (47 lanes, 505
+PRs, 1,012 PR projections), `main` e2f42f44c vs this branch, 5 runs per side,
+load 7-38. A statement timer and a sync-wait recorder were preloaded into the
+measurement brain for F2 and the near-miss check.
+
+| T3 measurement | T3 | Before (`main`) | Baseline | Ceiling |
+|---|---:|---:|---:|---:|
+| F1 PR discovery reads, one pass (T3 #25443, 500 threads) | 4.32 ms | 3.2-3.6 ms | 3.3 ms (worst run 3.9) | 5 ms |
+| F3 one `git rev-parse HEAD` through runGit, 200 runs (T3 #22759) | 2.7-3.0 ms | 6.9 ms (Xcode shim) | 3.0 ms (worst run 3.4; bare spawn here 2.6-3.2) | 4 ms |
+| F4 git processes, 1 + 4 overlapping `git status --full` (T3 #24478) | 46 | 35 | 22 | 30 |
+| F5 startup recovery read, 20 warm runs (T3 #22554) | 0.8 ms | 0.06 ms | 0.04-0.12 ms | 1 ms |
+| F2 longest database step on the event loop while a phone connects (T3 #23689) | 12.7 ms | 73 ms (runs 52-106) | 11.1 ms (runs 9.7-52) | 60 ms |
+| F2 a read beside the slowest read (T3 #24762) | 181-220 ms | <= 106 ms | <= 52 ms | 250 ms |
+
+F2's long step on `main` is the phone's sync export (`crsql_changes`), 75-147
+ms per batch on this database. The host now reads it on a second connection
+with cr-sqlite loaded, in a worker thread (`exportChangesSinceOffThread`, one
+export plan shared with the synchronous path): no `crsql_changes` statement
+runs on the event loop in 5 real-load runs, and a 10,000-row export holds it
+7.9 ms instead of 120 ms. Checked first on a copy of the real database: every
+export shape byte-identical to the main connection's (truncation, suppression,
+excluded tables, the oversized-group error), 221,803 rows identical while 240
+commits landed during one read, 100 rounds interleaved with writes, no busy or
+lock errors, and the file renames after close. The worst run's 52 ms was a
+1.5 ms PR-list read under load 26 (a `crsql_db_version()` call took 29 ms in
+the same run).
+The search
+index no longer rewrites a lane's commits and branches when they are unchanged
+(each rewrite was ~500 statements and 10-86 ms on the event loop, every brain
+start), and overlapping change reads of one worktree share one follow-up read
+(15 -> 11 git processes in F4).
+
+`brain.event_loop_near_miss` every ~33 s at ~2.0 s with little CPU, seen on
+measurement brains: on `main` it is `security add-generic-password` timing out
+(spawnSync, 2,001-2,004 ms, from the credential store's key-material read); this
+branch makes no such call (0 near-misses in 10 runs vs 2 per run on `main`).
+
+Credential reads while another ADE process holds the store lock
+(`scripts/perf/service/credential-lock.bench.mts`: a second process holds
+the lock 3 s, a cold store reads one key with `getSync`, as the brain does
+on its event loop for the account lease, Linear and session reads), 3 runs:
+
+| Metric | Before | Baseline (`09e100e94`) | Ceiling |
+|---|---:|---:|---:|
+| Brain event loop blocked by one read | 3,004-3,011 ms (up to the 15 s lock timeout) | 0 ms | 50 ms |
+
+The owner's installed brain logged an 11.1 s freeze at idle with 123 ms of
+CPU and no page faults: a sleeping wait, which is what this lock wait is
+(25 ms sleeps until the holder, often an `ade` CLI call, lets go).

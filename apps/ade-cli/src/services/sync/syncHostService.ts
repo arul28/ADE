@@ -6115,10 +6115,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.lastKnownServerDbVersion + SYNC_EXPORT_VERSION_WINDOW,
         currentDbVersion,
       );
-      const exported = args.db.sync.exportChangesSince(
-        peer.lastKnownServerDbVersion,
+      // Read off the event loop: a recovery batch is up to 4x maxRows rows, and
+      // reading one on this thread held it for 75-150 ms on a real project.
+      const exportFromDbVersion = peer.lastKnownServerDbVersion;
+      const exported = await (args.db.sync.exportChangesSinceOffThread ?? args.db.sync.exportChangesSince)(
+        exportFromDbVersion,
         { maxRows: batchLimits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
       );
+      // The peer may have moved on while the read ran (a batch admitted, its
+      // cursor reset by a reconnect, the socket gone). The next poll exports
+      // again from wherever it is now.
+      if (
+        disposed
+        || peer.ws.readyState !== WebSocket.OPEN
+        || !peer.authenticated
+        || peer.pendingChangesetBatch
+        || peer.lastKnownServerDbVersion !== exportFromDbVersion
+      ) {
+        return;
+      }
       const exportedThroughDbVersion = exported.length > 0
         ? Number(exported[exported.length - 1].db_version)
         : scanThroughDbVersion;
