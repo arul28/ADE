@@ -72,6 +72,7 @@ async function updateOtherMachinesFirst(
     tone: "warning",
     confirmLabel: "Install here",
     cancelLabel: "Not now",
+    returnKeyHint: true,
   });
 }
 
@@ -105,6 +106,7 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
         : []),
     ],
     confirmLabel: "Continue",
+    returnKeyHint: true,
   });
   if (!answer.confirmed) {
     captureUpdatePromptDecision(snapshot, "deferred");
