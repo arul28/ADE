@@ -689,9 +689,12 @@ function rawHasTable(db: DatabaseSyncType, tableName: string): boolean {
   return Boolean(getRow(db, "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [tableName]));
 }
 
+// One cached statement for every table, instead of a `pragma table_info('<table>')`
+// prepared per table and read in full.
+const HAS_COLUMN_SQL = "select 1 as present from pragma_table_info(?) where name = ? limit 1";
+
 function rawHasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
-  return allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`)
-    .some((column) => column.name === columnName);
+  return Boolean(getRow(db, HAS_COLUMN_SQL, [tableName, columnName]));
 }
 
 function isReadonlyDatabaseError(error: unknown): boolean {
@@ -922,6 +925,8 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
     USER_TABLES_SQL
   );
 
+  // Read once: rebuilding a non-CRR table never creates or drops a clock table.
+  const tableNames = readTableNames(db);
   let changed = false;
   runStatement(db, "pragma foreign_keys = off");
   try {
@@ -936,7 +941,7 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name)) continue;
       // CRR tables must be altered via crsql_begin_alter/commit_alter or rebuilt
       // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
-      if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
+      if (tableNames.has(`${table.name}__crsql_clock`)) continue;
 
       try {
         if (retrofitTableLegacyPrimaryKey(db, table.name, table.sql)) changed = true;
@@ -1455,7 +1460,7 @@ function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   );
   return tables
     .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
-    .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
+    .filter((table) => Boolean(getRow(db, "select 1 as present from pragma_table_info(?) where pk > 0 limit 1", [table.name])))
     .map((table) => table.name);
 }
 
@@ -1592,13 +1597,12 @@ function removeLegacyQueueStorage(db: DatabaseSyncType, logger?: Logger): void {
  * writes keep working. Observed live with a dropped `github_pr_cache`.
  */
 function removeOrphanedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
-  const clockTables = allRows<{ name: string }>(
-    db,
-    "select name from sqlite_master where type = 'table' and name like '%__crsql_clock'",
-  ).map((row) => String(row.name)).filter((name) => name.endsWith("__crsql_clock"));
+  // Read once: dropping one orphan's shadow tables never adds or removes a base table.
+  const tableNames = readTableNames(db);
+  const clockTables = [...tableNames].filter((name) => name.endsWith("__crsql_clock"));
   for (const clockTableName of clockTables) {
     const tableName = clockTableName.slice(0, -"__crsql_clock".length);
-    if (!tableName || rawHasTable(db, tableName)) continue;
+    if (!tableName || tableNames.has(tableName)) continue;
     runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
     runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
     if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
@@ -1786,10 +1790,11 @@ function dropRetiredPrAiSummarySchema(db: DatabaseSyncType, logger?: Logger): vo
 }
 
 function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
+  const present = readTableNames(db);
   return tableNames.filter((tableName) =>
-    rawHasTable(db, tableName)
-    || rawHasTable(db, `${tableName}__crsql_clock`)
-    || rawHasTable(db, `${tableName}__crsql_pks`),
+    present.has(tableName)
+    || present.has(`${tableName}__crsql_clock`)
+    || present.has(`${tableName}__crsql_pks`),
   );
 }
 
@@ -2041,11 +2046,21 @@ type CrrSchemaSnapshot = {
   crrTriggerCounts: ReadonlyMap<string, number>;
 };
 
-/** The schema facts the CRR passes check per table, read in two queries. */
-function readCrrSchemaSnapshot(db: DatabaseSyncType): CrrSchemaSnapshot {
-  const tableNames = new Set(
+/**
+ * Every table name in the main schema, in one scan of `sqlite_master`.
+ * `sqlite_master` has no index, so a pass that asks about each of its tables
+ * one lookup at a time scans the whole schema (1,500+ rows on a real project)
+ * once per table; the open runs several such passes.
+ */
+function readTableNames(db: DatabaseSyncType): Set<string> {
+  return new Set(
     allRows<{ name: string }>(db, "select name from sqlite_master where type = 'table'").map((row) => row.name),
   );
+}
+
+/** The schema facts the CRR passes check per table, read in two queries. */
+function readCrrSchemaSnapshot(db: DatabaseSyncType): CrrSchemaSnapshot {
+  const tableNames = readTableNames(db);
   const crrTriggerCounts = new Map(
     allRows<{ tbl_name: string; trigger_count: number }>(
       db,
@@ -2263,6 +2278,29 @@ function forceSiteId(db: DatabaseSyncType, siteId: string): void {
     "insert into crsql_site_id(site_id, ordinal) values (?, 0) on conflict(ordinal) do update set site_id = excluded.site_id",
     [Buffer.from(siteId, "hex")]
   );
+}
+
+/**
+ * Write the local site id before cr-sqlite loads. The extension reads
+ * `crsql_site_id` once, at load, so an id written after it (a project copied
+ * from another machine, or a new `sync-site-id` file) only takes effect after
+ * closing the connection and loading the extension again. Writing it first
+ * makes that reopen unnecessary. A database without the table yet is left to
+ * the extension, which creates it, and a peer holding the lock is not waited
+ * for: the write after the load, and its reopen, still settle the id.
+ */
+function presetSiteIdBeforeCrsqliteLoad(db: DatabaseSyncType, siteId: string): void {
+  try {
+    withAttemptBusyTimeout(db, () => {
+      const row = getRow<{ site_id: string }>(
+        db,
+        "select lower(hex(site_id)) as site_id from crsql_site_id where ordinal = 0",
+      );
+      if (row?.site_id !== siteId) forceSiteId(db, siteId);
+    });
+  } catch (error) {
+    if (!isSqliteBusyOrLockedError(error)) throw error;
+  }
 }
 
 function readCurrentSiteId(db: DatabaseSyncType): string | null {
@@ -2522,8 +2560,7 @@ function parseAlterTableAddColumn(sql: string): { tableName: string; columnName:
 }
 
 function migrationHasColumn(db: MigrationDb, tableName: string, columnName: string): boolean {
-  return db.all<{ name: string }>(`pragma table_info('${tableName.replace(/'/g, "''")}')`)
-    .some((column) => column.name === columnName);
+  return Boolean(db.get(HAS_COLUMN_SQL, [tableName, columnName]));
 }
 
 function isDuplicateColumnError(error: unknown): boolean {
@@ -4986,6 +5023,9 @@ export async function openKvDb(
       writeMigrationBackupIfNeeded(dbPath);
     }
 
+    if (extensionPath && rawHasTable(db, "crsql_site_id")) {
+      presetSiteIdBeforeCrsqliteLoad(db, desiredSiteId);
+    }
     // Existing CRR tables install triggers that call cr-sqlite functions on
     // ordinary writes. Load the extension before any migrations or repair
     // updates can touch those tables in source-mode CLI and desktop startup.
