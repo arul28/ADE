@@ -1,66 +1,48 @@
 ---
 title: "Key concepts"
-description: "The ADE vocabulary: lanes, Work, chats, agents, CTO, proof, PRs, mobile, and local project state."
+description: "The ADE vocabulary in two minutes: machines, lanes, work sessions, agents, tools, and subagents."
 icon: "lightbulb"
 ---
 
-ADE has a small set of ideas. Learn these and the rest of the app becomes easier to follow.
+ADE has a small set of ideas. Learn these six and the rest of the product follows. Each one has a page of its own; this page is the map.
 
-<CardGroup cols={3}>
-  <Card title="Machine" icon="server" href="#machine">A computer running the ADE brain.</Card>
-  <Card title="Lane" icon="code-branch" href="#lane">One isolated branch and worktree per task.</Card>
-  <Card title="Work" icon="rectangle-terminal" href="#work">The place where chats, terminals, and CLI sessions run.</Card>
-  <Card title="Agent chat" icon="comments" href="#agent-chat">A lane-scoped conversation that can edit, run, test, and commit.</Card>
-  <Card title="CTO" icon="crown" href="#cto">A project-level agent for planning and delegation.</Card>
-  <Card title="Worker" icon="users" href="#worker">A scoped agent assigned to a specific job.</Card>
-  <Card title="Proof" icon="camera" href="#proof">Evidence captured during work.</Card>
-  <Card title="PR flow" icon="code-pull-request" href="#pr-flow">GitHub review tied back to lanes.</Card>
-  <Card title="History" icon="clock-rotate-left" href="#history">Searchable record of sessions, commits, and checkpoints.</Card>
-  <Card title="iOS companion" icon="mobile-screen" href="#ios-companion">Phone pairing for updates and remote follow-up.</Card>
+<CardGroup cols={2}>
+  <Card title="Machines and clients" icon="server" href="/concepts/machines-and-clients">
+    A machine runs the brain. The desktop app, terminal, web, and phone attach to it.
+  </Card>
+  <Card title="Lanes" icon="code-branch" href="/concepts/lanes">
+    One git worktree and branch per task — the unit of parallel work.
+  </Card>
+  <Card title="Work sessions" icon="rectangle-terminal" href="/concepts/work-sessions">
+    Agent chats, terminals, and CLI sessions, all scoped to a lane.
+  </Card>
+  <Card title="Agents and models" icon="robot" href="/concepts/agents-and-models">
+    Thirteen provider runtimes, a model chosen per session, credentials you already have.
+  </Card>
+  <Card title="Tools" icon="toolbox" href="/concepts/tools">
+    What every chat can do: universal tools, ADE's CLI surfaces, and provider-native extras.
+  </Card>
+  <Card title="Subagents" icon="users" href="/concepts/subagents">
+    Delegate inside one provider, or hand work to a different one.
+  </Card>
 </CardGroup>
 
-## Machine
+## The rest of the vocabulary
 
-A machine is a computer running the **brain** — ADE's always-on engine. The brain owns your projects, lanes, chats, and Git state, and it runs the agents. Everything you look at is a client of a brain: the desktop app, `ade code`, the web client, and the iOS app.
+These are areas rather than foundations. You will meet them as you work.
 
-That split is why a machine does not have to be the computer in front of you. Run [`ade connect`](/getting-started/connect-machine) on a box — your laptop, or a headless Linux server — and it joins your account directory, reachable from every client. On Linux the brain is the whole product; there is no desktop app and none is needed.
-
-## Lane
-
-A lane is ADE's name for a git worktree — its unit of parallel work. It is a Git branch in an isolated working copy, usually under `.ade/worktrees/<lane-name>/`. Agents, terminals, diffs, tests, and PRs are all scoped to that lane.
-
-Use one lane for one feature, bug fix, experiment, or review thread. If the work grows, split it into another lane or stack a child lane on top of it.
-
-## Work
-
-Work is where active execution happens. A Work session can be a chat, a terminal, or a provider CLI. ADE keeps these sessions visible and attributable so you can answer "what is running, where, and why?"
-
-## Agent chat
-
-Agent chat is a conversation with a coding agent inside a lane. The agent can read files, edit files, run shell commands, inspect diffs, create commits, and help open PRs. Tool calls and results stay in the transcript.
-
-Provider support depends on what you have configured, but the agent paths are Claude Code, Codex, Meta Muse Code, Cursor, Factory Droid, and OpenCode.
-
-## CTO
-
-The CTO is a project-scoped agent: one persistent chat thread with durable memory. Use it for planning, summarizing project state, reading and updating Linear issues, and deciding how to split work — and it remembers decisions across sessions and model switches. It is not the fastest way to make a tiny edit; lane chat is usually better for that.
-
-## Proof
-
-Proof is intentional evidence: screenshots, recordings, browser traces, console logs, or verification notes captured during work. Proof artifacts can be tied to a chat session, lane, PR, or Linear issue.
-
-## PR flow
-
-ADE links lanes to GitHub PRs. From that link, ADE can show review state, CI, changed files, comments, merge risk, and stacked PR relationships. The point is simple: review the agent's work before it lands.
-
-## History
-
-History is the searchable project record. It includes chats, terminal sessions, commits, PR events, lane changes, and checkpoints. Use it when you need to recover context or explain what happened.
-
-## iOS companion
-
-The iOS app connects to a machine's brain. Sign in with the same account and your connected machines appear automatically; you can also pair a machine directly without an account. It mirrors useful project state and lets you follow work from your phone. The phone does not run agents — the machine remains the execution host.
+| Term | What it means |
+|---|---|
+| **CTO** | A persistent project-level agent with durable memory, used for planning and delegation. [CTO](/cto/overview) |
+| **Proof** | Intentional evidence — screenshots, recordings, traces — tied to a chat, lane, PR, or issue. [Proof](/computer-use/proofs) |
+| **PR flow** | A lane linked to its GitHub pull request: diff, CI, comments, merge. [Pull requests](/tools/pull-requests) |
+| **History** | The searchable project record of sessions, commits, PR events, and checkpoints. [History](/tools/history) |
+| **Automations** | Event- or schedule-triggered rules that start work without you. [Automations](/tools/automations) |
 
 ## Local project state
 
-ADE stores project data in `.ade/` inside your repository. That directory contains the local database, worktrees, artifacts, caches, and machine-specific state. Keep it out of Git unless a page explicitly tells you a file is safe to share.
+ADE stores project data in `.ade/` inside your repository — the local database, worktrees, artifacts, caches, and machine-specific state. Keep it out of Git unless a page explicitly says a file is safe to share.
+
+<Tip>
+If you only read one more page, read [Lanes](/concepts/lanes). Almost every surprise in ADE is really a question about which worktree you are in.
+</Tip>

@@ -6,10 +6,6 @@ icon: "folder-open"
 
 Use **Open Repository** on the welcome screen or press `Cmd+O` (`Ctrl+O` on Windows). Choose the root of a Git repository, or clone one straight from GitHub. If you pick a subfolder, ADE finds the repository root automatically.
 
-<Frame caption="Open a repository or clone from GitHub">
-  <img src="/media/features/project/add-project-options.webp" alt="Open a local repository or clone from GitHub" />
-</Frame>
-
 ## What ADE creates
 
 On first open, ADE creates a local `.ade/` directory:
@@ -27,7 +23,7 @@ This holds local runtime state, lane worktrees, transcripts, proof, and credenti
 
 Your repository root becomes the **primary lane** — it always exists and is edit-protected. Every other lane you add is a separate worktree under `.ade/worktrees/`, so agent work never touches your main checkout until you choose to merge it.
 
-If the folder you pick is itself a Git worktree of another repository, ADE recognizes that and offers to open it as a lane in the owning project instead of creating a duplicate project. See [Repos and worktrees](/lanes/repos-and-worktrees).
+If the folder you pick is itself a Git worktree of another repository, ADE recognizes that and offers to open it as a lane in the owning project instead of creating a duplicate project. See [Repos and worktrees](/lanes/overview#repos-projects-and-worktrees).
 
 <Warning>
 Do not commit `.ade/` wholesale. It contains machine-local paths and state. If your project needs shared ADE defaults later, use the project configuration flow rather than committing local secrets or runtime files.
@@ -50,7 +46,7 @@ You can skip any step and return to it from **Settings**.
 Create a lane before running your first agent. That keeps your primary checkout clean and gives the task its own branch and worktree.
 
 <CardGroup cols={2}>
-  <Card title="Create your first lane" icon="code-branch" href="/getting-started/first-lane">
+  <Card title="Your first task" icon="code-branch" href="/getting-started/first-task">
     Start isolated work for a small task.
   </Card>
   <Card title="Connect a provider" icon="plug" href="/getting-started/connect-provider">

@@ -1,0 +1,77 @@
+---
+title: "Subagents"
+description: "Delegate work inside one provider, or hand it to another provider entirely — with the parent staying in charge."
+icon: "users"
+---
+
+A subagent is an agent another agent started. ADE supports two kinds, and they differ in who owns the orchestration:
+
+| | **Provider-native** | **ADE child chat** |
+|---|---|---|
+| Started by | The provider's own subagent tool | `ade new chat`, or the parent's shell |
+| Same provider? | Always | No — any of ADE's providers |
+| Visible as | Nested transcript entries | A real Work session with its own row |
+| Reports to parent | Provider-managed | ADE-managed wake and summary |
+| Survives a client restart | Provider-dependent | Yes — it is a normal persisted chat |
+
+Most work uses one kind. The interesting cases use both.
+
+<Frame caption="A Claude parent delegates to GPT, Claude Haiku, and DeepSeek at once; each child reports back into the parent.">
+  <img src="/assets/readme/machines.gif" alt="Three subagents reporting back into one parent chat" />
+</Frame>
+
+## Provider-native subagents
+
+Claude Code has its own subagent tool. Codex has its own delegation. When a provider starts one of these, ADE does not intercept it — it normalizes the activity into the transcript and preserves the parent/child relationship.
+
+The result: nested tool activity you can expand, collapsed by default so a deep delegation does not bury the parent's work, and no second chat cluttering Work. This is the right choice for short, parallel research or a narrowly scoped edit.
+
+## ADE child chats
+
+An ADE child is a full session — its own lane-scoped context, its own tools, its own permissions — that records the parent it came from. Any chat can start one:
+
+```bash
+ade new chat --mode chat --lane auto --parent <session> --type subagent --prompt "Run the auth tests and report failures"
+```
+
+Two spawn types make the coordination contract explicit:
+
+- **`subagent`** — the parent needs the result. The child wakes the parent when it finishes, with a bounded summary, and the parent can join, read, or review the work.
+- **`peer`** — fire-and-forget. The child leaves a quiet completion note and never wakes the parent.
+
+The child can run a **different provider and model** from the parent. That is the cross-product case: a Claude parent can hand a mechanical refactor to a fast model, visual review to a model with vision, and a second opinion to a different vendor — then reconcile all three.
+
+<Note>
+The child is a normal agent, not a restricted helper. It gets the same runtime, tools, and permissions as any other chat in that lane. The spawn type is a coordination contract, not a permission ceiling.
+</Note>
+
+## What the parent sees
+
+- A **subagent panel** in Chat Info listing running and completed children.
+- A **card in the transcript** for each child, with its status and latest summary.
+- A **wake** when a `subagent` finishes, so the parent continues rather than polling.
+
+Demoting a subagent to a peer is an explicit action — from the composer banner, the session menu, or `ade chat demote`. Demoting stops the report channel; promoting restores it while the parent still exists. A later dispatch from the parent promotes a peer back automatically.
+
+## Choosing between them
+
+| Situation | Use |
+|---|---|
+| Short parallel research inside one provider | Provider-native |
+| Work that must survive a restart or be inspected on its own | ADE child |
+| A different model or vendor should do it | ADE child |
+| Fire-and-forget side task | ADE child with `--type peer` |
+| Deep, provider-specific delegation the runtime optimizes | Provider-native |
+
+<Tip>
+Give a subagent a narrow, verifiable job and tell it what to report. "Run the auth suite and list failures with file and line" produces a usable summary; "look into auth" produces a paragraph the parent has to re-check.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Multi-agent setup" icon="users" href="/guides/multi-agent-setup">
+    A worked setup for running several agents together.
+  </Card>
+  <Card title="Chat capabilities" icon="toolbox" href="/chat/capabilities">
+    What each agent can do inside its lane.
+  </Card>
+</CardGroup>

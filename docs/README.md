@@ -85,6 +85,10 @@ docs/
 
 ## Relationship to the public (Mintlify) docs
 
-`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./cto/`, `./sdk/`, etc.). That site is user-facing and separate. The **SDK** tab (`sdk/*.mdx`) is the public embedder docs for `@ade-dev/sdk` and `@ade-dev/chat-ui`; keep it in lockstep with `docs/features/sdk/` and the package READMEs when the contract changes.
+`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./concepts/`, `./sdk/`, etc.). That site is user-facing and separate. The **SDK** tab (`sdk/*.mdx`) is the public embedder docs for `@ade-dev/sdk` and `@ade-dev/chat-ui`; keep it in lockstep with `docs/features/sdk/` and the package READMEs when the contract changes.
+
+The public site is organized **task-first**: “I want to…” groups, then a Concepts layer (machines, lanes, work sessions, agents, tools, subagents), then Reference. It is deliberately not one page per feature. When adding a user-visible feature, prefer extending an existing area page over adding a new one.
+
+`docs-areas.json` at the repo root is the source-to-page ownership map. Every public page belongs to an area or to `shared`, and every area names the source trees that can make it wrong. `node scripts/docs-areas.mjs --changed --base <ref>` prints the pages a change can affect; the release skill runs it as its docs-drift gate. `node scripts/validate-docs.mjs` fails if a page has no owner or an area points at a missing page.
 
 **This folder (`docs/`) is internal-only** — for engineers and AI agents working on ADE itself.

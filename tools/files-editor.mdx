@@ -6,15 +6,6 @@ icon: "file-code"
 
 **Files** is ADE's review workbench: the place you read exactly what an agent changed, fix anything that's off, and turn a reviewed diff into a commit. It pairs a lane-scoped file tree and a full Monaco editor with diff and conflict views and a Git panel for staging, committing, stashing, and pushing — all without leaving the tab.
 
-<Columns cols={2}>
-  <Frame caption="The lane's file tree, editor, and diff in one pane.">
-    <img src="/media/landing/showcase/work-tools-files.webp" alt="Files review workbench inside ADE" />
-  </Frame>
-  <Frame caption="Stage, commit, stash, and push from the Git panel.">
-    <img src="/media/landing/showcase/work-tools-git.webp" alt="The Git panel inside ADE" />
-  </Frame>
-</Columns>
-
 ## What Files is for
 
 <CardGroup cols={3}>
@@ -41,8 +32,8 @@ The file tree is scoped to one **workspace** at a time. A workspace is a directo
 
 ADE shows the active workspace name prominently so you never edit the primary checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
 
-<Frame caption="Pick the lane whose changes you want to review.">
-  <img src="/media/features/files/choose-worktree.webp" alt="Choose the lane worktree to review in Files" />
+<Frame caption="Files: the active workspace, its file tree, and the open file with Preview or Source.">
+  <img src="/media/current/files.jpg" alt="The Files tab with a workspace tree and an open README" />
 </Frame>
 
 ## Read the diff
@@ -53,10 +44,6 @@ Open a changed file to inspect its hunks. Diffs come from a few sources — stag
 - **Raw** for the unified diff, where you want to read code line by line.
 
 The file tree itself carries Git status decorations, so changed, added, and deleted files are colored in place before you even open them.
-
-<Frame caption="Toggle a rendered preview or the raw diff.">
-  <img src="/media/features/files/preview-or-raw.webp" alt="Toggle between rendered preview and raw diff" />
-</Frame>
 
 ## Edit in Monaco
 
@@ -69,10 +56,6 @@ Read-only workspaces are enforced end to end: the editor opens read-only and the
 ## Stage, commit, and push
 
 The Git panel turns a reviewed diff into a commit. Stage related files together, write a message, stash or amend when you need to, and push the lane's branch — all from the same surface.
-
-<Frame caption="Stage, commit, and push from the Git panel.">
-  <img src="/media/features/git/git-actions.webp" alt="Stage, commit, and push from the Git panel" />
-</Frame>
 
 ## The review flow
 

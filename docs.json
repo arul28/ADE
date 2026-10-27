@@ -37,83 +37,65 @@
             "pages": [
               "welcome",
               "quickstart",
+              "getting-started/first-task",
               "key-concepts"
             ]
           },
           {
-            "group": "Setup",
+            "group": "Set up ADE",
             "icon": "flag-checkered",
             "pages": [
               "getting-started/install",
               "getting-started/connect-machine",
-              "getting-started/windows",
               "getting-started/connect-provider",
               "getting-started/open-project",
-              "getting-started/first-lane",
-              "getting-started/first-agent"
+              "getting-started/windows"
             ]
           },
           {
-            "group": "Lanes",
-            "icon": "code-branch",
+            "group": "Work on several things",
+            "icon": "layer-group",
             "pages": [
               "lanes/overview",
-              "lanes/repos-and-worktrees",
               "lanes/creating",
               "lanes/stacks",
-              "lanes/environment"
-            ]
-          },
-          {
-            "group": "Agent chat",
-            "icon": "comments",
-            "pages": [
-              "chat/overview",
-              "chat/capabilities",
-              "chat/grid",
-              "chat/context",
+              "lanes/environment",
               "guides/multi-agent-setup"
             ]
           },
           {
-            "group": "Work surfaces",
-            "icon": "window-restore",
+            "group": "Give agents context and tools",
+            "icon": "toolbox",
             "pages": [
+              "chat/overview",
+              "chat/capabilities",
+              "chat/context",
               "tools/files-editor",
               "tools/terminals",
-              "tools/browser",
-              "tools/ios-simulator"
+              "tools/browser"
             ]
           },
           {
-            "group": "Review & ship",
+            "group": "Review and ship",
             "icon": "code-pull-request",
             "pages": [
               "tools/pull-requests",
-              "guides/stacked-prs",
               "tools/conflicts",
               "tools/history"
             ]
           },
           {
-            "group": "CTO & automation",
-            "icon": "crown",
+            "group": "Work across machines",
+            "icon": "mobile-screen",
             "pages": [
-              "cto/overview",
-              "cto/setup",
-              "tools/automations"
+              "tools/remote-machines",
+              "tools/ios-companion",
+              "tools/ios-simulator",
+              "tools/ade-code"
             ]
           },
           {
-            "group": "Integrations",
-            "icon": "plug",
-            "pages": [
-              "integrations/github",
-              "integrations/linear"
-            ]
-          },
-          {
-            "group": "Proof & computer use",
+            "group": "Capture proof",
             "icon": "camera",
             "pages": [
               "computer-use/overview",
@@ -123,13 +105,48 @@
             ]
           },
           {
-            "group": "Mobile & terminal",
-            "icon": "mobile-screen",
+            "group": "Automate and operate",
+            "icon": "robot",
             "pages": [
-              "tools/ios-companion",
-              "tools/ade-relay",
-              "tools/ade-code",
-              "tools/remote-machines"
+              "tools/automations",
+              "cto/overview",
+              "cto/setup",
+              "integrations/linear",
+              "integrations/github"
+            ]
+          },
+          {
+            "group": "Configure and secure",
+            "icon": "sliders",
+            "pages": [
+              "configuration/overview",
+              "configuration/settings",
+              "configuration/permissions",
+              "configuration/ai-providers",
+              "ai-tools/claude-code",
+              "ai-tools/cursor",
+              "ai-tools/windsurf"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "icon": "lightbulb",
+            "pages": [
+              "concepts/machines-and-clients",
+              "concepts/lanes",
+              "concepts/work-sessions",
+              "concepts/agents-and-models",
+              "concepts/tools",
+              "concepts/subagents"
+            ]
+          },
+          {
+            "group": "Reference",
+            "icon": "code",
+            "pages": [
+              "reference/cli",
+              "architecture",
+              "reference/troubleshooting"
             ]
           }
         ]
@@ -169,42 +186,9 @@
             "icon": "code",
             "pages": [
               "sdk/reference",
+              "sdk/api",
+              "sdk/types",
               "sdk/license"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Settings & dev guide",
-        "icon": "sliders",
-        "groups": [
-          {
-            "group": "Settings",
-            "icon": "gear",
-            "expanded": true,
-            "pages": [
-              "configuration/settings",
-              "configuration/permissions",
-              "configuration/overview"
-            ]
-          },
-          {
-            "group": "AI Connections",
-            "icon": "brain",
-            "pages": [
-              "configuration/ai-providers",
-              "ai-tools/claude-code",
-              "ai-tools/cursor",
-              "ai-tools/windsurf"
-            ]
-          },
-          {
-            "group": "For developers",
-            "icon": "code",
-            "pages": [
-              "reference/cli",
-              "architecture",
-              "reference/troubleshooting"
             ]
           }
         ]
@@ -219,160 +203,14 @@
             "expanded": true,
             "pages": [
               "changelog",
-              "changelog/v1.2.123",
-              "changelog/v1.2.122",
-              "changelog/v1.2.121",
-              "changelog/v1.2.120",
-              "changelog/v1.2.119",
-              "changelog/v1.2.118",
-              "changelog/v1.2.117",
-              "changelog/v1.2.116",
-              "changelog/v1.2.115",
-              "changelog/v1.2.114",
-              "changelog/v1.2.113",
-              "changelog/v1.2.112",
-              "changelog/v1.2.111",
-              "changelog/v1.2.110",
-              "changelog/v1.2.109",
-              "changelog/v1.2.108",
-              "changelog/v1.2.107",
-              "changelog/v1.2.106",
-              "changelog/v1.2.105",
-              "changelog/v1.2.104",
-              "changelog/v1.2.103",
-              "changelog/v1.2.102",
-              "changelog/v1.2.101",
-              "changelog/v1.2.100",
-              "changelog/v1.2.99",
-              "changelog/v1.2.98",
-              "changelog/v1.2.97",
-              "changelog/v1.2.96",
-              "changelog/v1.2.95",
-              "changelog/v1.2.94",
-              "changelog/v1.2.93",
-              "changelog/v1.2.92",
-              "changelog/v1.2.91",
-              "changelog/v1.2.90",
-              "changelog/v1.2.89",
-              "changelog/v1.2.88",
-              "changelog/v1.2.87",
-              "changelog/v1.2.86",
-              "changelog/v1.2.85",
-              "changelog/v1.2.84",
-              "changelog/v1.2.83",
-              "changelog/v1.2.82",
-              "changelog/v1.2.81",
-              "changelog/v1.2.80",
-              "changelog/v1.2.79",
-              "changelog/v1.2.78",
-              "changelog/v1.2.77",
-              "changelog/v1.2.76",
-              "changelog/v1.2.75",
-              "changelog/v1.2.74",
-              "changelog/v1.2.73",
-              "changelog/v1.2.72",
-              "changelog/v1.2.71",
-              "changelog/v1.2.70",
-              "changelog/v1.2.69",
-              "changelog/v1.2.68",
-              "changelog/v1.2.67",
-              "changelog/v1.2.66",
-              "changelog/v1.2.65",
-              "changelog/v1.2.64",
-              "changelog/v1.2.63",
-              "changelog/v1.2.62",
-              "changelog/v1.2.61",
-              "changelog/v1.2.60",
-              "changelog/v1.2.59",
-              "changelog/v1.2.58",
-              "changelog/v1.2.57",
-              "changelog/v1.2.56",
-              "changelog/v1.2.55",
-              "changelog/v1.2.54",
-              "changelog/v1.2.53",
-              "changelog/v1.2.52",
-              "changelog/v1.2.51",
-              "changelog/v1.2.50",
-              "changelog/v1.2.49",
-              "changelog/v1.2.48",
-              "changelog/v1.2.47",
-              "changelog/v1.2.46",
-              "changelog/v1.2.45",
-              "changelog/v1.2.44",
-              "changelog/v1.2.43",
-              "changelog/v1.2.42",
-              "changelog/v1.2.41",
-              "changelog/v1.2.40",
-              "changelog/v1.2.39",
-              "changelog/v1.2.38",
-              "changelog/v1.2.37",
-              "changelog/v1.2.36",
-              "changelog/v1.2.35",
-              "changelog/v1.2.34",
-              "changelog/v1.2.33",
-              "changelog/v1.2.32",
-              "changelog/v1.2.31",
-              "changelog/v1.2.30",
-              "changelog/v1.2.29",
-              "changelog/v1.2.28",
-              "changelog/v1.2.27",
-              "changelog/v1.2.26",
-              "changelog/v1.2.25",
-              "changelog/v1.2.24",
-              "changelog/v1.2.23",
-              "changelog/v1.2.22",
-              "changelog/v1.2.21",
-              "changelog/v1.2.20",
-              "changelog/v1.2.19",
-              "changelog/v1.2.18",
-              "changelog/v1.2.17",
-              "changelog/v1.2.16",
-              "changelog/v1.2.15",
-              "changelog/v1.2.14",
-              "changelog/v1.2.13",
-              "changelog/v1.2.12",
-              "changelog/v1.2.11",
-              "changelog/v1.2.10",
-              "changelog/v1.2.9",
-              "changelog/v1.2.8",
-              "changelog/v1.2.7",
-              "changelog/v1.2.6",
-              "changelog/v1.2.5",
-              "changelog/v1.2.4",
-              "changelog/v1.2.3",
-              "changelog/v1.2.2",
-              "changelog/v1.2.1",
-              "changelog/v1.2.0",
-              "changelog/v1.1.12",
-              "changelog/v1.1.11",
-              "changelog/v1.1.10",
-              "changelog/v1.1.9",
-              "changelog/v1.1.8",
-              "changelog/v1.1.7",
-              "changelog/v1.1.6",
-              "changelog/v1.1.5",
-              "changelog/v1.1.4",
-              "changelog/v1.1.3",
-              "changelog/v1.1.2",
-              "changelog/v1.1.0",
-              "changelog/v1.0.19",
-              "changelog/v1.0.18",
-              "changelog/v1.0.17",
-              "changelog/v1.0.16",
-              "changelog/v1.0.15",
-              "changelog/v1.0.14",
-              "changelog/v1.0.13",
-              "changelog/v1.0.12",
-              "changelog/v1.0.11",
-              "changelog/v1.0.10",
-              "changelog/v1.0.8",
-              "changelog/v1.0.7",
-              "changelog/v1.0.6",
-              "changelog/v1.0.4",
-              "changelog/v1.0.3",
-              "changelog/v1.0.2",
-              "changelog/v1.0.1",
-              "changelog/v1.0.0"
+              "changelog/2026-10",
+              "changelog/2026-09",
+              "changelog/2026-08",
+              "changelog/2026-07",
+              "changelog/2026-06",
+              "changelog/2026-05",
+              "changelog/2026-04",
+              "changelog/2026-03"
             ]
           }
         ]
@@ -426,29 +264,88 @@
       {
         "header": "Product",
         "items": [
-          { "label": "Download", "href": "https://ade-app.dev" },
-          { "label": "Download for iOS", "href": "https://testflight.apple.com/join/ZSdJGKPy" },
-          { "label": "Lanes", "href": "/lanes/overview" },
-          { "label": "SDK", "href": "/sdk/overview" },
-          { "label": "Changelog", "href": "/changelog" }
+          {
+            "label": "Download",
+            "href": "https://ade-app.dev"
+          },
+          {
+            "label": "Download for iOS",
+            "href": "https://testflight.apple.com/join/ZSdJGKPy"
+          },
+          {
+            "label": "Lanes",
+            "href": "/lanes/overview"
+          },
+          {
+            "label": "SDK",
+            "href": "/sdk/overview"
+          },
+          {
+            "label": "Changelog",
+            "href": "/changelog"
+          }
         ]
       },
       {
         "header": "Get started",
         "items": [
-          { "label": "Welcome", "href": "/welcome" },
-          { "label": "Quickstart", "href": "/quickstart" },
-          { "label": "Key concepts", "href": "/key-concepts" },
-          { "label": "Embed ADE chat", "href": "/sdk/overview" }
+          {
+            "label": "Welcome",
+            "href": "/welcome"
+          },
+          {
+            "label": "Quickstart",
+            "href": "/quickstart"
+          },
+          {
+            "label": "Key concepts",
+            "href": "/key-concepts"
+          },
+          {
+            "label": "Embed ADE chat",
+            "href": "/sdk/overview"
+          }
         ]
       },
       {
         "header": "Community",
         "items": [
-          { "label": "GitHub", "href": "https://github.com/arul28/ADE" },
-          { "label": "Twitter", "href": "https://x.com/ade_dev" }
+          {
+            "label": "GitHub",
+            "href": "https://github.com/arul28/ADE"
+          },
+          {
+            "label": "Twitter",
+            "href": "https://x.com/ade_dev"
+          }
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "source": "/lanes/repos-and-worktrees",
+      "destination": "/lanes/overview"
+    },
+    {
+      "source": "/guides/stacked-prs",
+      "destination": "/lanes/stacks"
+    },
+    {
+      "source": "/chat/grid",
+      "destination": "/guides/multi-agent-setup"
+    },
+    {
+      "source": "/tools/ade-relay",
+      "destination": "/tools/remote-machines"
+    },
+    {
+      "source": "/getting-started/first-lane",
+      "destination": "/getting-started/first-task"
+    },
+    {
+      "source": "/getting-started/first-agent",
+      "destination": "/getting-started/first-task"
+    }
+  ]
 }

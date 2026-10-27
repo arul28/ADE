@@ -1,0 +1,72 @@
+---
+title: "Agents and models"
+description: "A provider is the agent runtime. A model is what that runtime thinks with. ADE keeps the two choices separate."
+icon: "robot"
+---
+
+ADE does not ship its own coding agent. It runs **provider** runtimes — the same CLIs and SDKs you already use — and gives them a shared workspace.
+
+## Providers
+
+A provider is an agent runtime with its own tool loop, prompt, and authentication. ADE drives thirteen:
+
+| Provider | Runtime | Credential |
+|---|---|---|
+| **Claude Code** | Anthropic's Claude Agent SDK | Claude subscription or Anthropic API key |
+| **Codex** | OpenAI's `codex` app-server | ChatGPT plan or OpenAI API key |
+| **Muse Code** | Meta's Muse runtime | Muse account |
+| **Cursor** | Cursor's official SDK | Cursor account |
+| **Factory Droid** | Factory's `droid` CLI | Factory account |
+| **OpenCode** | The OpenCode server | OpenCode plan, provider keys, or local models |
+| **Pi** | ADE's pinned Pi runtime | Any provider Pi can sign in to |
+| **GitHub Copilot** | Copilot runtime | GitHub Copilot |
+| **Qwen** | Agent Client Protocol | Qwen account |
+| **Kimi** | Agent Client Protocol | Moonshot account |
+| **Grok** | Agent Client Protocol | xAI account |
+| **Devin** | Agent Client Protocol | Devin account |
+| **Antigravity** | Agent Client Protocol | Antigravity account |
+
+The five ACP providers share one host and one session-config shape. The rest each have their own adapter.
+
+<Note>
+ADE downloads its own pinned copy of each runtime for the machine that runs the chat, the first time it is needed. It never runs an agent CLI from your `PATH`. Model calls go from your machine to the provider, not through ADE.
+</Note>
+
+## Models
+
+A model is selected per session, not per project. You can switch models inside the same provider mid-session, and start a different session on a different model in the same lane.
+
+That is the point of separating the two: the agent runtime decides *how* work happens, the model decides *how well* it reasons, and neither choice locks the other.
+
+<Frame caption="The composer carries the session's model, permission mode, and reasoning effort.">
+  <img src="/assets/readme/compose.gif" alt="Choosing a model and permission mode in the ADE composer" />
+</Frame>
+
+## Credentials and cost
+
+Every turn is priced against what actually paid for it: a subscription plan, an API key, or a local model at zero cost. ADE's usage surfaces report by account, so a mixed setup stays legible.
+
+You can mix credentials freely — a Claude subscription for chat, an API key for a cheaper model on a side task, a local model through Ollama for offline work.
+
+## Harnesses and routes
+
+A **harness** is a saved setup: a provider, a model, a credential, and optional runtime flags. Routes let a launch pick a harness without repeating the configuration. Use them when you routinely start the same kind of session — a fast model for triage, a strong one for refactors, a specific account for a shared machine.
+
+## Skills
+
+Agents can load **Agent Skills** — packaged instructions for a task. ADE injects the skill roots and the guidance to read them on demand, so a session can follow a project's own procedures without you pasting them into the prompt.
+
+<CardGroup cols={2}>
+  <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
+    Connect subscriptions, keys, and local models.
+  </Card>
+  <Card title="Provider setup" icon="plug" href="/getting-started/connect-provider">
+    The first-run path for one working provider.
+  </Card>
+  <Card title="Chat capabilities" icon="toolbox" href="/chat/capabilities">
+    What an agent can do inside a lane.
+  </Card>
+  <Card title="Subagents" icon="users" href="/concepts/subagents">
+    Delegating work to the same provider or a different one.
+  </Card>
+</CardGroup>

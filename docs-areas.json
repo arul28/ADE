@@ -1,0 +1,266 @@
+{
+  "$comment": "Source-to-page ownership map for the public docs. The release skill uses it to decide which pages a change can affect. Every area page must exist; every source glob must match at least one file; every public page must be owned by an area or listed in shared.",
+  "areas": [
+    {
+      "id": "machines-and-clients",
+      "title": "Machines and clients",
+      "sources": [
+        "apps/desktop/src/main/services/remoteRuntime/**",
+        "apps/desktop/src/main/services/localRuntime/**",
+        "apps/desktop/src/main/services/account/**",
+        "apps/ade-cli/src/services/account/**"
+      ],
+      "pages": [
+        "concepts/machines-and-clients",
+        "getting-started/install",
+        "getting-started/connect-machine",
+        "getting-started/windows"
+      ]
+    },
+    {
+      "id": "lanes",
+      "title": "Lanes",
+      "sources": [
+        "apps/desktop/src/main/services/lanes/**",
+        "apps/desktop/src/renderer/components/lanes/**"
+      ],
+      "pages": [
+        "concepts/lanes",
+        "lanes/overview",
+        "lanes/creating",
+        "lanes/stacks",
+        "lanes/environment"
+      ]
+    },
+    {
+      "id": "chat",
+      "title": "Chat and work sessions",
+      "sources": [
+        "apps/desktop/src/main/services/chat/**",
+        "apps/desktop/src/renderer/components/chat/**",
+        "apps/desktop/src/renderer/components/work/**"
+      ],
+      "pages": [
+        "concepts/work-sessions",
+        "chat/overview",
+        "chat/capabilities",
+        "chat/context"
+      ]
+    },
+    {
+      "id": "providers-and-models",
+      "title": "Agents, providers, and models",
+      "sources": [
+        "apps/desktop/src/main/services/ai/**",
+        "apps/desktop/src/main/services/providerAccounts/**",
+        "apps/desktop/src/shared/modelCatalog.ts",
+        "apps/desktop/src/shared/routerRegistry.ts"
+      ],
+      "pages": [
+        "concepts/agents-and-models",
+        "configuration/ai-providers",
+        "getting-started/connect-provider",
+        "ai-tools/claude-code",
+        "ai-tools/cursor",
+        "ai-tools/windsurf"
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "Tools and surfaces",
+      "sources": [
+        "apps/desktop/src/main/services/ai/tools/**",
+        "apps/desktop/src/main/services/builtInBrowser/**",
+        "apps/desktop/src/renderer/components/browser/**"
+      ],
+      "pages": [
+        "concepts/tools",
+        "tools/browser"
+      ]
+    },
+    {
+      "id": "subagents",
+      "title": "Subagents and delegation",
+      "sources": [
+        "apps/desktop/src/main/services/chat/spawnMissionOwnership.ts",
+        "apps/desktop/src/main/services/chat/ctoTurnContext.ts",
+        "apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts"
+      ],
+      "pages": [
+        "concepts/subagents",
+        "guides/multi-agent-setup"
+      ]
+    },
+    {
+      "id": "files-and-editor",
+      "title": "Files and editor",
+      "sources": [
+        "apps/desktop/src/main/services/files/**",
+        "apps/desktop/src/main/services/editors/**",
+        "apps/desktop/src/main/services/diffs/**",
+        "apps/desktop/src/main/services/search/**",
+        "apps/desktop/src/renderer/components/files/**"
+      ],
+      "pages": [
+        "tools/files-editor"
+      ]
+    },
+    {
+      "id": "terminals",
+      "title": "Terminals",
+      "sources": [
+        "apps/desktop/src/main/services/pty/**",
+        "apps/desktop/src/main/services/sessions/**",
+        "apps/desktop/src/renderer/components/terminals/**"
+      ],
+      "pages": [
+        "tools/terminals"
+      ]
+    },
+    {
+      "id": "prs-and-git",
+      "title": "Git and pull requests",
+      "sources": [
+        "apps/desktop/src/main/services/prs/**",
+        "apps/desktop/src/main/services/git/**",
+        "apps/desktop/src/main/services/conflicts/**",
+        "apps/desktop/src/renderer/components/prs/**",
+        "apps/desktop/src/renderer/components/github/**"
+      ],
+      "pages": [
+        "tools/pull-requests",
+        "tools/conflicts"
+      ]
+    },
+    {
+      "id": "history",
+      "title": "History",
+      "sources": [
+        "apps/desktop/src/main/services/history/**",
+        "apps/desktop/src/renderer/components/history/**"
+      ],
+      "pages": [
+        "tools/history"
+      ]
+    },
+    {
+      "id": "computer-use",
+      "title": "Computer use and proof",
+      "sources": [
+        "apps/desktop/src/main/services/computerUse/**",
+        "apps/desktop/src/main/services/capture/**",
+        "apps/desktop/src/main/services/appControl/**",
+        "apps/desktop/src/main/services/macDesktop/**",
+        "apps/desktop/src/main/services/windowsDesktop/**"
+      ],
+      "pages": [
+        "computer-use/overview",
+        "computer-use/setup",
+        "computer-use/proofs",
+        "computer-use/config"
+      ]
+    },
+    {
+      "id": "automations",
+      "title": "Automations",
+      "sources": [
+        "apps/desktop/src/main/services/automations/**",
+        "apps/desktop/src/renderer/components/automations/**"
+      ],
+      "pages": [
+        "tools/automations"
+      ]
+    },
+    {
+      "id": "cto",
+      "title": "CTO",
+      "sources": [
+        "apps/desktop/src/main/services/cto/**",
+        "apps/desktop/src/renderer/components/cto/**"
+      ],
+      "pages": [
+        "cto/overview",
+        "cto/setup"
+      ]
+    },
+    {
+      "id": "integrations",
+      "title": "Integrations",
+      "sources": [
+        "apps/desktop/src/main/services/cto/linear*.ts",
+        "apps/desktop/src/main/services/github/**",
+        "apps/desktop/src/main/services/issueTrackers/**"
+      ],
+      "pages": [
+        "integrations/linear",
+        "integrations/github"
+      ]
+    },
+    {
+      "id": "mobile-and-clients",
+      "title": "Mobile, terminal, and web clients",
+      "sources": [
+        "apps/ios/**",
+        "apps/web/**",
+        "apps/ade-cli/src/tuiClient/**"
+      ],
+      "pages": [
+        "tools/ios-companion",
+        "tools/ios-simulator",
+        "tools/ade-code",
+        "tools/remote-machines"
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "Settings and permissions",
+      "sources": [
+        "apps/desktop/src/main/services/config/**",
+        "apps/desktop/src/shared/settingsManifest.ts",
+        "apps/desktop/src/renderer/components/settings/**"
+      ],
+      "pages": [
+        "configuration/overview",
+        "configuration/settings",
+        "configuration/permissions"
+      ]
+    },
+    {
+      "id": "sdk",
+      "title": "SDK",
+      "sources": [
+        "packages/sdk/**",
+        "packages/chat-ui/**"
+      ],
+      "pages": [
+        "sdk/overview",
+        "sdk/install",
+        "sdk/quickstart",
+        "sdk/threads",
+        "sdk/mcp",
+        "sdk/permissions",
+        "sdk/chat-ui",
+        "sdk/electron",
+        "sdk/runtime",
+        "sdk/bundling",
+        "sdk/reference",
+        "sdk/license",
+        "sdk/api",
+        "sdk/types",
+        "sdk/accounts",
+        "sdk/server",
+        "sdk/testing"
+      ]
+    }
+  ],
+  "shared": [
+    "architecture",
+    "getting-started/first-task",
+    "getting-started/open-project",
+    "key-concepts",
+    "quickstart",
+    "reference/cli",
+    "reference/troubleshooting",
+    "welcome"
+  ]
+}

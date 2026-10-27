@@ -1,0 +1,105 @@
+---
+title: "Your first task"
+description: "Create a lane, start an agent, watch the tool calls, and review the diff."
+icon: "rocket"
+---
+
+This is the shortest path from an open repository to a reviewed change. It assumes ADE is installed and at least one provider is connected — see [Set up ADE](/getting-started/install) and [Connect a provider](/getting-started/connect-provider).
+
+<Frame caption="The Work tab: lanes on the left, the active chat and composer on the right.">
+  <img src="/assets/readme/start.gif" alt="ADE's Work tab with lanes and the composer" />
+</Frame>
+
+## 1. Create a lane
+
+A **lane** is ADE's name for a git worktree: an isolated branch and working copy for one task. It keeps agent work out of your primary checkout, so you can run several tasks in parallel without colliding.
+
+<Note>
+Your repo root is already the **primary lane** — it always exists and is edit-protected. You don't pick a "lane type"; you add a new worktree lane for the task, branched off your default branch.
+</Note>
+
+<Steps>
+  <Step title="Open Lanes">
+    Choose **Lanes** from the sidebar.
+  </Step>
+  <Step title="Click New lane">
+    Click the **+** above the lane list. Give it a short task name, like `add-health-endpoint` or `fix-login-copy`.
+  </Step>
+  <Step title="Pick the base branch">
+    For your first lane, use your default branch — usually `main`.
+  </Step>
+  <Step title="Create">
+    ADE creates a Git worktree under `.ade/worktrees/` and checks out a branch for the lane.
+  </Step>
+</Steps>
+
+### Or let ADE create it
+
+Describe a task in chat and ADE spins up a fresh worktree, auto-named from the task — no stashing, no context switch.
+
+<Frame caption="A lane with its branch, open PR, CI state, and the chat that produced it.">
+  <img src="/media/current/lanes.jpg" alt="A lane selected in the Lanes tab" />
+</Frame>
+
+### Good lane names
+
+| Good | Avoid |
+|------|-------|
+| `add-health-endpoint` | `test` |
+| `fix-auth-redirect` | `agent-work` |
+| `linear-eng-142` | `new-branch` |
+
+## 2. Start the chat
+
+<Steps>
+  <Step title="Open a new chat">
+    In **Work**, start a new chat in your lane. You can also let ADE create the lane from the prompt.
+  </Step>
+  <Step title="Pick a provider and model">
+    Use the default, or choose any connected provider from the model selector. Thirteen runtimes are supported; see [Agents and models](/concepts/agents-and-models).
+  </Step>
+  <Step title="Send a narrow task">
+    Ask for one contained change. Skip broad prompts like "clean up the whole app" for your first run.
+  </Step>
+</Steps>
+
+## 3. Watch, review, and commit
+
+The transcript streams reads, edits, shell commands, and test output as the agent works. Every tool call is expandable, so you can inspect each edit before you trust it.
+
+When the agent finishes:
+
+- Open **Files** and read the diff.
+- Run the relevant checks from **Run** or the terminal.
+- Read the closeout summary.
+- Commit, or open a pull request if the change should be reviewed.
+
+## First prompt
+
+```text
+Add a GET /health endpoint that returns { "status": "ok" } and add one test for it.
+```
+
+## If the agent gets stuck
+
+<AccordionGroup>
+  <Accordion title="Unstick a run" icon="triangle-exclamation">
+    - Press **Stop** and ask for a shorter plan.
+    - Paste the exact test or build error back into the chat.
+    - Switch to a stronger model for the session.
+    - Keep the task inside the lane — don't move it to your primary checkout.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+Your first successful session should be one lane, one agent, one narrow change, and one review pass. Build from there.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    How chats, providers, and tool calls work.
+  </Card>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Open a PR once the lane is ready.
+  </Card>
+</CardGroup>

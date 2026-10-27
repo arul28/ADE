@@ -7,7 +7,7 @@ icon: "plus"
 Your repo root is always the **primary lane** — it exists from the moment you open the project, and it can't be deleted or restacked. Every *other* lane is a git worktree you create for a single task, isolated under `.ade/worktrees/`. You never pick a "lane type"; what varies is **how** you bring the new lane into being.
 
 <Frame caption="Start a new lane from the Lanes view.">
-  <img src="/media/features/worktrees/new-lane-button.webp" alt="The New lane button in the Lanes view" />
+  <img src="/media/current/lanes.jpg" alt="The New lane button in the Lanes view" />
 </Frame>
 
 ## The four ways to create a lane
@@ -50,10 +50,6 @@ This is the default path. Open the **New lane** dialog, name the task, and choos
 Press **Enter** in the name field to create the lane. **⌘ Enter** (Ctrl+Enter on Windows and Linux) creates it from anywhere in the dialog.
 </Tip>
 
-<Frame caption="Name the lane and choose what to branch from.">
-  <img src="/media/features/worktrees/new-lane-options.webp" alt="Naming a lane and choosing its base branch" />
-</Frame>
-
 <Note>
 Every branch or lane choice opens an inline popover above the form. The popover has a search field and a list. Each row shows the branch name, its last commit message, author, and age, plus a **current** tag on the checked-out branch and a **PR pill** (`#NNN`, with *draft* added for draft pull requests) when the branch has an open pull request. Search accepts free text plus `pr:open`, `pr:none`, `mine` (or `author:me`), `stale:30d`, and a PR number such as `#812`. Pressing Enter in the search field picks the top row.
 </Note>
@@ -68,8 +64,6 @@ The three modes sit under the name field, and each has a tooltip that explains i
 ### Auto-create from a task or Linear issue
 
 You don't have to fill in the dialog by hand. Hand ADE a task — or attach a Linear issue — and it derives the branch name, names the lane, and attaches the issue as context so the agent starts with the right spec.
-
-<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/autocreateLane.mp4"></video>
 
 <Tip>
 Attaching a Linear issue derives the branch name from the issue identifier and title (`IDENT-title-slug`), or uses Linear's own branch name when it provides one. If that branch already exists locally or on the remote, the issue card warns and **Create lane** stays disabled until you detach the issue, so you don't accidentally collide with existing work.
@@ -107,20 +101,12 @@ In the **History** tab, the **Create lane here** action on any commit branches a
 
 Open a lane's manage dialog to change it once work is underway or done.
 
-<Frame caption="Open a lane's manage actions.">
-  <img src="/media/features/worktrees/manage-lane-button.webp" alt="The manage button on an existing lane" />
-</Frame>
-
 | Action | Use it when |
 |--------|-------------|
 | **Rename** | The task name is unclear. This updates ADE's lane metadata. |
 | **Recolor** | You want a different accent dot. Colors already used by other active lanes are disabled. |
 | **Archive** | The work may matter later but should leave the active list. The worktree stays on disk and **unarchive** brings it back. |
 | **Delete** | The lane is done. This tears the lane down — see below. |
-
-<Frame caption="Rename, recolor, archive, or delete from the manage dialog.">
-  <img src="/media/features/worktrees/manage-lane-options.webp" alt="The rename, archive, and delete options for a lane" />
-</Frame>
 
 ### What delete tears down
 
