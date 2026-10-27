@@ -2033,11 +2033,16 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
  * live-PR lane (Quiet, shown with a "↳ parent" hint because its parent sits in
  * another group). The Done lane's merged PR is added in `mockLiveLanePrs`.
  */
+/** Lanes opened from another repo's PR are named `<repo>/<ref>`; keep them out of the demo picks. */
+function isImportedPrLane(lane: any): boolean {
+  return String(lane.name ?? "").includes("/");
+}
+
 const MOCK_SIDEBAR_DONE_LANE_ID = "mock-sidebar-done";
 function mockSidebarGroupLanes(realLanes: any[]): any[] {
   const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
   const liveParent = realLanes.find(
-    (lane: any) => lane.laneType !== "primary" && !String(lane.name ?? "").startsWith("t3code/"),
+    (lane: any) => lane.laneType !== "primary" && !isImportedPrLane(lane),
   );
   const primaryId = realLanes.find((lane: any) => lane.laneType === "primary")?.id ?? null;
   const withCommit = (lane: any, lastCommitAt: string, behind = 0) => ({
@@ -3127,7 +3132,7 @@ const ADE_DB_SNAPSHOT_PR_LANES = new Set<string>(
 
 function mockLiveLanePrs(): any[] {
   const lanes = MOCK_LANES.filter(
-    (lane: any) => lane.laneType !== "primary" && !String(lane.name ?? "").startsWith("t3code/"),
+    (lane: any) => lane.laneType !== "primary" && !isImportedPrLane(lane),
   ).slice(0, 3);
   const looks = [
     { state: "open", checksStatus: "failing", reviewStatus: "changes_requested", mergeConflicts: true, additions: 412, deletions: 96 },

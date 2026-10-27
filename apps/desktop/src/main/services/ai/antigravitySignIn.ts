@@ -105,7 +105,7 @@ function browserMethod(method: AntigravityAuthMethod): boolean {
 /**
  * Google's sign-in URL as the agent printed it. Accepted only when it is the
  * real Google endpoint and names one `state` and a loopback `redirect_uri`
- * on an unprivileged port (T3 Code's checks).
+ * on an unprivileged port.
  */
 export function parseAntigravityAuthorizationUrl(raw: string): { url: string; pending: PendingRedirect } | null {
   if (raw.length > MAX_URL_LENGTH || /\s/.test(raw)) return null;

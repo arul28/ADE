@@ -43,14 +43,14 @@ describe("selectLanePrs branch drift", () => {
   it("shows both the drifted checkout's PR and the recorded branch's owned PR", () => {
     const lane = makeLane({
       id: "lane-1",
-      branchRef: "t3code/6fcd8d4a",
+      branchRef: "feature/6fcd8d4a",
       branchDrift: {
-        expectedBranchRef: "t3code/6fcd8d4a",
-        headBranchRef: "t3code/web-render-local-dev",
+        expectedBranchRef: "feature/6fcd8d4a",
+        headBranchRef: "feature/web-render-local-dev",
       },
     });
-    const live = makePr({ id: "pr-live", laneId: "lane-1", headBranch: "t3code/web-render-local-dev" });
-    const recorded = makePr({ id: "pr-recorded", laneId: "lane-1", headBranch: "t3code/6fcd8d4a" });
+    const live = makePr({ id: "pr-live", laneId: "lane-1", headBranch: "feature/web-render-local-dev" });
+    const recorded = makePr({ id: "pr-recorded", laneId: "lane-1", headBranch: "feature/6fcd8d4a" });
 
     // Drift means the checkout moved; the lane still records its branch, so the
     // recorded branch's own PR stays the lane's work instead of disappearing.

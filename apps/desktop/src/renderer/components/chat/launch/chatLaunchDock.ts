@@ -3,7 +3,7 @@ import { latestAppResourcePressureLevel } from "../../../lib/resourcePressure";
 import { applyViewportOverlayHostStyle, createViewportOverlayHost } from "../../ui/ViewportOverlayHost";
 
 /**
- * T3-style send handoff for the first message of a new chat.
+ * Send handoff for the first message of a new chat.
  *
  * The draft composer sits centered on the empty chat surface; the chat it
  * starts docks its composer at the bottom of the thread. Right before the view

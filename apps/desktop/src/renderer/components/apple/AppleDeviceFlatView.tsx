@@ -1,8 +1,9 @@
-// Ported from t3code apps/web/src/components/device/DeviceStreamView.tsx
-// (MIT, T3 Tools Inc.) — the fit rule, the normalise-against-the-drawn-frame
-// pointer mapping, keyboard forwarding from a focused `role="application"`
-// surface, and (round 5 §V1) the `rotation`/`sideways` handling that draws the
-// raw PORTRAIT framebuffer inside a transposed landscape box.
+// Portions adapted from T3 Code (https://github.com/pingdotgg/t3code),
+// MIT License, Copyright (c) 2026 T3 Tools Inc. See NOTICE.
+// Adapted: the fit rule, the normalise-against-the-drawn-frame pointer
+// mapping, keyboard forwarding from a focused `role="application"` surface,
+// and (round 5 §V1) the `rotation`/`sideways` handling that draws the raw
+// PORTRAIT framebuffer inside a transposed landscape box.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from "react";
 import type { AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
 import { cn } from "../ui/cn";
@@ -171,10 +172,10 @@ export type AppleScreenRotation = 0 | 90 | 180 | -90;
 /**
  * How far to turn the frame for a device in `orientation`.
  *
- * Ported from t3code's `DeviceStreamView.tsx` `rotation` memo. The helper
+ * Adapted (see the file header). The helper
  * encodes the simulator's raw framebuffer, and a rotated iOS device keeps the
  * SAME portrait framebuffer and draws its landscape UI sideways inside it — so
- * the picture is turned here, in the viewer, exactly as t3code turns it.
+ * the picture is turned here, in the viewer.
  *
  * A frame that already arrives landscape is not turned: that is a helper that
  * has rotated for us, and turning it again would put the picture back on its
@@ -225,7 +226,7 @@ export function appleRotatedSize<T extends { width: number; height: number }>(
 /**
  * Where to put the raw frame so it fills `box` once it is turned.
  *
- * Ported from t3code's `mediaStyle`: a sideways rotation draws the raw
+ * Adapted (see the file header): a sideways rotation draws the raw
  * portrait frame into a landscape box by giving the media element the
  * TRANSPOSED size and rotating it about the box's centre. Scaling a portrait
  * frame into a landscape box instead — which is what "just set the width" does

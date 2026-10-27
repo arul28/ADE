@@ -54,7 +54,7 @@ These are verified. Do not re-derive them; re-check only if the code disagrees.
    N input + a ~6k-token summary. Compaction is cheaper for almost any N above ~30k. The limit is the quality loss of
    the summary, not cost. So the chip threshold is a quality choice: use **100k**, the value Anthropic tuned for
    Claude Code.
-6. **t3code** (open source, HEAD ec80933a): a Claude "Auto-compact after" setting (100k–1M) passed as SDK
+6. **Another open-source agent app**: a Claude "Auto-compact after" setting (100k–1M) passed as SDK
    `settings.autoCompactWindow`; a "compact first" chip at idle ≥70 min and ≥100k; compaction as its own queued turn;
    a divider with `before → after` tokens. It has no near-full warning and no Codex limit setting.
 

@@ -72,7 +72,7 @@ function makeLane(overrides: Record<string, unknown> = {}) {
     name: "redesign",
     laneType: "worktree",
     baseRef: "main",
-    branchRef: "t3code/redesign-new-chat-ui",
+    branchRef: "feature/redesign-new-chat-ui",
     worktreePath: "/tmp/wt/redesign",
     parentLaneId: null,
     childCount: 0,
@@ -143,7 +143,7 @@ function makeForeignMachine(overrides: Record<string, unknown> = {}) {
       makeLane({
         id: "lane-remote",
         name: "release",
-        branchRef: "t3code/release-notes",
+        branchRef: "feature/release-notes",
       }),
     ],
     sessions: [
@@ -671,7 +671,7 @@ describe("CommandPalette", () => {
             makeLane({
               id: "lane-2",
               name: "sidebar",
-              branchRef: "t3code/refine-ade-chat-sidebar",
+              branchRef: "feature/refine-ade-chat-sidebar",
             }),
           ],
           activeItemId: "session-2",
@@ -688,7 +688,7 @@ describe("CommandPalette", () => {
       expect(screen.getByText("Redesign ADE Chat and Prompt UI")).toBeTruthy();
       // Project · branch, with the active session annotated in place.
       expect(
-        screen.getByText("ADE · #t3code/refine-ade-chat-sidebar"),
+        screen.getByText("ADE · #feature/refine-ade-chat-sidebar"),
       ).toBeTruthy();
       expect(screen.getByText(/Current thread/)).toBeTruthy();
     });
@@ -706,7 +706,7 @@ describe("CommandPalette", () => {
         ],
         {
           lanes: [
-            makeLane({ id: "lane-1", branchRef: "t3code/pty-foundation" }),
+            makeLane({ id: "lane-1", branchRef: "feature/pty-foundation" }),
             makeLane({
               id: "lane-2",
               name: "payments",
@@ -1197,7 +1197,7 @@ describe("CommandPalette", () => {
         ).toBe(false);
         // The foreign lane resolves through its OWN machine's lane list, not
         // the locally-bound project's.
-        expect(screen.getByText("ADE · #t3code/release-notes")).toBeTruthy();
+        expect(screen.getByText("ADE · #feature/release-notes")).toBeTruthy();
       });
 
       it("labels a foreign thread with its bound project rather than the current project", async () => {
@@ -1215,7 +1215,7 @@ describe("CommandPalette", () => {
           </MemoryRouter>,
         );
 
-        expect(await screen.findByText("Remote Tools · #t3code/release-notes")).toBeTruthy();
+        expect(await screen.findByText("Remote Tools · #feature/release-notes")).toBeTruthy();
       });
 
       it("matches a thread on its machine name", async () => {

@@ -107,7 +107,7 @@ import { useTicker } from "../../lib/ticker";
  * because it is the one the Work page already renders over the chat column
  * with everything the players need.
  *
- * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
+ * The chrome is nothing but an 8px status dot at rest,
  * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
  * on hover and doubles as the drag handle. The picture is the whole card, so
  * every pixel of chrome is a pixel of preview you do not get.
@@ -117,7 +117,7 @@ import { useTicker } from "../../lib/ticker";
 const SCRUB_STRIP_HEIGHT = 2;
 /** How often a frame-rate feed is allowed to move the "most recent tool" clock. */
 const ACTIVITY_COMMIT_MS = 500;
-/** t3's mini-player entry, in ADE's emphasized curve. */
+/** The mini-player entry, in ADE's emphasized curve. */
 const ENTER = { duration: 0.2, ease: EMPHASIZED_EASE } as const;
 const EXIT = exitTransition;
 const PREVIEW_FPS = 12;

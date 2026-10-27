@@ -148,8 +148,7 @@ jobs:
     # notarizes and staples its own app; the per-arch updater manifests are
     # merged by the publish-release job in release-publish.yml.
     #
-    # x64 is packaged on Apple Silicon with the native arm64 Node, as t3code
-    # does: install-cross-arch-packages.mjs adds the darwin-x64 npm packages
+    # x64 is packaged on Apple Silicon with the native arm64 Node: install-cross-arch-packages.mjs adds the darwin-x64 npm packages
     # next to the arm64 ones, electron-builder packages Electron x64, and
     # validate-mac-artifacts rejects any Mach-O without x64 code or an x64 twin.
     # The Intel runner took 35-45 minutes for this job; an x64 Node under

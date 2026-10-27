@@ -89,7 +89,7 @@ export function WorkToolPicker({
   const cardCount = definitions.length;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
-  // Starts at nothing highlighted, exactly like t3's launcher: this is a page
+  // Starts at nothing highlighted: this is a page
   // you look at, not a palette you are already typing into, and opening with a
   // card pre-selected reads as a choice already made for you.
   const [highlight, setHighlight] = useState(-1);

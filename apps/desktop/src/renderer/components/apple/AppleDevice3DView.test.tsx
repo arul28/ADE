@@ -24,7 +24,7 @@ describe("appleDragIntent (round 4 §A3)", () => {
   });
 });
 
-describe("appleWheelIntent (ported from t3code phoneTrackpad.ts)", () => {
+describe("appleWheelIntent", () => {
   it("scrolls the device on a plain wheel over the glass", () => {
     expect(appleWheelIntent({ ctrlKey: false, metaKey: false, onScreen: true, interactive: true }))
       .toBe("scroll");

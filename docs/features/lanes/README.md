@@ -57,8 +57,8 @@ The primary checkout's default branch stays current without a manual pull.
 `apps/ade-cli/src/bootstrap.ts`), because the brain owns the project's
 checkout whether or not a desktop, phone, or web client is attached. It runs a
 decision-and-maybe-pull pass 20 s after the project opens and then on a
-bounded five-minute background timer — the same "startup plus background
-refresh" trigger t3code uses. A PR that ADE merges into the default branch
+bounded five-minute background timer — a "startup plus background
+refresh" trigger. A PR that ADE merges into the default branch
 triggers one extra pass right after post-merge cleanup fetches the base
 branch (`refreshDefaultBranchAfterMerge` on `createPrService`), so a lane
 created right after a merge starts from the merged branch. Passes never

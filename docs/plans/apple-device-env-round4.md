@@ -39,8 +39,7 @@ default. Persist the choice per project.
 A3. **3D drives the device.** Tap, scroll and typing reach the device through
 the existing screen-mesh raycast. A drag that starts on the screen is input;
 a drag that starts off the screen orbits; holding Alt forces orbit. Keep
-Reset view. Port t3code's `phoneTrackpad.ts` behaviour with a
-`// Ported from t3code <path> (MIT, T3 Tools Inc.)` header.
+Reset view. Ported code keeps its MIT credit header (see `NOTICE`).
 A4. **Inspect, working.** Mount `AppleInspectOverlay`. Inspect is a rail
 toggle. On, it draws element frames over the device. Clicking a frame opens a
 compact card anchored to it with the element's details and two buttons,

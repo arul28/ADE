@@ -6,7 +6,7 @@ type, and (with the same proxy) a remote desktop. Results and ceilings live in
 
 | File | What it is |
 |---|---|
-| `slow-proxy.mjs` | TCP pass-through proxy with 3g (400 kbps, 400 ms RTT, T3's condition), lte (10 Mbps, 60 ms) and lan profiles. Counts bytes each way and connections. No admin rights, any OS. |
+| `slow-proxy.mjs` | TCP pass-through proxy with 3g (400 kbps, 400 ms RTT), lte (10 Mbps, 60 ms) and lan profiles. Counts bytes each way and connections. No admin rights, any OS. |
 | `phone-sync.bench.mts` | Headless phone. Speaks the sync protocol as the iOS app does and times each connect step through the proxy. |
 | `make-synthetic-project.mts` | Seeded 1,000-chat project (20 lanes, a 1,000-turn chat, an icon). Same seed, same bytes. |
 | `rig.sh`, `rig-pair.mts`, `rig-scenarios.mjs` | Three-machine rig: a dev desktop paired (through its own pairing call) with two measurement brains behind slow proxies (`wan30` = 30 ms RTT), and the scenarios run on it: reload → rows from every machine, cross-machine chat switches and project tab switches, each with proxy bytes. Sources are make-real-load-copy copies; run up → measure → down in one heavy slot. See the header of `rig.sh`. |

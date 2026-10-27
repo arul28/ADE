@@ -120,8 +120,7 @@ export type PrDetailHeaderProps = {
 
 /**
  * The PR card: who and when · the title · where it merges and what it belongs
- * to · the tabs with their actions. Modeled on t3code's PR header, but it also
- * carries ADE's own links — the lane and the chats working on this PR.
+ * to · the tabs with their actions. It also carries ADE's own links — the lane and the chats working on this PR.
  */
 export const PrDetailHeader = React.memo(function PrDetailHeader({
   pr,

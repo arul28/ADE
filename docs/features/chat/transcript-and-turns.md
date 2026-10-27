@@ -425,8 +425,8 @@ shows, and `byTurn` for the thread.
 
 `apps/desktop/src/main/services/chat/sourceFaviconService.ts` resolves them.
 The icon is fetched from the site the agent already visited, directly by the
-machine running the brain, never through a third-party favicon service (the
-Google s2 endpoint t3code uses would learn every domain a chat touched).
+machine running the brain, never through a third-party favicon service (Google's
+s2 endpoint would learn every domain a chat touched).
 
 - **Action.** `chat.resolveSourceFavicons` takes `{ domains: string[] }` (at
   most 48; `domain` or `url` also work) and returns `{ icons: { [domain]:

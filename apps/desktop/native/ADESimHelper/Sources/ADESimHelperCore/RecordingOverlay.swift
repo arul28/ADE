@@ -9,8 +9,7 @@ import CoreGraphics
 /// instant, and that part has to be testable without a booted simulator.
 /// `RecordingSession` owns the pixels; this file owns the arithmetic.
 ///
-/// Shape borrowed from t3code #12779 ("fix(desktop): align preview recording
-/// cursors and show input feedback"): a ring in the theme's primary colour at
+/// The shape: a ring in the theme's primary colour at
 /// the press point, plus a key/text badge, composited into the **saved
 /// recording only** — never into the live stream a human is watching.
 public enum RecordingOverlay {

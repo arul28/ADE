@@ -136,7 +136,7 @@ or Git operations until the visible surface needs them.
 
 ### Share reads, cap concurrency, and keep what cannot change (2026-10-26)
 
-- **Why it helped**: opening one PR on `pingdotgg/t3code` sent 57 GitHub
+- **Why it helped**: opening one PR on a large public repo sent 57 GitHub
   requests, 19 at once: status, checks and reviews each read the head's
   check-runs and combined status themselves, and the commit list read
   check-runs once per commit (29) for a field no desktop surface draws.

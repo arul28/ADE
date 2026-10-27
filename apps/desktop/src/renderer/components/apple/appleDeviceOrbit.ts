@@ -1,6 +1,6 @@
 import { Quaternion, Vector3 } from "three";
 
-/** Recovered Bitrig / t3 #12787 feel. Keep these as the single source of orbit numbers. */
+/** The orbit feel. Keep these as the single source of orbit numbers. */
 export const APPLE_DEVICE_ORBIT = {
   gain: 0.006,
   dragForceLimit: 1.2,
