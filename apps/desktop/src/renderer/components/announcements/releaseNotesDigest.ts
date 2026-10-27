@@ -74,7 +74,9 @@ export function releaseNotesDigest(version: string | null, fromVersion: string |
       const title = canonicalTitle(section.title);
       const key = title.toLowerCase();
       const merged = sections.get(key) ?? { title, items: [] };
-      merged.items.push(...section.items);
+      // A release can carry an earlier one's notes again (v1.2.125 repeats
+      // v1.2.124's, which most computers never got to see): list each once.
+      merged.items.push(...section.items.filter((item) => !merged.items.includes(item)));
       sections.set(key, merged);
     }
   }
