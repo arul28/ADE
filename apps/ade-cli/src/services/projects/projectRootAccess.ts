@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
-import os from "node:os";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 
 /**
  * How long a project folder gets to answer a listing before the project is
- * treated as unreadable. A healthy folder answers in milliseconds.
+ * treated as unreadable. A healthy folder answers in milliseconds; this leaves
+ * room for an external disk or a network share waking up, while a permission
+ * prompt nobody answers waits forever.
  */
-const PROJECT_ROOT_READ_TIMEOUT_MS = 4_000;
+const PROJECT_ROOT_READ_TIMEOUT_MS = 15_000;
 
 /**
  * Refuses to start a project whose folder this process cannot read right now,
@@ -35,7 +36,7 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
           resolve(null);
           return;
         }
-        if ((error as { killed?: boolean }).killed) {
+        if (error.killed) {
           resolve(`it did not answer within ${PROJECT_ROOT_READ_TIMEOUT_MS / 1000} seconds`);
           return;
         }
@@ -45,7 +46,7 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
   });
   if (!failure) return;
   throw codedError(
-    `ADE can't read ${projectRoot} on ${os.hostname()} (${failure}). If macOS is asking on that Mac's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it. The project opens once it can be read.`,
+    `ADE can't read ${projectRoot} on this Mac (${failure}). If macOS is asking on this Mac's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it. The project opens once it can be read.`,
     "storage_read_failed",
   );
 }

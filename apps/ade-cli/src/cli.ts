@@ -27661,10 +27661,8 @@ async function runServe(
 
   // "Update & restart" asks this machine's desktop app, when one is running, to
   // install its own update: an app that owns the brain puts its own runtime
-  // back over a standalone one.
-  // A brain the app runs on a Mac whose app is closed opens the app to update
-  // it, rather than updating into a program macOS has given no permissions
-  // (`requestUpdateThroughClosedApp`).
+  // back over a standalone one. On a Mac whose app runs the brain but is
+  // closed, the app is opened to do it (`requestUpdateThroughClosedApp`).
   const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
     const { hostAppBundlePath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
@@ -27672,7 +27670,7 @@ async function runServe(
     const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath;
     let routing = await requestDesktopAppUpdate({ socketPath, targetVersion });
     const closedAppBundlePath = routing.attached ? null : hostAppBundlePath();
-    if (closedAppBundlePath) {
+    if (closedAppBundlePath && !routing.attached) {
       headlessProjectLogger.info("brain.remote_update_opening_app", {
         appBundlePath: closedAppBundlePath,
         detail: routing.detail,
