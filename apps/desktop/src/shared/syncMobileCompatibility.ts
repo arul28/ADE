@@ -121,6 +121,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // PR Watch / Ship. Optional: an older host simply has no watch.
   "prs.setChatWatch",
   "prs.getChatWatches",
+  // GitHub tab filters that search GitHub, and PR assignees. Optional: an
+  // older host filters loaded rows only and shows assignees read-only.
+  "prs.listGitHubFilterOptions",
+  "prs.searchGitHubPrs",
+  "prs.setAssignees",
   // Restart agent session. Optional: an older host simply lacks it.
   "chat.restartSession",
   // Session menu "Hand off ▸ Auto handoff…". Optional: the phone hides the

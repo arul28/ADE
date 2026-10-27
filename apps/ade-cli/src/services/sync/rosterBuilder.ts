@@ -531,11 +531,52 @@ function resumeMetadataLineage(
 const positiveInteger = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 
+/**
+ * Sidecars read before, kept while the file is unchanged: a roster build reads
+ * every visible chat's sidecar, and on a reconnect almost none have changed.
+ * The rule is createStampedJsonCache's (durableFile.ts): a hit needs the same
+ * inode, size, mtime and ctime, and only a file unchanged for SIDECAR_SETTLE_MS
+ * before the read is kept, so two writes in one timestamp tick cannot share a
+ * stamp. A wall clock stepped back drops every entry.
+ */
+const SIDECAR_SETTLE_MS = 2_000;
+const SIDECAR_CACHE_MAX = 5_000;
+const sidecarCache = new Map<string, { stamp: string; sidecar: Sidecar }>();
+let sidecarClockLead: number | null = null;
+
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
 // A missing or unparsable sidecar leaves those fields null — never throws.
 function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | null {
+  const filePath = path.join(chatSessionsDir, `${sessionId}.json`);
+  const wallNow = Date.now();
+  const clockLead = wallNow - performance.now();
+  if (sidecarClockLead !== null && clockLead < sidecarClockLead - 500) sidecarCache.clear();
+  sidecarClockLead = clockLead;
+  let stat: fs.Stats | null = null;
   try {
-    const raw = fs.readFileSync(path.join(chatSessionsDir, `${sessionId}.json`), "utf8");
+    stat = fs.statSync(filePath);
+  } catch {
+    sidecarCache.delete(filePath);
+    return null;
+  }
+  const stamp = stat.ino ? `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : null;
+  const cached = sidecarCache.get(filePath);
+  if (stamp !== null && cached?.stamp === stamp) return { ...cached.sidecar };
+  sidecarCache.delete(filePath);
+  const sidecar = parseChatSidecar(filePath);
+  if (sidecar && stamp !== null && Math.max(stat.mtimeMs, stat.ctimeMs) <= wallNow - SIDECAR_SETTLE_MS) {
+    sidecarCache.set(filePath, { stamp, sidecar: { ...sidecar } });
+    if (sidecarCache.size > SIDECAR_CACHE_MAX) {
+      const oldest = sidecarCache.keys().next().value;
+      if (oldest !== undefined) sidecarCache.delete(oldest);
+    }
+  }
+  return sidecar;
+}
+
+function parseChatSidecar(filePath: string): Sidecar | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       provider: typeof parsed.provider === "string" ? parsed.provider : null,
@@ -552,6 +593,35 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
   } catch {
     return null;
   }
+}
+
+/**
+ * The last project built from disk alone (no booted scope), with what it was
+ * built from. While the database read, the sidecar folder and the registry
+ * record are all unchanged, the same object is returned, so the fanout's
+ * digests of it are reused too. Valid until the next snooze in it ends (the
+ * running count reads the clock) and for at most
+ * `DISK_PROJECT_CACHE_MAX_AGE_MS`.
+ */
+const unbootedProjectMemo = new Map<string, {
+  disk: DiskProjectData;
+  sidecarFolderIdentity: string | null;
+  recordKey: string;
+  validUntilMs: number;
+  project: SyncRosterProject;
+}>();
+
+function rosterRecordKey(record: RosterProjectRecord): string {
+  return JSON.stringify([record.rootPath, record.displayName, record.lastOpenedAt, rosterRepoOriginUrl(record)]);
+}
+
+function memoValidUntilMs(disk: DiskProjectData, nowMs: number): number {
+  let validUntilMs = nowMs + DISK_PROJECT_CACHE_MAX_AGE_MS;
+  for (const row of disk.chats) {
+    const until = row.snoozed_until ? Date.parse(row.snoozed_until) : Number.NaN;
+    if (Number.isFinite(until) && until > nowMs && until < validUntilMs) validUntilMs = until;
+  }
+  return validUntilMs;
 }
 
 // Disk-only status (un-booted project): the truthful persisted state. `running`
@@ -646,6 +716,20 @@ function compareLanes(left: LaneRow, right: LaneRow): number {
   return left.name.localeCompare(right.name);
 }
 
+/**
+ * A roster row without its null fields. Every roster field is optional and
+ * clients read a missing key and a null the same way (the iOS models decode
+ * both as nil), while a 1,000-chat project carried ~11k nulls: about 40% of
+ * its JSON, sent again with every change to the project.
+ */
+function withoutNullFields<T extends object>(row: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (value !== null && value !== undefined) out[key] = value;
+  }
+  return out as T;
+}
+
 async function buildRosterProject(
   record: RosterProjectRecord,
   scopeRegistry: RosterScopeRegistry,
@@ -653,6 +737,19 @@ async function buildRosterProject(
 ): Promise<SyncRosterProject> {
   const disk = readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
+  const recordKey = rosterRecordKey(record);
+  const sidecarFolderIdentity = fileIdentity(chatSessionsDir);
+  const memo = unbootedProjectMemo.get(record.projectId);
+  if (
+    memo
+    && !scopeRegistry.getIfBooted(record.projectId)
+    && memo.disk === disk
+    && memo.sidecarFolderIdentity === sidecarFolderIdentity
+    && memo.recordKey === recordKey
+    && Date.now() < memo.validUntilMs
+  ) {
+    return memo.project;
+  }
 
   // Path A overlay: only for projects already booted on the runtime. NEVER
   // boots a scope (getIfBooted is non-booting). When booted, listSessions()
@@ -824,7 +921,7 @@ async function buildRosterProject(
       ?? sidecar?.orchestrationParentSessionId
       ?? cliLineage?.orchestrationParentSessionId
       ?? null;
-    chats.push({
+    chats.push(withoutNullFields({
       id: row.id,
       laneId: row.lane_id,
       chatSessionId: row.chat_session_id,
@@ -856,12 +953,12 @@ async function buildRosterProject(
       ...(chatLog
         ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
         : {}),
-    });
+    }));
   }
 
   chats.sort((left, right) => (right.lastActivityAt ?? "").localeCompare(left.lastActivityAt ?? ""));
 
-  return {
+  const project: SyncRosterProject = {
     projectId: record.projectId,
     rootPath: record.rootPath,
     displayName: record.displayName,
@@ -873,6 +970,18 @@ async function buildRosterProject(
     lanes: visibleLanes.map((lane) => mapLane(lane, disk.prWaitingReasonByLaneId)),
     chats,
   };
+  if (booted) {
+    unbootedProjectMemo.delete(record.projectId);
+  } else {
+    unbootedProjectMemo.set(record.projectId, {
+      disk,
+      sidecarFolderIdentity,
+      recordKey,
+      validUntilMs: memoValidUntilMs(disk, Date.now()),
+      project,
+    });
+  }
+  return project;
 }
 
 // --- Cross-project "quick look" transcript resolver --------------------------

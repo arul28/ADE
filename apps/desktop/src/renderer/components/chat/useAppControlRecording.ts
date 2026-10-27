@@ -7,6 +7,7 @@ import type {
 import type { MacDesktopPermissionKind, MacDesktopPermissions } from "../../../shared/types/macDesktop";
 import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordingFormat";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The App Control pane's recording: status, the Record/Stop toggle, the
@@ -113,13 +114,7 @@ export function useAppControlRecording({
   }, [enabled, laneId, pinKey]);
 
   const running = Boolean(recording?.running);
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running) return undefined;
-    setNowTick(Date.now());
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [running]);
+  const nowTick = useTicker(1000, running);
   const elapsedMs = running
     ? Math.max(0, nowTick - (Date.parse(recording?.startedAt ?? "") || nowTick))
     : 0;

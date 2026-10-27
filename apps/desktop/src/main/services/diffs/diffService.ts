@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { gitCommandError, parseNameStatusRecords, runGit } from "../git/git";
+import { gitCommandError, parseNameStatusRecords, resolveWorktreeIndexPath, runGit } from "../git/git";
 import { parseNumstatRecordsZ, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
@@ -321,8 +321,7 @@ async function resolveBranchCompareBase(
 
 /** Where the worktree's own index lives; empty when git cannot say. */
 function readRealIndexPath(worktreePath: string): Promise<string> {
-  return runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: 10_000 })
-    .then((res) => (res.exitCode === 0 ? path.resolve(worktreePath, res.stdout.trim()) : ""), () => "");
+  return resolveWorktreeIndexPath(worktreePath).catch(() => "");
 }
 
 /**
@@ -385,6 +384,43 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
   /** The newest read per lane, and whether it has started reading the working tree. */
   type BranchRead = { readingWorkingTree: boolean; read: Promise<BranchDiffChanges> };
+  const readChanges = async (worktreePath: string): Promise<DiffChanges> => {
+    // The line counts do not depend on the status, so all three run at once:
+    // one process start of wall time instead of two (25-45 ms each on Windows).
+    const [res, unstagedStats, stagedStats] = await Promise.all([
+      runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 }),
+      runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+      runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+    ]);
+    if (res.exitCode !== 0) {
+      return { unstaged: [], staged: [] };
+    }
+
+    const changes = parsePorcelainStatusZ(res.stdout);
+    if (unstagedStats.exitCode === 0) applyNumstat(changes.unstaged, unstagedStats.stdout);
+    if (stagedStats.exitCode === 0) applyNumstat(changes.staged, stagedStats.stdout);
+
+    return changes;
+  };
+
+  /**
+   * Reads of one worktree's changes in flight. A refresh fans out to several
+   * asks at once (each window, the lane pane, the phone), and each read is
+   * three git processes. An ask that arrives while a read runs cannot take that
+   * read's answer, since it may have read git before the asker's edit, so every
+   * such ask shares one follow-up read that starts when the running one ends.
+   */
+  const changeReads = new Map<string, { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null }>();
+  const startChangesRead = (
+    worktreePath: string,
+    slot: { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null },
+  ): Promise<DiffChanges> => {
+    slot.current = readChanges(worktreePath).finally(() => {
+      if (slot.next === null && changeReads.get(worktreePath) === slot) changeReads.delete(worktreePath);
+    });
+    return slot.current;
+  };
+
   const branchReads = new Map<string, BranchRead>();
 
   const readBranchChanges = async (laneId: string, entry: BranchRead): Promise<BranchDiffChanges> => {
@@ -469,22 +505,22 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      // The line counts do not depend on the status, so all three run at once:
-      // one process start of wall time instead of two (25-45 ms each on Windows).
-      const [res, unstagedStats, stagedStats] = await Promise.all([
-        runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 }),
-        runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-      ]);
-      if (res.exitCode !== 0) {
-        return { unstaged: [], staged: [] };
+      const slot = changeReads.get(worktreePath);
+      if (!slot) {
+        const fresh: { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null } = {
+          current: Promise.resolve({ unstaged: [], staged: [] }),
+          next: null,
+        };
+        changeReads.set(worktreePath, fresh);
+        return await startChangesRead(worktreePath, fresh);
       }
-
-      const changes = parsePorcelainStatusZ(res.stdout);
-      if (unstagedStats.exitCode === 0) applyNumstat(changes.unstaged, unstagedStats.stdout);
-      if (stagedStats.exitCode === 0) applyNumstat(changes.staged, stagedStats.stdout);
-
-      return changes;
+      if (!slot.next) {
+        slot.next = slot.current.then(() => undefined, () => undefined).then(() => {
+          slot.next = null;
+          return startChangesRead(worktreePath, slot);
+        });
+      }
+      return await slot.next;
     },
 
     async getFileDiff({

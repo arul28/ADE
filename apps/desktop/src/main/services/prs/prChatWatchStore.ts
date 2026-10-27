@@ -57,12 +57,19 @@ function parseState(raw: string, fallbackStartedAt: string): PrWatchState {
   try {
     const parsed = JSON.parse(raw) as Partial<PrWatchState>;
     const base = initialPrWatchState(fallbackStartedAt, null);
+    const failedChecks = Array.isArray(parsed.failedChecks) ? parsed.failedChecks.map(String) : [];
     return {
       ...base,
       ...parsed,
-      failedChecks: Array.isArray(parsed.failedChecks) ? parsed.failedChecks.map(String) : [],
+      failedChecks,
       remarkIds: Array.isArray(parsed.remarkIds) ? parsed.remarkIds.map(String) : [],
       held: Array.isArray(parsed.held) ? parsed.held : [],
+      // A watch saved before these fields existed: if it already saw checks
+      // fail or pass on this head, CI ran, so "no CI" must not be reported.
+      checksSeen: typeof parsed.checksSeen === "boolean" ? parsed.checksSeen : parsed.passed === true || failedChecks.length > 0,
+      noChecksSince: typeof parsed.noChecksSince === "string" ? parsed.noChecksSince : null,
+      noChecksTold: parsed.noChecksTold === true,
+      mergeQueueRemovalId: typeof parsed.mergeQueueRemovalId === "string" ? parsed.mergeQueueRemovalId : null,
     };
   } catch {
     return initialPrWatchState(fallbackStartedAt, null);

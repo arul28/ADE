@@ -21,6 +21,9 @@ const WELCOME_VIDEO_VERSION = 1;
 
 export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
   const { client, commands, events, localState, state } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the call site.
+  const mutation = { idempotent: false } as const;
 
   const app: Record<string, unknown> = {
     async ping() {
@@ -186,10 +189,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       // Send the data URL under its own key: that host branch reads the mime
       // from the URL itself. Under `data` it would be decoded as raw base64 and
       // rejected as invalid.
-      return await commands.call("chat.saveTempAttachment", { ...args, dataUrl: image.dataUrl, filename: image.filename }, {
-        fallback: { path: "", mimeType: image.mimeType, previewDataUrl: image.dataUrl },
-        idempotent: false,
-      });
+      return await commands.call("chat.saveTempAttachment", { ...args, dataUrl: image.dataUrl, filename: image.filename }, mutation);
     },
     async getImageDataUrl(args: string | { path?: string; artifactPath?: string }) {
       const path = typeof args === "string" ? args : args.path ?? args.artifactPath ?? "";

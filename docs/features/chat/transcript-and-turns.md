@@ -1638,7 +1638,11 @@ The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
   after a page lands, a settled restore — get one page between two reader
   scrolls, so pages never chain on their own; an underfilled pane with no
   scrollbar keeps backfilling until it fills, and a failure still offers
-  Retry.
+  Retry. The main Work pane also fills the rest of a local chat's history on
+  its own, 1.5 s after the open (at once when the reader scrolls up, opens
+  find, or uses the prompt rail), in 512 KiB pages that never rebuild the rows
+  already on screen. A chat on another machine fills only on demand, so a
+  switch never pulls its whole history across the link.
 - **Code blocks.** `HighlightedCode` renders a cached highlight on the first
   frame, and the plain fallback and Shiki's `<pre>` share one font size, line
   height, and wrapping, so highlighting never changes a measured row's height.
@@ -1658,6 +1662,18 @@ positional form while older packaged clients age out. This matters because a
 one-argument runtime wrapper silently discards a second positional options
 argument before validation, making every older-page request fail even though
 the initial snapshot succeeds.
+
+### Resume — reopening a chat sends only what is new
+
+Every snapshot carries `tailEndOffset` (the byte where the tail read ended)
+and `historyGeneration` (moves when a rewind or import rewrites
+the file in place). A reopened chat passes both back as `afterOffset` and
+`historyGeneration`; when the generation still matches, the reply holds the
+seam event plus everything newer and sets `resumedFromOffset`, and the client
+merges it into the window it kept. A mismatch, or a host that does not know
+the arguments, answers with the full window, so old brains and old clients
+keep today's behavior. On a remote machine this is what makes a warm switch
+cost kilobytes instead of the whole window.
 
 ### `hasOlderHistory` — is there anything to scroll back to?
 
@@ -1701,7 +1717,8 @@ client paging loops provably terminating. A page that claims `hasMore` without
 decreasing the cursor is a retryable protocol failure, not evidence that the
 head was reached.
 
-Desktop, personal chat, and ADE Code request 256 KiB pages. Desktop and
+Desktop, personal chat, and ADE Code request 256 KiB pages; the desktop
+background fill requests 512 KiB. Desktop and
 personal-chat selected views keep at most 60,000 events / 32 MiB resident; a
 background personal-chat view keeps 1,000 events / 2 MiB. Page responses are
 committed only while the selected session, bound runtime, request generation,

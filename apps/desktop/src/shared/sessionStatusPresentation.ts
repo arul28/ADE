@@ -1,4 +1,4 @@
-import { resolveUsageLimitResumeState } from "./chatAutoResume";
+import { resolveUsageLimitResumeState } from "./usageLimitResumeState";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";

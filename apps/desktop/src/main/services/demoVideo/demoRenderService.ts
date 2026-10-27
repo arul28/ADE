@@ -6,7 +6,8 @@
  *
  * - The first engine that can read the raw file does the work: the Swift
  *   `ade-media` for an MP4/MOV on macOS, the desktop app's Chromium engine for
- *   an `.aderaw` capture.
+ *   an `.aderaw` capture, the system's ffmpeg for an MP4 anywhere else. When
+ *   one fails, the next that reads the file tries before the raw file is filed.
  * - A render over {@link DEMO_MAX_BYTES} is done again at a fitted bitrate, a
  *   step smaller when needed (see `renderToFit`). No file over the limit is
  *   ever returned.
@@ -133,7 +134,10 @@ export async function produceDemoVideo(args: {
   const { rawPath, outputPath, logger } = args;
   if (!fs.existsSync(rawPath)) throw new Error("The recording's raw file is gone, so no video can be made.");
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  const engine = args.engines.find((candidate): candidate is DemoEngine => Boolean(candidate?.canRead(rawPath))) ?? null;
+  // Every engine that reads the file, in order. One that fails (the desktop's
+  // Chromium engine offered while a bridge probe is still settling, then gone)
+  // hands the recording to the next instead of filing it uncut.
+  const engines = args.engines.filter((candidate): candidate is DemoEngine => Boolean(candidate?.canRead(rawPath)));
   const rawIsPlayable = PLAYABLE_RAW.has(path.extname(rawPath).toLowerCase());
   const startedAt = Date.now();
   const fileRawAsIs = async (reason: string, analysis: DemoAnalysis | null): Promise<ProducedDemoVideo> => {
@@ -171,7 +175,7 @@ export async function produceDemoVideo(args: {
     };
   };
 
-  if (!engine) {
+  if (!engines.length) {
     const missing = args.missingEngineReason?.trim();
     return await fileRawAsIs(
       missing
@@ -180,56 +184,64 @@ export async function produceDemoVideo(args: {
     );
   }
 
-  let analysis: DemoAnalysis;
-  try {
-    analysis = await engine.analyze(rawPath, { signal: args.signal });
-  } catch (error) {
-    if (args.signal?.aborted) throw error;
-    return await fileRawAsIs(`the recording could not be read (${errorText(error)})`, null);
-  }
-
-  const attempts: Array<{ plain: boolean; plan: () => DemoPlan }> = args.plain
-    ? [{ plain: true, plan: () => planPlainDemo(analysis) }]
-    : [
-      { plain: false, plan: () => planDemo({ track: args.track, analysis, plain: false }) },
-      { plain: true, plan: () => planPlainDemo(analysis) },
-    ];
-
-  let lastError: unknown = null;
-  for (const attempt of attempts) {
+  let lastAnalysis: DemoAnalysis | null = null;
+  let lastReason = "";
+  for (const engine of engines) {
+    let analysis: DemoAnalysis;
     try {
-      const { plan, bytes } = await renderToFit({
-        engine,
-        rawPath,
-        outputPath,
-        plan: attempt.plan(),
-        logger,
-        signal: args.signal,
-        onProgress: args.onProgress,
-      });
-      removeQuietly(rawPath);
-      const metadata = demoMetadataFor({ plan, analysis, track: args.track, plain: attempt.plain, engine: engine.id });
-      if (attempt.plain && !args.plain && lastError) {
-        metadata.fallbackReason = `the demo could not be made (${errorText(lastError)}), so this is the plain recording`;
-      }
-      logger.info("demo_video.produced", {
-        engine: engine.id,
-        plain: attempt.plain,
-        bytes,
-        sourceSeconds: metadata.sourceSeconds,
-        outputSeconds: metadata.outputSeconds,
-        width: plan.output.width,
-        fps: plan.output.fps,
-        bitrate: plan.output.bitrate,
-        elapsedMs: Date.now() - startedAt,
-      });
-      return { path: outputPath, bytes, engine: engine.id, metadata };
+      analysis = await engine.analyze(rawPath, { signal: args.signal });
     } catch (error) {
       if (args.signal?.aborted) throw error;
-      lastError = error;
-      removeQuietly(outputPath);
-      logger.warn("demo_video.render_failed", { engine: engine.id, plain: attempt.plain, error: errorText(error) });
+      lastReason = `the recording could not be read (${errorText(error)})`;
+      logger.warn("demo_video.analyze_failed", { engine: engine.id, error: errorText(error) });
+      continue;
     }
+    lastAnalysis = analysis;
+
+    const attempts: Array<{ plain: boolean; plan: () => DemoPlan }> = args.plain
+      ? [{ plain: true, plan: () => planPlainDemo(analysis) }]
+      : [
+        { plain: false, plan: () => planDemo({ track: args.track, analysis, plain: false }) },
+        { plain: true, plan: () => planPlainDemo(analysis) },
+      ];
+
+    let lastError: unknown = null;
+    for (const attempt of attempts) {
+      try {
+        const { plan, bytes } = await renderToFit({
+          engine,
+          rawPath,
+          outputPath,
+          plan: attempt.plan(),
+          logger,
+          signal: args.signal,
+          onProgress: args.onProgress,
+        });
+        removeQuietly(rawPath);
+        const metadata = demoMetadataFor({ plan, analysis, track: args.track, plain: attempt.plain, engine: engine.id });
+        if (attempt.plain && !args.plain && lastError) {
+          metadata.fallbackReason = `the demo could not be made (${errorText(lastError)}), so this is the plain recording`;
+        }
+        logger.info("demo_video.produced", {
+          engine: engine.id,
+          plain: attempt.plain,
+          bytes,
+          sourceSeconds: metadata.sourceSeconds,
+          outputSeconds: metadata.outputSeconds,
+          width: plan.output.width,
+          fps: plan.output.fps,
+          bitrate: plan.output.bitrate,
+          elapsedMs: Date.now() - startedAt,
+        });
+        return { path: outputPath, bytes, engine: engine.id, metadata };
+      } catch (error) {
+        if (args.signal?.aborted) throw error;
+        lastError = error;
+        removeQuietly(outputPath);
+        logger.warn("demo_video.render_failed", { engine: engine.id, plain: attempt.plain, error: errorText(error) });
+      }
+    }
+    lastReason = `the video could not be rendered (${errorText(lastError)})`;
   }
-  return await fileRawAsIs(`the video could not be rendered (${errorText(lastError)})`, analysis);
+  return await fileRawAsIs(lastReason, lastAnalysis);
 }

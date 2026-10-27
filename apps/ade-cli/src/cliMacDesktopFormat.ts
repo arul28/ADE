@@ -13,6 +13,7 @@ import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
   LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE,
+  LINUX_DESKTOP_ENCODER_REQUIREMENT,
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
   MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
@@ -44,6 +45,7 @@ import {
   type DesktopSeatSummary,
   type MacDesktopDisplay,
   type WindowsDesktopStatus,
+  type LinuxDesktopHostFacts,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
   asString,
@@ -93,7 +95,9 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
     MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
     (host) => host === "win32"
       ? "This needs a Windows host with the ADE desktop driver installed (or the verb is Mac-only). Check: ade screen status --text"
-      : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
+      : host === "linux"
+        ? "This verb is not available on a Linux lane screen (claim, release and present are Mac-only; every window on a Linux screen is already the lane's). Check: ade screen status --text"
+        : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
   ],
   [
     MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
@@ -340,8 +344,10 @@ export function formatMacDesktopStatus(value: unknown): string {
   const windows = firstArray(status, ["windows"]);
   const lanes = firstArray(status, ["lanes"]);
   const windowsDesktop = firstRecord(status, ["windowsDesktop"]);
+  const linuxDesktop = firstRecord(status, ["linuxDesktop"]);
   const platform = hostPlatform(status);
   const windowsHost = platform === "win32";
+  const linuxHost = platform === "linux";
   // The service attaches the summary; an older runtime's reply is summarized
   // here with the same shared function, field by field, so a summary from a
   // runtime that predates a field still gets it.
@@ -350,6 +356,7 @@ export function formatMacDesktopStatus(value: unknown): string {
     supported: status.supported === true,
     display: display as MacDesktopDisplay | null,
     windowsDesktop: windowsDesktop as WindowsDesktopStatus | null,
+    linuxDesktop: linuxDesktop as LinuxDesktopHostFacts | null,
   });
   const seat: DesktopSeatSummary = { ...derived, ...(firstRecord(status, ["seat"]) as Partial<DesktopSeatSummary> | null) };
   const operation = windowsDesktop ? firstRecord(windowsDesktop, ["operation"]) : null;
@@ -387,6 +394,26 @@ export function formatMacDesktopStatus(value: unknown): string {
     ...seatRows,
     ["session", display?.displayId],
   ];
+  const missing = linuxDesktop && Array.isArray(linuxDesktop.missing)
+    ? linuxDesktop.missing.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The helper reports an installed ffmpeg whose build has no H.264 encoder as
+  // `ffmpeg-encoder`, a requirement name rather than a package: reinstalling
+  // ffmpeg cannot add the encoder, and no distribution has such a package. The
+  // encoder row below says what it means in words; the packages row names only
+  // names a person can actually install.
+  const encoderMissing = missing.includes(LINUX_DESKTOP_ENCODER_REQUIREMENT);
+  const packagesMissing = missing.filter((name) => name !== LINUX_DESKTOP_ENCODER_REQUIREMENT);
+  const linuxRows: Array<[string, unknown]> = [
+    ...seatRows,
+    ["display", display?.displayId != null ? `:${display.displayId}` : null],
+    ["encoder", linuxDesktop
+      ? asString(linuxDesktop.encoder)
+        ?? (encoderMissing ? "none — the installed ffmpeg has no H.264 encoder" : "none (install ffmpeg)")
+      : null],
+    ["missing packages", packagesMissing.length ? packagesMissing.join(", ") : linuxDesktop ? "none" : null],
+    ["install with", linuxDesktop ? asString(linuxDesktop.installCommand) : null],
+  ];
   const shared: Array<[string, unknown]> = [
     ["size", display?.width && display?.height ? `${display.width}x${display.height}` : null],
     ["windows", windows.length || display?.windowCount],
@@ -409,7 +436,7 @@ export function formatMacDesktopStatus(value: unknown): string {
   ];
   const header = renderKeyValues(screenTitle(status), [
     ...common,
-    ...(windowsHost ? windowsRows : macRows),
+    ...(windowsHost ? windowsRows : linuxHost ? linuxRows : macRows),
     ...shared,
     ...(windowsHost ? windowsFacts : []),
     ["host is local", status.hostIsLocal],
@@ -422,7 +449,7 @@ export function formatMacDesktopStatus(value: unknown): string {
     : [header];
   // The Windows shared seat reports `offscreen-region` too; its seat line
   // already says what that means there.
-  if (!windowsHost && macDesktopIsOffscreenRegion(display, status)) {
+  if (!windowsHost && !linuxHost && macDesktopIsOffscreenRegion(display, status)) {
     sections.push(
       "",
       "Windows are parked in an off-screen region of the main display — this Mac has no virtual display.",
@@ -452,6 +479,21 @@ export function formatMacDesktopStatus(value: unknown): string {
     );
   }
   return sections.join("\n");
+}
+
+/**
+ * `screen setup`: the one sentence the seat service wrote, then the command a
+ * person runs when a step is left to them.
+ *
+ * The service composes the sentence on the host it is about, so this prints it
+ * rather than re-deriving which host it is from the CLI's own platform.
+ */
+export function formatMacDesktopSetup(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const message = asString(result.message)
+    ?? (result.needsUser === true ? "Setup needs a step only the user can do." : "Setup finished.");
+  const command = asString(result.command)?.trim();
+  return command ? `${message}\n\ninstall with  ${command}` : message;
 }
 
 /** `screen open`: what launched, the windows that appeared, or why none did. */

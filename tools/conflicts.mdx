@@ -50,10 +50,6 @@ This is the same primitive that backs the PR merge-readiness check and integrati
 
 When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — a queue's tracking branch if the lane is in a merge queue, the parent branch for a stacked lane, or `origin/<base>` otherwise.
 
-<Frame caption="Rebase options when a lane drifts from its base.">
-  <img src="/media/features/pull-requests/rebase-options.webp" alt="Rebase options for a lane that drifted from its base" />
-</Frame>
-
 ## AI-assisted resolution
 
 When a conflict needs more than a reorder, ADE can resolve it for you in two ways:

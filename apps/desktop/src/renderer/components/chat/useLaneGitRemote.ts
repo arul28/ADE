@@ -22,6 +22,8 @@ export const LANE_GIT_REMOTE_RETRY_DELAYS_MS = [1_000, 3_000, 8_000] as const;
 
 const NO_GIT_BRIDGE_MESSAGE = "Git is unavailable in this window.";
 
+const LAST_GOOD_REMOTE_MAX = 64;
+
 /**
  * Reads one lane's origin remote and current branch, and says which of the four
  * things is true: nothing asked yet, a read in flight, a finished read, or a
@@ -47,6 +49,12 @@ export function useLaneGitRemote(
   const [status, setStatus] = useState<LaneGitRemoteStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  // The last good answer per lane and machine, for this caller. The Work chat
+  // pane stays mounted across chat switches; switching back to a lane it has
+  // read shows that answer at once while a re-read confirms it, instead of
+  // going idle, loading, ready (three renders) for an answer that had not
+  // changed. A failed re-read still reports its failure.
+  const lastGoodRemoteByLaneRef = useRef(new Map<string, { remoteUrl: string | null; branch: string | null }>());
 
   // The pin object is rebuilt on every render by some callers, so the effect
   // keys off its stable `key` instead and reads the object itself from a ref.
@@ -70,12 +78,16 @@ export function useLaneGitRemote(
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const cacheKey = `${pinKey ?? ""}\u0000${laneId}`;
+    const lastGoodRemoteByLane = lastGoodRemoteByLaneRef.current;
+    const known = lastGoodRemoteByLane.get(cacheKey);
 
-    // A new lane means the previous lane's answer is wrong, not stale-but-close.
-    setRemoteUrl(null);
-    setBranch(null);
+    // A new lane means the previous lane's answer is wrong, not stale-but-close;
+    // this lane's own last answer is the one to show while it is re-read.
+    setRemoteUrl(known ? known.remoteUrl : null);
+    setBranch(known ? known.branch : null);
     setError(null);
-    setStatus("loading");
+    setStatus(known ? "ready" : "loading");
 
     const run = (attempt: number) => {
       const getOriginRemote = window.ade.git?.getOriginRemote;
@@ -91,14 +103,21 @@ export function useLaneGitRemote(
       void request
         .then((info) => {
           if (cancelled) return;
-          setRemoteUrl(info?.remoteUrl ?? null);
-          setBranch(info?.branch ?? null);
+          const next = { remoteUrl: info?.remoteUrl ?? null, branch: info?.branch ?? null };
+          lastGoodRemoteByLane.delete(cacheKey);
+          lastGoodRemoteByLane.set(cacheKey, next);
+          if (lastGoodRemoteByLane.size > LAST_GOOD_REMOTE_MAX) {
+            lastGoodRemoteByLane.delete(lastGoodRemoteByLane.keys().next().value!);
+          }
+          setRemoteUrl(next.remoteUrl);
+          setBranch(next.branch);
           setError(null);
           setStatus("ready");
         })
         .catch((caught: unknown) => {
           if (cancelled) return;
           const raw = caught instanceof Error ? caught.message : String(caught);
+          lastGoodRemoteByLane.delete(cacheKey);
           setError(stripElectronErrorWrapper(raw) || "The git remote read failed.");
           setStatus("error");
           const delay = LANE_GIT_REMOTE_RETRY_DELAYS_MS[attempt];

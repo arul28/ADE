@@ -411,6 +411,7 @@ import {
   formatMacDesktopProofFiled,
   formatMacDesktopRecording,
   formatMacDesktopScreenshot,
+  formatMacDesktopSetup,
   formatMacDesktopStatus,
   formatMacDesktopStop,
   formatMacDesktopWindowAction,
@@ -704,6 +705,7 @@ export type FormatterId =
   | "ios-sim-selection"
   | "ios-sim-preview"
   | "mac-desktop-status"
+  | "mac-desktop-setup"
   | "mac-desktop-stop"
   | "mac-desktop-windows"
   | "mac-desktop-observation"
@@ -1403,7 +1405,7 @@ function commandHelpText(key: string): string | undefined {
     key === "screen" || key === "windows-desktop" || key === "windows-desk"
     // On a Windows host the Mac name is an alias of the same Windows screen,
     // and the Mac page (virtual display, ⌘, System Settings) would mislead.
-    || (process.platform === "win32" && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
+    || ((process.platform === "win32" || process.platform === "linux") && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
   ) {
     // The neutral family and the Windows name share one host-neutral help; the
     // Mac-only name keeps its own.
@@ -2396,6 +2398,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
+    $ ade prs assignees <pr> --add alice --remove bob
+                                                    Add or remove assignees; anyone not named is kept
     $ ade prs reviewers request <pr> alice bob      Request reviewers
 `,
   shell: `${ADE_BANNER}
@@ -3335,7 +3339,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
              keyboard and it is NOT the user's screen. No lease is needed.
     shared   The user's main desktop, only after the user says yes in your
              chat. Actions take over the window they are using.
-  The verbs are the same on both hosts.
+  On Linux it is Linux Desktop, a private virtual display (Xvfb) per lane.
+  The verbs are the same on every host.
 
   Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` and
   \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
@@ -3354,18 +3359,19 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade screen stop --text                        Stop it (quits apps the lane opened)
     $ ade screen show --text                        Show it to the user (--floating: card)
 
-  The user's steps (Windows; an agent asks, it cannot do these):
-    $ ade screen setup --allow-prompt --text        One-time admin step
+  The user's steps (an agent asks, it cannot do these):
+    $ ade screen setup --allow-prompt --text        Windows: one-time admin step.
+                                                    Linux: install the screen's system packages
     $ ade screen setup --allow-prompt --save-password --text   Save the Windows password
-    $ ade screen takeover --text                    Take the private screen from another lane
+    $ ade screen takeover --text                    Windows: take the private screen from another lane
 
   Apps and windows:
     $ ade screen open <app|path|url> --text         Launch onto the screen; prints its windows
     $ ade screen open notepad -- C:\\tmp\\proof.txt --text   App args after --
     $ ade screen windows --text                     List windows
-    $ ade screen focus --window <id> --text         Windows: raise one of this lane's windows
-    $ ade screen minimize --window <id> --text      Windows: minimize it
-    $ ade screen close --window <id> --text         Windows: close it (it may ask to save)
+    $ ade screen focus --window <id> --text         Windows, Linux: raise one of this lane's windows
+    $ ade screen minimize --window <id> --text      Windows, Linux: minimize it
+    $ ade screen close --window <id> --text         Windows, Linux: close it (it may ask to save)
     $ ade screen claim --window <id> --text         Move an existing window here
     $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
     $ ade screen quit [app] --text                  Quit apps the lane opened
@@ -9166,6 +9172,37 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
           collectGenericObjectArgs(args, {
             prId: id,
             labels: args.filter((entry) => !entry.startsWith("-")),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "assignees") {
+    // Add/remove people, like `gh pr edit --add-assignee`: naming the whole
+    // list would have to read it first and could drop someone another tool added.
+    const readLogins = (names: string[]): string[] =>
+      readRepeatedValues(args, names)
+        .flatMap((value) => value.split(","))
+        .map((login) => login.trim())
+        .filter(Boolean);
+    const add = readLogins(["--add", "--add-assignee"]);
+    const remove = readLogins(["--remove", "--remove-assignee"]);
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    if (add.length === 0 && remove.length === 0) {
+      throw new CliUsageError("prs assignees needs --add or --remove, e.g. 'ade prs assignees <pr> --add alice'.");
+    }
+    return {
+      kind: "execute",
+      label: "PR assignees",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setAssignees",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            ...(add.length > 0 ? { add } : {}),
+            ...(remove.length > 0 ? { remove } : {}),
           }),
         ),
       ],
@@ -22696,7 +22733,9 @@ function checkComputerUseReadiness(): ReadinessCheck {
       ? undefined
       : isDarwin
         ? "Install or expose screencapture/open/swift/osascript on PATH, or use an external proof backend."
-        : "Use ADE desktop on macOS or an external proof backend for computer-use capture.",
+        : process.platform === "linux"
+          ? "On Linux, capture from the lane's own screen: ade screen start --text, then ade proof screenshot (or ade screen proof)."
+          : "Use ADE desktop on macOS or an external proof backend for computer-use capture.",
     details: {
       platform: process.platform,
       screenshotReady,
@@ -34732,6 +34771,8 @@ function formatTextOutput(
       return formatIosSimPreview(value);
     case "mac-desktop-status":
       return formatMacDesktopStatus(value);
+    case "mac-desktop-setup":
+      return formatMacDesktopSetup(value);
     case "mac-desktop-stop":
       return formatMacDesktopStop(value);
     case "mac-desktop-windows":

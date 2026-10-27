@@ -1,0 +1,215 @@
+// cd apps/ade-cli && npx tsx ../../scripts/perf/net/make-real-load-copy.mts --source <project root> --out <empty dir> [--no-worktrees]
+//
+// A runnable copy of one real ADE project, for measuring under real load (a heavy user's
+// database) without touching the original. Read-only on the source:
+//   - the project database through SQLite's backup API (`sqlite3 ... .backup`, safe while a brain
+//     writes it);
+//   - chat transcripts, chat-session records and project icons as APFS clones (`cp -c`);
+//   - the git repository through `git clone --local`, then the clone's origin is pointed at a path
+//     that does not exist, so nothing in the copy can fetch from or push to the original;
+//   - one worktree per active lane, checked out from the lane's branch in the clone.
+// Every path in the copied database and chat-session records that names the source root is rewritten
+// to the copy (through ADE's own kvDb, so cr-sqlite's triggers run), so a measurement brain that
+// opens the copy runs git and shells only inside it. Not copied: secrets, ade.yaml / local.yaml
+// (automations and processes), caches other than chat sessions.
+//
+// Prints the copy's scale as JSON. Never commit, upload or show a copy: numbers only, delete when done.
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import zlib from "node:zlib";
+import { openKvDb } from "../../../apps/desktop/src/main/services/state/kvDb";
+
+const argv = process.argv.slice(2);
+const read = (name: string): string | null => {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] ?? null : null;
+};
+const source = read("--source");
+const out = read("--out");
+if (!source || !out) throw new Error("--source <project root> and --out <empty dir> are required");
+const sourceRoot = fs.realpathSync(source);
+const copyRoot = path.resolve(out);
+if (copyRoot.startsWith(`${sourceRoot}${path.sep}`) || copyRoot === sourceRoot) throw new Error("--out must be outside the source project");
+if (fs.existsSync(copyRoot) && fs.readdirSync(copyRoot).length > 0) throw new Error(`${copyRoot} is not empty`);
+const withWorktrees = !argv.includes("--no-worktrees");
+// --clone: the source is a copy this script made (a "golden" copy no brain opens). The whole tree is
+// cloned with APFS clonefile (instant, no load on the source's disk), then paths and git worktree links
+// are rewritten. Copying a live database again is what this mode avoids.
+const cloneMode = argv.includes("--clone");
+const markerName = "real-load-copy.json";
+if (cloneMode && !fs.existsSync(path.join(sourceRoot, ".ade", markerName))) throw new Error("--clone needs a source made by make-real-load-copy (no .ade/real-load-copy.json)");
+
+const quietGit = (args: string[], cwd: string) =>
+  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull, GIT_TERMINAL_PROMPT: "0" } });
+
+const sourceAde = path.join(sourceRoot, ".ade");
+const copyAde = path.join(copyRoot, ".ade");
+fs.mkdirSync(path.dirname(copyRoot), { recursive: true });
+if (cloneMode) {
+  fs.rmSync(copyRoot, { recursive: true, force: true });
+  execFileSync("cp", ["-cRp", sourceRoot, copyRoot], { stdio: "inherit" });
+  // The golden copy is read-only on disk (chmod -R a-w); clonefile keeps that mode, so open it up.
+  // `cp -p` also copies file flags, so the golden copy's `uchg` must come off before the mode can.
+  execFileSync("chflags", ["-R", "nouchg", copyRoot], { stdio: "inherit" });
+  execFileSync("chmod", ["-R", "u+w", copyRoot], { stdio: "inherit" });
+} else {
+// 1. Repository: a local clone (hard links on one volume, the source is only read).
+// Hard links only work on one volume (e.g. a project on the system disk, copies on another volume).
+const sameVolume = fs.statSync(sourceRoot).dev === fs.statSync(path.dirname(copyRoot)).dev;
+quietGit(["clone", "--quiet", "--local", ...(sameVolume ? [] : ["--no-hardlinks"]), sourceRoot, copyRoot], path.dirname(copyRoot));
+quietGit(["remote", "set-url", "origin", path.join(os.tmpdir(), "ade-real-load-copy-no-origin")], copyRoot);
+
+// 2. Project state: database by backup API, transcripts and chat records as clones.
+fs.mkdirSync(copyAde, { recursive: true });
+// A live database (a brain may be writing it) is read with mode=ro through its -shm. A frozen, read-only
+// copy cannot get a -shm, and mode=ro then spins on SQLITE_BUSY forever; immutable=1 reads it directly
+// (safe only because nothing can write a file without write permission).
+let sourceWritable = true;
+try { fs.accessSync(path.join(sourceAde, "ade.db"), fs.constants.W_OK); } catch { sourceWritable = false; }
+execFileSync("sqlite3", [`file:${path.join(sourceAde, "ade.db")}?${sourceWritable ? "mode=ro" : "immutable=1"}`, `.backup '${path.join(copyAde, "ade.db").replaceAll("'", "''")}'`], { stdio: "inherit" });
+for (const relative of ["transcripts/chat", "cache/chat-sessions", "project-icons"]) {
+  const from = path.join(sourceAde, relative);
+  if (!fs.existsSync(from)) continue;
+  fs.mkdirSync(path.dirname(path.join(copyAde, relative)), { recursive: true });
+  execFileSync("cp", ["-cR", from, path.join(copyAde, relative)], { stdio: "inherit" });
+}
+}
+
+// 3. Paths: every text value naming the source root now names the copy.
+const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
+const db = await openKvDb(path.join(copyAde, "ade.db"), silentLogger as never);
+let rewrittenCells = 0;
+const tables = db.all<{ name: string }>(
+  "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' and name not like 'crsql_%' and name not like '%__crsql_%' and sql not like '%VIRTUAL TABLE%'",
+);
+for (const { name } of tables) {
+  if (db.get("select 1 from sqlite_schema where type = 'table' and name like ? || '_%' and sql like '%VIRTUAL%'", [name])) continue;
+  for (const column of db.all<{ name: string; type: string }>(`pragma table_info("${name.replaceAll('"', '""')}")`)) {
+    if (column.type && !/text|char|clob|json/i.test(column.type)) continue;
+    const quoted = `"${column.name.replaceAll('"', '""')}"`;
+    const table = `"${name.replaceAll('"', '""')}"`;
+    try {
+      rewrittenCells += db.runChanged(`update ${table} set ${quoted} = replace(${quoted}, ?, ?) where typeof(${quoted}) = 'text' and instr(${quoted}, ?) > 0`, [sourceRoot, copyRoot, sourceRoot]);
+    } catch {
+      // Shadow tables of full-text indexes and similar refuse writes; they hold no live paths.
+    }
+  }
+}
+// The copied cluster record names the source machine's brain, so a measurement brain would treat the copy as
+// following that machine (and refuse to host it). Without a record, the brain that opens the copy
+// becomes its host; it never dials the source machine.
+db.run("delete from sync_cluster_state");
+const sessionsDir = path.join(copyAde, "cache", "chat-sessions");
+let rewrittenRecords = 0;
+if (fs.existsSync(sessionsDir)) {
+  for (const file of fs.readdirSync(sessionsDir)) {
+    const full = path.join(sessionsDir, file);
+    if (!fs.statSync(full).isFile()) continue;
+    const body = fs.readFileSync(full, "utf8");
+    if (!body.includes(sourceRoot)) continue;
+    fs.rmSync(full); // the clone shares blocks with the original until written; write a new file
+    fs.writeFileSync(full, body.split(sourceRoot).join(copyRoot));
+    rewrittenRecords += 1;
+  }
+}
+
+// 4. Lanes: one worktree per active lane, on its branch when the clone has it.
+const lanes = db.all<{ id: string; branch_ref: string | null; worktree_path: string | null; archived_at: string | null; lane_type: string | null }>(
+  "select id, branch_ref, worktree_path, archived_at, lane_type from lanes",
+);
+let worktrees = 0;
+let worktreesFromHead = 0;
+if (cloneMode) {
+  // The cloned worktree links still name the source on both sides: <copy>/.git/worktrees/*/gitdir and each
+  // worktree's .git file. Rewrite them as text inside the copy. (`git worktree repair` follows the old
+  // links and writes into the SOURCE's worktrees, so it must never run here.)
+  const adminDir = path.join(copyRoot, ".git", "worktrees");
+  const relink = (file: string) => {
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
+    const body = fs.readFileSync(file, "utf8");
+    if (!body.includes(sourceRoot)) return false;
+    if (!path.resolve(file).startsWith(`${copyRoot}${path.sep}`)) throw new Error(`refusing to write outside the copy: ${file}`);
+    fs.writeFileSync(file, body.split(sourceRoot).join(copyRoot));
+    return true;
+  };
+  for (const name of fs.existsSync(adminDir) ? fs.readdirSync(adminDir) : []) {
+    const gitdirFile = path.join(adminDir, name, "gitdir");
+    relink(gitdirFile);
+    if (!fs.existsSync(gitdirFile)) continue;
+    const worktreeDotGit = fs.readFileSync(gitdirFile, "utf8").trim();
+    if (relink(worktreeDotGit) || fs.existsSync(worktreeDotGit)) worktrees += 1;
+  }
+} else if (withWorktrees) {
+  const remoteBranches = new Set(quietGit(["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin"], copyRoot).split("\n").filter(Boolean));
+  for (const lane of lanes) {
+    if (lane.archived_at || !lane.worktree_path || path.resolve(lane.worktree_path) === copyRoot) continue;
+    if (!lane.worktree_path.startsWith(copyRoot) || fs.existsSync(lane.worktree_path)) continue;
+    const branch = lane.branch_ref?.replace(/^refs\/heads\//, "") || `perf-copy/${lane.id}`;
+    const start = remoteBranches.has(branch) ? `origin/${branch}` : "HEAD";
+    if (start === "HEAD") worktreesFromHead += 1;
+    quietGit(["worktree", "add", "--quiet", "-B", branch, lane.worktree_path, start], copyRoot);
+    worktrees += 1;
+  }
+}
+// A fresh checkout writes files in the same second as its index, so git treats every entry as
+// "racily clean" and re-reads all of them on each status until the index is rewritten, and the brain
+// runs git without optional locks, so it never rewrites it (5-8 s per status instead of ~0.15 s).
+// A real worktree's index settled long ago: wait past that second and refresh each index once.
+await new Promise((resolve) => setTimeout(resolve, 1_100));
+for (const line of quietGit(["worktree", "list", "--porcelain"], copyRoot).split("\n")) {
+  if (!line.startsWith("worktree ")) continue;
+  try { quietGit(["update-index", "-q", "--refresh"], line.slice("worktree ".length)); } catch { /* exit 1 lists changed files */ }
+}
+
+fs.writeFileSync(path.join(copyAde, markerName), JSON.stringify({ madeBy: "make-real-load-copy", from: sourceRoot, at: new Date().toISOString() }));
+
+// 5. Scale.
+const clockTables = db.all<{ name: string }>("select name from sqlite_schema where type = 'table' and name like '%__crsql_clock'");
+let maxDbVersion = 0;
+let clockRows = 0;
+for (const { name } of clockTables) {
+  const row = db.get<{ v: number | null; c: number }>(`select max(db_version) as v, count(*) as c from "${name}"`);
+  maxDbVersion = Math.max(maxDbVersion, Number(row?.v ?? 0));
+  clockRows += Number(row?.c ?? 0);
+}
+const sessions = db.get<{ total: number; chats: number; running: number }>(
+  "select count(*) as total, sum(tool_type like '%chat%') as chats, sum(status = 'running') as running from terminal_sessions",
+);
+const project = db.get<{ id: string }>("select id from projects limit 1");
+db.flushNow();
+db.close();
+
+const transcriptsDir = path.join(copyAde, "transcripts", "chat");
+const transcripts = fs.existsSync(transcriptsDir) ? fs.readdirSync(transcriptsDir) : [];
+let biggest = { file: "", bytes: 0 };
+let transcriptBytes = 0;
+for (const file of transcripts) {
+  const full = path.join(transcriptsDir, file);
+  const onDisk = fs.statSync(full).size;
+  transcriptBytes += onDisk;
+  // Decompressed size decides what a chat open reads; only the larger files can be the biggest.
+  if (onDisk < biggest.bytes / 20) continue;
+  const bytes = file.endsWith(".gz") ? zlib.gunzipSync(fs.readFileSync(full)).length : onDisk;
+  if (bytes > biggest.bytes) biggest = { file, bytes };
+}
+console.log(JSON.stringify({
+  copyRoot,
+  projectId: project?.id ?? null,
+  dbMB: +(fs.statSync(path.join(copyAde, "ade.db")).size / 1e6).toFixed(1),
+  maxDbVersion,
+  crrRows: clockRows,
+  terminalSessions: sessions,
+  chatSessionRecords: fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir).length : 0,
+  transcripts: transcripts.length,
+  transcriptMBOnDisk: +(transcriptBytes / 1e6).toFixed(1),
+  biggestChat: { sessionId: biggest.file.replace(/\.jsonl(\.gz)?$/, ""), decompressedMB: +(biggest.bytes / 1e6).toFixed(1) },
+  lanes: lanes.length,
+  activeLanes: lanes.filter((lane) => !lane.archived_at).length,
+  worktrees,
+  worktreesFromHead,
+  rewrittenCells,
+  rewrittenRecords,
+}));
+process.exit(0);

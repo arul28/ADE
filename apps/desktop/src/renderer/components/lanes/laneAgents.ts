@@ -2,6 +2,7 @@ import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentChatEventEnvelope,
   AgentChatSessionSummary,
   TerminalSessionSummary,
   TerminalToolType,
@@ -13,6 +14,7 @@ import {
 } from "../../../shared/sessionCanonicalState";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 /**
@@ -217,18 +219,71 @@ export function buildLaneAgents(
   });
 }
 
+const EMPTY_LANE_AGENTS: Map<string, LaneAgent[]> = new Map();
+
+function sameLaneAgents(a: readonly LaneAgent[] | undefined, b: readonly LaneAgent[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    const left = a[index]!;
+    const right = b[index]!;
+    if (
+      left.sessionId !== right.sessionId
+      || left.laneId !== right.laneId
+      || left.kind !== right.kind
+      || left.name !== right.name
+      || left.modelId !== right.modelId
+      || left.providerLabel !== right.providerLabel
+      || left.activity !== right.activity
+      || left.lastHint !== right.lastHint
+      || left.lastActivityAt !== right.lastActivityAt
+    ) return false;
+  }
+  return true;
+}
+
 /**
  * Hook: returns the merged agent list for a set of lanes, keyed by laneId.
  * Pass the lane ids you want enumerated (usually the visible lanes). Refreshes
  * on agent-chat + terminal-session change events, debounced.
+ *
+ * A chat that starts, ends, asks or changes state (`shouldRefreshSessionListForChatEvent`)
+ * re-reads every chat. Any other event of a chat already listed (streamed text
+ * moves its preview) re-reads that chat's summary alone: a full list summarizes
+ * up to 500 chats on the brain, and it ran about three times a second while any
+ * chat streamed. Events of chats the page does not list are ignored, and with
+ * no lanes (the page parked) nothing is read or subscribed.
  */
 export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
-  const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(new Map());
+  const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(EMPTY_LANE_AGENTS);
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const laneKey = useMemo(() => [...laneIds].sort().join(","), [laneIds]);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
+  /** The next refresh re-reads every chat (true), or only `staleChatIdsRef`. */
+  const fullRefreshDueRef = useRef(true);
+  const staleChatIdsRef = useRef(new Set<string>());
+  /** The chats of the listed lanes, by id, as the last read left them. */
+  const chatsByIdRef = useRef(new Map<string, AgentChatSessionSummary>());
+  const byLaneRef = useRef(byLane);
+
+  const commit = useCallback((next: Map<string, LaneAgent[]>) => {
+    const previous = byLaneRef.current;
+    let changed = previous.size !== next.size;
+    const merged = new Map<string, LaneAgent[]>();
+    for (const [laneId, agents] of next) {
+      const before = previous.get(laneId);
+      if (sameLaneAgents(before, agents)) {
+        merged.set(laneId, before!);
+      } else {
+        changed = true;
+        merged.set(laneId, agents);
+      }
+    }
+    if (!changed) return;
+    byLaneRef.current = merged;
+    setByLane(merged);
+  }, []);
 
   const refresh = useCallback(async () => {
     if (refreshInFlightRef.current) {
@@ -242,17 +297,44 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
 
         const ids = laneKey ? laneKey.split(",") : [];
         if (!ids.length) {
-          setByLane(new Map());
+          chatsByIdRef.current = new Map();
+          if (byLaneRef.current.size > 0) {
+            byLaneRef.current = EMPTY_LANE_AGENTS;
+            setByLane(EMPTY_LANE_AGENTS);
+          }
           return;
         }
+        const requestedLaneIds = new Set(ids);
+        const full = fullRefreshDueRef.current || chatsByIdRef.current.size === 0;
+        const staleIds = [...staleChatIdsRef.current];
+        fullRefreshDueRef.current = false;
+        staleChatIdsRef.current = new Set();
         const [chat, cli] = await Promise.all([
-          window.ade.agentChat.list({}).catch(() => []),
+          window.ade.agentChat.list(full ? {} : { sessionIds: staleIds }).catch(() => null),
           listSessionsCached({ limit: 500 }).catch(() => []),
         ]);
-        const requestedLaneIds = new Set(ids);
+        if (full) {
+          const chatsById = new Map<string, AgentChatSessionSummary>();
+          for (const session of chat ?? []) {
+            if (requestedLaneIds.has(session.laneId)) chatsById.set(session.sessionId, session);
+          }
+          chatsByIdRef.current = chatsById;
+        } else if (chat) {
+          // A brain without `sessionIds` returns every chat; only the named ones are taken.
+          const wanted = new Set(staleIds);
+          const chatsById = new Map(chatsByIdRef.current);
+          for (const session of chat) {
+            if (!wanted.has(session.sessionId)) continue;
+            if (requestedLaneIds.has(session.laneId)) chatsById.set(session.sessionId, session);
+            else chatsById.delete(session.sessionId);
+          }
+          chatsByIdRef.current = chatsById;
+        } else {
+          // The read failed; the next event reads everything again.
+          fullRefreshDueRef.current = true;
+        }
         const chatByLane = new Map<string, AgentChatSessionSummary[]>();
-        for (const session of chat) {
-          if (!requestedLaneIds.has(session.laneId)) continue;
+        for (const session of chatsByIdRef.current.values()) {
           const rows = chatByLane.get(session.laneId) ?? [];
           rows.push(session);
           chatByLane.set(session.laneId, rows);
@@ -268,20 +350,22 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
           laneId,
           buildLaneAgents(chatByLane.get(laneId) ?? [], cliByLane.get(laneId) ?? []),
         ] as const);
-        setByLane(new Map(entries));
+        commit(new Map(entries));
       } while (refreshQueuedRef.current);
     } finally {
       refreshInFlightRef.current = false;
     }
-  }, [laneKey]);
+  }, [commit, laneKey]);
 
   useEffect(() => {
     // Re-run when the active project changes; listSessionsCached keys by active project.
     void projectRoot;
+    fullRefreshDueRef.current = true;
     void refresh();
   }, [projectRoot, refresh]);
 
   useEffect(() => {
+    if (!laneKey) return;
     const scheduleRefresh = () => {
       if (refreshTimerRef.current != null) return;
       refreshTimerRef.current = window.setTimeout(() => {
@@ -289,8 +373,22 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
         void refresh();
       }, 350);
     };
-    const offChat = window.ade.agentChat.onEvent(scheduleRefresh);
-    const offSession = window.ade.sessions.onChanged(scheduleRefresh);
+    const onChatEvent = (envelope: AgentChatEventEnvelope) => {
+      if (shouldRefreshSessionListForChatEvent(envelope)) {
+        fullRefreshDueRef.current = true;
+      } else if (chatsByIdRef.current.has(envelope.sessionId)) {
+        staleChatIdsRef.current.add(envelope.sessionId);
+      } else {
+        return;
+      }
+      scheduleRefresh();
+    };
+    const onSessionsChanged = () => {
+      fullRefreshDueRef.current = true;
+      scheduleRefresh();
+    };
+    const offChat = window.ade.agentChat.onEvent(onChatEvent);
+    const offSession = window.ade.sessions.onChanged(onSessionsChanged);
     return () => {
       if (refreshTimerRef.current != null) {
         window.clearTimeout(refreshTimerRef.current);
@@ -299,7 +397,7 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
       offChat?.();
       offSession?.();
     };
-  }, [refresh]);
+  }, [laneKey, refresh]);
 
   return byLane;
 }

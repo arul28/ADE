@@ -52,6 +52,7 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import { IPC } from "../../../shared/ipc";
+import { conditionalActionResult } from "../../../../../ade-cli/src/conditionalActionResult";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 
 type DisconnectListener = (error: Error) => void;
@@ -1013,14 +1014,14 @@ describe("RemoteConnectionPool", () => {
       nextCursor: 2,
       events: [{ id: 1, category: "runtime" }],
     });
-    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "stream_events",
       arguments: {
         cursor: 1,
         limit: 10,
       },
-    }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
+    }), { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
 
     firstClient.emitDisconnect(new Error("lost"));
 
@@ -1406,7 +1407,7 @@ describe("RemoteConnectionPool", () => {
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
     expect(firstClient.call).toHaveBeenCalledTimes(1);
-    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
@@ -1414,7 +1415,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    }, { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
+    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
@@ -1443,7 +1444,7 @@ describe("RemoteConnectionPool", () => {
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
     expect(client.call).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
@@ -1451,7 +1452,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    }, { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
+    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
     expect(client.close).not.toHaveBeenCalled();
     expect(ssh.end).not.toHaveBeenCalled();
   });
@@ -1705,6 +1706,75 @@ describe("RemoteConnectionPool", () => {
     }
   });
 
+  describe("conditional reads", () => {
+    // The host side is the real one: it hashes a large result and answers
+    // "not modified" when the caller already holds the same bytes.
+    const hostReply = (payload: unknown, params: Record<string, unknown>, action: { domain: string; action: string }) => {
+      const reply = { ok: true, domain: action.domain, action: action.action, result: payload, statusHints: {} };
+      return params.conditional === true ? conditionalActionResult(reply, params.ifNoneMatch) : reply;
+    };
+    const bigList = (tag: string) => Array.from({ length: 400 }, (_, index) => ({ id: `lane-${index}`, tag }));
+
+    it("reuses its copy of an unchanged read, and takes a changed one in full", async () => {
+      const client = createClient();
+      let payload: unknown = bigList("v1");
+      const replies: Array<Record<string, unknown>> = [];
+      client.call.mockImplementation(async (_method: string, params: Record<string, unknown>) => {
+        const reply = hostReply(payload, params, { domain: "lane", action: "list" }) as Record<string, unknown>;
+        replies.push(reply);
+        return reply;
+      });
+      bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client, ssh: createSsh(), result: connectResult("1.0.0") });
+      const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+      const read = () => pool.callActionForTarget(target, "project-1", { domain: "lane", action: "list" });
+
+      expect((await read()).result).toEqual(bigList("v1"));
+      expect((await read()).result).toEqual(bigList("v1"));
+      expect(replies[1]).toMatchObject({ notModified: true });
+      expect(replies[1]).not.toHaveProperty("result");
+      // The kept copy answered: no second, full request.
+      expect(client.call).toHaveBeenCalledTimes(2);
+
+      payload = bigList("v2");
+      expect((await read()).result).toEqual(bigList("v2"));
+      expect(replies[2]).not.toHaveProperty("notModified");
+    });
+
+    it("asks again in full when the host says not modified for a copy it no longer has", async () => {
+      const client = createClient();
+      const payload = bigList("v1");
+      client.call
+        .mockResolvedValueOnce({ ok: true, domain: "lane", action: "list", notModified: true, etag: "unknown", statusHints: {} })
+        .mockImplementation(async (_method: string, params: Record<string, unknown>) => hostReply(payload, params, { domain: "lane", action: "list" }));
+      bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client, ssh: createSsh(), result: connectResult("1.0.0") });
+      const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+      const reply = await pool.callActionForTarget(target, "project-1", { domain: "lane", action: "list" });
+
+      expect(reply.result).toEqual(payload);
+      expect(client.call).toHaveBeenCalledTimes(2);
+      expect(client.call.mock.calls[1]?.[1]).not.toHaveProperty("ifNoneMatch");
+    });
+
+    it("never makes a write conditional, so a write is never asked twice", async () => {
+      const client = createClient();
+      client.call.mockImplementation(async (_method: string, params: Record<string, unknown>) =>
+        hostReply(bigList("draft"), params, { domain: "chat", action: "updateDraft" }));
+      bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client, ssh: createSsh(), result: connectResult("1.0.0") });
+      const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+      for (let i = 0; i < 2; i += 1) {
+        expect((await pool.callActionForTarget(target, "project-1", { domain: "chat", action: "updateDraft", args: {} })).result)
+          .toEqual(bigList("draft"));
+      }
+      expect(client.call).toHaveBeenCalledTimes(2);
+      for (const [, params] of client.call.mock.calls) {
+        expect(params).not.toHaveProperty("conditional");
+        expect(params).not.toHaveProperty("ifNoneMatch");
+      }
+    });
+  });
+
   it("retries read-only project actions once after ECONNRESET", async () => {
     const firstClient = createClient();
     const firstSsh = createSsh();
@@ -1746,23 +1816,23 @@ describe("RemoteConnectionPool", () => {
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
     expect(firstClient.call).toHaveBeenCalledTimes(1);
-    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
         domain: "lane",
         action: "list",
       },
-    }, { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000 });
     expect(secondClient.call).toHaveBeenCalledTimes(1);
-    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
         domain: "lane",
         action: "list",
       },
-    }, { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000 });
   });
 
   it("retries file git decoration refresh once after ECONNRESET", async () => {
@@ -1804,7 +1874,7 @@ describe("RemoteConnectionPool", () => {
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
@@ -1812,7 +1882,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }, { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000 });
   });
 
   it("falls back to empty git decorations when an older runtime lacks that optional action", async () => {
@@ -1852,7 +1922,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     expect(client.call).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
@@ -1860,7 +1930,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }, { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000 });
   });
 
   it("lists remote ADE actions as grouped registry entries", async () => {
@@ -1908,11 +1978,11 @@ describe("RemoteConnectionPool", () => {
       },
     ]);
 
-    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "list_ade_actions",
       arguments: { domain: "all" },
-    });
+    }));
   });
 
   it("reconnects before running a target-scoped action after the cached SSH session drops", async () => {
@@ -1957,14 +2027,14 @@ describe("RemoteConnectionPool", () => {
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
     expect(firstClient.call).not.toHaveBeenCalled();
-    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
       name: "run_ade_action",
       arguments: {
         domain: "lane",
         action: "list",
       },
-    }, { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000 });
   });
 
   it("calls project-scoped sync methods on the connected runtime", async () => {

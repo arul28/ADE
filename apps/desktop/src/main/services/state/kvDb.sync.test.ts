@@ -73,6 +73,39 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     reopened.close();
   });
 
+  // cr-sqlite reads its site id once, when the extension loads, and every
+  // change this machine exports carries it. The `secrets/sync-site-id` file is
+  // the source of truth, including for a database copied from another machine.
+  it.each(["fresh", "stored id matches the file", "stored id differs from the file"] as const)(
+    "cr-sqlite uses the file's site id on open and in exported changes (%s)",
+    async (state) => {
+      const dbPath = makeDbPath("ade-kvdb-sync-site-file-");
+      const siteIdFile = path.join(path.dirname(dbPath), "secrets", "sync-site-id");
+      if (state !== "fresh") {
+        const seed = await openKvDb(dbPath, createLogger() as any);
+        seed.close();
+        if (state === "stored id differs from the file") {
+          fs.writeFileSync(siteIdFile, "0123456789abcdef0123456789abcdef");
+        }
+      }
+
+      const db = await openKvDb(dbPath, createLogger() as any);
+      const fileSiteId = fs.readFileSync(siteIdFile, "utf8").trim();
+      const versionBefore = db.sync.getDbVersion();
+      db.run(
+        `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+         values (?, ?, ?, ?, ?, ?)`,
+        ["project-site", "/repo/site", "Site", "main", "2026-10-27T00:00:00.000Z", "2026-10-27T00:00:00.000Z"],
+      );
+
+      expect(db.get<{ site_id: string }>("select lower(hex(crsql_site_id())) as site_id")?.site_id).toBe(fileSiteId);
+      const exported = db.sync.exportChangesSince(versionBefore).filter((change) => change.table === "projects");
+      expect(exported.length).toBeGreaterThan(0);
+      expect(new Set(exported.map((change) => change.site_id))).toEqual(new Set([fileSiteId]));
+      db.close();
+    },
+  );
+
   it("exports and applies CRDT changes across two databases", async () => {
     const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-a-"), createLogger() as any);
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-b-"), createLogger() as any);
@@ -183,6 +216,71 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     );
 
     db.close();
+  });
+
+  it("reads the same export on the off-thread helper connection as on the main one, then lets the file go on close", async () => {
+    const dbPath = makeDbPath("ade-kvdb-sync-offthread-");
+    const warnings: string[] = [];
+    const db = await openKvDb(dbPath, { ...createLogger(), warn: (event: string) => { warnings.push(event); } } as any);
+    for (let batch = 0; batch < 4; batch += 1) {
+      db.run("begin immediate");
+      for (let index = 0; index < 5; index += 1) {
+        db.run("insert into kv(key, value) values (?, ?)", [`offthread-${batch}-${index}`, `value-${index}`]);
+      }
+      db.run("commit");
+    }
+    // Suppressed local rows and a later change, so the filter and the
+    // keep-scanning-past-filtered-rows paths both run.
+    db.sync.discardUnpublishedChangesForTables(["kv"]);
+    db.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-offthread", "/repo/offthread", "Offthread", "main", "2026-10-26T00:00:00.000Z", "2026-10-26T00:00:00.000Z"],
+    );
+    const through = db.sync.getDbVersion();
+    const shapes = [
+      {},
+      { maxRows: 10 },
+      { maxRows: 3, throughDbVersion: through },
+      { excludeTables: ["projects"], throughDbVersion: through },
+    ];
+    expect(db.sync.exportChangesSinceOffThread).toBeTypeOf("function");
+    for (const options of shapes) {
+      const onMain = db.sync.exportChangesSince(0, options);
+      expect(await db.sync.exportChangesSinceOffThread!(0, options)).toEqual(onMain);
+    }
+    expect(db.sync.exportChangesSince(0, { maxRows: 10 }).some((change) => change.table === "projects")).toBe(true);
+
+    const errorCode = async (run: () => unknown): Promise<unknown> => {
+      try {
+        await run();
+        return null;
+      } catch (error) {
+        return (error as { code?: unknown }).code;
+      }
+    };
+    db.run("begin immediate");
+    for (let index = 0; index < 20; index += 1) db.run("insert into kv(key, value) values (?, ?)", [`big-${index}`, "v"]);
+    db.run("commit");
+    const oversized = { maxRows: 5, throughDbVersion: db.sync.getDbVersion(), rejectOversizedVersionGroup: true };
+    const from = db.sync.getDbVersion() - 1;
+    expect(await errorCode(() => db.sync.exportChangesSinceOffThread!(from, oversized)))
+      .toBe(CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE);
+    expect(await errorCode(() => db.sync.exportChangesSince(from, oversized)))
+      .toBe(CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE);
+
+    // The helper answered every export itself; a fallback to the main
+    // connection would also match, and logs this.
+    expect(warnings).not.toContain("db.export_helper_failed");
+
+    // Close finalizes the helper too: the file can be moved (Windows refuses
+    // while any connection holds it) and opened again with every change.
+    const versionBeforeClose = db.sync.getDbVersion();
+    db.close();
+    fs.renameSync(dbPath, `${dbPath}.moved`);
+    const reopened = await openKvDb(`${dbPath}.moved`, createLogger() as any);
+    expect(reopened.sync.getDbVersion()).toBe(versionBeforeClose);
+    reopened.close();
   });
 
   it("normalizes legacy text primary keys before applying remote CRDT changes", async () => {

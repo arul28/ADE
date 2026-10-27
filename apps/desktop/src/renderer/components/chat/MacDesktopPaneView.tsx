@@ -37,6 +37,7 @@ import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopS
 import { MAC_DESKTOP_NOT_ANSWERING } from "./macDesktopStatusStore";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
+import { LinuxDesktopOpenApp } from "./LinuxDesktopOpenApp";
 import {
   MAC_DESKTOP_LIST_TITLE,
   MacDesktopAppIcon,
@@ -86,6 +87,8 @@ type MacDesktopWindowCardProps = {
   onSelect: (windowId: number) => void;
   /** Absent where a window cannot leave the lane's screen (a private Windows screen). */
   onRelease?: (windowId: number) => void;
+  /** Linux: the window cannot leave, but it can be closed. */
+  onCloseWindow?: (windowId: number) => void;
 };
 
 const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
@@ -94,6 +97,7 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
   iconPng,
   onSelect,
   onRelease,
+  onCloseWindow,
 }: MacDesktopWindowCardProps) {
   const title = macDesktopWindowTitle(entry);
   return (
@@ -134,6 +138,13 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
           title={`Send “${title}” back to your main screen`}
           onClick={() => onRelease(entry.id)}
         />
+      ) : onCloseWindow ? (
+        <MacDesktopRowAction
+          label="Close"
+          testId="mac-desktop-window-close"
+          title={`Close “${title}”`}
+          onClick={() => onCloseWindow(entry.id)}
+        />
       ) : null}
     </div>
   );
@@ -148,14 +159,14 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId,
     lastObservation, videoHost, attachCanvasSlot, attachSurface, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, takeoverBlocked, permissionCheck, confirmStop,
-    setConfirmStop, restartingCapture, restartCapture,
+    setConfirmStop, restartingCapture, restartCapture, canRecheckPermissions, hostScreenIsLocal,
     connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
-    saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById,
+    saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById, openApp, closeWindowById,
     selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool,
   } = controller;
   const windowsHost = desktopTool === "windows-desktop" || status?.platform === "win32";
-  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop");
+  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop", status?.platform ?? null);
   /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
   const seatKind = desktopSeatKind({
     platform: windowsHost ? "win32" : status?.platform,
@@ -165,7 +176,10 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   const windowsShared = Boolean(display) && seatKind === "windows-shared";
   // A private Windows screen is another Windows session: a window cannot move
   // between it and the user's screen, so the two "move" controls are not drawn.
-  const windowsMovable = seatKind !== "windows-private";
+  // A Linux lane screen is its own X display: nothing moves on or off it,
+  // so "Add app" opens an app and a window card offers Close.
+  const linuxSeat = seatKind === "linux";
+  const windowsMovable = seatKind !== "windows-private" && !linuxSeat;
   const { action: stopLabel, consequence: stopConsequence } = STOP_CONFIRM_COPY[seatKind];
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
@@ -386,7 +400,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
     : null;
   // Moving a window to the user's screen needs a local host and a seat that can move it.
-  const canMoveWindows = Boolean(status?.hostIsLocal) && windowsMovable;
+  const canMoveWindows = hostScreenIsLocal && windowsMovable;
   const presentAction = macDesktopPresentAction({
     hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
@@ -791,14 +805,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 Details
               </button>
             ) : null}
-            <button
-              type="button"
-              data-testid={`mac-desktop-restart-capture${suffix}`}
-              className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
-              onClick={() => void restartCapture()}
-            >
-              Restart capture
-            </button>
+            {canRecheckPermissions ? (
+              <button
+                type="button"
+                data-testid={`mac-desktop-restart-capture${suffix}`}
+                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => void restartCapture()}
+              >
+                Restart capture
+              </button>
+            ) : null}
             {stopped ? null : (
               <button
                 type="button"
@@ -966,6 +982,9 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           className="absolute inset-0 z-20 flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-sm)] border border-border bg-surface"
           data-testid="mac-desktop-picker-overlay"
         >
+          {linuxSeat ? (
+            <LinuxDesktopOpenApp onOpen={openApp} onClose={() => setPickerOpen(false)} />
+          ) : (
           <MacDesktopClaimPicker
             inline
             laneId={laneId}
@@ -978,15 +997,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             onClaim={claimWindow}
             onClose={() => setPickerOpen(false)}
           />
+          )}
         </div>
       ) : null}
 
       {/* The decoder, mounted once and never moved in the React tree. Its host
           node is what travels between the pane and the overlay. */}
-      {videoHost && live.url
+      {videoHost && live.source
         ? createPortal(
             <H264StreamView
-              source={{ kind: "http", url: live.url }}
+              source={live.source}
               reconnectNonce={live.reconnectNonce}
               onStatus={live.onStatus}
               onDimensions={live.onDimensions}
@@ -1079,14 +1099,15 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
                 onSelect={selectWindow}
                 onRelease={windowsMovable ? releaseWindowById : undefined}
+                onCloseWindow={linuxSeat ? closeWindowById : undefined}
               />
             ))}
-            {windowsMovable ? (
+            {windowsMovable || linuxSeat ? (
               <button
                 type="button"
                 data-testid="mac-desktop-add-app"
                 onClick={() => setPickerOpen(true)}
-                title="Add an app to this desktop"
+                title={linuxSeat ? "Open an app on this screen" : "Add an app to this desktop"}
                 className={cn(
                   "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
                   "border border-dashed border-border/70 text-[11.5px] text-muted-fg",

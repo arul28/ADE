@@ -1723,15 +1723,18 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     };
     rerender();
 
-    expect(setWorkViewStateSpy).toHaveBeenCalledWith(
-      "/fake/project",
-      expect.objectContaining({
-        activeItemId: session.id,
-        selectedItemId: session.id,
-        workSidebarOpen: true,
-        workSidebarTool: "git",
-      }),
-    );
+    const write = setWorkViewStateSpy.mock.calls.filter(([key]) => key === "/fake/project").at(-1)?.[1] as
+      | Record<string, unknown>
+      | ((prev: Record<string, unknown>) => Record<string, unknown>)
+      | undefined;
+    expect(write, "the switch writes the project's Work view").toBeDefined();
+    const next = typeof write === "function" ? write(createDefaultWorkProjectViewState()) : write;
+    expect(next).toMatchObject({
+      activeItemId: session.id,
+      selectedItemId: session.id,
+      workSidebarOpen: true,
+      workSidebarTool: "git",
+    });
   });
 
   it("does not copy Work selection onto a different repository", async () => {

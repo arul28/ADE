@@ -32,6 +32,9 @@ function fallbackFor(action: PersonalChatAction): unknown {
 
 export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<"personalChats"> {
   const { client, commands } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the call site.
+  const mutation = { idempotent: false } as const;
   const subscriptions = new Map<string, () => void>();
   const buffered: RemoteRuntimeBufferedEvent[] = [];
   const delivered = new Set<string>();
@@ -85,21 +88,20 @@ export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<
 
   return {
     call: async (request: PersonalChatCallArgs): Promise<PersonalChatCallResponse> => {
-      const result = await commands.call<unknown>(
-        `personalChats.${request.action}`,
-        (request.args ?? {}) as Record<string, unknown>,
-        {
-          fallback: fallbackFor(request.action),
-          idempotent: request.action === "list"
-            || request.action === "getSummary"
-            || request.action === "read"
-            || request.action === "models"
-            || request.action === "modelCatalog"
-            || request.action === "getEventHistory"
-            || request.action === "getEventHistoryPage",
-          requireProject: false,
-        },
-      );
+      const action = `personalChats.${request.action}`;
+      const args = (request.args ?? {}) as Record<string, unknown>;
+      const isRead = request.action === "list"
+        || request.action === "getSummary"
+        || request.action === "read"
+        || request.action === "models"
+        || request.action === "modelCatalog"
+        || request.action === "getEventHistory"
+        || request.action === "getEventHistoryPage";
+      // The read and mutation shapes are disjoint, so this branches instead of
+      // building a union of the two.
+      const result = await (isRead
+        ? commands.call<unknown>(action, args, { fallback: fallbackFor(request.action), requireProject: false })
+        : commands.call<unknown>(action, args, { ...mutation, requireProject: false }));
       ensureFromResult(result);
       return { action: request.action, result };
     },

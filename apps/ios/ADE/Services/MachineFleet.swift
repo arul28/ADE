@@ -522,7 +522,7 @@ final class MachineFleet: ObservableObject {
           machines: AccountService.shared.machines
         ) ?? "Machine",
         state: state,
-        projects: connection.rosterProjects,
+        projects: connection.rosterProjectsIncludingOlderChats,
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),

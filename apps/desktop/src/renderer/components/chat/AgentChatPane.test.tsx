@@ -2106,7 +2106,7 @@ describe("AgentChatPane companion drawers", () => {
       });
     });
 
-    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
     fireEvent.click(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!);
     await waitFor(() => {
       expect(screen.queryByTestId("ios-panel")).toBeNull();
@@ -2115,7 +2115,7 @@ describe("AgentChatPane companion drawers", () => {
     const iosButton = screen.getAllByRole("button", { name: "Open iOS simulator drawer" })[0]!;
     fireEvent.click(iosButton);
 
-    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
     expect(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!);
@@ -2206,7 +2206,7 @@ describe("AgentChatPane companion drawers", () => {
         requestedAt: new Date(0).toISOString(),
     }).then((next) => { status = next?.status ?? null; });
     await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
-    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
     resetWorkToolShowRequestsForTests();
     setDocumentVisibleForTests(null);
     layout.mockRestore();
@@ -2619,7 +2619,7 @@ describe("AgentChatPane companion drawers", () => {
     }).then((next) => { status = next?.status ?? null; });
     await waitFor(() => expect(status).toBe("held"), { timeout: 5_000 });
     // Opened all the same: the user sees it when the window comes back.
-    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
     resetWorkToolShowRequestsForTests();
     setDocumentVisibleForTests(null);
     layout.mockRestore();
@@ -13198,7 +13198,11 @@ describe("older transcript paging retries", () => {
     try {
       renderPane(session);
       expect(await screen.findByText("newest visible message")).toBeTruthy();
-      // No scroll: the Work pane backfills on its own.
+      // The reader reaches for older history (a wheel up), which starts the
+      // background fill at once instead of after the open's quiet delay.
+      const pane = document.querySelector(".ade-chat-timeline-pane");
+      expect(pane, "transcript pane").toBeTruthy();
+      fireEvent.wheel(pane!, { deltaY: -120 });
       await waitFor(() => expect(pageRequests).toBe(1));
       await act(async () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));

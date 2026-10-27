@@ -73,6 +73,7 @@ import { showToast } from "../app/toast/toastStore";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { cssZoomOf } from "../../lib/webZoom";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The floating live-preview card.
@@ -283,7 +284,6 @@ export function WorkLiveCornerCard({
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
   const [bottomReserve, setBottomReserve] = useState(0);
   const [scrubBuffer, setScrubBuffer] = useState<readonly WorkLiveScrubFrame[]>([]);
-  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const companionUi = useChatCompanionUiState(chatSessionId);
   const closed: WorkLiveCardClosedByTool = chatSessionId
@@ -874,11 +874,7 @@ export function WorkLiveCornerCard({
 
   // One low-frequency tick so "· 2s" ages while you look at it. Only while the
   // card is actually on screen.
-  useEffect(() => {
-    if (!visible) return undefined;
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [visible]);
+  const nowTick = useTicker(1000, visible);
 
   /* ── Scrubbing ─────────────────────────────────────────────────────────── */
 
@@ -1350,6 +1346,7 @@ export function WorkLiveCornerCard({
       sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
       desktopTool={desktopTool}
+      hostPlatform={toolContext.hostPlatform ?? null}
       supported={desktopTool === "windows-desktop"
         ? toolContext.supportsWindowsDesktop !== false
         : toolContext.supportsMacDesktop !== false}

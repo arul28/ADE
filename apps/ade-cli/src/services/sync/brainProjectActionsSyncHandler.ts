@@ -28,16 +28,20 @@ import type {
   SyncProjectCatalogPayload,
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
+  SyncRosterSubscribePayload,
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+  SYNC_ROSTER_CHAT_DELTA_CAPABILITY,
+  SYNC_ROSTER_CHAT_PAGES_CAPABILITY,
+  SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
-import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
+import { SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import { resolveBrainMachineSyncStores } from "./brainMachineSyncStores";
@@ -90,6 +94,7 @@ import {
 } from "./brainRoutedCommands";
 import {
   createSyncRosterFanout,
+  rosterResumeIdentity,
   createSyncRosterPeerState,
   type SyncRosterPeerState,
   type SyncRosterProvider,
@@ -689,6 +694,12 @@ export function createBrainProjectActionsSyncHandler(
     isDisposed: () => false,
     logger: args.logger,
     buildFailedLogEvent: "sync_brain.roster_build_failed",
+    resumeIdentity: (peer) => rosterResumeIdentity(peer.authenticated, peer.metadata),
+    acceptsChatPatches: (peer) => peer.metadata?.capabilities?.includes(SYNC_ROSTER_CHAT_DELTA_CAPABILITY) === true,
+    acceptsPrioritySnapshot: (peer) =>
+      peer.metadata?.capabilities?.includes(SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY) === true,
+    acceptsChatPages: (peer) =>
+      peer.metadata?.capabilities?.includes(SYNC_ROSTER_CHAT_PAGES_CAPABILITY) === true,
   });
   const chatSubscriptions = createBrainChatSubscriptions({
     logger: args.logger,
@@ -946,11 +957,20 @@ export function createBrainProjectActionsSyncHandler(
         break;
       }
       case "roster_subscribe": {
-        await rosterFanout.subscribe(peer, envelope.requestId);
+        await rosterFanout.subscribe(
+          peer,
+          envelope.requestId,
+          (envelope.payload as SyncRosterSubscribePayload | null)?.sinceSeq,
+        );
         break;
       }
       case "roster_unsubscribe": {
         rosterFanout.unsubscribe(peer);
+        break;
+      }
+      case "roster_chats_request": {
+        if (!rosterFanout.enabled) break;
+        send(peer.ws, "roster_chats", await rosterFanout.chatPage(envelope.payload), envelope.requestId);
         break;
       }
       case "heartbeat": {
@@ -1172,7 +1192,7 @@ export function createBrainProjectActionsSyncHandler(
     }
   };
 
-  return ({ ws, remoteAddress, transportOrigin }) => {
+  return ({ ws, remoteAddress, transportOrigin, upgradeHello: upgradeHelloHeader }) => {
     const peer: BrainPeerState = {
       ws,
       lifecycleGeneration: 0,
@@ -1291,79 +1311,9 @@ export function createBrainProjectActionsSyncHandler(
       }
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
-    ws.on("message", (data: RawData) => {
-      const lifecycleGeneration = peer.lifecycleGeneration;
-      let envelope: ReturnType<typeof parseSyncEnvelope>;
-      try {
-        envelope = parseSyncEnvelopeFrame(data);
-        // Same inbound framing as the project host, for peers that declared it.
-        if (
-          envelope.type === "envelope_chunk"
-          && peer.authenticated
-          && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
-        ) {
-          const binaryChunk = envelope.binaryChunk;
-          if (binaryChunk) {
-            const reassembled = peer.envelopeChunks.addBinary(binaryChunk, binaryChunk.body);
-            if (!reassembled) return;
-            envelope = parseSyncEnvelopeFrame(reassembled);
-          } else {
-            const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
-            if (!chunk) throw new Error("Invalid envelope_chunk payload.");
-            const reassembled = peer.envelopeChunks.add(chunk);
-            if (!reassembled) return;
-            envelope = parseSyncEnvelope(reassembled);
-          }
-          if (envelope.type === "envelope_chunk") {
-            throw new Error("Nested envelope_chunk frames are not allowed.");
-          }
-        }
-      } catch (error) {
-        if (error instanceof SyncProtocolVersionMismatchError) {
-          const payload = sendSyncProtocolVersionMismatchAndClose(
-            peer.ws,
-            error,
-            () => {
-              clearAuthTimeout();
-            },
-          );
-          args.logger.warn("sync_brain.protocol_version_mismatch", {
-            receivedVersion: payload.receivedVersion,
-            currentVersion: payload.currentVersion,
-            minSupportedVersion: payload.minSupportedVersion,
-            remoteAddress: remoteAddress ?? null,
-          });
-          return;
-        }
-        args.logger.warn("sync_brain.invalid_envelope", {
-          error: error instanceof Error ? error.message : String(error),
-          remoteAddress: remoteAddress ?? null,
-        });
-        return;
-      }
-
-      if (peer.authenticated && envelope.type === "relay_reauthorize") {
-        if (!peer.relayAuthorization) {
-          send(peer.ws, "relay_reauthorize_result", {
-            ok: false,
-            error: {
-              code: "invalid_request",
-              message: "This connection does not have a refreshable Relay authorization lease.",
-              retryable: false,
-            },
-          }, envelope.requestId);
-          return;
-        }
-        void peer.relayAuthorization.handle(envelope.payload, envelope.requestId).catch((error) => {
-          args.logger.warn("sync_brain.relay_reauthorization_failed", {
-            error: error instanceof Error ? error.message : String(error),
-            peerDeviceId: peer.metadata?.deviceId ?? null,
-            requestId: envelope.requestId,
-          });
-        });
-        return;
-      }
-
+    // One queue for every envelope this socket sends: frames, and a hello
+    // that came with the upgrade request (`X-ADE-Hello`), which goes first.
+    const enqueueEnvelope = (envelope: ReturnType<typeof parseSyncEnvelope>, lifecycleGeneration: number): void => {
       peer.messageQueue = peer.messageQueue.catch(() => {}).then(async () => {
         if (!isPeerCurrent(lifecycleGeneration)) return;
 
@@ -1776,6 +1726,8 @@ export function createBrainProjectActionsSyncHandler(
               diagnoseSyncHostReadiness({ skipListenerScan: true }),
               syncHostRecoveryAuthorized,
             ),
+            knownCommandRoutingDigest: hello.commandRoutingDigest ?? null,
+            omitProjectCatalog: isRosterSyncPeer(hello.peer),
           });
           // Framing follows the peer's declared capability from hello_ok on,
           // exactly as on the project host.
@@ -1804,6 +1756,96 @@ export function createBrainProjectActionsSyncHandler(
           peerDeviceId: peer.metadata?.deviceId ?? null,
         });
       });
+    };
+    // A hello sent with the upgrade request: queued before any frame, so it
+    // takes the frame path and its hello_ok is the first frame after the 101.
+    // The client also sends it as a frame for older hosts; that copy is
+    // dropped by its request id.
+    const upgradeHello = syncUpgradeHelloEnvelope(upgradeHelloHeader);
+    const upgradeHelloRequestId = upgradeHello?.requestId ?? null;
+    if (upgradeHello) enqueueEnvelope(upgradeHello, peer.lifecycleGeneration);
+    ws.on("message", (data: RawData) => {
+      const lifecycleGeneration = peer.lifecycleGeneration;
+      let envelope: ReturnType<typeof parseSyncEnvelope>;
+      try {
+        envelope = parseSyncEnvelopeFrame(data);
+        // Same inbound framing as the project host, for peers that declared it.
+        if (
+          envelope.type === "envelope_chunk"
+          && peer.authenticated
+          && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+        ) {
+          const binaryChunk = envelope.binaryChunk;
+          if (binaryChunk) {
+            const reassembled = peer.envelopeChunks.addBinary(binaryChunk, binaryChunk.body);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelopeFrame(reassembled);
+          } else {
+            const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
+            if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+            const reassembled = peer.envelopeChunks.add(chunk);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelope(reassembled);
+          }
+          if (envelope.type === "envelope_chunk") {
+            throw new Error("Nested envelope_chunk frames are not allowed.");
+          }
+        }
+      } catch (error) {
+        if (error instanceof SyncProtocolVersionMismatchError) {
+          const payload = sendSyncProtocolVersionMismatchAndClose(
+            peer.ws,
+            error,
+            () => {
+              clearAuthTimeout();
+            },
+          );
+          args.logger.warn("sync_brain.protocol_version_mismatch", {
+            receivedVersion: payload.receivedVersion,
+            currentVersion: payload.currentVersion,
+            minSupportedVersion: payload.minSupportedVersion,
+            remoteAddress: remoteAddress ?? null,
+          });
+          return;
+        }
+        args.logger.warn("sync_brain.invalid_envelope", {
+          error: error instanceof Error ? error.message : String(error),
+          remoteAddress: remoteAddress ?? null,
+        });
+        return;
+      }
+
+      if (peer.authenticated && envelope.type === "relay_reauthorize") {
+        if (!peer.relayAuthorization) {
+          send(peer.ws, "relay_reauthorize_result", {
+            ok: false,
+            error: {
+              code: "invalid_request",
+              message: "This connection does not have a refreshable Relay authorization lease.",
+              retryable: false,
+            },
+          }, envelope.requestId);
+          return;
+        }
+        void peer.relayAuthorization.handle(envelope.payload, envelope.requestId).catch((error) => {
+          args.logger.warn("sync_brain.relay_reauthorization_failed", {
+            error: error instanceof Error ? error.message : String(error),
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            requestId: envelope.requestId,
+          });
+        });
+        return;
+      }
+
+      // The frame copy of a hello this socket already sent with its upgrade.
+      if (
+        envelope.type === "hello"
+        && upgradeHelloRequestId != null
+        && envelope.requestId === upgradeHelloRequestId
+      ) {
+        return;
+      }
+      enqueueEnvelope(envelope, lifecycleGeneration);
     });
     ws.on("error", (error) => {
       args.logger.warn("sync_brain.socket_error", {

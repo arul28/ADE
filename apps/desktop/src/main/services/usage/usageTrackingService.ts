@@ -259,6 +259,14 @@ const ACTIVE_POLL_INTERVAL_MS = 60_000;
 const IDLE_POLL_INTERVAL_MS = 5 * 60_000;
 const IDLE_AFTER_MS = 15 * 60_000;
 const QUOTA_DEMAND_LEASE_MS = 90_000;
+/**
+ * The first automatic poll after the process starts, when a snapshot from the
+ * last run is already on disk to show. A poll starts the ledger worker, which
+ * reads every provider's transcript history, and at boot it competed with the
+ * project opens and the first clients. Anyone who asks for usage sooner
+ * (`noteQuotaDemand`, `forceRefresh`) still polls at once.
+ */
+const FIRST_AUTOMATIC_POLL_DELAY_MS = 20_000;
 const COST_CACHE_TTL_MS = 60 * 60_000;        // 1 hour; history scans are intentionally low priority
 const COST_REFRESH_RETRY_BASE_MS = 60_000;
 const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
@@ -5786,7 +5794,7 @@ export function createUsageTrackingService({
     return pollIntervalMs;
   }
 
-  function scheduleNextPoll(): void {
+  function scheduleNextPoll(delayMs = nextPollDelayMs()): void {
     if (!pollingEnabled) return;
     if (pollTimer) clearTimeout(pollTimer);
     pollTimer = setTimeout(() => {
@@ -5796,13 +5804,20 @@ export function createUsageTrackingService({
         .finally(() => {
           if (pollingEnabled) scheduleNextPoll();
         });
-    }, nextPollDelayMs());
+    }, delayMs);
     pollTimer.unref?.();
   }
 
+  let startedOnce = false;
   function start() {
     if (pollingEnabled) return;
     pollingEnabled = true;
+    const firstStart = !startedOnce;
+    startedOnce = true;
+    if (firstStart && diskCachedSnapshot) {
+      scheduleNextPoll(FIRST_AUTOMATIC_POLL_DELAY_MS);
+      return;
+    }
     scheduleNextPoll();
     void poll({ reason: "automatic" })
       .catch(() => {})

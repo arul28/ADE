@@ -41,6 +41,7 @@ import type {
   TerminalWatchResult,
   TerminalWatchSummary,
 } from "../shared/terminalWatch";
+import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../shared/githubMedia";
 import {
   type AppOpenSystemSettingsPaneArgs,
   type AppOpenSystemSettingsPaneResult,
@@ -567,6 +568,7 @@ import type {
   PrReviewThread,
   PrReviewThreadComment,
   PrStatus,
+  PrListConditionalReply,
   PrSummary,
   PrDetail,
   PrFile,
@@ -592,6 +594,12 @@ import type {
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
+  SetPrAssigneesArgs,
+  SetPrAssigneesResult,
+  ListGitHubPrFilterOptionsArgs,
+  ListGitHubPrFilterOptionsResult,
+  SearchGitHubPrsArgs,
+  SearchGitHubPrsResult,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
   SubmitPrReviewResult,
@@ -8026,6 +8034,7 @@ const adeBridge = {
           {
             includeAutomation: args.includeAutomation === true,
             includeIdentity: args.includeIdentity === true,
+            ...(Array.isArray(args.sessionIds) ? { sessionIds: args.sessionIds } : {}),
           },
         ],
       };
@@ -9219,12 +9228,18 @@ const adeBridge = {
         sessionId: string;
         maxEvents?: number;
         maxBytes?: number;
+        /** Resume from a held snapshot; see `AgentChatEventHistorySnapshot.tailEndOffset`. */
+        afterOffset?: number;
+        historyGeneration?: number;
       },
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatEventHistorySnapshot> => {
       const historyOptions = {
         ...(args.maxEvents != null ? { maxEvents: args.maxEvents } : {}),
         ...(args.maxBytes != null ? { maxBytes: args.maxBytes } : {}),
+        ...(args.afterOffset != null && args.historyGeneration != null
+          ? { afterOffset: args.afterOffset, historyGeneration: args.historyGeneration }
+          : {}),
       };
       if (pin) {
         return callPinnedRuntimeAction<AgentChatEventHistorySnapshot>(pin, "chat", "getChatEventHistory", {
@@ -13069,6 +13084,21 @@ const adeBridge = {
       callPrReadRuntimeActionOr(pin, "listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),
       ),
+    /**
+     * `listAll` that can answer "unchanged": pass the signature of the list you
+     * hold. Resolves to the bare array when the host predates this (or for the
+     * local IPC fallback), so callers must accept both shapes.
+     */
+    listAllConditional: async (
+      ifNoneMatch: string | null,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrSummary[] | PrListConditionalReply> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "listAll",
+        { args: { conditional: true, ...(ifNoneMatch ? { ifNoneMatch } : {}) } },
+        () => ipcRenderer.invoke(IPC.prsListAll),
+      ),
     listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
       callPrReadRuntimeActionOr(null, "listOpenPullRequests", {}, () =>
         ipcRenderer.invoke(IPC.prsListOpenForRepo),
@@ -13337,6 +13367,15 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.prsGetChatWatches, args),
       ),
+    // The GitHub credential lives on the machine that owns the project, so the
+    // signed URL is asked for there; only the URL comes back.
+    resolveMedia: (args: ResolvePrMediaArgs, pin?: OpenProjectBinding | null): Promise<ResolvePrMediaResult> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "resolveMedia",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsResolveMedia, args),
+      ),
     getStackLinkOffer: (
       args: {
         sessionId: string;
@@ -13571,6 +13610,21 @@ const adeBridge = {
     setLabels: async (args: SetPrLabelsArgs, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "setLabels", { args }, () =>
         ipcRenderer.invoke(IPC.prsSetLabels, args),
+      ),
+    setAssignees: (args: SetPrAssigneesArgs, pin?: OpenProjectBinding | null): Promise<SetPrAssigneesResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "pr", "setAssignees", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetAssignees, args),
+      ),
+    listGitHubFilterOptions: (
+      args: ListGitHubPrFilterOptionsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ListGitHubPrFilterOptionsResult> =>
+      callPrReadRuntimeActionOr(pin, "listGithubFilterOptions", { args }, () =>
+        ipcRenderer.invoke(IPC.prsListGitHubFilterOptions, args),
+      ),
+    searchGitHubPrs: (args: SearchGitHubPrsArgs, pin?: OpenProjectBinding | null): Promise<SearchGitHubPrsResult> =>
+      callPrReadRuntimeActionOr(pin, "searchGithubPrs", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSearchGitHubPrs, args),
       ),
     requestReviewers: async (args: RequestPrReviewersArgs, pin?: OpenProjectBinding | null): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "requestReviewers", { args }, () =>

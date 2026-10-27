@@ -15,10 +15,16 @@
 // The measurement is taken by scripts/perf/desktop-main-start-probe.cjs, loaded
 // through NODE_OPTIONS=--require; product code is not changed for it.
 //
-// usage: node scripts/perf/desktop-main-start.mjs --mode off|cold|warm [--runs 7] [--out results.json]
+// usage: node scripts/perf/desktop-main-start.mjs --mode off|cold|warm [--runs 7] [--keep-user-data] [--project <dir>] [--out results.json]
 //   off   NODE_DISABLE_COMPILE_CACHE=1: no compile cache (the baseline for the new bootstrap)
 //   cold  the cache dir is emptied before every run: a launch right after an update
 //   warm  one unmeasured launch fills the cache, then --runs measured launches reuse it
+//   --keep-user-data  every launch reuses one user-data dir, as a relaunch does, so
+//                     what a launch saves for the next (the shell PATH) is in play;
+//                     in warm mode the fill launch also fills it
+//   --project <dir>   open <dir> as the startup project (ADE_PROJECT_ROOT), the way a
+//                     relaunch after an update or `ade open` does; use a throwaway git
+//                     repo, never a real project. Its brain is stopped after each run
 // Build the bundle first: `cd apps/desktop && ./node_modules/.bin/tsup`.
 // Run it under the machine limiter: `~/ade-perf-handoff/bin/quiet.sh node scripts/perf/desktop-main-start.mjs ...`.
 import { spawn, spawnSync } from "node:child_process";
@@ -36,7 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RUN_TIMEOUT_MS = 120_000;
 
 function parseArgs(argv) {
-  const opts = { mode: null, runs: 7, out: null };
+  const opts = { mode: null, runs: 7, out: null, keepUserData: false, project: null };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = () => {
@@ -48,6 +54,8 @@ function parseArgs(argv) {
     if (flag === "--mode") opts.mode = value();
     else if (flag === "--runs") opts.runs = Number(value());
     else if (flag === "--out") opts.out = path.resolve(value());
+    else if (flag === "--keep-user-data") opts.keepUserData = true;
+    else if (flag === "--project") opts.project = path.resolve(value());
     else throw new Error(`unknown argument: ${flag}`);
   }
   if (!["off", "cold", "warm"].includes(opts.mode)) throw new Error("--mode must be off, cold or warm");
@@ -65,12 +73,12 @@ const INHERITED_TO_CLEAR = [
   "ADE_DISABLE_RUNTIME_SERVICE_INSTALL",
 ];
 
-function launchEnv({ runDir, cacheDir, mode }) {
+function launchEnv({ runDir, cacheDir, mode, userDataDir, project }) {
   const env = { ...process.env };
   for (const key of INHERITED_TO_CLEAR) delete env[key];
   Object.assign(env, {
     ADE_HOME: path.join(runDir, "ade-home"),
-    ADE_DESKTOP_USER_DATA_PATH: path.join(runDir, "user-data"),
+    ADE_DESKTOP_USER_DATA_PATH: userDataDir ?? path.join(runDir, "user-data"),
     ADE_RUNTIME_SOCKET_PATH: path.join(runDir, "ade-home", "sock", "ade.sock"),
     ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     ADE_DISABLE_SYNC_HOST: "1",
@@ -81,6 +89,7 @@ function launchEnv({ runDir, cacheDir, mode }) {
     ADE_DISABLE_PRODUCT_ANALYTICS: "1",
   });
   if (mode === "off") env.NODE_DISABLE_COMPILE_CACHE = "1";
+  if (project) env.ADE_PROJECT_ROOT = project;
   return env;
 }
 
@@ -117,15 +126,17 @@ function brainsOwnedBy(pids, adeHome) {
     .includes(`ADE_HOME=${adeHome}`));
 }
 
-async function launchOnce({ electronBin, tmpRoot, cacheDir, mode, index }) {
+async function launchOnce({ electronBin, tmpRoot, cacheDir, mode, index, userDataDir, project }) {
   const runDir = path.join(tmpRoot, `run-${index}`);
   fs.mkdirSync(path.join(runDir, "ade-home"), { recursive: true });
   const brainsBefore = new Set(brainPids());
   const stdoutFd = fs.openSync(path.join(runDir, "stdout.log"), "w");
   const stderrFd = fs.openSync(path.join(runDir, "stderr.log"), "w");
-  const env = launchEnv({ runDir, cacheDir, mode });
+  const env = launchEnv({ runDir, cacheDir, mode, userDataDir, project });
   const started = Date.now();
-  const child = spawn(electronBin, ["."], {
+  // A mock keychain: the unsigned dev Electron would otherwise ask the login
+  // keychain for its safe-storage key, and wait on a dialog until the timeout.
+  const child = spawn(electronBin, ["--use-mock-keychain", "."], {
     cwd: desktopDir,
     env,
     detached: true,
@@ -202,21 +213,22 @@ async function main() {
   const electronBin = createRequire(path.join(desktopDir, "package.json"))("electron");
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-start-"));
   const cacheDir = path.join(tmpRoot, "compile-cache");
+  const userDataDir = opts.keepUserData ? path.join(tmpRoot, "user-data") : undefined;
 
-  console.error(`[desktop-main-start] mode=${opts.mode} runs=${opts.runs} load=${os.loadavg()[0].toFixed(2)}`);
+  console.error(`[desktop-main-start] mode=${opts.mode} runs=${opts.runs}${opts.keepUserData ? " keep-user-data" : ""} load=${os.loadavg()[0].toFixed(2)}`);
   const runs = [];
   const launches = [];
   let index = 0;
   if (opts.mode === "warm") {
     fs.rmSync(cacheDir, { recursive: true, force: true });
-    launches.push(await launchOnce({ electronBin, tmpRoot, cacheDir, mode: opts.mode, index: index++ }));
+    launches.push(await launchOnce({ electronBin, tmpRoot, cacheDir, mode: opts.mode, index: index++, userDataDir, project: opts.project }));
     const cached = countFiles(cacheDir);
     if (cached === 0) throw new Error("warm: the cache dir is still empty after the fill launch; the cache is not flushed at exit");
     console.error(`[desktop-main-start] cache filled (${cached} files), measuring`);
   }
   for (let i = 0; i < opts.runs; i += 1) {
     if (opts.mode === "cold") fs.rmSync(cacheDir, { recursive: true, force: true });
-    const result = await launchOnce({ electronBin, tmpRoot, cacheDir, mode: opts.mode, index: index++ });
+    const result = await launchOnce({ electronBin, tmpRoot, cacheDir, mode: opts.mode, index: index++, userDataDir, project: opts.project });
     launches.push(result);
     runs.push(result);
     console.error(`[desktop-main-start] run ${i + 1}/${opts.runs}: bundle=${result.bundleMs.toFixed(0)} ready=${result.readyMs.toFixed(0)} window=${result.windowMs.toFixed(0)}`);
@@ -236,6 +248,7 @@ async function main() {
   };
   const report = {
     mode: opts.mode,
+    keepUserData: opts.keepUserData,
     node: runs[0].node,
     electron: runs[0].electron,
     loadAvg1m: os.loadavg()[0],

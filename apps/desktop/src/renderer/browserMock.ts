@@ -4379,6 +4379,127 @@ const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
     : BUILTIN_MOCK_GITHUB_SNAPSHOT,
 );
 
+// ── GitHub tab filters + assignees (mock) ─────────────────────
+// Labels, people and assignees so label/author/assignee filters and the
+// Assignees card are demoable without GitHub. Assigning `no-access` fails like
+// a missing triage permission; assigning `outsider` is silently dropped like a
+// person without repository access; searching the text `ratelimit` answers as a
+// rate-limited GitHub search.
+const MOCK_FILTER_LABELS = [
+  { value: "bug", color: "d73a4a", description: "Something is broken" },
+  { value: "enhancement", color: "a2eeef", description: "New feature or request" },
+  { value: "needs review", color: "fbca04", description: "Waiting on a reviewer" },
+  { value: "size:XS", color: "3cbf00", description: null },
+  { value: "size:L", color: "f9d0c4", description: null },
+  { value: "🚧 In Progress", color: "5319e7", description: null },
+  { value: "docs", color: "0075ca", description: "Documentation" },
+];
+const MOCK_FILTER_PEOPLE = [
+  { value: "mock-user", name: "Mock User", avatarUrl: null },
+  { value: "teammate", name: "Team Mate", avatarUrl: null },
+  { value: "ada", name: "Ada Lovelace", avatarUrl: null },
+  { value: "octo-cat", name: "Octo Cat", avatarUrl: null },
+  { value: "release-captain", name: null, avatarUrl: null },
+  { value: "no-access", name: "Read-only Rita", avatarUrl: null },
+  { value: "outsider", name: "Fork Contributor", avatarUrl: null },
+];
+const MOCK_PR_ASSIGNEES = new Map<string, Array<{ login: string; avatarUrl: string | null }>>();
+/** Who `@me` means: the snapshot's viewer when it knows one. */
+const MOCK_VIEWER_LOGIN = String(MOCK_GITHUB_SNAPSHOT?.viewerLogin ?? "mock-user") || "mock-user";
+if (!USE_ADE_DB_SNAPSHOT) {
+  (MOCK_GITHUB_SNAPSHOT.repoPullRequests ?? []).forEach((row: any, index: number) => {
+    if (!Array.isArray(row.labels) || row.labels.length === 0) {
+      const picks = [MOCK_FILTER_LABELS[index % MOCK_FILTER_LABELS.length]!, ...(index % 3 === 0 ? [MOCK_FILTER_LABELS[3]!] : [])];
+      row.labels = picks.map((label) => ({ name: label.value, color: label.color, description: label.description }));
+    }
+    if (index % 2 === 0) MOCK_PR_ASSIGNEES.set(String(row.id), [{ login: index % 4 === 0 ? "mock-user" : "teammate", avatarUrl: null }]);
+  });
+} else {
+  // A database snapshot already carries each PR's assignees; without seeding
+  // them here the detail card shows people while the assignee filter (and
+  // `@none`) acts as if nobody is assigned.
+  for (const snapshot of ADE_DB_PR_SNAPSHOTS) {
+    const assignees = Array.isArray(snapshot?.detail?.assignees) ? snapshot.detail.assignees : [];
+    const people = assignees
+      .map((user: any) => ({ login: String(user?.login ?? ""), avatarUrl: user?.avatarUrl ?? null }))
+      .filter((user: { login: string }) => user.login.length > 0);
+    if (people.length > 0) MOCK_PR_ASSIGNEES.set(String(snapshot.prId), people);
+  }
+}
+
+function mockPrAssigneeKey(prId: string): string {
+  const coords = /^gh:([^/]+)\/([^#]+)#(\d+)$/.exec(prId);
+  if (!coords) return prId;
+  const row = (MOCK_GITHUB_SNAPSHOT.repoPullRequests ?? []).find((item: any) =>
+    String(item.repoOwner).toLowerCase() === coords[1]!.toLowerCase()
+    && String(item.repoName).toLowerCase() === coords[2]!.toLowerCase()
+    && Number(item.githubPrNumber) === Number(coords[3]));
+  return row ? String(row.id) : prId;
+}
+
+function withMockAssignees(prId: string, detail: any): any {
+  if (!detail) return detail;
+  const key = mockPrAssigneeKey(prId);
+  return MOCK_PR_ASSIGNEES.has(key) ? { ...detail, assignees: MOCK_PR_ASSIGNEES.get(key) } : detail;
+}
+
+async function mockListGitHubFilterOptions(args: any) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const kind = args?.kind === "author" || args?.kind === "assignee" ? args.kind : "label";
+  const query = String(args?.query ?? "").trim().toLowerCase();
+  const source: any[] = kind === "label"
+    ? MOCK_FILTER_LABELS
+    : MOCK_FILTER_PEOPLE.filter((person) => kind === "author" || person.value !== "outsider");
+  const options = source.filter((option) => !query
+    || option.value.toLowerCase().includes(query)
+    || String(option.name ?? option.description ?? "").toLowerCase().includes(query));
+  return { kind, query, options, complete: true };
+}
+
+async function mockSearchGitHubPrs(args: any) {
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  const state = args?.state ?? "open";
+  const filters = args?.filters ?? { labels: [], author: null, assignee: null };
+  const text = String(args?.text ?? "").trim().toLowerCase();
+  const query = `repo:acme/ade is:pr ${state === "all" ? "" : `is:${state} `}(mock)`;
+  if (text.includes("ratelimit")) {
+    return { items: [], totalCount: 0, nextCursor: null, query, error: { kind: "rate_limited", message: "GitHub search is rate limited right now.", retryAt: null } };
+  }
+  const items = (MOCK_GITHUB_SNAPSHOT.repoPullRequests ?? []).filter((row: any) => {
+    const rowState = row.state === "draft" ? "open" : row.state;
+    if (state !== "all" && rowState !== state) return false;
+    const labelNames = (row.labels ?? []).map((label: any) => String(label.name).toLowerCase());
+    if ((filters.labels ?? []).some((label: string) => !labelNames.includes(label.toLowerCase()))) return false;
+    const author = String(row.author ?? "").toLowerCase();
+    if (filters.author && author !== (filters.author === "@me" ? MOCK_VIEWER_LOGIN.toLowerCase() : String(filters.author).toLowerCase())) return false;
+    const assignees = (MOCK_PR_ASSIGNEES.get(String(row.id)) ?? []).map((user) => user.login.toLowerCase());
+    if (filters.assignee === "@none" && assignees.length > 0) return false;
+    if (filters.assignee && filters.assignee !== "@none"
+      && !assignees.includes(filters.assignee === "@me" ? MOCK_VIEWER_LOGIN.toLowerCase() : String(filters.assignee).toLowerCase())) return false;
+    return !text || String(row.title ?? "").toLowerCase().includes(text);
+  });
+  return { items, totalCount: items.length, nextCursor: null, query, error: null };
+}
+
+async function mockSetAssignees(args: any) {
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const add: string[] = Array.isArray(args?.add) ? args.add : [];
+  const remove: string[] = Array.isArray(args?.remove) ? args.remove : [];
+  if (add.some((login) => login.toLowerCase() === "no-access")) {
+    throw new Error("This GitHub account cannot assign people here. Assigning needs triage access to the repository.");
+  }
+  const key = mockPrAssigneeKey(String(args?.prId ?? ""));
+  const removeKeys = new Set(remove.map((login) => login.toLowerCase()));
+  const current = (MOCK_PR_ASSIGNEES.get(key) ?? []).filter((user) => !removeKeys.has(user.login.toLowerCase()));
+  const notAssigned = add.filter((login) => login.toLowerCase() === "outsider");
+  for (const login of add) {
+    if (notAssigned.includes(login) || current.some((user) => user.login.toLowerCase() === login.toLowerCase())) continue;
+    current.push({ login, avatarUrl: null });
+  }
+  MOCK_PR_ASSIGNEES.set(key, current);
+  return { assignees: current, notAssigned };
+}
+
 const MOCK_JIRA_ACCOUNT = {
   accountId: "mock-jira-user-1",
   displayName: "Morgan Lee",
@@ -8435,6 +8556,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       open: resolvedArg(null as never),
       claimWindow: resolvedArg(null as never),
       releaseWindow: resolvedArg({ released: 0 }),
+      closeWindow: resolvedArg(null as never),
       observe: resolvedArg(null as never),
       click: resolvedArg(null as never),
       type: resolvedArg(null as never),
@@ -9651,7 +9773,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         comments: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ?? MOCK_COMMENTS_BY_PR[prId] ?? [],
       }),
       getReviewThreads: async (prId: string) => ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviewThreads ?? [],
-      getDetailByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.detail ?? null,
+      getDetailByGithub: async (args: any) => {
+        const detail = getAdeDbPrSnapshotByGithubCoordinates(args)?.detail ?? null;
+        return detail ? withMockAssignees(`gh:${args?.repoOwner}/${args?.repoName}#${args?.githubPrNumber}`, detail) : null;
+      },
       getFilesByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.files ?? [],
       getCommitsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.commits ?? [],
       getActionRunsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.actionRuns ?? [],
@@ -9842,6 +9967,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       unlinkChatSession: async () => ({ ok: true }),
       setChatWatch: async () => null,
       getChatWatches: async () => [],
+      resolveMedia: async () => ({ status: "unavailable" as const, reason: "github_error" as const }),
       linkChatStack: async () => ({ ok: true, linked: 0 }),
       listChatSessionsForPr: async () => [],
       getStackLinkOffer: async () => null,
@@ -9858,7 +9984,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
       onEvent: noop,
-      getDetail: async (prId: string) =>
+      getDetail: async (prId: string) => withMockAssignees(prId,
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.detail ?? {
           prId,
           body: null,
@@ -9869,7 +9995,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           isDraft: false,
           milestone: null,
           linkedIssues: [],
-        },
+        }),
       getFiles: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.files ?? MOCK_LIVE_PR_FILES[prId] ?? [],
       getCommits: async (prId: string) =>
@@ -9913,6 +10039,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       updateTitle: resolvedArg(undefined),
       updateBody: resolvedArg(undefined),
       setLabels: resolvedArg(undefined),
+      setAssignees: mockSetAssignees,
+      listGitHubFilterOptions: mockListGitHubFilterOptions,
+      searchGitHubPrs: mockSearchGitHubPrs,
       requestReviewers: resolvedArg(undefined),
       submitReview: resolvedArg({
         id: "pr-review-1",

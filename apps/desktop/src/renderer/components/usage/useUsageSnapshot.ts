@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding, UsageSnapshot } from "../../../shared/types";
+import { useAppStoreApi } from "../../state/appStore";
 import { shouldApplyUsageSnapshot } from "./usageSnapshotOrdering";
 
 /** What a refresh actually did, so a Retry can report an outcome. */
@@ -36,8 +37,47 @@ export type UsageSnapshotSource = {
   refreshNow: () => Promise<UsageRefreshOutcome>;
 };
 
+/** Which machine's usage a binding reads: every local project shares this machine's. */
+function usageMachineOfBinding(binding: OpenProjectBinding | null): string {
+  if (!binding) return "none";
+  return binding.kind === "remote" ? `remote:${binding.targetId}` : "local";
+}
+
 /** How often a pinned reader re-reads the machine's cached snapshot while visible. */
 const PINNED_SNAPSHOT_REREAD_MS = 60_000;
+
+/**
+ * One read shared by every reader of a machine while it is in flight. The
+ * header, the balance indicator and the suggestions all re-read when the tab
+ * changes machine, and the header's deferred read starts a moment later; a
+ * snapshot can be hundreds of KB. Never shared across a binding change: the
+ * bound machine may differ.
+ */
+let bindingEpoch = 0;
+let bindingEpochSource: unknown = null;
+const readsInFlight = new Map<string, Promise<UsageSnapshot | null>>();
+
+function trackBindingEpoch(): void {
+  const app = window.ade?.app;
+  if (!app || app === bindingEpochSource) return;
+  // Registered before any reader's own listener, so a binding change moves the
+  // epoch before those readers ask again.
+  if (app.onProjectBindingChanged?.(() => { bindingEpoch += 1; })) bindingEpochSource = app;
+}
+
+function readSnapshotShared(
+  bridge: { getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null> },
+  pin: OpenProjectBinding | null,
+): Promise<UsageSnapshot | null> {
+  const key = pin ? `pin:${pin.key}` : `bound:${bindingEpoch}`;
+  const inFlight = readsInFlight.get(key);
+  if (inFlight) return inFlight;
+  const read = bridge.getSnapshot(pin).finally(() => {
+    if (readsInFlight.get(key) === read) readsInFlight.delete(key);
+  });
+  readsInFlight.set(key, read);
+  return read;
+}
 
 export function useUsageSnapshot({
   readSnapshot = true,
@@ -67,6 +107,7 @@ export function useUsageSnapshot({
   const snapshotRef = useRef<UsageSnapshot | null>(null);
   const bindingGenerationRef = useRef(0);
   const pinRef = useRef(pin);
+  const appStore = useAppStoreApi();
 
   const applySnapshot = useCallback((next: UsageSnapshot | null) => {
     if (!shouldApplyUsageSnapshot(next, snapshotRef.current)) return;
@@ -82,6 +123,7 @@ export function useUsageSnapshot({
       return;
     }
     const bridge = window.ade.usage;
+    trackBindingEpoch();
     let cancelled = false;
     // Reads in flight for the previous machine or binding are discarded.
     const dropSnapshot = () => {
@@ -107,7 +149,7 @@ export function useUsageSnapshot({
       const requestedGeneration = bindingGenerationRef.current;
       let current: UsageSnapshot | null = null;
       try {
-        current = await bridge.getSnapshot(pin);
+        current = await readSnapshotShared(bridge, pin);
       } catch {
         // Keep whatever is already on screen: a read that threw is not news
         // that the numbers went away.
@@ -134,9 +176,18 @@ export function useUsageSnapshot({
     };
     if (readSnapshot) void load();
 
-    const unsubscribeBinding = pin ? undefined : window.ade?.app?.onProjectBindingChanged?.(() => {
-      dropSnapshot();
+    // The snapshot is the machine's, not the project's: a switch between two
+    // projects on one machine keeps its numbers (no blank gauges, no re-read
+    // from every reader on every project switch). Starts from the binding the
+    // store holds now: the subscription does not replay it.
+    let boundMachine: string | null = usageMachineOfBinding(appStore.getState().projectBinding ?? null);
+    const unsubscribeBinding = pin ? undefined : window.ade?.app?.onProjectBindingChanged?.((binding) => {
+      const machine = usageMachineOfBinding(binding);
+      const sameMachine = boundMachine !== null && machine === boundMachine;
+      boundMachine = machine;
       setBindingRevision((revision) => revision + 1);
+      if (sameMachine) return;
+      dropSnapshot();
       if (readSnapshot) void load();
     });
 
@@ -179,7 +230,7 @@ export function useUsageSnapshot({
       unsubscribe?.();
       unsubscribeBinding?.();
     };
-  }, [applySnapshot, noteDemand, pin, readSnapshot]);
+  }, [appStore, applySnapshot, noteDemand, pin, readSnapshot]);
 
   /**
    * Force a provider poll and say what came back.

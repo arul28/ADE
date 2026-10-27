@@ -61,12 +61,25 @@ bash scripts/release-tools/scope.sh
 find the failed job before writing notes (step 2): a flaky job is rerun with
 `gh run rerun <id> --failed`; a real failure stops the release.
 
-### 2. Release notes (desktop only, 5 min)
+### 2. Release notes and docs drift (desktop only, ~10 min)
 
-Write `changelog/v<V>.mdx` (copy the previous one's shape), add it to
-`docs.json`'s changelog list, update the "Latest release" card in
-`changelog/index.mdx`, and add the `## [<V>]` section plus compare links to
-`CHANGELOG.md`.
+Write `changelog/v<V>.mdx` (copy the previous one's shape). The changelog nav
+lists months, not versions, so also add the release to `changelog/<YYYY-MM>.mdx`
+for the release month (create that page if this is the month's first release).
+Update the "Latest release" card in `changelog/index.mdx`, and add the `## [<V>]`
+section plus compare links to `CHANGELOG.md`.
+
+Then check the product docs, not just the changelog:
+
+```bash
+node scripts/docs-areas.mjs --changed --base v<previous-release>
+```
+
+It prints every docs area the release touched and the pages that belong to it.
+For each area, update its pages or write one line in the release notes commit
+message saying why it needs no change. A changelog entry is not a substitute:
+the release gate exists because feature pages drift while changelogs stay
+current.
 
 These notes ship inside the app. On the first launch after a user installs
 the update on that computer, What's new shows up to 3 catalogue pages they
@@ -84,8 +97,6 @@ since the one they came from (sections merged, an icon per section). So:
   (its `added` date is the day it ships) plus a short file in `pages/`. Use
   real captures from the dev app, cropped to the feature, GIF or WebP in
   `pages/assets/`. Pages show by themselves for 45 days.
-
-Then:
 
 ```bash
 node scripts/validate-docs.mjs

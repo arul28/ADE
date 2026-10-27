@@ -142,7 +142,7 @@ import {
   type IosSimulatorPressKeyArgs,
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
-import { commandExists } from "../ai/utils";
+import { commandExistsCached } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
@@ -340,7 +340,7 @@ const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { de
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
-type CommandExistsProbe = typeof commandExists;
+type CommandExistsProbe = (command: string) => boolean;
 
 function describeClaimAge(claimedAt: string | null | undefined): string | null {
   if (!claimedAt) return null;
@@ -711,7 +711,10 @@ const defaultRunCommand: RunCommand = async (command, args, options = {}) => {
 
 let run: RunCommand = defaultRunCommand;
 let spawnProcess: SpawnProcess = spawn;
-let commandExistsProbe: CommandExistsProbe = commandExists;
+// Machine-wide and off the event loop once answered: every project's service
+// asked again every 10 s with a synchronous login shell (about 35 ms each for
+// xcrun and xcodebuild), on the brain's loop, on a project's first status read.
+let commandExistsProbe: CommandExistsProbe = commandExistsCached;
 
 /**
  * The helper-client factory, swappable for tests.

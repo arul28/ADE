@@ -508,9 +508,13 @@ After apply, ADE runs post-hooks:
 - The host applies each `changeset_batch` envelope as a single SQL
   transaction. Partial application is impossible; the entire batch
   either lands or rolls back.
-- Senders keep exactly one batch pending and advance their durable outbound
-  cursor only after a successful `changeset_ack`. A NACK or 10-second ack
-  timeout retries the identical batch; cursor state never moves speculatively.
+- Senders keep one batch pending and advance their durable outbound cursor
+  only after a successful `changeset_ack`. A NACK or 10-second ack timeout
+  retries the identical batch; cursor state never moves speculatively. A peer
+  that declares `changesetAckWindowV1` may have up to eight batches in flight
+  behind the pending one. An ack covers its batch and every batch before it;
+  an ack that falls short of its batch's end changes nothing, and a resend
+  always starts at the pending batch.
   The compact mobile reseed follows the same rule: its target becomes the
   peer's watermark only after the reseed ACK commits.
 - After six failed send attempts, host and desktop-peer senders discard the

@@ -102,6 +102,15 @@ function compatibilityError(error: unknown): PairedRuntimeCompatibilityError {
   );
 }
 
+/**
+ * How long a local-network route gets to open while another route is still
+ * waiting behind it. A socket on the same network opens in milliseconds; the
+ * default 10 s is for a route that is the last hope. A paired box in a data
+ * centre advertises private addresses nobody else can reach, and each of
+ * them used to hold the relay back by the full 10 s.
+ */
+const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
+
 export async function bootstrapPairedRuntime(args: {
   target: RemoteRuntimeTarget;
   registry: RemoteTargetRegistry;
@@ -160,8 +169,9 @@ export async function bootstrapPairedRuntime(args: {
       candidate.endpoint,
     );
   };
-  for (const candidate of orderedCandidates) {
+  for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
+    const hasFallback = candidateIndex < orderedCandidates.length - 1;
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
     let relayAccountToken: string | null = null;
     let relayAccountOwnerUserId: string | null = null;
@@ -227,6 +237,9 @@ export async function bootstrapPairedRuntime(args: {
         appVersion: args.appVersion,
         relayAccountToken,
         ...(candidate.kind === "relay" ? { correlationId } : {}),
+        ...(candidate.kind === "lan" && hasFallback
+          ? { connectTimeoutMs: LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
+          : {}),
       });
     } catch (error) {
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
@@ -280,11 +293,19 @@ export async function bootstrapPairedRuntime(args: {
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     const latencyStartedAt = Date.now();
+    // Pipelined: `projects.list` goes out right behind `initialize` instead of
+    // one round trip later. The runtime marks the session initialized before
+    // its first await, so the second request finds it ready. Its answer is
+    // used only once `initialize` proves the runtime compatible; any failure
+    // other than a dead transport falls back to asking again afterwards.
+    const initializing = client.initialize(
+      DESKTOP_CLIENT_NAMES.remote,
+      args.appVersion,
+    );
+    const pipelinedProjects = client.call("projects.list", {});
+    pipelinedProjects.catch(() => {});
     try {
-      initializeResult = await client.initialize(
-        DESKTOP_CLIENT_NAMES.remote,
-        args.appVersion,
-      );
+      initializeResult = await initializing;
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {
@@ -317,7 +338,10 @@ export async function bootstrapPairedRuntime(args: {
 
     let projects;
     try {
-      projects = coerceProjects(await client.call("projects.list", {}));
+      projects = coerceProjects(await pipelinedProjects.catch(async (error) => {
+        if (isPairedTransportFailure(error)) throw error;
+        return await client.call("projects.list", {});
+      }));
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {

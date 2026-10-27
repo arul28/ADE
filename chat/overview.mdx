@@ -7,7 +7,7 @@ icon: "comments"
 Agent chat is ADE's interactive coding surface. You open a chat in a lane, describe the task, and the agent reads and edits files, runs commands, inspects diffs, commits, and opens PRs — all inside that lane's git worktree. Every tool call streams into the transcript and is expandable, so you can inspect each edit or command before you trust it.
 
 <Frame caption="Agent chat on the desktop — transcript, streaming tool calls, and live diffs in one place.">
-  <img src="/media/landing/showcase/agent-chat-desktop.webp" alt="Agent chat on the ADE desktop" />
+  <img src="/media/current/work-chat.jpg" alt="Agent chat on the ADE desktop" />
 </Frame>
 
 ## Lane-scoped by design
@@ -20,17 +20,9 @@ Because work is isolated per lane, several agents can run in the same repository
 
 From an empty Work composer you can launch into an existing lane, or let ADE auto-create a worktree from your prompt. In a lane you can start either an **agent chat** (the streaming, tool-aware surface) or a provider **CLI session** (the provider's own terminal client) — both run scoped to the lane's worktree.
 
-<Frame caption="Start an agent chat or a provider CLI session in a lane.">
-  <img src="/media/features/agent-chat/chat-or-cli.webp" alt="Choose between an agent chat and a CLI session in a lane" />
-</Frame>
-
 ## Pick a provider and model per session
 
-ADE runs five coding agents against the same lane. Pick the provider and model that fits the task when you start the session, and switch within the same family mid-session when you want a different model.
-
-<Frame caption="Pick the provider and model for the session.">
-  <img src="/media/features/agent-chat/model-selection.webp" alt="Provider and model picker for an agent chat" />
-</Frame>
+ADE runs thirteen provider runtimes against the same lane. Pick the provider and model that fits the task when you start the session, and switch within the same family mid-session when you want a different model.
 
 | Provider | Runtime |
 |----------|---------|
@@ -40,6 +32,8 @@ ADE runs five coding agents against the same lane. Pick the provider and model t
 | **Factory Droid** | The official `@factory/droid-sdk`, driving ADE's own copy of the `droid` CLI. |
 | **OpenCode** | The OpenCode server runtime, routing your provider API keys, OpenRouter, or a local model (Ollama, LM Studio). |
 
+Plus Pi, GitHub Copilot, Qwen, Kimi, Grok, Devin, and Antigravity. The full list and each runtime's credential model is in [Agents and models](/concepts/agents-and-models).
+
 <Note>
 Add a provider key or subscription in **Settings** before its models appear in the picker. ADE downloads its own copy of each agent for the machine that runs the chat, the first time it is needed; it never runs a CLI from your PATH. When an agent is not downloaded yet or not signed in, an inline card in the chat offers Download / Retry or a sign-in, on the chat's machine.
 </Note>
@@ -47,8 +41,6 @@ Add a provider key or subscription in **Settings** before its models appear in t
 ## Set a Codex goal
 
 Codex chats can keep an explicit goal on the session, so a long-running task has a visible objective while the transcript, tool calls, and follow-up prompts continue normally. Set, update, complete, or clear the goal from the chat UI when the work changes.
-
-<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/codex-goals.mp4"></video>
 
 ## Follow long-running work
 
@@ -77,17 +69,17 @@ Provider-native sessions can also be recovered into ADE when possible. Claude an
 <Tabs>
   <Tab title="Desktop">
     <Frame caption="Agent chat in the macOS app.">
-      <img src="/media/landing/showcase/agent-chat-desktop.webp" alt="Agent chat on the ADE desktop" />
+      <img src="/media/current/work-chat.jpg" alt="Agent chat on the ADE desktop" />
     </Frame>
   </Tab>
   <Tab title="Terminal">
     <Frame caption="The same chat in ade code.">
-      <img src="/media/landing/showcase/agent-chat-tui.webp" alt="Agent chat in ade code" />
+      <img src="/assets/readme/terminal.webp" alt="Agent chat in ade code" />
     </Frame>
   </Tab>
   <Tab title="iOS">
     <Frame caption="Pick up the chat from your phone.">
-      <img src="/media/landing/showcase/agent-chat-mobile.webp" alt="Agent chat on the ADE iOS app" width="300" />
+      <img src="/assets/readme/phone.webp" alt="Agent chat on the ADE iOS app" width="300" />
     </Frame>
   </Tab>
 </Tabs>
@@ -100,7 +92,7 @@ Keep the first prompt specific. "Fix the failing auth redirect test" works bette
   <Card title="Chat capabilities" icon="toolbox" href="/chat/capabilities">
     The full catalog of what a chat agent can do inside a lane.
   </Card>
-  <Card title="Grid & multi-model" icon="grid-2" href="/chat/grid">
+  <Card title="Grid & multi-model" icon="grid-2" href="/guides/multi-agent-setup">
     Run several agents at once and compare their work side by side.
   </Card>
 </CardGroup>

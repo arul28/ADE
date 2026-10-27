@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { issueRefKey, issueRefLabel, type IssueRef } from "../../../shared/issueRefs";
 import {
   clearPendingIssueSheetRequest,
@@ -13,7 +13,8 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { Dialog } from "../ui/dialog";
-import { IssueViewer } from "./IssueViewer";
+// The viewer (and its markdown) loads when a sheet first opens, not with the app.
+const IssueViewer = lazy(() => import("./IssueViewer").then((module) => ({ default: module.IssueViewer })));
 
 /** Wide enough for the two-column layout; the sheet never covers more than it needs. */
 const SHEET_WIDTH = 760;
@@ -80,6 +81,7 @@ export function IssueSheetHost() {
       {request ? (
         // Keyed by issue: an unsaved title or description edit must not carry
         // over to the next issue the sheet shows.
+        <Suspense fallback={null}>
         <IssueViewer
           key={issueRefKey(request.ref)}
           issueRef={request.ref}
@@ -89,6 +91,7 @@ export function IssueSheetHost() {
           onViewAll={viewAll}
           onClose={close}
         />
+        </Suspense>
       ) : null}
     </Dialog>
   );

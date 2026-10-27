@@ -481,6 +481,7 @@ const RECENT_PR_WINDOW_MS = 7 * 86_400_000;
 export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null };
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
+  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const requestRef = useRef(0);
   // What the last reload returned, as text: PR events arrive every few seconds
@@ -500,7 +501,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       const [snapshot, tracked] = await Promise.all([
         // One page of closed history (cached ten minutes in main) brings the
         // week's merges with it; open PRs come in the same snapshot.
-        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot }).catch(() => null),
+        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }).catch(() => null),
         listPrsCoalesced({ projectRoot }).catch(() => [] as PrSummary[]),
       ]);
       if (requestRef.current !== request) return;
@@ -528,7 +529,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot]);
+  }, [projectRoot, projectBindingKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));

@@ -246,13 +246,23 @@ describe("macDesktop watch-only Stop", () => {
     });
   });
 
+  const linuxStatus = (withDisplay: boolean) => ({
+    ...fixture.status,
+    platform: "linux",
+    windowsDesktop: null,
+    display: withDisplay ? { ...fixture.status.display!, seatMode: "private", mode: "virtual" } : null,
+  }) as unknown as MacDesktopStatus;
+
   it.each([
     // The user's way out of "Using your main Windows desktop", from any trusted device.
     ["macDesktop.stopSeat", "the main Windows desktop", windowsStatus("shared"), null],
     ["macDesktop.stopSeat", "the private Windows screen", windowsStatus("private"), null],
     // A Mac lane's display is a controller's to stop (`macDesktop.stop`), never a viewer's.
-    ["macDesktop.stopSeat", "a Mac lane's display", fixture.status, /Only a Windows screen/],
+    ["macDesktop.stopSeat", "a Mac lane's display", fixture.status, /Only a Windows or Linux screen/],
     ["macDesktop.stopSeat", "a Windows lane with no screen", windowsStatus(null), /no Windows screen/],
+    // A Linux lane's screen is the lane's own X display on another machine: a viewer's to stop too.
+    ["macDesktop.stopSeat", "a Linux lane's display", linuxStatus(true), null],
+    ["macDesktop.stopSeat", "a Linux lane with no screen", linuxStatus(false), /no Linux screen/],
     // An older phone's command keeps its rule: the private screen only.
     ["macDesktop.stopPrivate", "the private Windows screen", windowsStatus("private"), null],
     ["macDesktop.stopPrivate", "the main Windows desktop", windowsStatus("shared"), /Only a private Windows screen/],

@@ -88,6 +88,9 @@ apps/desktop/resources/runtime/ade-*
 apps/desktop/resources/native/ade-desktop-driver
 apps/desktop/native/ADEDesktopDriver/.build/
 apps/desktop/native/ADEDesktopDriver/.build-*/
+apps/desktop/native/ADEDesktopDriverLinux/target/
+apps/desktop/resources/native/linux-x64/
+apps/desktop/resources/native/linux-arm64/
 apps/desktop/resources/native/ade-capture-helper
 apps/desktop/resources/native/ade-capture-helper.exe
 apps/desktop/resources/native/ade-now-playing.exe

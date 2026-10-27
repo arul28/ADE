@@ -183,6 +183,23 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     deps.db?.setJson(moveKey(sessionId), value);
   };
 
+  /**
+   * The chats that have a move key, from the key range alone; null when this
+   * database cannot list keys, so a caller reads each chat's record instead.
+   */
+  const listMoveSessionIds = (): Set<string> | null => {
+    if (!deps.db) return new Set();
+    if (!deps.db.all) return null;
+    // Every key that starts with the prefix sorts below the prefix with its
+    // last character bumped by one (SQLite compares the UTF-8 bytes).
+    const prefixEnd = `${MOVE_KEY_PREFIX.slice(0, -1)}${String.fromCharCode(MOVE_KEY_PREFIX.charCodeAt(MOVE_KEY_PREFIX.length - 1) + 1)}`;
+    const rows = deps.db.all<{ key: string }>(
+      "select key from kv where key >= ? and key < ?",
+      [MOVE_KEY_PREFIX, prefixEnd],
+    );
+    return new Set(rows.map((row) => row.key.slice(MOVE_KEY_PREFIX.length)));
+  };
+
   const listMoves = (): Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> => {
     const rows = deps.db?.all?.<{ key: string }>("select key from kv where key like ?", [`${MOVE_KEY_PREFIX}%`]) ?? [];
     const moves: Array<{ sessionId: string; value: CrossMachineHandoffPersisted }> = [];
@@ -505,6 +522,7 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     listBatches,
     listOpenBatches,
     listBatchApprovals,
+    listMoveSessionIds,
     inspect,
     inspectLane,
     outbox,

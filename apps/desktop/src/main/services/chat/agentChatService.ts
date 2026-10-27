@@ -5182,7 +5182,7 @@ type EpochDirective =
   | "computerUse"
   /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
   | "appleDevice"
-  /** The lane-screen line (Mac or Windows Desktop), keyed by lane and text. */
+  /** The lane-screen line (Mac, Windows or Linux Desktop), keyed by lane and text. */
   | "laneScreen"
   /**
    * ADE's lane guidance for a provider with no instruction channel, keyed by
@@ -5206,6 +5206,12 @@ type ManagedChatSession = {
   laneWorktreePath: string;
   runtime: ChatRuntime | null;
   preview: string | null;
+  /**
+   * The preview row write, at most one per PREVIEW_WRITE_INTERVAL_MS: when the
+   * last one landed, and the trailing write that carries the newest preview.
+   */
+  previewWrittenAtMs?: number;
+  previewWriteTimer?: NodeJS.Timeout | null;
   closed: boolean;
   endedNotified: boolean;
   /** Set when deleteSession begins — persistence paths bail to avoid re-creating deleted files. */
@@ -5394,6 +5400,15 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
     summaryIndex?: number;
+    timer: NodeJS.Timeout | null;
+  } | null;
+  /**
+   * The newest Codex plan delta, not yet emitted. Each delta carries the whole
+   * plan so far, so only the newest of a burst matters; it goes out on the
+   * 100 ms text clock, or before any other event of the session.
+   */
+  bufferedPlanDelta?: {
+    event: Extract<AgentChatEvent, { type: "plan" }>;
     timer: NodeJS.Timeout | null;
   } | null;
   previewTextBuffer: {
@@ -5874,6 +5889,12 @@ const CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS: ReadonlySet<string> = new Set(["WebFe
 const CLAUDE_POST_TOOL_HOOK_MATCHER = `^(?!${[...CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS].map((tool) => `${tool}$`).join("|")}).*`;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
+/**
+ * Longest a chat's stored preview line trails its stream. Every streamed text
+ * flush and command chunk moves the preview, and each write is a synchronous
+ * SQLite update plus a sync change every connected phone downloads.
+ */
+const PREVIEW_WRITE_INTERVAL_MS = 1_000;
 const TRANSCRIPT_WRITE_FLUSH_MS = 100;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
@@ -9395,6 +9416,8 @@ export function buildComputerUseDirective(
      * "tell the agent" rule as above, for the Windows seat.
      */
     windowsDesktopAvailable?: boolean;
+    /** This host can give the lane a Linux screen (Linux Desktop). */
+    linuxDesktopAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -9407,8 +9430,11 @@ export function buildComputerUseDirective(
   // screenshot anything.
   const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
-  // No backends and no local fallback → skip the directive entirely.
-  if (!hasExternalBackends && !hasLocalFallback) {
+  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable || options.linuxDesktopAvailable);
+  // No backends, no local fallback and no lane screen → skip the directive
+  // entirely. A headless Linux brain has neither of the first two, and its
+  // lane screen is the only screen an agent there can use.
+  if (!hasExternalBackends && !hasLocalFallback && !ownScreen) {
     return null;
   }
 
@@ -9418,7 +9444,6 @@ export function buildComputerUseDirective(
   // skills; this block is only what must hold before the agent opens them. It
   // rides the first turn of every chat on every provider, so every line here
   // is paid by chats that never touch a screen (it was ~9.4k chars).
-  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
   // --- Header (always when we have any capability) ---
   sections.push(
     [
@@ -9470,7 +9495,7 @@ export function buildComputerUseDirective(
     [
       "### Proof Capture",
       "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
-        + (options.windowsDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
         + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
         + (ownScreen
           ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
@@ -15923,6 +15948,12 @@ export function createAgentChatService(args: {
   const readRecentTranscriptEnvelopesForSessionIdAsync = async (
     sessionId: string,
     signal?: AbortSignal,
+    /**
+     * Checked after each page with what was kept so far (oldest first): true
+     * stops the read. A caller that only needs the newest entries stops once
+     * it has them, instead of reading and converting the whole window.
+     */
+    enough?: (keptOldestFirst: AgentChatEventEnvelope[]) => boolean,
   ): Promise<AgentChatEventEnvelope[]> => {
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
     if (!transcriptPath) return [];
@@ -15984,6 +16015,7 @@ export function createAgentChatService(args: {
         retainedConversationEvents >= maxRetainedEvents
         || retainedChars >= maxRetainedChars
         || !page.hasMore
+        || (enough != null && enough([...newestFirst].reverse()))
       ) {
         break;
       }
@@ -16207,6 +16239,8 @@ export function createAgentChatService(args: {
     turnBoundaryAligned?: boolean;
     /** Report re-admitted approvals in `pinnedEvents` instead of `events`. */
     separatePinnedEvents?: boolean;
+    /** Receives the window before approvals are re-admitted ahead of it. */
+    windowOut?: { events: readonly AgentChatEventEnvelope[] };
     transcriptHistory: Pick<
       TranscriptHistoryCacheEntry,
       "envelopes" | "truncated" | "startOffset" | "endOffset" | "envelopeStartOffsetByIdentity"
@@ -16255,6 +16289,7 @@ export function createAgentChatService(args: {
     // counting the session as blocked. Re-admitted in place, past both budgets
     // (or, for callers that asked, reported separately as `pinnedEvents`).
     const retained = retainUnresolvedApprovalRequests(parentVisibleMerged, budgeted);
+    if (args.windowOut) args.windowOut.events = budgeted;
     let windowed = retained;
     let pinnedEvents: AgentChatEventEnvelope[] | null = null;
     if (args.separatePinnedEvents) {
@@ -16353,6 +16388,13 @@ export function createAgentChatService(args: {
       turnBoundaryAligned?: boolean;
       /** Report unresolved approvals older than the window in `pinnedEvents`. */
       separatePinnedEvents?: boolean;
+      /**
+       * Resume: the `tailEndOffset` of a snapshot the caller still holds, with
+       * its `historyGeneration`. Answered with only the events after it when
+       * the generation still matches and the gap fits in this window.
+       */
+      afterOffset?: number;
+      historyGeneration?: number;
     },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const trimmedId = sessionId.trim();
@@ -16372,15 +16414,54 @@ export function createAgentChatService(args: {
       options?.turnBoundaryAligned ? tailBytes * 2 : tailBytes,
       options?.signal,
     );
-    return buildChatEventHistorySnapshot({
+    const window: { events: readonly AgentChatEventEnvelope[] } = { events: [] };
+    const snapshot = buildChatEventHistorySnapshot({
       sessionId: trimmedId,
       maxEvents,
       requestedMaxBytes,
       responseMaxChars,
       turnBoundaryAligned: options?.turnBoundaryAligned === true,
       separatePinnedEvents: options?.separatePinnedEvents === true,
+      windowOut: window,
       transcriptHistory,
     });
+    const historyGeneration = getChatLogState(trimmedId)?.historyGeneration;
+    const withCursor: AgentChatEventHistorySnapshot = {
+      ...snapshot,
+      tailEndOffset: transcriptHistory.endOffset,
+      ...(historyGeneration != null ? { historyGeneration } : {}),
+    };
+    const afterOffset = options?.afterOffset;
+    if (
+      afterOffset == null
+      || !Number.isSafeInteger(afterOffset)
+      || afterOffset <= 0
+      || afterOffset > transcriptHistory.endOffset
+      || historyGeneration == null
+      || options?.historyGeneration !== historyGeneration
+    ) {
+      return withCursor;
+    }
+    // The client holds everything up to `afterOffset`. Send the last event that
+    // starts before it (the seam it joins on) and all that follows; when that
+    // seam is not inside this window, the gap is too big and the full window
+    // goes out as usual. Only the window itself counts: an unresolved approval
+    // re-admitted ahead of it is older than the gap, not a seam.
+    let seamEvent: AgentChatEventEnvelope | null = null;
+    for (let index = window.events.length - 1; index >= 0; index -= 1) {
+      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(window.events[index]!);
+      if (offset != null && offset < afterOffset) {
+        seamEvent = window.events[index]!;
+        break;
+      }
+    }
+    const seam = seamEvent ? snapshot.events.indexOf(seamEvent) : -1;
+    if (seam < 0) return withCursor;
+    return {
+      ...withCursor,
+      events: snapshot.events.slice(seam),
+      resumedFromOffset: afterOffset,
+    };
   };
 
   /**
@@ -19857,9 +19938,14 @@ export function createAgentChatService(args: {
    * waits to start a fresh thread (`claudeFreshThreadPending`), and only one
    * written for the chat's own lane.
    */
-  const claudeResumePointer = (sessionId: string, laneId: string, freshThreadPending: boolean) => {
+  const claudeResumePointer = (
+    sessionId: string,
+    laneId: string,
+    freshThreadPending: boolean,
+    scope?: SummaryCallScope,
+  ) => {
     if (freshThreadPending) return null;
-    const pointer = getClaudeSessionPointerForChat(sessionId);
+    const pointer = scope ? scope.claudePointer(sessionId) : getClaudeSessionPointerForChat(sessionId);
     return pointer?.laneId === laneId ? pointer : null;
   };
 
@@ -20405,7 +20491,7 @@ export function createAgentChatService(args: {
   const copilotRewindEventIdsOf = (managed: ManagedChatSession): Record<string, string> | undefined =>
     managed.copilotRewindEventIds ?? readPersistedState(managed.session.id)?.copilotRewindEventIds;
 
-  const readPersistedState = (sessionId: string): PersistedChatState | null => {
+  const readPersistedState = (sessionId: string, scope?: SummaryCallScope): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
     const recovered = persistedStateFiles.read(filePath);
     if (recovered.value === null) return null;
@@ -20586,7 +20672,7 @@ export function createAgentChatService(args: {
             .slice(-12)
         : undefined;
       const claudeFreshThreadPending = record.claudeFreshThreadPending === true;
-      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending) : null;
+      const claudePointer = provider === "claude" ? claudeResumePointer(sessionId, laneId, claudeFreshThreadPending, scope) : null;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length
         ? record.sdkSessionId.trim()
         : claudePointer?.sessionId;
@@ -21004,7 +21090,36 @@ export function createAgentChatService(args: {
     let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> | null = null;
     const ownerDecisions = new Map<string, ChatRuntimeOwnershipDecision>();
     let batchApprovals: Map<string, AgentChatCrossMachineBatchMoveApproval> | null = null;
+    const claudePointers = new Map<string, ReturnType<typeof getClaudeSessionPointerForChat>>();
+    const parentsPresent = new Map<string, boolean>();
+    let movedSessionIds: ReadonlySet<string> | null | undefined;
+    let idleOpenCodeCompact: Promise<boolean> | null = null;
     return {
+      idleOpenCodeCompactListed: (sessionId: string): Promise<boolean> => {
+        idleOpenCodeCompact ??= getSlashCommands({ sessionId, provider: "opencode" })
+          .then((commands) => commands.some((command) => command.name.replace(/^\//, "") === "compact"));
+        return idleOpenCodeCompact;
+      },
+      // A row's state and its summary both read the chat's Claude pointer.
+      claudePointer: (sessionId: string) => {
+        if (!claudePointers.has(sessionId)) claudePointers.set(sessionId, getClaudeSessionPointerForChat(sessionId));
+        return claudePointers.get(sessionId) ?? null;
+      },
+      // Siblings share a parent, and each summary asks about it twice.
+      parentChatExists: (parentSessionId: string): boolean => {
+        let present = parentsPresent.get(parentSessionId);
+        if (present === undefined) {
+          present = parentChatStillExists(parentSessionId);
+          parentsPresent.set(parentSessionId, present);
+        }
+        return present;
+      },
+      // Which chats have a move record, from one read of the key range: most
+      // chats have none, and asking each row for its record is a query per row.
+      crossMachineMove: (sessionId: string) => {
+        if (movedSessionIds === undefined) movedSessionIds = crossMachineSource.listMoveSessionIds();
+        return !movedSessionIds || movedSessionIds.has(sessionId) ? readCrossMachineMove(sessionId) : null;
+      },
       projectConfig: () => {
         config ??= projectConfigService.get();
         return config;
@@ -21542,19 +21657,39 @@ export function createAgentChatService(args: {
     }, metadata);
   }
 
-  const setSessionPreview = (managed: ManagedChatSession, candidate: string): void => {
-    const next = normalizePreview(candidate);
-    if (!next) return;
-    if (next === managed.preview) return;
-    managed.preview = next;
+  const writeSessionPreview = (managed: ManagedChatSession): void => {
+    const preview = managed.preview;
+    if (!preview || managed.deleted) return;
+    managed.previewWrittenAtMs = Date.now();
     try {
-      sessionService.setLastOutputPreview(managed.session.id, next);
+      sessionService.setLastOutputPreview(managed.session.id, preview);
     } catch (error) {
       logger.warn("agent_chat.preview_update_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const setSessionPreview = (managed: ManagedChatSession, candidate: string): void => {
+    const next = normalizePreview(candidate);
+    if (!next) return;
+    if (next === managed.preview) return;
+    managed.preview = next;
+    // A write is already scheduled; it reads the newest preview when it runs.
+    if (managed.previewWriteTimer) return;
+    const sinceLastWriteMs = Date.now() - (managed.previewWrittenAtMs ?? 0);
+    if (sinceLastWriteMs >= PREVIEW_WRITE_INTERVAL_MS) {
+      writeSessionPreview(managed);
+      return;
+    }
+    const timer = setTimeout(() => {
+      managed.previewWriteTimer = null;
+      if (managed.endedNotified) return;
+      writeSessionPreview(managed);
+    }, PREVIEW_WRITE_INTERVAL_MS - sinceLastWriteMs);
+    timer.unref?.();
+    managed.previewWriteTimer = timer;
   };
 
   const clearAcceptedStartWatch = (sessionId: string): void => {
@@ -23107,6 +23242,12 @@ export function createAgentChatService(args: {
         setSessionPreview(managed, storedEvent.report.summary);
       }
     }
+    // A finished turn stores its last line now, not up to a second later.
+    if (storedEvent.type === "done" && managed.previewWriteTimer) {
+      clearTimeout(managed.previewWriteTimer);
+      managed.previewWriteTimer = null;
+      writeSessionPreview(managed);
+    }
 
     // Durable turn health. The error text is remembered as it streams past and
     // spent on the `done` — the same two signals the blocking-turn collector
@@ -23540,10 +23681,39 @@ export function createAgentChatService(args: {
     }
   };
 
+  const flushBufferedPlanDelta = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedPlanDelta;
+    if (!buffered) return;
+    if (buffered.timer) clearTimeout(buffered.timer);
+    managed.bufferedPlanDelta = null;
+    commitChatEvent(managed, buffered.event);
+  };
+
+  const isBufferablePlanDelta = (event: AgentChatEvent): event is Extract<AgentChatEvent, { type: "plan" }> =>
+    event.type === "plan" && event.state === "delta" && event.streamingText !== undefined && event.steps.length === 0;
+
+  const queuePlanDelta = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "plan" }>,
+  ): void => {
+    const buffered = managed.bufferedPlanDelta;
+    if (buffered && (buffered.event.itemId !== event.itemId || buffered.event.turnId !== event.turnId)) {
+      flushBufferedPlanDelta(managed);
+    }
+    const timer = managed.bufferedPlanDelta?.timer ?? setTimeout(() => {
+      if (managed.bufferedPlanDelta) managed.bufferedPlanDelta.timer = null;
+      flushBufferedPlanDelta(managed);
+    }, BUFFERED_TEXT_FLUSH_MS);
+    managed.bufferedPlanDelta = { event, timer };
+  };
+
   const flushBufferedText = (
     managed: ManagedChatSession,
     perfReason: ChatTextFlushReason = "other",
   ): void => {
+    // A plan delta was emitted the moment it arrived before it was buffered,
+    // so it goes out ahead of text buffered alongside it.
+    flushBufferedPlanDelta(managed);
     const buffered = managed.bufferedText;
     if (!buffered) return;
     if (buffered.timer) {
@@ -23598,6 +23768,11 @@ export function createAgentChatService(args: {
   };
 
   const flushBufferedReasoning = (managed: ManagedChatSession): void => {
+    flushBufferedPlanDelta(managed);
+    flushBufferedReasoningOnly(managed);
+  };
+
+  const flushBufferedReasoningOnly = (managed: ManagedChatSession): void => {
     const buffered = managed.bufferedReasoning;
     if (!buffered) return;
     if (buffered.timer) {
@@ -24133,6 +24308,15 @@ export function createAgentChatService(args: {
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
     }
+
+    if (isBufferablePlanDelta(normalizedEvent)) {
+      // Unchanged from before it was buffered: a plan delta flushes reasoning
+      // and leaves buffered text alone.
+      flushBufferedReasoningOnly(managed);
+      queuePlanDelta(managed, normalizedEvent);
+      return;
+    }
+    flushBufferedPlanDelta(managed);
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);
@@ -28260,6 +28444,12 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
+    // The last preview lands before the row ends, never after it.
+    if (managed.previewWriteTimer) {
+      clearTimeout(managed.previewWriteTimer);
+      managed.previewWriteTimer = null;
+      writeSessionPreview(managed);
+    }
     await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });
@@ -44052,9 +44242,13 @@ export function createAgentChatService(args: {
   };
   const compactionSettingsFor = (managed: ManagedChatSession) => compactionSettingsForSession(managed.session);
   /** OpenCode runs `/compact` only when its server lists the command. */
-  const openCodeCompactListed = async (sessionId: string): Promise<boolean> =>
-    (await getSlashCommands({ sessionId, provider: "opencode" }))
+  const openCodeCompactListed = async (sessionId: string, scope?: SummaryCallScope): Promise<boolean> => {
+    // A chat that is not running lists the project's prompt files, the same
+    // for every such chat, so a listing walks them once, not once per row.
+    if (scope && !managedSessions.has(sessionId)) return await scope.idleOpenCodeCompactListed(sessionId);
+    return (await getSlashCommands({ sessionId, provider: "opencode" }))
       .some((command) => command.name.replace(/^\//, "") === "compact");
+  };
   const compactionSignatureFor = (managed: ManagedChatSession) =>
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
   /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
@@ -54310,8 +54504,9 @@ export function createAgentChatService(args: {
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform !== "win32",
+        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
         windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
+        linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -65589,7 +65784,7 @@ export function createAgentChatService(args: {
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
     scope: SummaryCallScope = createSummaryCallScope(),
   ): Promise<AgentChatSessionSummary> => {
-    const persisted = readPersistedState(row.id);
+    const persisted = readPersistedState(row.id, scope);
     const liveManagedInitial = managedSessions.get(row.id) ?? null;
     if (liveManagedInitial) {
       reconcileOrphanedSubagent(liveManagedInitial);
@@ -65599,7 +65794,7 @@ export function createAgentChatService(args: {
         persisted?.spawnKind === "subagent"
         && persistedParent
         && persistedParent !== row.id
-        && !parentChatStillExists(persistedParent)
+        && !scope.parentChatExists(persistedParent)
       ) {
         try {
           reconcileOrphanedSubagent(ensureManagedSession(row.id));
@@ -65675,7 +65870,7 @@ export function createAgentChatService(args: {
       : null;
     const codexEffectiveCollaborationMode = liveCodexRuntime?.effectiveCollaborationMode ?? null;
     const claudeTag = provider === "claude"
-      ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
+      ? scope.claudePointer(row.id)?.tags[0] ?? null
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
@@ -65782,14 +65977,14 @@ export function createAgentChatService(args: {
       ? undefined
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
-    const crossMachineMove = readCrossMachineMove(row.id)?.record ?? null;
+    const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
     return {
       sessionId: row.id,
       laneId: row.laneId,
       provider,
       model,
-      ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id) } : {}),
+      ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id, scope) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
@@ -66025,7 +66220,7 @@ export function createAgentChatService(args: {
       ...(() => {
         const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
         if (!parentId) return {};
-        return { orchestrationParentReachable: parentChatStillExists(parentId) };
+        return { orchestrationParentReachable: scope.parentChatExists(parentId) };
       })(),
     } satisfies AgentChatSessionSummary;
   };
@@ -74157,9 +74352,22 @@ export function createAgentChatService(args: {
     if (!trimmedId.length) return [];
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return [];
+    const hasSince = typeof since === "string" && since.trim().length > 0;
+    const entryLimit = typeof limit === "number" && limit > 0 ? Math.floor(limit) : null;
     const entries = transcriptEntriesFromEnvelopes(
       trimmedId,
-      await readRecentTranscriptEnvelopesForSessionIdAsync(trimmedId, signal),
+      await readRecentTranscriptEnvelopesForSessionIdAsync(
+        trimmedId,
+        signal,
+        // Enough once the kept part holds two more user entries than the
+        // limit: the last `limit` entries then lie past two whole turns, which
+        // a cut further back (a steer's other rows, a split message) cannot
+        // reach. `--since` filters by time, so it reads the whole window.
+        entryLimit != null && !hasSince
+          ? (kept) => transcriptEntriesFromEnvelopes(trimmedId, kept)
+            .filter((entry) => entry.role === "user").length >= entryLimit + 2
+          : undefined,
+      ),
     );
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {

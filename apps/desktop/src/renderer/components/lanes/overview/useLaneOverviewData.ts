@@ -95,6 +95,8 @@ export function useLaneOverviewPrs(
   foreignPrs: PrSummary[] | null = null,
 ): { current: LaneHistoryPr[]; all: LaneHistoryPr[] } {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The snapshot read is unpinned, so it follows the window's binding.
+  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [boundPrs, setPrs] = useState<PrSummary[]>([]);
   const [boundGithubPrs, setGithubPrs] = useState<GitHubPrListItem[]>([]);
   const isForeign = foreignPrs != null;
@@ -104,7 +106,7 @@ export function useLaneOverviewPrs(
   useEffect(() => {
     if (isForeign || !window.ade?.prs) return;
     let cancelled = false;
-    const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot })
+    const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey: projectBindingKey })
       .then((snapshot) => {
         if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
       })
@@ -124,7 +126,7 @@ export function useLaneOverviewPrs(
       cancelled = true;
       unsubscribe?.();
     };
-  }, [isForeign, projectRoot]);
+  }, [isForeign, projectRoot, projectBindingKey]);
 
   return useMemo(() => {
     if (!lane) return { current: [], all: [] };

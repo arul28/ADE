@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPrReadInFlightForTest,
   getGitHubSnapshotCoalesced,
+  invalidatePrListCache,
+  listPrsCached,
   listPrsCoalesced,
   refreshLinkedPrCoalesced,
   refreshPrsCoalesced,
@@ -76,6 +78,36 @@ describe("prReadCache", () => {
     await expect(b).resolves.toEqual([{ id: "pr-from-b" }]);
   });
 
+  it("keeps each machine's settled PR list to itself and lets a PR event supersede a read in flight", async () => {
+    const listAllConditional = vi.fn();
+    (window as any).ade.prs.listAllConditional = listAllConditional;
+
+    // Same root, two machines: the second must ask its own machine.
+    listAllConditional
+      .mockResolvedValueOnce({ signature: "a1", prs: [{ id: "pr-on-a" }] })
+      .mockResolvedValueOnce({ signature: "b1", prs: [{ id: "pr-on-b" }] });
+    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-a" })).resolves.toEqual([{ id: "pr-on-a" }]);
+    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-b" })).resolves.toEqual([{ id: "pr-on-b" }]);
+    expect(listAllConditional).toHaveBeenCalledTimes(2);
+
+    // A read is under way when a PR event lands. The read after the event
+    // does not join it, and the older answer is not kept as fresh.
+    const scope = { projectRoot: "/repo", bindingKey: "machine-a" };
+    invalidatePrListCache(scope);
+    const beforeEvent = deferred<any>();
+    listAllConditional
+      .mockReturnValueOnce(beforeEvent.promise)
+      .mockResolvedValueOnce({ signature: "a3", prs: [{ id: "pr-on-a" }, { id: "pr-new" }] });
+    const early = listPrsCached(scope);
+    invalidatePrListCache(scope);
+    const late = listPrsCached(scope);
+    expect(listAllConditional).toHaveBeenCalledTimes(4);
+    await expect(late).resolves.toEqual([{ id: "pr-on-a" }, { id: "pr-new" }]);
+    beforeEvent.resolve({ signature: "a2", prs: [{ id: "pr-on-a" }] });
+    await expect(early).resolves.toEqual([{ id: "pr-on-a" }]);
+    await expect(listPrsCached(scope)).resolves.toEqual([{ id: "pr-on-a" }, { id: "pr-new" }]);
+  });
+
   it("keeps forced and non-forced GitHub snapshots isolated", async () => {
     const normal = deferred<any>();
     const forced = deferred<any>();
@@ -92,6 +124,46 @@ describe("prReadCache", () => {
 
     await expect(first).resolves.toMatchObject({ repoPullRequests: [] });
     await expect(second).resolves.toMatchObject({ repoPullRequests: [{ id: "fresh" }] });
+  });
+
+  it("keeps each machine's GitHub snapshot reads and auth refusals to itself", async () => {
+    const snapshotB = {
+      repoPullRequests: [{ id: "pr-b" }],
+      externalPullRequests: [],
+      repo: null,
+      viewerLogin: "b",
+      syncedAt: "now",
+    };
+    let rejectA!: (error: unknown) => void;
+    const machineARejects = new Promise<never>((_resolve, reject) => {
+      rejectA = reject;
+    });
+    getGitHubSnapshot.mockResolvedValue(snapshotB);
+    getGitHubSnapshot.mockReturnValueOnce(machineARejects);
+    const refused = new Error("GitHub auth missing on this machine.");
+
+    // The same checkout path on two machines is two credential stores and two
+    // databases; the window's binding is what tells them apart.
+    const first = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" });
+    const firstOutcome = expect(first).rejects.toThrow(/auth missing/);
+    const second = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" });
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(2);
+
+    rejectA(refused);
+    await firstOutcome;
+    await expect(second).resolves.toMatchObject({ viewerLogin: "b" });
+
+    // A's refusal is remembered for A alone: B's next automatic read still asks.
+    await getGitHubSnapshotCoalesced(
+      { automaticRefresh: true },
+      { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" },
+    );
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
+    await expect(getGitHubSnapshotCoalesced(
+      { automaticRefresh: true },
+      { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" },
+    )).rejects.toThrow(/auth missing/);
+    expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
   });
 
   it("coalesces PR refreshes with the same id set regardless of order", async () => {

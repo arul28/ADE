@@ -258,6 +258,30 @@ async function copyCrsqliteExtension(bundleRoot, target) {
   return true;
 }
 
+/**
+ * The Linux lane-screen helper, built by apps/desktop/scripts/
+ * build-linux-desktop-driver.mjs. A Linux machine runs the headless brain only,
+ * so this archive is how the helper reaches it (`<runtime>/native/
+ * ade-desktop-driver`, which resolveLinuxDesktopDriverBinary looks for). The
+ * release build sets ADE_REQUIRE_LINUX_DESKTOP_DRIVER=1 so a missing helper
+ * fails the job; a local package without Rust skips it with a warning.
+ */
+async function copyLinuxDesktopDriver(bundleRoot, target) {
+  if (!target.startsWith("linux-")) return false;
+  const source = path.join(packageRoot, "..", "desktop", "resources", "native", target, "ade-desktop-driver");
+  if (!(await exists(source))) {
+    const message = `no Linux desktop driver built for ${target} (${source}); run node apps/desktop/scripts/build-linux-desktop-driver.mjs --target ${target}`;
+    if (process.env.ADE_REQUIRE_LINUX_DESKTOP_DRIVER === "1") throw new Error(message);
+    process.stderr.write(`[package-native-deps] warning: ${message}. Lane screens will be unavailable on this runtime.\n`);
+    return false;
+  }
+  const destination = path.join(bundleRoot, "native", "ade-desktop-driver");
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.copyFile(source, destination);
+  await fs.chmod(destination, 0o755);
+  return true;
+}
+
 async function copyBuiltTuiClient(bundleRoot) {
   const source = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
   if (!(await exists(source))) {
@@ -328,6 +352,7 @@ async function main() {
   }
   await copyBuiltTuiClient(bundleRoot);
   await copyCrsqliteExtension(bundleRoot, args.target);
+  await copyLinuxDesktopDriver(bundleRoot, args.target);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied, inlined);
 

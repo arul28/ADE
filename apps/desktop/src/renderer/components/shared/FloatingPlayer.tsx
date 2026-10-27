@@ -33,6 +33,7 @@ import {
   type FloatingPlayerResizeDirection,
   type FloatingPlayerSize,
 } from "./floatingPlayerLayout";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The floating player's shell: one box over the chat column that you drag,
@@ -401,13 +402,7 @@ export function FloatingPlayerCapturePill({ capture, attrPrefix, marker }: {
   marker?: Record<string, string>;
 }) {
   const running = Boolean(capture.startedAt) && !capture.makingDemo;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [running]);
+  const now = useTicker(1000, running);
   if (capture.makingDemo) {
     return (
       <MakingDemoPill

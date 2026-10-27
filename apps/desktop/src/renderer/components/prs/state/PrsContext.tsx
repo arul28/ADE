@@ -35,6 +35,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
+import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "../shared/prChangeSplitStore";
 
 type PrTab = "normal" | "integration" | "rebase";
 
@@ -616,6 +617,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const mergeDetailSnapshots = useCallback((snapshots: PrSnapshotHydration[]) => {
     const validSnapshots = snapshots.filter((snapshot) => snapshot?.prId);
     if (validSnapshots.length === 0) return;
+    // List rows read their code / tests / docs split from these files rather
+    // than asking GitHub. Stored unsummarized, so this is one Map write each.
+    const prById = new Map(prsRef.current.map((pr) => [pr.id, pr] as const));
+    for (const snapshot of validSnapshots) {
+      const pr = prById.get(snapshot.prId);
+      if (pr && snapshot.files?.length) notePrChangeFiles(prChangeSplitKey(pr), snapshot.files);
+    }
     setDetailSnapshotsByPrId((prev) => {
       let changed = false;
       const next = { ...prev };
@@ -906,6 +914,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     githubPollPeriodFor,
     githubPollGeneration,
   } = useGithubPollGovernor(active);
+  useEffect(() => setPrChangeSplitStandDown(isGithubPollStoodDown), [isGithubPollStoodDown]);
 
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
@@ -1268,6 +1277,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // moment GitHub does.
     const startDetailPolling = () => {
       const intervalId = window.setInterval(() => {
+        // Nobody sees a hidden window; the next visible tick catches up.
+        if (document.visibilityState === "hidden") return;
         refreshDetailSilently(prId);
       }, 60_000);
       return () => {

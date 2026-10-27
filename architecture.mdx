@@ -24,7 +24,7 @@ flowchart TB
 
 ## The brain
 
-The brain is the source of truth on a machine. It owns lanes, agent chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, the project catalog, and the sync service. It runs every agent — **Claude Code, Codex, Meta Muse Code, Cursor, Factory Droid, and OpenCode** — against the same projects. Because desktop and CLI clients call the same brain, a chat you start in the app and one you start with [`ade code`](/tools/ade-code) operate on the same project state.
+The brain is the source of truth on a machine. It owns lanes, agent chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, the project catalog, and the sync service. It runs every supported provider runtime against the same projects. Because desktop and CLI clients call the same brain, a chat you start in the app and one you start with [`ade code`](/tools/ade-code) operate on the same project state.
 
 The brain installs as a per-user login service — launchd on macOS, a systemd user service on Linux, a per-user startup entry on Windows — so it stays running even when no window is open. None of them need administrator rights. The [one-command install](/getting-started/install) sets this up, and [`ade connect`](/getting-started/connect-machine) publishes the machine to your account so every client can find it.
 

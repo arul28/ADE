@@ -221,6 +221,9 @@ describe("laneService createFromUnstaged", () => {
             stdout: cwd === childPath
               ? [
                 "# branch.head feature/child",
+                // The status header carries the upstream lag the lane reports.
+                "# branch.upstream origin/feature/child",
+                "# branch.ab +1 -4",
                 "1 MM N... 100644 100644 100644 aaa bbb src/both.ts",
                 "1 M. N... 100644 100644 100644 aaa bbb src/staged.ts",
                 "1 .M N... 100644 100644 100644 aaa bbb src/unstaged.ts",
@@ -238,12 +241,6 @@ describe("laneService createFromUnstaged", () => {
         if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
           return { exitCode: 0, stdout: "2\t3\n", stderr: "" } as any;
-        }
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
-          return { exitCode: 0, stdout: "origin/feature/child\n", stderr: "" } as any;
-        }
-        if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}") {
-          return { exitCode: 0, stdout: "4\n", stderr: "" } as any;
         }
         return { exitCode: 1, stdout: "", stderr: "" } as any;
       });

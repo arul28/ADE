@@ -1,9 +1,9 @@
 import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readGitOriginUrlFromConfigOrGit } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
@@ -96,17 +96,8 @@ export function deriveProjectId(rootPath: string): ProjectId {
 }
 
 function readGitOriginUrl(rootPath: string): string | null {
-  const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
-    cwd: rootPath,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5_000,
-    windowsHide: true,
-  });
-  if (result.status !== 0) return null;
-  const value = result.stdout.trim();
   // The identity form: an SSH alias of GitHub becomes `github.com`.
-  return canonicalGitOriginUrl(value.length ? value : null);
+  return canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(rootPath));
 }
 
 function ensureProjectAdeDir(rootPath: string): void {

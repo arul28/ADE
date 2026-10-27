@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { validateAreaMap } from "./docs-areas.mjs";
 
 const repoRoot = process.cwd();
 const ignoredTopLevel = new Set([
@@ -310,6 +311,55 @@ async function validateReleaseDocs({ routeSet, errors }) {
   }
 }
 
+async function validateChangelogArchives({ docFiles, errors }) {
+  const versionPages = docFiles
+    .filter((file) => /^changelog\/v\d+\.\d+\.\d+\.mdx$/.test(file))
+    .map((file) => file.replace(/\.mdx$/, ""));
+  const monthPages = docFiles.filter((file) => /^changelog\/\d{4}-\d{2}\.mdx$/.test(file));
+  const seen = new Map();
+
+  for (const monthPage of monthPages) {
+    const content = await fs.readFile(path.join(repoRoot, monthPage), "utf8");
+    for (const match of content.matchAll(/\]\(\/(changelog\/v\d+\.\d+\.\d+)\)/g)) {
+      const version = match[1];
+      if (seen.has(version)) {
+        errors.push(`${monthPage}: ${version} is also listed in ${seen.get(version)}`);
+      } else {
+        seen.set(version, monthPage);
+      }
+    }
+  }
+
+  for (const versionPage of versionPages) {
+    if (!seen.has(versionPage)) {
+      errors.push(`${versionPage}: not listed in any changelog/<YYYY-MM>.mdx archive page`);
+    }
+  }
+  for (const version of seen.keys()) {
+    if (!versionPages.includes(version)) {
+      errors.push(`${seen.get(version)}: links a missing release page ${version}`);
+    }
+  }
+}
+
+async function validateSdkGenerated({ errors }) {
+  try {
+    await fs.access(path.join(repoRoot, "apps/desktop/node_modules/typescript/package.json"));
+  } catch {
+    console.warn("Documentation validation warning: TypeScript is not installed; skipped the generated SDK reference check.");
+    return;
+  }
+  try {
+    execFileSync(process.execPath, ["scripts/generate-sdk-reference.mjs", "--check"], {
+      cwd: repoRoot,
+      stdio: "pipe"
+    });
+  } catch (error) {
+    const detail = error.stdout?.toString().trim() || error.stderr?.toString().trim() || "generated pages are stale";
+    errors.push(`scripts/generate-sdk-reference.mjs: ${detail}`);
+  }
+}
+
 async function main() {
   const docFiles = [];
   await walkDocs(repoRoot, docFiles);
@@ -320,6 +370,14 @@ async function main() {
 
   await validateLinks({ docFiles, routeSet, docsConfig, errors });
   await validateReleaseDocs({ routeSet, errors });
+  await validateChangelogArchives({ docFiles, errors });
+  await validateSdkGenerated({ errors });
+  errors.push(
+    ...validateAreaMap({
+      root: repoRoot,
+      routeIds: docFiles.filter((file) => file.endsWith(".mdx")).map((file) => file.replace(/\.mdx$/, ""))
+    })
+  );
 
   if (errors.length > 0) {
     console.error("Documentation validation failed:");

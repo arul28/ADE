@@ -994,8 +994,10 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
 import type { TerminalWatchService } from "../pty/terminalWatchService";
 import { readTerminalListWatchesArgs, readTerminalUnwatchArgs, readTerminalWatchArgs } from "../../../shared/terminalWatch";
+import type { PrShellLinkWatcher } from "../prs/prShellLinkWatcher";
 import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import { parsePrWatchMode, type GetPrChatWatchArgs, type PrChatWatchSummary, type SetPrChatWatchArgs } from "../../../shared/prWatch";
+import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import { isExternalSessionProvider } from "../../../shared/types/externalSessions";
@@ -1391,6 +1393,8 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   prWatchService: PrWatchService | null;
   terminalWatchService?: TerminalWatchService | null;
+  /** Links PRs a chat's `gh pr create` / `gh pr merge` made to that chat. */
+  prShellLinkWatcher?: PrShellLinkWatcher | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -1933,6 +1937,7 @@ export function registerIpc({
   resolveSyncService,
   runWithIpcWindow,
   getWindowSession,
+  waitForStartupProjectOpen,
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
@@ -1971,6 +1976,8 @@ export function registerIpc({
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
   getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
+  /** Settles when the launch has opened (or failed to open) its startup project. */
+  waitForStartupProjectOpen?: () => Promise<void>;
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
@@ -2403,6 +2410,13 @@ export function registerIpc({
         ? { ...(entry as Record<string, unknown>), url: "[redacted]" }
         : entry;
       return Array.isArray(result) ? result.map(hideUrl) : hideUrl(result);
+    }
+    // A signed media URL carries its own short-lived authorization: a trace
+    // that keeps it hands a private attachment to anyone who reads the log.
+    if (channel === IPC.prsResolveMedia) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+      const record = result as Record<string, unknown>;
+      return "src" in record ? { ...record, src: "[redacted]" } : record;
     }
     if (!result || typeof result !== "object" || Array.isArray(result)) return result;
     const record = result as Record<string, unknown>;
@@ -3744,6 +3758,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appGetWindowSession, async (event) => {
+    // The first window can load before the launch has opened its project.
+    await waitForStartupProjectOpen?.();
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
@@ -5232,7 +5248,10 @@ export function registerIpc({
   // window still shows the recovery screen.
   ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
     if (!projectRecoveryService) return null;
-    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.startupProjectDataStatus();
+    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) {
+      await waitForStartupProjectOpen?.();
+      return projectRecoveryService.startupProjectDataStatus();
+    }
     const projectRoot = resolveRequestedProjectRoot(arg.projectRoot.trim());
     return projectRoot ? projectRecoveryService.projectDataStatus(projectRoot) : null;
   });
@@ -9157,14 +9176,18 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const sessionIds = Array.isArray(arg?.sessionIds)
+      ? arg.sessionIds.filter((id): id is string => typeof id === "string")
+      : null;
     const listOptions = {
       includeAutomation: Boolean(arg?.includeAutomation),
       ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
     };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean; sessionIds?: string[] },
       ) => Promise<AgentChatSessionSummary[]>;
     }).listSessions(laneId || undefined, listOptions);
   });
@@ -9971,7 +9994,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
     _event,
-    arg: { sessionId?: string; maxEvents?: number; maxBytes?: number },
+    arg: { sessionId?: string; maxEvents?: number; maxBytes?: number; afterOffset?: number; historyGeneration?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
@@ -9996,10 +10019,13 @@ export function registerIpc({
       rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
         ? rawMaxBytes
         : undefined;
-    const options = maxEvents != null || maxBytes != null
+    const afterOffset = Number.isSafeInteger(arg?.afterOffset) && (arg.afterOffset as number) > 0 ? arg.afterOffset : undefined;
+    const historyGeneration = Number.isSafeInteger(arg?.historyGeneration) ? arg.historyGeneration : undefined;
+    const options = maxEvents != null || maxBytes != null || afterOffset != null
       ? {
           ...(maxEvents != null ? { maxEvents } : {}),
           ...(maxBytes != null ? { maxBytes } : {}),
+          ...(afterOffset != null && historyGeneration != null ? { afterOffset, historyGeneration } : {}),
         }
       : undefined;
     return await service.getChatEventHistory(sessionId, options);
@@ -10677,6 +10703,7 @@ export function registerIpc({
   ipcMain.handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
   ipcMain.handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
   ipcMain.handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
+  ipcMain.handle(IPC.macDesktopCloseWindow, async (_event, arg) => ensureMacDesktop().closeWindow(arg));
   ipcMain.handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
   ipcMain.handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
   ipcMain.handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));
@@ -13183,6 +13210,18 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.prsResolveMedia,
+    async (_event, raw: unknown): Promise<ResolvePrMediaResult> => {
+      const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      return await ensurePrReadContext().prService.resolveMedia({
+        url: typeof record.url === "string" ? record.url : "",
+        repoOwner: typeof record.repoOwner === "string" ? record.repoOwner : "",
+        repoName: typeof record.repoName === "string" ? record.repoName : "",
+      });
+    },
+  );
+
+  ipcMain.handle(
     IPC.prsGetStackLinkOffer,
     async (_event, raw: unknown): Promise<StackLinkOffer | null> =>
       ensurePrReadContext().prService.getStackLinkOffer({
@@ -13605,6 +13644,9 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
   ipcMain.handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
   ipcMain.handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
+  ipcMain.handle(IPC.prsSetAssignees, (_e, args) => ensurePrReadContext().prService.setAssignees(args));
+  ipcMain.handle(IPC.prsListGitHubFilterOptions, (_e, args) => ensurePrReadContext().prService.listGithubFilterOptions(args));
+  ipcMain.handle(IPC.prsSearchGitHubPrs, (_e, args) => ensurePrReadContext().prService.searchGithubPrs(args));
   ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => ensurePrReadContext().prService.requestReviewers(args));
   ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
   ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));

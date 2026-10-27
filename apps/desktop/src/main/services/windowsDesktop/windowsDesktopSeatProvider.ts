@@ -34,6 +34,7 @@ import {
   macDesktopDisplayName,
   type WindowsDesktopPrivateUnavailableReason,
   type WindowsDesktopSeatMode,
+  type WindowsDesktopSetupArgs,
   type WindowsDesktopSetupResult,
   type WindowsDesktopStatus,
   type WindowsDesktopHostState,
@@ -167,14 +168,39 @@ export function asWindowsDesktopStatus(raw: unknown): WindowsDesktopStatus {
   };
 }
 
-function asSetupResult(raw: unknown, fallbackStatus: WindowsDesktopStatus): WindowsDesktopSetupResult {
+function asSetupResult(
+  raw: unknown,
+  fallbackStatus: WindowsDesktopStatus,
+  args: WindowsDesktopSetupArgs,
+): WindowsDesktopSetupResult {
   const record = asRecord(raw);
   const status = record.status && typeof record.status === "object"
     ? asWindowsDesktopStatus(record.status)
     : asWindowsDesktopStatus(record.windowsDesktop ?? fallbackStatus);
+  const requiresAdmin = asBoolean(record.requiresAdmin);
+  // Setup is a no-op on a PC that already allows child sessions and Remote
+  // Desktop (see the Windows host's `windows.setup`), and the helper reports
+  // only the post-call state, so "already set up" is the honest sentence
+  // whenever no password action was asked for and the answer says it is
+  // configured.
+  const alreadySetUp = status.childSessionsEnabled && status.remoteDesktopAllowed;
+  // The two fields every seat's setup answer shares, composed here where the
+  // kind of step is known: a surface that is not the wizard prints one
+  // sentence and knows whether the user still has a step, without asking
+  // which host it is.
   return {
-    requiresAdmin: asBoolean(record.requiresAdmin),
+    requiresAdmin,
     status,
+    needsUser: requiresAdmin,
+    message: requiresAdmin
+      ? "Windows Desktop setup needs the user's administrator prompt on the PC."
+      : args.forgetPassword === true
+        ? "ADE's saved Windows password is gone."
+        : args.savePassword === true
+          ? "Windows Desktop setup ran and the Windows password is saved on the PC."
+          : alreadySetUp
+            ? "Windows Desktop is already set up on this PC."
+            : "Windows Desktop setup ran on the PC.",
   };
 }
 
@@ -196,7 +222,7 @@ function windowsSeatHooks(): SeatProviderWindowsHooks {
       const reply = asRecord(
         await request(MAC_DESKTOP_DRIVER_OPS.setupWindows, { allowPrompt: args.allowPrompt, savePassword: args.savePassword, forgetPassword: args.forgetPassword }, { timeoutMs: PRIVATE_SIGN_IN_TIMEOUT_MS }),
       );
-      return asSetupResult(reply, lastStatus);
+      return asSetupResult(reply, lastStatus, args);
     },
     windowAction: (request, args) => request(WINDOW_ACTION_OPS[args.action], {
       laneId: args.laneId,

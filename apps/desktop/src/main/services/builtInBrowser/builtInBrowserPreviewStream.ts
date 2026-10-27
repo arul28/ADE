@@ -43,6 +43,20 @@ export type BuiltInBrowserPreviewFrame = BuiltInBrowserPreviewCapture & {
 
 type TimerHandle = ReturnType<typeof setInterval>;
 
+/**
+ * How long one capture may stay unanswered before the loop stops waiting for
+ * it. `capturePage()` on a view that lost its surface can hang without ever
+ * settling, and the skip rule would then drop every later tick: the card froze
+ * on its last frame for good. The same bound as a screenshot's.
+ */
+export const BUILT_IN_BROWSER_PREVIEW_CAPTURE_STALL_MS = 3_000;
+/**
+ * Captures that may be unanswered at once. A stalled one cannot be cancelled,
+ * so past this many the loop waits for one to answer instead of piling more
+ * onto a surface that is not responding.
+ */
+const MAX_OUTSTANDING_CAPTURES = 2;
+
 export type BuiltInBrowserPreviewStreamDeps = {
   /**
    * Takes one frame, already downscaled to `maxWidth`. Resolving `null` means
@@ -80,6 +94,10 @@ type StreamState = {
   maxWidth: number;
   timer: TimerHandle | null;
   capturing: boolean;
+  /** When the capture in flight started, and which one it is. */
+  captureStartedAt: number;
+  captureSeq: number;
+  outstandingCaptures: number;
   /** Frames dropped because the previous capture was still in flight. */
   skipped: number;
 };
@@ -177,18 +195,31 @@ export function createBuiltInBrowserPreviewStreams(
     }
     if (!deps.isVisible()) return;
     // The skip rule. `capturing` is cleared in the promise's tail, so a capture
-    // that takes longer than the interval simply thins the frame rate out.
+    // that takes longer than the interval simply thins the frame rate out. One
+    // that never answers is given up on, and its late answer is dropped.
     if (state.capturing) {
-      state.skipped += 1;
-      return;
+      if (
+        now() - state.captureStartedAt < BUILT_IN_BROWSER_PREVIEW_CAPTURE_STALL_MS
+        || state.outstandingCaptures >= MAX_OUTSTANDING_CAPTURES
+      ) {
+        state.skipped += 1;
+        return;
+      }
+      deps.onError?.(
+        state.tabId,
+        new Error(`Preview capture gave no answer in ${BUILT_IN_BROWSER_PREVIEW_CAPTURE_STALL_MS}ms.`),
+      );
     }
     state.capturing = true;
+    state.captureStartedAt = now();
+    const seq = ++state.captureSeq;
+    state.outstandingCaptures += 1;
     const maxWidth = state.maxWidth;
     void deps.capture(state.tabId, maxWidth)
       .then((frame) => {
         // Subscribers can drop while a capture is in flight; emitting then would
         // be a frame for a card that has already unmounted.
-        if (!frame || disposed || streams.get(state.tabId) !== state) return;
+        if (!frame || disposed || streams.get(state.tabId) !== state || seq !== state.captureSeq) return;
         deps.emit({
           tabId: state.tabId,
           dataUrl: frame.dataUrl,
@@ -201,7 +232,8 @@ export function createBuiltInBrowserPreviewStreams(
         deps.onError?.(state.tabId, error);
       })
       .finally(() => {
-        state.capturing = false;
+        state.outstandingCaptures -= 1;
+        if (seq === state.captureSeq) state.capturing = false;
       });
   };
 
@@ -250,6 +282,9 @@ export function createBuiltInBrowserPreviewStreams(
         maxWidth,
         timer: null,
         capturing: false,
+        captureStartedAt: 0,
+        captureSeq: 0,
+        outstandingCaptures: 0,
         skipped: 0,
       };
       streams.set(tabId, state);

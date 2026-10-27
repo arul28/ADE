@@ -540,7 +540,9 @@ function ToolCallRow({
   // URLs only when the provider didn't send a results array.
   const searchUrlActions = searchResults.length > 0 ? [] : webSearchUrlActions(entry);
 
-  const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
+  // Only an open row shows its detail, and a live command's detail is its
+  // whole output: build it when the row opens, not on every streamed chunk.
+  const detailBody = useMemo(() => (open ? buildEntryDetail(entry) : null), [entry, open]);
   // A failed tool says why on its own row, so the reason is readable without
   // opening it (the turn carries on; this row is the whole report).
   const failureText = useMemo(() => toolEntryFailureText(entry), [entry]);
@@ -647,8 +649,12 @@ function toolEntryFailureText(entry: ChatWorkLogEntry): string | null {
 
 function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   if (entry.entryKind === "command") {
-    const out = entry.output?.trim();
-    if (!out) return null;
+    const trimmed = entry.output?.trim();
+    if (!trimmed) return null;
+    const omitted = entry.outputOmittedChars ?? 0;
+    const out = omitted > 0
+      ? `… ${omitted.toLocaleString()} earlier characters not shown\n${trimmed}`
+      : trimmed;
     // A computer-use row reads as its action, so the command it ran leads
     // the detail.
     const command = computerUseEntryCommand(entry);

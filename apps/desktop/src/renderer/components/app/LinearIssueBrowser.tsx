@@ -41,7 +41,9 @@ import {
   ProjectFilterButton,
   ScopeNavButton,
 } from "./LinearIssueBrowserRows";
-import { LinearBatchActionView, LinearIssueDetails } from "./LinearIssueDetailPane";
+// The detail views (and the markdown they render) load with the first selection.
+const LinearBatchActionView = React.lazy(() => import("./LinearIssueDetailPane").then((module) => ({ default: module.LinearBatchActionView })));
+const LinearIssueDetails = React.lazy(() => import("./LinearIssueDetailPane").then((module) => ({ default: module.LinearIssueDetails })));
 import { LinearInboxList } from "./LinearInboxList";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import {
@@ -1730,6 +1732,7 @@ export function LinearIssueBrowser({
           </div>
         </section>
 
+        <React.Suspense fallback={null}>
         {multiSelectEnabled && selectedIssueIds.size > 1 && onBatchLaunch ? (
           <LinearBatchActionView
             selectedIssues={resolvedSelectedIssues}
@@ -1756,6 +1759,7 @@ export function LinearIssueBrowser({
             loadingIssueId={loadingRelationId}
           />
         )}
+        </React.Suspense>
       </div>
     </div>
   );

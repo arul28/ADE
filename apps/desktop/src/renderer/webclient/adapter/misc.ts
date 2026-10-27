@@ -116,6 +116,10 @@ const MUSE_BINARY_STATUS_UNAVAILABLE: MuseBinaryStatus = {
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const { client, commands, events, localState, state } = infra;
 
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
+
   function call<T>(
     action: string,
     args: unknown,
@@ -124,7 +128,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     fallback: T | (() => T | Promise<T>),
     idempotent = true,
   ): Promise<T> {
-    return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+    return idempotent
+      ? commands.call<T>(action, asRecord(args), { fallback })
+      : commands.call<T>(action, asRecord(args), mutation);
   }
 
   function syncSnapshot(): SyncRoleSnapshot {

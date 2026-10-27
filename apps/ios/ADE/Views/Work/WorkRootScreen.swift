@@ -271,6 +271,16 @@ struct WorkRootSyncInputs: Equatable {
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
       )
+      // The Work list shows every chat of this repository on the other
+      // machines, and its search and filters cover them all: a paged roster
+      // loads the rest of the matched project now that the user opened it.
+      for repo in remoteMachineRepos {
+        guard let connection = fleet.connection(for: repo.machineKey),
+              connection.rosterProjects.first(where: { $0.projectId == repo.projectId })?.unloadedChatCount ?? 0 > 0
+        else { continue }
+        let projectId = repo.projectId
+        Task { await connection.loadOlderRosterChats(projectId: projectId, all: true) }
+      }
     }
     machineFilterOptions = workMachineFilterOptions(
       primaryName: sync.focusedMachineDisplayName,

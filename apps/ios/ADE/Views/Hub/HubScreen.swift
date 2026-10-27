@@ -249,6 +249,10 @@ struct HubScreen: View {
       } else if requestedRosterLookupRequestId != request.id {
         requestedRosterLookupRequestId = request.id
         syncService.requestRosterSnapshot()
+        // A paged roster may hold the chat only on the host: ask for it by id.
+        // Its arrival moves the roster revision, which runs this again.
+        let sessionId = request.sessionId
+        Task { await syncService.loadOlderRosterChatForNavigation(sessionId: sessionId) }
       }
       return
     }

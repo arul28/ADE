@@ -259,13 +259,14 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     }, "mac-desktop-status");
   }
   if (sub === "setup") {
-    // Windows only. `--allow-prompt` is the local user's click on the wizard's
-    // first step; without it the helper refuses to raise the admin prompt.
+    // One verb on every host: Windows' admin step, or Linux's system packages.
+    // `--allow-prompt` is the local user's click on the wizard's first step;
+    // without it the helper refuses to raise the admin prompt.
     return desktopAction("screen setup", "setupWindows", {
       allowPrompt: readFlag(args, ["--allow-prompt", "--prompt"]),
       savePassword: readFlag(args, ["--save-password"]),
       forgetPassword: readFlag(args, ["--forget-password"]),
-    });
+    }, "mac-desktop-setup");
   }
   if (sub === "takeover" || sub === "take-over") {
     // Windows only, and never an agent's own move: it signs the holder out.
@@ -294,7 +295,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...(windowId() == null ? {} : { windowId: windowId() }),
     });
   if (sub === "focus" || sub === "raise" || sub === "minimize" || sub === "minimise" || sub === "close") {
-    // Windows only: one of this lane's own windows. The Mac driver has no
+    // Windows and Linux: one of this lane's own windows. The Mac driver has no
     // such op and the service says so.
     const explicit = windowId();
     const id = explicit == null ? Number(positionals(args)[0]) : explicit;

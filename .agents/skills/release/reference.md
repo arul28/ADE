@@ -446,9 +446,34 @@ the user asks.
 For desktop releases, update all release-doc surfaces:
 
 - `changelog/v<VERSION>.mdx`
-- `docs.json` (changelog page list)
-- `changelog/index.mdx`
+- `changelog/<YYYY-MM>.mdx` — the release month's archive page (create it if
+  this is the month's first release; add a row with the version, date, and the
+  one-line summary)
+- `changelog/index.mdx` (the "Latest release" card)
 - root `CHANGELOG.md`
+
+`docs.json` lists changelog **months**, not individual versions. Do not add a
+version there; every version page stays addressable at `/changelog/v<VERSION>`
+without being in the nav.
+
+### Docs drift gate
+
+Release notes are not product docs. After the changelog entry, run the
+source-to-page map for everything that shipped since the previous tag:
+
+```bash
+node scripts/docs-areas.mjs --changed --base v<previous-release>
+```
+
+It prints each affected area and its public pages. For every area, either
+update the pages or record in the release commit message why the release has no
+user-visible docs impact. This is the maintenance contract that keeps feature
+pages from drifting; a changelog entry does not satisfy it.
+
+`docs-areas.json` is the map. When a new feature area appears, add an entry
+(sources + pages) in the same PR that adds the feature. `node
+scripts/validate-docs.mjs` fails on a public page with no owner, an area
+pointing at a missing page, or a source glob that matches no files.
 
 **Additionally, when `sdk-docs` is `yes`** (whether or not desktop is in
 scope):
@@ -457,6 +482,10 @@ scope):
   `sdk/quickstart.mdx`, `sdk/threads.mdx`, `sdk/mcp.mdx`, `sdk/chat-ui.mdx`,
   `sdk/runtime.mdx`, `sdk/reference.mdx`, and the `docs.json` SDK tab /
   footer links if pages were added or renamed.
+- Regenerate the API pages from the declarations: `node
+  scripts/generate-sdk-reference.mjs`. `node scripts/validate-docs.mjs`
+  fails when `sdk/api.mdx` or `sdk/types.mdx` is stale. Never hand-edit those
+  two pages.
 - Keep the MCP honesty table aligned across `sdk/mcp.mdx`,
   `packages/sdk/README.md`, and `docs/features/sdk/README.md`. Strict MCP is
   **enforced only on Claude**; never market it as uniform. `mcpCapability`

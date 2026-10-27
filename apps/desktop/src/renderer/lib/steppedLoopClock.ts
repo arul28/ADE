@@ -31,11 +31,19 @@ const MAX_CHANGES_PER_SECOND = 31;
 const BATCH_WINDOW_MS = 8;
 /** Lands a seek just past the step instant, never on the old side of it. */
 const SEEK_EPSILON_MS = 0.5;
+/**
+ * How often a loop's CSS timing is read back to notice a retime. Reading it
+ * walks the keyframes; a loop steps up to 31 times a second, a retime (a
+ * Settings toggle) is rare, and a second's delay in noticing it shows nothing.
+ */
+const TIMING_RECHECK_MS = 1_000;
 
 type SteppedLoop = {
   animation: CSSAnimation;
   /** The timing the loop was adopted with; see `timingKey`. */
   timing: string;
+  /** When `timing` was last compared with the loop's live CSS timing. */
+  timingCheckedAtMs: number;
   durationMs: number;
   delayMs: number;
   /** Fractions of one iteration where the loop's value changes, ascending. */
@@ -142,33 +150,47 @@ function release(animation: CSSAnimation): void {
 }
 
 /**
- * Brings one loop to `nowMs` and finds its next step. "gone" when its element
- * or animation is gone; "retimed" when CSS changed its timing, in which case
- * it is already handed back to CSS.
+ * Whether one loop is still adopted at `nowMs`: "gone" when its element or
+ * animation is gone; "retimed" when CSS changed its timing, in which case it is
+ * already handed back to CSS. Reads only (playState flushes pending style).
  */
-function catchUp(loop: SteppedLoop, nowMs: number): "kept" | "gone" | "retimed" {
+function checkLoop(loop: SteppedLoop, nowMs: number): "kept" | "gone" | "retimed" {
   const { animation } = loop;
   const effect = animation.effect as KeyframeEffect | null;
   if (animation.playState === "idle" || !effect?.target?.isConnected) return "gone";
-  if (timingKey(effect) !== loop.timing) {
-    release(animation);
-    return "retimed";
+  if (nowMs - loop.timingCheckedAtMs >= TIMING_RECHECK_MS) {
+    loop.timingCheckedAtMs = nowMs;
+    if (timingKey(effect) !== loop.timing) {
+      release(animation);
+      return "retimed";
+    }
   }
-  // A loop CSS has paused (`animation-play-state: paused`) holds still.
-  if (animation.playState === "running") seek(loop, nowMs);
-  loop.nextAtMs = nextChangeAt(loop, nowMs + SEEK_EPSILON_MS);
   return "kept";
+}
+
+/** Brings a kept loop to `nowMs` and finds its next step. Writes only. */
+function advanceLoop(loop: SteppedLoop, nowMs: number, running: boolean): void {
+  // A loop CSS has paused (`animation-play-state: paused`) holds still.
+  if (running) seek(loop, nowMs);
+  loop.nextAtMs = nextChangeAt(loop, nowMs + SEEK_EPSILON_MS);
 }
 
 function catchUpAll(nowMs: number, dueOnly: boolean): void {
   const retimed: CSSAnimation[] = [];
+  // Every read first, then every seek: a seek invalidates style, and the next
+  // loop's playState read would flush it again, once per loop per tick.
+  const due: Array<{ loop: SteppedLoop; running: boolean }> = [];
   for (const [animation, loop] of loops) {
     if (dueOnly && loop.nextAtMs > nowMs + BATCH_WINDOW_MS) continue;
-    const outcome = catchUp(loop, nowMs);
-    if (outcome === "kept") continue;
+    const outcome = checkLoop(loop, nowMs);
+    if (outcome === "kept") {
+      due.push({ loop, running: animation.playState === "running" });
+      continue;
+    }
     loops.delete(animation);
     if (outcome === "retimed") retimed.push(animation);
   }
+  for (const { loop, running } of due) advanceLoop(loop, nowMs, running);
   // A retimed loop that still qualifies under its new timing comes back.
   for (const animation of retimed) adoptSteppedLoop(animation);
   schedule();
@@ -218,6 +240,7 @@ export function adoptSteppedLoop(animation: CSSAnimation): void {
   const loop: SteppedLoop = {
     animation,
     timing: timingKey(effect),
+    timingCheckedAtMs: performance.now(),
     durationMs,
     delayMs: timing.delay ?? 0,
     changes,

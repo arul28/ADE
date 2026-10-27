@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { captureError } from "../../../shared/sentry/capture";
 
 type ResolutionSource = "path" | "known-dir";
 const PATH_MARKER_START = "__ADE_PATH_START__";
@@ -602,7 +603,7 @@ function readShellPath(
   // spawned a login shell synchronously. The inherited PATH is still merged in
   // fresh by augmentProcessPathWithShellAndKnownCliDirs, so a PATH change shows
   // up at once; only what the shell itself adds waits for the TTL.
-  const key = [shellPath, shellFlag, source.HOME ?? ""].join("\u0000");
+  const key = [shellPath, shellFlag, source.HOME ?? ""].join(SHELL_PATH_KEY_SEPARATOR);
   // Once a shell has answered, never wait on it again: an expired answer is
   // returned as is while one background probe replaces it. Re-probing
   // synchronously at expiry spawned a login (and interactive) shell on the
@@ -616,10 +617,121 @@ function readShellPath(
     return cached.value;
   }
   // A null is a timeout or a broken rc file -- most likely under exactly the
-  // load this cache is for -- so it is not kept: the next agent env retries.
+  // load this cache is for. It is not kept as an answer, but for a short while
+  // the retry runs in the background instead of synchronously on every agent
+  // env build: a timing-out shell blocked the brain for its whole timeout each.
+  const failedAt = shellPathFailedAt.get(key);
+  if (failedAt !== undefined && Date.now() - failedAt < SHELL_PATH_FAILURE_BACKOFF_MS) {
+    // At most one background retry per few seconds: a shell that keeps failing
+    // is not respawned on every agent env build.
+    if (Date.now() - failedAt >= SHELL_PATH_RETRY_GAP_MS) {
+      refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    }
+    return null;
+  }
   const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
-  if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
+  if (resolved !== null) {
+    rememberProbe(shellPathCache, key, resolved);
+    shellPathFailedAt.delete(key);
+  } else {
+    if (shellPathFailedAt.size >= ENVIRONMENT_PROBE_CACHE_MAX && !shellPathFailedAt.has(key)) shellPathFailedAt.clear();
+    shellPathFailedAt.set(key, Date.now());
+  }
   return resolved;
+}
+
+/** How long after a failed synchronous shell probe its retries run in the background only. */
+const SHELL_PATH_FAILURE_BACKOFF_MS = 30_000;
+/** The shortest gap between background retries of a shell probe that failed. */
+const SHELL_PATH_RETRY_GAP_MS = 2_000;
+const shellPathFailedAt = new Map<string, number>();
+
+/** A shell's PATH answer, as kept across launches by `primeShellPathCache`. */
+export type PersistedShellPath = {
+  shell: string;
+  flag: "-lc" | "-ic";
+  home: string;
+  value: string;
+};
+
+const SHELL_PATH_KEY_SEPARATOR = "\u0000";
+
+/**
+ * Seeds the shell PATH cache with the answers an earlier launch saved. They
+ * count as expired: the first read returns them at once and starts one
+ * background probe that replaces them, so a launch never waits on a login or
+ * interactive shell once one answer has been saved. Live answers win.
+ */
+export function primeShellPathCache(entries: readonly PersistedShellPath[]): void {
+  for (const entry of entries) {
+    const key = [entry.shell, entry.flag, entry.home].join(SHELL_PATH_KEY_SEPARATOR);
+    if (!shellPathCache.has(key)) shellPathCache.set(key, { at: 0, value: entry.value });
+  }
+}
+
+/** The shell PATH answers held now, to save for the next launch. */
+export function shellPathCacheEntries(): PersistedShellPath[] {
+  const entries: PersistedShellPath[] = [];
+  for (const [key, { value }] of shellPathCache) {
+    const [shell, flag, home] = key.split(SHELL_PATH_KEY_SEPARATOR);
+    if (flag !== "-lc" && flag !== "-ic") continue;
+    entries.push({ shell: shell ?? "", flag, home: home ?? "", value });
+  }
+  return entries;
+}
+
+/** The file in the app's user data that keeps the shells' PATH answers across launches. */
+export const SHELL_PATH_CACHE_FILE = "shell-path-cache.json";
+const SHELL_PATH_CACHE_MAX_BYTES = 256 * 1024;
+
+export function readSavedShellPaths(cacheFile: string): PersistedShellPath[] {
+  try {
+    if (fs.statSync(cacheFile).size > SHELL_PATH_CACHE_MAX_BYTES) return [];
+    const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is PersistedShellPath =>
+      entry != null
+      && typeof entry === "object"
+      && typeof entry.shell === "string"
+      && (entry.flag === "-lc" || entry.flag === "-ic")
+      && typeof entry.home === "string"
+      && typeof entry.value === "string"
+      && entry.value.length > 0);
+  } catch (error) {
+    // No file yet is the first launch; anything else is worth a line.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      captureError(error, { fingerprint: ["shell-path-cache", "read"] });
+    }
+    return [];
+  }
+}
+
+/** Writes the shell PATH answers when they differ from the saved ones. Best effort. */
+export function saveShellPaths(cacheFile: string): void {
+  try {
+    const entries = shellPathCacheEntries();
+    if (entries.length === 0) return;
+    const serialized = JSON.stringify(entries);
+    try {
+      if (fs.readFileSync(cacheFile, "utf8") === serialized) return;
+    } catch {
+      // Nothing saved yet.
+    }
+    const tempPath = `${cacheFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tempPath, serialized, "utf8");
+    fs.renameSync(tempPath, cacheFile);
+  } catch (error) {
+    // The next launch probes the shells itself.
+    captureError(error, { fingerprint: ["shell-path-cache", "write"] });
+  }
+}
+
+const shellPathRefreshListeners = new Set<() => void>();
+
+/** Called after a background probe replaced a shell PATH answer with a different one. */
+export function onShellPathRefreshed(listener: () => void): () => void {
+  shellPathRefreshListeners.add(listener);
+  return () => shellPathRefreshListeners.delete(listener);
 }
 
 const shellPathRefreshesInFlight = new Set<string>();
@@ -644,8 +756,23 @@ function refreshShellPathInBackground(
         const entry = shellPathCache.get(key);
         // A failed refresh keeps the last answer; it is tried again after
         // another TTL rather than on every call.
-        if (resolved !== null) rememberProbe(shellPathCache, key, resolved);
-        else if (entry) entry.at = Date.now();
+        if (resolved !== null) {
+          rememberProbe(shellPathCache, key, resolved);
+          shellPathFailedAt.delete(key);
+        } else if (entry) entry.at = Date.now();
+        // A shell that never answers keeps its retries in the background
+        // instead of earning a synchronous probe again after each window.
+        else if (shellPathFailedAt.has(key)) shellPathFailedAt.set(key, Date.now());
+        if (resolved !== null && resolved !== entry?.value) {
+          for (const listener of shellPathRefreshListeners) {
+            try {
+              listener();
+            } catch (error) {
+              // A listener's failure must not stop the others.
+              captureError(error, { fingerprint: ["shell-path-cache", "refresh-listener"] });
+            }
+          }
+        }
       },
     );
     // execFile cannot take `stdio`; an rc file that reads stdin must see EOF,

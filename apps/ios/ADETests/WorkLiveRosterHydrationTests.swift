@@ -412,6 +412,69 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
   }
 
   @MainActor
+  func testStaleNotModifiedWorkListAsksAgainInsteadOfClearingRows() async throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-a', '/tmp/a', 'A', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+    let lane = makeLane(id: "lane-a", name: "A")
+    try database.replaceLaneSnapshots([lane])
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+    }
+    func rows(_ ids: [String]) throws -> [Any] {
+      try ids.map { id in
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeSession(id: id, laneId: lane.id, laneName: lane.name)))
+      }
+    }
+    func nextRequestId(after count: Int) async throws -> String {
+      var ids: [String] = []
+      for _ in 0..<40 where ids.count <= count {
+        await Task.yield()
+        ids = service.capturedOutboundRequestIdsForTesting(type: "command")
+      }
+      return try XCTUnwrap(ids.count > count ? ids[count] : nil, "Expected work list request \(count + 1).")
+    }
+
+    let initial = Task { try await service.refreshWorkSessions() }
+    service.completeCapturedRequestForTesting(
+      requestId: try await nextRequestId(after: 0),
+      result: ["sessions": try rows(["s1", "s2"]), "signature": "list-1", "notModified": false] as [String: Any]
+    )
+    try await initial.value
+
+    // Two refreshes both ask with list-1; the second one's newer list lands first.
+    let older = Task { try await service.refreshWorkSessions() }
+    let olderRequestId = try await nextRequestId(after: 1)
+    let newer = Task { try await service.refreshWorkSessions() }
+    let newerRequestId = try await nextRequestId(after: 2)
+    service.completeCapturedRequestForTesting(
+      requestId: newerRequestId,
+      result: ["sessions": try rows(["s1", "s2", "s3"]), "signature": "list-2", "notModified": false] as [String: Any]
+    )
+    try await newer.value
+    // "Not modified" names list-1, which the app no longer holds: it asks again.
+    service.completeCapturedRequestForTesting(
+      requestId: olderRequestId,
+      result: ["signature": "list-1", "notModified": true] as [String: Any]
+    )
+    service.completeCapturedRequestForTesting(
+      requestId: try await nextRequestId(after: 3),
+      result: ["sessions": try rows(["s1", "s2", "s3"]), "signature": "list-2", "notModified": false] as [String: Any]
+    )
+    try await older.value
+
+    XCTAssertEqual(database.fetchSessions().map(\.id).sorted(), ["s1", "s2", "s3"])
+  }
+
+  @MainActor
   func testMultipleSuspendedWorkRefreshesRestoreOriginalStatusAfterProjectSwitch() async throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     defer { database.close() }
@@ -980,7 +1043,9 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
     let refresh = Task { try await service.refreshPullRequestSnapshots() }
     let listId = try await awaitCapturedCommand(service, index: 0)
     XCTAssertEqual(service.capturedCommandForTesting(requestId: listId)?.action, "prs.list")
-    XCTAssertTrue(service.capturedCommandArgsForTesting(requestId: listId)?.isEmpty ?? true)
+    // The first PR load of a session asks for the open PRs only; this host is
+    // older and answers with every PR as a bare array.
+    XCTAssertEqual(service.capturedCommandArgsForTesting(requestId: listId)?["activeOnly"] as? Bool, true)
     service.completeCapturedRequestForTesting(requestId: listId, result: try encodeJSON(listed))
 
     var requestedBatches: [[String]] = []

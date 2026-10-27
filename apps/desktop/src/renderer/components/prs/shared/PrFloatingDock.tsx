@@ -8,7 +8,6 @@ import {
   Prohibit,
   Stack,
   Tag,
-  UserCircle,
   Users,
   WarningCircle,
   X,
@@ -148,7 +147,7 @@ function DockBubble({ item, active, onClick }: { item: PrDockItem; active: boole
   );
 }
 
-function CardHeader({ icon: Glyph, title, onClose, trailing }: { icon: Icon; title: string; onClose?: () => void; trailing?: React.ReactNode }) {
+export function CardHeader({ icon: Glyph, title, onClose, trailing }: { icon: Icon; title: string; onClose?: () => void; trailing?: React.ReactNode }) {
   return (
     <div className="mb-2 flex items-center gap-2">
       <Glyph size={13} style={{ color: COLORS.textMuted }} />
@@ -941,25 +940,6 @@ export function PrLabelsCard({ detail, onSetLabels, onClose }: { detail: PrDetai
         <div className="mb-2 text-[12px]" style={{ color: COLORS.textMuted }}>No labels.</div>
       )}
       <InlineInput value={input} onChange={setInput} onSubmit={add} placeholder="Add: bug, enhancement" />
-    </div>
-  );
-}
-
-export function PrAssigneesCard({ detail, onClose }: { detail: PrDetail | null; onClose: () => void }) {
-  const assignees = detail?.assignees ?? [];
-  return (
-    <div data-testid="pr-assignees-card">
-      <CardHeader icon={UserCircle} title="Assignees" onClose={onClose} />
-      {assignees.length === 0 ? (
-        <div className="text-[12px]" style={{ color: COLORS.textMuted }}>Nobody is assigned.</div>
-      ) : (
-        assignees.map((assignee) => (
-          <div key={assignee.login} className="flex items-center gap-2 py-1">
-            <PrAgentAvatar login={assignee.login} isBot={assignee.isBot} avatarUrl={assignee.avatarUrl} size={20} />
-            <span className="text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>{assignee.login}</span>
-          </div>
-        ))
-      )}
     </div>
   );
 }

@@ -1,10 +1,12 @@
 import type {
+  GitHubPrListFilters,
   GitHubPrListItem,
   GitHubPrSnapshot,
   PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
+import { GITHUB_PR_FILTER_ME } from "../../../../shared/githubPrSearch";
 import { isTerminalPrState } from "../../../lib/prState";
 import type { OptimisticTerminalState } from "../state/PrsContext";
 import type { GitHubTabSort } from "./prBlockedSort";
@@ -36,11 +38,19 @@ export type GitHubTabWarmCache = {
   selectedItemId: string | null;
   selectedItemIdsByFilter?: GitHubFilterSelectionMap;
   searchQuery: string;
+  /** Label / author / assignee filters; absent in caches written before filters. */
+  listFilters?: GitHubPrListFilters;
   externalHistoryLoaded: boolean;
   cachedAt: number;
 };
 
 export type GitHubSnapshotRequestKey = {
+  /**
+   * The machine the read is scoped to (`projectBinding.key`), or null for this
+   * computer. Two machines can show the same checkout path, so the path alone
+   * does not identify what a request asks for.
+   */
+  bindingKey: string | null;
   includeExternalClosed: boolean;
   historyPageLimit: number;
 };
@@ -72,12 +82,16 @@ export function normalizeHistoryPageLimit(value: unknown): number {
   );
 }
 
-export function snapshotRequestKey(options?: {
-  includeExternalClosed?: boolean;
-  historyPageLimit?: number;
-}): GitHubSnapshotRequestKey {
+export function snapshotRequestKey(
+  bindingKey: string | null,
+  options?: {
+    includeExternalClosed?: boolean;
+    historyPageLimit?: number;
+  },
+): GitHubSnapshotRequestKey {
   const includeExternalClosed = options?.includeExternalClosed === true;
   return {
+    bindingKey,
     includeExternalClosed,
     historyPageLimit: includeExternalClosed ? normalizeHistoryPageLimit(options?.historyPageLimit) : 0,
   };
@@ -88,6 +102,9 @@ export function snapshotRequestSatisfies(
   requested: GitHubSnapshotRequestKey,
 ): boolean {
   if (!current) return false;
+  // A read scoped to another machine never answers this one, even when both
+  // machines show a checkout at the same path.
+  if (current.bindingKey !== requested.bindingKey) return false;
   if (!requested.includeExternalClosed) return true;
   return current.includeExternalClosed && current.historyPageLimit >= requested.historyPageLimit;
 }
@@ -171,6 +188,25 @@ export function applyOptimisticTerminalState(
 export function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "open") return item.state === "open" || item.state === "draft";
   return item.state === filter;
+}
+
+/**
+ * The label / author part of the filters, applied to loaded rows. Used only
+ * while GitHub search is unavailable or still answering; loaded rows carry no
+ * assignees, so an assignee filter cannot narrow them here.
+ */
+export function matchesListFiltersLocally(
+  item: GitHubPrListItem,
+  filters: GitHubPrListFilters,
+  viewerLogin: string | null,
+): boolean {
+  const names = new Set(item.labels.map((label) => label.name.toLowerCase()));
+  if (!filters.labels.every((label) => names.has(label.toLowerCase()))) return false;
+  if (filters.author) {
+    const wanted = filters.author === GITHUB_PR_FILTER_ME ? viewerLogin : filters.author;
+    if (!wanted || item.author?.toLowerCase() !== wanted.toLowerCase()) return false;
+  }
+  return true;
 }
 
 export function bucketForState(state: GitHubPrListItem["state"]): GitHubFilter {

@@ -159,12 +159,21 @@ export function createRebaseSuggestionService(args: {
     return result.exitCode === 0 && result.stdout.trim() ? result.stdout.trim() : null;
   };
 
+  // A count between two commit ids never changes, so each pair is asked once.
+  const behindCountByRange = new Map<string, number>();
   const readBehindCount = async (args: { laneHeadSha: string; baseHeadSha: string }): Promise<number> => {
-    const result = await runGit(
-      ["rev-list", "--count", `${args.laneHeadSha}..${args.baseHeadSha}`],
-      { cwd: projectRoot, timeoutMs: 10_000 }
-    );
-    return result.exitCode === 0 ? Math.max(0, Number(result.stdout.trim()) || 0) : 0;
+    const range = `${args.laneHeadSha}..${args.baseHeadSha}`;
+    const known = behindCountByRange.get(range);
+    if (known !== undefined) return known;
+    const result = await runGit(["rev-list", "--count", range], { cwd: projectRoot, timeoutMs: 10_000 });
+    if (result.exitCode !== 0) return 0;
+    const count = Math.max(0, Number(result.stdout.trim()) || 0);
+    behindCountByRange.set(range, count);
+    if (behindCountByRange.size > 2_000) {
+      const oldest = behindCountByRange.keys().next().value;
+      if (oldest !== undefined) behindCountByRange.delete(oldest);
+    }
+    return count;
   };
 
   /**
@@ -172,10 +181,31 @@ export function createRebaseSuggestionService(args: {
    * a rebase would pull in. Cap at 20 for payload safety; older commits are
    * trimmed. Returns an empty array on any git failure.
    */
+  // Like the count, the newest 20 commits between two commit ids never change.
+  const behindCommitsByRange = new Map<string, RebaseTargetCommit[]>();
   const readBehindCommits = async (args: {
     laneHeadSha: string;
     baseHeadSha: string;
   }): Promise<RebaseTargetCommit[]> => {
+    const range = `${args.laneHeadSha}..${args.baseHeadSha}`;
+    const known = behindCommitsByRange.get(range);
+    if (known) return known.map((commit) => ({ ...commit }));
+    const commits = await readBehindCommitsUncached(args);
+    if (commits) {
+      behindCommitsByRange.set(range, commits.map((commit) => ({ ...commit })));
+      if (behindCommitsByRange.size > 500) {
+        const oldest = behindCommitsByRange.keys().next().value;
+        if (oldest !== undefined) behindCommitsByRange.delete(oldest);
+      }
+    }
+    return commits ?? [];
+  };
+
+  /** Null when git failed, so a failure is never kept. */
+  const readBehindCommitsUncached = async (args: {
+    laneHeadSha: string;
+    baseHeadSha: string;
+  }): Promise<RebaseTargetCommit[] | null> => {
     const result = await runGit(
       [
         "log",
@@ -186,7 +216,7 @@ export function createRebaseSuggestionService(args: {
       ],
       { cwd: projectRoot, timeoutMs: 10_000 }
     );
-    if (result.exitCode !== 0) return [];
+    if (result.exitCode !== 0) return null;
     const out: RebaseTargetCommit[] = [];
     for (const line of result.stdout.split("\n")) {
       const trimmed = line.trim();

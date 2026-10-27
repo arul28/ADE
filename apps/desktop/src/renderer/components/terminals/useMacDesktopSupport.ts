@@ -49,8 +49,11 @@ export function desktopToolContext(support: MacDesktopSupport | null): {
   hostPlatform: NodeJS.Platform | null;
 } {
   return {
-    supportsMacDesktop: support ? support.platform === "darwin" && support.supported : null,
-    macDesktopUnsupportedReason: support?.platform === "darwin" ? support.reason : "This lane’s host isn’t a Mac",
+    // A Linux host's lane screen is served by the same pane (as Linux Desktop).
+    supportsMacDesktop: support ? (support.platform === "darwin" || support.platform === "linux") && support.supported : null,
+    macDesktopUnsupportedReason: support?.platform === "darwin" || support?.platform === "linux"
+      ? support.reason
+      : "This lane’s host isn’t a Mac",
     // The same read answers both seats: a Windows host that can host a screen
     // shows Windows Desktop, a Mac host shows Mac Desktop, and only one is
     // available at a time because one platform answers.
@@ -63,6 +66,9 @@ export function desktopToolContext(support: MacDesktopSupport | null): {
 }
 
 const cache = new Map<string, MacDesktopSupport>();
+
+/** A few spaced re-reads after a failed one, then the answer stays unknown. */
+const SUPPORT_RETRY_DELAYS_MS = [1_500, 5_000, 15_000] as const;
 
 /** Test-only reset for the module-level capability cache. */
 export function resetMacDesktopSupportCache(): void {
@@ -99,24 +105,35 @@ export function useMacDesktopSupport(args: {
     const api = window.ade?.macDesktop;
     if (!api) return;
     let cancelled = false;
-    void api
-      .getStatus({}, pinRef.current)
-      .then((status) => {
-        const answer: MacDesktopSupport = {
-          supported: status.supported,
-          reason: status.supported ? null : (status.unsupportedReason ?? null),
-          platform: status.platform,
-        };
-        cache.set(key, answer);
-        if (!cancelled) setSupported(answer);
-      })
-      .catch(() => {
-        // An unreachable host is not a "no". Leaving it unknown keeps the tool
-        // visible, and the panel says what actually went wrong when it is opened.
-        if (!cancelled) setSupported(null);
-      });
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const read = (attempt: number): void => {
+      void api
+        .getStatus({}, pinRef.current)
+        .then((status) => {
+          const answer: MacDesktopSupport = {
+            supported: status.supported,
+            reason: status.supported ? null : (status.unsupportedReason ?? null),
+            platform: status.platform,
+          };
+          cache.set(key, answer);
+          if (!cancelled) setSupported(answer);
+        })
+        .catch(() => {
+          // An unreachable host is not a "no". Leaving it unknown keeps the tool
+          // visible, and the panel says what actually went wrong when it is opened.
+          if (cancelled) return;
+          setSupported(null);
+          // The first read often lands while the tab is still switching to
+          // the machine ("Project is switching"); without another try the
+          // tools named the wrong platform for as long as the tab stayed open.
+          const delay = SUPPORT_RETRY_DELAYS_MS[attempt];
+          if (delay != null) retryTimer = setTimeout(() => read(attempt + 1), delay);
+        });
+    };
+    read(0);
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [args.enabled, key]);
 

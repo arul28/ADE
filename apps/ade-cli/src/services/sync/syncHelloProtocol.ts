@@ -1,7 +1,9 @@
-import type {
-  SyncHelloPayload,
-  SyncPairingRequestPayload,
-  SyncPeerMetadata,
+import {
+  SYNC_PIPELINED_HELLO_MAX_ENVELOPES,
+  type SyncHelloPayload,
+  type SyncPairingRequestPayload,
+  type SyncPeerMetadata,
+  type SyncPipelinedHelloEnvelope,
 } from "../../../../desktop/src/shared/types";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
 import { normalizeSyncApplicationCompressionOffer } from "./syncProtocol";
@@ -125,6 +127,15 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     ) return null;
     connectionAttempt = { id, startedAtMs };
   }
+  const pipelined = parsePipelinedHelloEnvelopes(value?.pipelined);
+  const rawProjectCatalogDigest = toOptionalString(value?.projectCatalogDigest);
+  const projectCatalogDigest = rawProjectCatalogDigest && rawProjectCatalogDigest.length <= 128
+    ? rawProjectCatalogDigest
+    : null;
+  const rawCommandRoutingDigest = toOptionalString(value?.commandRoutingDigest);
+  const commandRoutingDigest = rawCommandRoutingDigest && rawCommandRoutingDigest.length <= 128
+    ? rawCommandRoutingDigest
+    : null;
   return {
     peer: {
       deviceId: String(peer.deviceId).trim(),
@@ -150,7 +161,46 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     },
     auth: normalizedAuth,
     compression: normalizeSyncApplicationCompressionOffer(value?.compression),
+    ...(commandRoutingDigest ? { commandRoutingDigest } : {}),
+    ...(pipelined ? { pipelined } : {}),
+    ...(projectCatalogDigest ? { projectCatalogDigest } : {}),
   };
+}
+
+const PIPELINED_HELLO_TYPES: ReadonlySet<string> = new Set([
+  "command",
+  "chat_subscribe",
+  "roster_subscribe",
+  "project_catalog_request",
+]);
+
+/**
+ * `hello.pipelined`, all or nothing: null when absent, empty when any entry is
+ * malformed or there are too many (the host then runs none, and the client
+ * sends them itself), otherwise the normalized list.
+ */
+export function parsePipelinedHelloEnvelopes(value: unknown): SyncPipelinedHelloEnvelope[] | null {
+  if (value == null) return null;
+  if (!Array.isArray(value) || value.length > SYNC_PIPELINED_HELLO_MAX_ENVELOPES) return [];
+  const out: SyncPipelinedHelloEnvelope[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (!PIPELINED_HELLO_TYPES.has(type)) return [];
+    const payload = record.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+    const requestId = record.requestId == null ? null : toOptionalString(record.requestId);
+    if (record.requestId != null && (!requestId || requestId.length > 128)) return [];
+    const projectId = record.projectId == null ? null : toOptionalString(record.projectId);
+    out.push({
+      type: type as SyncPipelinedHelloEnvelope["type"],
+      requestId,
+      projectId,
+      payload: payload as Record<string, unknown>,
+    });
+  }
+  return out;
 }
 
 export function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload | null {

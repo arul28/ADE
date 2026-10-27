@@ -343,6 +343,29 @@ function turnCitedProofIds(text: string): string[] {
   if (!text.includes("ade-proof") && !text.includes(PROOF_COMPARE_FENCE_LANGUAGE)) return [];
   return citedProofArtifactIds(text);
 }
+/**
+ * The object last handed to a row for `key`, while its fields hold the same
+ * values; else `next`, remembered. Keeps a memoized row's object props equal
+ * across list renders that rebuild them.
+ */
+function stableRowProp<T extends Record<string, string | number | boolean>>(cache: Map<string, T>, key: string, next: T): T {
+  const previous = cache.get(key);
+  if (previous) {
+    let same = true;
+    for (const field in next) {
+      if (previous[field] !== next[field]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return previous;
+  }
+  // Bounded: a row key that leaves the window is dropped with the oldest.
+  if (cache.size >= 2_000) cache.delete(cache.keys().next().value as string);
+  cache.set(key, next);
+  return next;
+}
+
 const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
@@ -5458,12 +5481,15 @@ const EventRow = React.memo(function EventRow({
  * virtualizer so subsequent frames use real measured sizes instead of estimates.
  */
 const MeasuredEventRow = React.memo(function MeasuredEventRow({
-  index,
+  rowKey,
   onMeasure,
   ...rest
-}: EventRowProps & { index: number; onMeasure: (index: number, height: number) => void }) {
+}: EventRowProps & { rowKey: string; onMeasure: (rowKey: string, height: number) => void }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
 
+  // Keyed by the row, not its position: an older page prepended above shifts
+  // every index, and re-running this effect forced a layout read per mounted
+  // row on every page (a quarter of a long chat's history fill).
   useLayoutEffect(() => {
     const el = rowRef.current;
     if (!el) return;
@@ -5472,7 +5498,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       // The rect is screen pixels under hosted-web body zoom; the heights the
       // scroll math stores are layout pixels.
       const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
-      if (height > 0) onMeasure(index, height);
+      if (height > 0) onMeasure(rowKey, height);
     };
 
     measureNow();
@@ -5497,7 +5523,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       if (raf !== null) cancelAnimationFrame(raf);
       observer.disconnect();
     };
-  }, [index, onMeasure]);
+  }, [rowKey, onMeasure]);
 
   return (
     <div ref={rowRef} data-chat-virtualized-row="true" className="min-w-0 max-w-full overflow-visible">
@@ -5691,6 +5717,8 @@ const SCROLL_RESTORE_MAX_CORRECTION_FRAMES = 60;
 const SCROLL_RESTORE_STABLE_FRAMES = 2;
 /** Automatic older pages allowed between two reader scrolls (not counting an underfilled pane). */
 const MAX_CHAINED_AUTO_OLDER_PAGES = 1;
+/** Quiet time after a chat opens before its older history starts filling in by itself. */
+const OLDER_HISTORY_AUTO_FILL_DELAY_MS = 1_500;
 /** Longest an older-history backfill page waits for an idle slot before it runs anyway. */
 const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
 /** How often backfill looks again while a scroll restore is still landing. */
@@ -5938,6 +5966,7 @@ function AgentChatMessageListMain({
   olderHistoryError = null,
   onLoadOlderHistory,
   backfillOlderHistory = false,
+  autoFillOlderHistory = true,
   onRetryOlderHistory,
   onReturnToLatest,
   scrollToRowKeyRequest,
@@ -6039,6 +6068,13 @@ function AgentChatMessageListMain({
    * merge keeps the oldest events, which would drop the reader's live tail).
    */
   backfillOlderHistory?: boolean;
+  /**
+   * Start that backfill by itself shortly after the chat opens. Off for a chat
+   * on another machine: every page is a network read, and a switch back to the
+   * chat would pull its whole history again. There the reader's scroll, find
+   * and the prompt rail still start it.
+   */
+  autoFillOlderHistory?: boolean;
   /** Called when the user explicitly retries a failed older-history page. */
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
@@ -6313,6 +6349,32 @@ function AgentChatMessageListMain({
    * no scrollbar to scroll, so it keeps backfilling until it fills. Nothing
    * loads while a scroll restore is still landing.
    */
+  // Older history pages in once the chat has opened and been quiet for a
+  // moment, or at once when the reader reaches for it: scrolls up, opens find,
+  // points at the prompt rail or recalls a prompt. Opening a long chat used to
+  // page its whole transcript in at once (16,000 events: 1.6 s of main thread
+  // that delayed the open itself); now the open paints first and the fill
+  // follows in idle slots, so scrolling up later rarely meets the top. Keyed
+  // by chat, so a switch starts quiet again.
+  const [backfillArmedSessionKey, setBackfillArmedSessionKey] = useState<string | null | undefined>(undefined);
+  const backfillSessionKey = sessionId ?? null;
+  const backfillArmed = backfillArmedSessionKey === backfillSessionKey;
+  const backfillArmStateRef = useRef({ armed: backfillArmed, key: backfillSessionKey });
+  backfillArmStateRef.current = { armed: backfillArmed, key: backfillSessionKey };
+  /** A press on the list is held (a scrollbar drag, among others). */
+  const readerPointerHeldRef = useRef(false);
+  const armOlderHistoryBackfill = useCallback(() => {
+    const { armed, key } = backfillArmStateRef.current;
+    if (armed) return;
+    backfillArmStateRef.current = { armed: true, key };
+    setBackfillArmedSessionKey(key);
+  }, []);
+  useEffect(() => {
+    if (!backfillOlderHistory || !autoFillOlderHistory || backfillArmed || !hasOlderHistory) return;
+    const timer = setTimeout(armOlderHistoryBackfill, OLDER_HISTORY_AUTO_FILL_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [armOlderHistoryBackfill, autoFillOlderHistory, backfillArmed, backfillOlderHistory, backfillSessionKey, hasOlderHistory]);
+
   const maybeRequestOlderHistory = useCallback((
     scrollTopNow: number,
     source: "reader" | "auto" | "underfill" | "backfill",
@@ -6370,7 +6432,7 @@ function AgentChatMessageListMain({
   // the resident cap (no loading flip, so nothing re-arms). Idle slots keep it
   // behind input, layout and streaming work.
   useEffect(() => {
-    if (!backfillOlderHistory || !hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
+    if (!backfillOlderHistory || !backfillArmed || !hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
     let idleHandle: number | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
@@ -6404,7 +6466,7 @@ function AgentChatMessageListMain({
       if (idleHandle !== null) window.cancelIdleCallback(idleHandle);
       if (timer !== null) clearTimeout(timer);
     };
-  }, [backfillOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
+  }, [backfillArmed, backfillOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -6935,7 +6997,19 @@ function AgentChatMessageListMain({
     const known = knownTurnFoldIdsRef.current;
     knownTurnFoldIdsRef.current = new Set(turnFolds.map((fold) => fold.foldId));
     const container = scrollRef.current;
-    const newFolds = known ? turnFolds.filter((fold) => !known.has(fold.foldId)) : [];
+    let newFolds = known ? turnFolds.filter((fold) => !known.has(fold.foldId)) : [];
+    // Folds that arrive with an older page hide only rows that were never
+    // drawn; nothing on screen moved into them. The list anchor below keeps the
+    // reader's place for a prepend (and sizes the window for it), so leave
+    // those to it: taking a fold anchor here drew each page's commit at the old
+    // scrollTop and remounted the whole window once more.
+    if (newFolds.length) {
+      const drawn = new Set(groupedRowKeysRef.current);
+      newFolds = newFolds.filter((fold) => {
+        for (const key of fold.hiddenKeys) if (drawn.has(key)) return true;
+        return false;
+      });
+    }
     if (newFolds.length && container) {
       if (stickToBottomRef.current) {
         pinAfterTurnFoldRef.current = true;
@@ -7642,12 +7716,13 @@ function AgentChatMessageListMain({
   const findSnapshotRef = useRef<ChatFindSourceSnapshot>({ rows: [], excludedKeys: new Set(), hasOlderHistory: false });
   const findListenersRef = useRef(new Set<() => void>());
   const findSource = useMemo<ChatFindSource>(() => ({
+    requestCompleteHistory: armOlderHistoryBackfill,
     get: () => findSnapshotRef.current,
     subscribe: (listener) => {
       findListenersRef.current.add(listener);
       return () => findListenersRef.current.delete(listener);
     },
-  }), []);
+  }), [armOlderHistoryBackfill]);
   useEffect(() => {
     findSnapshotRef.current = {
       rows: presentedRows,
@@ -7670,6 +7745,8 @@ function AgentChatMessageListMain({
     if (!scrollToPromptHistoryRequest?.eventKey) return;
     if (lastHandledPromptHistoryRequestIdRef.current === scrollToPromptHistoryRequest.requestId) return;
     lastHandledPromptHistoryRequestIdRef.current = scrollToPromptHistoryRequest.requestId;
+    // Recalling prompts walks back through the chat: page the rest in.
+    armOlderHistoryBackfill();
     const rowIndex = groupedRows.findIndex((row) => (
       row.event.type === "user_message"
       && promptHistoryEventKey({ timestamp: row.timestamp, event: row.event }) === scrollToPromptHistoryRequest.eventKey
@@ -7816,9 +7893,14 @@ function AgentChatMessageListMain({
       measureFlushTimer.current = null;
     }
   }, []);
-  const handleMeasure = useCallback((index: number, height: number) => {
-    const key = groupedRowKeys[index];
-    if (!key) return;
+  const rowIndexByKey = useMemo(() => {
+    const byKey = new Map<string, number>();
+    for (let index = 0; index < groupedRowKeys.length; index += 1) byKey.set(groupedRowKeys[index]!, index);
+    return byKey;
+  }, [groupedRowKeys]);
+  const handleMeasure = useCallback((key: string, height: number) => {
+    const index = rowIndexByKey.get(key);
+    if (index === undefined) return;
     const prev = measuredHeights.current.get(key);
     if (prev !== height) {
       const previousHeight = prev ?? heightForKey(key);
@@ -7853,7 +7935,7 @@ function AgentChatMessageListMain({
         if (isFollowingBottom) scrollToBottomSoon(2);
       }, isFollowingBottom ? 16 : 80);
     }
-  }, [groupedRowKeys, heightForKey, rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
+  }, [rowIndexByKey, heightForKey, rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
 
   // Compute the visible window of rows when virtualization is active.
   // measurementTick forces recomputation when row heights are measured so
@@ -8086,7 +8168,12 @@ function AgentChatMessageListMain({
   useLayoutEffect(() => {
     if (!resolvedScrollMemoryKey || !scrollRestoreSettledRef.current || scrollRestoreActiveRef.current) return;
     const el = scrollRef.current;
-    const scrollTopAtExit = el?.scrollTop ?? lastScrollTopRef.current;
+    // A reader following the tail is saved as "pinned", which reads nothing
+    // from the DOM. Reading scrollTop here forced a layout on every streamed
+    // row-height tick, before the bottom pin moved the view again.
+    const scrollTopAtExit = stickToBottomRef.current
+      ? lastScrollTopRef.current
+      : (el?.scrollTop ?? lastScrollTopRef.current);
     rememberBoundedChatScrollMemory(
       scrollMemorySnapshotByKeyRef.current,
       resolvedScrollMemoryKey,
@@ -8354,14 +8441,19 @@ function AgentChatMessageListMain({
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
     autoOlderLoadsSinceUserScrollRef.current = 0;
+    // A scrollbar drag upward (wheel, keys and touch arm through the scroll direction).
+    if (readerPointerHeldRef.current && target.scrollTop < previousScrollTop - 0.5) armOlderHistoryBackfill();
     maybeRequestOlderHistory(target.scrollTop, "reader");
-  }, [captureScrollMemory, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
+  }, [armOlderHistoryBackfill, captureScrollMemory, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
 
   /** The reader scrolled up (true) or down (false): starts or ends the re-pin hold. */
   const noteReaderScrollDirection = useCallback((up: boolean) => {
     userScrollUpAtRef.current = up ? performance.now() : null;
-    if (up) releaseBottomStickinessForUserScroll();
-  }, [releaseBottomStickinessForUserScroll]);
+    if (up) {
+      releaseBottomStickinessForUserScroll();
+      armOlderHistoryBackfill();
+    }
+  }, [armOlderHistoryBackfill, releaseBottomStickinessForUserScroll]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
@@ -8378,6 +8470,14 @@ function AgentChatMessageListMain({
   // over: an in-flight scroll restore must not pull the view back afterwards.
   const handlePointerDown = useCallback(() => {
     noteReaderScrollIntent();
+    readerPointerHeldRef.current = true;
+    const release = () => {
+      readerPointerHeldRef.current = false;
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+    };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
   }, [noteReaderScrollIntent]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -8505,6 +8605,8 @@ function AgentChatMessageListMain({
   const rowScrollToRowKey = useLatestCallback(scrollToRowKey);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
+  const turnEndFoldByRowKeyRef = useRef(new Map<string, { foldId: string; open: boolean }>());
+  const turnEndWakeChainByRowKeyRef = useRef(new Map<string, { chainId: string; checkCount: number; open: boolean }>());
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
     // Turn dividers render at the END of a turn (the `done` row) for every
@@ -8534,10 +8636,14 @@ function AgentChatMessageListMain({
       ? scheduledWorkByTurnEndKey.get(envelope.key)
       : undefined;
     const turnEndFoldId = envelope.event.type === "done" ? wakeTurnFoldIdByTurnEndKey.get(envelope.key) : undefined;
-    const turnEndFold = turnEndFoldId ? { foldId: turnEndFoldId, open: openTurnFolds.has(turnEndFoldId) } : null;
+    // Rows are memoized; a fresh object here re-rendered every mounted turn
+    // end on each streamed event. Same values keep the previous object.
+    const turnEndFold = turnEndFoldId
+      ? stableRowProp(turnEndFoldByRowKeyRef.current, envelope.key, { foldId: turnEndFoldId, open: openTurnFolds.has(turnEndFoldId) })
+      : null;
     const anchoredChain = envelope.event.type === "done" ? wakeChainByAnchorKey.get(envelope.key) : undefined;
     const turnEndWakeChain = anchoredChain
-      ? { chainId: anchoredChain.chainId, checkCount: anchoredChain.checkCount, open: openTurnFolds.has(anchoredChain.chainId) }
+      ? stableRowProp(turnEndWakeChainByRowKeyRef.current, envelope.key, { chainId: anchoredChain.chainId, checkCount: anchoredChain.checkCount, open: openTurnFolds.has(anchoredChain.chainId) })
       : null;
     const inlineProof = inlineProofByRowKey.get(envelope.key);
     const sourcesTurnId = envelope.event.type === "done" ? envelope.event.turnId : foldEvent?.turnId;
@@ -8565,7 +8671,7 @@ function AgentChatMessageListMain({
       return (
         <MeasuredEventRow
           key={envelope.key}
-          index={index}
+          rowKey={envelope.key}
           onMeasure={rowMeasure}
           envelope={envelope}
           showTurnDivider={Boolean(showTurnDivider)}
@@ -8800,6 +8906,7 @@ function AgentChatMessageListMain({
         columnWidthPx={columnWidthPx}
         keyboardFocusIndex={promptHistoryFocusIndex}
         keyboardFocusRequestId={scrollToPromptHistoryRequest?.requestId ?? null}
+        onReach={armOlderHistoryBackfill}
       />
       <div
         ref={scrollRef}

@@ -15,6 +15,7 @@
 
 import type { AdeCardPayload, AdeCardRow } from "./adeCard";
 import { classifyPrAuthor } from "./prBotIdentity";
+import { isCiProducerCheck } from "./prChecksRollup";
 import type { PrCheck, PrChecksStatus, PrState } from "./types/prs";
 
 export type PrWatchMode = "watch" | "ship";
@@ -37,6 +38,14 @@ export const PR_WATCH_UNREADABLE_LIMIT_MS = 15 * 60_000;
  * Past it, a bot with no activity is treated as not running on this PR.
  */
 export const PR_SHIP_REVIEW_BOT_GRACE_MS = 12 * 60_000;
+/**
+ * A head that no CI check has reported on for this long wakes the agent once.
+ * A docs-only push that every workflow's `paths-ignore` skips never reports a
+ * check, so without this the watch would wait on CI forever. Longer than the
+ * rollup's 5-minute registration grace, so a slow runner is not mistaken for
+ * no CI at all.
+ */
+export const PR_WATCH_NO_CHECKS_GRACE_MS = 10 * 60_000;
 
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 220;
@@ -72,11 +81,27 @@ export function adeReviewRemarkKey(submittedAt: string): string {
 
 export type PrWatchFailedCheck = { name: string; url: string | null; conclusion: string | null };
 
+/**
+ * The newest time GitHub's merge queue let go of the PR without merging it,
+ * read from its `RemovedFromMergeQueueEvent`. The queue runs CI on a merge
+ * commit of its own, so a failed queue check leaves the head green, the branch
+ * clean and no comment — this event is the only trace.
+ */
+export type PrMergeQueueRemoval = {
+  id: string;
+  createdAt: string | null;
+  /** GitHub's own words, e.g. "manual"; "merged" is filtered out by the reader. */
+  reason: string | null;
+};
+
 export type PrWatchChange =
   | { kind: "checks_failed"; failed: PrWatchFailedCheck[] }
   | { kind: "checks_passed" }
   | { kind: "remarks"; remarks: PrWatchRemark[] }
   | { kind: "conflicting" }
+  /** No CI check reported on the head within {@link PR_WATCH_NO_CHECKS_GRACE_MS}. */
+  | { kind: "no_checks"; draft: boolean }
+  | { kind: "merge_queue_removed"; reason: string | null }
   | { kind: "merged" }
   | { kind: "closed" }
   | { kind: "unreadable"; reason: string };
@@ -95,6 +120,14 @@ export type PrWatchState = {
   remarksThrough: string | null;
   remarkIds: string[];
   conflicting: boolean;
+  /** A CI check has reported on the current head (so "no checks" is never news for it). */
+  checksSeen: boolean;
+  /** When the watch first read the current head with no CI check on it. */
+  noChecksSince: string | null;
+  /** The agent was told that no CI reported on the current head. */
+  noChecksTold: boolean;
+  /** The last merge-queue removal the watch has accounted for. */
+  mergeQueueRemovalId: string | null;
   commentOnlyWakes: number;
   unreadableSince: string | null;
   /** Ship mode: news found but not yet released. */
@@ -134,6 +167,10 @@ export function initialPrWatchState(startedAtIso: string, headSha: string | null
     remarksThrough: startedAtIso,
     remarkIds: [],
     conflicting: false,
+    checksSeen: false,
+    noChecksSince: null,
+    noChecksTold: false,
+    mergeQueueRemovalId: null,
     commentOnlyWakes: 0,
     unreadableSince: null,
     held: [],
@@ -248,6 +285,14 @@ export function evaluatePrWatch(args: {
   checks: PrCheck[] | null;
   remarks: PrWatchRemark[] | null;
   ignoredRemarkIds?: ReadonlySet<string>;
+  /**
+   * The newest merge-queue removal; `null` when there is none, `undefined`
+   * when it could not be read this pass (the stored id is kept, so nothing is
+   * told twice).
+   */
+  mergeQueueRemoval?: PrMergeQueueRemoval | null;
+  /** When the watch began. A removal from before it is history, not news. */
+  watchStartedAt?: string;
   nowMs: number;
 }): PrWatchEvaluation {
   const { mode, pr, nowMs } = args;
@@ -277,8 +322,12 @@ export function evaluatePrWatch(args: {
   let failedChecks = headMoved ? [] : previous.failedChecks;
   let passed = headMoved ? false : previous.passed;
   let held = headMoved
-    ? previous.held.filter((change) => change.kind !== "checks_failed" && change.kind !== "checks_passed")
+    ? previous.held.filter((change) =>
+      change.kind !== "checks_failed" && change.kind !== "checks_passed" && change.kind !== "no_checks")
     : previous.held;
+  let checksSeen = headMoved ? false : previous.checksSeen;
+  let noChecksSince = headMoved ? null : previous.noChecksSince;
+  let noChecksTold = headMoved ? false : previous.noChecksTold;
 
   if (args.checks && args.checks.length > 0) {
     const failed = args.checks.filter(isFailedCheck);
@@ -296,6 +345,39 @@ export function evaluatePrWatch(args: {
   const passedNow = pr.checksStatus === "passing";
   if (passedNow && !passed) found.push({ kind: "checks_passed" });
   passed = passedNow;
+
+  // No CI on this head. Review bots and deploy previews report checks too, so
+  // only a CI producer counts as "CI ran". Once one has reported, an empty
+  // read later (a rerun clearing the list) is never "no CI".
+  if (args.checks !== null) {
+    if (args.checks.some((check) => isCiProducerCheck(check.appSlug))) {
+      checksSeen = true;
+      noChecksSince = null;
+      held = held.filter((change) => change.kind !== "no_checks");
+    } else if (!checksSeen && !noChecksTold) {
+      noChecksSince = noChecksSince ?? nowIso;
+      const settled = pr.checksStatus !== "passing" && pr.checksStatus !== "failing";
+      if (settled && nowMs - timeMs(noChecksSince) >= PR_WATCH_NO_CHECKS_GRACE_MS) {
+        found.push({ kind: "no_checks", draft: pr.state === "draft" });
+        noChecksTold = true;
+      }
+    }
+  }
+
+  // GitHub also writes a removal when the queue merges the PR ("merged"); the
+  // merge itself is reported by the terminal path, so only a drop is news.
+  let mergeQueueRemovalId = previous.mergeQueueRemovalId ?? null;
+  const removal = args.mergeQueueRemoval;
+  if (removal && removal.id !== mergeQueueRemovalId) {
+    const afterStart = args.watchStartedAt
+      ? timeMs(removal.createdAt) >= timeMs(args.watchStartedAt)
+      // No start time to compare with: only a removal after one already seen is news.
+      : mergeQueueRemovalId !== null;
+    if (afterStart && (removal.reason ?? "").trim().toLowerCase() !== "merged") {
+      found.push({ kind: "merge_queue_removed", reason: removal.reason?.trim() || null });
+    }
+    mergeQueueRemovalId = removal.id;
+  }
 
   const { fresh, remarksThrough, remarkIds } = readFreshRemarks(previous, args.remarks, args.ignoredRemarkIds);
   if (fresh.length > 0) found.push({ kind: "remarks", remarks: fresh });
@@ -332,9 +414,21 @@ export function evaluatePrWatch(args: {
         isAgentReviewer(remark) && timeMs(remarkAt(remark)) >= timeMs(headSeenAt)));
     // A conflict blocks CI from ever settling, so it never waits.
     const urgent = held.some((change) => change.kind === "conflicting");
-    const release = held.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));
-    changes = release ? held : [];
-    if (release) held = [];
+    // The no-CI warning exists because nothing is verifying this commit. A
+    // preview or review-bot check that is still running must not hold it: that
+    // check is not CI, and waiting for it would silence the warning forever.
+    const noChecksDue = held.some((change) => change.kind === "no_checks");
+    const waitable = held.filter((change) => change.kind !== "no_checks");
+    const release = waitable.length > 0 && (urgent || (checksTerminal && (botsHeard || graceOver)));
+    if (release) {
+      changes = held;
+      held = [];
+    } else if (noChecksDue) {
+      changes = held.filter((change) => change.kind === "no_checks");
+      held = waitable;
+    } else {
+      changes = [];
+    }
   } else {
     // News Ship was holding (the watch switched from Ship) goes out now.
     changes = mergeHeld(held, found);
@@ -356,6 +450,10 @@ export function evaluatePrWatch(args: {
       remarksThrough,
       remarkIds,
       conflicting: conflictingNow,
+      checksSeen,
+      noChecksSince,
+      noChecksTold,
+      mergeQueueRemovalId,
       commentOnlyWakes,
       unreadableSince,
       held,
@@ -398,6 +496,8 @@ const CHANGE_LABEL: Record<PrWatchChange["kind"], string> = {
   checks_passed: "checks passed",
   remarks: "new comments",
   conflicting: "merge conflict",
+  no_checks: "no CI reported",
+  merge_queue_removed: "dropped from the merge queue",
   merged: "merged",
   closed: "closed",
   unreadable: "unreadable",
@@ -470,6 +570,14 @@ function changeLines(change: PrWatchChange, ctx: PrWatchWakeContext): string[] {
       ];
     case "conflicting":
       return [`- The branch now conflicts with ${ctx.pr.baseBranch}.`];
+    case "no_checks":
+      return [
+        `- No CI check has reported${commit} after ${Math.round(PR_WATCH_NO_CHECKS_GRACE_MS / 60_000)} minutes, so nothing has verified this commit.`
+          + ` The repository's workflows may skip these paths${change.draft ? " or draft pull requests" : ""}, or CI may not be set up.`
+          + " Do not treat this as a pass; verify the change yourself if it matters.",
+      ];
+    case "merge_queue_removed":
+      return [`- It was removed from the merge queue without merging${mergeQueueReasonText(change.reason)}. ADE does not re-queue it.`];
     case "merged":
       return ["- The pull request was merged."];
     case "closed":
@@ -477,6 +585,13 @@ function changeLines(change: PrWatchChange, ctx: PrWatchWakeContext): string[] {
     case "unreadable":
       return [`- ${change.reason}`];
   }
+}
+
+/** GitHub's removal reason in words: ": someone removed it by hand", or nothing. */
+function mergeQueueReasonText(reason: string | null): string {
+  if (!reason) return "";
+  if (reason.toLowerCase() === "manual") return ": someone removed it by hand";
+  return `: ${reason}`;
 }
 
 function closingLine(ctx: PrWatchWakeContext): string {
@@ -530,6 +645,15 @@ function changeRows(change: PrWatchChange, baseBranch: string): AdeCardRow[] {
       }));
     case "conflicting":
       return [{ icon: "fail", tone: "warning", text: `Conflicts with ${baseBranch}` }];
+    case "no_checks":
+      return [{ icon: "info", text: "No CI reported on this commit", detail: change.draft ? "draft" : null }];
+    case "merge_queue_removed":
+      return [{
+        icon: "fail",
+        tone: "warning",
+        text: "Removed from the merge queue",
+        detail: mergeQueueReasonText(change.reason).replace(/^: /, "") || null,
+      }];
     case "merged":
       return [{ icon: "pass", tone: "success", text: "Merged" }];
     case "closed":

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import type { H264StreamStatus } from "./h264StreamPlayer";
+import type { H264StreamSource, H264StreamStatus } from "./h264StreamPlayer";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
@@ -105,6 +105,11 @@ const FRAME_SNAPSHOT_MS = 250;
 export type MacDesktopLiveView = {
   /** The address this desktop can open, or null while it is being built. */
   url: string | null;
+  /**
+   * What the decoder reads: the address above on the desktop, the sync push
+   * stream on the hosted web client. Null while there is nothing to read.
+   */
+  source: H264StreamSource | null;
   /** Bumping this reconnects the reader. */
   reconnectNonce: number;
   status: "idle" | "starting" | "playing" | "error";
@@ -503,6 +508,38 @@ export function useMacDesktopLiveView(args: {
 
   /* ── The shared last frame ───────────────────────────────────────────── */
 
+  useMacDesktopFrameSnapshots({ laneId, status, dimensions, canvasRef });
+
+  const source = useMemo<H264StreamSource | null>(() => (url ? { kind: "http", url } : null), [url]);
+
+  return {
+    url,
+    source,
+    reconnectNonce,
+    status,
+    error,
+    streamStatus,
+    dimensions,
+    onStatus,
+    onDimensions,
+    onCanvas,
+    gaveUp,
+    restart,
+  };
+}
+
+/**
+ * Copies the playing picture into the shared frame store, for the floating
+ * player, the Lanes hover peek and the pane's handover frame. Shared by the
+ * desktop live view and the web one, so both feed the same readers.
+ */
+export function useMacDesktopFrameSnapshots(args: {
+  laneId: string | null;
+  status: MacDesktopLiveView["status"];
+  dimensions: { width: number; height: number } | null;
+  canvasRef: MutableRefObject<HTMLCanvasElement | null>;
+}): void {
+  const { laneId, status, dimensions, canvasRef } = args;
   useEffect(() => {
     if (status !== "playing" || !laneId) return;
     const snapshot = () => {
@@ -535,19 +572,5 @@ export function useMacDesktopLiveView(args: {
     snapshot();
     const timer = setInterval(snapshot, FRAME_SNAPSHOT_MS);
     return () => clearInterval(timer);
-  }, [dimensions, laneId, status]);
-
-  return {
-    url,
-    reconnectNonce,
-    status,
-    error,
-    streamStatus,
-    dimensions,
-    onStatus,
-    onDimensions,
-    onCanvas,
-    gaveUp,
-    restart,
-  };
+  }, [canvasRef, dimensions, laneId, status]);
 }

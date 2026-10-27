@@ -1,0 +1,2853 @@
+---
+title: "Types"
+description: "Every type and interface exported by @ade-dev/sdk — generated from the published TypeScript declarations."
+icon: "shapes"
+---
+
+> Generated from `packages/sdk/src` by `scripts/generate-sdk-reference.mjs`. Do not edit this page by hand — change the source or the generator. For the narrative version, start with [Reference](/sdk/reference).
+
+## Types and interfaces
+
+### `AccountInfo`
+
+````ts
+export type AccountInfo = {
+  id: string;
+  provider: string;
+  label: string;
+  email?: string;
+  plan?: string;
+  signedIn: boolean;
+  isDefault: boolean;
+  loginBroken?: boolean;
+  accentColor?: string;
+  createdAt?: string;
+  usage?: AccountUsage;
+};
+````
+
+### `AccountUsage`
+
+````ts
+export type AccountUsage = {
+  state: "ok" | "stale" | "expired" | "signed_out" | "no_reading" | "error";
+  readAt: string | null;
+  note: string | null;
+  windows: Array<{
+    type: string;
+    label: string;
+    percentLeft: number;
+    resetsAt: string | null;
+    unlimited?: true;
+    countLeft?: number;
+    countTotal?: number;
+  }>;
+};
+````
+
+### `AdeChatClient`
+
+RULE FOR ANYTHING ADDED TO THIS SURFACE — destructive while streaming.
+
+An SDK caller has no ambient signal that a turn is live. `send()` resolves as
+soon as the turn is dispatched, not when it completes, so nothing in the API
+tells a settings handler or a render effect that a reply is mid-flight. And
+when a turn dies from a runtime teardown it emits neither `error` nor `done`
+— subscribers just stop receiving. Silent truncation is therefore the default
+failure mode of every destructive operation here, not an edge case.
+
+So any new operation that can end a running turn must pick one, explicitly:
+  - refuse mid-turn and name the way out (`setModel`, which throws and points
+    at `interrupt()` or `{ force: true }`); or
+  - proceed, and say plainly in its own docs that in-flight turns end without
+    a completion event (`dispose`, because a shutdown that can refuse is
+    worse than a lost reply).
+
+What is not acceptable is the third option: destroying the turn quietly and
+letting the consumer discover it as a response that stopped mid-sentence.
+
+````ts
+export interface AdeChatClient {
+  accounts: AccountManagement["accounts"];
+  credentials: AccountManagement["credentials"];
+  presets: AccountManagement["presets"];
+  providers: {
+    /**
+     * Per-provider install, auth and availability.
+     *
+     * Served from the runtime's probe cache when the runtime supports it, and
+     * derived from the model catalog when it does not. Read `source` on each
+     * record before presenting any of it as a fact about the machine.
+     */
+    status(): Promise<Record<string, ProviderStatus>>;
+    /**
+     * The same map, with the runtime's probe cache bypassed.
+     *
+     * This is the "I just installed it" button. It spawns `--version` for every
+     * provider, so it is the slow path — `status()` and the `onChange` poll
+     * never bypass the cache.
+     */
+    refresh(): Promise<Record<string, ProviderStatus>>;
+    onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
+    /** Runtime-derived controls for a provider, or `unsupported` when absent. */
+    capabilities(provider: string): Promise<ProviderCapabilities>;
+  };
+  models: {
+    list(): Promise<ModelCatalogEntry[]>;
+    /**
+     * Called with the whole catalog when it changes: a provider signs in or
+     * out, or the runtime's catalog gains or drops a model. Driven by the same
+     * poll as `providers.onChange`, and called only when a model's id,
+     * `isAvailable`, `connected` or `isDefault` changed. Not called with the
+     * current list on subscribe; call `list()` for that. SDK >= 0.4.
+     */
+    onChange(cb: (models: ModelCatalogEntry[]) => void): Unsubscribe;
+    /**
+     * The model a new thread should use, or null when none qualifies. See
+     * `pickDefaultModel` for the rule; this reads a fresh catalog first.
+     * SDK >= 0.4.
+     */
+    defaultModel(opts?: DefaultModelOptions): Promise<ModelCatalogEntry | null>;
+  };
+  threads: {
+    /** Open a thread, creating it when the key is new to this home. */
+    open(key: string, opts: ThreadOpenOptions): Promise<AdeThread>;
+    /**
+     * Reopen a key this home already stores. The provider and model come from
+     * the stored record, so an app that reopens `"support"` after a restart
+     * does not have to remember how it was created.
+     */
+    open(key: string, opts?: ThreadResumeOptions): Promise<AdeThread>;
+    /**
+     * Every chat in this home, archived ones included, newest activity first
+     * is NOT guaranteed — sort on `updatedAt` yourself.
+     */
+    list(): Promise<ThreadSummary[]>;
+    /**
+     * One thread's summary, by key, or null when the runtime has no session for
+     * it: a key this home never opened, a deleted key, or a key whose session
+     * the runtime lost (the next `open` recreates it). The same row `list()`
+     * would return, without reading every chat. SDK >= 0.4.
+     */
+    get(key: string): Promise<ThreadSummary | null>;
+    /**
+     * Delete a thread: its runtime session, its transcript, and its key.
+     *
+     * A running turn is interrupted FIRST, so subscribers receive the turn's
+     * `done` before the session goes away rather than a stream that simply
+     * stops. Then the runtime deletes the session, the key is removed from the
+     * thread store, and a live `AdeThread` for the key is released — it throws
+     * `disposed`-style errors from the runtime afterwards, so drop it.
+     *
+     * A key whose session the runtime already lost is still removed. A key the
+     * store does not know and no live thread holds throws `thread_not_found`.
+     * Throws `invalid_option` on a runtime without the `delete` action.
+     */
+    delete(key: string): Promise<void>;
+    /**
+     * Archive a thread. The key and transcript are kept; `list()` reports it
+     * with `archived: true`, and `unarchive` brings it back.
+     *
+     * Like `delete`, a running turn is interrupted first so it ends with a
+     * `done` event rather than silently. Throws `thread_not_found` for a key
+     * the store does not know, and `invalid_option` on a runtime without the
+     * `archive` action.
+     */
+    archive(key: string): Promise<void>;
+    /** Reverse `archive`. Same errors. */
+    unarchive(key: string): Promise<void>;
+  };
+  doctor(): Promise<DoctorReport>;
+  exportThread(key: string): Promise<string>;
+  /** Run a temporary thread and delete it after the final answer is received. */
+  run<T = unknown>(prompt: string, options: RunOptions): Promise<T | string>;
+  /**
+   * Listen for runtime lifecycle events: `"exit"`, `"transport"`, `"restart"`.
+   * See {@link AdeClientEventMap} for the payloads. Returns the unsubscribe.
+   *
+   * Listeners survive an `autoRestart`, because the client object does.
+   */
+  on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
+  /**
+   * Stop the runtime and release this client. Idempotent.
+   *
+   * Ends any turn still in flight, and — like every teardown on this surface —
+   * without an `error` or `done` event first: the child process goes away, so
+   * subscribers simply stop receiving. Deliberately NOT guarded the way
+   * `setModel` is, because dispose is the teardown path and a shutdown that can
+   * refuse is worse than a truncated reply. If a caller needs the reply, it
+   * must await the turn before disposing; the transcript is durable either way
+   * and `exportThread` still returns everything that was persisted.
+   */
+  dispose(): Promise<void>;
+}
+````
+
+### `AdeClientEvent`
+
+The client-level event names. See AdeClientEventMap.
+
+````ts
+export type AdeClientEvent = (typeof ADE_CLIENT_EVENTS)[number];
+````
+
+### `AdeClientEventMap`
+
+Payloads of the client-level events, by name.
+
+These are about the RUNTIME, not about any one thread. A thread learns that
+its runtime died from the synthetic `status` envelope on its own `status`
+channel; a host learns it here, once.
+
+````ts
+export type AdeClientEventMap = {
+  /**
+   * The runtime process this client spawned exited without `dispose()`.
+   * `error` is the tail of its stderr, when it wrote any. Not emitted in attach
+   * mode, where the client owns no process — watch `transport` there.
+   */
+  exit: { code: number | null; signal: string | null; error: string | null };
+  /**
+   * The socket to the runtime closed unexpectedly (`"closed"`), or an
+   * `autoRestart` brought it back (`"reconnected"`).
+   */
+  transport: { state: "closed" | "reconnected"; error: string | null };
+  /**
+   * One `autoRestart` attempt finished. `attempt` counts from 1 per outage.
+   * `final` is true when no further attempt follows for this outage: the
+   * attempt succeeded (`ok: true`), or it failed and was the last one
+   * `maxAttempts` allows (the client gave up; the runtime stays down until the
+   * host creates a new client). SDK >= 0.4.
+   */
+  restart: { attempt: number; ok: boolean; error: string | null; final: boolean };
+  /**
+   * A thread left, or came back to, the host's active list through this
+   * client: `threads.delete` (`"deleted"`), `threads.archive` (`"archived"`)
+   * or `threads.unarchive` (`"unarchived"`). Emitted after the action
+   * succeeds, whoever called it: host code in the main process, or a renderer
+   * over the Electron bridge. A change made by another client of the same
+   * runtime (ADE desktop) is not reported. SDK >= 0.4.
+   */
+  threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
+  /** A provider turn stopped because its current account reached a usage limit. */
+  usageLimit: import("./types.js").UsageLimitEvent;
+};
+````
+
+### `AdeErrorCode`
+
+Every error this package throws carries a stable machine-readable code.
+
+Kept as its own union rather than derived from ADE_ERROR_CODES so
+each member can carry its own doc comment; a test asserts the two agree.
+
+````ts
+export type AdeErrorCode =
+  | "binary_not_found"
+  | "download_failed"
+  | "checksum_mismatch"
+  | "spawn_failed"
+  | "connect_failed"
+  | "handshake_failed"
+  | "rpc_error"
+  | "rpc_timeout"
+  | "transport_closed"
+  | "protocol_error"
+  | "thread_not_found"
+  | "invalid_option"
+  /**
+   * No runtime could be resolved and `allowDownload: false` forbade fetching
+   * one. A packaging mistake must fail here, loudly, rather than work on the
+   * developer's machine through a silent download and fail on a locked-down
+   * user's.
+   */
+  | "runtime_unavailable"
+  /**
+   * `approve()` named an item that is not pending. A stop, a teardown, or an
+   * earlier call already settled it; the engine settles unknown items silently,
+   * so the SDK checks first and says so rather than letting a no-op look like
+   * a success.
+   */
+  | "approval_not_found"
+  /**
+   * A bridge refused the call before it reached the SDK — the host's
+   * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
+   */
+  | "unauthorized"
+  | "disposed"
+  /**
+   * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
+   * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
+   * Without that option an unsupported runtime connects with a logged warning.
+   */
+  | "runtime_incompatible"
+  /**
+   * The call was refused only because a turn is running on the thread:
+   * `setModel`, a reasoning `update`, `retry`, `editLast`, or a runtime action
+   * that must wait for the turn to end. Nothing changed. Wait for the turn to
+   * finish (or `interrupt()` it), then call again. `setModel` and `update`
+   * also accept `{ force: true }`. Before SDK 0.4 these refusals used
+   * `invalid_option`.
+   */
+  | "turn_in_flight"
+  /**
+   * The thread's provider, or the runtime, cannot do what was asked. Nothing
+   * changed. `retry` and `editLast` throw it for a provider other than Claude
+   * or Codex, and for a runtime older than the `rerunLastTurn` action.
+   */
+  | "unsupported"
+  | "invalid_output"
+  /**
+   * A provider sign-in ended without signing in: it failed, was cancelled, or
+   * expired. The handle's last status says which (`state`) and why (`message`).
+   */
+  | "sign_in_failed";
+````
+
+### `AdeProvider`
+
+Known provider ids for autocomplete; provider strings remain open for newer runtimes.
+
+````ts
+export type AdeProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "muse"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot"
+  | "devin"
+  | "antigravity"
+  | (string & {});
+````
+
+### `AdeThread`
+
+````ts
+export interface AdeThread {
+  /**
+   * The runtime session id. Stable for the life of the thread, EXCEPT across a
+   * recreate: if an `autoRestart` finds the runtime lost the session, the key
+   * is rebuilt on a new session and this id changes. Key your own state on
+   * `key`, not on this.
+   */
+  readonly id: string;
+  readonly key: string;
+  /**
+   * The thread's title, or null. Updated by `update({ title })`; the runtime
+   * may also retitle a thread after its first turn, which this reflects at the
+   * next open or `update`.
+   */
+  readonly title: string | null;
+  /**
+   * What the thread's model resolved to, with the catalog display name.
+   *
+   * Kept current by `setModel`. Null only when the runtime reported no model.
+   * Show `displayName` rather than the id when it is non-null: after a CLI
+   * update retires a model the runtime resolves the id forward, and the raw id
+   * a host stored is then the wrong label.
+   */
+  readonly model: ThreadModelSelection | null;
+  /**
+   * What the provider did with this thread's `mcpServers` / strict-mode request.
+   *
+   * Only Claude enforces strict mode outright. Every other provider is
+   * best-effort with a named `residual`, so an embedder that promised its users
+   * an isolated tool surface must read this rather than assume the request
+   * landed whole. Populated on create AND on resume — a reopened thread rebuilds
+   * the same tool surface it started with, and reports the same caveat.
+   *
+   * Null means one of two things, and they are NOT equivalent:
+   *   - the thread asked for neither `mcpServers` nor strict mode; or
+   *   - the runtime did not report one. Older runtimes omit the field
+   *     entirely. The SDK logs a warning in that case rather than letting a
+   *     missing report read as "nothing was requested" — if you asked for
+   *     servers and got null here, treat the guarantee as unverified.
+   */
+  readonly mcpCapability: McpCapabilityReport | null;
+  /**
+   * What the provider did with this thread's `instructions`.
+   *
+   * Null when the thread asked for none, or when an older runtime reported
+   * nothing — the same two-case ambiguity `mcpCapability` has, and for the same
+   * reason: the SDK does not invent a verdict it did not receive.
+   *
+   * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
+   * instructions through a channel of their own; `"best-effort"` on Cursor and
+   * Droid, where ADE merges the text into a prompt it already prefixes.
+   */
+  readonly instructionsCapability: InstructionsCapability | null;
+  /**
+   * What the provider did with this thread's `settingSources`.
+   *
+   * Only Claude has a real switch. Codex reports `"best-effort"` for `project`
+   * and `all` because it always reads its own user-level file too, and every
+   * other provider reports `"ignored"` — the value did not reach it.
+   */
+  readonly settingSourcesCapability: SettingSourcesCapability | null;
+  /**
+   * What the provider could enforce of this thread's permission policy.
+   *
+   * Null when the thread opened with a preset rather than a policy. Read
+   * `level` before telling a user their rules are in force: only Claude gates
+   * every tool call against the policy, Codex approximates it with containment
+   * and approval settings, and the rest cannot express it at all.
+   */
+  readonly permissionCapability: PermissionCapability | null;
+  /**
+   * Queue a message for the agent.
+   *
+   * DISPATCH-RESOLUTION ASYMMETRY: this resolves when the turn has been
+   * DISPATCHED, not when the reply is complete. Nothing in the returned promise
+   * tells you a turn is still streaming, so code that runs after an `await
+   * send(...)` must not assume the thread is idle. Before any destructive
+   * operation — `setModel`, `dispose` — either await the completion event on
+   * `on("status")` or check the thread's status; `setModel` enforces this for
+   * you and throws rather than silently ending the turn.
+   *
+   * With an `mcpHeaders` callback and remote MCP servers, the headers are
+   * resolved again first (see `refreshMcpHeaders`), so a token that expired
+   * since the last turn is replaced before this one. A refresh that fails is
+   * logged and the message is still sent, on the headers the session has.
+   */
+  send(text: string, opts?: SendOptions): Promise<void>;
+  /**
+   * Add input to the turn in flight, without waiting for it to end.
+   *
+   * Needs text, attachments, or both. Attachments follow the same rules as
+   * `send`. Resolves once the runtime accepted the steer, not once the agent
+   * read it.
+   */
+  steer(text: string, opts?: SteerOptions): Promise<void>;
+  interrupt(): Promise<void>;
+  /**
+   * Rename the thread, or change its reasoning effort or fast mode.
+   *
+   * A title-only update is allowed at any time. `reasoningEffort` and
+   * `fastMode` are refused while a turn is in flight (`AdeError` code
+   * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
+   * on Codex a settings change the provider rejects tears the provider down,
+   * which ends the turn without `error` or `done` — the silent truncation the
+   * client's destructive-while-streaming rule forbids. Await the turn or
+   * `interrupt()` first.
+   *
+   * Resolves with the title and model as the runtime reports them afterwards.
+   */
+  update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /**
+   * Run the last user turn again, as if the first attempt never happened.
+   *
+   * The runtime rolls the provider conversation back to just before the last
+   * user message, removes that message and everything after it from the
+   * thread's history, and sends the same message (text and attachments) again.
+   * The history then holds the message once. Files the old turn changed are
+   * NOT restored: the rollback covers the conversation, not the disk.
+   *
+   * The result does not say whether the old turn wrote files, because the
+   * runtime cannot tell which of YOUR tools write. A host that lets the agent
+   * write can find them itself: the removed events are the ones at or after
+   * `retractedFromSequence` in your own copy of the history, so inspect their
+   * tool calls and warn the user if any of them was a write.
+   *
+   * What a subscriber sees, in order: `session_meta_updated` with
+   * `historyInvalidated: true` and the new `historyGeneration` (drop your copy
+   * of the events at or after `retractedFromSequence`, or re-read `history()`),
+   * then the new turn's `user_message`, `status: started`, and the rest of the
+   * turn. A `history()` or `historyPage()` read after the call returns only the
+   * new attempt.
+   *
+   * Claude and Codex only. Throws `turn_in_flight` while a turn runs or waits
+   * on an approval (nothing changed; await it or `interrupt()` first),
+   * `unsupported` for another provider or a runtime without the action, and
+   * `rpc_error` when the thread has no user message yet.
+   *
+   * Resolves once the new turn is dispatched, not once it ends.
+   */
+  retry(): Promise<ThreadRerunResult>;
+  /**
+   * Replace the last user message with `text` and run it again.
+   *
+   * Everything `retry` says applies: same rollback, same event sequence, same
+   * errors, and the history shows only the edited message. `text` may be empty
+   * only when `opts.attachments` is non-empty. Attachments default to the
+   * original message's.
+   */
+  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
+  /**
+   * Replace this thread's caller MCP servers wholesale.
+   *
+   * For a credential or URL that changed: a rotated bearer token, a port that
+   * moved. The provider picks the new servers up on the next turn. Header
+   * values are sent to the runtime and never persisted by the SDK — the thread
+   * store keeps header names only.
+   *
+   * A remote server passed without `headers` gets them from the client's
+   * `mcpHeaders` callback, when there is one.
+   *
+   * Mid-turn, the runtime validates the servers at once (a bad map still
+   * rejects) and queues them for the end of the running turn — completed,
+   * interrupted or failed — and the call resolves. A later call replaces a
+   * queued map. Until the swap the summary reports `mcpServersPending: true`,
+   * and `mcpCapability` keeps describing the servers the running turn has. A
+   * runtime without `capabilities.personalChats.deferredMcpUpdates` refuses
+   * mid-turn instead (`turn_in_flight`).
+   *
+   * Refused by the SDK on a runtime that does not advertise
+   * `capabilities.personalChats.updateMcpServers` (`invalid_option`) — an older
+   * runtime would ignore the field and leave the old credentials in place,
+   * which is worse than failing. The same goes for `allowedTools` /
+   * `disallowedTools` on a runtime without `mcpToolFilters`, and for a filter
+   * the thread's provider cannot enforce (see `McpToolFilter`).
+   *
+   * A map identical to the one this client last sent for the thread — header
+   * values included — is not sent again: the call resolves with the current
+   * `mcpCapability` and the provider is left alone. So a renderer that reloads
+   * and repeats the same `refresh` does not restart anything.
+   *
+   * Resolves with the thread's new `mcpCapability`.
+   */
+  updateMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null>;
+  /**
+   * Resolve this thread's MCP header values again through the client's
+   * `mcpHeaders` callback and push them when they changed.
+   *
+   * `send`, `retry` and `editLast` already do this before every turn; call it
+   * yourself right after rotating a token, so the swap does not wait for the
+   * next message. The servers are the thread's own (the last map it was
+   * opened or updated with); only the header values of its remote servers
+   * that carry headers are re-resolved, and a thread with none is a no-op. Values
+   * identical to the last ones sent push nothing. Mid-turn the push is queued
+   * for the end of the turn, as `updateMcpServers` is.
+   *
+   * Throws `invalid_option` without an `mcpHeaders` callback, on a runtime
+   * without `updateMcpServers`, and when the callback supplies nothing for a
+   * server that needs headers: pushing would replace that server's live
+   * credentials with none. A callback that throws rejects this call with its
+   * error. Resolves with the thread's `mcpCapability`.
+   */
+  refreshMcpHeaders(): Promise<McpCapabilityReport | null>;
+  /**
+   * Switch this thread's model, including across providers — the runtime tears
+   * the old one down and replays the transcript into the new one.
+   *
+   * Refused while a turn is in flight (code `turn_in_flight`, SDK >= 0.4)
+   * unless `{ force: true }`: the switch would
+   * end that turn without emitting `error` or `done`, so a caller who did not
+   * know a turn was running would see the response simply stop. Await the turn
+   * or `interrupt()` first.
+   *
+   * Returns what the model actually resolved to — the runtime resolves aliases
+   * and CLI-wrapped ids, so it can differ from what you passed — together with
+   * the four capability reports on the new provider. The same reports are
+   * emitted as a `capabilities_changed` envelope on the `status` channel.
+   */
+  setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
+  /**
+   * The durable transcript, newest `limit` events (all of them when omitted,
+   * up to the runtime's own cap of about 20,000 events / 2 MB). For a long
+   * thread prefer `historyPage`, which reads one bounded page at a time.
+   */
+  history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /** Token totals observed on this thread; cost is present only when reported by the provider. */
+  usage(): ThreadUsage;
+  /**
+   * One page of the durable transcript, for "load older" on scroll.
+   *
+   * Without `beforeSequence` this is the newest page. Each page reports the
+   * cursor for the one before it. Events are oldest-first within a page.
+   *
+   * On a runtime without the `getEventHistoryPage` action, only the newest page
+   * is available: an older-page request returns an empty page with
+   * `hasMore: false` and logs once.
+   */
+  historyPage(opts?: HistoryPageOptions): Promise<ThreadHistoryPage>;
+  /**
+   * Answer an approval this thread emitted.
+   *
+   * AN UNANSWERED APPROVAL BLOCKS THE TURN, with no timeout anywhere in the
+   * runtime. This call and `interrupt()` are the only two ways out, and they
+   * are not the same: this one answers the request and lets the turn continue,
+   * while `interrupt()` aborts the turn without answering anything. A policy
+   * with `approvalTimeoutMs` adds a third: the SDK declines the request itself
+   * when the time runs out.
+   *
+   * Resolves once the runtime accepts the decision, NOT once the tool has run —
+   * the same dispatch-resolution asymmetry `send()` has.
+   *
+   * Throws `approval_not_found` when the item is not pending: a stop, a
+   * teardown, or an earlier call already settled it. The engine settles unknown
+   * items silently, so without this check an answer to a dead card would look
+   * like it worked.
+   *
+   * Use `respond()` for questions and plan approvals. This method accepts only
+   * `"approval"` and `"permissions"` requests; an MCP elicitation that only
+   * asks "may this tool run?" arrives as `"approval"` and is answerable here.
+   *
+   * `accept_always` settles this request and every later one the provider
+   * considers the same, for the life of the session.
+   */
+  approve(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
+  /**
+   * Every request this thread is currently blocked on.
+   *
+   * Call it after a reload to restore approval cards: the requests outlive the
+   * client that saw the events. The `answerable` field identifies whether the
+   * runtime supports a response for each request. Questions and plan approvals
+   * use `respond()` when that action is available; tool approvals use
+   * `approve()`.
+   */
+  pendingApprovals(): Promise<ApprovalRequest[]>;
+  /**
+   * Answer a question, structured question, or plan approval through the
+   * runtime's `respondToInput` action. Question answers are keyed by question
+   * id. Plan approval uses an explicit `decision` (`accept` or `decline`); the
+   * SDK never infers it from option labels.
+   */
+  respond(requestId: string, response: ThreadRespondOptions): Promise<void>;
+  /** Mutable queued sends belonging to this thread. */
+  readonly queue: {
+    list(): Promise<ThreadQueueItem[]>;
+    cancel(id: string): Promise<void>;
+    edit(id: string, text: string): Promise<void>;
+    move(id: string, index: number): Promise<void>;
+    dispatch(id: string): Promise<void>;
+    cancelDispatched(id: string): Promise<void>;
+    restore(): Promise<void>;
+  };
+  interrupt(options?: ThreadInterruptOptions): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
+  slashCommands(): Promise<AgentChatSlashCommand[]>;
+  recover(options?: { turnId?: string; action?: "wait" | "nudge" | "retry_same_runtime" | "restart_resume" }): Promise<AgentChatRecoverTurnResult>;
+  resolveUnprocessed(args: { steerId: string; action: "run_next" | "dismiss" }): Promise<AgentChatResolveUnprocessedMessageResult>;
+  readonly usageLimit: {
+    resumeNow(): Promise<AgentChatUsageLimitResult>;
+    continueOnAlternate(): Promise<AgentChatUsageLimitResult>;
+  };
+  switchAccount(instanceId: string): Promise<AgentChatSwitchAccountResult>;
+  on(event: ThreadEventChannel, cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
+}
+````
+
+### `AgentChatCodexCollaborationMode`
+
+Collaboration mode accepted by the Codex app-server for an active turn/start.
+
+````ts
+export type AgentChatCodexCollaborationMode = "default" | "plan";
+````
+
+### `AgentChatEvent`
+
+One transcript event. The `type` field is the discriminant; the remaining
+fields are provider- and type-specific and are preserved verbatim.
+
+````ts
+export type AgentChatEvent = {
+  type: string;
+  [key: string]: unknown;
+};
+````
+
+### `AgentChatEventEnvelope`
+
+````ts
+export type AgentChatEventEnvelope = {
+  sessionId: string;
+  timestamp: string;
+  event: AgentChatEvent;
+  sequence?: number;
+  /**
+   * Mirrors `AgentChatEventEnvelope["provenance"]` in ADE's `shared/types/chat.ts`,
+   * NARROWED on purpose: only the keys an SDK consumer can act on are named.
+   *
+   * ADE stamps more than this — orchestration routing (`targetKind`,
+   * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
+   * (`replayFork`), and other ADE-only metadata. These describe surfaces this
+   * package does not have: a sidecar drives its own thread with the `agent`
+   * role, so it is never the orchestrator reading routing keys or ADE metadata.
+   * Naming them here would advertise surfaces that do not exist.
+   *
+   * The index signature is what makes that narrowing safe rather than lossy:
+   * the runtime is downloaded and can be newer than the SDK, so every key ADE
+   * stamps still arrives and still reads, typed `unknown`. Add a key to the
+   * named set only when this package grows a use for it.
+   */
+  provenance?: {
+    messageId?: string;
+    providerMessageId?: string;
+    threadId?: string | null;
+    role?: "user" | "orchestrator" | "worker" | "agent" | null;
+    [key: string]: unknown;
+  };
+};
+````
+
+### `AgentChatFileRef`
+
+File attachment reference accepted by `send` and `steer`.
+
+Only the path crosses the wire; bytes never do. The runtime reads the file
+itself, on the host machine, when the provider needs its contents.
+
+WHERE THE PATH MAY LIVE. The runtime resolves an attachment against the
+thread's working directory and refuses an absolute path it cannot place, so
+a send whose attachment names a file outside what the runtime accepts throws
+rather than dropping the file quietly. Pass paths the host obtained from its
+own file dialog or drop handler, not strings a model produced.
+
+````ts
+export type AgentChatFileRef = {
+  path: string;
+  name?: string;
+  mimeType?: string;
+  bytes?: number;
+  /**
+   * How the provider receives the file.
+   *
+   * `"image"` sends the bytes as an image the model can see (Claude and Codex
+   * both take image input). `"file"` sends a path hint the model can open with
+   * its own tools. When absent, the SDK fills it in before sending with the
+   * runtime's own rule, exported as `inferAttachmentType(path, mimeType)`: any
+   * `image/*` `mimeType` is an image; otherwise the extension of `path`
+   * decides (`.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff
+   * .webp` are images), and everything else is `"file"`. Before 0.3 the field
+   * did not exist and every image arrived as a path hint.
+   */
+  type?: "file" | "image";
+  /**
+   * Whether the runtime may read the file's bytes. Defaults to true.
+   *
+   * `false` is REFERENCE-ONLY: the runtime never opens the file, never copies
+   * it to a staging directory, and hands the model the path alone — even for an
+   * image. Use it for files that must not be downloaded as a side effect, such
+   * as a macOS File Provider placeholder, where reading the bytes hydrates the
+   * whole file from the cloud.
+   *
+   * An older runtime ignores the field and reads the bytes as before; the SDK
+   * cannot detect that from here, so treat reference-only as a request until
+   * your runtime is at least the SDK's supported minimum
+   * (`SUPPORTED_RUNTIME_RANGE`).
+   */
+  hydrate?: boolean;
+};
+````
+
+### `AgentChatHostConfigLevel`
+
+How completely a provider honoured a host configuration request.
+
+The same three-value vocabulary the MCP report uses, for the same reason:
+four of the six providers cannot do the thing exactly, and a report that said
+only "applied" would be a lie for most embedders.
+
+  - `"applied"` — the provider received the value through a first-class
+    channel of its own.
+  - `"best-effort"` — ADE reached the same outcome through a mechanism it
+    already owns (a prompt prefix, a containment root), and `detail` names
+    what that costs.
+  - `"ignored"` — the provider has no switch for it and the value did not
+    reach the model. `detail` says so.
+
+````ts
+export type AgentChatHostConfigLevel = "applied" | "best-effort" | "ignored";
+````
+
+### `AgentChatInstructions`
+
+Host instructions for one thread, in the normalized wire form.
+
+````ts
+export type AgentChatInstructions = {
+  mode: "append" | "replace";
+  text: string;
+};
+````
+
+### `AgentChatSessionStatus`
+
+````ts
+export type AgentChatSessionStatus = "active" | "idle" | "ended";
+````
+
+### `AgentChatSessionSummary`
+
+````ts
+export type AgentChatSessionSummary = {
+  sessionId: string;
+  laneId: string;
+  provider: string;
+  model: string;
+  title?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode;
+  /** Accepted Codex app-server collaboration mode, when a live runtime reports one. */
+  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
+  status: AgentChatSessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  archivedAt?: string | null;
+  lastActivityAt: string;
+  lastOutputPreview: string | null;
+  summary: string | null;
+  awaitingInput?: boolean;
+  /**
+   * The working directory the runtime actually bound the session to, echoed
+   * back in its own spelling. Present only when one was requested.
+   *
+   * This is the canonical answer: the engine resolves the path before it
+   * stores it, so a symlinked or differently-cased spelling of one directory
+   * comes back as one string. A client that records the caller's spelling
+   * instead reports a resume mismatch on a `cwd` that never changed.
+   */
+  requestedCwd?: string | null;
+  /** Catalog model id the session is bound to, when the runtime reports one. */
+  modelId?: string;
+  /** Present only when the chat was created with an MCP request. */
+  mcpCapability?: McpCapabilityReport;
+  /**
+   * True while MCP servers sent mid-turn wait for that turn to end.
+   * `mcpCapability` still describes the servers the running turn has.
+   */
+  mcpServersPending?: boolean;
+  /**
+   * Present only when the chat was created with `instructions`. Absent means
+   * nothing was requested — NOT that the request was dropped.
+   */
+  instructionsCapability?: {
+    level: AgentChatHostConfigLevel;
+    mode: "append" | "replace";
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with `settingSources`. */
+  settingSourcesCapability?: {
+    level: AgentChatHostConfigLevel;
+    value: AgentChatSettingSources;
+    mechanism: string;
+    detail: string | null;
+  } | null;
+  /** Present only when the chat was created with a permission policy. */
+  permissionCapability?: {
+    level: "enforced" | "best-effort" | "unsupported";
+    mechanism: string;
+    residual: string | null;
+  } | null;
+  [key: string]: unknown;
+};
+````
+
+### `AgentChatSettingSources`
+
+Which on-disk configuration layers a provider loads for a thread.
+
+`"none"` is the default for SDK threads and is what every 0.1.x thread got.
+The four values are sent verbatim; the engine decides what each one means per
+provider, and reports the answer on AgentChatSessionSummary.
+
+````ts
+export type AgentChatSettingSources = "none" | "project" | "user" | "all";
+````
+
+### `ApiCredentialInfo`
+
+````ts
+export type ApiCredentialInfo = {
+  provider: string;
+  credentialId: string;
+  label: string;
+  envVar?: string;
+  baseUrl?: string;
+  protocol?: "openai-compatible" | "openai-responses" | "anthropic";
+  models?: string[];
+  source: "store" | "env" | "config";
+  createdAt: string;
+  updatedAt: string;
+  maskedTail?: string;
+};
+````
+
+### `ApprovalDecision`
+
+What a host can say about a pending approval.
+
+````ts
+export type ApprovalDecision = "accept" | "accept_always" | "reject";
+````
+
+### `ApprovalRequest`
+
+One request a host has to answer before its turn can continue.
+
+````ts
+export type ApprovalRequest = {
+  /** The id to pass to `approve()`. */
+  itemId: string;
+  /** Groups retries of one logical action, when the provider reports one. */
+  logicalItemId?: string;
+  /** The shape of the thing being confirmed. */
+  kind: "command" | "file_change" | "tool_call";
+  /**
+   * The finer-grained kind.
+   *
+   * `"approval"` and `"permissions"` are answerable with `approve()`. Use
+   * `respond()` for `"question"` and `"structured_question"` requests, with
+   * answers keyed by question id, and for `"plan_approval"` with an explicit
+   * decision. A runtime may leave other request kinds read-only.
+   */
+  requestKind?: PendingInputKind;
+  /** Human-readable and provider-supplied. Safe to render. */
+  description: string;
+  turnId?: string;
+  /** Provider payload: the command string, the patch, the tool input. */
+  detail?: unknown;
+  /** Which provider raised it. */
+  provider: AdeProvider;
+  /** The original prompts for requests answered through `respond()`. */
+  questions?: PendingInputRequest["questions"];
+  /** False when the runtime cannot answer this request through the SDK. */
+  answerable?: boolean;
+};
+````
+
+### `AttachmentRootCheck`
+
+What checkAttachmentRoot answers: the canonical root, or the refusal.
+
+````ts
+export type AttachmentRootCheck = { ok: true; root: string } | { ok: false; reason: string };
+````
+
+### `AttachmentRootFilterResult`
+
+The result of filterAttachmentRoots: the roots to send, and the ones dropped.
+
+````ts
+export type AttachmentRootFilterResult = {
+  /** Valid roots, canonicalized, de-duplicated, capped. Pass these to `threads.open`. */
+  roots: string[];
+  /** One entry per refused or over-the-limit input, with the reason it was refused. */
+  dropped: Array<{ root: string; reason: string }>;
+};
+````
+
+### `BundledRuntime`
+
+Resolution of a runtime shipped as an npm platform package.
+
+A downloaded runtime cannot live inside a signed and notarized application:
+the bundle is one signed artifact, and a Mach-O executable that appears in
+`userData` after the fact is outside it. So the runtime is also published the
+way esbuild and swc publish theirs — one package per target, each carrying
+`os` and `cpu`, listed as `optionalDependencies` of `@ade-dev/runtime` so npm
+installs exactly one. The embedder copies that directory into their bundle
+and signs it with their own identity.
+
+Layout, which this module both expects and documents:
+
+  @ade-dev/runtime-&lt;target&gt;/
+    package.json          &#123; os: [...], cpu: [...], version: &lt;ade release&gt; &#125;
+    bin/ade[.exe]         the runtime binary, mode 0755
+    native/               the extracted contents of &lt;binary&gt;.native.tar.gz
+      node_modules/       the modules the binary dlopens
+      vendor/crsqlite/... the cr-sqlite extension
+      tuiClient/
+    LICENSE
+    README.md
+
+`runtimeRoot` is `<pkg>/native`, which is what `ADE_RUNTIME_ROOT` must point
+at; `nodeModulesPath` is `<pkg>/native/node_modules`, which is
+`ADE_RUNTIME_NODE_MODULES`. The two are reported separately rather than
+derived at the call site because an embedder is free to relocate either half
+inside their bundle, and `createAdeChat` accepts both.
+
+````ts
+export type BundledRuntime = {
+  /** Absolute path of the runtime binary inside the platform package. */
+  binaryPath: string;
+  /** Absolute path that `ADE_RUNTIME_ROOT` must name. */
+  runtimeRoot: string;
+  /** Absolute path that `ADE_RUNTIME_NODE_MODULES` must name. */
+  nodeModulesPath: string;
+  /** e.g. `@ade-dev/runtime-darwin-arm64`. */
+  packageName: string;
+  /** The ADE release version the package was cut from. */
+  version: string;
+};
+````
+
+### `CapabilitiesChangedEvent`
+
+Emitted on a thread's `status` channel after `setModel` replaced its
+capability reports.
+
+A switch across providers can move a policy from `"enforced"` to
+`"best-effort"`, and a host that read the reports once at open would keep
+showing the old guarantee. Synthesized by the SDK, never by the runtime.
+
+````ts
+export type CapabilitiesChangedEvent = {
+  type: "capabilities_changed";
+  synthetic: true;
+} & ThreadCapabilities;
+````
+
+### `CreateAdeChatOptions`
+
+````ts
+export type CreateAdeChatOptions = {
+  /** Isolated per-app ADE state root. Created if missing. */
+  home: string;
+  /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
+  binaryPath?: string;
+  /**
+   * Where the native modules the runtime dlopens live. Maps to
+   * `ADE_RUNTIME_NODE_MODULES`. Required alongside `binaryPath` when the
+   * modules are not beside the binary, which is the normal case for an app
+   * bundle: the binary lands in `Contents/Resources/ade-runtime/bin` and the
+   * modules in `Contents/Resources/ade-runtime/native/node_modules`.
+   */
+  runtimeNodeModules?: string;
+  /** Maps to `ADE_RUNTIME_ROOT`. Defaults to the parent of `runtimeNodeModules`. */
+  runtimeRoot?: string;
+  /**
+   * Never reach the network. Throws `runtime_unavailable` instead of
+   * downloading. Defaults to true, which preserves 0.1.x behavior.
+   *
+   * A shipping app wants false: a packaging mistake then fails loudly in QA,
+   * rather than working on the developer's machine through a silent download
+   * and failing on a locked-down user's.
+   */
+  allowDownload?: boolean;
+  /** Release channel for the downloader: `latest` (default) or a tag. */
+  channel?: string;
+  logger?: (line: string) => void;
+  /**
+   * Default instructions for every thread this client opens.
+   *
+   * A per-thread `instructions` wins outright — it is not merged with this one,
+   * because two texts silently concatenated is nobody's intent. Use this for
+   * the persona your whole app shares and the per-thread field for a narrower
+   * one.
+   */
+  instructions?: ThreadInstructions;
+  /**
+   * Supplies MCP header values — usually a bearer token — per thread and
+   * server, at the moment they are needed.
+   *
+   * The SDK never writes header values to disk: the thread store keeps header
+   * NAMES only. So a resume, a recreate after the runtime lost a session, and
+   * an `autoRestart` all need the values again, and this is where they come
+   * from when the caller did not pass them (`refresh.mcpServers` on
+   * `threads.open` wins over it; headers passed explicitly on a create win over
+   * it too). May return a Promise, so the host can refresh an OAuth token
+   * first; return undefined for a server that needs no headers.
+   *
+   * Also called before every `send`, `retry` and `editLast` of a thread with
+   * remote servers, and by `thread.refreshMcpHeaders()`: when the values
+   * changed (a token rotated), the SDK pushes them and the runtime restarts
+   * the provider between turns on the same provider thread, so a long chat
+   * never runs on an expired token. Unchanged values push nothing, so keep
+   * the callback cheap — return a cached token until it nears expiry.
+   *
+   * On a resume the SDK pushes the resolved servers to the runtime with
+   * `updateSession`, so a rotated token takes effect on the next turn. That
+   * needs a runtime advertising `capabilities.personalChats.updateMcpServers`;
+   * an older one keeps whatever it had and the SDK logs a warning. Two cases
+   * push nothing: when this callback supplies no value for any server that
+   * needs one (re-sending would replace the session's live credentials with
+   * none; logged), and when the resolved servers, values included, are the
+   * ones this client already sent for the thread.
+   */
+  mcpHeaders?: McpHeadersResolver;
+  /**
+   * Respawn the runtime when it exits unexpectedly. Off by default.
+   *
+   * `true` uses 5 attempts with a 1 s backoff that doubles per attempt;
+   * the object form overrides either. Each attempt emits
+   * `client.on("restart")`. On success the client re-handshakes, rebinds its
+   * event stream, and re-opens every thread it had open from the stored
+   * record — header values resolved again through `mcpHeaders` — so the
+   * thread objects a host holds, and a bridge built on this client, keep
+   * working. The client object itself never changes.
+   *
+   * A turn in flight when the runtime died is NOT resumed: each live thread
+   * already received a synthetic `status` / `turnStatus: "failed"` envelope,
+   * and the transcript keeps everything that was persisted.
+   *
+   * Not attempted after `dispose()`, and not in attach mode for a runtime the
+   * SDK did not start — there the client only reconnects to the same socket.
+   */
+  autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
+  /**
+   * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
+   * throwing `AdeError("runtime_incompatible")` from `createAdeChat` (and
+   * failing an `autoRestart` attempt the same way).
+   *
+   * Off by default: an unsupported runtime connects, logs one warning, and
+   * degrades feature by feature. `doctor().runtime.compatibility` reports the
+   * verdict either way. Dev builds (`0.0.0`, or no version) always pass.
+   */
+  requireCompatibleRuntime?: boolean;
+  /**
+   * Where `binaryPath` came from. Set by `resolvePackagedRuntime()`, which
+   * returns `source: "packaged"` so that spreading its result into these
+   * options makes `doctor().runtime.source` report `"packaged"` rather than
+   * `"explicit"`. Ignored without `binaryPath`.
+   */
+  source?: "packaged";
+  /**
+   * Reuse the runtime host's provider logins. Defaults to false (isolated
+   * per-app logins). SDK 0.7 changes the default from machine logins; pass
+   * true to keep relying on the host machine's Claude/Codex login.
+   */
+  useMachineLogin?: boolean;
+  /**
+   * The environment the runtime starts with. Defaults to this process's
+   * environment. `useMachineLogin: false` isolates the providers' sign-in
+   * folders, not variables: an `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
+   * `CURSOR_API_KEY` here is visible to the runtime, so leave them out when end
+   * users must run only on their own logins and keys. The host's own `ADE_*`
+   * variables are always removed.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Resolve a host-vault credential id to a secret for one thread session.
+   * The value is pushed to the runtime for the live session and never saved
+   * in the SDK thread record.
+   */
+  resolveSecret?: (provider: AdeProvider, credentialId: string) => string | undefined | Promise<string | undefined>;
+  /** Usage-limit behavior for new threads. Defaults to `wait`. */
+  onUsageLimit?: "failover" | "wait" | "ask";
+};
+````
+
+### `DefaultModelOptions`
+
+Options for `pickDefaultModel` and `client.models.defaultModel`.
+
+````ts
+export type DefaultModelOptions = {
+  /**
+   * Only models a thread can use now: `isAvailable` and `connected` (the
+   * provider is signed in). Default true.
+   */
+  available?: boolean;
+  /**
+   * Only these providers, in order of preference: the first provider with a
+   * qualifying model wins. Omit for every provider.
+   */
+  providers?: readonly string[];
+  /**
+   * Your own ranking inside one provider's qualifying models (SDK 0.5). Return
+   * a number greater than zero to prefer a model — the highest score wins.
+   * Return 0, a negative number, or a non-finite number for "no opinion": that
+   * model is then ranked the way it is ranked without this option.
+   *
+   * Use it to state a cost or family preference instead of keeping your own
+   * copy of the rule. For example, to start new chats on the newest Sonnet:
+   *
+   *   prefer: (model) => (/sonnet/i.test(model.id) ? 1 : 0)
+   *
+   * A model that nobody scores falls back to `isDefault`, then to catalog
+   * order, so passing this option never removes a model from the pool.
+   *
+   * A callback that throws propagates out of `pickDefaultModel` (and out of
+   * `client.models.defaultModel`), like every other host callback that is part
+   * of an operation. It is not swallowed: a ranking that fails silently would
+   * pick a model you did not ask for.
+   */
+  prefer?: (model: ModelCatalogEntry) => number;
+};
+````
+
+### `DoctorReport`
+
+````ts
+export type DoctorReport = {
+  ok: boolean;
+  /**
+   * Version of this SDK package. Reported alongside the runtime version
+   * because a mismatched pair is the first thing to check when an embedder's
+   * chat misbehaves: the two ship on separate cadences, and the SDK is the
+   * half that lives inside the embedder's own build.
+   */
+  sdkVersion: string;
+  binary: {
+    path: string;
+    /** Version string reported by `<binary> --version`, when it answered. */
+    version: string | null;
+    source: "option" | "path" | "download" | "cache";
+    /**
+     * Whether THIS client verified the binary against a published SHA256SUMS.
+     *
+     * False is not an accusation — a caller-supplied `binaryPath`, an `ade`
+     * found on PATH, and a reuse of an earlier download are all unverified by
+     * this client because it did not fetch them. It is only meaningful as
+     * "provenance was checked here", which is what an operator wants to know
+     * when auditing where the running binary came from.
+     */
+    checksumVerified: boolean;
+  };
+  /**
+   * Runtime provenance: which of the five resolution steps produced the binary,
+   * where its native modules came from, and whether the OS considers it signed.
+   *
+   * `binary` above is the 0.1.x view and keeps its four `source` values.
+   * `source` and `signature` here are the two fields to put in a support
+   * bundle: together they separate "the app is running the runtime we signed
+   * and shipped" from "the app quietly downloaded one on this machine", which
+   * is the difference an embedder cannot otherwise see.
+   */
+  runtime: {
+    /**
+     * `"packaged"` is an explicit runtime whose options came from
+     * `resolvePackagedRuntime()` — the copy inside the host's own signed app
+     * bundle. `"explicit"` is any other caller-pinned `binaryPath`.
+     */
+    source:
+      | "explicit"
+      | "packaged"
+      | "bundled-package"
+      | "cached-download"
+      | "path"
+      | "downloaded"
+      | "attached";
+    binaryPath: string;
+    version: string | null;
+    /** `ADE_RUNTIME_ROOT` as spawned, or null when the install carries its own. */
+    runtimeRoot: string | null;
+    /** `ADE_RUNTIME_NODE_MODULES` as spawned. */
+    nodeModulesPath: string | null;
+    /**
+     * macOS and Windows only. Null on Linux, in attach mode, and whenever the
+     * check could not run — "not known", never "not signed".
+     *
+     * `accepted` on macOS is Gatekeeper's verdict on the outermost `.app` the
+     * runtime is embedded in (a nested binary assessed alone is always
+     * "rejected" as not an app), and null when it cannot be judged. Only
+     * `accepted: false` means the OS refused it.
+     */
+    signature: { signed: boolean; authority?: string; accepted?: boolean | null } | null;
+    /** True only when THIS client downloaded a runtime during its lifetime. */
+    downloadedThisSession: boolean;
+    checksumVerified: boolean;
+    /**
+     * Whether the runtime's self-reported version is inside the range this SDK
+     * supports (`SUPPORTED_RUNTIME_RANGE`).
+     *
+     * An unsupported runtime still connects: features it lacks are detected
+     * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
+     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * at all) counts as supported and says so in `note`.
+     */
+    compatibility: RuntimeCompatibility;
+  };
+  socket: {
+    path: string;
+    connected: boolean;
+    /** Runtime info from the `ade/initialize` result, when the runtime sent it. */
+    runtimeVersion: string | null;
+    pid: number | null;
+  };
+  events: {
+    mode: "push" | "drain" | "unavailable";
+    /** Buffer epoch last observed; a change means the runtime restarted. */
+    epoch: string | null;
+    gapsRecovered: number;
+  };
+  providers: Record<string, ProviderStatus>;
+  logins: {
+    mode: "isolated" | "machine" | "attached";
+    perProvider: Record<string, "isolated" | "shared" | "unknown">;
+  };
+  threads: { tracked: number; live: number };
+  /** Most recent errors the client recorded, newest last. Capped. */
+  recentErrors: Array<{ at: string; scope: string; message: string }>;
+};
+````
+
+### `DownloadRequest`
+
+````ts
+export type DownloadRequest = {
+  /** Directory that receives `bin/ade` and `runtime/<target>/node_modules`. */
+  home: string;
+  /** Release channel: `latest` (default) or an explicit tag such as `v1.2.69`. */
+  channel: string;
+  repo: string;
+  target: RuntimeTarget;
+  logger: (line: string) => void;
+  signal?: AbortSignal;
+  /**
+   * Refuse to install a runtime whose checksum cannot be verified. Defaults to
+   * true; set false only for a channel that genuinely publishes no SHA256SUMS.
+   */
+  requireChecksum?: boolean;
+};
+````
+
+### `DownloadResult`
+
+````ts
+export type DownloadResult = {
+  /** Absolute path of the installed `ade` binary. */
+  binaryPath: string;
+  /** Absolute path of the extracted native runtime root. */
+  runtimeRoot: string;
+  /** True when a checksum from a published SHA256SUMS was verified. */
+  checksumVerified: boolean;
+};
+````
+
+### `EditLastOptions`
+
+Options for `editLast`.
+
+````ts
+export type EditLastOptions = {
+  /** Text shown to the user when it differs from what the agent receives. */
+  displayText?: string;
+  /**
+   * Files for the edited message, replacing the original's. Omit to keep the
+   * original message's attachments; pass `[]` to drop them.
+   */
+  attachments?: AgentChatFileRef[];
+};
+````
+
+### `HistoryPageOptions`
+
+Options for `historyPage`.
+
+````ts
+export type HistoryPageOptions = {
+  /**
+   * Return events strictly older than this `sequence`. Omit for the newest
+   * page. Pass the previous page's `nextBeforeSequence` to walk backwards.
+   */
+  beforeSequence?: number;
+  /**
+   * At most this many events. The runtime pages by bytes, so a page can hold
+   * fewer; when it holds more, the SDK keeps the newest `limit` and moves the
+   * cursor so nothing is skipped. Defaults to 200.
+   */
+  limit?: number;
+};
+````
+
+### `HostConfigCapability`
+
+What the provider did with a host-configuration request.
+
+Null means one of two things, exactly as `mcpCapability` does: this thread
+asked for nothing, or it asked and an older runtime reported nothing. The
+SDK does not invent a level for the second case — an unverified guarantee is
+reported as unverified.
+
+````ts
+export type HostConfigCapability = {
+  /**
+   * Always true on a non-null report: a report exists only for a request that
+   * was made. Retained because the field is part of the published shape and
+   * because a null report is ambiguous, so code that has a report in hand can
+   * still say plainly which of the two cases it is not in.
+   */
+  requested: boolean;
+  level: AgentChatHostConfigLevel;
+  /** How the provider implemented it, for logs and support threads. */
+  mechanism: string;
+  /** Why the level is not `"applied"`, or null when it is. */
+  detail: string | null;
+} & Record<string, unknown>;
+````
+
+### `InstructionsCapability`
+
+````ts
+export type InstructionsCapability = HostConfigCapability & {
+  mode: "append" | "replace";
+};
+````
+
+### `JsonSchema`
+
+````ts
+export type JsonSchema = {
+  type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  enum?: unknown[];
+  additionalProperties?: boolean | JsonSchema;
+  title?: string;
+  description?: string;
+  $schema?: string;
+  $id?: string;
+  default?: unknown;
+  examples?: unknown[];
+};
+````
+
+### `KnownAgentChatEvent`
+
+The narrowed members most consumers actually branch on.
+
+````ts
+export type KnownAgentChatEvent =
+  | {
+      type: "user_message";
+      text: string;
+      displayText?: string;
+      messageId?: string;
+      turnId?: string;
+      steerId?: string;
+      deliveryState?: "queued" | "accepted" | "processed" | "unprocessed" | "delivered" | "inline" | "failed";
+      attachments?: AgentChatFileRef[];
+    }
+  | { type: "user_message_resolution"; steerId: string; action: "run_next" | "dismiss"; state: "completed"; replacementMessageId?: string }
+  | { type: "queue_reordered"; steerIds: string[] }
+  | {
+    type: "queue_recovery";
+    recoveryId: string;
+    state: "available" | "restored" | "expired";
+    messageCount: number;
+    /** On `restored`: the messages put back in the queue. */
+    restoredSteers?: Array<{ steerId: string; text: string; attachments?: AgentChatFileRef[] }>;
+  }
+  | { type: "text"; text: string; messageId?: string; turnId?: string }
+  | { type: "reasoning"; text?: string; turnId?: string }
+  | { type: "tool_call"; tool: string; args: unknown; itemId: string; turnId?: string }
+  | { type: "tool_result"; tool: string; result: unknown; itemId?: string; turnId?: string }
+  | { type: "tokens"; [key: string]: unknown }
+  | { type: "context_usage"; [key: string]: unknown }
+  | { type: "codex_token_usage"; [key: string]: unknown }
+  | {
+      /**
+       * The provider is blocked and wants a decision. Answer it with
+       * `thread.approve(itemId, …)`.
+       *
+       * AN UNANSWERED REQUEST BLOCKS THE TURN. There is no timeout anywhere in
+       * the runtime: the turn stays parked until `approve()` or `interrupt()`.
+       * A host that receives this event and renders nothing has a chat that
+       * looks frozen, so render a card for every one of them.
+       */
+      type: "approval_request";
+      itemId: string;
+      logicalItemId?: string;
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      turnId?: string;
+      detail?: unknown;
+      /**
+       * The finer-grained kind. `"question"` and the other prose kinds ride
+       * this event because `kind` has no word for a question — they cannot be
+       * answered with approve/decline, so render them read-only.
+       */
+      requestKind?: PendingInputKind;
+    }
+  | {
+      /** An `approval_request` with this `itemId` is settled. Upgrade the card. */
+      type: "pending_input_resolved";
+      itemId: string;
+      resolution: "accepted" | "declined" | "cancelled";
+      answers?: Record<string, string | string[]>;
+      turnId?: string;
+    }
+  | { type: "status"; [key: string]: unknown }
+  | { type: "error"; [key: string]: unknown }
+  | {
+      type: "budget_exceeded";
+      budget: { maxCostUsd?: number; maxTokens?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+        complete?: boolean;
+        contextWindow?: number;
+        costUsd?: number;
+      };
+      turnId?: string;
+      resumed?: boolean;
+    }
+  | { type: "done"; [key: string]: unknown };
+````
+
+### `McpCapabilityReport`
+
+What the provider could actually do with a caller's MCP request.
+
+Mirrors `AgentChatMcpCapability` in chat.ts. Only ADE's Claude adapter can
+enforce strict mode outright; the rest are best-effort with a named residual,
+and Pi has no MCP surface at all (a thread that asks for `mcpServers` on Pi
+is refused by the runtime rather than silently opened without them).
+
+Read `strictRequested` FIRST, then `level`. `level` and `residual` describe
+strict mode, so they only make a claim when strict mode was requested; on a
+delivery-only thread (`loadUserMcpServers: true`) the user's own config loads
+by design and no level value means "only my tools are loaded".
+
+Given `strictRequested`, `level` is the field to branch on, and `"enforced"`
+is the ONLY value that means "nothing but the servers I supplied". Treating
+`"best-effort"` as a synonym is the mistake this type exists to prevent —
+four of the six providers report it, so an embedder that branches on
+truthiness rather than on the level will overpromise for most of its users.
+
+Surface `residual` when it is non-null: "your servers are loaded, and so is
+X" is a materially different guarantee from "only yours". The residual text
+comes from the provider adapter and names the specific leak, so it is safe
+to show verbatim.
+
+````ts
+export type McpCapabilityReport = {
+  /**
+   * What strict mode achieved — meaningful ONLY when `strictRequested` is true.
+   * Read that field first.
+   */
+  level: "enforced" | "best-effort" | "unsupported";
+  /**
+   * How the provider implemented the request, for logs and support threads.
+   *
+   * Describes ENFORCEMENT when `strictRequested` is true, and DELIVERY (how the
+   * supplied servers were handed to the provider) when it is false.
+   */
+  mechanism: string;
+  /**
+   * What strict mode could NOT exclude, or null when nothing leaked through.
+   *
+   * Always null when `strictRequested` is false: nothing was asked to be
+   * excluded, so nothing leaked.
+   */
+  residual: string | null;
+  /**
+   * Whether this thread asked ADE to withhold the user's and project's own MCP
+   * config — i.e. `loadUserMcpServers: false`, explicitly or by supplying
+   * `mcpServers` without opting back in.
+   *
+   * THE FIRST FIELD TO READ. When it is false the caller asked for delivery
+   * only: the user's own MCP config loads by design, and `level` makes no
+   * isolation claim at all — treating `level === "enforced"` as "only my tools
+   * are loaded" on a delivery-only thread would be exactly backwards.
+   *
+   * An older runtime that predates the field omits it, and the SDK reports
+   * false rather than guessing. That is the conservative direction: it
+   * understates isolation instead of promising one that was never verified.
+   */
+  strictRequested: boolean;
+  /**
+   * False when the provider has no MCP surface and supplied servers were
+   * dropped.
+   *
+   * PREFER `level`. On a current runtime this is effectively always true —
+   * `create` refuses the only case that would make it false — so branching on
+   * it tells you nothing that `level` does not tell you better. It is retained
+   * because it is part of the published shape, not because it is useful.
+   *
+   * Older runtimes additionally returned false for a strict-only request
+   * (strict mode with no servers) that had in fact been enforced, which made
+   * `!delivered` read a success as a failure. Anything keyed on this field
+   * against a pre-fix runtime is suspect; `level === "unsupported"` is the
+   * check that was always correct.
+   */
+  delivered: boolean;
+};
+````
+
+### `McpHeadersResolver`
+
+Supplies MCP header values for one server of one thread.
+
+Called at every create, resume and restart that needs them, and before each
+turn of a thread with remote servers; the result is sent to the runtime and
+never persisted by the SDK. May return a Promise, so a host can refresh an
+OAuth token first. Return undefined for a server that needs no headers.
+
+````ts
+export type McpHeadersResolver = (
+  key: string,
+  serverName: string,
+) => Record<string, string> | undefined | Promise<Record<string, string> | undefined>;
+````
+
+### `McpServerConfig`
+
+Per-thread MCP server definition. Mirrors `AgentChatMcpServerConfig` on the
+engine side (unit 1). Passing these sets `mcpServers` on the create call;
+`loadUserMcpServers: false` additionally sets `strictMcpConfig: true`.
+
+````ts
+export type McpServerConfig =
+  | ({ type: "http" | "sse"; url: string; headers?: Record<string, string> } & McpToolFilter)
+  | ({
+      type: "stdio";
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    } & McpToolFilter);
+````
+
+### `McpToolFilter`
+
+Which of one MCP server's tools reach the model. Bare tool names, as the
+server lists them (`"search"`, not `"mcp__docs__search"`). Names are not
+secrets: the thread store keeps them.
+
+Not every provider can enforce both, and a filter a provider cannot enforce
+is refused (`invalid_option`) at open, `updateMcpServers` and `setModel` —
+never dropped:
+
+| provider | `allowedTools` | `disallowedTools` |
+| --- | --- | --- |
+| codex | yes (`enabled_tools`) | yes (`disabled_tools`) |
+| claude | refused | yes (removed from the model's context) |
+| cursor, droid, opencode, muse, pi | refused | refused |
+
+Needs a runtime advertising `capabilities.personalChats.mcpToolFilters`;
+an older one would drop the fields, so the SDK refuses to send them there.
+
+````ts
+export type McpToolFilter = {
+  /** Only these tools reach the model. Never empty. */
+  allowedTools?: string[];
+  /** These tools never reach the model. Applied after `allowedTools`. */
+  disallowedTools?: string[];
+};
+````
+
+### `ModelCatalogEntry`
+
+Flattened, SDK-facing model row.
+
+````ts
+export type ModelCatalogEntry = {
+  /** Canonical ADE registry id — this is what `ThreadOpenOptions.model` takes. */
+  id: string;
+  displayName: string;
+  /**
+   * The provider group this model belongs to. One of the six
+   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * typed open because the runtime's catalog is downloaded and can list a
+   * provider group newer than this SDK.
+   *
+   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * not take it without narrowing. Narrow it with `isSupportedProvider` — an
+   * SDK export since 0.4 — rather than a cast:
+   *
+   *   if (!isSupportedProvider(entry.provider)) return;
+   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
+   */
+  provider: AdeProvider | (string & {});
+  /** Provider-native model ref ADE sends under the hood. */
+  runtimeModelId: string;
+  isDefault: boolean;
+  isAvailable: boolean;
+  connected: boolean;
+  requiresConfiguration: boolean;
+  reasoningEfforts: string[];
+  defaultReasoningEffort: string | null;
+  description: string | null;
+};
+````
+
+### `PackagedRuntime`
+
+Spread straight into `createAdeChat`:
+
+  createAdeChat(&#123; ...resolvePackagedRuntime(process.resourcesPath), home, allowDownload: false &#125;)
+
+The field names ARE the `createAdeChat` option names, which is the point:
+no host-side mapping to get wrong. `source: "packaged"` makes
+`doctor().runtime.source` report `"packaged"`.
+
+````ts
+export type PackagedRuntime = {
+  /** Absolute path of `bin/ade` (`bin/ade.exe` on Windows). */
+  binaryPath: string;
+  /** Absolute path of `native/`, which becomes `ADE_RUNTIME_ROOT`. */
+  runtimeRoot: string;
+  /** Absolute path of `native/node_modules`, which becomes `ADE_RUNTIME_NODE_MODULES`. */
+  runtimeNodeModules: string;
+  source: "packaged";
+};
+````
+
+### `PendingInputKind`
+
+````ts
+export type PendingInputKind = (typeof PENDING_INPUT_KINDS)[number];
+````
+
+### `PendingInputOption`
+
+````ts
+export type PendingInputOption = {
+  label: string;
+  value: string;
+  description?: string;
+  recommended?: boolean;
+  preview?: string;
+  previewFormat?: "markdown" | "html";
+};
+````
+
+### `PendingInputQuestion`
+
+````ts
+export type PendingInputQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  options?: PendingInputOption[] | null;
+  multiSelect?: boolean;
+  allowsFreeform?: boolean;
+  isSecret?: boolean;
+  defaultAssumption?: string | null;
+  impact?: string | null;
+};
+````
+
+### `PendingInputRequest`
+
+One unresolved request the provider is blocked on.
+
+Mirrors `PendingInputRequest` in chat.ts. Returned by the `pendingInputs`
+action and mapped to the SDK's ApprovalRequest shape before it
+reaches a caller.
+
+````ts
+export type PendingInputRequest = {
+  requestId: string;
+  itemId?: string;
+  source: PendingInputSource;
+  kind: PendingInputKind;
+  title?: string | null;
+  description?: string | null;
+  questions: PendingInputQuestion[];
+  allowsFreeform: boolean;
+  blocking: boolean;
+  canProceedWithoutAnswer: boolean;
+  options?: PendingInputOption[];
+  providerMetadata?: Record<string, unknown>;
+  autoResolutionMs?: number | null;
+  turnId?: string | null;
+};
+````
+
+### `PendingInputSource`
+
+Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
+Devin, Antigravity) all report `"acp"`, not their own name.
+
+````ts
+export type PendingInputSource =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "muse"
+  | "acp"
+  | "ade";
+````
+
+### `PermissionCapability`
+
+What the provider could actually enforce of a permission policy.
+
+`"enforced"` means the provider itself gates every tool call against the
+policy. `"best-effort"` means ADE approximated it with the containment and
+approval knobs the provider does expose, and `residual` names what the policy
+therefore does not cover. `"unsupported"` means the provider has no gate at
+all and only the coarse preset applies.
+
+````ts
+export type PermissionCapability = {
+  level: "enforced" | "best-effort" | "unsupported";
+  mechanism: string;
+  residual: string | null;
+};
+````
+
+### `PermissionPreset`
+
+````ts
+export type PermissionPreset = "always-allow" | "default";
+````
+
+### `ProbeRuntimeSignatureOptions`
+
+````ts
+export type ProbeRuntimeSignatureOptions = {
+  platform?: NodeJS.Platform;
+  spawn?: SignatureCommandRunner;
+};
+````
+
+### `ProviderCapabilities`
+
+Runtime-derived controls available for a provider.
+
+````ts
+export type ProviderCapabilities = {
+  permissionModes: AgentChatPermissionMode[];
+  reasoningEfforts: string[];
+  fastMode: boolean;
+  multipleAccounts: boolean;
+  signIn: "cli-login" | "device-code" | "api-key" | "none";
+  apiKeys: boolean;
+  presets: boolean;
+  mcp: "full" | "partial" | "none";
+};
+````
+
+### `ProviderStatus`
+
+Per-provider installation, authentication and availability roll-up.
+
+READ `source` FIRST. It is the field that says how much the rest of the
+record is worth:
+
+  - `"probed"` — the runtime resolved the binary the provider would actually
+    spawn, ran `--version`, and looked at the credential files the CLI itself
+    uses. `installed`, `binaryPath`, `version` and `authenticated` are real
+    measurements.
+  - `"derived"` — the runtime is older than the `providers.status` RPC, so
+    everything here comes from the model catalog. `installed` is
+    `modelCount > 0`, the three probe fields are null, and a UI should say
+    "not detected" rather than "not installed".
+
+````ts
+export type ProviderStatus = {
+  provider: string;
+  displayName: string;
+  /**
+   * A usable binary or package was found.
+   *
+   * On a derived record this is `modelCount > 0`, which answers a different
+   * question — "does ADE know models for this provider" — so do not present it
+   * as a filesystem fact unless `source` is `"probed"`.
+   */
+  installed: boolean;
+  /** Absolute path the runtime would spawn. Null when not found or derived. */
+  binaryPath: string | null;
+  /** Verbatim first line of `--version`. Null on a timeout, or when derived. */
+  version: string | null;
+  /**
+   * Credentials the CLI can use were found.
+   *
+   * On a probed record this is a credential-file check. On a derived one it
+   * means "the catalog resolved at least one connected model", which a stale
+   * catalog can report after the credential expired — `stale` carries that.
+   */
+  authenticated: boolean;
+  /** How, when the probe could tell: subscription, api-key, oauth, unknown. */
+  authMethod?: string | null;
+  /** Remediation ADE supplies. Null on a derived record. */
+  installCommand: string | null;
+  loginCommand: string | null;
+  docsUrl: string | null;
+  /** True when at least one model is usable right now. */
+  available: boolean;
+  /** True when every usable path needs setup first. */
+  requiresConfiguration: boolean;
+  modelCount: number;
+  /**
+   * True when something behind this verdict was served from the cache rather
+   * than probed on this call: a cached model catalog, or a cached probe record.
+   * It does not mean the record is past the runtime's TTL — a record inside the
+   * TTL is served from the cache and is stale by this definition.
+   */
+  stale: boolean;
+  /** How this record was produced. Read this before trusting the rest. */
+  source: "probed" | "derived";
+  /** ISO timestamp of the probe, or of the derivation. */
+  checkedAt: string;
+  /** Human-readable note from the probe, when it had one. */
+  detail?: string | null;
+  /** Provider controls, present only when the runtime advertises them. */
+  capabilities?: ProviderCapabilities;
+  /** Config-home isolation used by this runtime, when it can report it. */
+  isolation?: "isolated" | "shared";
+};
+````
+
+### `ProviderStatusProbeRecord`
+
+One provider record as the `providers.status` RPC sends it.
+
+NOT a `Partial<ProviderStatus>`. `ProviderStatus` is this SDK's OUTPUT type
+and carries four fields only the model catalog can answer — `available`,
+`requiresConfiguration`, `modelCount` and the `"derived"` half of `source` —
+which the probe never sends and `mergeProviderStatus` deliberately takes from
+the catalog instead. Declaring them here would admit members that never
+occur.
+
+Every field is optional and widely typed on purpose: this is untrusted wire
+data, and `mergeProviderStatus` re-reads each one through its own guard. The
+shape is the one documented in `docs/features/sdk/README.md`.
+
+````ts
+export type ProviderStatusProbeRecord = {
+  provider?: string;
+  displayName?: string;
+  installed?: boolean;
+  binaryPath?: string | null;
+  version?: string | null;
+  authenticated?: boolean;
+  authMethod?: string | null;
+  installCommand?: string | null;
+  loginCommand?: string | null;
+  docsUrl?: string | null;
+  source?: "probed";
+  stale?: boolean;
+  checkedAt?: string;
+  detail?: string | null;
+  capabilities?: ProviderCapabilities;
+  isolation?: "isolated" | "shared";
+};
+````
+
+### `ProviderStatusRpcResult`
+
+Result of the `providers.status` machine RPC.
+
+````ts
+export type ProviderStatusRpcResult = {
+  checkedAt: string;
+  providers: Record<string, ProviderStatusProbeRecord>;
+};
+````
+
+### `ResolveBundledRuntimeOptions`
+
+````ts
+export type ResolveBundledRuntimeOptions = {
+  /**
+   * Directory or file to resolve the package from. Defaults to this module's
+   * own location, which is what an embedder wants: the runtime package sits
+   * beside `@ade-dev/sdk` in the same `node_modules` tree.
+   */
+  resolveFrom?: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+};
+````
+
+### `ResolvedBinarySource`
+
+Which of the five resolution steps produced the binary. Reported verbatim on
+`doctor().runtime.source`, where it is the difference between a five-minute
+diagnosis of a packaging mistake and a day of one.
+
+`"packaged"` is an explicit binary whose options came from
+`resolvePackagedRuntime()` (SDK &gt;= 0.4 lists it here; before, only
+`DoctorReport["runtime"]["source"]` had it).
+
+````ts
+export type ResolvedBinarySource =
+  | "explicit"
+  | "packaged"
+  | "bundled-package"
+  | "cached-download"
+  | "path"
+  | "downloaded";
+````
+
+### `ResolvePackagedRuntimeOptions`
+
+Options for resolvePackagedRuntime.
+
+````ts
+export type ResolvePackagedRuntimeOptions = {
+  /** Directory under `resourcesPath` that holds the runtime. Defaults to `"ade-runtime"`. */
+  dir?: string;
+  /** Defaults to `process.platform`. Decides the binary name and the Mach-O check. */
+  platform?: NodeJS.Platform;
+  /** Defaults to `process.arch`. The architecture the binary must be able to run. */
+  arch?: string;
+};
+````
+
+### `RunOptions`
+
+````ts
+export type RunOptions = Omit<ThreadOpenOptions, "provider" | "model"> & {
+  provider: AdeProvider;
+  model: string;
+  schema?: JsonSchema;
+  budget?: ThreadBudget;
+  /**
+   * Longest one turn may take, in ms (default 10 minutes). On expiry the turn
+   * is interrupted and `run()` rejects with `rpc_timeout`.
+   */
+  timeoutMs?: number;
+};
+````
+
+### `RuntimeCompatibility`
+
+The result of comparing a runtime's version with `SUPPORTED_RUNTIME_RANGE`.
+
+````ts
+export type RuntimeCompatibility = {
+  supported: boolean;
+  /** The range this SDK build supports, e.g. `">=1.2.81 <2.0.0"`. */
+  range: string;
+  /** What the runtime reported on `ade/initialize`, or null when it sent none. */
+  version: string | null;
+  /** Why a version counted as supported without being checked, when it did. */
+  note: string | null;
+};
+````
+
+### `RuntimeDownloader`
+
+Injectable so tests never touch the network. `createAdeChat` accepts one via
+the internal options bag; the default is `downloadRuntime`.
+
+````ts
+export type RuntimeDownloader = (request: DownloadRequest) => Promise<DownloadResult>;
+````
+
+### `RuntimeSignature`
+
+Code-signing state of the runtime binary, for a support bundle.
+
+An embedder who signs their app but forgets the nested runtime does not get a
+clean error — the process dies on launch under the hardened runtime, on a
+user's machine, never on the developer's. `doctor().runtime.signature` is the
+cheapest way to see that before a release goes out, so this probe never
+throws and never blocks: a failure to read the state is reported as "not
+known" (`null`), which is honest, rather than as "not signed", which is not.
+
+````ts
+export type RuntimeSignature = {
+  /** True when the OS reports a signature of any kind, ad-hoc included. */
+  signed: boolean;
+  /** The signing authority, when readable: a certificate subject or Team ID. */
+  authority?: string;
+  /**
+   * Whether the OS accepts the runtime for execution.
+   *
+   * On macOS this is Gatekeeper's verdict (`spctl --assess --type execute`).
+   * A runtime embedded in an app bundle is assessed through the OUTERMOST
+   * enclosing `.app`, because Gatekeeper judges a nested helper as part of the
+   * app that carries it: assessed on its own, a correctly signed and notarized
+   * embedded binary is "rejected (the code is valid but does not seem to be an
+   * app)". When the binary is not inside a bundle and Gatekeeper answers that
+   * way, the verdict is `null` — not known — never `false`.
+   *
+   * On Windows it is whether the Authenticode chain is valid.
+   *
+   * Absent or null: acceptance could not be determined. Only `false` means
+   * the OS refused it.
+   */
+  accepted?: boolean | null;
+};
+````
+
+### `RuntimeTarget`
+
+Asset naming and URL scheme, mirrored from
+`apps/ade-cli/scripts/install-runtime.sh` and `apps/web/api/install.ts`:
+
+  https://github.com/&lt;repo&gt;/releases/latest/download/&lt;asset&gt;
+  https://github.com/&lt;repo&gt;/releases/download/&lt;tag&gt;/&lt;asset&gt;
+
+with `<asset>` one of `ade-<platform>-<arch>[.exe]`, the matching
+`<binary>.native.tar.gz`, and `SHA256SUMS`.
+
+The runtime binary alone is NOT runnable: it dlopens native modules out of
+the archive's `node_modules`, which is why both assets are fetched and why
+`spawnEnv` below exists.
+
+````ts
+export type RuntimeTarget = {
+  /** e.g. `darwin-arm64`, `linux-x64`, `win32-x64`. */
+  target: string;
+  binaryAsset: string;
+  archiveAsset: string;
+};
+````
+
+### `SendOptions`
+
+````ts
+export type SendOptions = {
+  /** Files to attach. `type` is inferred when absent; see `AgentChatFileRef`. */
+  attachments?: AgentChatFileRef[];
+  /** Text shown to the user when it differs from what the agent receives. */
+  displayText?: string;
+  reasoningEffort?: string | null;
+};
+````
+
+### `SetModelOptions`
+
+````ts
+export type SetModelOptions = {
+  /**
+   * Switch even with a turn in flight, accepting that the turn ends with no
+   * completion event. Only meaningful mid-turn; ignored on an idle thread.
+   */
+  force?: boolean;
+};
+````
+
+### `SetModelResult`
+
+What `setModel` returns: the resolved model, plus the four capability
+reports as they stand on the new provider.
+
+A switch across providers can quietly lower a guarantee — a policy Claude
+enforced is best-effort on Codex — so the reports come back with the answer
+rather than leaving the caller to re-read four fields and notice. The same
+object is emitted as `capabilities_changed` on the thread's `status`
+channel, for subscribers that did not make the call.
+
+````ts
+export type SetModelResult = ThreadModelSelection & { capabilities: ThreadCapabilities };
+````
+
+### `SettingSourcesCapability`
+
+````ts
+export type SettingSourcesCapability = HostConfigCapability & {
+  value: AgentChatSettingSources;
+};
+````
+
+### `SignInHandle`
+
+````ts
+export type SignInHandle = {
+  on(event: "update", listener: (status: SignInStatus) => void): () => void;
+  submitCode(code: string): Promise<void>;
+  cancel(): Promise<void>;
+  done: Promise<AccountInfo>;
+};
+````
+
+### `SignInStatus`
+
+````ts
+export type SignInStatus = {
+  loginId: string;
+  instanceId: string;
+  provider: string;
+  state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | "expired";
+  url: string | null;
+  awaitingCode: boolean;
+  deviceCode?: string;
+  email?: string;
+  message?: string;
+  startedAt: string;
+  endedAt?: string;
+};
+````
+
+### `SteerOptions`
+
+Options for `steer`.
+
+````ts
+export type SteerOptions = {
+  /**
+   * Files to hand the running turn. Same shape and inference as
+   * `SendOptions.attachments`. A steer with attachments may have empty text.
+   */
+  attachments?: AgentChatFileRef[];
+};
+````
+
+### `SyntheticRuntimeLostStatusEvent`
+
+The `status` envelope the SDK synthesizes when the runtime goes away.
+
+A runtime that exits mid-turn emits nothing — the process that would have
+sent `done` or `error` is gone — so without this every subscriber stayed
+"running" forever. Every live thread receives one of these, on the `status`
+and `event` channels, when the client sees the runtime exit or its socket
+drop. `synthetic: true` marks it as the SDK's own; the runtime never sends
+that key. It is not in the durable transcript, so `history()` never
+returns it.
+
+````ts
+export type SyntheticRuntimeLostStatusEvent = {
+  type: "status";
+  /**
+   * `"failed"`, the runtime's own word for a turn that ended badly, so a
+   * subscriber that already maps `turnStatus` needs no new case. Tell it apart
+   * from a runtime-sent failure by `synthetic: true`.
+   */
+  turnStatus: "failed";
+  message: string;
+  synthetic: true;
+};
+````
+
+### `ThreadBudget`
+
+A host-side limit for the usage observed on one thread.
+
+````ts
+export type ThreadBudget = {
+  maxCostUsd?: number;
+  maxTokens?: number;
+};
+````
+
+### `ThreadCapabilities`
+
+The four capability reports a thread carries, as one object.
+
+Returned by `setModel` and carried by `capabilities_changed`. Each report
+keeps its own null rule — see the matching field on `AdeThread`.
+
+````ts
+export type ThreadCapabilities = {
+  mcpCapability: McpCapabilityReport | null;
+  permissionCapability: PermissionCapability | null;
+  instructionsCapability: InstructionsCapability | null;
+  settingSourcesCapability: SettingSourcesCapability | null;
+};
+````
+
+### `ThreadEventChannel`
+
+````ts
+export type ThreadEventChannel = "event" | "usage" | "status";
+````
+
+### `ThreadHistoryPage`
+
+One page of a thread's durable transcript, newest page first.
+
+Returned by `AdeThread.historyPage`. `events` are in transcript order
+(oldest first) within the page.
+
+````ts
+export type ThreadHistoryPage = {
+  events: AgentChatEventEnvelope[];
+  /** True when older events exist before this page. */
+  hasMore: boolean;
+  /**
+   * Pass as `beforeSequence` to read the page before this one. Null when
+   * `hasMore` is false — including the case where the transcript's envelopes
+   * carry no `sequence`, which cannot be paged by sequence at all.
+   */
+  nextBeforeSequence: number | null;
+};
+````
+
+### `ThreadInstructions`
+
+Host instructions for a thread. A bare string means `{ mode: "append" }`.
+
+````ts
+export type ThreadInstructions =
+  | string
+  | { mode: "append" | "replace"; text: string };
+````
+
+### `ThreadInterruptOptions`
+
+````ts
+export type ThreadInterruptOptions = {
+  /** Keep queued messages, or remove them along with the active turn. */
+  queue?: "keep" | "drop";
+  /** Full ADE stop semantics. When set, this takes precedence over `queue`. */
+  mode?: AgentChatStopMode;
+};
+````
+
+### `ThreadModelSelection`
+
+What a thread's model resolved to, as the runtime reports it.
+
+The runtime resolves aliases, CLI-wrapped ids, and ids a CLI update retired,
+so this can differ from the id the host passed. Render `displayName` rather
+than the raw id whenever it is non-null.
+
+````ts
+export type ThreadModelSelection = {
+  /** Catalog model id now bound to the thread. */
+  modelId: string;
+  /** Provider group that id resolved into — authoritative, not inferred. */
+  provider: string;
+  /** Provider-native model token. */
+  model: string;
+  /**
+   * The catalog's display name for `modelId`, or null when the catalog does
+   * not list it (a retired model, or a catalog that has not loaded).
+   */
+  displayName: string | null;
+};
+````
+
+### `ThreadOpenOptions`
+
+````ts
+export type ThreadOpenOptions = {
+  /** A provider id present in this runtime's model catalog. */
+  provider: AdeProvider | (string & {});
+  model: string;
+  /** Stop a turn when cumulative reported usage reaches either limit. */
+  budget?: ThreadBudget;
+  /** Direct harness permission mode; validated against provider capabilities when available. */
+  permissionMode?: import("./types.js").AgentChatPermissionMode;
+  /** Reasoning tier, validated against provider capabilities when available. */
+  reasoningEffort?: string;
+  /** Fast mode, validated against provider capabilities when available. */
+  fastMode?: boolean;
+  /** Provider instance id. Create-only; persisted and reused when recreating this key. */
+  account?: string;
+  /** Runtime credential id. Create-only; persisted without its key value. */
+  credential?: string;
+  /** Harness preset id. Create-only; persisted and reused when recreating this key. */
+  preset?: string;
+  /**
+   * MCP servers to attach to this thread.
+   *
+   * Refused outright by providers with no MCP surface (Pi), so a thread never
+   * opens silently tool-less. Read {@link AdeThread.mcpCapability} afterwards
+   * for what the provider actually delivered.
+   *
+   * Supplying servers also turns on strict mode unless you set
+   * `loadUserMcpServers: true` — see that field.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the tool
+   * surface it was created with, and the SDK logs one line when the map passed
+   * here differs. See {@link ThreadResumeOptions}.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Whether to also load the user's and project's own MCP configuration.
+   *
+   * Applies when you supply `mcpServers` or set this flag explicitly: either
+   * makes the SDK send `strictMcpConfig` — `true` to withhold the user's
+   * config, and an explicit `false` (not an omission) when you set this flag
+   * true, because omitting the key is not the same as asking for the user's
+   * servers.
+   *
+   * A thread that does neither sends no MCP field at all and lets the runtime's
+   * session profile decide. The profile SDK threads run is strict by default,
+   * so "sent nothing" means the user's own MCP config is withheld — pass
+   * `loadUserMcpServers: true` if you want it loaded.
+   *
+   * IMPORTANT — false is NOT a uniform guarantee. Only Claude can enforce it.
+   * Every other provider is best-effort because the gap is in the provider's
+   * own SDK, not in ADE:
+   *
+   * | provider | strict mode | what still loads anyway                        |
+   * |----------|-------------|------------------------------------------------|
+   * | claude   | enforced    | nothing (MCP-wise)                             |
+   * | codex    | best-effort | servers contributed by a Codex *plugin*        |
+   * | cursor   | best-effort | user-layer servers                             |
+   * | droid    | best-effort | tools appearing only after the first sweep     |
+   * | opencode | best-effort | the global OpenCode config dir (for auth)      |
+   * | pi       | unsupported | n/a — no MCP surface at all                    |
+   *
+   * That table is a summary of ADE's own `CALLER_MCP_SUPPORT` table in
+   * `apps/desktop/src/shared/callerMcpServers.ts`, which is where each level,
+   * mechanism and residual is decided; this doc comment restates it and must be
+   * updated when a row there changes.
+   *
+   * Note that even for Claude, "enforced" scopes to MCP only: the user's
+   * rules, commands, and output styles still load, because those are not MCP
+   * and are not what strict mode excludes.
+   *
+   * Do not present this to your users as "only your tools are loaded" without
+   * checking {@link AdeThread.mcpCapability}: it names the exact residual for
+   * the thread you actually got, and it is authoritative where this table is
+   * only a summary.
+   *
+   * The table above applies only when this is false. Setting it TRUE (or
+   * supplying servers and opting back in) is a delivery-only request: the
+   * user's own MCP config loads by design, the report comes back with
+   * `strictRequested: false`, `residual` is null, and `mechanism` describes how
+   * the servers were delivered rather than any enforcement. Nothing in that
+   * report claims isolation, because none was asked for.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the value it
+   * was created with, and the SDK logs one line when the value passed here
+   * differs. See {@link ThreadResumeOptions}.
+   */
+  loadUserMcpServers?: boolean;
+  /**
+   * How tool use is gated on this thread. Three accepted forms.
+   *
+   * `"default"` leaves each provider's own behavior in place, and what that
+   * means differs enough per provider to be worth stating: on Claude, ADE
+   * installs no gate at all and the Agent SDK decides non-interactively; on
+   * Codex, an approval request PARKS THE TURN until something answers it.
+   *
+   * `"always-allow"` maps to each provider's full-auto create args —
+   * `bypassPermissions` on Claude, `danger-full-access` on Codex.
+   *
+   * A {@link ThreadPermissionPolicy} object is the third form, and the only one
+   * that is neither of those extremes: name the tools that may run, the tools
+   * that may not, and what happens to everything else. `fallback: "deny"`
+   * guarantees a turn never parks, which is what a host with no approval UI
+   * wants. `fallback: "ask"` emits `approval_request` and needs
+   * {@link AdeThread.approve} wired to a card.
+   *
+   * Read {@link AdeThread.permissionCapability} afterwards: only Claude gates
+   * every tool call against the policy.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the value it
+   * was created with, and the SDK logs one line when the value passed here
+   * differs. See {@link ThreadResumeOptions}.
+   */
+  permissions?: PermissionPreset | ThreadPermissionPolicy;
+  /**
+   * Host instructions for this thread.
+   *
+   * A bare string is shorthand for `{ mode: "append", text }`, which keeps
+   * ADE's own personal-chat framing and adds yours after it. `"replace"` uses
+   * your text alone — for a chat branded as your assistant, which must not
+   * mention ADE.
+   *
+   * This does NOT put the text in the transcript: `exportThread` returns no
+   * user message carrying it, which is the whole difference from the
+   * hidden-first-message workaround it replaces. Falls back to the client-level
+   * `instructions` when omitted; check {@link AdeThread.instructionsCapability}
+   * for what the provider did with it.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the value it
+   * was created with, and the SDK logs one line when the value passed here
+   * differs. See {@link ThreadResumeOptions}.
+   */
+  instructions?: ThreadInstructions;
+  /**
+   * Absolute directory the provider runs in.
+   *
+   * Created recursively (mode 0755) when missing. Defaults to the runtime's own
+   * scratch workspace at `<home>/personal-chats/workspaces`, and omitting it
+   * keeps exactly that behavior.
+   *
+   * Refused, with `invalid_option`: a relative path (it would resolve against
+   * the runtime's working directory, not yours), a path starting with `~` (not
+   * expanded), a filesystem root, the user's home directory itself, and
+   * anything inside the SDK's own `home`.
+   *
+   * This is a working directory, NOT a sandbox. For containment use
+   * `permissions.sandboxRoot`; the two are separate fields precisely so setting
+   * one does not read as implying the other.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the value it
+   * was created with, and the SDK logs one line when the value passed here
+   * differs. See {@link ThreadResumeOptions}.
+   */
+  cwd?: string;
+  /**
+   * Extra directories an attachment's ABSOLUTE path may point into, beside
+   * the chat's working directory and the runtime's state directory. SDK >= 0.4,
+   * runtime >= 1.2.82 (an older runtime ignores the field, and an attachment
+   * outside the default roots still throws on send).
+   *
+   * Use it for a folder the user drops files from (Downloads, a music
+   * library), so the host can attach the file in place instead of copying it.
+   * Combined with `hydrate: false`, a File Provider placeholder is attached
+   * without being downloaded.
+   *
+   * Each entry follows the `cwd` rules (absolute, no `~`, not a filesystem
+   * root, not the home directory itself, not inside the SDK home); at most 32.
+   * These are READ roots for attachments only: they do not change where the
+   * agent runs, and they are not a sandbox. A path is matched after the
+   * runtime resolves symlinks on both sides (see the attachments guide).
+   *
+   * ONE REFUSED ENTRY FAILS THE WHOLE OPEN, because the runtime is sent the
+   * whole list. Test a candidate first with `checkAttachmentRoot`, or prepare
+   * the list with `filterAttachmentRoots`, which drops a bad entry and reports
+   * why. Both are SDK >= 0.5.
+   *
+   * IGNORED ON RESUME, like `cwd`: a known key keeps the roots on record. Pass
+   * `refresh.attachmentRoots` to replace them on a live thread.
+   */
+  attachmentRoots?: string[];
+  /**
+   * Which on-disk configuration layers the provider loads.
+   *
+   * Defaults to `"none"`, which is what every 0.1.x thread got: no filesystem
+   * settings. `"project"` loads files in `cwd` (a `CLAUDE.md` your app ships);
+   * `"user"` loads the machine user's own global config; `"all"` loads user,
+   * project and local.
+   *
+   * `"project"` is usually the right choice for an embedder. Loading a user's
+   * personal `~/.claude` into an app-branded assistant is a surprise, and it
+   * should take an explicit `"user"` or `"all"` to get it. Only Claude has a
+   * real switch — see {@link AdeThread.settingSourcesCapability}.
+   *
+   * IGNORED ON RESUME: a key this home already knows re-applies the value it
+   * was created with, and the SDK logs one line when the value passed here
+   * differs. See {@link ThreadResumeOptions}.
+   */
+  settingSources?: AgentChatSettingSources;
+  title?: string;
+  /** See {@link ThreadRefreshOptions}. */
+  refresh?: ThreadRefreshOptions;
+};
+````
+
+### `ThreadPermissionPolicy`
+
+A per-tool permission policy: the third form of `permissions`, alongside the
+two presets.
+
+Tool names are provider-neutral. `mcp:<server>:<tool>` and `mcp:<server>:*`
+name an MCP tool and the engine translates them to each provider's own
+spelling (Claude writes `mcp__server__tool`). Any other string is matched
+against the provider's own tool name, case-insensitively, with an optional
+trailing `*` for a prefix match — and built-in tool names ARE
+provider-specific, so `Bash` means something on Claude and nothing on Pi.
+
+Precedence on Claude, highest first:
+  1. `deniedTools`
+  2. `allowedTools` and `autoApproveMcpServers`
+  3. `sandboxRoot` containment, for commands and file writes only
+  4. `fallback`
+
+On Codex the three tool fields apply to MCP tool calls only: a call Codex
+raises as an elicitation is judged by `deniedTools`, then `allowedTools` /
+`autoApproveMcpServers` on `mcp:<server>:<tool>`, then `fallback`. Commands
+and file writes reach only rungs 3 and 4 — `sandboxRoot` containment then
+`fallback` — and the command text is never consulted. Read
+`thread.permissionCapability.residual` rather than assuming a rung.
+
+`fallback` is required. A policy with no fallback has no obvious default, and
+guessing "ask" would silently park the turn for a host that built no approval
+UI — which is the failure this type exists to remove.
+
+````ts
+export type ThreadPermissionPolicy = {
+  /** Tools that run without asking. Exact names, or a trailing-`*` prefix. */
+  allowedTools?: string[];
+  /** Tools refused outright, never asked about. Wins over `allowedTools`. */
+  deniedTools?: string[];
+  /** Every tool of these servers is allowed. Same as `mcp:<server>:*`. */
+  autoApproveMcpServers?: string[];
+  /**
+   * Absolute path. Commands and file writes inside it auto-approve; outside it
+   * they follow `fallback`. This is containment, not a jail: see
+   * `ThreadOpenOptions.cwd` for the plain working directory.
+   */
+  sandboxRoot?: string;
+  /** What happens to anything the rules above did not match. */
+  fallback: "ask" | "deny";
+  /**
+   * Decline an approval nobody answered within this many milliseconds.
+   *
+   * Opt-in and enforced by the SDK, not the runtime: the field is stripped
+   * before the policy goes on the wire. When an approval-shaped
+   * `approval_request` this client watched arrive is still pending after the
+   * timeout, the SDK answers it `decline` and logs a line; the transcript then
+   * records the refusal like any other. Questions and plan approvals are left
+   * alone — a decline is not an answer to them.
+   *
+   * Only requests this client SAW are timed, from the moment it saw them. One
+   * raised before the client connected, or while its runtime was down, is not.
+   *
+   * There is no default. Proceeding after N seconds is a security decision, and
+   * refusing after N seconds breaks a long human review, so the host picks.
+   */
+  approvalTimeoutMs?: number;
+};
+````
+
+### `ThreadQueueItem`
+
+One message waiting in a thread's queue.
+
+````ts
+export type ThreadQueueItem = {
+  id: string;
+  text: string;
+  attachments?: AgentChatFileRef[];
+};
+````
+
+### `ThreadRefreshOptions`
+
+Credentials and endpoints to push onto a thread as it is opened.
+
+The one exception to "a resume re-applies the stored values": MCP servers
+carry secrets that rotate (a bearer token after sign-out or an account
+switch) and endpoints that move (a port that was busy), and a thread pinned
+to the old ones fails MCP auth for good.
+
+````ts
+export type ThreadRefreshOptions = {
+  /**
+   * Replaces the thread's caller MCP servers wholesale.
+   *
+   * On a resume the SDK sends these with `updateSession`, and the provider
+   * picks them up on its next turn; that needs a runtime advertising
+   * `capabilities.personalChats.updateMcpServers`, and an older one keeps its
+   * old servers with a logged warning. On a recreate they are the servers the
+   * new session is created with. On a create they are used when `mcpServers`
+   * is absent. The stored record is updated either way — header names only.
+   *
+   * A map identical (header values included) to the one this client last sent
+   * for the key is not sent again, so a renderer that reloads and repeats the
+   * same `refresh` does not restart the provider.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Replaces the thread's `attachmentRoots` (see `ThreadOpenOptions`); `[]`
+   * clears them. On a resume, and on a thread this client already holds open,
+   * the SDK sends them with `updateSession` (runtime >= 1.2.82) before the MCP
+   * refresh, and a refusal fails the `open` with the thread unchanged. On a
+   * recreate or a create they are the roots the session starts with. The
+   * stored record is updated either way. SDK >= 0.4.
+   *
+   * A list identical to the one the record holds is NOT sent again, the same
+   * way an identical `refresh.mcpServers` map is skipped: a host that repeats
+   * its four roots on every open costs no update call and does not restart the
+   * provider. Compare and canonicalize a root with `checkAttachmentRoot`, and
+   * prepare a whole list with `filterAttachmentRoots`, so one refused entry
+   * cannot fail every open. SDK >= 0.5.
+   */
+  attachmentRoots?: string[];
+};
+````
+
+### `ThreadRerunResult`
+
+What `retry` and `editLast` return, once the runtime has cut the old turn
+out and dispatched the new one. The new turn's events follow on the stream.
+
+The rollback is the CONVERSATION only. Files the old turn wrote stay on
+disk, and this result does not report them (see `retry`).
+
+````ts
+export type ThreadRerunResult = {
+  /**
+   * The first history `sequence` removed. Every event at or after it is gone
+   * from the runtime's history; drop the same events from any copy you keep —
+   * and inspect them there if you want to warn about files the old turn wrote.
+   */
+  retractedFromSequence: number;
+  /**
+   * The thread's history generation after the cut. The runtime also emits a
+   * `session_meta_updated` event with `historyInvalidated: true` and this
+   * generation, before the new turn's first event.
+   */
+  historyGeneration: number;
+  /**
+   * How the provider conversation went back: `claude_fork` (the Claude session
+   * was copied up to the entry before the turn), `claude_new_session` (the
+   * turn was the first, so a new Claude session starts), `codex_thread` (the
+   * Codex thread was reverted or forked before the turn), or `not_delivered`
+   * (the turn never reached the provider, so only the history changed).
+   */
+  conversationRollback: "claude_fork" | "claude_new_session" | "codex_thread" | "not_delivered";
+};
+````
+
+### `ThreadRespondOptions`
+
+The response fields accepted by the runtime's `respondToInput` action.
+
+````ts
+export type ThreadRespondOptions = Pick<
+  AgentChatRespondToInputArgs,
+  "answers" | "decision" | "responseText"
+>;
+````
+
+### `ThreadResumeOptions`
+
+Options for reopening a key this home already knows.
+
+`provider` and `model` become optional because a durable thread already
+recorded them — but they are still used if the runtime lost the session and
+the thread has to be recreated, so a caller that has them should pass them.
+
+A RESUME RE-APPLIES THE STORED VALUES. `cwd`, `instructions`,
+`settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` are
+read off the durable record, not off this object: one key is one
+conversation, and moving a live agent to a new directory, a new policy or a
+new tool surface on reopen is not what "reopen" means. Passing a value that
+differs from the stored one is not an error and does not change the thread;
+the SDK logs one line naming the option it ignored. To run under different
+host configuration, open a different key.
+
+THE STORED RECORD ALSO WINS ON A RECREATE. When the runtime has lost the
+session entirely (a wiped or migrated home, a corrupt state root), the key is
+created afresh from the record: `provider`, `model`, `cwd`, `instructions`,
+`settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` come
+off the record, and a value passed here only fills a field the record lacks.
+`permissions` means the stored policy or, for a key created on 0.3 or later
+with a preset, the stored preset; a key written before 0.3 with a preset has
+none on record, so the value passed here (or `"default"`) is used. Before
+0.3 the call's options won instead, which let any caller that could name a
+key — a renderer, over the Electron bridge — rebuild a lost thread
+with a looser policy, another provider, or no MCP servers at all.
+
+`refresh.mcpServers` is the one field that does replace the stored value, on
+a resume and on a recreate alike — see ThreadRefreshOptions.
+
+````ts
+export type ThreadResumeOptions = Partial<ThreadOpenOptions>;
+````
+
+### `ThreadSummary`
+
+````ts
+export type ThreadSummary = {
+  /** Stable caller-chosen key. Null for chats created outside the SDK. */
+  key: string | null;
+  sessionId: string;
+  provider: string;
+  model: string;
+  title: string | null;
+  status: AgentChatSessionStatus;
+  startedAt: string;
+  lastActivityAt: string;
+  /** The same instant as `lastActivityAt`, under the name list UIs sort by. */
+  updatedAt: string;
+  archived: boolean;
+  /**
+   * What the thread's model resolved to, with the catalog's display name.
+   * Null when the runtime reported no model at all.
+   */
+  modelSelection: ThreadModelSelection | null;
+};
+````
+
+### `ThreadUpdate`
+
+What `update` may change on a live thread.
+
+`title` is a rename and is safe at any time. `reasoningEffort` and
+`fastMode` reconfigure the provider, which on some providers restarts it —
+so they follow the same mid-turn rule `setModel` does.
+
+````ts
+export type ThreadUpdate = {
+  /**
+   * New title. Persisted in the thread store as well. A host title marks the
+   * chat as named: the runtime's automatic title never replaces it.
+   *
+   * `null` clears the host title. The chat then shows the provider's
+   * placeholder title ("Claude Chat", "Codex Chat"), so `thread.title` reads
+   * that string, not null, and the automatic title may name the chat again
+   * after its next message (runtime >= 1.2.82; before, `null` set the
+   * placeholder and still counted as named).
+   */
+  title?: string | null;
+  /** Reasoning effort for later turns. `null` returns to the model default. */
+  reasoningEffort?: string | null;
+  /** Provider fast mode, where the provider has one. */
+  fastMode?: boolean;
+};
+````
+
+### `ThreadUpdateOptions`
+
+Options for `update`.
+
+````ts
+export type ThreadUpdateOptions = {
+  /**
+   * Apply `reasoningEffort` / `fastMode` even with a turn in flight, accepting
+   * that some providers end that turn without a completion event. Ignored for
+   * a title-only update, which never needs it.
+   */
+  force?: boolean;
+};
+````
+
+### `ThreadUpdateResult`
+
+What `update` returns: the thread's title and model after the change.
+
+````ts
+export type ThreadUpdateResult = {
+  title: string | null;
+  model: ThreadModelSelection | null;
+};
+````
+
+### `ThreadUsage`
+
+Usage totals observed or recovered from a thread's durable transcript.
+
+````ts
+export type ThreadUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** False when the SDK could not load part of the durable transcript. */
+  complete?: boolean;
+  contextWindow?: number;
+  /** Present only when the provider reports a dollar cost. */
+  costUsd?: number;
+};
+````
+
+### `ToolIdentity`
+
+A tool name split into the server that owns it and the tool itself.
+
+````ts
+export type ToolIdentity = {
+  /** The MCP server, or null for a built-in or a name with no server part. */
+  server: string | null;
+  /** The tool name on that server, or the whole name when there is none. */
+  tool: string;
+};
+````
+
+### `Unsubscribe`
+
+````ts
+export type Unsubscribe = () => void;
+````
+
+### `UsageLimitEvent`
+
+The client `usageLimit` event: one thread's limit state changed.
+
+````ts
+export type UsageLimitEvent = {
+  /** Thread key; empty when the session is not one this client opened by key. */
+  key: string;
+  sessionId: string;
+  provider: AdeProvider;
+  /** The current state, or null when the limit cleared. */
+  status: UsageLimitResume | null;
+};
+````
+
+### `UsageLimitResume`
+
+A thread's usage-limit state, as the runtime publishes it on
+`session_meta_updated.usageLimitResume` (a copy of
+`AgentChatUsageLimitResume`). The runtime republishes the whole value on
+every transition and sends null when the limit clears.
+
+````ts
+export type UsageLimitResume = {
+  state: "armed" | "resuming" | "paused" | "opted_out" | "no_reset" | (string & {});
+  provider: AdeProvider;
+  /** When the resume prompt is sent (reset + buffer). Null when unknown. */
+  fireAt: string | null;
+  /** The reset the provider published. Null when unknown. */
+  resetAt: string | null;
+  /** Turn that hit the limit. */
+  turnId: string | null;
+  updatedAt: string;
+  /** Another signed-in account with room, chosen by the runtime. */
+  alternateAccount?: { instanceId: string; label: string } | null;
+  [key: string]: unknown;
+};
+````

@@ -1,4 +1,6 @@
 import React from "react";
+import type { PrAssigneeChange } from "../shared/PrAssigneesCard";
+import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import {
   XCircle,
   CircleNotch,
@@ -21,11 +23,14 @@ import type {
   PrCheckLogExcerpt,
   PrRerunChecksTarget,
   ReviewerRequest,
+  SetPrAssigneesResult,
 } from "../../../../shared/types";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import { summarizePrChangeKinds } from "../../../../shared/prChangeKind";
+import { notePrChangeFiles, prChangeSplitKey } from "../shared/prChangeSplitStore";
 import type { PrSwitcher } from "../shared/PrSwitcher";
 import { formatChatOutputContextBlock } from "../../../../shared/chatOutputContext";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
@@ -61,6 +66,7 @@ import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { PrRuntimePinProvider } from "../state/prMachines";
 import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
+import { forgetGitHubPrSearchResults } from "../tabs/useGitHubPrFilterSearch";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -479,6 +485,8 @@ export function PrDetailPane({
   const [checksPaletteRequest, setChecksPaletteRequest] = React.useState(0);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? initialPaneWarmCache?.files ?? []);
+  const changeSummary = React.useMemo(() => (files.length > 0 ? summarizePrChangeKinds(files) : null), [files]);
+  const changeSplitKey = prChangeSplitKey(pr);
   const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? initialPaneWarmCache?.commits ?? []);
   const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? initialPaneWarmCache?.status ?? null);
   // Latest direct mergeability re-poll for the selected PR. Used to resolve the
@@ -817,6 +825,8 @@ export function PrDetailPane({
         if (requestId !== detailLoadSeqRef.current) return;
         if (cachedSnapshot) {
           applySnapshotHydration(cachedSnapshot);
+          // The list rows read this PR's split from here instead of GitHub.
+          notePrChangeFiles(changeSplitKey, cachedSnapshot.files);
           if (hasSnapshotHydrationData(cachedSnapshot)) {
             hasVisibleDetailDataRef.current = true;
             setDetailLoading(false);
@@ -839,6 +849,7 @@ export function PrDetailPane({
           liveFilesLoadedForPrRef.current = pr.id;
           setFiles(value);
           updateDetailPaneWarmCache({ files: value });
+          notePrChangeFiles(changeSplitKey, value);
         }))
         .catch(() => []);
       const commitsPromise = fetchCommits()
@@ -899,7 +910,7 @@ export function PrDetailPane({
         setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
+  }, [applySnapshotHydration, changeSplitKey, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -1158,6 +1169,7 @@ export function PrDetailPane({
         return;
       }
       if (isGithubPollStoodDown()) return;
+      if (document.visibilityState === "hidden") return;
       const request = pollStatus();
       if (!request) return;
       request
@@ -1330,8 +1342,32 @@ export function PrDetailPane({
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels }, ...onPin);
+    forgetGitHubPrSearchResults();
     await loadDetail({ forceLive: true });
   });
+
+  // Assignees: sent to the PR's machine (`onPin`), like every PR mutation. The
+  // editor hides on an older host without the action, and when the snapshot
+  // says there is no write-capable GitHub account (`writeViewerLogin: null`).
+  const canEditAssignees = typeof window.ade.prs.setAssignees === "function" && writeViewerLogin !== null;
+  const handleSetAssignees = React.useCallback(async (change: PrAssigneeChange): Promise<SetPrAssigneesResult> => {
+    const setAssignees = window.ade.prs.setAssignees;
+    if (!setAssignees) throw new Error("This machine's ADE cannot assign people yet.");
+    const result = await setAssignees({ prId: pr.id, add: change.add, remove: change.remove }, ...onPin);
+    forgetGitHubPrSearchResults();
+    void loadDetail({ forceLive: true }).catch(() => undefined);
+    return result;
+  }, [loadDetail, onPin, pr.id]);
+  const searchAssignableUsers = React.useMemo((): GitHubFilterOptionsLoader | null => {
+    const list = window.ade.prs.listGitHubFilterOptions;
+    if (typeof list !== "function") return null;
+    return async (_kind, query) => (await list({
+      kind: "assignee",
+      query,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
+    }, ...onPin)).options;
+  }, [onPin, pr.repoName, pr.repoOwner]);
 
   const handleRequestReviewers = (request: ReviewerRequest) => runAction(async () => {
     await window.ade.prs.requestReviewers({
@@ -1528,6 +1564,7 @@ export function PrDetailPane({
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         filesCount={files.length}
+        changeSummary={changeSummary}
         checksNote={checksNote}
         author={detail?.author ?? null}
         lane={laneForPr}
@@ -1612,6 +1649,8 @@ export function PrDetailPane({
             updateBranchNotice={updateBranchNotice}
             onRequestReviewers={handleRequestReviewers}
             onSetLabels={handleSetLabels}
+            onSetAssignees={canEditAssignees ? handleSetAssignees : undefined}
+            searchAssignableUsers={searchAssignableUsers}
             onDeleteBranch={handleDeleteBranch}
             deleteBranchBusy={actionBusy}
             onReopen={handleReopenPr}

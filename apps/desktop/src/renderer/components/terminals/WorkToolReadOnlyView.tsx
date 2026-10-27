@@ -3,13 +3,14 @@ import {
   WORK_TOOLS_CONTROL_HINT,
   WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT,
   WORK_TOOLS_NO_DESKTOP_MESSAGE,
+  WORK_TOOLS_UNREACHABLE_MESSAGE,
   workToolsUnavailableMessage,
   type WorkToolsLaneState,
   type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
 import { H264StreamView } from "../chat/H264StreamView";
-import { isWebCodecsAvailable, type H264PushSource, type H264StreamStatus } from "../chat/h264StreamPlayer";
+import { isWebCodecsAvailable, type H264StreamStatus } from "../chat/h264StreamPlayer";
 import {
   MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
   MacDesktopTakeoverCursor,
@@ -18,13 +19,18 @@ import { createMacDesktopLeaseHeartbeat } from "../chat/macDesktopLease";
 import { viewPointToDisplayPoint, type ViewRect } from "../chat/macDesktopGeometry";
 import {
   useMacDesktopRealInput,
-  type MacDesktopInputCall,
   type MacDesktopPoint,
 } from "../chat/useMacDesktopRealInput";
 import { cn } from "../ui/cn";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
-import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import {
+  createMacDesktopWebInputSender,
+  macDesktopWebApi,
+} from "../chat/macDesktopWebStream";
+import { useMacDesktopStreamSubscription } from "../chat/useMacDesktopStreamSubscription";
+
+export { createMacDesktopStreamSource } from "../chat/macDesktopWebStream";
 
 /**
  * The browser and App Control panes, as seen from a surface that cannot run
@@ -89,6 +95,13 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
    * only thing that knows, so it reports the status up.
    */
   const [livePlaying, setLivePlaying] = useState(false);
+  /**
+   * The last read failed: the machine is unreachable or its brain is
+   * restarting. Distinct from a null state, which means no desktop is attached;
+   * telling the user to open ADE on their Mac for a dropped connection to a
+   * Linux box sends them the wrong way.
+   */
+  const [unreachable, setUnreachable] = useState(false);
   // Guards against a slow refresh landing after the pane moved to another lane.
   const requestedLaneId = useRef(laneId);
   requestedLaneId.current = laneId;
@@ -119,13 +132,15 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
       const changed = signature !== lastStateSignature.current;
       lastStateSignature.current = signature;
       setState(next);
+      setUnreachable(false);
       return changed;
     } catch {
       if (requestedLaneId.current !== laneId) return false;
-      const changed = lastStateSignature.current !== "null";
-      lastStateSignature.current = "null";
-      setState(null);
-      return changed;
+      // Keep the last state on screen and retry at the base rate instead of
+      // backing off: a failed read is one cheap call, and the pane should come
+      // back as soon as the machine does.
+      setUnreachable(true);
+      return true;
     } finally {
       if (requestedLaneId.current === laneId) setLoaded(true);
     }
@@ -135,6 +150,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     lastStateSignature.current = null;
     setLoaded(false);
     setState(null);
+    setUnreachable(false);
     setPreview(null);
     setLivePlaying(false);
     void refresh();
@@ -203,7 +219,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     return <ReadOnlyMessage message="Select a lane to see what its tools are doing." />;
   }
   if (!state) {
-    return <ReadOnlyMessage message={WORK_TOOLS_NO_DESKTOP_MESSAGE} />;
+    return <ReadOnlyMessage message={unreachable ? WORK_TOOLS_UNREACHABLE_MESSAGE : WORK_TOOLS_NO_DESKTOP_MESSAGE} />;
   }
 
   return (
@@ -226,6 +242,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
           dataUrl={preview?.path === observationPath ? preview?.dataUrl ?? null : null}
         />
       )}
+      {unreachable ? <p className="text-[11px] text-amber-300">{WORK_TOOLS_UNREACHABLE_MESSAGE}</p> : null}
       <p className="text-[11px] text-muted-fg">
         {macDesktopControlAvailable ? WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT : WORK_TOOLS_CONTROL_HINT}
       </p>
@@ -313,113 +330,6 @@ function AppControlSummary({ state }: { state: WorkToolsLaneState }): JSX.Elemen
   );
 }
 
-/** The web namespace is optional on every surface; read it defensively. */
-function macDesktopWebApi(): Partial<MacDesktopWebApi> | null {
-  // Through `unknown` on purpose: on the desktop this slot is the Electron IPC
-  // namespace, whose `renewLease` takes a `holderId` where the web one takes a
-  // token. This component only mounts on the web client (see
-  // `isReadOnlyWorkTool`), but the type of `window.ade` is the desktop surface.
-  const api = window.ade?.macDesktop as unknown as Partial<MacDesktopWebApi> | undefined;
-  return api ?? null;
-}
-
-function randomSubscriptionId(laneId: string): string {
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `macdesk-${laneId}-${suffix}`;
-}
-
-function decodeBase64Bytes(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-/**
- * A push-fed record source over the web `macDesktop` namespace. One
- * subscription per source instance; abandoning the source unsubscribes.
- *
- * Records keep the host's sequence numbers: the host skips frames under
- * backpressure and always resumes at a keyframe, and the player's gate uses
- * the gap to hold P-frames whose reference was skipped.
- */
-export function createMacDesktopStreamSource(args: {
-  api: Partial<MacDesktopWebApi>;
-  laneId: string;
-  subscriptionId: string;
-  viewerLabel: string;
-}): H264PushSource {
-  const { api, laneId, subscriptionId, viewerLabel } = args;
-  return {
-    kind: "push",
-    subscribe(handlers) {
-      let closed = false;
-      const offRecord = api.onStreamRecord?.((record) => {
-        if (closed || record.subscriptionId !== subscriptionId) return;
-        if (record.kind === "config") {
-          try {
-            const config = JSON.parse(new TextDecoder().decode(decodeBase64Bytes(record.data))) as {
-              codec?: unknown;
-              width?: unknown;
-              height?: unknown;
-              annexB?: unknown;
-            };
-            if (typeof config.codec !== "string" || !config.codec) {
-              handlers.onError("The video stream sent no codec.");
-              return;
-            }
-            handlers.onRecord({
-              kind: "config",
-              codec: config.codec,
-              width: typeof config.width === "number" ? config.width : null,
-              height: typeof config.height === "number" ? config.height : null,
-              annexB: config.annexB !== false,
-            });
-          } catch {
-            handlers.onError("The video stream sent an unreadable configuration.");
-          }
-          return;
-        }
-        handlers.onRecord({
-          kind: "access-unit",
-          keyframe: record.keyframe,
-          seq: record.seq,
-          bytes: decodeBase64Bytes(record.data),
-        });
-      }) ?? (() => {});
-      const offEnded = api.onStreamEnded?.((ended) => {
-        if (closed || ended.subscriptionId !== subscriptionId) return;
-        if (ended.reason === "error") {
-          handlers.onError(ended.message ?? "The desktop stream failed.");
-        } else {
-          handlers.onEnd();
-        }
-      }) ?? (() => {});
-      void Promise.resolve(api.streamSubscribe?.({ laneId, subscriptionId, viewerLabel }))
-        .then((result) => {
-          if (closed || !api.streamSubscribe) return;
-          if (!result) handlers.onError("The live desktop view is not available on this host.");
-        })
-        .catch((error: unknown) => {
-          if (closed) return;
-          handlers.onError(error instanceof Error ? error.message : String(error));
-        });
-      return () => {
-        closed = true;
-        offRecord();
-        offEnded();
-        void Promise.resolve(api.streamUnsubscribe?.({ subscriptionId })).catch(() => {
-          // A dead socket already released the subscription host-side.
-        });
-      };
-    },
-  };
-}
-
 /**
  * The lane's private macOS screen in the hosted web client: the live picture
  * when the host and this browser can play it, the last still frame otherwise,
@@ -481,10 +391,6 @@ function MacDesktopPanel({
     && api.input
     && api.supportsMacDesktopControl?.() === true,
   );
-  const [pageVisible, setPageVisible] = useState(
-    () => typeof document === "undefined" || document.visibilityState !== "hidden",
-  );
-  const [connected, setConnected] = useState(true);
   const [retryNonce, setRetryNonce] = useState(0);
   const [streamStatus, setStreamStatus] = useState<H264StreamStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -512,39 +418,23 @@ function MacDesktopPanel({
   /** Guards the lease reconciliation against a poll older than the takeover. */
   const holdingSinceRef = useRef(0);
 
-  useEffect(() => {
-    const onVisibilityChange = () => setPageVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
-
   // A tool switch or a lane change unmounts the panel; the parent's longer
   // poll and skipped still fetch must not outlive the live picture that
   // justified them.
   useEffect(() => () => onLivePlayingChange?.(false), [onLivePlayingChange]);
 
-  useEffect(() => {
-    if (!liveSupported || !api?.onConnectionChange) return undefined;
-    return api.onConnectionChange((next) => setConnected(next));
-  }, [liveSupported, api]);
-
-  const streamKey = `${pageVisible ? "shown" : "hidden"}:${connected ? "on" : "off"}:${retryNonce}`;
-  const subscriptionId = useMemo(
-    () => randomSubscriptionId(laneId),
-    // A reconnect or a manual retry is a new subscription; the old one was
-    // released by the server with the socket or by our own unsubscribe.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [laneId, streamKey],
-  );
-  const source = useMemo(() => {
-    if (!liveSupported || !api || !pageVisible || !connected) return null;
-    return createMacDesktopStreamSource({
-      api,
-      laneId,
-      subscriptionId,
-      viewerLabel: "ADE Web",
-    });
-  }, [liveSupported, api, laneId, subscriptionId, pageVisible, connected]);
+  // The stream plumbing is shared with the full pane; only the recovery
+  // policy differs. This pane re-dials when a person presses Retry or
+  // Reconnect, which is its whole budget, and the hook owns the rest: one
+  // subscription per visible tab and per live socket, on the tab's own
+  // machine here (the full pane passes the session's pin).
+  const { pageVisible, connected, subscriptionId, source } = useMacDesktopStreamSubscription({
+    api,
+    laneId,
+    runtimePin: null,
+    enabled: liveSupported,
+    nonce: retryNonce,
+  });
 
   const display = macDesktop?.display ?? null;
   const lease = macDesktop?.lease ?? null;
@@ -587,17 +477,13 @@ function MacDesktopPanel({
 
   /* ── Real input, only while this tab holds the lease ──────────────────── */
 
-  const sendInputCall = useCallback((call: MacDesktopInputCall) => {
-    if (!api?.input) {
-      return Promise.reject(new Error("The host does not accept input from this client."));
-    }
-    // A remote controller does not lock its pointer, so it never asks the
-    // driver to hold the lane's cursor and has nothing to put back. The call
-    // exists for the desktop takeover; here it is a no-op rather than a wire
-    // message the host would have to understand.
-    if (call.kind === "releaseCursor") return Promise.resolve(null);
-    return api.input({ laneId, call });
-  }, [api, laneId]);
+  // The one web input sender, shared with the full pane: one `macDesktop.input`
+  // call per event, `releaseCursor` answered here, and no wire message when the
+  // host does not accept input.
+  const sendInputCall = useMemo(
+    () => (controlSupported ? createMacDesktopWebInputSender({ laneId, runtimePin: null }) : null),
+    [controlSupported, laneId],
+  );
 
   const realInput = useMacDesktopRealInput({
     laneId,
@@ -606,7 +492,7 @@ function MacDesktopPanel({
     enabled: controlHolderId != null,
     toDisplayPoint,
     runtimePin: null,
-    sender: controlSupported ? sendInputCall : null,
+    sender: sendInputCall,
     // The desktop deliberately does not post hover moves (the warp floods
     // ScreenCaptureKit and its local glyph is the pointer instead); a remote
     // controller needs the lane's pointer to track, so the same pump is opted

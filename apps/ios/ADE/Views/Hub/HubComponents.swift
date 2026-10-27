@@ -515,6 +515,9 @@ struct HubProjectPresentation: Equatable, Identifiable {
   /// as the sentence form for a caller that wants words, and because the counts
   /// reaching the card at all is a locked contract.
   let statusLine: String?
+  /// Chats of this project a paged roster has not loaded (`rosterChatPagesV1`).
+  /// They are all Done chats: the host keeps every other chat in the roster.
+  let olderChatCount: Int
   fileprivate let renderSignature: Int
 
   var id: String { project.id }
@@ -535,6 +538,7 @@ struct HubProjectPresentation: Equatable, Identifiable {
   var stateCounts: [HubStateCount] {
     var tally: [ActivityBoardColumn: Int] = [:]
     for lane in lanes { lane.accumulateStateTally(into: &tally) }
+    if olderChatCount > 0 { tally[.done, default: 0] += olderChatCount }
     return hubTreeStateCounts(tally)
   }
 
@@ -547,9 +551,11 @@ struct HubProjectPresentation: Equatable, Identifiable {
     chatCount: Int,
     lanes: [HubLanePresentation],
     attentionCount: Int = 0,
-    runningCount: Int = 0
+    runningCount: Int = 0,
+    olderChatCount: Int = 0
   ) {
     self.project = project
+    self.olderChatCount = olderChatCount
     self.isActive = isActive
     self.isSwitching = isSwitching
     self.isLoading = isLoading
@@ -573,7 +579,7 @@ struct HubProjectPresentation: Equatable, Identifiable {
       lanes: lanes,
       attentionCount: attentionCount,
       runningCount: runningCount
-    )
+    ) &* 31 &+ olderChatCount
   }
 
   static func == (lhs: HubProjectPresentation, rhs: HubProjectPresentation) -> Bool {
@@ -885,7 +891,8 @@ func buildHubProjectPresentation(
     chatCount: chatCount,
     lanes: lanes,
     attentionCount: hubLaneColumnCount(lanes, .needsYou),
-    runningCount: hubLaneColumnCount(lanes, .working)
+    runningCount: hubLaneColumnCount(lanes, .working),
+    olderChatCount: roster.unloadedChatCount
   )
 }
 
@@ -903,6 +910,9 @@ struct HubProjectCard: View, Equatable {
   let onArchiveChat: (RemoteRosterChat) -> Void
   let onDeleteChat: (RemoteRosterChat) -> Void
   let onForget: () -> Void
+  /// Loads the next page of older chats (`rosterChatPagesV1`); the footer row
+  /// shows only when this is set and chats are left to load.
+  var onLoadOlderChats: (() -> Void)? = nil
 
   private var project: MobileProjectSummary { presentation.project }
   private var hasExpandableContent: Bool { !presentation.lanes.isEmpty }
@@ -933,6 +943,17 @@ struct HubProjectCard: View, Equatable {
               onDeleteChat: onDeleteChat
             )
             .equatable()
+          }
+          if let onLoadOlderChats, presentation.olderChatCount > 0 {
+            Button(action: onLoadOlderChats) {
+              Text("Show older chats (\(presentation.olderChatCount))")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(ADEColor.accent)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Loads more of this project's finished chats.")
           }
         }
         .padding(.leading, 18)

@@ -8,6 +8,7 @@ import type { AdapterEvents, AdapterInfra } from "../types";
 import { assertWebRuntimePinRoutable } from "../runtimePinGuard";
 import { createGitNamespaces } from "../git";
 import { createLanesNamespace } from "../lanes";
+import { createMacDesktopNamespace } from "../macDesktop";
 import { createSessionsPtyNamespaces } from "../sessionsPty";
 import { createComputerUseNamespace } from "../computerUse";
 
@@ -252,5 +253,29 @@ describe("computerUse namespace pin guard", () => {
       .rejects.toThrow(/computerUse\.readArtifactPreview/);
     expect(call).not.toHaveBeenCalled();
     expect(requestFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("macDesktop namespace pin guard", () => {
+  it("sends no screen, window or recording command for a foreign pin", async () => {
+    const { infra, call } = scopeFixture();
+    const macDesktop = createMacDesktopNamespace(infra);
+    const foreignPin = remotePin("env-2", "project-2");
+
+    // These read or change another machine's screen: a pin naming a different
+    // machine must fail before anything reaches this adapter's host. These
+    // members throw before they return a promise, like the service's own
+    // synchronous guards.
+    expect(() => macDesktop.screenshot({ laneId: "lane-1", caption: "the fix" }, foreignPin))
+      .toThrow(/macDesktop\.screenshot.*remote:env-2:project-2/s);
+    expect(() => macDesktop.closeWindow({ laneId: "lane-1", windowId: 1 }, foreignPin))
+      .toThrow(/macDesktop\.closeWindow/);
+    expect(() => macDesktop.startRecording({ laneId: "lane-1", caption: "the fix" }, foreignPin))
+      .toThrow(/macDesktop\.startRecording/);
+    expect(call).not.toHaveBeenCalled();
+
+    // A pin restating this adapter's own binding still reaches the host.
+    await macDesktop.screenshot({ laneId: "lane-1", caption: "the fix" }, remotePin(OWN_ENV, OWN_PROJECT));
+    expect(call.mock.calls.map((entry) => entry[0])).toEqual(["macDesktop.screenshot"]);
   });
 });

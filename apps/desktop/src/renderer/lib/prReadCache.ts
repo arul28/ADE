@@ -1,4 +1,4 @@
-import type { GitHubPrSnapshot, OpenProjectBinding, PrSummary } from "../../shared/types";
+import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -28,6 +28,24 @@ function projectKey(
 ): string {
   if (pin?.key) return `pin:${pin.key}`;
   return projectRoot?.trim() || "active";
+}
+
+/**
+ * The scope of an unpinned GitHub snapshot read.
+ *
+ * `getGitHubSnapshot` takes no pin, so the read follows the machine this
+ * window's project tab is bound to — the same path on two machines is two
+ * different credential stores and two different databases. The root alone
+ * cannot say which one a memoized refusal came from, so the caller also names
+ * the window's binding: one machine's "no GitHub credential" must never answer
+ * the other machine's reads. It is an argument, not a store read, so the key
+ * is a function of what the caller asked for.
+ */
+function snapshotReadScopeKey(
+  projectRoot: string | null | undefined,
+  bindingKey: string | null | undefined,
+): string {
+  return JSON.stringify([projectKey(projectRoot), bindingKey ?? null]);
 }
 
 function summaryFreshness(summary: PrSummary): number {
@@ -70,6 +88,103 @@ export function listPrsCoalesced(options?: {
   );
 }
 
+/**
+ * The project's PR list, kept for a short while per machine. A chat's header
+ * and the Work tools both read it to find one lane's PRs, on every chat switch;
+ * on a large remote project that list is half a megabyte, re-downloaded each
+ * time. A surface that hears a PR event drops the entry first
+ * (`invalidatePrListCache`), so a change still shows at once while it is open.
+ */
+const PR_LIST_TTL_MS = 30_000;
+const prListSettled = new Map<string, { value: PrSummary[]; at: number; signature: string | null; stale?: boolean }>();
+/**
+ * Bumped by `invalidatePrListCache`. A read started before a PR event neither
+ * answers a read started after it nor writes its older list back.
+ */
+const prListGeneration = new Map<string, number>();
+
+/**
+ * The settled list's scope. A pin names its machine; an unpinned read goes to
+ * the machine this window's tab is bound to, so the binding is part of the key
+ * (the same root on two machines is two databases).
+ */
+function prListKey(options?: PrListCacheOptions): string {
+  if (options?.pin?.key) return projectKey(null, options.pin);
+  return JSON.stringify([projectKey(options?.projectRoot), options?.bindingKey ?? null]);
+}
+
+type PrListCacheOptions = {
+  projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
+  /** The window's `projectBinding.key`, for an unpinned read. */
+  bindingKey?: string | null;
+};
+const prListRevalidateInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
+
+function isConditionalPrListReply(value: unknown): value is PrListConditionalReply {
+  return Boolean(value)
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof (value as { signature?: unknown }).signature === "string";
+}
+
+/**
+ * One read of the list that can come back "unchanged". A machine's brain that
+ * knows `conditional` answers with a signature (and nothing else when it
+ * matches the one held); an older one, the web client and the local IPC path
+ * answer with the bare list, which is always taken whole.
+ */
+function readPrListConditional(
+  key: string,
+  held: { value: PrSummary[]; signature: string | null } | undefined,
+  pin: OpenProjectBinding | null,
+): Promise<PrSummary[]> {
+  const prs = window.ade.prs;
+  const listAllConditional = prs.listAllConditional;
+  const generation = prListGeneration.get(key) ?? 0;
+  const flightKey = `${generation}:${key}`;
+  if (typeof listAllConditional !== "function") {
+    return coalesceInFlight(prListInFlight, flightKey, () => prs.listAll(pin));
+  }
+  const settle = (value: PrSummary[], signature: string | null) => {
+    if ((prListGeneration.get(key) ?? 0) !== generation) return;
+    prListSettled.set(key, { value, at: Date.now(), signature });
+  };
+  return coalesceInFlight(prListRevalidateInFlight, flightKey, async () => {
+    const reply = await listAllConditional(held?.signature ?? null, pin);
+    if (Array.isArray(reply)) {
+      settle(reply, null);
+      return reply;
+    }
+    if (!isConditionalPrListReply(reply)) throw new Error("Unexpected PR list reply.");
+    if (reply.notModified && held) {
+      settle(held.value, reply.signature);
+      return held.value;
+    }
+    const value = reply.prs ?? [];
+    settle(value, reply.signature);
+    return value;
+  });
+}
+
+export function listPrsCached(options?: PrListCacheOptions): Promise<PrSummary[]> {
+  const key = prListKey(options);
+  const settled = prListSettled.get(key);
+  if (settled && !settled.stale && Date.now() - settled.at < PR_LIST_TTL_MS) return Promise.resolve(settled.value);
+  // Past its time (or dropped by a PR event): ask whether it changed. An
+  // unchanged list costs a signature, not the whole list again.
+  return readPrListConditional(key, settled, options?.pin ?? null);
+}
+
+export function invalidatePrListCache(options?: PrListCacheOptions): void {
+  // Keep the list and its signature for the conditional re-read; only its
+  // freshness goes, and any read already under way is superseded.
+  const key = prListKey(options);
+  prListGeneration.set(key, (prListGeneration.get(key) ?? 0) + 1);
+  const entry = prListSettled.get(key);
+  if (entry) entry.stale = true;
+}
+
 export function getGitHubSnapshotCoalesced(
   args: {
     force?: boolean;
@@ -82,20 +197,49 @@ export function getGitHubSnapshotCoalesced(
      */
     automaticRefresh?: boolean;
   } = {},
-  options?: { projectRoot?: string | null },
+  options?: {
+    projectRoot?: string | null;
+    /** The window's `projectBinding.key`: the read follows it (see `snapshotReadScopeKey`). */
+    bindingKey?: string | null;
+  },
 ): Promise<GitHubPrSnapshot> {
+  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey);
+  // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
+  // answers every snapshot read with the same refusal, and every PR event
+  // here used to ask it again over the relay. Remember that answer briefly;
+  // a forced read (a person asking) always goes through.
+  const remembered = githubSnapshotAuthRefusals.get(scopeKey);
+  if (!args.force && remembered && Date.now() - remembered.at < GITHUB_SNAPSHOT_AUTH_REFUSAL_TTL_MS) {
+    return Promise.reject(remembered.error);
+  }
   return coalesceInFlight(
     githubSnapshotInFlight,
     JSON.stringify({
-      projectRoot: projectKey(options?.projectRoot),
+      scope: scopeKey,
       force: args.force === true,
       automaticRefresh: args.automaticRefresh === true,
       includeExternalClosed: args.includeExternalClosed === true,
       historyPageLimit: args.historyPageLimit ?? null,
     }),
-    () => window.ade.prs.getGitHubSnapshot(args),
+    () => window.ade.prs.getGitHubSnapshot(args).then(
+      (snapshot) => {
+        githubSnapshotAuthRefusals.delete(scopeKey);
+        return snapshot;
+      },
+      (error: unknown) => {
+        if (GITHUB_SNAPSHOT_AUTH_REFUSAL.test(error instanceof Error ? error.message : String(error))) {
+          githubSnapshotAuthRefusals.set(scopeKey, { at: Date.now(), error });
+        }
+        throw error;
+      },
+    ),
   );
 }
+
+const GITHUB_SNAPSHOT_AUTH_REFUSAL_TTL_MS = 60_000;
+/** The prService sentences for "this machine has no usable GitHub credential". */
+const GITHUB_SNAPSHOT_AUTH_REFUSAL = /GitHub auth missing|GitHub token could not be decrypted|GitHub auth is invalid/i;
+const githubSnapshotAuthRefusals = new Map<string, { at: number; error: unknown }>();
 
 export function refreshPrsCoalesced(
   args: { prId?: string; prIds?: string[] } = {},
@@ -157,6 +301,8 @@ export function refreshLinkedPrCoalesced(
 
 export function warmPrSurfaceCoalesced(options?: {
   projectRoot?: string | null;
+  /** The window's `projectBinding.key`, as for `getGitHubSnapshotCoalesced`. */
+  bindingKey?: string | null;
   includeGithubSnapshot?: boolean;
   forceGithubSnapshot?: boolean;
 }): Promise<void> {
@@ -165,6 +311,7 @@ export function warmPrSurfaceCoalesced(options?: {
     prSurfaceWarmInFlight,
     JSON.stringify({
       projectRoot: rootKey,
+      bindingKey: options?.bindingKey ?? null,
       includeGithubSnapshot: options?.includeGithubSnapshot !== false,
       forceGithubSnapshot: options?.forceGithubSnapshot === true,
     }),
@@ -176,7 +323,7 @@ export function warmPrSurfaceCoalesced(options?: {
         tasks.push(
           getGitHubSnapshotCoalesced(
             { force: options?.forceGithubSnapshot === true },
-            { projectRoot: options?.projectRoot },
+            { projectRoot: options?.projectRoot, bindingKey: options?.bindingKey },
           ).catch(() => null),
         );
       }
@@ -214,6 +361,9 @@ export function requestMachinePrReconcile(
 
 export function clearPrReadInFlightForTest(): void {
   prListInFlight.clear();
+  prListSettled.clear();
+  prListRevalidateInFlight.clear();
+  prListGeneration.clear();
   githubSnapshotInFlight.clear();
   prRefreshInFlight.clear();
   prSurfaceWarmInFlight.clear();

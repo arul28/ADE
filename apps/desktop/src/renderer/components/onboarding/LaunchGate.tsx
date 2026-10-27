@@ -5,7 +5,8 @@ import { GateBackdrop } from "./GateBackdrop";
 import { WebSignInGate } from "./WebSignInGate";
 import { accountGateMode, accountSessionState, useAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { showFirstRunProjects, type FirstRunResult } from "./FirstRunFlow";
+import type { FirstRunResult } from "./FirstRunFlow";
+import { showFirstRunProjects } from "./firstRunActions";
 import { FirstRunStep, useFirstRunSteps, type FirstRunPhase, type FirstRunStepId } from "./FirstRunSteps";
 import "./launchGateGlass.css";
 

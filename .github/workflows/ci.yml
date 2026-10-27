@@ -557,6 +557,74 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # The Linux lane-screen helper (Rust). Nothing else builds or tests it at PR
+  # time, so a PR that touches it gets one build and a ping smoke test; every
+  # other PR skips the work in seconds. It runs beside the long test jobs,
+  # never ahead of them. main always builds it, which keeps the cargo cache
+  # the release's background build restores warm.
+  linux-desktop-driver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether the helper changed
+        id: gate
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD || true)
+          if printf '%s\n' "$changed" | grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No Linux desktop driver changes in this PR; skipping its build."
+          fi
+
+      - name: Restore cargo cache
+        if: steps.gate.outputs.run == 'true'
+        id: cargo_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: linux-desktop-driver-cargo-v1-${{ runner.arch }}-${{ hashFiles('apps/desktop/native/ADEDesktopDriverLinux/Cargo.lock') }}
+          restore-keys: linux-desktop-driver-cargo-v1-${{ runner.arch }}-
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: 22
+
+      - name: Build and smoke test
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          node apps/desktop/scripts/build-linux-desktop-driver.mjs --target linux-x64
+          # Input held open a moment: the helper exits when its stdin closes.
+          reply=$( (printf '{"id":"1","op":"ping"}\n'; sleep 3) \
+            | timeout 20 apps/desktop/resources/native/linux-x64/ade-desktop-driver host --ade-home "$RUNNER_TEMP/ade-home")
+          echo "$reply"
+          grep -q '"linux"' <<< "$reply"
+
+      - name: Save cargo cache
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: linux-desktop-driver-cargo-v1-${{ runner.arch }}-${{ hashFiles('apps/desktop/native/ADEDesktopDriverLinux/Cargo.lock') }}
+
   # Native Windows source gate for the filesystem, process, IPC, SQLite, and
   # capability contracts that Linux-hosted unit jobs cannot exercise.
   #
@@ -941,6 +1009,7 @@ jobs:
       - test-account-directory
       - build
       - build-runtime-binaries
+      - linux-desktop-driver
       - windows-foundation
       - test-ios
       - validate-docs

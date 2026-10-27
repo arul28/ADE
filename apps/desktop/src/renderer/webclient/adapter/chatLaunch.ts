@@ -17,18 +17,21 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
  */
 export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"chatLaunch"> {
   const { client, commands, events } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
 
   function guardPin(operation: string, pin: RuntimePinArg): void {
     assertWebRuntimePinRoutable(`chatLaunch.${operation}`, pin, infra);
   }
 
   function call<T>(action: string, args: unknown, idempotent: boolean): Promise<T> {
-    return commands.call<T>(action, asRecord(args), {
-      fallback: () => {
-        throw new Error(`New-lane launch action '${action}' is unavailable on the connected ADE host.`);
-      },
-      idempotent,
-    });
+    const unavailable = () => {
+      throw new Error(`New-lane launch action '${action}' is unavailable on the connected ADE host.`);
+    };
+    return idempotent
+      ? commands.call<T>(action, asRecord(args), { fallback: unavailable })
+      : commands.call<T>(action, asRecord(args), mutation);
   }
 
   return {

@@ -19,15 +19,18 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
 /** Jira calls use the selected host's machine credential through sync commands. */
 export function createJiraNamespace(infra: AdapterInfra): AdeNamespace<"jira"> {
   const { commands } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
 
   function call<T>(action: string, args: Record<string, unknown>, pin: RuntimePinArg, idempotent: boolean): Promise<T> {
     assertWebRuntimePinRoutable(`jira.${action}`, pin, infra);
-    return commands.call<T>(`jira.${action}`, args, {
-      fallback: () => {
-        throw new Error(`Jira action '${action}' is unavailable on the connected ADE host.`);
-      },
-      idempotent,
-    });
+    const fallback = () => {
+      throw new Error(`Jira action '${action}' is unavailable on the connected ADE host.`);
+    };
+    return idempotent
+      ? commands.call<T>(`jira.${action}`, args, { fallback })
+      : commands.call<T>(`jira.${action}`, args, mutation);
   }
 
   return {

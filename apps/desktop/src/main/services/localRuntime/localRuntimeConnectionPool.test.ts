@@ -2514,14 +2514,14 @@ describe("local runtime connection pool", () => {
     expect(createConnection).toHaveBeenCalledTimes(2);
     expect(firstClient.call).toHaveBeenCalledWith(
       "projects.add",
-      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto", withoutIcon: true },
       { timeoutMs: 120_000 },
     );
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
-      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto", withoutIcon: true },
       { timeoutMs: 120_000 },
     );
     expect(secondClient.call).toHaveBeenNthCalledWith(
@@ -2676,7 +2676,7 @@ describe("local runtime connection pool", () => {
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith(
       "projects.add",
-      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto", withoutIcon: true },
       { timeoutMs: 120_000 },
     );
     expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
@@ -4866,7 +4866,7 @@ setInterval(() => {}, 1000);
     expect(call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
-      { rootPath, catalogVisibility: "recent", registrationSource: "desktop" },
+      { rootPath, catalogVisibility: "recent", registrationSource: "desktop", withoutIcon: true },
       { timeoutMs: expect.any(Number) },
     );
     expect(call).toHaveBeenNthCalledWith(
@@ -4881,7 +4881,7 @@ setInterval(() => {}, 1000);
     );
     expect(call).not.toHaveBeenCalledWith(
       "projects.add",
-      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto", withoutIcon: true },
       expect.anything(),
     );
     expect(call).not.toHaveBeenCalledWith("sync.switchHost", expect.anything());

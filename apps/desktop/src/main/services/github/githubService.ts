@@ -33,6 +33,7 @@ import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghC
 import { createExpiringPromiseCache } from "../../../shared/expiringPromiseCache";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
+  GITHUB_STATUS_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -70,6 +71,7 @@ import {
   type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
 import { readGitTransportStatus, runGitWithGithubAuthFallback, setGitTransportTokenReader } from "../git/gitTransportAuth";
+import { acquireGithubRequestSlot } from "./githubRequestGate";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -455,6 +457,9 @@ async function fetchGitHub(
   init: RequestInit,
   accounting?: GithubRequestAccountingContext,
 ): Promise<Response> {
+  // Waiting for a slot happens before the timeout starts: the timeout is for
+  // GitHub's answer, not for ADE's own queue.
+  const releaseSlot = await acquireGithubRequestSlot(init.signal);
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const onUpstreamAbort = (): void => controller.abort(upstreamSignal?.reason);
@@ -496,6 +501,7 @@ async function fetchGitHub(
     throw error;
   } finally {
     clearTimeout(timer);
+    releaseSlot();
   }
 }
 
@@ -1867,7 +1873,7 @@ export function createGithubService({
     }
 
     const now = Date.now();
-    if (cachedStatus && now - cachedAt < 30_000 && cachedStatus.tokenStored) {
+    if (cachedStatus && now - cachedAt < GITHUB_STATUS_CACHE_TTL_MS && cachedStatus.tokenStored) {
       const repoChanged =
         (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
         (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
@@ -2688,6 +2694,24 @@ export function createGithubService({
         tokensToClear: [previousToken, currentToken],
         clearGhCaches: true,
       });
+    },
+
+    /**
+     * A non-secret identity of the effective read credential: the credential
+     * revision plus a digest of the token a media resolve would use. A signed
+     * media URL belongs to the account that asked for it, so a PAT or App
+     * change (the revision) and a `gh auth switch` (the digest) both move it.
+     */
+    async getCredentialRevision(): Promise<string> {
+      const revision = sharedGhAuth.credentialInventoryRevision;
+      try {
+        // The same cooldown-aware selection `getReadTokenOrThrowAsync` uses, so
+        // the identity names the credential that actually minted the URL.
+        const token = (await readAuthToken("read")).token ?? "";
+        return `${revision}:${token ? githubCredentialTokenDigest(token) : "none"}`;
+      } catch {
+        return `${revision}:unknown`;
+      }
     },
 
     clearToken(): void {

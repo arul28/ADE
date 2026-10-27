@@ -2,15 +2,21 @@ import { memo } from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
+import { isImeComposing } from "../../../lib/imeComposition";
 
 export type GitHubPrSearchInputProps = {
   value: string;
   onChange: (value: string) => void;
+  /** Enter, outside IME composition (reads a last `label:x` still being typed). */
+  onSubmit?: () => void;
+  placeholder?: string;
 };
 
 export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
   value,
   onChange,
+  onSubmit,
+  placeholder = "Search pull requests",
 }: GitHubPrSearchInputProps) {
   return (
     <div
@@ -32,7 +38,14 @@ export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
         type="text"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="Search pull requests"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && onSubmit && !isImeComposing(event)) {
+            event.preventDefault();
+            onSubmit();
+          }
+        }}
+        placeholder={placeholder}
+        aria-label="Search pull requests"
         style={{
           flex: 1,
           minWidth: 0,

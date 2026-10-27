@@ -140,7 +140,8 @@ import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
 import { WorktreeBadge } from "../projects/WorktreeBadge";
-import { ReadmeMarkdown } from "./ReadmeMarkdown";
+// Markdown loads with the first project detail that has a readme.
+const ReadmeMarkdown = React.lazy(() => import("./ReadmeMarkdown").then((module) => ({ default: module.ReadmeMarkdown })));
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import {
   availableSettingsEntries,
@@ -261,6 +262,8 @@ function anchorSessionHit(sessionId: string, deepLink: string | null | undefined
     });
   }
 }
+
+const NO_COMMANDS: Command[] = [];
 
 export function CommandPalette({
   open,
@@ -663,6 +666,9 @@ export function CommandPalette({
   );
 
   const commands: Command[] = useMemo(() => {
+    // The palette is mounted for the life of the window; while it is closed
+    // nothing reads the list, so a lane or selection change does not rebuild it.
+    if (!open) return NO_COMMANDS;
     const next: Command[] = [
       {
         id: "project-browse",
@@ -1034,6 +1040,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    open,
     activeSessionTarget,
     hasActiveProject,
     lanes,
@@ -3345,7 +3352,7 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg)]">
             Readme
           </div>
-          <ReadmeMarkdown content={detail.readmeExcerpt} />
+          <React.Suspense fallback={null}><ReadmeMarkdown content={detail.readmeExcerpt} /></React.Suspense>
         </div>
       )}
 

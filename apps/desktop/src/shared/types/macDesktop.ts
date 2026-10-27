@@ -142,11 +142,15 @@ export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
   "A Mac Desktop display is only available on a macOS runtime host.";
 
 /**
- * What a Linux host says instead. Neither seat exists there: it is not a
- * wrong-OS mistake to correct, just not built yet.
+ * What a Linux host says when its brain has no Linux seat adapter (an older
+ * runtime, or a service built without one).
  */
 export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
-  "Lane screens are not supported on Linux yet. Use ade browser for web pages and ade app-control for Electron apps.";
+  "This ADE runtime has no Linux lane screen. Update ADE on this machine.";
+
+/** The one sentence every non-Linux rejection of the Linux seat carries. */
+export const LINUX_DESKTOP_LINUX_ONLY_MESSAGE =
+  "A Linux Desktop screen is only available on a Linux runtime host.";
 
 /** The one sentence every non-Windows rejection carries. */
 export const WINDOWS_DESKTOP_WINDOWS_ONLY_MESSAGE =
@@ -1068,6 +1072,8 @@ export type MacDesktopStatus = {
    * read it; the Windows cards are the only readers.
    */
   windowsDesktop?: WindowsDesktopStatus | null;
+  /** Linux only: missing system packages and the command that installs them. */
+  linuxDesktop?: LinuxDesktopHostFacts | null;
   /**
    * What an agent needs to read first: which product and seat this is, whether
    * real input needs the lease, and the exact next command when something
@@ -1107,7 +1113,7 @@ export type DesktopSeatSummary = {
  * Which kind of lane screen a host and display describe: a Mac virtual display,
  * the private Windows child session, or the user's shared Windows desktop.
  */
-export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared";
+export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared" | "linux";
 
 // The seat logic (`describeDesktopSeat`, `desktopSeatKind`, the product name,
 // the seat sentences and the next-step table) lives in `../desktopSeat`, and is
@@ -1116,6 +1122,8 @@ export {
   WINDOWS_DESKTOP_NEXT_STEP,
   WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION,
   WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION,
+  LINUX_DESKTOP_SEAT_DESCRIPTION,
+  LINUX_DESKTOP_SETUP_USER_STEP,
   describeDesktopSeat,
   desktopProductName,
   desktopSeatKind,
@@ -1411,7 +1419,61 @@ export function reduceMacDesktopNotParked(
 export type DesktopSeatProviderId =
   | "mac-virtual-display"
   | "windows-child-session"
-  | "windows-shared-desktop";
+  | "windows-shared-desktop"
+  | "linux-xvfb";
+
+/**
+ * The helper's name for an installed ffmpeg whose build has no H.264 encoder.
+ *
+ * It is a requirement name, never a package: no distribution ships an
+ * `ffmpeg-encoder` to install, so every surface that lists installable names
+ * or builds the install command must filter it out and explain it in words.
+ * The native helper mints it (see `native/ADEDesktopDriverLinux/src/main.rs`,
+ * `linux.ping`), so this constant and that string must stay equal.
+ */
+export const LINUX_DESKTOP_ENCODER_REQUIREMENT = "ffmpeg-encoder";
+
+/**
+ * What a Linux host's helper reports about the machine: which of the system
+ * packages a lane screen needs are missing, and which H.264 encoder its ffmpeg
+ * offers.
+ *
+ * `readLinuxHostFacts` answers null on every other host and for a reply from a
+ * helper that predates it. The install command is derived from this report
+ * where the status is built, so the parser that reads the helper's reply has
+ * no dependency on package management.
+ */
+export type LinuxDesktopHostReport = {
+  /**
+   * The helper's names: `xvfb`, `openbox`, `dbus`, `at-spi2-core`, `ffmpeg`,
+   * and `ffmpeg-encoder` when ffmpeg itself is installed but its build has no
+   * H.264 encoder. The last one is not installable by re-running the package
+   * install, so `installCommand` is null when it is the only name present.
+   */
+  missing: string[];
+  /** `x264` or `openh264`: the H.264 encoder the system ffmpeg offers. */
+  encoder: string | null;
+};
+
+/**
+ * The `linuxDesktop` field of a status: {@link LinuxDesktopHostReport} plus the
+ * one command that installs what is missing.
+ */
+export type LinuxDesktopHostFacts = LinuxDesktopHostReport & {
+  /** The shell command that installs what is missing, or null. */
+  installCommand: string | null;
+};
+
+/** `ade screen setup` on a Linux host. */
+export type LinuxDesktopSetupResult = {
+  installed: boolean;
+  alreadyInstalled: boolean;
+  /** The install command, for the user to run when ADE cannot. */
+  command: string | null;
+  /** True when only the user can finish it (sudo needs a password, no root). */
+  needsUser: boolean;
+  message: string;
+};
 
 /** Which Windows seat a lane asked for. */
 export type WindowsDesktopSeatMode = "private" | "shared";
@@ -1533,10 +1595,43 @@ export type WindowsDesktopSetupArgs = {
   forgetPassword?: boolean;
 };
 
+/**
+ * `ade screen setup`: one verb on every seat host.
+ *
+ * `allowPrompt` is the one argument every host reads; a Linux host ignores the
+ * password fields, which belong to the Windows wizard (and its saved
+ * credential).
+ */
+export type DesktopSetupArgs = {
+  /**
+   * Passed true after approval from a trusted CTO client on any device.
+   * The helper refuses Windows admin/Remote Desktop changes otherwise;
+   * native UAC and password entry still occur on the Windows host.
+   */
+  allowPrompt: boolean;
+  /** Windows only: opens a native password dialog and verifies a private sign-in before saving. */
+  savePassword?: boolean;
+  /** Windows only: removes only ADE's saved Windows Desktop credential. */
+  forgetPassword?: boolean;
+};
+
+/**
+ * What `ade screen setup` answers, whichever seat the host runs.
+ *
+ * Every arm carries `needsUser` and `message`, so a surface prints one
+ * sentence and says whether the user still has a step without first asking
+ * which host it is talking to. The rest of each arm stays platform-specific.
+ */
+export type DesktopSetupResult = WindowsDesktopSetupResult | LinuxDesktopSetupResult;
+
 export type WindowsDesktopSetupResult = {
   /** Setup needs an interactive admin prompt the helper has not raised yet. */
   requiresAdmin: boolean;
   status: WindowsDesktopStatus;
+  /** True when only the user can finish the step (the admin prompt). */
+  needsUser: boolean;
+  /** One sentence saying what happened, for a surface that does not know the host. */
+  message: string;
 };
 
 /**
@@ -1693,8 +1788,9 @@ export type DesktopSeatProvider = {
   /** Windows only: the wizard's one admin step, prompt honored only on approval. */
   setupWindows?(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
   /**
-   * Windows only: `window.focus` / `window.minimize` / `window.close` on one of
-   * the lane's windows. Absent on the Mac backend, whose helper has no such op.
+   * Windows and Linux: `window.focus` / `window.minimize` / `window.close` on
+   * one of the lane's windows. Absent on the Mac backend, whose helper has no
+   * such op.
    */
   windowAction?(args: { laneId: string; windowId: number; action: MacDesktopWindowAction }): Promise<DesktopSeatReply>;
 };
@@ -1858,6 +1954,20 @@ export type MacDesktopServiceApi = {
    */
   setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult>;
   /**
+   * Linux only: installs the system packages a lane screen needs (Xvfb, a
+   * window manager, D-Bus, AT-SPI, ffmpeg) when the machine allows it without
+   * a password, or answers with the command for the user to run. Rejects on
+   * any other host.
+   */
+  setupLinuxDesktop(args: { allowPrompt: boolean }): Promise<LinuxDesktopSetupResult>;
+  /**
+   * `ade screen setup`: one verb on every seat host. Windows runs the wizard's
+   * admin step; Linux installs the lane screen's system packages. Dispatches on
+   * the seat the host serves, without a status read. A Mac host refuses with
+   * `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+   */
+  setupDesktop(args: DesktopSetupArgs): Promise<DesktopSetupResult>;
+  /**
    * Windows only: the user approved taking the private screen from whichever
    * lane holds it. Signs the old holder out (a clean slate) and starts a fresh
    * private seat for this lane. Never called by an agent's own action.
@@ -1874,8 +1984,8 @@ export type MacDesktopServiceApi = {
   /** Quits apps the lane opened, released ones included. Only on the user's request. */
   quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult>;
   /**
-   * Windows only: raise, minimize or close one of this lane's own windows.
-   * A Mac host refuses with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+   * Windows and Linux: raise, minimize or close one of this lane's own
+   * windows. A Mac host refuses with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
    */
   focusWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;
   minimizeWindow(args: MacDesktopWindowActionArgs): Promise<MacDesktopWindowActionResult>;

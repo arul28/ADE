@@ -22,6 +22,8 @@ export type ChatFindSourceSnapshot = {
 };
 
 export type ChatFindSource = {
+  /** Find is open: page the rest of the chat in, so every match can be counted. */
+  requestCompleteHistory?: () => void;
   get: () => ChatFindSourceSnapshot;
   subscribe: (listener: () => void) => () => void;
 };

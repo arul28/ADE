@@ -106,6 +106,8 @@ describe("bootstrapPairedRuntime", () => {
   beforeEach(() => {
     initializeMock.mockReset();
     callMock.mockReset();
+    // Like the real client: every call returns a promise.
+    callMock.mockImplementation(async () => undefined);
     closeMock.mockReset();
     createForwardClientMock.mockClear();
   });

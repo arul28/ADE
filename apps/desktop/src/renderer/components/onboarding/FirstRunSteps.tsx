@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { markOnboardingStarted, skipOnboarding } from "../../onboarding/onboardingProgress";
-import { FirstRunAgents } from "./FirstRunAgents";
-import { FirstRunProjects, FirstRunWelcome, type FirstRunResult } from "./FirstRunFlow";
+import type { FirstRunResult } from "./FirstRunFlow";
+
+// The step screens load when setup runs, not with every launch.
+const FirstRunAgents = lazy(() => import("./FirstRunAgents").then((module) => ({ default: module.FirstRunAgents })));
+const FirstRunProjects = lazy(() => import("./FirstRunFlow").then((module) => ({ default: module.FirstRunProjects })));
+const FirstRunWelcome = lazy(() => import("./FirstRunFlow").then((module) => ({ default: module.FirstRunWelcome })));
 
 /**
  * The first-run step machine both hosts run: the launch gate on a fresh
@@ -97,12 +101,14 @@ export function useFirstRunSteps({
 export function FirstRunStep({ step, steps }: { step: FirstRunStepId; steps: FirstRunSteps }) {
   return (
     <div className="ade-gate-stack" data-step={step}>
+      <Suspense fallback={null}>
       {step === "welcome" ? <FirstRunWelcome onStart={steps.start} onSkip={steps.skip} /> : null}
       {step === "agents" ? <FirstRunAgents onDone={steps.agentsDone} /> : null}
       {/* Skipping the projects only skips adding them; the tour still follows. */}
       {step === "projects" ? (
         <FirstRunProjects onDone={steps.finish} onSkip={() => steps.finish({ rootPaths: [] })} />
       ) : null}
+      </Suspense>
     </div>
   );
 }

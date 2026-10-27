@@ -33,6 +33,7 @@ import type {
   MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
   MacDesktopPressArgs,
+  MacDesktopRecordingStatus,
   MacDesktopScrollArgs,
   MacDesktopStatus,
   MacDesktopTypeArgs,
@@ -1008,6 +1009,12 @@ export type SyncFeatureFlags = {
    */
   roster?: {
     enabled: boolean;
+    /**
+     * The host answers `roster_chats_request` (older chats of a project, by
+     * page or by id). Sent only by hosts that cut the roster to its head rows
+     * for clients that declare `SYNC_ROSTER_CHAT_PAGES_CAPABILITY`.
+     */
+    chatPages?: boolean;
   };
   /**
    * The host honors `peer.syncRole: "roster"` on hello (see SyncPeerMetadata):
@@ -1045,10 +1052,45 @@ export type SyncFeatureFlags = {
     enabled: true;
     pinDigits: 6;
   };
+  /**
+   * The host runs a hello's `pipelined` requests. `accepted` is how many of
+   * this hello's requests it took (all of them, or 0 when the list was
+   * invalid); the client sends any it did not take itself.
+   */
+  pipelinedHello?: {
+    enabled: true;
+    maxEnvelopes: number;
+    accepted: number;
+  };
   commandRouting: {
     mode: "allowlisted";
     supportedActions: string[];
+    /**
+     * The command descriptors. Empty when `actionsUnchanged` is true: the
+     * client's hello named this exact list by `commandRoutingDigest`, so it
+     * keeps the copy it saved.
+     */
     actions: SyncRemoteCommandDescriptor[];
+    /**
+     * Content digest of the full `actions` list. A client that saves the list
+     * sends it back as `commandRoutingDigest` in its next hello. Older hosts
+     * omit it.
+     */
+    actionsDigest?: string;
+    /**
+     * `actions` was left out because the client already holds that list.
+     * `supportedActions` and `mobileCompatibility.requiredActions` are then
+     * empty too: only a client that saves the descriptors sends the digest,
+     * and it derives both from them.
+     */
+    actionsUnchanged?: true;
+    /**
+     * The descriptors grouped by scope and policy, sent instead of `actions`
+     * and `supportedActions` (both then empty) to a client that declared
+     * `SYNC_COMMAND_ROUTING_GROUPS_CAPABILITY`. `actionsDigest` still names the
+     * full `actions` list.
+     */
+    actionGroups?: SyncCommandRoutingActionGroup[];
   };
   /**
    * Additive host/mobile product contract. Older hosts omit this field; clients
@@ -1068,7 +1110,40 @@ export type SyncHelloPayload = {
   auth?: SyncHelloAuth;
   /** Ordered application-layer codecs this client can encode and decode. */
   compression?: SyncApplicationCompressionCodec[];
+  /**
+   * `commandRouting.actionsDigest` of the descriptor list this client saved
+   * from an earlier hello_ok. When it still matches, the host sends
+   * `actionsUnchanged` and an empty list instead of the list again. Older
+   * hosts ignore it and always send the list.
+   */
+  commandRoutingDigest?: string;
+  /**
+   * Requests to run right after this hello is accepted, as if they had
+   * arrived on the wire behind it (lanes, work sessions, the open chat's
+   * resume). Their answers follow hello_ok with the given request ids, so a
+   * reconnect costs one round trip instead of three. A host that runs them
+   * says so in `features.pipelinedHello.accepted`; an older host ignores the
+   * field and the client sends them itself after hello_ok.
+   */
+  pipelined?: SyncPipelinedHelloEnvelope[];
+  /**
+   * `projectCatalogDigest` of the catalog this client got in an earlier
+   * hello_ok. When it still matches, hello_ok carries `projects: []` with
+   * `projectCatalogUnchanged: true`. Older hosts ignore it.
+   */
+  projectCatalogDigest?: string;
 };
+
+/** One request carried in `hello.pipelined`. */
+export type SyncPipelinedHelloEnvelope = {
+  type: "command" | "chat_subscribe" | "roster_subscribe" | "project_catalog_request";
+  requestId?: string | null;
+  projectId?: string | null;
+  payload: Record<string, unknown>;
+};
+
+/** Most requests one hello may carry in `pipelined`. */
+export const SYNC_PIPELINED_HELLO_MAX_ENVELOPES = 8;
 
 export type SyncMobileProjectSummary = {
   id: string;
@@ -1231,12 +1306,83 @@ export type SyncRosterProject = {
   attentionCount: number;
   lanes: SyncRosterLane[];
   chats: SyncRosterChat[];
+  /**
+   * How many chats this project has on the host (the rows a full roster would
+   * carry). Sent only to a client that declared
+   * `SYNC_ROSTER_CHAT_PAGES_CAPABILITY`: its `chats` are the head rows (every
+   * live, waiting, failed or pinned chat, the most recent others, and their
+   * parents), and `roster_chats_request` returns the rest. `runningCount` and
+   * `attentionCount` always count every chat.
+   */
+  chatTotal?: number;
 };
 
 /** Full roster snapshot — sent on subscribe and on resync. */
 export type SyncRosterSnapshotPayload = {
   seq: number;
   projects: SyncRosterProject[];
+  /**
+   * Only the chats a first screen needs (live, waiting, pinned and the most
+   * recent ones; project counts stay exact). The rest follows as an ordinary
+   * `roster_delta` a few seconds later. Sent only to a client that declared
+   * `SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY`.
+   */
+  partial?: true;
+};
+
+/** One (scope, policy) of `commandRouting.actionGroups` and its action names. */
+export type SyncCommandRoutingActionGroup = {
+  scope?: SyncRemoteCommandDescriptor["scope"];
+  policy: SyncRemoteCommandDescriptor["policy"];
+  actions: string[];
+};
+
+/**
+ * Hello capability: the client reads `commandRouting.actionGroups` and derives
+ * the descriptor list and the supported actions from it.
+ */
+export const SYNC_COMMAND_ROUTING_GROUPS_CAPABILITY = "commandRoutingGroupsV1";
+
+/** Hello capability: the client accepts a `partial` first roster snapshot. */
+export const SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY = "rosterPrioritySnapshotV1";
+
+/**
+ * Hello capability: the client takes a roster cut to each project's head rows
+ * (with `chatTotal`) and asks for older chats with `roster_chats_request`
+ * when the user scrolls, searches or filters, or opens a chat by id.
+ */
+export const SYNC_ROSTER_CHAT_PAGES_CAPABILITY = "rosterChatPagesV1";
+
+/** Older chats per `roster_chats_request` page, by default and at most. */
+export const SYNC_ROSTER_CHAT_PAGE_DEFAULT = 100;
+export const SYNC_ROSTER_CHAT_PAGE_MAX = 500;
+
+/**
+ * `roster_chats_request`: chats of one project that the head rows leave out.
+ * With `ids`, those chats (any of them, head rows included). Otherwise the
+ * next page, most recent first, after the `before` cursor (the last row of the
+ * previous page) or from the start.
+ */
+export type SyncRosterChatsRequestPayload = {
+  projectId: string;
+  before?: { lastActivityAt: string | null; id: string } | null;
+  ids?: string[];
+  limit?: number;
+};
+
+/** `roster_chats`: the answer, with the request's id. */
+export type SyncRosterChatsPayload = {
+  projectId: string;
+  chats: SyncRosterChat[];
+  /** More rows follow this page (always false for an `ids` request). */
+  hasMore: boolean;
+  /**
+   * The `before` of the next page, when `hasMore`. The page's own last row: a
+   * page also carries parents of its rows, which are not in page order.
+   */
+  next?: { lastActivityAt: string | null; id: string } | null;
+  /** `chatTotal` of the project when this page was read; 0 for an unknown project. */
+  total: number;
 };
 
 /**
@@ -1248,6 +1394,40 @@ export type SyncRosterDeltaPayload = {
   seq: number;
   changed?: SyncRosterProject[];
   removed?: string[];
+  /**
+   * Per-chat updates to projects the client already holds. Sent only to a
+   * client whose hello declared `SYNC_ROSTER_CHAT_DELTA_CAPABILITY`; every
+   * other client gets the whole project in `changed`. Apply in this order:
+   * replace the head fields if `head` is present, upsert `chats` by id
+   * (replacing the whole row), drop `removedChatIds`, then reorder the chats
+   * by `order` when it is present (otherwise the order is unchanged and any
+   * upserted chat keeps its place). A patch for a project the client does not
+   * hold, or an `order` naming a chat it lacks, means the client must ask for
+   * a fresh snapshot.
+   */
+  patched?: SyncRosterProjectPatch[];
+};
+
+/**
+ * Hello capability: the client takes several changeset batches in flight.
+ * It applies and acks them in order, and after a failed apply it rejects
+ * (acks with `ok: false`) every later batch until one starts at or before its
+ * applied cursor, the host's resend. Without it the host keeps one batch in
+ * flight.
+ */
+export const SYNC_CHANGESET_ACK_WINDOW_CAPABILITY = "changesetAckWindowV1";
+
+/** Hello capability: the client applies `roster_delta.patched`. */
+export const SYNC_ROSTER_CHAT_DELTA_CAPABILITY = "rosterChatDeltaV1";
+
+export type SyncRosterProjectPatch = {
+  projectId: string;
+  /** Every project field except `chats`, when any of them changed. */
+  head?: Omit<SyncRosterProject, "chats">;
+  chats?: SyncRosterChat[];
+  removedChatIds?: string[];
+  /** Every chat id in display order, when the order changed. */
+  order?: string[];
 };
 
 export type SyncRosterSubscribePayload = {
@@ -1476,6 +1656,18 @@ export type SyncHelloOkPayload = {
    * against one project's DB is never replayed against another's.
    */
   serverDbSiteId?: string;
+  /**
+   * Content digest of the project catalog. A client sends it back as
+   * `hello.projectCatalogDigest`; older hosts omit it. Absent when the catalog
+   * was too big for this envelope.
+   */
+  projectCatalogDigest?: string;
+  /**
+   * `projects` is empty because the client's digest matched: it keeps the
+   * catalog it holds. An empty `projects` without this flag still means "too
+   * big, request it".
+   */
+  projectCatalogUnchanged?: true;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   /**
@@ -2277,12 +2469,22 @@ export type SyncMacDesktopInputCall =
   | { kind: "drag"; args: MacDesktopDragArgs }
   | { kind: "releaseInput"; args: MacDesktopReleaseInputArgs };
 
+/** A recording's status as a sync client may read it: no host file path. */
+export type SyncMacDesktopRecordingState = Omit<MacDesktopRecordingStatus, "filePath"> & { filePath: null };
+
 /**
  * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is
  * already token-free (the stream is a summary); this only pins the recording
  * to null, because its `filePath` is host state no read-only client can use.
+ *
+ * `recordingState` is that recording without its path, for the hosted web
+ * client's full pane, whose Record button has to know whether one is running.
+ * Optional: an older host sends none, which reads as not recording.
  */
-export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
+export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & {
+  recording: null;
+  recordingState?: SyncMacDesktopRecordingState | null;
+};
 
 // ---------------------------------------------------------------------------
 // App Control live frames over the sync socket
@@ -2926,6 +3128,8 @@ export type SyncRemoteCommandAction =
   | "prs.getComments"
   | "prs.getFiles"
   | "prs.getGitHubSnapshot"
+  | "prs.listGitHubFilterOptions"
+  | "prs.searchGitHubPrs"
   | "prs.getReviewThreads"
   | "prs.getActionRuns"
   | "prs.getActivity"
@@ -2955,6 +3159,7 @@ export type SyncRemoteCommandAction =
   | "prs.getStackLinkOffer"
   | "prs.setChatWatch"
   | "prs.getChatWatches"
+  | "prs.resolveMedia"
   | "prs.linkToLane"
   | "prs.preflightCreateLaneFromPrBranch"
   | "prs.createLaneFromPrBranch"
@@ -2970,6 +3175,7 @@ export type SyncRemoteCommandAction =
   | "prs.updateTitle"
   | "prs.updateBody"
   | "prs.setLabels"
+  | "prs.setAssignees"
   | "prs.submitReview"
   | "prs.replyToReviewThread"
   | "prs.setReviewThreadResolved"
@@ -3033,6 +3239,18 @@ export type SyncRemoteCommandAction =
   | "macDesktop.returnControl"
   | "macDesktop.renewLease"
   | "macDesktop.input"
+  // The rest of the full Work-tools pane on the hosted web client: the window
+  // list and its claim / release / close, Add app, and the
+  // pane's captures. Controller-only like the takeover calls above; a host
+  // without them keeps the web client on its watch-only pane.
+  | "macDesktop.listWindows"
+  | "macDesktop.open"
+  | "macDesktop.claimWindow"
+  | "macDesktop.releaseWindow"
+  | "macDesktop.closeWindow"
+  | "macDesktop.screenshot"
+  | "macDesktop.startRecording"
+  | "macDesktop.stopRecording"
   // App Control live view. All three are read-only and viewer-allowed. Frames
   // and the end notice are pushed back on `appControl.streamFrame` /
   // `appControl.streamEnded` envelopes.
@@ -3234,6 +3452,8 @@ export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscr
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
 export type SyncRosterDeltaEnvelope = SyncEnvelopeWithPayload<"roster_delta", SyncRosterDeltaPayload>;
+export type SyncRosterChatsRequestEnvelope = SyncEnvelopeWithPayload<"roster_chats_request", SyncRosterChatsRequestPayload>;
+export type SyncRosterChatsEnvelope = SyncEnvelopeWithPayload<"roster_chats", SyncRosterChatsPayload>;
 /**
  * Brain → every peer: a new-lane launch changed (shared/types/chatLaunch.ts),
  * stamped with the host project it belongs to so multi-project clients can
@@ -3325,6 +3545,8 @@ export type SyncEnvelope =
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope
   | SyncRosterDeltaEnvelope
+  | SyncRosterChatsRequestEnvelope
+  | SyncRosterChatsEnvelope
   | SyncChatLaunchEventEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope

@@ -25,6 +25,7 @@ import type {
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
+import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../shared/githubMedia";
 import type {
   TerminalListWatchesArgs,
   TerminalUnwatchArgs,
@@ -115,6 +116,8 @@ import type {
   MacDesktopRecordingStatus,
   MacDesktopRecheckPermissionsArgs,
   MacDesktopReleaseArgs,
+  MacDesktopWindowActionArgs,
+  MacDesktopWindowActionResult,
   MacDesktopRequestPermissionArgs,
   MacDesktopScreenshotArgs,
   MacDesktopScreenshotResult,
@@ -726,6 +729,7 @@ import type {
   PrReviewThreadComment,
   PrSnapshotHydration,
   PrStatus,
+  PrListConditionalReply,
   PrSummary,
   PrWithConflicts,
   UnstackGitHubPrStackArgs,
@@ -747,6 +751,12 @@ import type {
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
+  SetPrAssigneesArgs,
+  SetPrAssigneesResult,
+  ListGitHubPrFilterOptionsArgs,
+  ListGitHubPrFilterOptionsResult,
+  SearchGitHubPrsArgs,
+  SearchGitHubPrsResult,
   RequestPrReviewersArgs,
   SubmitPrReviewArgs,
   ClosePrArgs,
@@ -3503,6 +3513,10 @@ declare global {
           args: MacDesktopReleaseArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ released: number }>;
+        closeWindow: (
+          args: MacDesktopWindowActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindowActionResult>;
         observe: (
           args: MacDesktopObserveArgs,
           pin?: OpenProjectBinding | null,
@@ -4694,6 +4708,8 @@ declare global {
         /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
         reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
         listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
+        /** See preload `listAllConditional`; optional so bridges that predate it type-check. */
+        listAllConditional?: (ifNoneMatch: string | null, pin?: OpenProjectBinding | null) => Promise<PrSummary[] | PrListConditionalReply>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (
           args?: {
@@ -4813,6 +4829,8 @@ declare global {
         /** PR Watch / Ship for one chat; `mode: null` stops it. */
         setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary | null>;
         getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary[]>;
+        /** A private repo PR attachment as a signed URL, resolved on the machine `pin` names. */
+        resolveMedia: (args: ResolvePrMediaArgs, pin?: OpenProjectBinding | null) => Promise<ResolvePrMediaResult>;
         linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,
@@ -4865,6 +4883,12 @@ declare global {
         updateTitle: (args: UpdatePrTitleArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         updateBody: (args: UpdatePrBodyArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         setLabels: (args: SetPrLabelsArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Optional: an older remote runtime cannot assign; the UI hides the editor. */
+        setAssignees?: (args: SetPrAssigneesArgs, pin?: OpenProjectBinding | null) => Promise<SetPrAssigneesResult>;
+        /** Optional: absent on older hosts; the filter pickers then show loaded rows only. */
+        listGitHubFilterOptions?: (args: ListGitHubPrFilterOptionsArgs, pin?: OpenProjectBinding | null) => Promise<ListGitHubPrFilterOptionsResult>;
+        /** Optional: absent on older hosts; filters then apply to loaded rows only. */
+        searchGitHubPrs?: (args: SearchGitHubPrsArgs, pin?: OpenProjectBinding | null) => Promise<SearchGitHubPrsResult>;
         requestReviewers: (args: RequestPrReviewersArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         submitReview: (
           args: SubmitPrReviewArgs,

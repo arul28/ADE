@@ -408,6 +408,43 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     return candidates;
   };
 
+  /** Sweep one candidate and record what was decided about it. */
+  const sweepOne = (sessionId: string): void => {
+    try {
+      const outcome = sweepSession(sessionId);
+      // Nothing was decided about this chat, so leave its mark exactly as it
+      // was: a chat another brain claimed mid-pass is examined again next
+      // pass, not retired.
+      if (!outcome) return;
+      // A chat that still has a genuinely running delegate is not finished
+      // healing: marking it swept would retire it while rows it deliberately
+      // left running still need a terminal event once that delegate stops.
+      // It gets a fresh revisit clock instead, replacing the one that just
+      // came due.
+      marks.set(
+        sessionId,
+        outcome.subagentsLeftRunning === 0
+          ? SWEPT_MARK
+          : { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS },
+      );
+    } catch (error) {
+      // A throw is a failed look, not a clean chat: back off with a revisit
+      // clock rather than retiring rows that were never examined.
+      marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
+      logger.warn("agent_chat.stale_run_reconcile_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const trimMarks = (): void => {
+    // The map keys on ids that rotate out of the newest-N scan window and are
+    // never looked at again, so it is bounded or the bookkeeping outlives the
+    // chats it describes.
+    if (marks.size > STALE_RUN_SWEEP_SESSION_SCAN_LIMIT * 4) marks.clear();
+  };
+
   const reconcileStaleRuns = (): void => {
     // A session that regained a runtime must be eligible again the next time
     // that runtime dies, so drop its "already swept" mark while it is live.
@@ -416,37 +453,42 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     for (const sessionId of sweepCandidates()) {
       if (processed >= STALE_RUN_SWEEP_SESSIONS_PER_PASS) break;
       processed += 1;
-      try {
-        const outcome = sweepSession(sessionId);
-        // Nothing was decided about this chat, so leave its mark exactly as it
-        // was: a chat another brain claimed mid-pass is examined again next
-        // pass, not retired.
-        if (!outcome) continue;
-        // A chat that still has a genuinely running delegate is not finished
-        // healing: marking it swept would retire it while rows it deliberately
-        // left running still need a terminal event once that delegate stops.
-        // It gets a fresh revisit clock instead, replacing the one that just
-        // came due.
-        marks.set(
-          sessionId,
-          outcome.subagentsLeftRunning === 0
-            ? SWEPT_MARK
-            : { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS },
-        );
-      } catch (error) {
-        // A throw is a failed look, not a clean chat: back off with a revisit
-        // clock rather than retiring rows that were never examined.
-        marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
-        logger.warn("agent_chat.stale_run_reconcile_failed", {
-          sessionId,
+      sweepOne(sessionId);
+    }
+    trimMarks();
+  };
+
+  /**
+   * The timer's pass: the same work, but the event loop runs between chats.
+   * Each chat reads its whole transcript synchronously (up to ~35 ms for an
+   * 8.7 MB one), and eight in a row held the loop ~200 ms every minute after a
+   * start. Each chat is re-checked when its turn comes (`sweepSession` asks
+   * again whether a runtime or another brain owns it).
+   */
+  let pacedPass: Promise<void> | null = null;
+  let stopped = false;
+  const reconcileStaleRunsPaced = (): void => {
+    if (pacedPass || stopped) return;
+    pacedPass = (async () => {
+      for (const id of liveRuntimeSessionIds()) marks.delete(id);
+      let processed = 0;
+      for (const sessionId of sweepCandidates()) {
+        if (processed >= STALE_RUN_SWEEP_SESSIONS_PER_PASS) break;
+        if (processed > 0) await new Promise<void>((resolve) => setImmediate(resolve));
+        if (stopped) return;
+        processed += 1;
+        sweepOne(sessionId);
+      }
+      trimMarks();
+    })()
+      .catch((error) => {
+        logger.warn("agent_chat.stale_run_sweep_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-      }
-    }
-    // The map keys on ids that rotate out of the newest-N scan window and are
-    // never looked at again, so it is bounded or the bookkeeping outlives the
-    // chats it describes.
-    if (marks.size > STALE_RUN_SWEEP_SESSION_SCAN_LIMIT * 4) marks.clear();
+      })
+      .finally(() => {
+        pacedPass = null;
+      });
   };
 
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -463,13 +505,14 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     reconcileStaleRuns,
     start: () => {
       if (timer) return;
-      timer = setInterval(reconcileStaleRuns, STALE_RUN_SWEEP_INTERVAL_MS);
+      stopped = false;
+      timer = setInterval(reconcileStaleRunsPaced, STALE_RUN_SWEEP_INTERVAL_MS);
       timer.unref?.();
       // Brain start: the first pass runs off the event loop so service
       // construction never waits on transcript reads.
       kickoff = setTimeout(() => {
         try {
-          reconcileStaleRuns();
+          reconcileStaleRunsPaced();
         } catch (error) {
           logger.warn("agent_chat.stale_run_sweep_start_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -479,6 +522,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
       kickoff.unref?.();
     },
     dispose: () => {
+      stopped = true;
       if (timer) clearInterval(timer);
       if (kickoff) clearTimeout(kickoff);
       // Cleared, not just stopped: `start()` is idempotent on `timer`, so

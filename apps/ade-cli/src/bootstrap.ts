@@ -105,6 +105,7 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
+import { createPrShellLinkWatcher } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -225,6 +226,7 @@ import {
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
+import { createLinuxDesktopSeatAdapter } from "../../desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
@@ -2111,6 +2113,11 @@ export async function createAdeRuntime(args: {
             logger: macDesktopLogger,
             adeHome: resolveMachineAdeLayout().adeDir,
           })
+          : process.platform === "linux"
+          ? createLinuxDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: resolveMachineAdeLayout().adeDir,
+          })
           : null,
         adeHome: resolveMachineAdeLayout().adeDir,
         // `ade-media` on macOS; the attached desktop's Chromium engine (over
@@ -3230,6 +3237,21 @@ export async function createAdeRuntime(args: {
       })
       : null;
     if (terminalWatchService) teardown.push(() => terminalWatchService.dispose());
+
+    // A chat's own `gh pr create` / `gh pr merge` links that PR to the chat.
+    // The lightweight no-agent chat stub exposes no event subscription; only
+    // wire the watcher when the service really can deliver events.
+    if (typeof agentChatService?.subscribeToEvents === "function") {
+      const chatForShellLinks = agentChatService;
+      const prShellLinkWatcher = createPrShellLinkWatcher({
+        logger,
+        subscribeToEvents: (callback) => chatForShellLinks.subscribeToEvents(callback),
+        linkShellPrAction: (args) => headlessLinearServices.prService.linkShellPrAction(args),
+      });
+      // Registered before the start: a throw from start() still unsubscribes.
+      teardown.push(() => prShellLinkWatcher.dispose());
+      prShellLinkWatcher.start();
+    }
 
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
     // this daemon instead of the desktop main process, so the daemon must own

@@ -129,6 +129,14 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
 
   let originCache: { key: string; at: number } | null = null;
   let fleetCache: { key: string; at: number; result: CursorCloudFleetResult } | null = null;
+  /**
+   * Each agent's latest run, with the agent's `lastModified` when it was read.
+   * Cursor's list carries no status, so every unarchived agent looks live and
+   * used to cost one run request per refresh: 57 requests every poll for a
+   * typical account. A run that has ended cannot change until the agent does,
+   * and a new run moves `lastModified`, so an ended run is reused until then.
+   */
+  const latestRunCache = new Map<string, { lastModified: number; run: Record<string, unknown> | null }>();
 
   const originMatchKey = async (): Promise<string> => {
     if (originCache && Date.now() - originCache.at < ORIGIN_CACHE_TTL_MS) {
@@ -232,12 +240,24 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     // lazily when the renderer expands them, keeping one refresh to a
     // handful of bounded calls instead of one per row.
     const runsByAgentId = new Map<string, Record<string, unknown>>();
+    const listedIds = new Set(listed.items.map((agent) => agent.agentId));
+    for (const agentId of latestRunCache.keys()) {
+      if (!listedIds.has(agentId)) latestRunCache.delete(agentId);
+    }
+    const toFetch = activeOnly.filter(({ agent }) => {
+      const cached = latestRunCache.get(agent.agentId);
+      if (!cached || agent.lastModified == null || cached.lastModified !== agent.lastModified) return true;
+      const status = normalizeRunStatus(readString(cached.run?.status));
+      if (cached.run && (status == null || status === "creating" || status === "running")) return true;
+      if (cached.run) runsByAgentId.set(agent.agentId, cached.run);
+      return false;
+    });
     let workIndex = 0;
-    const workers = Math.min(ENRICH_CONCURRENCY, Math.max(activeOnly.length, 1));
+    const workers = Math.min(ENRICH_CONCURRENCY, Math.max(toFetch.length, 1));
     await Promise.all(
       Array.from({ length: workers }, async () => {
-        while (workIndex < activeOnly.length) {
-          const current = activeOnly[workIndex++];
+        while (workIndex < toFetch.length) {
+          const current = toFetch[workIndex++];
           try {
             const result = await deps.listCursorCloudRuns({
               agentId: current.agent.agentId,
@@ -245,6 +265,12 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
             });
             const latest = result.items[0];
             if (latest) runsByAgentId.set(current.agent.agentId, latest);
+            if (current.agent.lastModified != null) {
+              latestRunCache.set(current.agent.agentId, {
+                lastModified: current.agent.lastModified,
+                run: latest ?? null,
+              });
+            }
           } catch (error) {
             logger.warn("cursor_cloud_fleet.enrich_run_failed", {
               agentId: current.agent.agentId,
@@ -321,6 +347,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
 
   const invalidateCache = (): void => {
     fleetCache = null;
+    latestRunCache.clear();
   };
 
   /**

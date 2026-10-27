@@ -4,6 +4,7 @@ import { createProjectNotesService } from "../../../../desktop/src/main/services
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
+import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
 import type {
   LinearIssueCreateInput,
@@ -260,7 +261,9 @@ import type {
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
   SyncMacDesktopStatus,
+  SyncMacDesktopRecordingState,
   MacDesktopClickArgs,
+  MacDesktopRecordingStatus,
   MacDesktopDragArgs,
   MacDesktopReleaseInputArgs,
   MacDesktopMoveArgs,
@@ -875,6 +878,146 @@ function respondWithSignature<T extends object, E extends object>(
     return { ...emptyResponse, signature, notModified: true };
   }
   return { ...response, signature, notModified: false };
+}
+
+/**
+ * Recent `work.listSessions` answers, as row digests by signature, so a client
+ * holding one of them can be sent a delta. Process-wide and small: 32 lists of
+ * at most a few hundred short digests.
+ */
+const LIST_DELTA_CACHE_MAX = 32;
+/** Lists this short always go in full: a delta saves nothing worth its checks. */
+const LIST_DELTA_MIN_ROWS = 8;
+const workSessionListCache = new Map<string, { ids: string[]; digests: Map<string, string> }>();
+
+function workSessionRowId(row: unknown): string | null {
+  const id = (row as { id?: unknown } | null)?.id;
+  return typeof id === "string" && id ? id : null;
+}
+
+function rememberWorkSessionList(signature: string, sessions: readonly unknown[]): void {
+  if (workSessionListCache.has(signature)) {
+    const entry = workSessionListCache.get(signature)!;
+    workSessionListCache.delete(signature);
+    workSessionListCache.set(signature, entry);
+    return;
+  }
+  const ids: string[] = [];
+  const digests = new Map<string, string>();
+  for (const row of sessions) {
+    const id = workSessionRowId(row);
+    if (!id) return; // a row without an id cannot be diffed; keep full replies
+    ids.push(id);
+    digests.set(id, payloadSignature(row));
+  }
+  workSessionListCache.set(signature, { ids, digests });
+  while (workSessionListCache.size > LIST_DELTA_CACHE_MAX) {
+    const oldest = workSessionListCache.keys().next().value;
+    if (oldest === undefined) break;
+    workSessionListCache.delete(oldest);
+  }
+}
+
+/** A row without its null fields (`work.listSessions` with `omitNullFields`). */
+function withoutNullFields<T extends object>(row: T): T {
+  return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null)) as T;
+}
+
+/**
+ * The rows that turn the list named `baseSignature` into `sessions`: changed
+ * or new rows in full, removed ids, and the full id order when it moved. The
+ * client rebuilds the whole list from its copy. Null when the base is unknown
+ * or the delta would not be smaller than the list.
+ */
+function workSessionListDelta(
+  baseSignature: string,
+  sessions: readonly unknown[],
+): { baseSignature: string; upserted: unknown[]; removedIds: string[]; order?: string[] } | null {
+  const base = workSessionListCache.get(baseSignature);
+  if (!base) return null;
+  const upserted: unknown[] = [];
+  const ids: string[] = [];
+  for (const row of sessions) {
+    const id = workSessionRowId(row);
+    if (!id) return null;
+    ids.push(id);
+    if (base.digests.get(id) !== payloadSignature(row)) upserted.push(row);
+  }
+  if (upserted.length * 2 > sessions.length && sessions.length > LIST_DELTA_MIN_ROWS) return null;
+  const present = new Set(ids);
+  const removedIds = base.ids.filter((id) => !present.has(id));
+  const orderMoved = ids.length !== base.ids.length || ids.some((id, index) => base.ids[index] !== id);
+  return { baseSignature, upserted, removedIds, ...(orderMoved ? { order: ids } : {}) };
+}
+
+/** How old a lane's last computed git status may be in a phone's first answer. */
+const LANE_CACHED_STATUS_MAX_AGE_MS = 300_000;
+
+/**
+ * Recent `lanes.refreshSnapshots` answers as per-lane digests by signature, so
+ * a phone holding one gets only the lanes and snapshots that changed.
+ */
+const laneSnapshotListCache = new Map<string, {
+  laneIds: string[];
+  laneDigests: Map<string, string>;
+  snapshotDigests: Map<string, string>;
+}>();
+
+function laneSnapshotId(snapshot: unknown): string | null {
+  const id = (snapshot as { lane?: { id?: unknown } } | null)?.lane?.id;
+  return typeof id === "string" && id ? id : null;
+}
+
+function rememberLaneSnapshotList(signature: string, lanes: readonly unknown[], snapshots: readonly unknown[] | null | undefined): void {
+  if (laneSnapshotListCache.has(signature)) return;
+  const laneIds: string[] = [];
+  const laneDigests = new Map<string, string>();
+  for (const lane of lanes) {
+    const id = workSessionRowId(lane);
+    if (!id) return;
+    laneIds.push(id);
+    laneDigests.set(id, payloadSignature(lane));
+  }
+  const snapshotDigests = new Map<string, string>();
+  for (const snapshot of snapshots ?? []) {
+    const id = laneSnapshotId(snapshot);
+    if (!id) return;
+    snapshotDigests.set(id, payloadSignature(snapshot));
+  }
+  laneSnapshotListCache.set(signature, { laneIds, laneDigests, snapshotDigests });
+  while (laneSnapshotListCache.size > LIST_DELTA_CACHE_MAX) {
+    const oldest = laneSnapshotListCache.keys().next().value;
+    if (oldest === undefined) break;
+    laneSnapshotListCache.delete(oldest);
+  }
+}
+
+function laneSnapshotListDelta(
+  baseSignature: string,
+  lanes: readonly unknown[],
+  snapshots: readonly unknown[] | null | undefined,
+): { baseSignature: string; lanes: unknown[]; snapshots: unknown[]; removedLaneIds: string[]; order?: string[] } | null {
+  const base = laneSnapshotListCache.get(baseSignature);
+  if (!base) return null;
+  const changedLanes: unknown[] = [];
+  const ids: string[] = [];
+  for (const lane of lanes) {
+    const id = workSessionRowId(lane);
+    if (!id) return null;
+    ids.push(id);
+    if (base.laneDigests.get(id) !== payloadSignature(lane)) changedLanes.push(lane);
+  }
+  const changedSnapshots: unknown[] = [];
+  for (const snapshot of snapshots ?? []) {
+    const id = laneSnapshotId(snapshot);
+    if (!id) return null;
+    if (base.snapshotDigests.get(id) !== payloadSignature(snapshot)) changedSnapshots.push(snapshot);
+  }
+  if ((changedLanes.length + changedSnapshots.length) > ids.length && ids.length > LIST_DELTA_MIN_ROWS) return null;
+  const present = new Set(ids);
+  const removedLaneIds = base.laneIds.filter((id) => !present.has(id));
+  const orderMoved = ids.length !== base.laneIds.length || ids.some((id, index) => base.laneIds[index] !== id);
+  return { baseSignature, lanes: changedLanes, snapshots: changedSnapshots, removedLaneIds, ...(orderMoved ? { order: ids } : {}) };
 }
 
 function asConfidenceThreshold(value: unknown): number | undefined {
@@ -4578,16 +4721,46 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
     const listArgs = parseListLanesArgs(payload);
-    const refreshed = await args.laneService.refreshSnapshots(listArgs);
+    // `allowCachedStatus` (newer phones): lane rows are read fresh, but each
+    // lane's git status may be its last computed one (at most 5 min old); the
+    // answer then says `revalidating`, and the phone asks again with
+    // `awaitRevalidation` for the brain's exact re-check. Brains without the
+    // options answer exactly, as before.
+    const refreshArgs: ListLanesArgs & { statusMaxAgeMs?: number; awaitRevalidation?: boolean } = {
+      ...listArgs,
+      ...(payload.allowCachedStatus === true ? { statusMaxAgeMs: LANE_CACHED_STATUS_MAX_AGE_MS } : {}),
+      ...(payload.awaitRevalidation === true ? { awaitRevalidation: true } : {}),
+    };
+    const refreshed = await args.laneService.refreshSnapshots(refreshArgs) as Awaited<ReturnType<typeof args.laneService.refreshSnapshots>> & {
+      statusAsOf?: string;
+      revalidating?: boolean;
+    };
+    const { statusAsOf, revalidating, ...exact } = refreshed;
     const response = {
-      ...refreshed,
+      ...exact,
       snapshots: await buildLaneListSnapshots(args, refreshed.lanes, listArgs),
     };
-    return respondWithSignature(response, asTrimmedString(payload.ifNoneMatch), {
+    const ifNoneMatch = asTrimmedString(payload.ifNoneMatch);
+    const reply = respondWithSignature(response, ifNoneMatch, {
       refreshedCount: 0,
       lanes: [],
       snapshots: null,
     }, args.getLanePresenceStamp?.() ?? "");
+    // Outside the signature: a cached answer and its exact twin hash the same
+    // when nothing changed, and a "not modified" first answer still tells the
+    // phone a re-check follows.
+    const freshness = revalidating === true ? { revalidating: true as const, ...(statusAsOf ? { statusAsOf } : {}) } : {};
+    if (reply.notModified) return { ...reply, ...freshness };
+    rememberLaneSnapshotList(reply.signature, response.lanes, response.snapshots);
+    // `acceptDelta` with ifNoneMatch naming a remembered answer: only the lanes
+    // and snapshots whose fields changed, and the ids of the ones removed.
+    const delta = payload.acceptDelta === true && ifNoneMatch
+      ? laneSnapshotListDelta(ifNoneMatch, response.lanes, response.snapshots)
+      : null;
+    if (delta) {
+      return { refreshedCount: response.refreshedCount, signature: reply.signature, notModified: false, delta, ...freshness };
+    }
+    return { ...reply, ...freshness };
   });
   register("lanes.getDetail", { viewerAllowed: true }, async (payload) => {
     const detailArgs = parseLaneDetailRequestArgs(payload);
@@ -4871,7 +5044,51 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
-  register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
+  register("work.listSessions", { viewerAllowed: true }, async (payload) => {
+    const sessions = await listRemoteWorkSessions(args, parseListSessionsArgs(payload));
+    // `conditional: true` (newer phones) asks for `{ sessions, signature,
+    // notModified }`, so a reconnect whose list did not change downloads a
+    // signature instead of up to 200 rows. Without it the reply stays the bare
+    // array every older client decodes; an older host ignores the flag and
+    // sends the array, which a newer client also accepts.
+    if (payload.conditional !== true) return sessions;
+    // `headRows: N` (a phone's first connect): every running, waiting or
+    // pinned session plus the N most recent, marked `partial`. The phone keeps
+    // the rows it already has and asks for the full list a few seconds later.
+    const headRows = typeof payload.headRows === "number" && Number.isFinite(payload.headRows)
+      ? Math.max(1, Math.floor(payload.headRows))
+      : null;
+    if (headRows != null && sessions.length > headRows) {
+      const head = sessions.filter((session, index) =>
+        index < headRows
+        || session.status === "running"
+        || Boolean(session.attentionRequestedAt)
+        || session.pinned === true);
+      return {
+        sessions: payload.omitNullFields === true ? head.map(withoutNullFields) : head,
+        partial: true,
+        signature: null,
+        notModified: false,
+      };
+    }
+    const ifNoneMatch = asTrimmedString(payload.ifNoneMatch);
+    const reply = respondWithSignature({ sessions }, ifNoneMatch, {});
+    if (reply.notModified) return reply;
+    rememberWorkSessionList(reply.signature, sessions);
+    // `omitNullFields: true` (newer phones, which decode a missing key as
+    // nil): rows leave out their null fields, about half of a row's bytes.
+    // The signature still names the full rows.
+    const slim = <T extends object>(rows: T[]): T[] =>
+      payload.omitNullFields === true ? rows.map(withoutNullFields) : rows;
+    // `acceptDelta: true`: a client that holds the list named by ifNoneMatch
+    // gets only the rows that changed (`delta`) when that is smaller.
+    const delta = payload.acceptDelta === true && ifNoneMatch
+      ? workSessionListDelta(ifNoneMatch, sessions)
+      : null;
+    return delta
+      ? { signature: reply.signature, notModified: false, delta: { ...delta, upserted: slim(delta.upserted as object[]) } }
+      : { ...reply, sessions: slim(sessions) };
+  });
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseUpdateSessionMetaArgs(payload);
     await assertCursorCloudRenameAllowed(
@@ -5702,9 +5919,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
     const maxBytes = asOptionalNumber(payload.maxBytes);
+    const afterOffset = asOptionalNumber(payload.afterOffset);
+    const historyGeneration = asOptionalNumber(payload.historyGeneration);
     const options = {
       ...(maxEvents != null ? { maxEvents } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
+      ...(afterOffset != null && historyGeneration != null ? { afterOffset, historyGeneration } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     };
     const historyOptions = Object.keys(options).length > 0 ? options : undefined;
@@ -6412,6 +6632,118 @@ function assertMacDesktopSyncPointsInDisplay(
   check(args.to);
 }
 
+/** A recording's status with its one host path removed, for a sync client. */
+function redactMacDesktopRecording(
+  recording: MacDesktopRecordingStatus | null | undefined,
+): SyncMacDesktopRecordingState | null {
+  return recording ? { ...recording, filePath: null } : null;
+}
+
+/** A window id off the wire: a finite integer, or the action's own refusal. */
+function requireMacDesktopWindowId(value: unknown, action: string): number {
+  const windowId = asOptionalNumber(value);
+  if (windowId === undefined || !Number.isInteger(windowId)) {
+    throw new Error(`${action} requires windowId.`);
+  }
+  return windowId;
+}
+
+/**
+ * The full Work-tools pane's remaining controls, for the hosted web client.
+ *
+ * The desktop app reaches the same service methods through its pinned
+ * `mac_desktop` runtime actions; these mirror those calls and their argument
+ * checks (`macDesktopActionDomain.ts`). All of them act on the host's screen —
+ * they open and close apps, move windows between the user's screen and the
+ * lane's, and write capture files — so, like `start` / `stop` and the takeover
+ * calls, they are controller-only: a watch-only viewer never reaches them.
+ * `present` (bring the lane's windows to the user's own screen) is not here:
+ * it means the screen the person is sitting at, which a browser tab is not.
+ *
+ * Identity never comes off the wire. A browser has no chat session or holder
+ * id of its own, and both decide lease ownership on a shared Windows seat, so
+ * the window calls drop every caller-asserted id. The captures keep the chat
+ * id the pane names, because that is only where the proof is filed. Host file
+ * paths are removed from every answer, the same rule `getStatus` follows.
+ */
+function registerMacDesktopPaneRemoteCommands(
+  macDesktopService: NonNullable<SyncRemoteCommandServiceArgs["macDesktopService"]>,
+  register: RemoteCommandRegistrar,
+): void {
+  const controllerOnly = { viewerAllowed: false, controllerAllowed: true, queueable: false } as const;
+  const chatSessionId = (payload: Record<string, unknown>): { chatSessionId?: string } => {
+    const value = asTrimmedString(payload.chatSessionId);
+    return value ? { chatSessionId: value } : {};
+  };
+
+  // No lane lists every window on the host's screen, which is what the claim
+  // picker shows. That is the user's whole desktop, so it is a controller's
+  // read even though it changes nothing.
+  register("macDesktop.listWindows", controllerOnly, async (payload) =>
+    await macDesktopService.listWindows({ laneId: asTrimmedString(payload.laneId) }));
+
+  register("macDesktop.open", controllerOnly, async (payload) => {
+    const rawArgs = payload.args;
+    return await macDesktopService.open({
+      laneId: requireString(payload.laneId, "macDesktop.open requires laneId."),
+      target: requireString(payload.target, "macDesktop.open requires target."),
+      args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
+    });
+  });
+
+  register("macDesktop.claimWindow", controllerOnly, async (payload) =>
+    await macDesktopService.claimWindow({
+      laneId: requireString(payload.laneId, "macDesktop.claimWindow requires laneId."),
+      windowId: requireMacDesktopWindowId(payload.windowId, "macDesktop.claimWindow"),
+    }));
+
+  // No window releases every window the lane borrowed, as on the desktop.
+  register("macDesktop.releaseWindow", controllerOnly, async (payload) => {
+    const windowId = asOptionalNumber(payload.windowId);
+    if (windowId !== undefined && !Number.isInteger(windowId)) {
+      throw new Error("macDesktop.releaseWindow windowId must be a window id.");
+    }
+    return await macDesktopService.releaseWindow({
+      laneId: requireString(payload.laneId, "macDesktop.releaseWindow requires laneId."),
+      windowId: windowId ?? null,
+    });
+  });
+
+  register("macDesktop.closeWindow", controllerOnly, async (payload) =>
+    await macDesktopService.closeWindow({
+      laneId: requireString(payload.laneId, "macDesktop.closeWindow requires laneId."),
+      windowId: requireMacDesktopWindowId(payload.windowId, "macDesktop.closeWindow"),
+    }));
+
+  // A captioned screenshot is filed as proof, like the desktop pane's. The
+  // `out` path is not accepted: a browser has no say in where the host writes.
+  register("macDesktop.screenshot", controllerOnly, async (payload) => {
+    const shot = await macDesktopService.screenshot({
+      laneId: requireString(payload.laneId, "macDesktop.screenshot requires laneId."),
+      windowId: asOptionalNumber(payload.windowId) ?? null,
+      caption: asTrimmedString(payload.caption),
+      ...chatSessionId(payload),
+    });
+    return { ...shot, filePath: null };
+  });
+
+  register("macDesktop.startRecording", controllerOnly, async (payload) =>
+    redactMacDesktopRecording(await macDesktopService.startRecording({
+      laneId: requireString(payload.laneId, "macDesktop.startRecording requires laneId."),
+      caption: asTrimmedString(payload.caption),
+      fps: asOptionalNumber(payload.fps) ?? null,
+      keepIdle: asOptionalBoolean(payload.keepIdle) ?? null,
+      maxSeconds: asOptionalNumber(payload.maxSeconds) ?? null,
+      ...chatSessionId(payload),
+    })));
+
+  register("macDesktop.stopRecording", controllerOnly, async (payload) =>
+    redactMacDesktopRecording(await macDesktopService.stopRecording({
+      laneId: requireString(payload.laneId, "macDesktop.stopRecording requires laneId."),
+      ...chatSessionId(payload),
+    })));
+}
+
 /**
  * The lane's private macOS screen, over the sync socket.
  *
@@ -6443,13 +6775,23 @@ function registerMacDesktopRemoteCommands({
   if (macDesktopService) {
     // `MacDesktopStatus` is already token-free; only the recording's host file
     // path is outside what a read-only client may carry.
+    //
+    // `recording` stays null for the clients that already read it that way (the
+    // phone's fixture pins it). `recordingState` is the same answer with its one
+    // host path removed, so the web pane's Record button can say whether a
+    // recording is running without seeing where the file goes.
     const redact = (status: Awaited<ReturnType<typeof macDesktopService.getStatus>>): SyncMacDesktopStatus => ({
       ...status,
       recording: null,
+      recordingState: redactMacDesktopRecording(status.recording),
     });
+    // The lane is optional: a viewer asks once with no lane to learn which
+    // lane-screen tool this host has (its platform and support), before any
+    // lane's pane is open. Requiring one left the web client unable to tell a
+    // Linux or Windows host from a Mac.
     register("macDesktop.getStatus", { viewerAllowed: true }, async (payload) =>
       redact(await macDesktopService.getStatus({
-        laneId: requireString(payload.laneId, "macDesktop.getStatus requires laneId."),
+        laneId: asTrimmedString(payload.laneId) || null,
       })));
 
     // Frozen inspect from a phone or the hosted web viewer: one accessibility
@@ -6553,8 +6895,8 @@ function registerMacDesktopRemoteCommands({
     // EITHER seat: the private screen, or the user's main desktop ("Using your
     // main Windows desktop"), so the user always has the way out from any
     // trusted device. `stopPrivate` above stays for phones that predate this.
-    // A Mac lane's display is still not a viewer's to stop: that takes the
-    // controller-only `macDesktop.stop`.
+    // A Linux lane's screen too. A Mac lane's display is still not a viewer's
+    // to stop: that takes the controller-only `macDesktop.stop`.
     register("macDesktop.stopSeat", {
       viewerAllowed: true,
       controllerAllowed: true,
@@ -6562,10 +6904,13 @@ function registerMacDesktopRemoteCommands({
     }, async (payload) => {
       const laneId = requireString(payload.laneId, "macDesktop.stopSeat requires laneId.");
       const status = await macDesktopService.getStatus({ laneId });
-      if (status.platform !== "win32" || !status.windowsDesktop) {
-        throw new Error("Only a Windows screen can be stopped by a watch-only viewer.");
+      // A Linux lane screen is the lane's own X display on a remote machine,
+      // like the private Windows screen: any trusted viewer may stop it.
+      const linux = status.platform === "linux";
+      if (!linux && (status.platform !== "win32" || !status.windowsDesktop)) {
+        throw new Error("Only a Windows or Linux screen can be stopped by a watch-only viewer.");
       }
-      if (!status.display) throw new Error("This lane has no Windows screen to stop.");
+      if (!status.display) throw new Error(`This lane has no ${linux ? "Linux" : "Windows"} screen to stop.`);
       return await macDesktopService.stop({ laneId });
     });
 
@@ -6675,6 +7020,7 @@ function registerMacDesktopRemoteCommands({
           return await macDesktopService.releaseInput(inputArgs as unknown as MacDesktopReleaseInputArgs);
       }
     });
+    registerMacDesktopPaneRemoteCommands(macDesktopService, register);
   }
   if (macDesktopService && macDesktopSyncStream) {
     register("macDesktop.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
@@ -7994,7 +8340,23 @@ export async function refreshPullRequestsForSync(
 }
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
-  register("prs.list", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listAll());
+  register("prs.list", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const allPrs = await args.prService.listAll();
+    // `activeOnly: true`: only open and draft PRs, for a phone's first screen
+    // (a busy project has hundreds of merged ones; their rows also reach the
+    // phone's replica). Older hosts ignore it and send every PR.
+    const prs = payload?.activeOnly === true
+      ? allPrs.filter((pr) => pr.state === "open" || pr.state === "draft")
+      : allPrs;
+    // `conditional: true` (newer phones): `{ prs, signature, notModified }`, so
+    // a connect whose PR list did not change downloads a signature instead of
+    // every PR (over 100 KB on a busy project). `omitNullFields` leaves out
+    // null fields. Older clients get the bare array.
+    if (payload?.conditional !== true) return prs;
+    const reply = respondWithSignature({ prs }, asTrimmedString(payload.ifNoneMatch), {});
+    if (reply.notModified || payload.omitNullFields !== true) return reply;
+    return { ...reply, prs: (prs as object[]).map(withoutNullFields) };
+  });
   register("prs.listOpenForRepo", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listOpenPullRequests());
   register("prs.getForLane", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
@@ -8072,6 +8434,23 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
         ? { historyPageLimit: Math.max(1, Math.floor(payload.historyPageLimit)) }
         : {}),
     }));
+  register("prs.listGitHubFilterOptions", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listGithubFilterOptions({
+      kind: payload.kind === "author" || payload.kind === "assignee" ? payload.kind : "label",
+      query: typeof payload.query === "string" ? payload.query : null,
+      repoOwner: typeof payload.repoOwner === "string" ? payload.repoOwner : null,
+      repoName: typeof payload.repoName === "string" ? payload.repoName : null,
+    }));
+  register("prs.searchGitHubPrs", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.searchGithubPrs({
+      state: payload.state === "closed" || payload.state === "merged" || payload.state === "all" ? payload.state : "open",
+      filters: normalizeGitHubPrListFilters(payload.filters),
+      text: typeof payload.text === "string" ? payload.text : null,
+      cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+      force: payload.force === true,
+      repoOwner: typeof payload.repoOwner === "string" ? payload.repoOwner : null,
+      repoName: typeof payload.repoName === "string" ? payload.repoName : null,
+    }));
   register("prs.listGithubStacks", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listGithubStacks(parseListGithubStacksArgs(payload, "prs.listGithubStacks")));
   register("prs.syncGithubStacks", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -8137,6 +8516,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.setChatWatch(parseSetPrChatWatchArgs(payload)));
   register("prs.getChatWatches", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getChatWatches(parseGetPrChatWatchArgs(payload)));
+  // A read: the signed URL of a private repo's PR picture or video. The token
+  // stays on this machine; never queued, since a stale signed URL is useless.
+  register("prs.resolveMedia", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.resolveMedia({
+      url: requireString(payload.url, "prs.resolveMedia requires url."),
+      repoOwner: requireString(payload.repoOwner, "prs.resolveMedia requires repoOwner."),
+      repoName: requireString(payload.repoName, "prs.resolveMedia requires repoName."),
+    }));
   register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
   register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>
@@ -8191,6 +8578,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.setLabels(parseSetPrLabelsArgs(payload));
     return { ok: true };
   });
+  // Not queueable: the caller shows the assignees GitHub answered with and
+  // rolls back its optimistic change on failure, so a late replay helps nobody.
+  register("prs.setAssignees", { viewerAllowed: true }, async (payload) =>
+    args.prService.setAssignees({
+      prId: requirePrId(payload, "prs.setAssignees"),
+      add: asStringArray(payload.add),
+      remove: asStringArray(payload.remove),
+    }));
   register("prs.submitReview", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.submitReview(parseSubmitPrReviewArgs(payload));
     return { ok: true };

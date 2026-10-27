@@ -6,7 +6,14 @@ import type {
   SyncPeerMetadata,
 } from "../../../../desktop/src/shared/types";
 import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
-import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT, SYNC_PER_MESSAGE_DEFLATE_OPTIONS } from "./syncProtocol";
+import {
+  DEFAULT_SYNC_HOST_PORT,
+  SYNC_HOST_MAX_PORT,
+  SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
+  encodeSyncEnvelope,
+  parseSyncEnvelope,
+  type ParsedSyncEnvelope,
+} from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import {
   assertAdeLoopbackListener,
@@ -102,6 +109,11 @@ export type SharedSyncListenerConnection = {
   remoteAddress: string | null;
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
+  /**
+   * The `X-ADE-Hello` header of a direct upgrade request (a hello sent with
+   * the upgrade; see `readSyncUpgradeHello`), or null.
+   */
+  upgradeHello?: string | null;
 };
 
 export type SharedSyncListenerConnectionHandler = (connection: SharedSyncListenerConnection) => void;
@@ -283,6 +295,57 @@ function rawDataBytes(data: RawData): number {
   }
   if (data instanceof ArrayBuffer) return data.byteLength;
   return Buffer.byteLength(String(data), "utf8");
+}
+
+/**
+ * Hello on the upgrade request. A client on a direct route may put its hello
+ * envelope in this header (`v1.` + base64url of `{ requestId, payload }`); a
+ * host that reads it answers hello_ok as the first frame after the 101,
+ * saving the hello round trip. The client still sends the same hello as its
+ * first frame, so an older host (which ignores the header) answers that one,
+ * and a newer host drops the duplicate by its request id. A header, not the
+ * URL: it carries the paired secret, and URLs are what proxies log.
+ */
+export const SYNC_UPGRADE_HELLO_HEADER = "x-ade-hello";
+export const SYNC_UPGRADE_HELLO_MAX_CHARS = 12 * 1024;
+
+export function readSyncUpgradeHelloHeader(request: http.IncomingMessage): string | null {
+  const raw = request.headers[SYNC_UPGRADE_HELLO_HEADER];
+  const value = Array.isArray(raw) ? null : raw;
+  if (typeof value !== "string" || value.length > SYNC_UPGRADE_HELLO_MAX_CHARS || !value.startsWith("v1.")) return null;
+  return value;
+}
+
+/** The hello a `X-ADE-Hello` header carries, or null when it is malformed. */
+function parseSyncUpgradeHello(value: string | null | undefined): { requestId: string; payload: Record<string, unknown> } | null {
+  if (typeof value !== "string" || !value.startsWith("v1.")) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value.slice(3), "base64url").toString("utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const requestId = typeof record.requestId === "string" ? record.requestId.trim() : "";
+    const payload = record.payload;
+    if (!requestId || requestId.length > 128 || !payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    return { requestId, payload: payload as Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The hello envelope an `X-ADE-Hello` header carries, as a host queues it
+ * first on the socket (it then takes the frame path, checks and limits), or
+ * null when the header is absent or malformed.
+ */
+export function syncUpgradeHelloEnvelope(value: string | null | undefined): ParsedSyncEnvelope | null {
+  const hello = parseSyncUpgradeHello(value);
+  if (!hello) return null;
+  return parseSyncEnvelope(encodeSyncEnvelope({
+    type: "hello",
+    requestId: hello.requestId,
+    payload: hello.payload,
+    compressionCodec: "none",
+  }));
 }
 
 function hasValidRelayBridgeProof(request: http.IncomingMessage, expectedProof: Buffer): boolean {
@@ -608,13 +671,15 @@ export function createSharedSyncListener(options: {
         // lot sees it: it is a binary pipe, not a sync peer, and parking one
         // would hand a video socket to the next project's host on a switch.
         if (tryRouteAppleStreamSocket(ws, request)) return;
+        const transportOrigin = hasValidRelayBridgeProof(request, relayBridgeProofBytes)
+          ? "relay-bridge"
+          : "direct";
         const connection: SharedSyncListenerConnection = {
           ws,
           remoteAddress: request.socket.remoteAddress ?? null,
           remotePort: request.socket.remotePort ?? null,
-          transportOrigin: hasValidRelayBridgeProof(request, relayBridgeProofBytes)
-            ? "relay-bridge"
-            : "direct",
+          transportOrigin,
+          upgradeHello: transportOrigin === "direct" ? readSyncUpgradeHelloHeader(request) : null,
         };
         const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
         const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);

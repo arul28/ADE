@@ -5,7 +5,7 @@ import { useAppStore } from "../../state/appStore";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { DIALOG_SELECTOR, MODAL_DIALOG_SELECTOR } from "../ui/overlayState";
 import { GateBackdrop } from "./GateBackdrop";
-import { prefetchOnboardingDiscovery, showFirstRunProjects } from "./FirstRunFlow";
+import { prefetchOnboardingDiscovery, showFirstRunProjects } from "./firstRunActions";
 import { FirstRunStep, useFirstRunSteps } from "./FirstRunSteps";
 import "./launchGateGlass.css";
 
@@ -59,7 +59,7 @@ export function OnboardingBootstrap() {
     if (isWebClientMode()) return undefined;
     const replay = () => {
       // A replay finds projects again: some were added since the last run.
-      void prefetchOnboardingDiscovery({ fresh: true })?.catch(() => undefined);
+      void prefetchOnboardingDiscovery({ fresh: true }).catch(() => undefined);
       restart();
     };
     window.addEventListener(ADE_WELCOME_VIDEO_REPLAY_EVENT, replay);

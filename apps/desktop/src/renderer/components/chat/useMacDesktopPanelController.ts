@@ -34,6 +34,8 @@ import {
   macDesktopUserHasControl,
 } from "./macDesktopLease";
 import { useMacDesktopLiveView } from "./useMacDesktopLiveView";
+import { useMacDesktopWebLiveView } from "./useMacDesktopWebLiveView";
+import { createMacDesktopWebInputSender } from "./macDesktopWebStream";
 import {
   createMacDesktopFastInputSender,
   useMacDesktopRealInput,
@@ -45,6 +47,8 @@ import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import { macDesktopParkedWindows } from "./macDesktopStrip";
 import { Z_LAYERS } from "../ui/zLayers";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useTicker } from "../../lib/ticker";
 
 export const MAC_DESKTOP_FULLSCREEN_Z = Z_LAYERS.macDesktop;
 
@@ -134,6 +138,18 @@ export function useMacDesktopPanelController({
   runtimePin,
   desktopTool = "mac-desktop",
 }: ChatMacDesktopPanelProps) {
+  /**
+   * The hosted web client: the same pane, over the sync socket.
+   *
+   * Three things change and nothing else. The picture comes from the host's
+   * push stream instead of a loopback URL, input goes out as `macDesktop.input`
+   * calls, and the person is never "at" the host: their screen is a browser
+   * tab somewhere else, so every control that means "this Mac" (moving
+   * windows to my screen, opening a file, System Settings, the machine-wide
+   * Escape) is off. There is no event channel to a tab, so the status hook
+   * polls instead (`useMacDesktopStatus`).
+   */
+  const webClient = isWebClientMode();
   // The machine on the other end of the pin, for the one failure that is about
   // it rather than about this screen: a brain with no `mac_desktop` domain.
   const machineFacts = useMacDesktopMachineFacts(runtimePin);
@@ -145,6 +161,7 @@ export function useMacDesktopPanelController({
     readError,
     unconfirmed,
     refresh: refreshStatus,
+    discardReadsInFlight,
     stop: stopDisplay,
     stopping,
     start,
@@ -287,7 +304,16 @@ export function useMacDesktopPanelController({
   const lease: MacDesktopLeaseState | null = status?.lease ?? null;
   const windows: MacDesktopWindow[] = status?.windows ?? [];
   const supported = status?.supported ?? null;
-  const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId());
+  /**
+   * The holder id this tab's last takeover was granted, on the web client.
+   *
+   * The host never keeps the tab's token as the holder: it derives
+   * `web:<socket>:<token>`, so the lease the status reports is matched against
+   * what `takeControl` answered. On the desktop the two are the same id.
+   */
+  const [webHolderId, setWebHolderId] = useState<string | null>(null);
+  const iHaveControl = macDesktopUserHasControl(lease, macDesktopControllerId())
+    || (webHolderId != null && macDesktopUserHasControl(lease, webHolderId));
   const parkedWindows = macDesktopParkedWindows(windows, display?.displayId);
   const claimAppIcons = useMemo(() => macDesktopClaimAppIcons(windows), [windows]);
 
@@ -325,7 +351,19 @@ export function useMacDesktopPanelController({
    * local prompt reaches the wrong box. `hostIsLocal` is the host's own answer
    * and stays true for a runtime that has not been told which client asked.
    */
-  const laneHostIsLocal = runtimePin?.kind !== "remote" && Boolean(status?.hostIsLocal);
+  const laneHostIsLocal = !webClient && runtimePin?.kind !== "remote" && Boolean(status?.hostIsLocal);
+  /**
+   * The host's own "the person is sitting at me", for moving windows to their
+   * screen. Never on the web client: the host answers for itself, and the
+   * person reading this tab is not at that screen.
+   */
+  const hostScreenIsLocal = !webClient && Boolean(status?.hostIsLocal);
+  /**
+   * The host can re-probe its grants and restart its capture from here. A
+   * person's remediation, which the web client does not carry: there, Check
+   * again re-reads the status and Restart capture is not offered.
+   */
+  const canRecheckPermissions = isAdeAvailable(window.ade.macDesktop?.recheckPermissions);
 
   /**
    * Lane id → name, for "ADE · docs-fix" on a window parked somewhere else.
@@ -341,12 +379,20 @@ export function useMacDesktopPanelController({
     [laneId, laneName],
   );
 
-  const live = useMacDesktopLiveView({
+  // Both hooks run on both surfaces (a hook cannot be skipped), and each one
+  // is idle where it is not the transport.
+  const desktopLive = useMacDesktopLiveView({
     laneId,
     runtimePin,
-    enabled: Boolean(display),
+    enabled: !webClient && Boolean(display),
     chatSessionId: sessionId,
   });
+  const webLive = useMacDesktopWebLiveView({
+    laneId,
+    runtimePin,
+    enabled: webClient && Boolean(display),
+  });
+  const live = webClient ? webLive : desktopLive;
 
   // While the video connects, re-read the status: a display that went away
   // without an event must turn into the Off card, not a "Connecting video"
@@ -501,38 +547,57 @@ export function useMacDesktopPanelController({
       heartbeat.stop();
       void returnControl();
     };
+    // A hidden browser tab cannot forward the events a takeover is for, and
+    // its timers are throttled until the heartbeat lapses anyway. The desktop
+    // keeps blur-and-hide out of it for the reason above.
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") release();
+    };
     window.addEventListener("pagehide", release);
+    if (webClient) document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("pagehide", release);
+      if (webClient) document.removeEventListener("visibilitychange", onVisibility);
       release();
     };
-  }, [heartbeat, iHaveControl, returnControl]);
+  }, [heartbeat, iHaveControl, returnControl, webClient]);
 
   const takeControl = useCallback(async () => {
     if (takeoverBlocked) return;
     setBusy(true);
     try {
       const next = await macDesktopApi().takeControl(
-        { laneId, controllerId: macDesktopControllerId(), controllerLabel: "You" },
+        { laneId, controllerId: macDesktopControllerId(), controllerLabel: webClient ? "ADE Web" : "You" },
         pinRef.current,
       );
+      if (webClient) {
+        setWebHolderId(next?.holderId ?? null);
+        // The web status polls, and a poll sent before this answer would put
+        // the old lease back, which reads as losing control on the first click.
+        discardReadsInFlight();
+      }
       setStatus((current) => (current ? { ...current, lease: next } : current));
     } catch (error) {
       setStatusError(errorText(error));
     } finally {
       setBusy(false);
     }
-  }, [errorText, laneId, setStatus, setStatusError, takeoverBlocked]);
+  }, [discardReadsInFlight, errorText, laneId, setStatus, setStatusError, takeoverBlocked, webClient]);
 
   /* ── Real input, only while the user holds the lease ──────────────────── */
 
   // Local takeover goes over the stream's loopback port, not the brain RPC:
   // one request per event instead of a full IPC → brain → service hop.
+  // The web client has neither: its input is the sync `macDesktop.input` call.
+  const pinKey = runtimePin?.key ?? null;
   const fastSender = useMemo(
     // The driver puts the person's cursor back after every post. Nothing holds
     // it: absolute pointing has no mode to stay in.
-    () => createMacDesktopFastInputSender(live.url, { holdCursor: () => false }),
-    [live.url],
+    () => (webClient
+      ? createMacDesktopWebInputSender({ laneId, runtimePin: pinRef.current })
+      : createMacDesktopFastInputSender(live.url, { holdCursor: () => false })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [laneId, live.url, pinKey, webClient],
   );
   const realInput = useMacDesktopRealInput({
     laneId,
@@ -729,14 +794,8 @@ export function useMacDesktopPanelController({
   }, [errorText, laneHostIsLocal]);
 
   /* The pill's clock. Ticks only while something is recording. */
-  const [nowTick, setNowTick] = useState(() => Date.now());
   const recordingRunning = Boolean(recording?.running);
-  useEffect(() => {
-    if (!recordingRunning) return undefined;
-    setNowTick(Date.now());
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [recordingRunning]);
+  const nowTick = useTicker(1000, recordingRunning);
 
   const present = useCallback(async (destination: "main" | "display") => {
     setBusy(true);
@@ -820,6 +879,32 @@ export function useMacDesktopPanelController({
   /* Void-returning, stable identities, so a memoised card is not re-rendered
      by a new closure every time a frame lands. */
   const releaseWindowById = useCallback((windowId: number) => { void releaseWindow(windowId); }, [releaseWindow]);
+
+  /**
+   * Linux: open an app on the lane's screen (its windows cannot come from
+   * anywhere else). Resolves to the error sentence, or null once it started.
+   */
+  const openApp = useCallback(async (target: string): Promise<string | null> => {
+    try {
+      await macDesktopApi().open({ laneId, target, chatSessionId: sessionId }, pinRef.current);
+      await refreshStatus();
+      return null;
+    } catch (error) {
+      return errorText(error);
+    }
+  }, [errorText, laneId, refreshStatus, sessionId]);
+
+  /** Linux: a window's own close button, in place of the Mac's "Release". */
+  const closeWindowById = useCallback((windowId: number) => {
+    void (async () => {
+      try {
+        await macDesktopApi().closeWindow({ laneId, windowId, chatSessionId: sessionId }, pinRef.current);
+        await refreshStatus();
+      } catch (error) {
+        setStatusError(errorText(error));
+      }
+    })();
+  }, [errorText, laneId, refreshStatus, sessionId, setStatusError]);
 
   /**
    * Escape: the way out, and it is not only about full screen.
@@ -943,13 +1028,19 @@ export function useMacDesktopPanelController({
     const began = Date.now();
     let result: MacDesktopPermissionCheck;
     try {
-      const permissions = await macDesktopApi().recheckPermissions(
-        { restartDriver: !display },
-        pinRef.current,
-      );
-      setStatus((current) => (current ? { ...current, permissions } : current));
-      await refreshStatus().catch(() => undefined);
-      result = { at: Date.now(), stillMissing: macDesktopMissingPermissions(permissions) };
+      if (!canRecheckPermissions) {
+        // No re-probe from here: read what the host says its grants are now.
+        const next = await refreshStatus();
+        result = { at: Date.now(), stillMissing: macDesktopMissingPermissions(next.permissions) };
+      } else {
+        const permissions = await macDesktopApi().recheckPermissions(
+          { restartDriver: !display },
+          pinRef.current,
+        );
+        setStatus((current) => (current ? { ...current, permissions } : current));
+        await refreshStatus().catch(() => undefined);
+        result = { at: Date.now(), stillMissing: macDesktopMissingPermissions(permissions) };
+      }
     } catch (error) {
       result = { at: Date.now(), error: errorText(error) ?? "Could not check. Try again." };
     }
@@ -957,7 +1048,7 @@ export function useMacDesktopPanelController({
     if (wait > 0) await new Promise((resolve) => window.setTimeout(resolve, wait));
     setPermissionCheck(result);
     setCheckingPermissions(false);
-  }, [display, errorText, refreshStatus, setStatus, setStatusError]);
+  }, [canRecheckPermissions, display, errorText, refreshStatus, setStatus, setStatusError]);
 
   /**
    * "Restart capture", after a yes/no question: a new driver process and a new
@@ -1014,11 +1105,11 @@ export function useMacDesktopPanelController({
     viewRect, selectedWindowId, setSelectedWindowId, lastObservation, surfaceNode, videoHost, canvasSlot,
     attachCanvasSlot, attachSurface, errorText, display, lease, windows, supported, iHaveControl, parkedWindows,
     claimAppIcons, missingPermissions, takeoverBlocked, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
-    restartingCapture, restartCapture,
+    restartingCapture, restartCapture, canRecheckPermissions, hostScreenIsLocal, webClient,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,
     toggleRecording, saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow,
-    releaseWindow, releaseWindowById, selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
+    releaseWindow, releaseWindowById, openApp, closeWindowById, selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
   };
 }
 

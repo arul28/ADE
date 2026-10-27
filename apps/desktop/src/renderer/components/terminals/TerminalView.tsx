@@ -45,6 +45,7 @@ import {
   inferTranscriptColumns,
   normalizeTranscriptToGrid,
 } from "./terminalTranscriptNormalize";
+import { registerTerminalRuntimeDisposer } from "./terminalRuntimeLifecycle";
 import { installPtySizeOwnershipTracking, windowOwnsPtySize } from "./ptySizeOwnership";
 import type {
   OpenProjectBinding,
@@ -1070,6 +1071,7 @@ export function disposeTerminalRuntimesForProjectChange(
 ): void {
   disposeStaleRuntimes(activeProjectKey, activeProjectRevision);
 }
+registerTerminalRuntimeDisposer(disposeTerminalRuntimesForProjectChange);
 
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
   // Active ownership gates keyboard input and tab-focusability only. It must NOT
