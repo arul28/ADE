@@ -2294,6 +2294,7 @@ export function createHeadlessGitHubService(
         const currentToken = appUserAuth.getStoredTokenForHealth();
         if (previousToken) clearGithubCredentialHealth(previousToken);
         if (currentToken && currentToken !== previousToken) clearGithubCredentialHealth(currentToken);
+        credentialRevision += 1;
         invalidateStatusCache();
       }
       return result;
@@ -2302,6 +2303,7 @@ export function createHeadlessGitHubService(
       const previousToken = appUserAuth.getStoredTokenForHealth();
       const status = appUserAuth.clearAuth();
       if (previousToken) clearGithubCredentialHealth(previousToken);
+      credentialRevision += 1;
       invalidateStatusCache();
       return status;
     },

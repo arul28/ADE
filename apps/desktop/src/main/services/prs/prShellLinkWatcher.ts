@@ -36,28 +36,45 @@ export type PrShellLinkWatcherDeps = {
 export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
   const pendingCalls = new Map<string, string>();
   const handled = new Map<string, true>();
+  /** Keys whose link work is out; a repeat of the same event waits for it. */
+  const inFlightKeys = new Set<string>();
 
   const handle = (sessionId: string, itemId: string, command: string, output: string, exitCode: number | null) => {
     const key = `${sessionId}:${itemId}`;
-    if (handled.has(key)) return;
-    setBounded(handled, key, true, HANDLED_CAP);
+    if (handled.has(key) || inFlightKeys.has(key)) return;
     const actions = readGhPrShellActions({ command, output, exitCode });
-    for (const action of actions) {
-      void deps.linkShellPrAction({
-        sessionId,
-        kind: action.kind,
-        repoOwner: action.owner,
-        repoName: action.repo,
-        prNumber: action.number,
-      }).catch((error: unknown) => {
-        deps.logger.warn("prs.shell_link_failed", {
-          sessionId,
-          kind: action.kind,
-          prNumber: action.number,
-          error: getErrorMessage(error),
-        });
-      });
+    if (actions.length === 0) {
+      setBounded(handled, key, true, HANDLED_CAP);
+      return;
     }
+    inFlightKeys.add(key);
+    void Promise.allSettled(actions.map((action) => deps.linkShellPrAction({
+      sessionId,
+      kind: action.kind,
+      repoOwner: action.owner,
+      repoName: action.repo,
+      prNumber: action.number,
+    }))).then((results) => {
+      let failed = false;
+      for (const [index, result] of results.entries()) {
+        if (result.status === "rejected") {
+          failed = true;
+          const action = actions[index]!;
+          deps.logger.warn("prs.shell_link_failed", {
+            sessionId,
+            kind: action.kind,
+            prNumber: action.number,
+            error: getErrorMessage(result.reason),
+          });
+        }
+      }
+      // Only a fully linked event is settled. A harness can deliver the same
+      // result again after a failure, and that retry must not be suppressed;
+      // a repeat of the already-linked actions is harmless ("already_linked").
+      if (!failed) setBounded(handled, key, true, HANDLED_CAP);
+    }).finally(() => {
+      inFlightKeys.delete(key);
+    });
   };
 
   const onEvent = (envelope: AgentChatEventEnvelope): void => {

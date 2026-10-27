@@ -456,7 +456,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     // A host without these must say so, so the GitHub tab falls back to loaded
     // rows (and read-only assignees) instead of reading an empty answer.
-    setAssignees: async (args: unknown) => {
+    setAssignees: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.setAssignees", pin, infra);
       if (!commands.hasAction("prs.setAssignees")) throw new Error("This machine's ADE cannot assign people yet. Update it to edit assignees.");
       // A mutation never fabricates success: with no project open on the host
       // the call resolves no fallback, so reject and let the card keep its draft.

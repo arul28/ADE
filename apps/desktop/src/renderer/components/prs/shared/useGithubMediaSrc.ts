@@ -199,6 +199,15 @@ export function useGithubMediaSrc(url: string | undefined): GithubMediaSource {
       start(true);
       return true;
     }
+    if (phase === "failed") {
+      // The unavailable entry expires after the same cooldown; a dropped
+      // connection must not leave this attachment dead until a remount.
+      if (!readCache(target.key)) {
+        start(false);
+        return true;
+      }
+      return false;
+    }
     const failed: ViewState = { phase: "failed" as const, resolved: null, key: target.key };
     stateRef.current = failed;
     setState(failed);
