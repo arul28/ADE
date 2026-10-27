@@ -11,6 +11,7 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
+import { Worker } from "node:worker_threads";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import {
   EVENT_LOG_RETENTION_DAYS,
@@ -156,6 +157,20 @@ export type AdeDbSyncApi = {
     excludeTables?: readonly string[];
     rejectOversizedVersionGroup?: boolean;
   }) => CrsqlChangeRow[];
+  /**
+   * `exportChangesSince`, read on a second connection in a worker thread so a
+   * large batch does not hold the event loop (a 10,000-row batch was ~130 ms on
+   * it). Same plan, same rows: the helper opens its own read snapshot, so it
+   * sees committed changes only, which is what every caller outside a write
+   * transaction gets anyway. Falls back to the synchronous export when the
+   * helper cannot run.
+   */
+  exportChangesSinceOffThread?: (version: number, options?: {
+    maxRows?: number;
+    throughDbVersion?: number;
+    excludeTables?: readonly string[];
+    rejectOversizedVersionGroup?: boolean;
+  }) => Promise<CrsqlChangeRow[]>;
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Claim inbound settle-tuple writes so they are reconciled through the settle
@@ -4873,6 +4888,309 @@ function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
   db.loadExtension(extensionPath);
 }
 
+type ExportChangesOptions = {
+  maxRows?: number;
+  throughDbVersion?: number;
+  excludeTables?: readonly string[];
+  rejectOversizedVersionGroup?: boolean;
+};
+
+type ExportedChangeRow = {
+  table_name: string;
+  pk: unknown;
+  cid: string;
+  val: unknown;
+  col_version: number;
+  db_version: number;
+  site_id: Uint8Array;
+  cl: number;
+  seq: number;
+};
+
+type ExportPlanQuery = { sql: string; params: Array<string | number> };
+/** Yielded once, after the suppression read: the driver opens its read snapshot here. */
+const EXPORT_PLAN_BEGIN_SNAPSHOT = Symbol("export-plan-begin-snapshot");
+
+/**
+ * The CRR export as a plan: it yields each statement and receives its rows, so
+ * one algorithm runs on the main connection (synchronously) or on the export
+ * helper connection (`exportChangesSinceOffThread`) and the two cannot drift.
+ */
+function* exportChangesPlan(
+  version: number,
+  options: ExportChangesOptions | undefined,
+  desiredSiteId: string,
+): Generator<ExportPlanQuery | typeof EXPORT_PLAN_BEGIN_SNAPSHOT, ExportedChangeRow[], unknown[]> {
+  const suppressionRows = (yield {
+    sql: `select table_name,
+                  through_db_version
+             from ${LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE}
+            where site_id = ?`,
+    params: [desiredSiteId],
+  }) as Array<{ table_name: string; through_db_version: number }>;
+  const suppressions = new Map<string, number>(
+    suppressionRows.map((row) => [String(row.table_name), Number(row.through_db_version)]),
+  );
+  const throughDbVersion = options?.throughDbVersion != null && Number.isFinite(options.throughDbVersion)
+    ? Math.max(version, Math.floor(options.throughDbVersion))
+    : null;
+  const excludedTables = [...new Set(
+    (options?.excludeTables ?? [])
+      .map((table) => table.trim())
+      .filter(Boolean),
+  )];
+  const tableFilterSql = excludedTables.length > 0
+    ? ` and [table] not in (${excludedTables.map(() => "?").join(", ")})`
+    : "";
+  const rangeSql = throughDbVersion != null
+    ? `where db_version > ? and db_version <= ?${tableFilterSql}`
+    : `where db_version > ?${tableFilterSql}`;
+  const rangeParams = throughDbVersion != null
+    ? [version, throughDbVersion, ...excludedTables]
+    : [version, ...excludedTables];
+  const selectSql = `select [table] as table_name,
+                pk,
+                cid,
+                val,
+                col_version,
+                db_version,
+                site_id,
+                cl,
+                seq
+           from crsql_changes
+          ${rangeSql}
+          order by db_version asc, cl asc, seq asc`;
+  const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
+    ? Math.max(1, Math.floor(options.maxRows))
+    : null;
+  const survivesExportFilters = (row: ExportedChangeRow): boolean => {
+    const suppressedThroughVersion = suppressions.get(row.table_name);
+    if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
+      return true;
+    }
+    return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
+  };
+  // The crsql_changes vtab aborts a scan ("query aborted", SQLITE_ABORT)
+  // whenever another connection commits mid-read. Outside a transaction
+  // there is no snapshot isolation, so on a busy machine (multi-process
+  // writers) every export dies. A read transaction pins the WAL snapshot
+  // for the duration of the scan, making it immune to concurrent commits.
+  yield EXPORT_PLAN_BEGIN_SNAPSHOT;
+  if (maxRows == null) {
+    return ((yield { sql: selectSql, params: rangeParams }) as ExportedChangeRow[]).filter(survivesExportFilters);
+  }
+  // Scan forward in maxRows-sized fetches until one yields rows that
+  // survive the suppression/wipe-marker filters or the requested
+  // range is exhausted. An empty return must mean "the whole range
+  // was scanned": callers advance their watermark to the range end on
+  // empty results, so returning [] when a truncated fetch was merely
+  // filtered out would permanently skip the unscanned versions behind
+  // the truncation point.
+  let scanFromVersion = version;
+  for (;;) {
+    const scanParams = throughDbVersion != null
+      ? [scanFromVersion, throughDbVersion, ...excludedTables]
+      : [scanFromVersion, ...excludedTables];
+    let fetched = (yield { sql: `${selectSql} limit ?`, params: [...scanParams, maxRows + 1] }) as ExportedChangeRow[];
+    let truncated = false;
+    if (fetched.length > maxRows) {
+      truncated = true;
+      // The fetch was truncated; drop the trailing (possibly incomplete)
+      // db_version group so consumers only ever watermark complete groups.
+      const tailVersion = Number(fetched[fetched.length - 1].db_version);
+      let cut = fetched.length;
+      while (cut > 0 && Number(fetched[cut - 1].db_version) === tailVersion) cut -= 1;
+      if (cut > 0) {
+        fetched = fetched.slice(0, cut);
+      } else {
+        if (options?.rejectOversizedVersionGroup === true) {
+          throw codedError(
+            `CRR version group ${tailVersion} exceeds the ${maxRows}-row export limit.`,
+            CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE,
+          );
+        }
+        // A single transaction touched more rows than maxRows. Fetch that
+        // one version group in full — bounded by the group itself.
+        fetched = (yield {
+          sql: `select [table] as table_name,
+                pk,
+                cid,
+                val,
+                col_version,
+                db_version,
+                site_id,
+                cl,
+                seq
+           from crsql_changes
+          where db_version > ? and db_version <= ?${tableFilterSql}
+          order by db_version asc, cl asc, seq asc`,
+          params: [scanFromVersion, tailVersion, ...excludedTables],
+        }) as ExportedChangeRow[];
+      }
+    }
+    const rows = fetched.filter(survivesExportFilters);
+    if (rows.length > 0 || !truncated || fetched.length === 0) return rows;
+    // Every fetched row was filtered out but the scan stopped short of
+    // the range end — continue from the last scanned version group.
+    scanFromVersion = Number(fetched[fetched.length - 1].db_version);
+  }
+}
+
+function mapExportedChangeRows(rows: ExportedChangeRow[]): CrsqlChangeRow[] {
+  return rows.map((row) => ({
+    table: row.table_name,
+    pk: encodeSyncScalar(row.pk),
+    cid: row.cid,
+    val: encodeSyncScalar(row.val),
+    col_version: Number(row.col_version),
+    db_version: Number(row.db_version),
+    site_id: Buffer.from(row.site_id).toString("hex"),
+    cl: Number(row.cl),
+    seq: Number(row.seq),
+  }));
+}
+
+type ExportHelper = {
+  run: (plan: Generator<ExportPlanQuery | typeof EXPORT_PLAN_BEGIN_SNAPSHOT, ExportedChangeRow[], unknown[]>) => Promise<ExportedChangeRow[]>;
+  close: () => void;
+};
+
+/** How long `close` waits for the helper to finalize cr-sqlite and close its connection. */
+const EXPORT_HELPER_CLOSE_WAIT_MS = 2_000;
+
+const EXPORT_HELPER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { DatabaseSync } = require("node:sqlite");
+const closed = new Int32Array(workerData.closedFlag);
+let db = null;
+try {
+  db = new DatabaseSync(workerData.dbPath, { allowExtension: true });
+  db.exec("PRAGMA busy_timeout = " + workerData.busyTimeoutMs);
+  db.enableLoadExtension(true);
+  db.loadExtension(workerData.extensionPath);
+  db.enableLoadExtension(false);
+} catch (error) {
+  parentPort.postMessage({ type: "failed", error: String(error && error.message || error) });
+}
+const statements = new Map();
+const closeDb = () => {
+  if (db) {
+    try { db.exec("select crsql_finalize()"); } catch {}
+    try { db.close(); } catch {}
+    db = null;
+  }
+  Atomics.store(closed, 0, 1);
+  Atomics.notify(closed, 0);
+};
+parentPort.on("message", (message) => {
+  if (message.type === "close") { closeDb(); return; }
+  try {
+    if (!db) throw new Error("export helper connection is not open");
+    let rows = [];
+    if (message.type === "begin") db.exec("BEGIN");
+    else if (message.type === "end") {
+      try { db.exec("COMMIT"); } catch { try { db.exec("ROLLBACK"); } catch {} }
+    } else {
+      let statement = statements.get(message.sql);
+      if (!statement) {
+        statement = db.prepare(message.sql);
+        if (statements.size >= 64) statements.clear();
+        statements.set(message.sql, statement);
+      }
+      rows = statement.all(...message.params);
+    }
+    parentPort.postMessage({ type: "result", id: message.id, rows });
+  } catch (error) {
+    parentPort.postMessage({ type: "result", id: message.id, error: String(error && error.message || error) });
+  }
+});
+`;
+
+/**
+ * A read-only export connection in a worker thread. Exports run one at a time
+ * (a connection holds one snapshot); each runs the shared plan, with every
+ * statement answered by the worker inside one read transaction.
+ */
+function createExportHelper(dbPath: string, extensionPath: string): ExportHelper {
+  const closedFlag = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const worker = new Worker(EXPORT_HELPER_SOURCE, {
+    eval: true,
+    workerData: { dbPath, extensionPath, busyTimeoutMs: DEFAULT_BUSY_TIMEOUT_MS, closedFlag },
+  });
+  worker.unref();
+  let failure: Error | null = null;
+  let nextId = 0;
+  const waiting = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
+  const failAll = (error: Error): void => {
+    failure ??= error;
+    for (const entry of waiting.values()) entry.reject(failure);
+    waiting.clear();
+  };
+  worker.on("message", (message: { type: string; id?: number; rows?: unknown[]; error?: string }) => {
+    if (message.type === "failed") {
+      failAll(new Error(`export helper could not open the database: ${message.error}`));
+      return;
+    }
+    const entry = message.id == null ? undefined : waiting.get(message.id);
+    if (!entry) return;
+    waiting.delete(message.id!);
+    if (message.error != null) entry.reject(new Error(message.error));
+    else entry.resolve(message.rows ?? []);
+  });
+  worker.on("error", (error) => failAll(error instanceof Error ? error : new Error(String(error))));
+  worker.on("exit", (code) => failAll(new Error(`export helper exited (${code})`)));
+  const send = (message: { type: "begin" | "end" } | { type: "all"; sql: string; params: Array<string | number> }): Promise<unknown[]> => {
+    if (failure) return Promise.reject(failure);
+    const id = ++nextId;
+    return new Promise((resolve, reject) => {
+      waiting.set(id, { resolve, reject });
+      worker.postMessage({ ...message, id });
+    });
+  };
+  let queue: Promise<unknown> = Promise.resolve();
+  const runPlan = async (
+    plan: Generator<ExportPlanQuery | typeof EXPORT_PLAN_BEGIN_SNAPSHOT, ExportedChangeRow[], unknown[]>,
+  ): Promise<ExportedChangeRow[]> => {
+    let opened = false;
+    try {
+      let step = plan.next();
+      while (!step.done) {
+        const query = step.value;
+        if (query === EXPORT_PLAN_BEGIN_SNAPSHOT) {
+          await send({ type: "begin" });
+          opened = true;
+          step = plan.next([]);
+        } else {
+          step = plan.next(await send({ type: "all", sql: query.sql, params: query.params }));
+        }
+      }
+      return step.value;
+    } finally {
+      if (opened) await send({ type: "end" }).catch(() => undefined);
+    }
+  };
+  return {
+    run: (plan) => {
+      const result = queue.then(() => runPlan(plan));
+      queue = result.catch(() => undefined);
+      return result;
+    },
+    close: () => {
+      failAll(new Error("export helper closed"));
+      try {
+        worker.postMessage({ type: "close" });
+        // cr-sqlite must be finalized before this connection's file is
+        // closed, renamed or moved (on Windows its handle outlives a plain
+        // close), so close waits, bounded, for the helper to let go of it.
+        Atomics.wait(new Int32Array(closedFlag), 0, 0, EXPORT_HELPER_CLOSE_WAIT_MS);
+      } catch {
+        // A worker that already exited holds no connection.
+      }
+      void worker.terminate();
+    },
+  };
+}
+
 export type OpenKvDbOptions = {
   /** Conservative by default: compaction is unsafe unless zero sync peers is proven. */
   hasSyncPeers?: () => boolean;
@@ -5309,6 +5627,27 @@ export async function openKvDb(
   let remoteSettleTupleHandler: ((changes: RemoteSettleTupleChange[]) => void) | null = null;
   /** Columns a newer peer sent that this build lacks; each is logged once per process. */
   const deferredUnknownSyncColumns = new Set<string>();
+  // The export helper: a second connection, with cr-sqlite loaded, in a worker
+  // thread. Started on first use (after this open has settled the site id, which
+  // cr-sqlite reads when it loads) and closed with the database.
+  let exportHelper: ExportHelper | null = null;
+  let exportHelperDisabled = false;
+  const startExportHelper = (): ExportHelper | null => {
+    try {
+      exportHelper = createExportHelper(dbPath, extensionPath!);
+      return exportHelper;
+    } catch (error) {
+      exportHelperDisabled = true;
+      logger.warn("db.export_helper_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
+  const stopExportHelper = (): void => {
+    const helper = exportHelper;
+    exportHelper = null;
+    helper?.close();
+  };
+
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
@@ -5317,147 +5656,27 @@ export async function openKvDb(
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
-    exportChangesSince: (version: number, options?: {
-      maxRows?: number;
-      throughDbVersion?: number;
-      excludeTables?: readonly string[];
-      rejectOversizedVersionGroup?: boolean;
-    }) => {
+    exportChangesSince: (version: number, options?: ExportChangesOptions) => {
       if (!crsqliteLoaded) return [];
-      const suppressions = new Map<string, number>(
-        allRows<{ table_name: string; through_db_version: number }>(
-          db,
-          `select table_name,
-                  through_db_version
-             from ${LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE}
-            where site_id = ?`,
-          [desiredSiteId],
-        ).map((row) => [String(row.table_name), Number(row.through_db_version)]),
-      );
-      type ExportedChangeRow = {
-        table_name: string;
-        pk: unknown;
-        cid: string;
-        val: unknown;
-        col_version: number;
-        db_version: number;
-        site_id: Uint8Array;
-        cl: number;
-        seq: number;
-      };
-      const throughDbVersion = options?.throughDbVersion != null && Number.isFinite(options.throughDbVersion)
-        ? Math.max(version, Math.floor(options.throughDbVersion))
-        : null;
-      const excludedTables = [...new Set(
-        (options?.excludeTables ?? [])
-          .map((table) => table.trim())
-          .filter(Boolean),
-      )];
-      const tableFilterSql = excludedTables.length > 0
-        ? ` and [table] not in (${excludedTables.map(() => "?").join(", ")})`
-        : "";
-      const rangeSql = throughDbVersion != null
-        ? `where db_version > ? and db_version <= ?${tableFilterSql}`
-        : `where db_version > ?${tableFilterSql}`;
-      const rangeParams = throughDbVersion != null
-        ? [version, throughDbVersion, ...excludedTables]
-        : [version, ...excludedTables];
-      const selectSql = `select [table] as table_name,
-                pk,
-                cid,
-                val,
-                col_version,
-                db_version,
-                site_id,
-                cl,
-                seq
-           from crsql_changes
-          ${rangeSql}
-          order by db_version asc, cl asc, seq asc`;
-      const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
-        ? Math.max(1, Math.floor(options.maxRows))
-        : null;
-      const survivesExportFilters = (row: ExportedChangeRow): boolean => {
-        const suppressedThroughVersion = suppressions.get(row.table_name);
-        if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
-          return true;
-        }
-        return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
-      };
-      // The crsql_changes vtab aborts a scan ("query aborted", SQLITE_ABORT)
-      // whenever another connection commits mid-read. Outside a transaction
-      // there is no snapshot isolation, so on a busy machine (multi-process
-      // writers) every export dies. A read transaction pins the WAL snapshot
-      // for the duration of the scan, making it immune to concurrent commits.
+      const plan = exportChangesPlan(version, options, desiredSiteId);
       let openedSnapshotTxn = false;
       try {
-        runStatement(db, "BEGIN");
-        openedSnapshotTxn = true;
-      } catch {
-        // Already inside a caller-managed transaction — its snapshot works too.
-      }
-      let rows: ExportedChangeRow[];
-      try {
-        if (maxRows == null) {
-          rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams).filter(survivesExportFilters);
-        } else {
-          // Scan forward in maxRows-sized fetches until one yields rows that
-          // survive the suppression/wipe-marker filters or the requested
-          // range is exhausted. An empty return must mean "the whole range
-          // was scanned": callers advance their watermark to the range end on
-          // empty results, so returning [] when a truncated fetch was merely
-          // filtered out would permanently skip the unscanned versions behind
-          // the truncation point.
-          let scanFromVersion = version;
-          for (;;) {
-            const scanParams = throughDbVersion != null
-              ? [scanFromVersion, throughDbVersion, ...excludedTables]
-              : [scanFromVersion, ...excludedTables];
-            let fetched = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...scanParams, maxRows + 1]);
-            let truncated = false;
-            if (fetched.length > maxRows) {
-              truncated = true;
-              // The fetch was truncated; drop the trailing (possibly incomplete)
-              // db_version group so consumers only ever watermark complete groups.
-              const tailVersion = Number(fetched[fetched.length - 1].db_version);
-              let cut = fetched.length;
-              while (cut > 0 && Number(fetched[cut - 1].db_version) === tailVersion) cut -= 1;
-              if (cut > 0) {
-                fetched = fetched.slice(0, cut);
-              } else {
-                if (options?.rejectOversizedVersionGroup === true) {
-                  throw codedError(
-                    `CRR version group ${tailVersion} exceeds the ${maxRows}-row export limit.`,
-                    CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE,
-                  );
-                }
-                // A single transaction touched more rows than maxRows. Fetch that
-                // one version group in full — bounded by the group itself.
-                fetched = allRows<ExportedChangeRow>(
-                  db,
-                  `select [table] as table_name,
-                pk,
-                cid,
-                val,
-                col_version,
-                db_version,
-                site_id,
-                cl,
-                seq
-           from crsql_changes
-          where db_version > ? and db_version <= ?${tableFilterSql}
-          order by db_version asc, cl asc, seq asc`,
-                  [scanFromVersion, tailVersion, ...excludedTables],
-                );
-              }
+        let step = plan.next();
+        while (!step.done) {
+          const query = step.value;
+          if (query === EXPORT_PLAN_BEGIN_SNAPSHOT) {
+            try {
+              runStatement(db, "BEGIN");
+              openedSnapshotTxn = true;
+            } catch {
+              // Already inside a caller-managed transaction — its snapshot works too.
             }
-            rows = fetched.filter(survivesExportFilters);
-            if (rows.length > 0 || !truncated || fetched.length === 0) break;
-            // Every fetched row was filtered out but the scan stopped short of
-            // the range end — continue from the last scanned version group.
-            scanFromVersion = Number(fetched[fetched.length - 1].db_version);
+            step = plan.next([]);
+          } else {
+            step = plan.next(allRows<ExportedChangeRow>(db, query.sql, query.params));
           }
         }
+        return mapExportedChangeRows(step.value);
       } finally {
         if (openedSnapshotTxn) {
           try {
@@ -5467,19 +5686,22 @@ export async function openKvDb(
           }
         }
       }
-
-      return rows
-        .map((row) => ({
-          table: row.table_name,
-          pk: encodeSyncScalar(row.pk),
-          cid: row.cid,
-          val: encodeSyncScalar(row.val),
-          col_version: Number(row.col_version),
-          db_version: Number(row.db_version),
-          site_id: Buffer.from(row.site_id).toString("hex"),
-          cl: Number(row.cl),
-          seq: Number(row.seq),
-        }));
+    },
+    exportChangesSinceOffThread: async (version: number, options?: ExportChangesOptions) => {
+      if (!crsqliteLoaded) return [];
+      const helper = exportHelper ?? (exportHelperDisabled || !extensionPath ? null : startExportHelper());
+      if (!helper) return sync.exportChangesSince(version, options);
+      try {
+        return mapExportedChangeRows(await helper.run(exportChangesPlan(version, options, desiredSiteId)));
+      } catch (error) {
+        if (isCodedError(error, CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE)) throw error;
+        // The helper is an optimisation: any failure of its own is logged once
+        // and every later export runs on this connection, as before.
+        logger.warn("db.export_helper_failed", { error: error instanceof Error ? error.message : String(error) });
+        exportHelperDisabled = true;
+        stopExportHelper();
+        return sync.exportChangesSince(version, options);
+      }
     },
     setRemoteSettleTupleHandler: (handler: ((changes: RemoteSettleTupleChange[]) => void) | null) => {
       remoteSettleTupleHandler = handler;
@@ -5655,6 +5877,7 @@ export async function openKvDb(
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
     },
     close: () => {
+      stopExportHelper();
       closeDatabase(db);
     },
   };
