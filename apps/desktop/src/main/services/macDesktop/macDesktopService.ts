@@ -139,6 +139,11 @@ import {
   linuxDesktopInstallCommand,
   LINUX_DESKTOP_ENCODER_MESSAGE,
 } from "../linuxDesktop/linuxDesktopSetup";
+import {
+  logLinuxHostReport,
+  reportLinuxScreenProblem,
+  reportLinuxSetupOutcome,
+} from "../linuxDesktop/linuxScreenTelemetry";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -829,7 +834,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // every later frame is dropped, and only a stop reveals the loss. The
         // helper sends it once; a stop already running ignores a repeat.
         if (!laneId) return;
-        recording.interruptRecording(laneId, asNullableString(event.error) ?? "The lane's recording stopped unexpectedly.");
+        const interruption = asNullableString(event.error) ?? "The lane's recording stopped unexpectedly.";
+        if (isLinuxSeat) reportLinuxScreenProblem("recording_interrupted");
+        recording.interruptRecording(laneId, interruption);
         return;
       }
       case "window-not-parked": {
@@ -942,6 +949,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return;
     }
     deps.logger.warn("mac_desktop.driver_lost", { reason, lanes: ownership.laneIds() });
+    // Only a loss that took a lane's screen: an idle exit would use up the
+    // once-per-process report before a real one.
+    const lostLanes = ownership.laneIds().length;
+    if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", { lanes: lostLanes });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
     recording.clear();
@@ -999,6 +1010,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const linuxDesktopStatusFacts = (): LinuxDesktopHostFacts | null => {
     const report = driverLifecycle.linuxHostReport();
     if (!report) return null;
+    logLinuxHostReport(report);
     return { ...report, installCommand: linuxDesktopInstallCommand(report.missing) };
   };
 
@@ -1411,9 +1423,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // rather than a permanent "starting". A failure to start is health,
         // not an exception.
         await driverLifecycle.ensureDriver().catch((error) => {
-          deps.logger.warn("mac_desktop.status_driver_start_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const message = error instanceof Error ? error.message : String(error);
+          deps.logger.warn("mac_desktop.status_driver_start_failed", { error: message });
+          if (isLinuxSeat) reportLinuxScreenProblem("helper_start_failed");
         });
       } else if (driverLifecycle.isDriverRunning()) {
         await driverLifecycle.refreshDriverHealth();
@@ -1557,6 +1569,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const result = await installLinuxDesktopPackages(missing);
       // The helper re-checks what is on the machine on every ping.
       await driverLifecycle.refreshDriverHealth();
+      reportLinuxSetupOutcome(missing, result, driverLifecycle.linuxHostReport()?.missing ?? null);
       return result;
     },
 

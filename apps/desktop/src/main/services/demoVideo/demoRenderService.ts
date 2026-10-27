@@ -36,6 +36,8 @@ import {
   type DemoPlan,
   type DemoTrack,
 } from "../../../shared/demoVideo/demoContract";
+import { captureProblem } from "../../../shared/sentry/capture";
+import { linuxHostTags } from "../linuxDesktop/linuxScreenTelemetry";
 import { demoMetadataFor, planDemo, planPlainDemo, refitPlanForSize } from "../../../shared/demoVideo/demoPlanner";
 import type { Logger } from "../logging/logger";
 import { type DemoMp4Inspection, inspectDemoMp4 } from "./demoMp4Source";
@@ -61,6 +63,9 @@ export type ProducedDemoVideo = {
 };
 
 const PLAYABLE_RAW = new Set([".mp4", ".mov", ".m4v"]);
+
+/** Engine sets whose total failure was already reported by this process. */
+const reportedEngineFailures = new Set<string>();
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -186,6 +191,7 @@ export async function produceDemoVideo(args: {
 
   let lastAnalysis: DemoAnalysis | null = null;
   let lastReason = "";
+  let failedStage: "analyze" | "render" = "analyze";
   for (const engine of engines) {
     let analysis: DemoAnalysis;
     try {
@@ -193,6 +199,7 @@ export async function produceDemoVideo(args: {
     } catch (error) {
       if (args.signal?.aborted) throw error;
       lastReason = `the recording could not be read (${errorText(error)})`;
+      failedStage = "analyze";
       logger.warn("demo_video.analyze_failed", { engine: engine.id, error: errorText(error) });
       continue;
     }
@@ -242,6 +249,29 @@ export async function produceDemoVideo(args: {
       }
     }
     lastReason = `the video could not be rendered (${errorText(lastError)})`;
+    failedStage = "render";
+  }
+  // Every engine that could read the file failed: the user gets the uncut
+  // recording, and nothing else would tell ADE the demo pipeline is broken here.
+  // Once per process: a machine that cannot render fails every recording.
+  // The stage, not the engines' errors: an ffmpeg error carries its stderr,
+  // and terminal output never goes to Sentry (the per-engine warn lines above
+  // keep the detail in the local log).
+  const engineIds = engines.map((engine) => engine.id).join(",");
+  if (!reportedEngineFailures.has(engineIds)) {
+    reportedEngineFailures.add(engineIds);
+    const stage = failedStage === "render" ? "the video could not be rendered" : "the recording could not be read";
+    captureProblem(`demo_video.all_engines_failed: ${stage}`, {
+      level: "warning",
+      tags: {
+        feature: "demo_video",
+        platform: process.platform,
+        arch: process.arch,
+        ...(process.platform === "linux" ? linuxHostTags() : {}),
+      },
+      extra: { engines: engineIds, stage: failedStage },
+      fingerprint: ["demo_video", "all_engines_failed", process.platform, engineIds, failedStage],
+    });
   }
   return await fileRawAsIs(lastReason, lastAnalysis);
 }

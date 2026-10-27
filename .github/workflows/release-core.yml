@@ -838,6 +838,9 @@ jobs:
         env:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          # Stamps a Sentry debug ID into the bundle and writes the SEA entry's
+          # source map (build-static.mjs); uploaded after the artifact below.
+          ADE_BUILD_SOURCEMAPS: "1"
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
 
       - name: Sign and validate standalone Windows runtime
@@ -959,6 +962,22 @@ jobs:
             apps/ade-cli/dist-static/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
+
+      # Readable stack traces in Sentry (ade-brain) for the standalone runtime,
+      # which is the brain on Linux. Same rules as the desktop uploads: after
+      # the artifact, never fails the job, skips without SENTRY_AUTH_TOKEN.
+      # The dist is what the runtime reports (sentryDist: mac-*, win-*, linux-*).
+      - name: Upload runtime source maps to Sentry
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          target="${{ matrix.target }}"; dist="${target/darwin/mac}"; dist="${dist/win32/win}"
+          node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "$dist" \
+            --dir "apps/ade-cli/dist-static/.sentry/$target"
 
   smoke-mac-x64:
     # build-mac-release packages x64 on Apple Silicon, where running the x64 app

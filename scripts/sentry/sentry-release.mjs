@@ -1,9 +1,12 @@
 // Release-time Sentry steps for the desktop app and the brain:
 //
-//   upload      --version <v> --dist <win-x64|mac-arm64|mac-x64>
+//   upload      --version <v> --dist <win-x64|mac-arm64|mac-x64|linux-x64|linux-arm64>
+//               [--dir <path>]
 //               Creates release ade@<v> in ade-desktop and ade-brain and uploads
 //               the debug-ID source maps from apps/desktop/dist and
-//               apps/ade-cli/dist. Run after packaging, in the same job.
+//               apps/ade-cli/dist. Run after packaging, in the same job. With
+//               --dir, uploads only that folder to ade-brain: the standalone
+//               runtime's SEA entry and its map (build-static.mjs).
 //   set-commits --version <v>   Associates commits, read from this checkout's
 //               git history (no Sentry GitHub integration needed).
 //   finalize    --version <v>   Marks the release as released.
@@ -32,7 +35,7 @@ import {
 } from "./sentry-cli.mjs";
 
 const PROJECTS = SOURCE_MAP_TARGETS.map((target) => target.project);
-const DISTS = new Set(["win-x64", "mac-arm64", "mac-x64"]);
+const DISTS = new Set(["win-x64", "mac-arm64", "mac-x64", "linux-x64", "linux-arm64"]);
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -68,7 +71,7 @@ function deepenHistory() {
   if (result.status !== 0) warn("Could not deepen git history; the release may list fewer commits.");
 }
 
-function upload(release, version, dist) {
+function upload(release, version, dist, dir) {
   if (!DISTS.has(dist)) {
     warn(`Unknown Sentry dist '${dist}'; expected one of ${[...DISTS].join(", ")}. Skipping upload.`);
     return;
@@ -85,7 +88,8 @@ function upload(release, version, dist) {
     return;
   }
   if (!createRelease(release)) return;
-  for (const target of SOURCE_MAP_TARGETS) {
+  const targets = dir ? [{ project: "ade-brain", dirs: [path.resolve(dir)] }] : SOURCE_MAP_TARGETS;
+  for (const target of targets) {
     const dirs = existingDirs(target.dirs);
     if (dirs.length === 0) {
       warn(`No build output for ${target.project}; nothing to upload.`);
@@ -123,7 +127,7 @@ function main() {
   }
   const release = `ade@${version}`;
   if (command === "upload") {
-    upload(release, version, String(options.dist ?? ""));
+    upload(release, version, String(options.dist ?? ""), options.dir ? String(options.dir) : null);
   } else if (command === "set-commits") {
     if (createRelease(release)) {
       // `--local` reads commits from this checkout instead of asking Sentry's
