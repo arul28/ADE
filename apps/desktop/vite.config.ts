@@ -77,14 +77,21 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           const normalized = id.replace(/\\/g, "/");
+          // Vite's preload helper is imported by every chunk with a lazy import.
+          // Left to the default placement it lands inside a vendor group (it
+          // landed in vendor-monaco), and then the entry statically imports
+          // that whole group just to reach the helper.
+          if (normalized.includes("vite/preload-helper")) return "preload-helper";
           if (!normalized.includes("/node_modules/")) return undefined;
           if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
+          // The lane graph's library (@xyflow) has no group: grouped with motion,
+          // which the shell needs at startup, it was part of every launch, and a
+          // group of its own took React's JSX runtime along and every icon with it.
           if (
-            normalized.includes("/node_modules/@xyflow/react/")
-            || normalized.includes("/node_modules/framer-motion/")
+            normalized.includes("/node_modules/framer-motion/")
             || normalized.includes("/node_modules/motion/")
           ) {
-            return "vendor-graph";
+            return "vendor-motion";
           }
           if (
             normalized.includes("/node_modules/@xterm/")

@@ -43,7 +43,9 @@ import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectH
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectSidebar } from "./projectSidebar/ProjectSidebar";
 import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar/ProjectSidebarSlot";
-import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
+// Home loads when a window has no project, not with every launch (its tool
+// logos alone are a few hundred KB).
+const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
@@ -1101,7 +1103,9 @@ function ProjectTabHost() {
       <div className="relative h-full min-h-0 w-full">
         {webMode ? <ProjectHostStartingBanner /> : null}
         <PageErrorBoundary>
-          <ProjectWelcomePage />
+          <React.Suspense fallback={GuardLoadingFallback}>
+            <ProjectWelcomePage />
+          </React.Suspense>
         </PageErrorBoundary>
         {webMode ? <ProjectHostRecoveryScreen /> : null}
       </div>

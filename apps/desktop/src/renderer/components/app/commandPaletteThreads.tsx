@@ -12,7 +12,7 @@
  * `SESSION_TONE_*_CLASS` rather than a local color map: see
  * `shared/sessionStatusPresentation.ts` for why exactly one hue table exists.
  */
-import React, { useMemo } from "react";
+import React, { lazy, Suspense, useMemo } from "react";
 import {
   ArrowUUpLeft,
   Check,
@@ -21,7 +21,8 @@ import {
   Plus,
   Sun,
 } from "@phosphor-icons/react";
-import { ToolLogo } from "../terminals/ToolLogos";
+// Tool logos (a few hundred KB of provider artwork) load with the first open palette.
+const ToolLogo = lazy(() => import("../terminals/ToolLogos").then((module) => ({ default: module.ToolLogo })));
 import type {
   LaneSummary,
   OpenProjectBinding,
@@ -470,7 +471,7 @@ export function threadStatusPresentation(
 }
 
 function ThreadGlyph({ session }: { session: TerminalSessionSummary }) {
-  return <ToolLogo toolType={session.toolType} size={16} />;
+  return <Suspense fallback={null}><ToolLogo toolType={session.toolType} size={16} /></Suspense>;
 }
 
 export const ThreadResultRow = React.memo(function ThreadResultRow({

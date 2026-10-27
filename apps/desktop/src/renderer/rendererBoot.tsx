@@ -1,0 +1,217 @@
+/**
+ * The renderer's startup, loaded by `main.tsx` once `window.ade` exists (the
+ * Electron preload's, or the browser mock's in a Vite-only preview).
+ */
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { MotionConfig } from "motion/react";
+import "./index.css";
+import jetbrainsMonoUrl from "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
+import geistVariableUrl from "../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
+import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
+import { App } from "./components/app/App";
+import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
+import { useAppStore } from "./state/appStore";
+import { logRendererDebugEvent } from "./lib/debugLog";
+import { initPerfRuntime } from "./perf/harness";
+import { rendererPlatformAttribute } from "./lib/platform";
+import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
+import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
+
+// Error tracking, loaded as its own chunk and only when main's Sentry client is
+// running (the preload installs the bridge in that case alone), so dev builds
+// and the browser mock never pay for it.
+if ("__SENTRY_IPC__" in window) {
+  void import("./sentry/initRenderer").then((module) => module.initRendererSentry()).catch(() => undefined);
+}
+
+document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
+
+// Windows draws its caption buttons over the trailing edge of the title bar.
+// Keep the header's end padding pinned to their real width so the feedback,
+// help, and zoom controls always land just to their left.
+trackWindowsCaptionInset();
+
+// Scrollbars show only while you scroll the region under the pointer.
+installScrollingIndicator();
+installAnimationPhaseAlignment();
+
+(function injectFontFaces() {
+  const style = document.createElement("style");
+  style.dataset.adeFonts = "true";
+  style.textContent = `
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('${jetbrainsMonoUrl}') format('woff2');
+      font-weight: 100 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist';
+      src: url('${geistVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist Mono';
+      src: url('${geistMonoVariableUrl}') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+// Vite/embedded browser: StrictMode double-invokes the graph (and other) mount
+// effects and clears graph session state, so the canvas flashes then empties. Electron
+// is already on Fragment; match that for the out-of-Electron dev preview.
+const RootWrapper = React.Fragment;
+
+function readRendererMemory() {
+  const perf = performance as Performance & {
+    memory?: {
+      usedJSHeapSize?: number;
+      totalJSHeapSize?: number;
+      jsHeapSizeLimit?: number;
+    };
+  };
+  const memory = perf.memory;
+  if (!memory) return null;
+  return {
+    usedMB: Math.round((memory.usedJSHeapSize ?? 0) / 1024 / 1024),
+    totalMB: Math.round((memory.totalJSHeapSize ?? 0) / 1024 / 1024),
+    limitMB: Math.round((memory.jsHeapSizeLimit ?? 0) / 1024 / 1024),
+  };
+}
+
+function isBenignWindowError(message: string): boolean {
+  return message === "ResizeObserver loop completed with undelivered notifications."
+    || message === "ResizeObserver loop limit exceeded";
+}
+
+window.addEventListener("error", (event) => {
+  if (isBenignWindowError(event.message)) {
+    event.preventDefault();
+    return;
+  }
+  logRendererDebugEvent("renderer.window_error", {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+    stack: event.error instanceof Error ? event.error.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  });
+  console.error(`renderer.window_error ${JSON.stringify({
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+    stack: event.error instanceof Error ? event.error.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  })}`);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  // Vite 6+ module-runner HMR can race: `send`/`invoke` run before the WS transport
+  // reports connected (notably on heavy routes e.g. /files + Monaco). Harmless in dev.
+  if (
+    import.meta.env.DEV
+    && reason instanceof Error
+    && (reason.message === "send was called before connect"
+      || reason.message === "invoke was called before connect")
+  ) {
+    event.preventDefault();
+    return;
+  }
+  logRendererDebugEvent("renderer.unhandled_rejection", {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  });
+  console.error(`renderer.unhandled_rejection ${JSON.stringify({
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack ?? null : null,
+    route: window.location.hash || window.location.pathname,
+  })}`);
+});
+
+let rendererWatchdogLastTick = performance.now();
+let rendererWatchdogIntervalId: number | null = null;
+
+function startWatchdog() {
+  if (rendererWatchdogIntervalId !== null) return;
+  rendererWatchdogLastTick = performance.now();
+  rendererWatchdogIntervalId = window.setInterval(() => {
+    const now = performance.now();
+    const driftMs = now - rendererWatchdogLastTick - 1000;
+    rendererWatchdogLastTick = now;
+    if (driftMs < 1500) return;
+    logRendererDebugEvent("renderer.event_loop_stall", {
+      driftMs: Math.round(driftMs),
+      route: window.location.hash || window.location.pathname,
+      visibilityState: document.visibilityState,
+      memory: readRendererMemory(),
+    });
+    console.warn(`renderer.event_loop_stall ${JSON.stringify({
+      driftMs: Math.round(driftMs),
+      route: window.location.hash || window.location.pathname,
+      visibilityState: document.visibilityState,
+      memory: readRendererMemory(),
+    })}`);
+  }, 1000);
+}
+
+function stopWatchdog() {
+  if (rendererWatchdogIntervalId === null) return;
+  window.clearInterval(rendererWatchdogIntervalId);
+  rendererWatchdogIntervalId = null;
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") {
+    startWatchdog();
+  } else {
+    stopWatchdog();
+  }
+}
+
+document.addEventListener("visibilitychange", handleVisibilityChange);
+window.addEventListener("beforeunload", () => {
+  stopWatchdog();
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+});
+
+if (document.visibilityState === "visible") {
+  startWatchdog();
+}
+
+// One-time: on large screens default the chat font up (14 → 16) unless the user
+// has set it themselves. Runs before first paint; any manual change locks it.
+try {
+  useAppStore.getState().applyAutoSizeChatFontOnLargeScreenIfNotOverridden();
+} catch {
+  // non-fatal — fall back to the persisted/default font size
+}
+
+// `reducedMotion="user"` makes every `motion` element in the tree honour the
+// OS setting without each site opting in: transform and layout animations are
+// skipped, opacity still animates, so the information arrives and only the trip
+// is dropped. Individual components can still read `usePrefersReducedMotion`
+// when they need to change what renders, not just how it moves.
+createRoot(document.getElementById("root")!).render(
+  <MotionConfig reducedMotion="user">
+    <RootWrapper>
+      <RendererErrorBoundary>
+        <App />
+      </RendererErrorBoundary>
+    </RootWrapper>
+  </MotionConfig>
+);
+
+void initPerfRuntime();

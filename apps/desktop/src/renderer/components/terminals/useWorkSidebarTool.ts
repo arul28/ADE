@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { WorkToolId } from "../../../shared/types/workTools";
 import {
@@ -340,12 +340,26 @@ function usePublishActiveWorkTool(
   // Incremented by binding/status changes so a reconnect re-publishes through
   // the same debounced effect instead of duplicating the call.
   const [republishToken, setRepublishToken] = useState(0);
+  // The project this surface belongs to. A window has one binding at a time,
+  // and every mounted project surface used to republish when it changed: one
+  // switch between two projects sent a publish from each parked Work surface.
+  const surfaceBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  const surfaceBindingKeyRef = useRef(surfaceBindingKey);
+  // After commit, so a render React throws away never changes what the
+  // listener below compares against.
+  useLayoutEffect(() => {
+    surfaceBindingKeyRef.current = surfaceBindingKey;
+  }, [surfaceBindingKey]);
 
   useEffect(() => {
     const app = window.ade?.app;
     const bump = () => setRepublishToken((token) => token + 1);
+    const bumpForOwnBinding = (binding: OpenProjectBinding | null) => {
+      const own = surfaceBindingKeyRef.current;
+      if (own == null || binding?.key === own) bump();
+    };
     const disposers = [
-      app?.onProjectBindingChanged?.(bump),
+      app?.onProjectBindingChanged?.(bumpForOwnBinding),
       subscribeRuntimeIdentityChanges(bump),
       subscribeRemoteRuntimeIdentityChanges(bump),
     ];

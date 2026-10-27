@@ -84,6 +84,7 @@ import { appleDuoHeldOrientation, appleDuoInTent, appleDuoScreenName } from "../
 import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -225,7 +226,6 @@ export function AppleDevicePane({
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [bodyWidth, setBodyWidth] = useState(720);
   const [hidden, setHidden] = useState(false);
-  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const {
     status,
@@ -467,11 +467,7 @@ export function AppleDevicePane({
   });
   const recordingActive = recordings.active;
 
-  useEffect(() => {
-    if (!recordingActive) return undefined;
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [recordingActive]);
+  const nowTick = useTicker(1000, Boolean(recordingActive));
 
   /* ── the view toggle (§A2) and the 3D fallback (§A1) ───────────────────── */
 

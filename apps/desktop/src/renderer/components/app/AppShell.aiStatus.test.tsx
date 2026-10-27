@@ -45,10 +45,6 @@ vi.mock("../lanes/LaneAccentDot", () => ({
   LaneAccentDot: () => <span data-testid="lane-accent-dot" />,
 }));
 
-vi.mock("../terminals/TerminalView", () => ({
-  disposeTerminalRuntimesForProjectChange: vi.fn(),
-}));
-
 vi.mock("../../lib/debugLog", () => ({
   logRendererDebugEvent: vi.fn(),
 }));

@@ -28,6 +28,8 @@ const ROOT_TREE_DEPTH = 2;
 // Path reveals (external opens) may need entries beyond the first page; they
 // page up to this bound instead of the single visible page expansion uses.
 const REVEAL_MAX_CHILDREN = 10_000;
+/** How many folders of a reveal are read at once. */
+const REVEAL_PARALLEL_READS = 4;
 
 /** Every ancestor directory of a path, shallowest first. */
 export function pathAncestors(path: string): string[] {
@@ -232,23 +234,39 @@ export function useFilesTree(args: FilesTreeArgs) {
     }
   }, []);
 
+  // How many listings each folder has had applied. A read started before a
+  // newer listing landed (the file watcher's refresh) must not replace it.
+  const appliedListingsRef = useRef(new Map<string, number>());
+
   const refreshLoadedDirectory = useCallback(
     (
       parentPath: string,
       reqId = workspaceId,
-      options: { suppressMissingError?: boolean; minChildren?: number } = {},
+      options: {
+        suppressMissingError?: boolean;
+        minChildren?: number;
+        /**
+         * A read of this folder already started with `minChildren`, and how many
+         * listings the folder had applied when it started. Used only when it
+         * still covers what is loaded and no newer listing has landed since.
+         */
+        prefetched?: { read: Promise<Awaited<ReturnType<typeof fetchDirectoryChildren>>>; appliedAtStart: number };
+      } = {},
     ) => {
       if (!reqId) return Promise.resolve();
       return runSerializedTreeOp(parentPath, async () => {
         setLoadingDirs((prev) => new Set(prev).add(parentPath));
         try {
           const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
-          const result = await fetchDirectoryChildren(
-            reqId,
-            parentPath,
-            Math.max(loadedCount, options.minChildren ?? 0),
-          );
+          const minChildren = options.minChildren ?? 0;
+          const prefetched = options.prefetched;
+          const result = prefetched
+            && loadedCount <= minChildren
+            && (appliedListingsRef.current.get(parentPath) ?? 0) === prefetched.appliedAtStart
+            ? await prefetched.read
+            : await fetchDirectoryChildren(reqId, parentPath, Math.max(loadedCount, minChildren));
           if (!result || workspaceIdRef.current !== reqId) return;
+          appliedListingsRef.current.set(parentPath, (appliedListingsRef.current.get(parentPath) ?? 0) + 1);
           setTree((prev) => {
             const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
             writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
@@ -280,12 +298,41 @@ export function useFilesTree(args: FilesTreeArgs) {
   const loadDirectoryPath = useCallback(
     async (directoryPath: string) => {
       // Reveals must materialize the revealed entries even when they sit past
-      // the first page, so page deeper than a plain expansion.
-      for (const ancestor of pathAncestors(directoryPath)) {
-        await refreshLoadedDirectory(ancestor, workspaceIdRef.current, { minChildren: REVEAL_MAX_CHILDREN });
+      // the first page, so page deeper than a plain expansion. Every level is
+      // read at once (a few at a time), and applied top-down in order: one
+      // round trip per level was what a deep reveal waited on, most of all on
+      // another machine.
+      const reqId = workspaceIdRef.current;
+      if (!reqId) return;
+      const ancestors = pathAncestors(directoryPath);
+      const reads = new Map<string, { read: ReturnType<typeof fetchDirectoryChildren>; appliedAtStart: number }>();
+      const readOf = (ancestor: string) => {
+        // A folder already loaded past the reveal page gets its larger read in
+        // the refresh itself; reading it here too would be thrown away.
+        if (loadedDirectoryChildrenCount(treeRef.current, ancestor) > REVEAL_MAX_CHILDREN) return undefined;
+        let entry = reads.get(ancestor);
+        if (!entry) {
+          entry = {
+            read: fetchDirectoryChildren(reqId, ancestor, REVEAL_MAX_CHILDREN),
+            appliedAtStart: appliedListingsRef.current.get(ancestor) ?? 0,
+          };
+          reads.set(ancestor, entry);
+        }
+        return entry;
+      };
+      for (const [index, ancestor] of ancestors.entries()) {
+        // Keep the next few levels reading while this one applies. A level that
+        // fails is reported when its turn comes, not here.
+        for (const ahead of ancestors.slice(index, index + REVEAL_PARALLEL_READS)) {
+          readOf(ahead)?.read.catch(() => undefined);
+        }
+        await refreshLoadedDirectory(ancestor, reqId, {
+          minChildren: REVEAL_MAX_CHILDREN,
+          prefetched: readOf(ancestor),
+        });
       }
     },
-    [refreshLoadedDirectory, workspaceIdRef],
+    [fetchDirectoryChildren, refreshLoadedDirectory, workspaceIdRef],
   );
 
   const loadMoreChildren = useCallback(

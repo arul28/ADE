@@ -19,7 +19,7 @@
  * connection to it.
  */
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { readGitOriginUrlFromConfigOrGit } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
 import { canonicalGitOriginUrl } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { RuntimeRpcClient } from "../../../../desktop/src/main/services/remoteRuntime/runtimeRpcClient";
@@ -145,17 +145,8 @@ export function machineName(machine: AdeAccountMachine): string {
 }
 
 export function readGitOriginUrl(root: string): string | null {
-  const result = spawnSync("git", ["config", "--get", "remote.origin.url"], {
-    cwd: root,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5_000,
-    windowsHide: true,
-  });
-  if (result.status !== 0) return null;
-  const value = typeof result.stdout === "string" ? result.stdout.trim() : "";
   // The identity form: an SSH alias of GitHub becomes `github.com`.
-  return canonicalGitOriginUrl(value || null);
+  return canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(root));
 }
 
 export function coerceProjects(value: unknown): RemoteProjectRecord[] {

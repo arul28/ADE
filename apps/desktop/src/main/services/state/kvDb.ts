@@ -889,6 +889,29 @@ export function rebuildTableInTransaction(
   }
 }
 
+/**
+ * The app's own tables: not SQLite's or cr-sqlite's, not a virtual table, and
+ * not a virtual table's shadow table. The virtual tables are read once
+ * (materialized); as a correlated subquery the shadow check rescanned
+ * sqlite_master for every table, about 22 ms per call on a 440-table schema.
+ */
+const USER_TABLES_SQL = `with virtual_tables as materialized (
+    select name from sqlite_master
+     where type = 'table'
+       and sql is not null
+       and lower(sql) like 'create virtual%'
+  )
+  select m.name, m.sql
+    from sqlite_master m
+   where m.type = 'table'
+     and m.sql is not null
+     and m.name not like 'sqlite_%'
+     and m.name not like 'crsql_%'
+     and m.name not like '%__crsql_clock'
+     and m.name not like '%__crsql_pks'
+     and lower(m.sql) not like 'create virtual%'
+     and not exists (select 1 from virtual_tables v where m.name like v.name || '\\_%' escape '\\')`;
+
 function retrofitLegacyPrimaryKeyNotNullSchema(
   db: DatabaseSyncType,
   ambiguousTables: ReadonlySet<string> = new Set(),
@@ -896,22 +919,7 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
 ): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
-    `select m.name, m.sql
-       from sqlite_master m
-      where m.type = 'table'
-        and m.sql is not null
-        and m.name not like 'sqlite_%'
-        and m.name not like 'crsql_%'
-        and m.name not like '%__crsql_clock'
-        and m.name not like '%__crsql_pks'
-        and lower(m.sql) not like 'create virtual%'
-        and not exists (
-          select 1 from sqlite_master v
-           where v.type = 'table'
-             and v.sql is not null
-             and lower(v.sql) like 'create virtual%'
-             and m.name like v.name || '\\_%' escape '\\'
-        )`
+    USER_TABLES_SQL
   );
 
   let changed = false;
@@ -1060,22 +1068,7 @@ function retrofitForeignKeyCascadeActions(
 ): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
-    `select m.name, m.sql
-       from sqlite_master m
-      where m.type = 'table'
-        and m.sql is not null
-        and m.name not like 'sqlite_%'
-        and m.name not like 'crsql_%'
-        and m.name not like '%__crsql_clock'
-        and m.name not like '%__crsql_pks'
-        and lower(m.sql) not like 'create virtual%'
-        and not exists (
-          select 1 from sqlite_master v
-           where v.type = 'table'
-             and v.sql is not null
-             and lower(v.sql) like 'create virtual%'
-             and m.name like v.name || '\\_%' escape '\\'
-        )`
+    USER_TABLES_SQL
   );
 
   // Build a lookup: tableName -> list of { column, references, action }
@@ -1261,6 +1254,10 @@ const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: 
  *   references. It needs a terminal-status + `finished_at` policy instead.
  */
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  // A machine's own worktree locks (no primary key, never synced). Its unique
+  // key is what makes it a lock; the CRR primary-key retrofit stripped that
+  // index, the schema created it again, and every open rebuilt the table.
+  "lane_worktree_locks",
   // Which dead agent shells this machine may archive. It describes this
   // machine's own launches and typing, so a peer must never receive it.
   "agent_shell_cleanup",
@@ -1454,22 +1451,7 @@ export type RemoteSettleTupleChange = {
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
     db,
-    `select m.name, m.sql
-       from sqlite_master m
-      where m.type = 'table'
-        and m.sql is not null
-        and m.name not like 'sqlite_%'
-        and m.name not like 'crsql_%'
-        and m.name not like '%__crsql_clock'
-        and m.name not like '%__crsql_pks'
-        and lower(m.sql) not like 'create virtual%'
-        and not exists (
-          select 1 from sqlite_master v
-           where v.type = 'table'
-             and v.sql is not null
-             and lower(v.sql) like 'create virtual%'
-             and m.name like v.name || '\\_%' escape '\\'
-        )`
+    USER_TABLES_SQL
   );
   return tables
     .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
@@ -1627,17 +1609,18 @@ function removeOrphanedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
 }
 
 function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
+  // Read once per pass: cleaning one excluded table touches only that table's
+  // own shadow tables, triggers and metadata rows, never another's.
+  const crrSchema = readCrrSchemaSnapshot(db);
+  const masterHasTableNames = rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name");
+  const changesHasTableNames = rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table");
   for (const tableName of LOCAL_ONLY_CRR_EXCLUDED_TABLES) {
     const clockTableName = `${tableName}__crsql_clock`;
     const pksTableName = `${tableName}__crsql_pks`;
-    const hasClockTable = rawHasTable(db, clockTableName);
-    const hasPksTable = rawHasTable(db, pksTableName);
-    const triggerCount = listCrrTriggers(db, tableName).length;
-    const hasMasterRows = rawHasTable(db, "crsql_master")
-      && rawHasColumn(db, "crsql_master", "tbl_name")
+    const { hasClock: hasClockTable, hasPks: hasPksTable, triggerCount } = crrTableState(crrSchema, tableName);
+    const hasMasterRows = masterHasTableNames
       && Boolean(getRow(db, "select 1 as present from crsql_master where tbl_name = ? limit 1", [tableName]));
-    const hasChangesRows = rawHasTable(db, "crsql_changes")
-      && rawHasColumn(db, "crsql_changes", "table")
+    const hasChangesRows = changesHasTableNames
       && Boolean(getRow(db, "select 1 as present from crsql_changes where [table] = ? limit 1", [tableName]));
 
     if (!hasClockTable && !hasPksTable && triggerCount === 0 && !hasMasterRows && !hasChangesRows) {
@@ -2052,11 +2035,37 @@ export function sweepOrphanedRepairStagingTables(
   }
 }
 
-function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
-  if (!rawHasTable(db, `${tableName}__crsql_clock`)) {
-    return false;
-  }
-  return listCrrTriggers(db, tableName).length < 3;
+type CrrSchemaSnapshot = {
+  tableNames: ReadonlySet<string>;
+  /** CRR triggers per table, counted as `listCrrTriggers` counts them. */
+  crrTriggerCounts: ReadonlyMap<string, number>;
+};
+
+/** The schema facts the CRR passes check per table, read in two queries. */
+function readCrrSchemaSnapshot(db: DatabaseSyncType): CrrSchemaSnapshot {
+  const tableNames = new Set(
+    allRows<{ name: string }>(db, "select name from sqlite_master where type = 'table'").map((row) => row.name),
+  );
+  const crrTriggerCounts = new Map(
+    allRows<{ tbl_name: string; trigger_count: number }>(
+      db,
+      `select tbl_name, count(*) as trigger_count
+         from sqlite_master
+        where type = 'trigger'
+          and name like tbl_name || '__crsql_%trig'
+        group by tbl_name`,
+    ).map((row) => [row.tbl_name, Number(row.trigger_count)] as const),
+  );
+  return { tableNames, crrTriggerCounts };
+}
+
+/** Whether `tableName`'s CRR tables exist and how many CRR triggers it has, whether or not the table itself still exists. */
+function crrTableState(schema: CrrSchemaSnapshot, tableName: string): { hasClock: boolean; hasPks: boolean; triggerCount: number } {
+  return {
+    hasClock: schema.tableNames.has(`${tableName}__crsql_clock`),
+    hasPks: schema.tableNames.has(`${tableName}__crsql_pks`),
+    triggerCount: schema.crrTriggerCounts.get(tableName) ?? 0,
+  };
 }
 
 function disableCrrTriggersForUnavailableRuntime(db: DatabaseSyncType, logger?: Logger): void {
@@ -2182,9 +2191,15 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
     }
   };
 
+  // One read of the schema for the whole pass instead of a full sqlite_master
+  // scan per table. Converting table T only adds T's own clock, pks and
+  // triggers, and each table is looked up once, before its own conversion, so
+  // the answers match reading the schema live.
+  const crrSchema = readCrrSchemaSnapshot(db);
   for (const tableName of listEligibleCrrTables(db)) {
-    if (rawHasTable(db, `${tableName}__crsql_clock`)) {
-      if (tableNeedsCrrTriggerRepair(db, tableName)) {
+    const state = crrTableState(crrSchema, tableName);
+    if (state.hasClock) {
+      if (state.triggerCount < 3) {
         convertToCrr(tableName);
       }
       if (!repairTargets.has(tableName)) {

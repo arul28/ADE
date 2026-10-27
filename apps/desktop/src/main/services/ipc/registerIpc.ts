@@ -1937,6 +1937,7 @@ export function registerIpc({
   resolveSyncService,
   runWithIpcWindow,
   getWindowSession,
+  waitForStartupProjectOpen,
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
@@ -1975,6 +1976,8 @@ export function registerIpc({
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
   getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
+  /** Settles when the launch has opened (or failed to open) its startup project. */
+  waitForStartupProjectOpen?: () => Promise<void>;
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
@@ -3755,6 +3758,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appGetWindowSession, async (event) => {
+    // The first window can load before the launch has opened its project.
+    await waitForStartupProjectOpen?.();
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
@@ -5243,7 +5248,10 @@ export function registerIpc({
   // window still shows the recovery screen.
   ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
     if (!projectRecoveryService) return null;
-    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) return projectRecoveryService.startupProjectDataStatus();
+    if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) {
+      await waitForStartupProjectOpen?.();
+      return projectRecoveryService.startupProjectDataStatus();
+    }
     const projectRoot = resolveRequestedProjectRoot(arg.projectRoot.trim());
     return projectRoot ? projectRecoveryService.projectDataStatus(projectRoot) : null;
   });

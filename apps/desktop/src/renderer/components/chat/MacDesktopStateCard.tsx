@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Monitor, type Icon } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The one card the pane shows when there is no picture to show.
@@ -32,12 +33,7 @@ function useElapsedSeconds(active: boolean, since?: number | null): number | nul
   // A wait the host started before this card mounted (a sign-in still running
   // when the pane is reopened) counts from its own start, not from the mount.
   const startedAt = since ?? mountedAt;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [active]);
+  const now = useTicker(1000, active);
   const elapsed = now - startedAt;
   return active && elapsed >= MAC_DESKTOP_ELAPSED_AFTER_MS ? Math.floor(elapsed / 1_000) : null;
 }

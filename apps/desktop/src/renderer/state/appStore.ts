@@ -389,6 +389,12 @@ const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LANE_STATUS_MAX_AGE_MS = 30_000;
 /** Delay before a scheduled status read, so a burst of identity reads collapses into one. */
 const LANE_STATUS_READ_DELAY_MS = 1_200;
+/**
+ * The keybindings each project last answered with, so a switch back shows
+ * them at once (and keybinding readers do not render the defaults for a
+ * moment) while the read that follows the switch refreshes them.
+ */
+const keybindingsByProjectRoot = new Map<string, KeybindingsSnapshot>();
 
 export function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -1971,11 +1977,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
   let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
   /**
-   * When this store's lanes last carried a measured git status, and for which
-   * project. Status-less reads carry the old status forward; this is what
-   * tells "measured just now" from "inherited from a cache of any age".
+   * When this store's lanes last carried a measured git status, per project.
+   * Status-less reads carry the old status forward; this is what tells
+   * "measured just now" from "inherited from a cache of any age". Per project,
+   * so a switch back to a project measured seconds ago does not measure it
+   * again: the root store follows every project switch.
    */
-  let laneStatusReadAt: { projectKey: string | null; atMs: number } | null = null;
+  const laneStatusReadAt = new Map<string | null, number>();
   let laneStatusReadTimer: number | null = null;
   /**
    * The strictest freshness the pending timer was asked for. A later, stricter
@@ -1984,10 +1992,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    */
   let laneStatusReadThresholdMs = LANE_STATUS_MAX_AGE_MS;
 
-  const laneStatusAgeMs = (projectKey: string | null): number =>
-    laneStatusReadAt && laneStatusReadAt.projectKey === projectKey
-      ? Date.now() - laneStatusReadAt.atMs
-      : Number.POSITIVE_INFINITY;
+  const laneStatusAgeMs = (projectKey: string | null): number => {
+    const atMs = laneStatusReadAt.get(projectKey);
+    return atMs == null ? Number.POSITIVE_INFINITY : Date.now() - atMs;
+  };
 
   const scheduleLaneStatusRead = (maxAgeMs: number) => {
     const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
@@ -2020,14 +2028,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const delay = Math.max(1_200, 1_800);
     warmupTimer = window.setTimeout(() => {
       warmupTimer = null;
-      void get().refreshLanes({
-        includeStatus: true,
-        includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
-      }).catch((err) => {
-        console.debug("Scheduled lane refresh failed:", err);
-      });
+      // A git status read of every lane, only when this project's status is
+      // older than the freshness window. The status-less read the switch
+      // started has already asked for one when its numbers were stale.
+      const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      if (laneStatusAgeMs(projectKey) >= LANE_STATUS_MAX_AGE_MS) {
+        void get().refreshLanes({
+          includeStatus: true,
+          includeConflictStatus: false,
+          includeRebaseSuggestions: false,
+          includeAutoRebaseStatus: false,
+        }).catch((err) => {
+          console.debug("Scheduled lane refresh failed:", err);
+        });
+      }
       void get().refreshProviderMode();
     }, delay);
   };
@@ -3086,7 +3100,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         };
       });
       if (currentRequest.includeStatus) {
-        laneStatusReadAt = { projectKey: requestedProjectKey, atMs: Date.now() };
+        laneStatusReadAt.set(requestedProjectKey, Date.now());
       } else {
         // This read carried the previous status forward (or the brain's 0/0
         // placeholder when there was none). Measure it unless that was recent.
@@ -3161,9 +3175,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   refreshKeybindings: async () => {
-    const keybindings = await getKeybindingsCoalesced({
-      projectRoot: selectActiveProjectRoot(get()),
-    });
+    const projectRoot = selectActiveProjectRoot(get());
+    const keybindings = await getKeybindingsCoalesced({ projectRoot });
+    if (projectRoot) keybindingsByProjectRoot.set(projectRoot, keybindings);
+    // A switch made while this read was out: the answer is the other project's.
+    if (selectActiveProjectRoot(get()) !== projectRoot) return;
     set({ keybindings });
   },
 
@@ -3307,13 +3323,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             standaloneSettingsOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
-            laneStatusStale: true,
+            // Status measured under the freshness window is current: no read
+            // follows to clear the flag, so it must not be set.
+            laneStatusStale: cachedWarmLanes
+              ? laneStatusAgeMs(normalizeProjectKey(cachedProject.rootPath)) >= LANE_STATUS_MAX_AGE_MS
+              : true,
             lanesLoading: !cachedWarmLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredWarmSelection.laneId,
             focusedSessionId: restoredWarmSelection.sessionId,
             laneInspectorTabs: {},
-            keybindings: null,
+            keybindings: keybindingsByProjectRoot.get(cachedProject.rootPath) ?? null,
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           }
