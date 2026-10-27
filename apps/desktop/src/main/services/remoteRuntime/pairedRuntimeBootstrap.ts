@@ -293,11 +293,19 @@ export async function bootstrapPairedRuntime(args: {
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     const latencyStartedAt = Date.now();
+    // Pipelined: `projects.list` goes out right behind `initialize` instead of
+    // one round trip later. The runtime marks the session initialized before
+    // its first await, so the second request finds it ready. Its answer is
+    // used only once `initialize` proves the runtime compatible; any failure
+    // other than a dead transport falls back to asking again afterwards.
+    const initializing = client.initialize(
+      DESKTOP_CLIENT_NAMES.remote,
+      args.appVersion,
+    );
+    const pipelinedProjects = client.call("projects.list", {});
+    pipelinedProjects.catch(() => {});
     try {
-      initializeResult = await client.initialize(
-        DESKTOP_CLIENT_NAMES.remote,
-        args.appVersion,
-      );
+      initializeResult = await initializing;
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {
@@ -330,7 +338,10 @@ export async function bootstrapPairedRuntime(args: {
 
     let projects;
     try {
-      projects = coerceProjects(await client.call("projects.list", {}));
+      projects = coerceProjects(await pipelinedProjects.catch(async (error) => {
+        if (isPairedTransportFailure(error)) throw error;
+        return await client.call("projects.list", {});
+      }));
     } catch (error) {
       client.close();
       if (isPairedTransportFailure(error)) {

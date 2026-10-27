@@ -248,7 +248,9 @@ func hubRosterFilterCount(
   filter: HubRosterFilter
 ) -> Int {
   presentations.reduce(0) { partial, presentation in
-    partial + presentation.lanes.reduce(0) { lanePartial, lane in
+    // Chats a paged roster has not loaded are all Done chats.
+    let older = hubRosterFilterContains(.done, filter) ? presentation.olderChatCount : 0
+    return partial + older + presentation.lanes.reduce(0) { lanePartial, lane in
       lanePartial + lane.rows.reduce(0) { rowPartial, row in
         rowPartial + (hubRosterFilterContains(row.boardState.column, filter) ? 1 : 0)
       }
@@ -266,7 +268,8 @@ func hubProjectPresentation(
     guard !rows.isEmpty else { return nil }
     return HubLanePresentation(lane: lane.lane, rows: rows, totalCount: rows.count)
   }
-  guard !lanes.isEmpty else { return nil }
+  let older = hubRosterFilterContains(.done, filter) ? presentation.olderChatCount : 0
+  guard !lanes.isEmpty || older > 0 else { return nil }
   let chatCount = lanes.reduce(0) { $0 + $1.rows.count }
   return HubProjectPresentation(
     project: presentation.project,
@@ -277,7 +280,8 @@ func hubProjectPresentation(
     chatCount: chatCount,
     lanes: lanes,
     attentionCount: hubLaneColumnCount(lanes, .needsYou),
-    runningCount: hubLaneColumnCount(lanes, .working)
+    runningCount: hubLaneColumnCount(lanes, .working),
+    olderChatCount: older
   )
 }
 

@@ -5467,6 +5467,13 @@ struct SyncRemoteCommandDescriptor: Codable, Equatable, Identifiable {
   var policy: SyncRemoteCommandPolicy
 }
 
+/// One (scope, policy) of `commandRouting.actionGroups` and its actions.
+struct SyncRemoteCommandActionGroup: Codable, Equatable {
+  var scope: String? = nil
+  var policy: SyncRemoteCommandPolicy
+  var actions: [String]
+}
+
 struct FilesWorkspace: Codable, Identifiable, Equatable {
   var id: String
   var kind: String

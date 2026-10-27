@@ -391,6 +391,33 @@ func syncShouldQueueCommandAfterSendFailure(
   return !canSendLiveRequests || isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error)
 }
 
+/// The work list after a `work.listSessions` delta: `upserted` rows replace
+/// or join `base`, `removedIds` leave it, and `order` (every id, when the host
+/// sent it) sets the order; without it the base order holds and new rows go
+/// last.
+func workSessionsApplyingDelta(
+  base: [TerminalSessionSummary],
+  upserted: [TerminalSessionSummary],
+  removedIds: [String],
+  order: [String]?
+) -> [TerminalSessionSummary] {
+  var byId: [String: TerminalSessionSummary] = [:]
+  for session in base { byId[session.id] = session }
+  for session in upserted { byId[session.id] = session }
+  for id in removedIds { byId.removeValue(forKey: id) }
+  if let order {
+    return order.compactMap { byId[$0] }
+  }
+  var seen = Set<String>()
+  var result: [TerminalSessionSummary] = []
+  for session in base + upserted {
+    guard !seen.contains(session.id), let current = byId[session.id] else { continue }
+    seen.insert(session.id)
+    result.append(current)
+  }
+  return result
+}
+
 func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) throws -> T {
   do {
     let data = try adeJSONData(withJSONObject: raw)
@@ -758,6 +785,11 @@ private func syncFoundationObject(from value: RemoteJSONValue) -> Any {
   }
 }
 
+/// A flag a `@MainActor` closure can set (see the project-row gate's sleep).
+final class SyncMutableFlag {
+  var value = false
+}
+
 enum InitialHydrationGate {
   static let defaultTimeoutNanoseconds: UInt64 = 15_000_000_000
   static let defaultPollIntervalNanoseconds: UInt64 = 200_000_000
@@ -849,6 +881,18 @@ let syncChatHistoryTailPageMaxBytes = 600_000
 // A bounded tail keeps chat switches instant on constrained routes. Complete
 // reasoning remains reachable through the same byte-cursor paging contract.
 private let syncReducedLoadChatSubscriptionMaxBytes = 256 * 1024
+/// A chat's first page on a weak link: about the last turn. Older history
+/// pages in on scroll-up, prefetched before the reader reaches the top.
+let syncWeakLinkChatSubscriptionMaxBytes = 96 * 1024
+
+/// A link is weak when this connection's own handshake (socket dial,
+/// WebSocket upgrade and hello, about three round trips) took 700 ms or more:
+/// a 3G-class round trip (~250 ms or worse). LTE, Wi-Fi and LAN connect in
+/// well under that. Measured per connection, never guessed from the radio.
+func syncLinkIsWeak(handshakeSeconds: TimeInterval?) -> Bool {
+  guard let handshakeSeconds else { return false }
+  return handshakeSeconds >= 0.7
+}
 private let syncTerminalBufferMaxCharacters = 240_000
 
 enum SyncBonjourTiming {
@@ -4296,6 +4340,12 @@ final class SyncService: ObservableObject {
   // projection of every project's lanes + chats; the hub reads it overlaid on
   // `projects` (the catalog). Mutated only by the roster apply path below.
   @Published private(set) var rosterProjects: [RemoteRosterProject] = []
+  /// Older chats the user loaded per project id (`rosterChatPagesV1`), beyond
+  /// the roster's head rows. Not persisted; a full snapshot drops them.
+  @Published private(set) var rosterOlderChats: [String: RosterOlderChats] = [:]
+  /// Bumped whenever `rosterOlderChats` is dropped, so a page that was in
+  /// flight across the drop is not added to the new state.
+  private var rosterOlderChatsGeneration = 0
   @Published private(set) var rosterRevision = 0
   /// Per-project roster stamps let an open Work tab ignore high-frequency
   /// roster activity from agents running in other projects. Values are local
@@ -4554,6 +4604,8 @@ final class SyncService: ObservableObject {
   /// visible to the same UI regardless of process.
   private let pendingChatCreationsKey = "ade.sync.pendingChatCreations.v1"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+  /// `<app build>|<commandRouting.actionsDigest>` of the saved descriptors.
+  private let remoteCommandDescriptorsDigestKey = "ade.sync.remoteCommandDescriptorsDigest"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
   private let outboundSyncStateMaxEntries = 128
@@ -4755,6 +4807,48 @@ final class SyncService: ObservableObject {
   private var connectionEstablishedUptime: TimeInterval?
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
+  /// The last hello_ok carried a non-empty project catalog, so the post-hello
+  /// catalog request would only repeat it.
+  private var helloCarriedProjectCatalog = false
+  /// The catalog the last hello_ok carried, with the host's digest of it.
+  /// The next hello on the same machine sends the digest, and a host whose
+  /// catalog has not changed leaves it out (`projectCatalogUnchanged`).
+  /// In memory only: a relaunch downloads the catalog once.
+  private var lastHelloProjectCatalog: (hostKey: String, digest: String, catalog: MobileProjectCatalogPayload)?
+  /// `changesetAckWindowV1`: a batch failed to apply on this connection, so
+  /// every later batch is rejected until the host's resend (a batch that
+  /// starts at or before the applied cursor) arrives. Batches in flight behind
+  /// the failed one would otherwise leave a hole below the cursor.
+  private var changesetApplyBlockedAfterFailure: (generation: UInt64, cursor: Int)?
+  /// `hello.pipelined` for the connect attempt in flight: built once, so every
+  /// candidate socket carries the same request ids.
+  private var pipelinedHelloPlan: SyncPipelinedHelloPlan?
+  /// The plan the connected host took (`features.pipelinedHello.accepted`):
+  /// its answers arrive behind hello_ok, and the first matching request of
+  /// this connection waits for them instead of sending.
+  private var acceptedPipelinedHello: SyncPipelinedHelloPlan?
+  /// Pipelined answers that arrived before their caller asked.
+  private var pipelinedHelloReplies: [String: Any] = [:]
+  /// The last conditional `work.listSessions` answer, so a `notModified`
+  /// reply can apply the same rows again. Saved to a file as well, so a
+  /// relaunch can ask conditionally too (`loadSavedWorkSessionsCache`).
+  private var workSessionsConditionalCache: (key: String, signature: String, sessions: [TerminalSessionSummary])? {
+    didSet { saveWorkSessionsCache(workSessionsConditionalCache) }
+  }
+  /// Lists whose saved copy was already read this launch (one read per list).
+  private var workSessionsCacheLoadedKeys: Set<String> = []
+  /// The last full lane answer per signature key, for `lanes.refreshSnapshots` deltas.
+  private var laneFullListCache: [String: (signature: String, lanes: [LaneSummary], snapshots: [LaneListSnapshot], refreshedCount: Int)] = [:]
+  /// This connection's dial-to-hello_ok time (see `syncLinkIsWeak`).
+  private var connectionHandshakeSeconds: TimeInterval?
+  /// Waiters woken by the next applied changeset batch (the project-row gate).
+  private var changesetApplyWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+  /// Lists whose full copy was asked for after a head-rows answer, so the
+  /// follow-up asks for the whole list.
+  private var workSessionsFullListScheduled: Set<String> = []
+  /// The last conditional `prs.list` answer (in memory), so a `notModified`
+  /// reply reuses the same PRs.
+  private var pullRequestListConditionalCache: (key: String, signature: String, prs: [PrSummary])?
   private var remoteProjectCatalog: [MobileProjectSummary] = []
   private var hiddenProjectKeys: Set<String> = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
@@ -5893,6 +5987,14 @@ final class SyncService: ObservableObject {
     }]))
   }
 
+  /// hello_ok already carried the catalog unless it was too big for one
+  /// envelope (the host then sends `projects: []`); asking again would
+  /// download the same list a second time on every connect.
+  private func refreshRemoteProjectCatalogUnlessHelloCarriedIt() async {
+    guard !helloCarriedProjectCatalog else { return }
+    await refreshRemoteProjectCatalog()
+  }
+
   private func refreshRemoteProjectCatalog() async {
     guard supportsProjectCatalog, canSendLiveRequests() else { return }
     let requestId = makeRequestId()
@@ -6368,6 +6470,7 @@ final class SyncService: ObservableObject {
 
   private func resetLanePayloadSignatures() {
     laneSnapshotSignatures.removeAll()
+    laneFullListCache.removeAll()
     laneDetailSignatures.removeAll()
     laneDetailRevisions.removeAll()
     remoteLaneDetails.removeAll()
@@ -10219,23 +10322,21 @@ final class SyncService: ObservableObject {
   private func refreshLaneSnapshots(
     includeStatus: Bool,
     includeDecorations: Bool,
-    expectedScope scope: SyncHydrationProjectScope
+    expectedScope scope: SyncHydrationProjectScope,
+    awaitRevalidation: Bool = false
   ) async throws {
     try requireCurrentHydrationProjectScope(scope)
-    let statusAttempt = beginDomainHydrationAttempt([.lanes, .files])
+    // The follow-up for a cached first answer runs in the background: the
+    // lanes are already on screen, so it shows no loading state.
+    let statusAttempt = awaitRevalidation ? nil : beginDomainHydrationAttempt([.lanes, .files])
     do {
       let signatureKey = laneSnapshotSignatureKey(includeStatus: includeStatus, includeDecorations: includeDecorations)
-      var args: [String: Any] = [
-        "includeArchived": true,
-        "includeStatus": includeStatus,
-        "includeConflictStatus": includeDecorations,
-        "includeRebaseSuggestions": includeDecorations,
-        "includeAutoRebaseStatus": includeDecorations,
-      ]
-      if let signature = laneSnapshotSignatures[signatureKey] {
-        args["ifNoneMatch"] = signature
+      var args = laneRefreshArgs(includeStatus: includeStatus, includeDecorations: includeDecorations)
+      if awaitRevalidation {
+        args["awaitRevalidation"] = true
+        args.removeValue(forKey: "allowCachedStatus")
       }
-      let raw = try await sendCommand(
+      var raw = try await sendCommand(
         action: "lanes.refreshSnapshots",
         args: args,
         targetProjectId: scope.projectId,
@@ -10243,13 +10344,38 @@ final class SyncService: ObservableObject {
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
+      let revalidating = (raw as? [String: Any])?["revalidating"] as? Bool == true
+      // A delta (`acceptDelta`): rebuilt here against the last full answer
+      // this app holds; one it does not hold asks again in full.
+      if let object = raw as? [String: Any], let delta = object["delta"] as? [String: Any] {
+        if let rebuilt = laneRefreshApplyingDelta(delta, signature: object["signature"] as? String, signatureKey: signatureKey) {
+          raw = rebuilt
+        } else {
+          laneSnapshotSignatures.removeValue(forKey: signatureKey)
+          laneFullListCache.removeValue(forKey: signatureKey)
+          var fullArgs = args
+          fullArgs.removeValue(forKey: "ifNoneMatch")
+          fullArgs.removeValue(forKey: "acceptDelta")
+          raw = try await sendCommand(
+            action: "lanes.refreshSnapshots",
+            args: fullArgs,
+            targetProjectId: scope.projectId,
+            targetProjectRootPath: scope.rootPath,
+            fallbackToActiveProjectScope: false
+          )
+          try requireCurrentHydrationProjectScope(scope)
+        }
+      }
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
       if payload.notModified == true {
         try requireCurrentHydrationProjectScope(scope)
         if let signature = payload.signature {
-          laneSnapshotSignatures[signatureKey] = signature
+          saveLaneSnapshotSignature(signature, signatureKey: signatureKey)
         }
-        finishDomainHydrationAttempt(statusAttempt, phase: .ready)
+        if let statusAttempt { finishDomainHydrationAttempt(statusAttempt, phase: .ready) }
+        if revalidating && !awaitRevalidation {
+          scheduleLaneRevalidation(includeStatus: includeStatus, includeDecorations: includeDecorations, scope: scope)
+        }
         return
       }
       let lanes = includeStatus
@@ -10268,13 +10394,20 @@ final class SyncService: ObservableObject {
         expectedProjectId: scope.projectId
       )
       if let signature = payload.signature {
-        laneSnapshotSignatures[signatureKey] = signature
+        saveLaneSnapshotSignature(signature, signatureKey: signatureKey)
+        if let snapshots = payload.snapshots {
+          laneFullListCache[signatureKey] = (signature: signature, lanes: payload.lanes, snapshots: snapshots, refreshedCount: payload.refreshedCount)
+        }
       }
-      finishDomainHydrationAttempt(statusAttempt, phase: .ready)
+      if let statusAttempt { finishDomainHydrationAttempt(statusAttempt, phase: .ready) }
+      if revalidating && !awaitRevalidation {
+        scheduleLaneRevalidation(includeStatus: includeStatus, includeDecorations: includeDecorations, scope: scope)
+      }
     } catch is CancellationError {
-      restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+      if let statusAttempt { restoreDomainStatusesAfterCancelledAttempt(statusAttempt) }
       throw CancellationError()
     } catch {
+      guard let statusAttempt else { throw error }
       do {
         try requireCurrentHydrationProjectScope(scope)
       } catch {
@@ -10290,6 +10423,62 @@ final class SyncService: ObservableObject {
       }
       throw error
     }
+  }
+
+  /// The first lane refresh after a connect. A full lane list (no signature
+  /// held) on a measured weak link goes out a little later, so it does not
+  /// sit in front of the first chat page on the wire.
+  private func refreshLaneSnapshotsForFirstScreen() async throws {
+    let signatureKey = laneSnapshotSignatureKey(includeStatus: true, includeDecorations: true)
+    let holdsSignature = laneSnapshotSignatures[signatureKey] != nil || savedLaneSnapshotSignature(signatureKey) != nil
+    if !holdsSignature && chatFirstPageIsReducedForWeakLink {
+      try await Task.sleep(nanoseconds: 2_500_000_000)
+    }
+    try await refreshLaneSnapshots()
+  }
+
+  /// A cached first lane answer (`revalidating`): ask for the brain's exact
+  /// re-check right away, in the background, and apply what changed.
+  private func scheduleLaneRevalidation(includeStatus: Bool, includeDecorations: Bool, scope: SyncHydrationProjectScope) {
+    let generation = connectionGeneration
+    Task { @MainActor [weak self] in
+      guard let self, self.isCurrentConnectionGeneration(generation) else { return }
+      try? await self.refreshLaneSnapshots(
+        includeStatus: includeStatus,
+        includeDecorations: includeDecorations,
+        expectedScope: scope,
+        awaitRevalidation: true
+      )
+    }
+  }
+
+  /// The full lane answer a `lanes.refreshSnapshots` delta applies to, or nil
+  /// when this app does not hold the list the delta names.
+  private func laneRefreshApplyingDelta(_ delta: [String: Any], signature: String?, signatureKey: String) -> [String: Any]? {
+    guard let signature,
+          let base = laneFullListCache[signatureKey],
+          base.signature == delta["baseSignature"] as? String,
+          let changedLanes = try? decode(delta["lanes"] ?? [Any](), as: [LaneSummary].self),
+          let changedSnapshots = try? decode(delta["snapshots"] ?? [Any](), as: [LaneListSnapshot].self)
+    else { return nil }
+    let removed = Set(delta["removedLaneIds"] as? [String] ?? [])
+    var lanesById = Dictionary(base.lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+    var snapshotsById = Dictionary(base.snapshots.map { ($0.lane.id, $0) }, uniquingKeysWith: { _, new in new })
+    for lane in changedLanes { lanesById[lane.id] = lane }
+    for snapshot in changedSnapshots { snapshotsById[snapshot.lane.id] = snapshot }
+    let order = (delta["order"] as? [String]) ?? base.lanes.map(\.id).filter { !removed.contains($0) } + changedLanes.map(\.id).filter { id in !base.lanes.contains { $0.id == id } }
+    let lanes = order.compactMap { removed.contains($0) ? nil : lanesById[$0] }
+    let snapshots = order.compactMap { removed.contains($0) ? nil : snapshotsById[$0] }
+    guard let lanesJson = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(lanes)),
+          let snapshotsJson = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshots))
+    else { return nil }
+    return [
+      "refreshedCount": lanes.count,
+      "lanes": lanesJson,
+      "snapshots": snapshotsJson,
+      "signature": signature,
+      "notModified": false,
+    ]
   }
 
   private func laneSnapshotSignatureKey(includeStatus: Bool, includeDecorations: Bool) -> String {
@@ -10325,6 +10514,138 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// `lanes.refreshSnapshots` arguments, shared with the pipelined hello so
+  /// both send the same request.
+  private func laneRefreshArgs(includeStatus: Bool, includeDecorations: Bool) -> [String: Any] {
+    let signatureKey = laneSnapshotSignatureKey(includeStatus: includeStatus, includeDecorations: includeDecorations)
+    var args: [String: Any] = [
+      "includeArchived": true,
+      "includeStatus": includeStatus,
+      "includeConflictStatus": includeDecorations,
+      "includeRebaseSuggestions": includeDecorations,
+      "includeAutoRebaseStatus": includeDecorations,
+    ]
+    // Newer brains may answer from each lane's last computed status and
+    // re-check in the background (`revalidating`), and send only what changed
+    // against a list this app holds. Older brains ignore both.
+    if includeStatus { args["allowCachedStatus"] = true }
+    if let signature = laneSnapshotSignatures[signatureKey] ?? savedLaneSnapshotSignature(signatureKey) {
+      args["ifNoneMatch"] = signature
+      // A delta needs the full list it names in memory (a relaunch keeps only
+      // the signature).
+      if laneFullListCache[signatureKey]?.signature == signature { args["acceptDelta"] = true }
+    }
+    return args
+  }
+
+  // MARK: Conditional reads that survive a relaunch
+  //
+  // The lane and work-list signatures let a reconnect download "not modified"
+  // instead of every lane and 200 work rows. They were in memory only, so the
+  // first connect after iOS ended the app downloaded both in full. Each is
+  // saved per host and project:
+  // - a lane signature with the ids of the lanes the local database held when
+  //   it was saved; it is used again only while the database holds exactly
+  //   those lanes, so "not modified" can never leave the wrong lanes in place;
+  // - the work list with its rows, which a "not modified" reply applies again.
+
+  private struct SavedLaneSignature: Codable {
+    var signature: String
+    var laneIdsDigest: String
+  }
+
+  private func savedConditionalReadKey(_ kind: String) -> String? {
+    guard let host = activeHostStorageKey(), let projectId = activeProjectId, !projectId.isEmpty else { return nil }
+    return "ade.sync.conditional.\(kind).v1|\(host)|\(projectId)"
+  }
+
+  private func localLaneIdsDigest() -> String {
+    let ids = database.fetchLanes(includeArchived: true).map(\.id).sorted().joined(separator: "\n")
+    return DpopKeyService.sha256Hex(ids)
+  }
+
+  private func savedLaneSnapshotSignature(_ signatureKey: String) -> String? {
+    guard let key = savedConditionalReadKey("lanes|\(signatureKey)"),
+          let data = UserDefaults.standard.data(forKey: key),
+          let saved = try? JSONDecoder().decode(SavedLaneSignature.self, from: data),
+          saved.laneIdsDigest == localLaneIdsDigest()
+    else { return nil }
+    return saved.signature
+  }
+
+  private func saveLaneSnapshotSignature(_ signature: String, signatureKey: String) {
+    laneSnapshotSignatures[signatureKey] = signature
+    guard let key = savedConditionalReadKey("lanes|\(signatureKey)"),
+          let data = try? JSONEncoder().encode(SavedLaneSignature(signature: signature, laneIdsDigest: localLaneIdsDigest()))
+    else { return }
+    UserDefaults.standard.set(data, forKey: key)
+  }
+
+  private struct SavedWorkSessions: Codable {
+    var key: String
+    var signature: String
+    var sessions: [TerminalSessionSummary]
+  }
+
+  private func workSessionsCacheURL() -> URL? {
+    guard let key = savedConditionalReadKey("work") else { return nil }
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("ade-conditional-reads", isDirectory: true)
+    guard let dir else { return nil }
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("work-\(DpopKeyService.sha256Hex(key)).json")
+  }
+
+  /// The saved work list named `cacheKey` (the active host and project),
+  /// read once per launch, when memory does not already hold that list.
+  private func loadSavedWorkSessionsCache(cacheKey: String) {
+    guard workSessionsConditionalCache?.key != cacheKey,
+          workSessionsCacheLoadedKeys.insert(cacheKey).inserted,
+          let url = workSessionsCacheURL(),
+          let data = try? Data(contentsOf: url)
+    else { return }
+    guard let saved = try? JSONDecoder().decode(SavedWorkSessions.self, from: data) else {
+      syncConnectLog.info("saved work list unreadable; asking in full")
+      return
+    }
+    guard saved.key == cacheKey else { return }
+    workSessionsConditionalCache = (key: saved.key, signature: saved.signature, sessions: saved.sessions)
+  }
+
+  private func saveWorkSessionsCache(_ cache: (key: String, signature: String, sessions: [TerminalSessionSummary])?) {
+    guard let url = workSessionsCacheURL() else { return }
+    guard let cache else {
+      try? FileManager.default.removeItem(at: url)
+      return
+    }
+    let saved = SavedWorkSessions(key: cache.key, signature: cache.signature, sessions: cache.sessions)
+    Task.detached(priority: .utility) {
+      guard let data = try? JSONEncoder().encode(saved) else { return }
+      try? data.write(to: url, options: .atomic)
+    }
+  }
+
+  /// `work.listSessions` arguments and the cache key of the list they name,
+  /// shared with the pipelined hello.
+  private func workListRequest(projectId: String) -> (cacheKey: String, args: [String: Any]) {
+    let cacheKey = "\(activeHostStorageKey() ?? "")|\(projectId)"
+    // `acceptDelta`: a host that knows the list named by ifNoneMatch may
+    // answer with only the rows that changed; the full list is rebuilt here.
+    // `omitNullFields`: rows leave out null fields (every optional field here
+    // decodes a missing key as nil). Older hosts ignore it.
+    loadSavedWorkSessionsCache(cacheKey: cacheKey)
+    var args: [String: Any] = ["limit": 200, "conditional": true, "acceptDelta": true, "omitNullFields": true]
+    if let cached = workSessionsConditionalCache, cached.key == cacheKey {
+      args["ifNoneMatch"] = cached.signature
+    } else if !workSessionsFullListScheduled.contains(cacheKey) {
+      // First load of this list: the running, waiting and pinned sessions and
+      // the 20 newest now, the rest a few seconds later
+      // (`scheduleFullWorkSessionList`). Older hosts send the whole list.
+      args["headRows"] = 20
+    }
+    return (cacheKey, args)
+  }
+
   private func laneSnapshotsPreservingDecorations(_ snapshots: [LaneListSnapshot]?) -> [LaneListSnapshot]? {
     guard let snapshots else { return nil }
     let existingByLaneId = Dictionary(
@@ -10346,21 +10667,114 @@ final class SyncService: ObservableObject {
     try requireCurrentHydrationProjectScope(scope)
     let statusAttempt = beginDomainHydrationAttempt([.work])
     do {
+      // Conditional list: a host that still has the same 200 rows answers
+      // with a signature only, and the saved copy of that exact list is
+      // applied again below, so the local database ends up the same as after
+      // a full download. Older hosts ignore both arguments and send the array.
+      let (cacheKey, listArgs) = workListRequest(projectId: scope.projectId)
       let raw = try await sendCommand(
         action: "work.listSessions",
-        args: ["limit": 200],
+        args: listArgs,
         targetProjectId: scope.projectId,
         targetProjectRootPath: scope.rootPath,
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
-      let sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+      let sessions: [TerminalSessionSummary]
+      var partialList = false
+      if let conditional = raw as? [String: Any], conditional["partial"] as? Bool == true {
+        // Head rows only: keep what the database already has, and fetch the
+        // full list shortly.
+        sessions = try decodeHydrationPayload(
+          conditional["sessions"] ?? raw,
+          as: [TerminalSessionSummary].self,
+          domainLabel: "work session",
+          decoder: decoder
+        )
+        partialList = true
+        scheduleFullWorkSessionList(cacheKey: cacheKey)
+      } else if let conditional = raw as? [String: Any] {
+        let signature = conditional["signature"] as? String
+        if conditional["notModified"] as? Bool == true,
+           let cached = workSessionsConditionalCache,
+           cached.key == cacheKey,
+           cached.signature == signature {
+          sessions = cached.sessions
+        } else if conditional["notModified"] as? Bool == true || conditional["delta"] != nil {
+          let delta = conditional["delta"] as? [String: Any]
+          if let delta,
+             let cached = workSessionsConditionalCache,
+             cached.key == cacheKey,
+             cached.signature == delta["baseSignature"] as? String,
+             let signature {
+            let upserted = try decodeHydrationPayload(
+              delta["upserted"] ?? [Any](),
+              as: [TerminalSessionSummary].self,
+              domainLabel: "work session",
+              decoder: decoder
+            )
+            sessions = workSessionsApplyingDelta(
+              base: cached.sessions,
+              upserted: upserted,
+              removedIds: delta["removedIds"] as? [String] ?? [],
+              order: delta["order"] as? [String]
+            )
+            workSessionsConditionalCache = (key: cacheKey, signature: signature, sessions: sessions)
+          } else {
+            // "Not modified" or a delta for a list this app no longer holds (a
+            // concurrent refresh replaced it): ask once more without a
+            // signature, which always answers with the full list.
+            workSessionsConditionalCache = nil
+            let fullRaw = try await sendCommand(
+              action: "work.listSessions",
+              args: ["limit": 200, "conditional": true, "omitNullFields": true],
+              targetProjectId: scope.projectId,
+              targetProjectRootPath: scope.rootPath,
+              fallbackToActiveProjectScope: false
+            )
+            try requireCurrentHydrationProjectScope(scope)
+            let fullObject = fullRaw as? [String: Any]
+            sessions = try decodeHydrationPayload(
+              fullObject?["sessions"] ?? fullRaw,
+              as: [TerminalSessionSummary].self,
+              domainLabel: "work session",
+              decoder: decoder
+            )
+            workSessionsConditionalCache = (fullObject?["signature"] as? String).map {
+              (key: cacheKey, signature: $0, sessions: sessions)
+            }
+          }
+        } else {
+          // An object without a list is not an answer to this request: it
+          // fails to decode, as before, instead of reading as "no sessions",
+          // which would delete every row.
+          sessions = try decodeHydrationPayload(
+            conditional["sessions"] ?? raw,
+            as: [TerminalSessionSummary].self,
+            domainLabel: "work session",
+            decoder: decoder
+          )
+          workSessionsConditionalCache = signature.map { (key: cacheKey, signature: $0, sessions: sessions) }
+        }
+      } else {
+        sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+        workSessionsConditionalCache = nil
+      }
       // Captured from the wire, not from the database: `replaceTerminalSessions`
       // below writes only the columns `terminal_sessions` has, and this is not
       // one of them. A full list is authoritative for the rows it names, so a
       // key that disappeared is dropped rather than left behind — a reparented
       // chat must stop claiming the CTO.
-      ingestSessionParentIdentityKeys(from: sessions)
+      if partialList {
+        // Head rows say nothing about the others: add their keys, drop none.
+        for session in sessions {
+          guard let key = session.parentIdentityKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty,
+                sessionParentIdentityKeys[session.id] != key else { continue }
+          sessionParentIdentityKeys[session.id] = key
+        }
+      } else {
+        ingestSessionParentIdentityKeys(from: sessions)
+      }
       let knownLaneIds = Set(database.fetchLanes(includeArchived: true).map(\.id))
       if !syncMissingWorkSessionLaneIds(sessions: sessions, knownLaneIds: knownLaneIds).isEmpty {
         // Fetch only the cheap lane identity/status projection needed to
@@ -10374,7 +10788,7 @@ final class SyncService: ObservableObject {
         )
       }
       try requireCurrentHydrationProjectScope(scope)
-      try database.replaceTerminalSessions(sessions, expectedProjectId: scope.projectId)
+      try database.replaceTerminalSessions(sessions, expectedProjectId: scope.projectId, pruneAbsent: !partialList)
       finishDomainHydrationAttempt(statusAttempt, phase: .ready)
     } catch is CancellationError {
       restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
@@ -10870,24 +11284,72 @@ final class SyncService: ObservableObject {
   ///   2. Active ids computed here: open/draft, or on a lane that is not archived.
   ///   3. `prs.refresh { prIds, includeSnapshots: "active" }` in batches.
   /// An empty active set skips step 3: an old brain reads empty `prIds` as "all".
-  private func hydratePullRequestsBounded(scope: SyncHydrationProjectScope) async throws {
+  private func hydratePullRequestsBounded(scope: SyncHydrationProjectScope, activeOnly: Bool = false) async throws {
+    // Conditional list: a host that still has the same PRs answers with a
+    // signature only, and the saved copy of that list is used again. Older
+    // hosts ignore the arguments and send the array.
+    let cacheKey = "\(activeHostStorageKey() ?? "")|\(scope.projectId)"
+    var listArgs: [String: Any] = ["conditional": true, "omitNullFields": true]
+    if activeOnly {
+      // Open and draft PRs only: a first connect's PR refresh needs nothing
+      // more, and the full list follows off the first screen. `conditional`
+      // only for the object reply, which marks the list as filtered (a bare
+      // array is an older host's full list); no ifNoneMatch, because its
+      // signature names a different list than the saved one.
+      listArgs = ["activeOnly": true, "conditional": true, "omitNullFields": true]
+    } else if let cached = pullRequestListConditionalCache, cached.key == cacheKey {
+      listArgs["ifNoneMatch"] = cached.signature
+    }
     let listRaw = try await sendCommand(
       action: "prs.list",
-      args: [:],
+      args: listArgs,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       fallbackToActiveProjectScope: false
     )
     try requireCurrentHydrationProjectScope(scope)
-    let prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+    let prs: [PrSummary]
+    if let conditional = listRaw as? [String: Any] {
+      let signature = conditional["signature"] as? String
+      if conditional["notModified"] as? Bool == true,
+         let cached = pullRequestListConditionalCache,
+         cached.key == cacheKey,
+         cached.signature == signature {
+        prs = cached.prs
+      } else if conditional["notModified"] as? Bool == true {
+        // "Not modified" for a list this app no longer holds: ask in full.
+        pullRequestListConditionalCache = nil
+        let fullRaw = try await sendCommand(
+          action: "prs.list",
+          args: ["conditional": true, "omitNullFields": true],
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath,
+          fallbackToActiveProjectScope: false
+        )
+        try requireCurrentHydrationProjectScope(scope)
+        let fullObject = fullRaw as? [String: Any]
+        prs = try decodeHydrationPayload(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        pullRequestListConditionalCache = (fullObject?["signature"] as? String).map { (key: cacheKey, signature: $0, prs: prs) }
+      } else {
+        prs = try decodeHydrationPayload(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        if !activeOnly {
+          pullRequestListConditionalCache = signature.map { (key: cacheKey, signature: $0, prs: prs) }
+        }
+      }
+    } else {
+      prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+      if !activeOnly { pullRequestListConditionalCache = nil }
+    }
     try requireCurrentHydrationProjectScope(scope)
     // List only: "none" tells hydration it carries no snapshot information,
     // so no cached snapshot is cleared here. Every database write in PR
     // hydration runs off the main actor: a stale-row prune behind a changeset
     // apply hung the app on the main thread.
     let listPayload = PullRequestRefreshPayload(refreshedCount: prs.count, prs: prs, snapshots: [], snapshotScope: "none")
+    // A list of the open PRs only says nothing about the others: keep them.
+    let pruneStale = !activeOnly || !(listRaw is [String: Any])
     let liveLaneIds = try await performDatabaseOffMain { database in
-      try database.replacePullRequestHydration(listPayload, pruneStale: true, expectedProjectId: scope.projectId)
+      try database.replacePullRequestHydration(listPayload, pruneStale: pruneStale, expectedProjectId: scope.projectId)
       return Set(database.fetchLanes(includeArchived: false).map(\.id))
     }
     let activeIds = syncActivePullRequestIds(prs, liveLaneIds: liveLaneIds)
@@ -10915,13 +11377,64 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Returns true when a changeset batch was applied, false after
+  /// `timeoutNanoseconds`, whichever comes first.
+  @discardableResult
+  func waitForChangesetApply(timeoutNanoseconds: UInt64) async -> Bool {
+    let id = UUID()
+    return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+      changesetApplyWaiters[id] = continuation
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+        self?.changesetApplyWaiters.removeValue(forKey: id)?.resume(returning: false)
+      }
+    }
+  }
+
+  private func wakeChangesetApplyWaiters() {
+    guard !changesetApplyWaiters.isEmpty else { return }
+    let waiters = changesetApplyWaiters
+    changesetApplyWaiters.removeAll()
+    for continuation in waiters.values { continuation.resume(returning: true) }
+  }
+
+  private func scheduleFullWorkSessionList(cacheKey: String) {
+    guard workSessionsFullListScheduled.insert(cacheKey).inserted else { return }
+    let generation = connectionGeneration
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, self.isCurrentConnectionGeneration(generation) else { return }
+      try? await self.refreshWorkSessions()
+    }
+  }
+
+  private func schedulePullRequestFullList(scope: SyncHydrationProjectScope) {
+    let generation = connectionGeneration
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, self.isCurrentConnectionGeneration(generation) else { return }
+      guard (try? self.requireCurrentHydrationProjectScope(scope)) != nil else { return }
+      try? await self.hydratePullRequestsBounded(scope: scope)
+    }
+  }
+
   func refreshPullRequestSnapshots(prId: String? = nil) async throws {
     let scope = try captureHydrationProjectScope()
     try requireCurrentHydrationProjectScope(scope)
     let statusAttempt = beginDomainHydrationAttempt([.prs])
     do {
       if prId == nil, supportsRemoteAction("prs.list") {
-        try await hydratePullRequestsBounded(scope: scope)
+        let cacheKey = "\(activeHostStorageKey() ?? "")|\(scope.projectId)"
+        if pullRequestListConditionalCache?.key == cacheKey {
+          try await hydratePullRequestsBounded(scope: scope)
+        } else {
+          // First PR load of this project in this app session: the open PRs
+          // now, the full list (hundreds of merged PRs on a busy project) a
+          // few seconds later, so it does not share a slow link with the
+          // first screen and the chat the user opens from it.
+          try await hydratePullRequestsBounded(scope: scope, activeOnly: true)
+          schedulePullRequestFullList(scope: scope)
+        }
       } else {
         var args: [String: Any] = [:]
         if let prId {
@@ -13418,7 +13931,9 @@ final class SyncService: ObservableObject {
     try await subscribeToChatEvents(
       sessionId: sessionId,
       requestSnapshot: true,
-      maxBytes: syncChatSubscriptionMaxBytes
+      // A measured weak link opens with about the last turn; older history
+      // pages in (prefetched) as the reader scrolls up.
+      maxBytes: chatFirstPageIsReducedForWeakLink ? syncWeakLinkChatSubscriptionMaxBytes : syncChatSubscriptionMaxBytes
     )
   }
 
@@ -17546,6 +18061,60 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// The digest to send as `commandRoutingDigest` in a primary hello: the
+  /// host's digest of the descriptor list saved by this same app build (a new
+  /// build may decode descriptors differently, so it fetches the list again).
+  private func commandRoutingDigestForHello() -> String? {
+    guard !remoteCommandDescriptors.isEmpty,
+          let saved = UserDefaults.standard.string(forKey: remoteCommandDescriptorsDigestKey),
+          let separator = saved.lastIndex(of: "|")
+    else { return nil }
+    let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+    guard String(saved[..<separator]) == build else { return nil }
+    let digest = String(saved[saved.index(after: separator)...])
+    return digest.isEmpty ? nil : digest
+  }
+
+  /// A candidate socket's hello payload. Only the primary socket sends the
+  /// saved digests and the pipelined first requests.
+  private func candidateHelloPayload(
+    auth: [String: Any],
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    connectAttemptGeneration: UInt64,
+    fleetDial: SyncFleetDialContext?
+  ) -> [String: Any] {
+    var helloPayload: [String: Any] = [
+      "peer": fleetDial?.peerMetadata(connectionAttempt) ?? currentPeerMetadata(connectionAttempt: connectionAttempt),
+      "compression": syncApplicationCompressionCodecs,
+      "auth": auth,
+    ]
+    if fleetDial == nil, let digest = commandRoutingDigestForHello() {
+      helloPayload["commandRoutingDigest"] = digest
+    }
+    if fleetDial == nil, let digest = projectCatalogDigestForHello() {
+      helloPayload["projectCatalogDigest"] = digest
+    }
+    if fleetDial == nil, let pipelined = pipelinedHelloEnvelopes(forAttempt: connectAttemptGeneration) {
+      helloPayload["pipelined"] = pipelined
+    }
+    return helloPayload
+  }
+
+  /// The digest of the catalog this app holds for the active machine.
+  private func projectCatalogDigestForHello() -> String? {
+    guard let saved = lastHelloProjectCatalog, saved.hostKey == (activeHostStorageKey() ?? "") else { return nil }
+    return saved.digest
+  }
+
+  private func saveRemoteCommandDescriptorsDigest(_ digest: String?) {
+    let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+    if let digest, !digest.isEmpty, !remoteCommandDescriptors.isEmpty {
+      UserDefaults.standard.set("\(build)|\(digest)", forKey: remoteCommandDescriptorsDigestKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsDigestKey)
+    }
+  }
+
   private func loadRemoteCommandDescriptors() -> [SyncRemoteCommandDescriptor] {
     guard let data = UserDefaults.standard.data(forKey: remoteCommandDescriptorsKey),
           let descriptors = try? decoder.decode([SyncRemoteCommandDescriptor].self, from: data) else {
@@ -18504,6 +19073,9 @@ final class SyncService: ObservableObject {
     /// This endpoint completed a `?ready=2` handshake, so a future silent
     /// window on it is a fault rather than evidence of a pre-v2 relay.
     var negotiatedReadyV2: Bool = false
+    /// Socket dial to hello_ok on this candidate (TCP, upgrade, hello), the
+    /// connection's own round-trip measurement.
+    var handshakeSeconds: TimeInterval? = nil
   }
 
   private enum AuthenticatedConnectionRaceEvent: @unchecked Sendable {
@@ -18709,6 +19281,8 @@ final class SyncService: ObservableObject {
       relayTransportNegotiations[connectedCandidate.task.taskIdentifier] = SyncRelayReadyNegotiation(budget: connectAttemptBudget)
     }
     receiveLoop(for: connectedCandidate.task)
+    connectionHandshakeSeconds = connectedCandidate.handshakeSeconds
+    syncConnectLog.info("connect_handshake ms=\(Int(((connectedCandidate.handshakeSeconds ?? -0.001) * 1_000).rounded()), privacy: .public) weak=\(self.chatFirstPageIsReducedForWeakLink, privacy: .public)")
     try applyHelloPayload(
       connectedCandidate.helloPayload,
       connectedHost: connectedEndpoint.address,
@@ -19009,7 +19583,33 @@ final class SyncService: ObservableObject {
     defer {
       if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
     }
-    let candidateTask = socketSession.webSocketTask(with: url)
+    // Direct routes send the hello with the upgrade request as well
+    // (`X-ADE-Hello`): a host that reads it answers hello_ok as the first
+    // frame after the 101, one round trip sooner. The same hello still goes
+    // out as the first frame for hosts that ignore the header (a newer host
+    // drops that copy by its request id). Never over the relay, and never in
+    // the URL: the hello carries the paired secret.
+    let upgradeHello: (requestId: String, payload: [String: Any])? = {
+      guard !isRelay, !awaitsRelayReadyV2,
+            profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId
+      else { return nil }
+      var auth: [String: Any] = ["kind": "paired", "deviceId": pairedDeviceId, "secret": pairedSecret]
+      if let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret) {
+        auth["dpop"] = proof
+      }
+      return (makeRequestId(), candidateHelloPayload(
+        auth: auth,
+        connectionAttempt: connectionAttempt,
+        connectAttemptGeneration: connectAttemptGeneration,
+        fleetDial: fleetDial
+      ))
+    }()
+    var upgradeRequest = URLRequest(url: url)
+    if let upgradeHello,
+       let header = syncUpgradeHelloHeaderValue(requestId: upgradeHello.requestId, payload: upgradeHello.payload) {
+      upgradeRequest.setValue(header, forHTTPHeaderField: syncUpgradeHelloHeaderName)
+    }
+    let candidateTask = socketSession.webSocketTask(with: upgradeRequest)
     candidateTask.maximumMessageSize = 32 * 1_024 * 1_024
     let needsRelaySession = isRelay
       && profile.authKind == "paired"
@@ -19021,6 +19621,7 @@ final class SyncService: ObservableObject {
         // after it. Structured concurrency cancels and reaps the child task on
         // every exit from this scope, including the early throws below.
         async let pendingRelaySession = relaySessionForCandidate(required: needsRelaySession)
+        let handshakeStartedAt = ProcessInfo.processInfo.systemUptime
         try await awaitSocketOpen(candidateTask)
         guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
@@ -19055,7 +19656,9 @@ final class SyncService: ObservableObject {
 
         var auth: [String: Any]
         var relayAuthorization: AccountPairingAuthorization?
-        if profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId {
+        if let upgradeHello {
+          auth = upgradeHello.payload["auth"] as? [String: Any] ?? [:]
+        } else if profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId {
           let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret)
           if isRelay, proof == nil {
             throw NSError(
@@ -19086,15 +19689,19 @@ final class SyncService: ObservableObject {
           auth = ["kind": "bootstrap", "token": pairedSecret]
         }
 
-        let requestId = makeRequestId()
+        // The frame copy of an upgrade hello is the same envelope, request id
+        // included, so a host that took the header recognizes and drops it.
+        let requestId = upgradeHello?.requestId ?? makeRequestId()
+        let helloPayload = upgradeHello?.payload ?? candidateHelloPayload(
+          auth: auth,
+          connectionAttempt: connectionAttempt,
+          connectAttemptGeneration: connectAttemptGeneration,
+          fleetDial: fleetDial
+        )
         let helloText = try encodedCandidateEnvelope(
           type: "hello",
           requestId: requestId,
-          payload: [
-            "peer": fleetDial?.peerMetadata(connectionAttempt) ?? currentPeerMetadata(connectionAttempt: connectionAttempt),
-            "compression": syncApplicationCompressionCodecs,
-            "auth": auth,
-          ]
+          payload: helloPayload
         )
         try await candidateTask.send(.string(helloText))
 
@@ -19118,7 +19725,8 @@ final class SyncService: ObservableObject {
               task: candidateTask,
               helloPayload: payload,
               relayAuthorization: relayAuthorization,
-              negotiatedReadyV2: awaitsRelayReadyV2
+              negotiatedReadyV2: awaitsRelayReadyV2,
+              handshakeSeconds: ProcessInfo.processInfo.systemUptime - handshakeStartedAt
             )
           case "hello_error":
             throw candidateHelloError(preprocessed.payload, profile: profile)
@@ -19795,6 +20403,23 @@ final class SyncService: ObservableObject {
         "binaryEnvelopes",
         "foldedReplay",
         "mobileChatSlimV1",
+        // `roster_delta.patched`: per-chat roster updates instead of the
+        // whole project. Older hosts ignore it and keep sending projects.
+        "rosterChatDeltaV1",
+        // Several changeset batches in flight; this app applies them in
+        // order and rejects later ones after a failed apply (see
+        // `changesetApplyBlockedAfterFailure`). Older hosts send one at a time.
+        "changesetAckWindowV1",
+        // A first roster with the chats a first screen needs; the rest
+        // follows as an ordinary delta a few seconds later.
+        "rosterPrioritySnapshotV1",
+        // The roster carries each project's head rows and `chatTotal`; older
+        // chats load on demand (`loadOlderRosterChats`). Older hosts keep
+        // sending every chat.
+        "rosterChatPagesV1",
+        // The command list grouped by scope and policy (about a quarter of
+        // the bytes). Older hosts send the flat list.
+        "commandRoutingGroupsV1",
       ],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
@@ -19964,11 +20589,17 @@ final class SyncService: ObservableObject {
     }
 
     let raw = try await awaitResponse(requestId: requestId) {
-      self.sendEnvelope(type: "hello", requestId: requestId, payload: [
+      var hello: [String: Any] = [
         "peer": self.currentPeerMetadata(),
         "compression": syncApplicationCompressionCodecs,
         "auth": auth,
-      ])
+      ]
+      if let digest = self.commandRoutingDigestForHello() { hello["commandRoutingDigest"] = digest }
+      if let digest = self.projectCatalogDigestForHello() { hello["projectCatalogDigest"] = digest }
+      if let pipelined = self.pipelinedHelloEnvelopes(forAttempt: connectAttemptGeneration) {
+        hello["pipelined"] = pipelined
+      }
+      self.sendEnvelope(type: "hello", requestId: requestId, payload: hello)
     }
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
       throw CancellationError()
@@ -20002,7 +20633,7 @@ final class SyncService: ObservableObject {
         isCurrent: attachment.isCurrent,
         restore: {
           async let lanePresence: Void = self.restoreTrackedOpenLanesAfterReconnect()
-          async let projectCatalog: Void = self.refreshRemoteProjectCatalog()
+          async let projectCatalog: Void = self.refreshRemoteProjectCatalogUnlessHelloCarriedIt()
           _ = await (lanePresence, projectCatalog)
         },
         complete: {
@@ -21068,11 +21699,28 @@ final class SyncService: ObservableObject {
       : nil
     remoteProjectCatalog = []
     pendingProjectCatalogChunks.removeAll()
+    adoptPipelinedHelloPlan(
+      accepted: ((features?["pipelinedHello"] as? [String: Any])?["accepted"] as? NSNumber)?.intValue,
+      connectAttemptGeneration: connectAttemptGeneration
+    )
+    let commandRouting = features?["commandRouting"] as? [String: Any]
+    let commandRoutingDigest = commandRouting?["actionsDigest"] as? String
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
-      guard
-        let commandRouting = features?["commandRouting"],
-        let actions = (commandRouting as? [String: Any])?["actions"]
-      else {
+      // The host left the list out because this hello named the saved one.
+      if commandRouting?["actionsUnchanged"] as? Bool == true,
+         commandRoutingDigest != nil,
+         commandRoutingDigest == commandRoutingDigestForHello() {
+        return remoteCommandDescriptors
+      }
+      // `commandRoutingGroupsV1`: the same descriptors, grouped by scope and
+      // policy. `actionsDigest` still names the full list.
+      if let groups = commandRouting?["actionGroups"],
+         let decoded = try? decode(groups, as: [SyncRemoteCommandActionGroup].self) {
+        return decoded.flatMap { group in
+          group.actions.map { SyncRemoteCommandDescriptor(action: $0, scope: group.scope, policy: group.policy) }
+        }
+      }
+      guard let actions = commandRouting?["actions"] else {
         return []
       }
       return (try? decode(actions, as: [SyncRemoteCommandDescriptor].self)) ?? []
@@ -21091,11 +21739,26 @@ final class SyncService: ObservableObject {
         ? ["commandRouting"]
         : ["mobileCompatibility"]
     }
+    let catalogHostKey = activeHostStorageKey() ?? ""
+    let catalogDigest = payload["projectCatalogDigest"] as? String
     if supportsProjectCatalog,
+       payload["projectCatalogUnchanged"] as? Bool == true,
+       let saved = lastHelloProjectCatalog,
+       saved.hostKey == catalogHostKey,
+       saved.digest == catalogDigest {
+      // The host left the catalog out because this hello named the one held.
+      applyRemoteProjectCatalog(saved.catalog)
+      helloCarriedProjectCatalog = true
+    } else if supportsProjectCatalog,
        let projects = payload["projects"],
        let catalog = try? decode(["projects": projects], as: MobileProjectCatalogPayload.self) {
       applyRemoteProjectCatalog(catalog)
+      helloCarriedProjectCatalog = !catalog.projects.isEmpty
+      lastHelloProjectCatalog = catalogDigest.flatMap { digest in
+        catalog.projects.isEmpty ? nil : (hostKey: catalogHostKey, digest: digest, catalog: catalog)
+      }
     } else {
+      helloCarriedProjectCatalog = false
       refreshProjectCatalog()
     }
     if activeProjectId != nil, let incomingHostIdentity {
@@ -21149,6 +21812,7 @@ final class SyncService: ObservableObject {
     relayAuthorizationRequirement = nil
     markSyncActivity(force: true)
     saveRemoteCommandDescriptors(commandDescriptors)
+    saveRemoteCommandDescriptorsDigest(commandRoutingDigest)
     Task { @MainActor [weak self] in
       await self?.setProductAnalyticsClientEnabled(ProductAnalytics.shared.isEnabled)
     }
@@ -21474,7 +22138,7 @@ final class SyncService: ObservableObject {
     case "project_catalog_chunk":
       let chunk = try decode(payload, as: MobileProjectCatalogChunkPayload.self)
       applyRemoteProjectCatalogChunk(chunk, requestId: requestId)
-    case "project_switch_result":
+    case "project_switch_result", "roster_chats":
       resolve(requestId: requestId, result: .success(payload))
     case "project_browse_result",
          "project_default_parent_dir",
@@ -21545,6 +22209,19 @@ final class SyncService: ObservableObject {
         try syncDecodeChangesetBatch(batchPayload)
       }.value
       guard isCurrentConnectionGeneration(generation) else { return }
+      if let blocked = changesetApplyBlockedAfterFailure {
+        if blocked.generation == connectionGeneration, batch.fromDbVersion > blocked.cursor {
+          sendChangesetAck(
+            batch: batch,
+            ok: false,
+            appliedDbVersion: database.currentDbVersion(),
+            appliedCount: 0,
+            error: NSError(domain: "ADE", code: 27, userInfo: [NSLocalizedDescriptionKey: "Waiting for an earlier changeset to be sent again."])
+          )
+          return
+        }
+        changesetApplyBlockedAfterFailure = nil
+      }
       do {
         let database = self.database
         let result = try await Task.detached(priority: .userInitiated) {
@@ -21564,8 +22241,10 @@ final class SyncService: ObservableObject {
           appliedCount: result.appliedCount
         )
         resolve(requestId: requestId, result: .success(payload))
+        wakeChangesetApplyWaiters()
       } catch {
         guard isCurrentConnectionGeneration(generation) else { return }
+        changesetApplyBlockedAfterFailure = (connectionGeneration, latestRemoteDbVersion)
         sendChangesetAck(
           batch: batch,
           ok: false,
@@ -22110,7 +22789,15 @@ final class SyncService: ObservableObject {
   }
 
   private func resolve(requestId: String?, result: Result<Any, Error>) {
-    guard let requestId, let request = pending.removeValue(forKey: requestId) else { return }
+    guard let requestId else { return }
+    guard let request = pending.removeValue(forKey: requestId) else {
+      // An answer to a pipelined hello request whose caller has not asked yet.
+      if case .success(let payload) = result,
+         acceptedPipelinedHello?.commandRequestIds.contains(requestId) == true {
+        pipelinedHelloReplies[requestId] = payload
+      }
+      return
+    }
     request.timeoutTask.cancel()
     switch result {
     case .success(let payload):
@@ -22421,10 +23108,15 @@ final class SyncService: ObservableObject {
     // The connection age gates roam upgrades; it must not outlive its socket.
     connectionEstablishedUptime = nil
     // The roster subscription is bound to the live socket; a reconnect must
-    // re-subscribe. Keep `rosterProjects` for offline render, but drop the
-    // seq baseline so the next subscribe asks for (and applies) a fresh snapshot.
+    // re-subscribe. Keep `rosterProjects` for offline render and keep the seq:
+    // the next subscribe sends it as `sinceSeq`, and a brain that still holds
+    // that roster state answers with only what changed. Any other brain (older,
+    // restarted, or past its resume window) answers with a full snapshot, and
+    // `reloadRosterForActiveHost` drops the seq when the machine changes.
     rosterSubscribed = false
-    rosterSeq = nil
+    // Pipelined hello answers belong to the socket that carried them.
+    acceptedPipelinedHello = nil
+    pipelinedHelloReplies.removeAll()
     rosterPersistTask?.cancel()
     rosterPersistTask = nil
     transportProbeTask?.cancel()
@@ -23208,6 +23900,25 @@ final class SyncService: ObservableObject {
     // opt out when the selected lane does not carry trustworthy project scope.
     let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
     let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath)
+    // The host already ran this exact request from the hello: wait for that
+    // answer (or take it, if it came first) instead of asking again.
+    if let pipelinedRequestId = takePipelinedHelloCommand(
+      action: action,
+      args: args,
+      projectId: resolvedProjectId,
+      projectRootPath: resolvedProjectRootPath
+    ) {
+      if let early = pipelinedHelloReplies.removeValue(forKey: pipelinedRequestId) {
+        return try unwrapSyncCommandResponse(early)
+      }
+      let raw = try await awaitResponse(
+        requestId: pipelinedRequestId,
+        disconnectOnTimeout: disconnectOnTimeout,
+        timeoutMessage: timeoutMessage,
+        timeoutNanoseconds: effectiveTimeoutNanoseconds
+      ) {}
+      return try unwrapSyncCommandResponse(raw)
+    }
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
@@ -23352,14 +24063,22 @@ final class SyncService: ObservableObject {
     return [:]
   }
 
+  /// The first page of a chat on a link measured as truly weak (see
+  /// `syncLinkIsWeak`); older messages load on scroll-up and are prefetched.
+  var chatFirstPageIsReducedForWeakLink: Bool {
+    syncLinkIsWeak(handshakeSeconds: connectionHandshakeSeconds)
+  }
+
   private func chatSubscriptionPayload(
     sessionId: String,
     maxBytes requestedMaxBytes: Int? = nil,
     includeSinceSeq: Bool = false
   ) -> [String: Any] {
-    let defaultMaxBytes = canSendLiveRequests() && prefersReducedSyncLoad
-      ? syncReducedLoadChatSubscriptionMaxBytes
-      : syncChatSubscriptionMaxBytes
+    let defaultMaxBytes = chatFirstPageIsReducedForWeakLink
+      ? syncWeakLinkChatSubscriptionMaxBytes
+      : canSendLiveRequests() && prefersReducedSyncLoad
+        ? syncReducedLoadChatSubscriptionMaxBytes
+        : syncChatSubscriptionMaxBytes
     let maxBytes = max(1_024, min(syncChatSubscriptionMaxBytes, requestedMaxBytes ?? defaultMaxBytes))
     var payload: [String: Any] = [
       "sessionId": sessionId,
@@ -23396,6 +24115,17 @@ final class SyncService: ObservableObject {
   private func restoreChatEventSubscriptions() {
     guard canSendLiveRequests(), supportsChatStreaming else { return }
     for sessionId in subscribedChatSessionIds.sorted() {
+      // The hello carried this resume and the host ran it.
+      if consumePipelinedHelloChatSubscribe(sessionId: sessionId) {
+        noteFocusedChatSubscribe(
+          sessionId: sessionId,
+          payload: chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true),
+          sent: true,
+          requestSnapshot: false
+        )
+        chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
+        continue
+      }
       // Pass the last applied seq so the host can replay only the missed
       // events; it falls back to a full snapshot when the gap is too old.
       let payload = chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true)
@@ -23562,6 +24292,7 @@ final class SyncService: ObservableObject {
       // database queue: a main-actor read here waited out the batch (14–83 ms
       // frames right after a connect). The reads run off main; the main-actor
       // state they are matched against is read here.
+      let earlyWakeUsed = SyncMutableFlag()
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
@@ -23583,7 +24314,16 @@ final class SyncService: ObservableObject {
           guard self.activeProjectId == activeProjectId else { return nil }
           return hasRow ? activeProjectId : nil
         },
-        shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
+        shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) },
+        // Wakes as soon as a changeset batch is applied (the project row
+        // arrives in the first one), not only on the 200 ms poll. Only once:
+        // the gate counts each return as a full poll toward its timeout.
+        sleep: { [weak self] interval in
+          guard let self, !earlyWakeUsed.value else { try await Task.sleep(nanoseconds: interval); return }
+          if await self.waitForChangesetApply(timeoutNanoseconds: interval) {
+            earlyWakeUsed.value = true
+          }
+        }
       )
     } catch is CancellationError {
       ScrollDiagnostics.shared.event("hydration.exit", ["reason": "gateCancelled"])
@@ -23635,24 +24375,28 @@ final class SyncService: ObservableObject {
     // switch — tolerable on LAN, punishing over relay. `async let` overlaps
     // them: the main actor is free while each request is in flight, the same
     // reason `schedulePostHelloWork` can interleave its two refreshes.
-    async let laneRefresh: Void = refreshLaneSnapshots()
+    // The work list goes out first: the host answers a peer's commands in
+    // order, and the lane refresh is the slow one.
     async let workSessionRefresh: Void = refreshWorkSessions()
-
-    // PRs are not part of first paint — Work and Lanes render without them —
-    // so they must not hold the switch open. They arrive on their own domain
-    // status instead of gating the surfaces the user is looking at.
-    schedulePullRequestHydration(for: connectionGeneration)
+    async let laneRefresh: Void = refreshLaneSnapshotsForFirstScreen()
 
     do {
-      try await laneRefresh
+      try await workSessionRefresh
     } catch {
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
     }
 
+    // PRs are not part of first paint — Work and Lanes render without them —
+    // so they must not hold the switch open. They arrive on their own domain
+    // status instead of gating the surfaces the user is looking at, and start
+    // once the work list is in: the PR list can be over 100 KB, which on a
+    // slow link would otherwise share it with the first screen.
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+    schedulePullRequestHydration(for: connectionGeneration)
+
     do {
-      try await workSessionRefresh
+      try await laneRefresh
     } catch {
       guard isCurrentConnectionGeneration(connectionGeneration) else { return }
       lastError = SyncUserFacingError.message(for: error)
@@ -25183,6 +25927,169 @@ struct PrAutoMapCreateResult: Decodable, Equatable {
   let lane: LaneSummary
 }
 
+// MARK: - Pipelined hello (`hello.pipelined`)
+//
+// On a reconnect to a project this app already holds, the hello carries the
+// first requests the app would send after hello_ok: the lane and work-list
+// refreshes, the roster resume and the open chats' resumes. A host that runs
+// them says so (`features.pipelinedHello.accepted`) and answers right behind
+// hello_ok, which saves the round trip after it. The first request of this
+// connection with the same action and arguments takes that answer instead of
+// asking; anything not taken is simply unused. An older host ignores the
+// field, and the app sends everything itself as before.
+
+/// One connect attempt's pipelined requests.
+struct SyncPipelinedHelloPlan {
+  let connectAttemptGeneration: UInt64
+  let envelopes: [[String: Any]]
+  /// Request key (`syncPipelinedCommandKey`) → request id, one use each.
+  var commandRequestIdByKey: [String: String]
+  let commandRequestIds: Set<String>
+  var chatSessionIds: Set<String>
+  var includesRosterSubscribe: Bool
+}
+
+/// The identity of a command request: action, arguments and scope, with keys
+/// sorted so the same request always gives the same key.
+/// `X-ADE-Hello`: a hello sent with the WebSocket upgrade request.
+let syncUpgradeHelloHeaderName = "X-ADE-Hello"
+/// Hosts read at most 12 KiB; a bigger hello goes only as a frame.
+let syncUpgradeHelloHeaderMaxChars = 12 * 1_024
+
+/// `v1.` + base64url of `{ requestId, payload }`, or nil when it would not fit.
+func syncUpgradeHelloHeaderValue(requestId: String, payload: [String: Any]) -> String? {
+  guard let data = try? JSONSerialization.data(withJSONObject: ["requestId": requestId, "payload": payload]) else { return nil }
+  let base64url = data.base64EncodedString()
+    .replacingOccurrences(of: "+", with: "-")
+    .replacingOccurrences(of: "/", with: "_")
+    .replacingOccurrences(of: "=", with: "")
+  let value = "v1.\(base64url)"
+  return value.count <= syncUpgradeHelloHeaderMaxChars ? value : nil
+}
+
+func syncPipelinedCommandKey(action: String, args: [String: Any], projectId: String?, projectRootPath: String?) -> String? {
+  let scope: [String: Any] = [
+    "action": action,
+    "args": args,
+    "projectId": syncNormalizedCommandScopeValue(projectId) ?? "",
+    "projectRootPath": syncNormalizedProjectRootScope(projectRootPath) ?? "",
+  ]
+  guard let data = try? JSONSerialization.data(withJSONObject: scope, options: [.sortedKeys]) else { return nil }
+  return String(decoding: data, as: UTF8.self)
+}
+
+extension SyncService {
+  /// The hello's `pipelined` list for this connect attempt, or nil with no
+  /// active project. A cold connect bundles them too: their answers wait in
+  /// `pipelinedHelloReplies` until the project-row gate lets hydration ask.
+  func pipelinedHelloEnvelopes(forAttempt attempt: UInt64) -> [[String: Any]]? {
+    if let plan = pipelinedHelloPlan, plan.connectAttemptGeneration == attempt {
+      return plan.envelopes.isEmpty ? nil : plan.envelopes
+    }
+    pipelinedHelloPlan = nil
+    guard let projectId = normalizedProjectId(activeProjectId) else { return nil }
+    let rootPath = normalizedProjectRoot(activeProjectRootPath)
+    var envelopes: [[String: Any]] = []
+    var requestIdByKey: [String: String] = [:]
+    func addCommand(_ action: String, _ args: [String: Any]) {
+      guard let key = syncPipelinedCommandKey(action: action, args: args, projectId: projectId, projectRootPath: rootPath) else { return }
+      let requestId = makeRequestId()
+      requestIdByKey[key] = requestId
+      envelopes.append([
+        "type": "command",
+        "requestId": requestId,
+        "projectId": projectId,
+        "payload": syncCommandEnvelopePayload(
+          commandId: requestId,
+          action: action,
+          args: args,
+          projectId: projectId,
+          projectRootPath: rootPath
+        ),
+      ])
+    }
+    // The open chats' resumes go first, then the roster: the host runs a
+    // hello's requests in order, the roster build takes a moment and the lane
+    // refresh is the slow one, so what the user is looking at waits on
+    // neither. Two slots stay free for the lane and work requests.
+    var chatSessionIds = Set<String>()
+    if supportsChatStreaming {
+      for sessionId in subscribedChatSessionIds.sorted() where envelopes.count < 5 {
+        envelopes.append([
+          "type": "chat_subscribe",
+          "projectId": projectId,
+          "payload": chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true),
+        ])
+        chatSessionIds.insert(sessionId)
+      }
+    }
+    // Then the same requests, with the same arguments, performInitialHydration
+    // sends. The work list first: the Work screen (this project's first
+    // screen) waits on it alone; the roster (the Hub's) then comes down while
+    // the chat the user opens is requested. The lane refresh runs git in every
+    // worktree (seconds on a project with many lanes), so it goes last.
+    addCommand("work.listSessions", workListRequest(projectId: projectId).args)
+    var includesRoster = false
+    if !rosterSubscribed {
+      let rosterPayload: [String: Any] = rosterSeq.map { ["sinceSeq": $0] } ?? [:]
+      envelopes.append(["type": "roster_subscribe", "projectId": projectId, "payload": rosterPayload])
+      includesRoster = true
+    }
+    // Only when this app holds a lane signature: then the answer is "not
+    // modified" or a small delta. Without one it is the whole lane list
+    // (~27 KB on a busy project), which on a weak link would land in front of
+    // the chat the user opens next; performInitialHydration asks for it then.
+    let laneArgs = laneRefreshArgs(includeStatus: true, includeDecorations: true)
+    if laneArgs["ifNoneMatch"] != nil {
+      addCommand("lanes.refreshSnapshots", laneArgs)
+    }
+    let plan = SyncPipelinedHelloPlan(
+      connectAttemptGeneration: attempt,
+      envelopes: envelopes,
+      commandRequestIdByKey: requestIdByKey,
+      commandRequestIds: Set(requestIdByKey.values),
+      chatSessionIds: chatSessionIds,
+      includesRosterSubscribe: includesRoster
+    )
+    pipelinedHelloPlan = plan
+    return envelopes.isEmpty ? nil : envelopes
+  }
+
+  /// hello_ok: keep the plan only when the host ran all of it.
+  func adoptPipelinedHelloPlan(accepted: Int?, connectAttemptGeneration: UInt64) {
+    defer { pipelinedHelloPlan = nil }
+    pipelinedHelloReplies.removeAll()
+    guard let plan = pipelinedHelloPlan,
+          plan.connectAttemptGeneration == connectAttemptGeneration,
+          let accepted,
+          accepted == plan.envelopes.count,
+          accepted > 0
+    else {
+      acceptedPipelinedHello = nil
+      return
+    }
+    acceptedPipelinedHello = plan
+  }
+
+  /// The pipelined request id for this exact command, once.
+  func takePipelinedHelloCommand(action: String, args: [String: Any], projectId: String?, projectRootPath: String?) -> String? {
+    guard acceptedPipelinedHello != nil,
+          let key = syncPipelinedCommandKey(action: action, args: args, projectId: projectId, projectRootPath: projectRootPath)
+    else { return nil }
+    return acceptedPipelinedHello?.commandRequestIdByKey.removeValue(forKey: key)
+  }
+
+  func consumePipelinedHelloRosterSubscribe() -> Bool {
+    guard acceptedPipelinedHello?.includesRosterSubscribe == true else { return false }
+    acceptedPipelinedHello?.includesRosterSubscribe = false
+    return true
+  }
+
+  func consumePipelinedHelloChatSubscribe(sessionId: String) -> Bool {
+    acceptedPipelinedHello?.chatSessionIds.remove(sessionId) != nil
+  }
+}
+
 // MARK: - All-projects chat roster (mobile hub)
 //
 // A machine-wide projection of every project's lanes + chat sessions, pushed by
@@ -25204,6 +26111,8 @@ extension SyncService {
   func subscribeRosterIfNeeded() {
     guard canSendLiveRequests(), !rosterSubscribed else { return }
     rosterSubscribed = true
+    // The hello carried this subscribe and the host ran it.
+    if consumePipelinedHelloRosterSubscribe() { return }
     var payload: [String: Any] = [:]
     if let rosterSeq {
       payload["sinceSeq"] = rosterSeq
@@ -25229,6 +26138,9 @@ extension SyncService {
     let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
     rosterProjects = nextProjects
     rosterSeq = snapshot.seq
+    // A full snapshot is a fresh start: older chats loaded before it may have
+    // changed or gone, so the user loads them again.
+    dropRosterOlderChats()
     if !rosterSupported { rosterSupported = true }
     rosterRevision &+= 1
     markRosterProjectsChanged(changedProjectIds)
@@ -25249,8 +26161,7 @@ extension SyncService {
       let nextProjects = sortRosterProjects(projects.map { $0.excludingIdentityChats() })
       // A delta already carries its changed/removed project ids. Avoid a deep
       // all-project chat-array comparison on the MainActor every 250 ms.
-      let changedProjectIds = Set((delta.changed ?? []).map(\.projectId))
-        .union(delta.removed ?? [])
+      let changedProjectIds = delta.touchedProjectIds
       rosterSeq = seq
       // Most deltas re-send projects whose content did not change. Compare
       // just those (never the whole roster) and publish only a real change:
@@ -25261,7 +26172,7 @@ extension SyncService {
         markRosterProjectsChanged(changedProjectIds)
       }
       schedulePersistRoster()
-      applyChatThreadRosterFreshness(delta.changed ?? [])
+      applyChatThreadRosterFreshness(delta.deliveredChatRows(in: nextProjects))
     }
   }
 
@@ -25283,10 +26194,115 @@ extension SyncService {
   /// (the brain derives both ids from the root, but match on root as a fallback).
   func rosterProject(for project: MobileProjectSummary) -> RemoteRosterProject? {
     if let direct = rosterProjects.first(where: { $0.projectId == project.id }) {
-      return direct
+      return direct.mergingOlderChats(rosterOlderChats[direct.projectId])
     }
     guard let root = normalizedProjectRoot(project.rootPath) else { return nil }
     return rosterProjects.first { normalizedProjectRoot($0.rootPath) == root }
+      .map { $0.mergingOlderChats(rosterOlderChats[$0.projectId]) }
+  }
+
+  /// The roster with the older chats the user loaded, for lookups by chat id.
+  var rosterProjectsIncludingOlderChats: [RemoteRosterProject] {
+    guard !rosterOlderChats.isEmpty else { return rosterProjects }
+    return rosterProjects.map { $0.mergingOlderChats(rosterOlderChats[$0.projectId]) }
+  }
+
+  /// Load older chats of a project from the host (`roster_chats_request`):
+  /// the next page, or with `all` every page left (a search or a filter needs
+  /// them all). Does nothing when the host sent every chat.
+  func loadOlderRosterChats(projectId: String, all: Bool = false) async {
+    for _ in 0..<(all ? 40 : 1) {
+      guard canSendLiveRequests(),
+            let project = rosterProjects.first(where: { $0.projectId == projectId }),
+            project.unloadedChatCount > 0 || rosterOlderChats[projectId] != nil
+      else { return }
+      var state = rosterOlderChats[projectId] ?? RosterOlderChats()
+      guard !state.reachedEnd, !state.loading else { return }
+      state.loading = true
+      rosterOlderChats[projectId] = state
+      var payload: [String: Any] = ["projectId": projectId, "limit": all ? 500 : 100]
+      if let next = state.next { payload["before"] = next.payload }
+      guard let page = await requestRosterChats(payload: payload) else {
+        if var failed = rosterOlderChats[projectId] {
+          failed.loading = false
+          rosterOlderChats[projectId] = failed
+        }
+        return
+      }
+      guard let current = rosterOlderChats[projectId] else { return }
+      rosterOlderChats[projectId] = current.adding(page, isIdRequest: false)
+      rosterRevision &+= 1
+      markRosterProjectsChanged([projectId])
+      if rosterOlderChats[projectId]?.reachedEnd == true { return }
+    }
+  }
+
+  /// Fetch chats the roster's head rows leave out, by id (a deep link or a
+  /// notification for an older chat). Returns true when any arrived.
+  @discardableResult
+  func loadRosterChats(projectId: String, ids: [String]) async -> Bool {
+    let wanted = ids.filter { !$0.isEmpty }
+    guard !wanted.isEmpty, canSendLiveRequests(),
+          let project = rosterProjects.first(where: { $0.projectId == projectId }),
+          project.chatTotal != nil,
+          let page = await requestRosterChats(payload: ["projectId": projectId, "ids": wanted]),
+          !page.chats.isEmpty
+    else { return false }
+    rosterOlderChats[projectId] = (rosterOlderChats[projectId] ?? RosterOlderChats()).adding(page, isIdRequest: true)
+    rosterRevision &+= 1
+    markRosterProjectsChanged([projectId])
+    return true
+  }
+
+  /// Every chat of every paged project, on this machine and the other
+  /// connected machines: a list that shows chats across projects by state
+  /// (All, Done) must reach the older finished ones too.
+  func loadAllOlderRosterChats() async {
+    for project in rosterProjects where project.unloadedChatCount > 0 {
+      await loadOlderRosterChats(projectId: project.projectId, all: true)
+    }
+    guard let fleet = machineFleet else { return }
+    for machine in fleet.machines {
+      guard let connection = fleet.connection(for: machine.machineKey) else { continue }
+      for project in connection.rosterProjects where project.unloadedChatCount > 0 {
+        await connection.loadOlderRosterChats(projectId: project.projectId, all: true)
+      }
+    }
+  }
+
+  /// A chat named by a link that the roster's head rows leave out: ask each
+  /// paged project for it by id, until one has it.
+  func loadOlderRosterChatForNavigation(sessionId: String) async {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    for project in rosterProjects where project.unloadedChatCount > 0 {
+      if await loadRosterChats(projectId: project.projectId, ids: [trimmed]) { return }
+    }
+  }
+
+  private func requestRosterChats(payload: [String: Any]) async -> RemoteRosterChatsPayload? {
+    let generation = rosterOlderChatsGeneration
+    let requestId = makeRequestId()
+    do {
+      let raw = try await awaitResponse(
+        requestId: requestId,
+        disconnectOnTimeout: false,
+        timeoutMessage: "Timed out loading older chats."
+      ) {
+        self.sendEnvelope(type: "roster_chats_request", requestId: requestId, payload: payload)
+      }
+      guard generation == rosterOlderChatsGeneration else { return nil }
+      return try decode(raw, as: RemoteRosterChatsPayload.self)
+    } catch {
+      syncConnectLog.info("roster chats request failed error=\(String(describing: error), privacy: .public)")
+      return nil
+    }
+  }
+
+  private func dropRosterOlderChats() {
+    rosterOlderChatsGeneration &+= 1
+    guard !rosterOlderChats.isEmpty else { return }
+    rosterOlderChats = [:]
   }
 
   /// Active-surface invalidation token. Unlike machine-wide `rosterRevision`,
@@ -25317,7 +26333,7 @@ extension SyncService {
   ) -> RosterSessionNavigationTarget? {
     resolveRosterSessionNavigationTarget(
       projects: projects,
-      rosterProjects: rosterProjects,
+      rosterProjects: rosterProjectsIncludingOlderChats,
       sessionId: request.sessionId,
       laneId: request.laneId,
       repoOwner: request.repoOwner,
@@ -25389,6 +26405,7 @@ extension SyncService {
     rosterPersistTask?.cancel()
     rosterPersistTask = nil
     rosterProjects = loadCachedRoster()
+    dropRosterOlderChats()
     rosterSeq = nil
     rosterSupported = false
     rosterSubscribed = false
@@ -26238,6 +27255,9 @@ extension SyncService {
       "binaryEnvelopes",
       "foldedReplay",
       "mobileChatSlimV1",
+      "rosterChatDeltaV1",
+      "rosterPrioritySnapshotV1",
+      "rosterChatPagesV1",
     ]
     return metadata
   }

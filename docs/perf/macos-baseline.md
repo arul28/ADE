@@ -306,6 +306,298 @@ generation by machine memory, so the release runtime is built with Node 22's
 | Footprint, idle 30 s | `footprint` | 226 MB | 279 MB | 224–225 MB (264 MB uncapped) | the Processes table |
 | CPU time, first 30 s | `ps` | 0.97–1.01 s | 0.70–0.71 s | 0.74–0.80 s | — |
 
+### Network and remote (phone, remote desktop, wire bytes)
+
+Not measured with the rest of this table: Mac Studio (Mac16,9, M4 Max, 36 GB),
+macOS 27.0, Node 26.3, main at `e2f42f44c`, 2026-10-26, load average 9–35 (up to
+eight other agent lanes building at once; every run held the machine-wide
+heavy lock, so builds did not overlap runs, but idle agents did). Sync **ON**:
+a measurement brain on its own fake HOME, socket and loopback port
+(`scripts/perf/net/measure-brain.mjs`), never the installed brain. Links are
+shaped by `scripts/perf/net/slow-proxy.mjs`: **3G** = T3's condition (400 kbps
+each way, 400 ms RTT), **LTE** = 10 Mbps / 60 ms, **LAN** = unshaped. Dataset:
+the seeded synthetic project (`make-synthetic-project.mts`: 1,000 chats, 20
+lanes, a 1,000-turn chat of 10 MB). Medians of 3–6 runs, interleaved by profile.
+How to run each: `scripts/perf/net/README.md`.
+
+**Phone** (`phone-sync.bench.mts`, the iOS hello and request sequence; *cold* =
+paired, nothing cached; *reconnect* = after a 5 s drop, caught-up replica,
+roster seq, lane signature and chat cursor kept):
+
+| Metric | 3G | LTE | LAN | Ceiling (proposed, needs approval) |
+|---|---|---|---|---|
+| Cold: hello_ok | 1,549 ms | 207 ms | 11 ms | 3G 1,900 ms |
+| Cold: Work usable (project-row gate, then lanes + work sessions) | 3,884 ms | 1,139 ms | 1,095 ms | 3G 4,800 ms |
+| Cold: biggest chat's first page | 4,636 ms | 1,221 ms | 1,103 ms | 3G 5,800 ms |
+| Cold: replica caught up | not within 120 s (5,932 of 6,363 versions left) | not within 120 s | not within 120 s | must finish; no ceiling yet |
+| Cold: bytes down, whole connection, first 120 s | 476 KB (4.2 MB parsed) | 832 KB (7.3 MB parsed) | 828 KB (7.3 MB parsed) | — (bounded by the 120 s cap) |
+| Reconnect: biggest chat's first page | 4,573 ms | 1,060 ms | 738 ms | 3G 5,700 ms |
+| Reconnect: bytes down | 116 KB (1.1 MB parsed) | 113 KB | 112 KB | 145 KB |
+
+Where the cold bytes go (3G, first 120 s): changesets 224 KB (139 batches,
+11.3k rows), `brain_status` 137 KB (one ~850 B status after every ack),
+roster 57 KB (636 KB parsed), command replies 20 KB, chat page 16 KB,
+hello_ok 15 KB (77 KB parsed), catalog 5 KB. Reconnect: the full roster again
+(57 KB), hello_ok (15 KB), the catalog again (5 KB), the chat page again
+(16 KB: the `sinceSeq` resume did not apply), lanes/work replies (17 KB).
+Catch-up pace: one batch per 400 ms tick, 250 rows; with a chat open, 64 rows /
+64 KB. LTE and LAN deliver the same ~22.9k rows in 120 s, so the tick, not the
+link, is the limit.
+
+**Phone, real-scale database** (`replica-catchup.bench.mts`: the production
+sync host over a copy of this repo's own `.ade/ade.db`, 74 MB,
+`serverDbVersion` 78.4 M; lane and PR services stubbed, nothing touches a
+worktree; numbers only):
+
+| Metric | 3G | LTE | LAN | Ceiling |
+|---|---|---|---|---|
+| hello_ok | 1,400 ms | 206 ms | 8 ms | — |
+| Replica caught up | not within 180 s (18.5k rows, 192 batches, 892 KB) | not within 180 s (40.7k rows, 353 batches, 1.77 MB) | not within 180 s (same 40.7k rows) | must finish; no ceiling yet |
+| Reseed used | no | no | no | — |
+
+**Remote desktop** (`desktop-remote.bench.mts`: the desktop's own paired
+transport and RPC client; *connected* = socket, hello, `ade/initialize`,
+`projects.list`; *project usable* = lane, session and chat lists; *chat open* =
+the chat pane's first history read; *reconnect* = the bootstrap again after
+the link drops, plus one read. The automatic reconnect's backoff wait comes on
+top and is not timed):
+
+| Metric | 3G | LTE | LAN | Ceiling (proposed, needs approval) |
+|---|---|---|---|---|
+| Connected | 3,399 ms | 1,196 ms | 888 ms | 3G 4,200 ms, LAN 1,100 ms |
+| Project usable | 6,128 ms | 1,584 ms | 1,216 ms | 3G 7,700 ms |
+| Big chat open | 7,283 ms | 1,683 ms | 1,223 ms | 3G 9,100 ms |
+| Bytes down, connect to chat open | 166 KB | 166 KB | 166 KB | 210 KB |
+| Reconnect: connected + first read | 3,828 ms / 28 KB | 1,209 ms | 797 ms | 3G 4,800 ms |
+
+**Brain event loop** (`scripts/perf/net/loop-delay-preload.cjs`, `monitorEventLoopDelay` in the
+measurement brain, 5 s windows over 60 s, on the synthetic project):
+
+| Metric | Baseline | Ceiling (proposed, needs approval) |
+|---|---|---|
+| Idle: loop delay p99 (worst window) / longest stall | 43 ms / **2,046 ms** (a ~2 s stall about every 30 s, 33–41% loop utilisation in those windows) | 50 ms / 200 ms |
+| During a phone cold connect (LAN): p99 / longest stall | 129 ms / 2,042 ms | 150 ms / 200 ms |
+
+The installed brain's own log shows the same stall: 140 `brain.event_loop_near_miss`
+(≥ 2 s) entries, several with `lastCommand: idle`.
+
+**Local dev app, isolated home** (`cold-start.mjs`, 3 runs, desk-synth project): launch command to
+window created 14.2 s (14.2–15.3; ~9.5 s of it is the dev launcher's CLI build check and runtime
+start, Electron launch to window 3.6 s). An isolated home stops at the sign-in gate, so "app mounted"
+and the switch and chat-open scripts need a signed-in home; see the switch pass section.
+
+**Phone wire budget in CI** (`apps/ade-cli/src/services/sync/syncWireBudget.test.ts`,
+the real sync host on a 300-chat seeded project, no shaping; bytes only;
+deterministic to 0.03%): cold connect 240.9 KB (budget 265 KB), reconnect
+42.6 KB (47 KB), big chat first page 15.7 KB (17.5 KB). Lower the budgets as
+the wire gets cheaper; never raise them to pass. After the P1 phone pass
+(`9a775aedf`): cold 210.4 KB (budget 232 KB), reconnect 25.0 KB (27.5 KB),
+chat page 15.7 KB (17.5 KB).
+
+#### After the P1 phone and remote pass (`9a775aedf`, 2026-10-26)
+
+Same machine, dataset, proxy and benches as above. A/B, interleaved run by
+run: brain A runs the build before the pass, brain B the build after it, each
+on its own copy of the synthetic project. The phone bench runs as today's
+app (`--phone legacy`: drops its roster seq on a disconnect, no digest, asks
+for the catalog again) or as the app in this branch (`--phone new`). The new
+iOS app was **not built** for these runs (main disk under the 30 GB build
+rule); its wire is copied by the bench. Medians of 3, load average 8–18.
+Both brains show the ~2 s event-loop stall every ~30 s (P4's), which lands in
+some runs.
+
+| Metric (phone) | Before, today's app | After, today's app | After, new app |
+|---|---|---|---|
+| Cold 3G: Work usable / chat open | 4,010 / 4,763 ms | 3,833 / 4,613 ms | 3,724 / 4,474 ms |
+| Cold LTE / LAN: chat open | 1,431 / 1,175 ms | 1,422 / 1,084 ms | 1,364 / 1,016 ms |
+| Cold: replica caught up (3G / LTE / LAN) | never in 120 s (4.9k versions left) | 85.6 / 17.3 / 3.0 s | 85.3 / 18.2 / 3.0 s |
+| Cold 3G: changeset rows delivered | 11.4k in 120 s | all 42.0k | all 42.0k |
+| Reconnect 3G: chat open | 4,262 ms | 4,161 ms | 2,952 ms |
+| Reconnect 3G: bytes down / parsed | 99.7 KB / 977 KB | 94.5 KB / 736 KB | **12.9 KB / 17 KB** |
+| Reconnect LTE / LAN: chat open | 1,074 / 675 ms | 1,005 / 610 ms | 990 / 697 ms |
+| Reconnect, one chat renamed while away, 3G: chat open / bytes | 4,278 ms / 99.9 KB | 5,799 ms (two 2 s stalls) / 95.9 KB | 3,200 ms / 30.1 KB |
+| Same, roster part | 56.8 KB | 52.2 KB | 1.4 KB |
+
+| Metric (remote desktop) | Before | After |
+|---|---|---|
+| Connected, 3G / LTE / LAN | 3,125 / 915 / 582 ms | 2,159 / 301 / 27 ms |
+| Server time in the bootstrap RPCs, LAN | 513 ms | 11 ms |
+| Project usable, LAN | 865 ms | 328 ms |
+| Reconnect (bootstrap + one read), 3G / LTE / LAN | 3,562 / 2,621 / 528 ms | 2,679 / 398 / 42 ms |
+
+Pipelining alone against the old brain (`--pipelined` on brain A): connected
+3G 2,667 ms, LTE 786 ms; the old brain answers it, which is the compatibility
+check. The rest of the LAN win is `projects.list`: it started one icon worker
+process per project (~500 ms of Node start) on every connect.
+
+Roster build (`roster.bench.mts` on the 1,000-chat home, 3 interleaved runs):
+cold 43.5–53.0 → 44.8–45.9 ms, warm 22.6–34.0 → 23.7–30.4 ms (one 56 ms
+outlier): no change from the null-free rows. Per-chat roster patches, checked
+with a scratch randomized client (250 steps × 3 seeds, the iOS apply rules):
+the patched client always equals the host, at 0.21–0.34 of the bytes on
+40-chat projects.
+
+#### P1 round 2: pipelined hello, ack window, work-list deltas (2026-10-26)
+
+A/B as above: brain A runs the round-1 build (`9a775aedf`), brain B round 2;
+the phone is the bench's new-app mode on both (so A also shows the new app
+against an older brain falling back). Medians of 3, load average 10–14. Both
+brains still stall ~2 s every ~32 s (P4's); a run that lands on a stall is
+kept in the median.
+
+| Metric (phone, new app) | Round 1 | Round 2 | T3 |
+|---|---|---|---|
+| Reconnect 3G: chat shows | 3,219 ms | **1,359 ms** (chat first in the hello) | 1.3 s |
+| Reconnect 3G: hello_ok | 1,413 ms | 1,334 ms (catalog left out when unchanged) | — |
+| Reconnect 3G: Work usable | 2,795 ms | 1,882 ms (waits on the ~300 ms lane refresh, P4) | — |
+| Reconnect 3G: bytes down / parsed | 30.3 KB / 272 KB | **8.0–8.9 KB / 11 KB** | 17 KB / 137 KB |
+| Reconnect LTE / LAN: chat shows | 1,049 / 629 ms | 432 / 15 ms | — |
+| Reconnect after one chat renamed, 3G: chat / bytes | 3,258 ms / 30.3 KB | 1,961 ms / 12.5 KB (before chat-first) | — |
+| Work list after one session changed | 254 KB parsed (all 200 rows) | 1.8 KB (one row; 4 of 4 checks equal to a fresh full list) | — |
+| Cold: replica caught up, 3G / LTE / LAN | 85.7 / 18.3 / 2.8 s | **21.8 / 7.4 / 2.6 s** (8-batch ack window) | — |
+| Cold 3G: chat shows / bytes | 4,511 ms / 714 KB | 4,721 ms / 704 KB | 3.6 s / 89 KB |
+| Today's app against the round-2 brain | — | works: cold 3G 4,591 ms, reconnect 4,151 ms, 94.7 KB (today's wire) | — |
+
+`syncWireBudget.test.ts` still passes (cold 210.5 KB, reconnect 25.1 KB):
+its test phone sends no digests and no pipelined requests, so it measures the
+older-app wire, which round 2 leaves alone.
+
+#### P1 round 3: hello on the upgrade, a priority roster, cold bundling (2026-10-26)
+
+Brain A runs round 2 (`2b52adc0a`), brain B round 3; new-app mode on both.
+Medians of 3, load average 9–13.
+
+| Metric (phone, new app, 3G) | Round 2 | Round 3 | T3 |
+|---|---|---|---|
+| Reconnect: hello_ok | 1,334–1,404 ms | **944 ms** (hello in the upgrade request: one round trip less) | — |
+| Reconnect: chat shows | 1,359–1,429 ms | **973 ms** | 1.3 s |
+| Reconnect: bytes down | 7.9–8.9 KB | 9.5 KB | 17 KB |
+| Cold: hello_ok / project row / Work usable | 1,552 / 1,758 / 3,799 ms | 1,183 / 1,384 / 1,823 ms | — |
+| Cold: chat shows | 4,721 ms | **2,579 ms** | 3.6 s |
+| Cold: bytes down when the chat shows | ~113 KB (estimated from the trace) | **63.8 KB** | 89 KB |
+| Cold: first roster / whole roster | 53 KB at 3.3 s / same | 4.1 KB at 1.3 s / 5.6 s | — |
+| Cold: replica caught up | 21.8 s | 21.1 s (the window opens 3 s after hello) | — |
+| LTE: cold chat / reconnect chat | 1,254 / 432 ms | 845 / 219 ms | — |
+
+Where a cold 3G connect spends its time now: hello_ok at 1.18 s (two round
+trips plus 15 KB of command descriptors a fresh install has no digest for);
+the project row at 1.38 s (the first batch, never held back); Work usable at
+1.82 s (the bundled lane and work replies, 20 KB); the chat at 2.58 s (one round
+trip after Work, the user's tap, plus its 16 KB page). Today's app against the
+round-3 brain gets today's wire (cold 3G chat 6.6 s in one run that hit a
+stall; LTE 1.18 s, LAN 0.98 s).
+
+Still open after this pass (gaps against T3's 3G numbers):
+- None of the four T3 rows is lost on the bench any more. Work usable on a
+  reconnect still waits on the ~300 ms `lanes.refreshSnapshots` (P4).
+- Cold bytes: the whole replica is now delivered (~705 KB on 3G for 42k rows);
+  the change volume is the cost (P4's idle writes and terminal rows).
+- The whole cold replica is ~710 KB on 3G (42k rows), downloaded in the
+  background over ~21 s; T3 has no replica to compare.
+
+#### P1 under real load (golden clone of the owner's ADE project, 2026-10-26)
+
+A `--clone` of P0's golden copy: 78.47 M db versions, 46 lanes with real
+worktrees, 132 chats, 3,526 chat records, one big chat (8.7 MB).
+Measurement brain built from `fa02a7e48` plus P4's keychain-stall fix
+(`0224073ec`, applied to the measurement build only). Headless phone in
+new-app mode, desktop bench with the pipelined connect. Medians of 5, worst
+run in brackets. `wan30` is a real two-Mac tailnet link
+(`tailscale ping` 29 ms; 50 Mbps assumed). Load average 13-48 (a shared Mac).
+
+| Scenario | 3G | wan30 | LAN | T3 (3G, published) |
+|---|---|---|---|---|
+| Phone cold: Work screen (work list) | 1.54 s (1.54) | 0.11 s | 0.61 s ¹ | — |
+| Phone cold: big chat first page | 3.36 s (3.64) | 0.20 s (0.21) | 0.80 s ¹ | 3.6 s |
+| Phone cold: KB down when the chat shows | 101-128 | 101 | — | 89 KB |
+| Phone reconnect: chat | 0.98 s (1.74 ²) | 0.11 s (0.11) | 0.04 s ¹ | 1.3 s |
+| Phone reconnect: KB down | 6-20 | 5 | — | 17 KB |
+| Phone relaunch without saved signatures (before) → with (after): Work screen | 1.45 → 0.98 s | 0.13 → 0.12 s | | |
+| Phone relaunch: KB down, before → after | 67 → 6-9 | 66 → 5 | | |
+| Desktop remote: connected / project usable / chat open | 2.04 / 5.26 / 7.49 s | 0.16 / 0.28 / 0.34 s | 0.03 / 0.10 / 0.11 s | — |
+| Desktop remote: reconnect to first read | 5.02 s | 0.22 s | 0.05 s | — |
+
+¹ single runs while tracing. ² one run: `hello_ok` 1.16 s and the work list
+0.7 s after it, under load average 47; the other four 0.98-1.03 s.
+
+Before (P0's numbers on main, same golden data): phone cold chat 11.92 s
+(12.07) / 693 KB, reconnect chat 8.88 s (9.22) / 244 KB, cold Work usable
+8.99 s, replica never caught up in 60 s. After, the cold replica caught up on
+LAN (63.8 k rows) in 41 s.
+
+What moved it, in order of size:
+- `chat_subscribe`, `lanes.refreshSnapshots` and `prs.refresh` run as reads in
+  a peer's queue, and `changeset_ack` is handled outside it. Before, the
+  2.3 s lane refresh held the chat page, the PR list and every ack behind it
+  (cold LAN chat 2.7 → 1.59 s).
+- The first batch is not held by a reseed build (several polls on a big
+  project, over the cap anyway); a too-large result is reused for 30 min; the
+  first batch goes right after `hello_ok` (cold LAN project row 1.42 →
+  0.61 s, chat 1.59 → 0.80 s).
+- `prs.list` is conditional, null-free, and on a first load the open PRs
+  only (507 PRs were 108 KB on every connect); the full list follows 5 s later.
+- The work list goes first and, on a first load, as head rows (34 → 21 KB);
+  the iPhone writes head rows without removing other rows.
+- A phone's catch-up waits 3 s after its first batch, so batches do not sit
+  in front of the chat page.
+- The iPhone's project-row gate wakes on apply.
+
+Checked and dropped, with numbers:
+- Persistent zlib per phone socket: on real load 278.7 → 273.2 KB (−2%) for a
+  cold connect, ≤1% on every first-screen payload. The synthetic 1.46× came
+  from small batches.
+- Warm relay pipe pool: a local `wrangler dev` of `apps/tunnel-relay`
+  (loopback, port 18799) shows the host's pipe dial at ~46 ms (wan30 phone,
+  20 ms host leg: first echo 139 ms) and hidden on 3G (pipe open 673 ms, the
+  phone's own socket 826 ms). A pool saves ≤45 ms on fast links and nothing on
+  slow ones, for a relay protocol change that cannot be deployed or tested
+  live from here.
+- Dropping superseded `context_usage` events from the chat page: ≤4 KB on
+  the wire, and the iPhone's usage meter reads them in order with compaction
+  events.
+- SSH identity cache (r1 #12c): the only SSH targets are the owner's own
+  account on this Mac and the owner's machines; a full SSH connect starts a
+  runtime there. Not measured.
+
+`ade chat read --limit 10` on the 8.7 MB chat (CLI start included): 1,433 ms
+(1,080-2,128) → 563 ms (555-626), output byte-identical.
+
+Roster on the real clone (`roster-dirty.bench.mts`): cold 104 ms, rebuild
+after a database write 4.8 ms, unchanged 0 ms.
+
+#### P1 final real-load pass (golden clone, 2026-10-26 evening)
+
+P0's combined run, P1 `1bdc084d5` + P4 `41f0da44b` (median of 5, worst in
+brackets): 3G cold → big chat 2.57 s (2.61) vs T3 3.6 s; 3G cold bytes at
+the chat 85.3 KB (85.5) vs 89 KB; 3G reconnect → chat 0.98 s (0.99) / 5.9 KB
+vs 1.3 s / 17 KB; LTE reconnect hello 145 ms (160). With `cbc32aa15` (a full
+lane list waits behind the first chat page on a weak link), P1's own runs with
+P4's fixes: 3G cold chat 2.40-2.43 s, 56.9-57.8 KB at the chat in all 5.
+
+After the rebase onto main with P4 (`bf6bfe605`), P1 `68c349ed1`, a fresh
+golden clone, the headless phone on 3G, median of 5 (worst), load average
+6-15: cold → chat 2.53 s (2.65) vs T3 3.6 s; 61.8 KB at the chat (61.9) vs
+89 KB; reconnect → chat 0.99 s (1.02), 4.0 KB at the chat and 8.3 KB in all
+vs 1.3 s / 17 KB.
+
+- Weak-link first chat page (owner-approved): the phone times its own
+  handshake (dial to hello_ok); at 700 ms or more the first page is 96 KB, not
+  256 KB (13.5 KB wire instead of 57 KB on the 8.7 MB chat). The next older
+  page is prefetched and scroll-up loads 1.5 screens early; checked on the
+  simulator through a 3G proxy (handshake 1,070 ms, page 98,304 B, scrolled to
+  the chat's first message). LTE, Wi-Fi, LAN keep 256 KB.
+- Cached lane status (owner-approved, P4's laneService): first lane answer
+  1,753 ms → 45 ms (P4's numbers), exact re-check in the background, delta of
+  changed lanes.
+- Streaming on the iPhone (simulator, 30 s at 10 events/s into the open
+  real-load chat): `SyncService` published 29 times (~1/s, mostly the last-sync
+  stamp, none per token). No change needed.
+- A freshly started brain: first phone hello 5-6 ms, chat 0.17 s on LAN.
+- Dropped with numbers: repeated bodies on the chat page (2 KB of 284 KB);
+  an ID table (43 KB decoded, folded by deflate on the wire); remote desktop
+  on 3G (2.0 / 5.3 / 7.5 s; on the owner's 29 ms link 0.16 / 0.28 / 0.34 s; T3
+  has no number).
+
 ### Open items (measured, over budget or unbudgeted)
 
 - **Files tab switch:** 0–295 ms. The profile shows the kept-alive Work tab
@@ -436,6 +728,15 @@ then 500 events one at a time as a turn streams.
 pager's byte window and turn anchoring, the capped merge, and the row build per
 landed page, reported per page (`--synthetic N` builds a transcript instead of
 reading one).
+
+Network and phone, no app needed (`scripts/perf/net/`, see its README):
+`slow-proxy.mjs` (3G/LTE/LAN shaping), `phone-sync.bench.mts` (headless
+phone, cold and reconnect), `replica-catchup.bench.mts` (a phone's first
+replica on a copy of any project database), `desktop-remote.bench.mts`
+(remote desktop connect), `make-synthetic-project.mts` (the seeded
+1,000-chat project), `measure-brain.mjs` (an isolated sync-ON brain; read
+the README before starting one: a bare sync brain binds 8787 first, scans
+and reaps other listeners, and edits `tailscale serve`).
 
 Production-build chat streaming and typing:
 `scripts/perf-chat-stream.mjs` (headless Chromium against `vite preview`).

@@ -79,6 +79,7 @@ import type {
   PairedRuntimeHelloOkPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
+  SyncCommandRoutingActionGroup,
   SyncProjectOpenRequestPayload,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
@@ -87,6 +88,7 @@ import type {
   SyncProjectSetIconRequestPayload,
   SyncProjectSetIconResultPayload,
   SyncProjectSwitchRequestPayload,
+  SyncRosterSubscribePayload,
   SyncProjectSwitchResultPayload,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
@@ -113,6 +115,12 @@ import {
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
+  SYNC_ROSTER_CHAT_DELTA_CAPABILITY,
+  SYNC_COMMAND_ROUTING_GROUPS_CAPABILITY,
+  SYNC_ROSTER_CHAT_PAGES_CAPABILITY,
+  SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY,
+  SYNC_PIPELINED_HELLO_MAX_ENVELOPES,
+  SYNC_CHANGESET_ACK_WINDOW_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import {
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
@@ -132,7 +140,9 @@ import {
 } from "./chatLogResume";
 import {
   createSyncRosterFanout,
+  rosterResumeIdentity,
   ROSTER_DIRTYING_COMMAND_ACTIONS,
+  type SyncRosterPeerState,
   type SyncRosterProvider,
 } from "./syncRosterFanout";
 import {
@@ -334,6 +344,8 @@ import {
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
+  readSyncUpgradeHelloHeader,
+  syncUpgradeHelloEnvelope,
   type SharedSyncListener,
   type SyncPeerHandoffSnapshot,
   type SyncTransportOrigin,
@@ -628,6 +640,26 @@ export {
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+// How long after its last chat event (or subscribe) an open chat still keeps
+// changeset batches at the small chat-first size.
+const SYNC_HOST_CHAT_QUIET_FULL_BATCH_MS = 5_000;
+// Ack window for peers that declare it: batches in flight at once, and the
+// socket buffer past which no more are added. One batch per round trip left a
+// 3G link (400 ms RTT) mostly idle during a cold catch-up.
+/** How long a "too large" reseed result is reused before a new build is tried. */
+const MOBILE_REPLICA_RESEED_TOO_LARGE_REUSE_MS = 30 * 60 * 1000;
+const CHANGESET_ACK_WINDOW_MAX_BATCHES = 8;
+const CHANGESET_ACK_WINDOW_MAX_BUFFERED_BYTES = 1024 * 1024;
+const CHANGESET_ACK_WINDOW_OPEN_AFTER_HELLO_MS = 3_000;
+/** How long a connecting phone's catch-up waits after its first chat page was sent. */
+const SYNC_HOST_FIRST_CHAT_PAGE_DELIVERY_MS = 1_500;
+/** The latest time after hello that the first chat page still holds catch-up back. */
+const SYNC_HOST_FIRST_CHAT_PAGE_HOLD_MAX_MS = 8_000;
+// A compact reseed can carry up to 4 MiB of change JSON, which a slow phone
+// link (3G: ~400 kbps) needs well over 10 s to download and apply. Its ack
+// window grows by one second per 256 KiB of change JSON, so the batch is not
+// resent while it is still arriving.
+const CHANGESET_ACK_TIMEOUT_BYTES_PER_EXTRA_SECOND = 256 * 1024;
 const SYNC_HOST_AUTH_TIMEOUT_MS = 15_000;
 const MAX_CHANGESET_SEND_ATTEMPTS = 6;
 const MIN_RECOVERY_CHANGESET_BATCH_ROWS = 16;
@@ -780,14 +812,27 @@ export function isConcurrentReadCommandAction(action: string): boolean {
   });
 }
 
+/**
+ * Commands that change nothing the peer can see and may take seconds, so they
+ * run as reads instead of holding every later request back.
+ * `lanes.refreshSnapshots` runs git in every lane worktree (~2.3 s for 46
+ * lanes) and writes only the host's own lane-status cache; `prs.refresh`
+ * asks GitHub (1-1.5 s a call) and writes only the host's PR cache. As
+ * barriers they held a connecting phone's chat open behind them.
+ */
+const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set(["lanes.refreshSnapshots", "prs.refresh"]);
+
 export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
+  // Opening a chat reads its transcript and records the subscription on this
+  // peer only. A chat_unsubscribe or any command after it still waits for it.
+  if (envelope.type === "chat_subscribe") return true;
   if (envelope.type === "file_request") {
     const action = toOptionalString((envelope.payload as Partial<SyncFileRequest> | null)?.action);
     return action !== null && CONCURRENT_READ_FILE_ACTIONS.has(action);
   }
   if (envelope.type === "command") {
     const action = toOptionalString((envelope.payload as Partial<SyncCommandPayload> | null)?.action);
-    return action !== null && isConcurrentReadCommandAction(action);
+    return action !== null && (isConcurrentReadCommandAction(action) || CONCURRENT_READ_COMMAND_ACTIONS.has(action));
   }
   return false;
 }
@@ -912,6 +957,11 @@ type PeerState = {
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
   nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
+  /**
+   * Last time this peer subscribed to a chat or was sent a chat event. The
+   * small chat-first changeset batches apply only while a chat is busy.
+   */
+  lastChatActivityAtMs: number;
   hydratingChatSessionIds: Set<string>;
   /**
    * Per-session live subagent-progress coalescers, for peers that announced
@@ -935,14 +985,29 @@ type PeerState = {
   // so their byte cursors agree with the snapshot's.
   projectChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
+  /**
+   * Batches sent behind `pendingChangesetBatch`, oldest first, for a peer that
+   * declared the ack window. Never non-empty without a pending batch.
+   */
+  changesetBatchesInFlight: PendingChangesetBatch[];
+  /** Request id of the hello this socket sent with its upgrade request. */
+  upgradeHelloRequestId: string | null;
+  /** The last chat_subscribe scheduled per chat, so opens of one chat stay in order. */
+  chatSubscribeChains: Map<string, Promise<void>>;
+  /** When this peer was last sent a chat_subscribe snapshot (a first page). */
+  lastChatSnapshotSentAtMs: number | null;
+  /** Changeset batches sent to this socket. */
+  changesetBatchesSent: number;
+  /** When this socket's hello was accepted, for the ack window's start. */
+  helloAcceptedAtMs: number;
   mobileReplicaReseedDisabled: boolean;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
   // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
-  // no-change flush never sees a seq gap), and the per-project serialized
-  // baseline it last received (projectId → JSON) for changed/removed diffing.
+  // no-change flush never sees a seq gap), and the per-project digests of
+  // what it last received, for changed/removed/patched diffing.
   rosterSubscribed: boolean;
   rosterSeq: number;
-  rosterBaseline: Map<string, string>;
+  rosterBaseline: SyncRosterPeerState["rosterBaseline"];
   /** Settles when every envelope scheduled so far has finished (reads included). */
   messageQueue: Promise<void>;
   /** Settles when the last write-classified envelope finished; reads wait on it. */
@@ -966,6 +1031,8 @@ type PendingChangesetBatch = {
   sentAtMs: number;
   attemptCount: number;
   retryNotBeforeMs: number;
+  /** How long to wait for this batch's ack before a resend. */
+  ackTimeoutMs: number;
 };
 
 type CachedMobileCommandWaiter = {
@@ -1595,6 +1662,37 @@ export function syncConnectionTransportForOrigin(origin: SyncTransportOrigin): "
   return origin === "relay-bridge" ? "relay" : "direct";
 }
 
+/**
+ * Content digest of a hello_ok command descriptor list. Clients echo it as
+ * `commandRoutingDigest` so a reconnect does not resend an unchanged list
+ * (tens of KB of descriptors on every phone connect).
+ */
+export function syncCommandRoutingDigest(actions: SyncRemoteCommandDescriptor[]): string {
+  return syncContentDigest(actions);
+}
+
+/**
+ * Command descriptors grouped by scope and policy (`commandRoutingGroupsV1`):
+ * one entry per distinct (scope, policy), with its action names in order.
+ */
+export function groupSyncCommandDescriptors(
+  descriptors: ReadonlyArray<SyncRemoteCommandDescriptor>,
+): SyncCommandRoutingActionGroup[] {
+  const groups = new Map<string, SyncCommandRoutingActionGroup>();
+  for (const descriptor of descriptors) {
+    const key = JSON.stringify([descriptor.scope ?? null, descriptor.policy ?? null]);
+    const group = groups.get(key) ?? { scope: descriptor.scope, policy: descriptor.policy, actions: [] };
+    group.actions.push(descriptor.action);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+/** Short content digest of a JSON value, for "the client already has it" checks. */
+function syncContentDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("base64url").slice(0, 32);
+}
+
 export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
@@ -1650,6 +1748,20 @@ export function buildSyncHostHelloOkPayload(args: {
   /** Fresh secret returned only for first-time verified account adoption. */
   accountPairing?: { deviceId: string; secret: string } | null;
   projectHost?: SyncHostReadinessSnapshot | null;
+  /** The hello's `commandRoutingDigest`: the descriptor list the client holds. */
+  knownCommandRoutingDigest?: string | null;
+  /**
+   * Leave the project catalog out. A phone's roster socket never reads it
+   * (its primary socket owns the catalog), so it is not sent there.
+   */
+  omitProjectCatalog?: boolean;
+  /**
+   * How many of the hello's `pipelined` requests this host will run, or
+   * null/undefined where pipelined hellos are not served (no advertisement).
+   */
+  pipelinedHelloAccepted?: number | null;
+  /** The hello's `projectCatalogDigest`: the catalog the client holds. */
+  knownProjectCatalogDigest?: string | null;
 }): PairedRuntimeHelloOkPayload {
   const runtimeChannelEnabled = args.runtimeChannelEnabled === true;
   const actions = [
@@ -1662,6 +1774,21 @@ export function buildSyncHostHelloOkPayload(args: {
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
   const recentHostStall = readRecentHostStall();
+  const actionsDigest = syncCommandRoutingDigest(actions);
+  const actionsUnchanged = typeof args.knownCommandRoutingDigest === "string"
+    && args.knownCommandRoutingDigest === actionsDigest;
+  // A client that declared `commandRoutingGroupsV1` gets the list grouped by
+  // scope and policy: the same descriptors in about a quarter of the bytes,
+  // most of which every connect without a saved digest parses.
+  const actionGroups = !actionsUnchanged && args.peer.capabilities?.includes(SYNC_COMMAND_ROUTING_GROUPS_CAPABILITY) === true
+    ? groupSyncCommandDescriptors(actions)
+    : null;
+  const projectCatalogDigest = args.omitProjectCatalog
+    ? null
+    : syncContentDigest(args.projectCatalog.projects);
+  const projectCatalogUnchanged = projectCatalogDigest != null
+    && typeof args.knownProjectCatalogDigest === "string"
+    && args.knownProjectCatalogDigest === projectCatalogDigest;
   const payload: PairedRuntimeHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
@@ -1677,7 +1804,10 @@ export function buildSyncHostHelloOkPayload(args: {
           },
         }
       : {}),
-    projects: args.projectCatalog.projects,
+    projects: args.omitProjectCatalog || projectCatalogUnchanged ? [] : args.projectCatalog.projects,
+    // The client keeps the catalog it got last time when this matches it.
+    ...(projectCatalogDigest ? { projectCatalogDigest } : {}),
+    ...(projectCatalogUnchanged ? { projectCatalogUnchanged: true as const } : {}),
     // Explicit null (relay unavailable) must reach the wire: clients treat an
     // ABSENT key as "older host — keep saved relay routes", and the brain
     // fallback handler never sends brain_status, so hello_ok is the only
@@ -1766,6 +1896,7 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       roster: {
         enabled: args.rosterEnabled === true,
+        ...(args.rosterEnabled === true ? { chatPages: true } : {}),
       },
       // Every ingress built on this payload honors `syncRole: "roster"`, but a
       // roster socket is only useful where the roster feed is served: without
@@ -1793,15 +1924,27 @@ export function buildSyncHostHelloOkPayload(args: {
         enabled: true,
         pinDigits: 6,
       },
+      ...(args.pipelinedHelloAccepted != null
+        ? {
+            pipelinedHello: {
+              enabled: true as const,
+              maxEnvelopes: SYNC_PIPELINED_HELLO_MAX_ENVELOPES,
+              accepted: args.pipelinedHelloAccepted,
+            },
+          }
+        : {}),
       commandRouting: {
         mode: "allowlisted",
-        supportedActions,
-        actions,
+        supportedActions: actionsUnchanged || actionGroups ? [] : supportedActions,
+        actions: actionsUnchanged || actionGroups ? [] : actions,
+        ...(actionGroups ? { actionGroups } : {}),
+        actionsDigest,
+        ...(actionsUnchanged ? { actionsUnchanged: true as const } : {}),
       },
       mobileCompatibility: {
         contractVersion: MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
         mode: mobileCompatibility.mode,
-        requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
+        requiredActions: actionsUnchanged ? [] : [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
         missingActions: mobileCompatibility.missingActions,
       },
       rpcChannel: runtimeChannelEnabled,
@@ -1813,9 +1956,11 @@ export function buildSyncHostHelloOkPayload(args: {
     payload,
     compressionThresholdBytes: args.compressionThresholdBytes,
   }), "utf8");
-  return envelopeBytes <= (args.maxProjectCatalogEnvelopeBytes ?? MAX_PROJECT_CATALOG_ENVELOPE_BYTES)
-    ? payload
-    : { ...payload, projects: [] };
+  if (envelopeBytes <= (args.maxProjectCatalogEnvelopeBytes ?? MAX_PROJECT_CATALOG_ENVELOPE_BYTES)) return payload;
+  // Too big for one envelope: the client requests the catalog on its own, and
+  // the digest is left out so it cannot be mistaken for "unchanged".
+  const { projectCatalogDigest: _omitted, projectCatalogUnchanged: _unchanged, ...oversized } = payload;
+  return { ...oversized, projects: [] };
 }
 
 type ParsedAccountChallenge = {
@@ -3150,6 +3295,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // cache is capped at 10k rows / 4 MiB and therefore cannot grow with the
   // database; an oversized replica falls back to incremental replay.
   let mobileReplicaReseedCache: MobileReplicaReseedCache | null = null;
+  /** When the cached reseed was found too large (see MOBILE_REPLICA_RESEED_TOO_LARGE_REUSE_MS). */
+  let mobileReplicaReseedTooLargeAtMs: number | null = null;
   let mobileReplicaReseedAdvancedPollGeneration = -1;
   // Constructing the cache is shared, but gzip/frame generation happens once
   // per recipient. Admit only one fresh compact send per poll so a reconnect
@@ -3166,6 +3313,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     isDisposed: () => disposed,
     logger: args.logger,
     buildFailedLogEvent: "sync_host.roster_build_failed",
+    resumeIdentity: (peer) => rosterResumeIdentity(peer.authenticated, peer.metadata),
+    acceptsChatPatches: (peer) => peer.metadata?.capabilities?.includes(SYNC_ROSTER_CHAT_DELTA_CAPABILITY) === true,
+    acceptsPrioritySnapshot: (peer) =>
+      peer.metadata?.capabilities?.includes(SYNC_ROSTER_PRIORITY_SNAPSHOT_CAPABILITY) === true,
+    acceptsChatPages: (peer) =>
+      peer.metadata?.capabilities?.includes(SYNC_ROSTER_CHAT_PAGES_CAPABILITY) === true,
   });
   // Chat replay entries are intentionally bounded, but sequence high-water
   // marks must already exist when shared-listener peers are adopted below.
@@ -3201,6 +3354,72 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     args.onStateChanged?.();
   });
 
+  /**
+   * Queue one inbound envelope on its peer: writes in order, concurrent reads
+   * behind the last write. The socket's message handler and a hello's
+   * `pipelined` envelopes both enter here, so a pipelined request runs exactly
+   * as if it had arrived on the wire right after the hello.
+   */
+  function scheduleEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): void {
+    peer.queuedMessageCount += 1;
+    const changesTerminalOwnership = envelope.type === "terminal_subscribe"
+      || envelope.type === "terminal_unsubscribe";
+    if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
+    // The timeout starts when the handler starts, never while the envelope
+    // waits its turn — same as the fully serialized queue this replaced.
+    const runEnvelope = () => handleMessageWithTimeout(peer, envelope)
+      .catch((error) => {
+        args.logger.warn("sync_host.message_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          peerDeviceName: peer.metadata?.deviceName ?? null,
+          remoteAddress: peer.remoteAddress ?? null,
+          remotePort: peer.remotePort ?? null,
+          messageType: envelope.type,
+          requestId: envelope.requestId ?? null,
+        });
+      })
+      .finally(() => {
+        peer.queuedMessageCount = Math.max(0, peer.queuedMessageCount - 1);
+        if (changesTerminalOwnership) {
+          peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
+        }
+      });
+    const previousWork = peer.messageQueue.catch(() => {});
+    let scheduled: Promise<void>;
+    if (isConcurrentReadEnvelope(envelope)) {
+      // Two opens of the same chat save and restore that chat's subscription
+      // state, so they still run one after the other.
+      const chatSessionId = envelope.type === "chat_subscribe"
+        ? toOptionalString((envelope.payload as SyncChatSubscribePayload | null)?.sessionId)
+        : null;
+      const previousSameChat = chatSessionId
+        ? peer.chatSubscribeChains.get(chatSessionId)?.catch(() => {}) ?? Promise.resolve()
+        : Promise.resolve();
+      // Wait for the preceding write barrier BEFORE taking a read slot: a
+      // read that held a slot while waiting on a write could starve an
+      // earlier read the write is itself waiting on.
+      scheduled = Promise.all([peer.writeQueue.catch(() => {}), previousSameChat]).then(async () => {
+        await acquirePeerReadSlot(peer);
+        try {
+          await runEnvelope();
+        } finally {
+          releasePeerReadSlot(peer);
+        }
+      });
+      if (chatSessionId) {
+        peer.chatSubscribeChains.set(chatSessionId, scheduled);
+        void scheduled.finally(() => {
+          if (peer.chatSubscribeChains.get(chatSessionId) === scheduled) peer.chatSubscribeChains.delete(chatSessionId);
+        });
+      }
+    } else {
+      scheduled = previousWork.then(runEnvelope);
+      peer.writeQueue = scheduled;
+    }
+    peer.messageQueue = Promise.all([previousWork, scheduled]).then(() => {});
+  }
+
   const runPollPump = (): void => {
     if (disposed) return;
     const generation = ++pollPumpGeneration;
@@ -3232,6 +3451,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     }
   };
+
+  /**
+   * Catch-up paced by acks, not by the poll tick. A valid ack frees the
+   * peer's one batch slot; with lag left, the next batch goes out at once
+   * instead of waiting up to a full poll interval, so a far-behind replica
+   * moves at the link's round-trip rate. One batch stays in flight (or the
+   * ack window, see `fillChangesetAckWindow`), and `pumpChanges` keeps every
+   * gate (backpressure, chat-first deferral, reseed admission). It runs on `setImmediate` so the ack's own queue slot
+   * has been released and does not count as queued foreground work.
+   */
+  function pumpPeerAfterAck(peer: PeerState): void {
+    setImmediate(() => {
+      if (disposed || pollPumpPeersInFlight.has(peer)) return;
+      if (!isReplicaSyncPeer(peer.metadata)) return;
+      if (peer.pendingChangesetBatch && !peerAcceptsChangesetAckWindow(peer)) return;
+      const sendCursor = (peer.changesetBatchesInFlight.at(-1) ?? peer.pendingChangesetBatch)?.toDbVersion
+        ?? peer.lastKnownServerDbVersion;
+      if (args.db.sync.getDbVersion() <= sendCursor) return;
+      pollPumpPeersInFlight.add(peer);
+      void pumpChanges(peer, pollPumpGeneration)
+        .catch((error) => {
+          args.logger.warn("sync_host.poll_failed", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          pollPumpPeersInFlight.delete(peer);
+        });
+    });
+  }
 
   /**
    * True while at least one connected peer could receive something the pump
@@ -3681,6 +3931,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pendingTerminalSnapshots: new Map(),
       nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
+      lastChatActivityAtMs: 0,
       hydratingChatSessionIds: new Set(),
       subagentProgressCoalescers: new Map(),
       chatSubscriptionBindings: new Map(),
@@ -3690,6 +3941,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       resolvedChatTranscriptPaths: new Map(),
       projectChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
+      changesetBatchesInFlight: [],
+      upgradeHelloRequestId: null,
+      chatSubscribeChains: new Map(),
+      lastChatSnapshotSentAtMs: null,
+      changesetBatchesSent: 0,
+      helloAcceptedAtMs: 0,
       mobileReplicaReseedDisabled: false,
       rosterSubscribed: false,
       rosterSeq: 0,
@@ -3775,49 +4032,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (handleImmediateControlEnvelope(peer, envelope)) return;
-      peer.queuedMessageCount += 1;
-      const changesTerminalOwnership = envelope.type === "terminal_subscribe"
-        || envelope.type === "terminal_unsubscribe";
-      if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
-      // The timeout starts when the handler starts, never while the envelope
-      // waits its turn — same as the fully serialized queue this replaced.
-      const runEnvelope = () => handleMessageWithTimeout(peer, envelope)
-        .catch((error) => {
-          args.logger.warn("sync_host.message_failed", {
-            error: error instanceof Error ? error.message : String(error),
-            peerDeviceId: peer.metadata?.deviceId ?? null,
-            peerDeviceName: peer.metadata?.deviceName ?? null,
-            remoteAddress: peer.remoteAddress ?? null,
-            remotePort: peer.remotePort ?? null,
-            messageType: envelope.type,
-            requestId: envelope.requestId ?? null,
-          });
-        })
-        .finally(() => {
-          peer.queuedMessageCount = Math.max(0, peer.queuedMessageCount - 1);
-          if (changesTerminalOwnership) {
-            peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
-          }
-        });
-      const previousWork = peer.messageQueue.catch(() => {});
-      let scheduled: Promise<void>;
-      if (isConcurrentReadEnvelope(envelope)) {
-        // Wait for the preceding write barrier BEFORE taking a read slot: a
-        // read that held a slot while waiting on a write could starve an
-        // earlier read the write is itself waiting on.
-        scheduled = peer.writeQueue.catch(() => {}).then(async () => {
-          await acquirePeerReadSlot(peer);
-          try {
-            await runEnvelope();
-          } finally {
-            releasePeerReadSlot(peer);
-          }
-        });
-      } else {
-        scheduled = previousWork.then(runEnvelope);
-        peer.writeQueue = scheduled;
+      // The frame copy of a hello this socket already sent with its upgrade.
+      if (
+        envelope.type === "hello"
+        && peer.upgradeHelloRequestId != null
+        && envelope.requestId === peer.upgradeHelloRequestId
+      ) {
+        return;
       }
-      peer.messageQueue = Promise.all([previousWork, scheduled]).then(() => {});
+      scheduleEnvelope(peer, envelope);
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
@@ -3903,8 +4126,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // (`/apple/stream/<ticket>`). It is not a sync peer: it never says hello,
     // carries no JSON envelope, and must not occupy a peer slot.
     if (tryRouteAppleStreamSocket(ws, request)) return;
-    registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null, "direct");
+    const peer = registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null, "direct");
+    acceptUpgradeHello(peer, readSyncUpgradeHelloHeader(request));
   });
+
+  /**
+   * A hello sent with the upgrade request (`X-ADE-Hello`): queued as this
+   * socket's first envelope, so it takes exactly the path, checks and limits
+   * of a hello frame, and its hello_ok is the first frame after the 101. The
+   * client also sends the same hello as a frame (for older hosts); that copy
+   * is dropped by its request id.
+   */
+  function acceptUpgradeHello(peer: PeerState, header: string | null): void {
+    const hello = syncUpgradeHelloEnvelope(header);
+    if (!hello) return;
+    peer.upgradeHelloRequestId = hello.requestId ?? null;
+    scheduleEnvelope(peer, hello);
+  }
 
   /**
    * Adopt sockets handed off by the previous host service (plus any
@@ -4118,12 +4356,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let detachSharedListener: (() => void) | null = null;
   if (sharedListener) {
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
-      registerPeer(
+      const peer = registerPeer(
         connection.ws,
         sanitizeRemoteAddress(connection.remoteAddress),
         connection.remotePort,
         connection.transportOrigin,
       );
+      acceptUpgradeHello(peer, connection.upgradeHello ?? null);
     });
     void adoptHandedOffPeers().catch((error) => {
       args.logger.warn("sync_host.peer_adoption_failed", {
@@ -4981,8 +5220,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function sendChangesetBatchPayload(
     peer: PeerState,
     payload: SyncChangesetBatchPayload,
+    approximateBytes = 0,
   ): PendingChangesetBatch | null {
     const batch: PendingChangesetBatch = {
+      ackTimeoutMs: CHANGESET_ACK_TIMEOUT_MS
+        + Math.floor(Math.max(0, approximateBytes) / CHANGESET_ACK_TIMEOUT_BYTES_PER_EXTRA_SECOND) * 1_000,
       batchId: payload.batchId,
       reason: payload.reason,
       fromDbVersion: payload.fromDbVersion,
@@ -5003,6 +5245,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!sent) return null;
     batch.sentAtMs = Date.now();
     batch.attemptCount = 1;
+    peer.changesetBatchesSent += 1;
     return batch;
   }
 
@@ -5034,12 +5277,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cachedTargetLag = mobileReplicaReseedCache
       ? targetDbVersion - mobileReplicaReseedCache.targetDbVersion
       : 0;
+    // A compacted state over the cap stays over it for a long while (it only
+    // grows with the project), so a "too large" result is reused for a time
+    // instead of being rebuilt over several polls for every cold phone. Once
+    // the database has moved past the gap, it is rebuilt as before: later
+    // changes can make the state small enough.
+    if (
+      mobileReplicaReseedCache?.status === "too_large"
+      && mobileReplicaReseedTooLargeAtMs != null
+      && Date.now() - mobileReplicaReseedTooLargeAtMs < MOBILE_REPLICA_RESEED_TOO_LARGE_REUSE_MS
+      && cachedTargetLag <= SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
+    ) {
+      return mobileReplicaReseedCache;
+    }
     if (
       !mobileReplicaReseedCache
       || mobileReplicaReseedCache.targetDbVersion <= peerDbVersion
       || cachedTargetLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
     ) {
       mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
+      mobileReplicaReseedTooLargeAtMs = null;
       args.logger.info("sync_host.mobile_replica_reseed_started", {
         targetDbVersion,
         maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
@@ -5065,6 +5322,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
     }
     if (advancedCache.status === "too_large") {
+      mobileReplicaReseedTooLargeAtMs = Date.now();
       args.logger.info("sync_host.mobile_replica_reseed_skipped", {
         targetDbVersion: advancedCache.targetDbVersion,
         scanFromDbVersion: advancedCache.scanFromDbVersion,
@@ -5099,7 +5357,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!payload) {
       return { status: "too_large" };
     }
-    const pending = sendChangesetBatchPayload(peer, payload);
+    const pending = sendChangesetBatchPayload(peer, payload, cache.approximateBytes);
     if (pending) {
       args.logger.info("sync_host.mobile_replica_reseed_sent", {
         peerDeviceId: deviceId,
@@ -5115,6 +5373,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function resendPendingChangesetBatch(peer: PeerState): boolean {
     const batch = peer.pendingChangesetBatch;
     if (!batch) return false;
+    // The client rejects everything after a batch it did not apply; what was
+    // sent behind this one is sent again once it is acked.
+    peer.changesetBatchesInFlight = [];
     const sent = send(peer, "changeset_batch", {
       batchId: batch.batchId,
       reason: batch.reason,
@@ -5168,6 +5429,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const pending = peer.pendingChangesetBatch;
     if (!pending) return;
     peer.pendingChangesetBatch = null;
+    peer.changesetBatchesInFlight = [];
     if (pending.reason === "catchup") {
       // A compact reseed is disabled while it is in flight so the normal
       // incremental pump cannot race it. If every delivery attempt fails,
@@ -5532,6 +5794,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of recipients) send(peer.ws, "brain_status", payload);
   }
 
+  // A catching-up replica acks a batch every round trip. Broadcasting a full
+  // status (~850 B to every peer) per ack was a third of a cold phone's
+  // download on a slow link. The periodic status (every few seconds) already
+  // carries each peer's lag, so an ack reports at once only when it brought
+  // its peer level with the host, the moment the lag reads zero; even those
+  // go out at most once per interval, with a trailing report.
+  const ACK_BRAIN_STATUS_INTERVAL_MS = 1_000;
+  let lastAckBrainStatusAtMs = 0;
+  let ackBrainStatusTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleAckBrainStatus(): void {
+    if (disposed || ackBrainStatusTimer) return;
+    const waitMs = lastAckBrainStatusAtMs + ACK_BRAIN_STATUS_INTERVAL_MS - Date.now();
+    if (waitMs <= 0) {
+      lastAckBrainStatusAtMs = Date.now();
+      broadcastBrainStatus();
+      return;
+    }
+    ackBrainStatusTimer = setTimeout(() => {
+      ackBrainStatusTimer = null;
+      lastAckBrainStatusAtMs = Date.now();
+      broadcastBrainStatus();
+    }, waitMs);
+    ackBrainStatusTimer.unref?.();
+  }
+
 
   function requestedProjectChatScope(
     payload: ChatScopeRequest | null,
@@ -5818,6 +6105,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
     if (chatEventAlreadySent(peer, event)) return "already-sent";
+    peer.lastChatActivityAtMs = Date.now();
     if (!peerWantsSlimChat(peer)) {
       const sent = deliverChatEvent(peer, event, seq);
       if (sent) markChatEventSent(peer, event);
@@ -6009,7 +6297,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const pending = peer.pendingChangesetBatch;
         const rejectedRetryDue = pending.retryNotBeforeMs > 0 && nowMs >= pending.retryNotBeforeMs;
         const ackTimedOut = pending.retryNotBeforeMs === 0
-          && nowMs - pending.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS;
+          && nowMs - pending.sentAtMs >= pending.ackTimeoutMs;
         if (rejectedRetryDue || ackTimedOut) {
           if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
             abandonPendingChangesetBatch(peer, ackTimedOut ? "ack_timeout" : "ack_failed", nowMs);
@@ -6026,7 +6314,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               trigger: ackTimedOut ? "timeout" : "rejected",
             });
           }
+          return;
         }
+        await fillChangesetAckWindow(peer, currentDbVersion, nowMs);
         return;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) {
@@ -6034,9 +6324,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (nowMs < peer.changesetRecoveryNotBeforeMs) return;
+      // A connecting phone's first seconds belong to its first screen and the
+      // chat opened from it: after the first batch (the project row),
+      // catch-up waits until the ack window opens. On a slow link a catch-up
+      // batch sent between the work list and the chat request sat in front of
+      // the chat page.
+      if (
+        isMobileChangesetPeer(peer)
+        && peer.changesetBatchesSent > 0
+        && (
+          nowMs - peer.helloAcceptedAtMs < CHANGESET_ACK_WINDOW_OPEN_AFTER_HELLO_MS
+          // A chat page sent in that first window may still be on a slow
+          // link (57 KB is ~1.2 s at 400 kbps): catch-up does not start
+          // behind it. Bounded: at most the first 8 s after hello.
+          || (
+            peer.lastChatSnapshotSentAtMs != null
+            && peer.lastChatSnapshotSentAtMs - peer.helloAcceptedAtMs < CHANGESET_ACK_WINDOW_OPEN_AFTER_HELLO_MS
+            && nowMs - peer.lastChatSnapshotSentAtMs < SYNC_HOST_FIRST_CHAT_PAGE_DELIVERY_MS
+            && nowMs - peer.helloAcceptedAtMs < SYNC_HOST_FIRST_CHAT_PAGE_HOLD_MAX_MS
+          )
+        )
+      ) return;
       const hasQueuedForegroundWork = peer.queuedMessageCount > 0;
       const chatBackpressured = shouldDeferBackgroundChangesForChat(peer);
-      if (hasQueuedForegroundWork || chatBackpressured) {
+      // A phone's first batch does not wait for queued requests: it carries
+      // the project row its first screen waits for (the rows of version 1),
+      // while the first requests (often bundled in its hello) are what
+      // "queued" is here. A busy chat's backpressure still holds it.
+      const firstMobileBatch = peer.changesetBatchesSent === 0 && isMobileChangesetPeer(peer);
+      if ((hasQueuedForegroundWork && !firstMobileBatch) || chatBackpressured) {
         if (peer.changesetPriorityDeferredSinceMs == null) {
           peer.changesetPriorityDeferredSinceMs = nowMs;
           args.logger.debug("sync_host.changeset_priority_deferral_started", {
@@ -6065,38 +6381,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.lastKnownServerDbVersion,
           pollGeneration,
         );
-        if (reseed.status === "building") return;
-        if (reseed.status === "ready") {
-          if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
-          mobileReplicaReseedLaunchPollGeneration = pollGeneration;
-          const result = sendMobileReplicaReseed(peer, reseed);
-          if (result.status === "sent") {
-            peer.mobileReplicaReseedDisabled = true;
-            peer.pendingChangesetBatch = result.pending;
-            finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
-            lastBroadcastAt = nowIso();
-            return;
+        // A phone that has nothing yet gets one ordinary batch while the
+        // reseed builds (several polls on a big project): it carries the
+        // project row its first screen waits for. The reseed sends the whole
+        // compacted state from the phone's cursor later, so nothing is lost.
+        if (reseed.status === "building") {
+          if (peer.changesetBatchesSent > 0) return;
+        } else {
+          if (reseed.status === "ready") {
+            if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
+            mobileReplicaReseedLaunchPollGeneration = pollGeneration;
+            const result = sendMobileReplicaReseed(peer, reseed);
+            if (result.status === "sent") {
+              peer.mobileReplicaReseedDisabled = true;
+              peer.pendingChangesetBatch = result.pending;
+              finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
+              lastBroadcastAt = nowIso();
+              return;
+            }
+            if (result.status === "retry") return;
+            reseed.status = "too_large";
+            reseed.changes = [];
+            reseed.approximateBytes = 0;
           }
-          if (result.status === "retry") return;
-          reseed.status = "too_large";
-          reseed.changes = [];
-          reseed.approximateBytes = 0;
+          peer.mobileReplicaReseedDisabled = true;
+          args.logger.info("sync_host.mobile_replica_reseed_fallback", {
+            peerDeviceId: peer.metadata.deviceId,
+            currentDbVersion,
+            lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+            replicaLag,
+            reason: "compacted_state_too_large",
+          });
         }
-        peer.mobileReplicaReseedDisabled = true;
-        args.logger.info("sync_host.mobile_replica_reseed_fallback", {
-          peerDeviceId: peer.metadata.deviceId,
-          currentDbVersion,
-          lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
-          replicaLag,
-          reason: "compacted_state_too_large",
-        });
       }
       const recoveryLimits = changesetBatchLimits(peer);
+      // An open chat that has been quiet for a few seconds does not need the
+      // small batches: nothing waits behind a full one, and a far-behind
+      // replica then catches up in a quarter of the round trips.
+      const chatBusy = peer.subscribedChatSessionIds.size > 0
+        && nowMs - peer.lastChatActivityAtMs < SYNC_HOST_CHAT_QUIET_FULL_BATCH_MS;
       const chatLimits = syncHostChangesetBatchOptionsForChat({
         // Once a foreground queue ages past the deadline, admit only the same
         // small batch used for an active chat. This bounds the synchronous
         // export pause before the peer returns to its serialized messages.
-        subscribedChatSessionCount: peer.subscribedChatSessionIds.size + (hasQueuedForegroundWork ? 1 : 0),
+        subscribedChatSessionCount: (chatBusy ? peer.subscribedChatSessionIds.size : 0) + (hasQueuedForegroundWork ? 1 : 0),
         maxRows: recoveryLimits.maxRows,
         maxBytes: recoveryLimits.maxBytes,
       });
@@ -6169,6 +6497,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.changesetRecoveryNotBeforeMs = 0;
         if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
           peer.pendingChangesetBatch = pending;
+          peer.changesetBatchesInFlight = [];
+          await fillChangesetAckWindow(peer, currentDbVersion, nowMs);
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
           notePeerDeliveredWatermark(peer);
@@ -6176,6 +6506,86 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
       }
+  }
+
+  function peerAcceptsChangesetAckWindow(peer: PeerState): boolean {
+    return peer.metadata?.capabilities?.includes(SYNC_CHANGESET_ACK_WINDOW_CAPABILITY) === true;
+  }
+
+  /**
+   * Send more batches behind the pending one, up to the ack window, for a
+   * peer that declared it. Only full background catch-up widens the window:
+   * while a chat is busy, foreground work is queued, a batch is failing or a
+   * compact reseed is in flight, one batch stays in flight as before. A sparse
+   * version window with nothing to send stops the fill; the normal path
+   * crosses it once the window has drained.
+   */
+  async function fillChangesetAckWindow(peer: PeerState, currentDbVersion: number, nowMs: number): Promise<void> {
+    if (!peerAcceptsChangesetAckWindow(peer)) return;
+    const mobilePeer = isMobileChangesetPeer(peer);
+    // One export reads up to four batches' rows; what a batch leaves over is
+    // the start of the next one, so the window does not re-read it.
+    let leftover: { changes: CrsqlChangeRow[]; throughDbVersion: number } | null = null;
+    for (;;) {
+      const head = peer.pendingChangesetBatch;
+      if (!head || head.reason === "catchup" || head.retryNotBeforeMs > 0) return;
+      if (peer.changesetBatchesInFlight.length + 1 >= CHANGESET_ACK_WINDOW_MAX_BATCHES) return;
+      if (peer.changesetRecoveryLevel > 0 || nowMs < peer.changesetRecoveryNotBeforeMs) return;
+      if (peer.queuedMessageCount > 0 || shouldDeferBackgroundChangesForChat(peer)) return;
+      // A connecting phone's first screen (lanes, work sessions, then the chat
+      // the user opens from it) must not wait behind a window of catch-up
+      // batches on a slow link: for its first seconds one batch is in flight.
+      if (nowMs - peer.helloAcceptedAtMs < CHANGESET_ACK_WINDOW_OPEN_AFTER_HELLO_MS) return;
+      if (
+        peer.subscribedChatSessionIds.size > 0
+        && nowMs - peer.lastChatActivityAtMs < SYNC_HOST_CHAT_QUIET_FULL_BATCH_MS
+      ) return;
+      if (isPeerBackpressured(peer) || peer.ws.bufferedAmount >= CHANGESET_ACK_WINDOW_MAX_BUFFERED_BYTES) return;
+      const sendFrom = (peer.changesetBatchesInFlight.at(-1) ?? head).toDbVersion;
+      if (currentDbVersion <= sendFrom) return;
+      const limits = changesetBatchLimits(peer);
+      let changes: CrsqlChangeRow[];
+      let exportedThroughDbVersion: number;
+      if (leftover && leftover.changes.length > 0) {
+        changes = leftover.changes;
+        exportedThroughDbVersion = leftover.throughDbVersion;
+      } else {
+        const scanThroughDbVersion = Math.min(sendFrom + SYNC_EXPORT_VERSION_WINDOW, currentDbVersion);
+        // Off the event loop, like the pump's own export.
+        const exported = await (args.db.sync.exportChangesSinceOffThread ?? args.db.sync.exportChangesSince)(
+          sendFrom,
+          { maxRows: limits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
+        );
+        // The window may have moved while the read ran (an ack, a resend, a
+        // reconnect, the socket gone): stop, and the next pump fills again.
+        const windowTail = peer.changesetBatchesInFlight.at(-1) ?? peer.pendingChangesetBatch;
+        if (
+          disposed
+          || peer.ws.readyState !== WebSocket.OPEN
+          || !peer.authenticated
+          || peer.pendingChangesetBatch !== head
+          || windowTail?.toDbVersion !== sendFrom
+        ) {
+          return;
+        }
+        exportedThroughDbVersion = exported.length > 0
+          ? Number(exported[exported.length - 1].db_version)
+          : scanThroughDbVersion;
+        changes = exported
+          .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
+          .filter((change: CrsqlChangeRow) => !isHostAuthoritativeTable(change))
+          .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table));
+      }
+      if (changes.length === 0) return;
+      const pending = sendNextChangesetBatch(peer, "broadcast", sendFrom, exportedThroughDbVersion, changes, limits);
+      if (!pending) return;
+      peer.changesetBatchesInFlight.push(pending);
+      const rest = changes.filter((change) => Number(change.db_version) > pending.toDbVersion);
+      leftover = rest.length > 0 && pending.toDbVersion < exportedThroughDbVersion
+        ? { changes: rest, throughDbVersion: exportedThroughDbVersion }
+        : null;
+      lastBroadcastAt = nowIso();
+    }
   }
 
   /**
@@ -6344,8 +6754,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function handleChangesetAck(peer: PeerState, payload: SyncChangesetAckPayload | null | undefined): void {
+    if (!peer.pendingChangesetBatch || !payload) return;
+    const windowIndex = payload.batchId === peer.pendingChangesetBatch.batchId
+      ? -1
+      : peer.changesetBatchesInFlight.findIndex((batch) => batch.batchId === payload.batchId);
+    if (windowIndex >= 0) {
+      if (!payload.ok) {
+        // A batch behind the pending one failed: drop it and everything after
+        // it; they are sent again from the last batch still in flight.
+        peer.changesetBatchesInFlight = peer.changesetBatchesInFlight.slice(0, windowIndex);
+        return;
+      }
+      const target = peer.changesetBatchesInFlight[windowIndex]!;
+      // An ack that does not reach its batch's end changes nothing, as for the
+      // pending batch below; the window is left as it was.
+      if (payload.toDbVersion < target.toDbVersion) return;
+      // Acks arrive in order, so this one also covers every batch before it.
+      peer.pendingChangesetBatch = target;
+      peer.changesetBatchesInFlight = peer.changesetBatchesInFlight.slice(windowIndex + 1);
+    }
     const pending = peer.pendingChangesetBatch;
-    if (!pending || !payload) return;
     if (payload.batchId !== pending.batchId) {
       args.logger.debug("sync_host.changeset_ack_ignored", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -6363,6 +6791,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       const retryInMs = changesetRecoveryBackoffMs(pending.attemptCount);
       pending.retryNotBeforeMs = nowMs + retryInMs;
+      peer.changesetBatchesInFlight = [];
       args.logger.warn("sync_host.changeset_ack_failed", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
         batchId: pending.batchId,
@@ -6378,7 +6807,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const recoveryLevel = peer.changesetRecoveryLevel;
     peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
     notePeerDeliveredWatermark(peer);
-    peer.pendingChangesetBatch = null;
+    // The next batch in the window becomes the pending one; its ack window
+    // starts now, since the client applies batches one after another.
+    const promoted = peer.changesetBatchesInFlight.shift() ?? null;
+    if (promoted) promoted.sentAtMs = Date.now();
+    peer.pendingChangesetBatch = promoted;
     peer.changesetRecoveryLevel = 0;
     peer.changesetRecoveryNotBeforeMs = 0;
     peer.lastAppliedAt = nowIso();
@@ -6397,7 +6830,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         previousRecoveryLevel: recoveryLevel,
       });
     }
-    broadcastBrainStatus();
+    if (args.db.sync.getDbVersion() <= peer.lastKnownServerDbVersion) scheduleAckBrainStatus();
+    pumpPeerAfterAck(peer);
   }
 
   const artifactReads = createSyncArtifactReads({
@@ -6913,6 +7347,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function handleImmediateControlEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): boolean {
     if (!peer.authenticated) return false;
+    if (envelope.type === "changeset_ack") {
+      // An ack only moves this peer's changeset cursor, so it does not wait in
+      // the request queue: there it waited behind any slow command before it
+      // (a 2.3 s lane refresh on a connecting phone), held catch-up back for
+      // that long, and every later request waited behind it in turn. Acks are
+      // still handled one at a time in arrival order. One for another project
+      // takes the queued path, which rejects it as before.
+      const projectScope = resolveSyncHostInboundProjectScope(
+        envelope.type,
+        envelope.projectId,
+        args.projectId,
+        hostProjectIdAliases,
+      );
+      if (!projectScope.ok) return false;
+      markPeerMessageSeen(peer);
+      handleChangesetAck(peer, envelope.payload as SyncChangesetAckPayload);
+      return true;
+    }
     if (envelope.type === "relay_reauthorize") {
       markPeerMessageSeen(peer);
       if (!peer.relayAuthorization) {
@@ -7901,6 +8353,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       peer.authenticated = true;
+      peer.helloAcceptedAtMs = Date.now();
       if (sealedAdoption) {
         clearAdoptChallengeIssuancesAfterSuccessfulAuth(peer.remoteAddress);
       }
@@ -8004,6 +8457,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         runtimeChannelEnabled:
           isRecordBackedSyncAuthKind(auth.kind) && isRuntimeHostPairingRecord(authenticatedPairingRecord),
         accountPairing,
+        knownCommandRoutingDigest: hello.commandRoutingDigest ?? null,
+        omitProjectCatalog: rosterPeer,
+        // A sealed (account adoption) hello is a one-off socket: run nothing.
+        pipelinedHelloAccepted: sealedAdoption ? 0 : (hello.pipelined?.length ?? 0),
+        knownProjectCatalogDigest: hello.projectCatalogDigest ?? null,
       });
       if (sealedAdoption) {
         send(peer.ws, "hello_ok", {
@@ -8033,11 +8491,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // hello_ok itself uses the legacy encoder so the selected codec is never
       // required before the client has observed the negotiation result.
       peer.negotiatedCompression = negotiatedCompression;
+      // `hello.pipelined`: queued behind this hello, they run once it returns,
+      // exactly as if they had arrived on the wire right after it.
+      if (!sealedAdoption) {
+        for (const pipelined of hello.pipelined ?? []) {
+          scheduleEnvelope(peer, parseSyncEnvelope(encodeSyncEnvelope({
+            type: pipelined.type,
+            requestId: pipelined.requestId ?? null,
+            projectId: pipelined.projectId ?? null,
+            payload: pipelined.payload,
+            compressionCodec: "none",
+          })));
+        }
+      }
       args.onStateChanged?.();
       // Catch-up is background work. The periodic poll starts it after the
       // serialized hello queue has had a chance to admit subscriptions.
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       broadcastBrainStatus();
+      // Except the first batch: it carries the project row a phone's first
+      // screen waits for, so it goes now rather than on the next poll tick
+      // (up to 400 ms), ahead of the replies its hello asked for.
+      if (peer.changesetBatchesSent === 0) pumpPeerAfterAck(peer);
       return;
     }
 
@@ -8786,6 +9261,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatSubscriptionBindings.delete(sessionId);
         } else {
           peer.subscribedChatSessionIds.add(sessionId);
+          peer.lastChatActivityAtMs = Date.now();
           if (foreignScope.kind === "foreign" && requestedScope === "foreign-project") {
             peer.chatSubscriptionBindings.set(sessionId, {
               scope: "foreign-project",
@@ -9078,6 +9554,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
+        peer.lastChatSnapshotSentAtMs = Date.now();
         for (const event of pinnedEvents) {
           markChatEventSent(peer, event);
         }
@@ -9161,11 +9638,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "roster_subscribe": {
-        await rosterFanout.subscribe(peer, envelope.requestId);
+        await rosterFanout.subscribe(
+          peer,
+          envelope.requestId,
+          (envelope.payload as SyncRosterSubscribePayload | null)?.sinceSeq,
+        );
         break;
       }
       case "roster_unsubscribe": {
         rosterFanout.unsubscribe(peer);
+        break;
+      }
+      case "roster_chats_request": {
+        if (!rosterFanout.enabled) break;
+        send(peer.ws, "roster_chats", await rosterFanout.chatPage(envelope.payload), envelope.requestId);
         break;
       }
       case "command":
@@ -9528,6 +10014,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pollTimer = null;
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      if (ackBrainStatusTimer) clearTimeout(ackBrainStatusTimer);
+      ackBrainStatusTimer = null;
       clearInterval(accountLeaseTimer);
       rosterFanout.dispose();
       unpublishLanDiscovery();

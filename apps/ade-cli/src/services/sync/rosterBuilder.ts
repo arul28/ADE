@@ -595,6 +595,35 @@ function parseChatSidecar(filePath: string): Sidecar | null {
   }
 }
 
+/**
+ * The last project built from disk alone (no booted scope), with what it was
+ * built from. While the database read, the sidecar folder and the registry
+ * record are all unchanged, the same object is returned, so the fanout's
+ * digests of it are reused too. Valid until the next snooze in it ends (the
+ * running count reads the clock) and for at most
+ * `DISK_PROJECT_CACHE_MAX_AGE_MS`.
+ */
+const unbootedProjectMemo = new Map<string, {
+  disk: DiskProjectData;
+  sidecarFolderIdentity: string | null;
+  recordKey: string;
+  validUntilMs: number;
+  project: SyncRosterProject;
+}>();
+
+function rosterRecordKey(record: RosterProjectRecord): string {
+  return JSON.stringify([record.rootPath, record.displayName, record.lastOpenedAt, rosterRepoOriginUrl(record)]);
+}
+
+function memoValidUntilMs(disk: DiskProjectData, nowMs: number): number {
+  let validUntilMs = nowMs + DISK_PROJECT_CACHE_MAX_AGE_MS;
+  for (const row of disk.chats) {
+    const until = row.snoozed_until ? Date.parse(row.snoozed_until) : Number.NaN;
+    if (Number.isFinite(until) && until > nowMs && until < validUntilMs) validUntilMs = until;
+  }
+  return validUntilMs;
+}
+
 // Disk-only status (un-booted project): the truthful persisted state. `running`
 // collapses to `idle` because no live runtime is streaming the turn.
 //
@@ -687,6 +716,20 @@ function compareLanes(left: LaneRow, right: LaneRow): number {
   return left.name.localeCompare(right.name);
 }
 
+/**
+ * A roster row without its null fields. Every roster field is optional and
+ * clients read a missing key and a null the same way (the iOS models decode
+ * both as nil), while a 1,000-chat project carried ~11k nulls: about 40% of
+ * its JSON, sent again with every change to the project.
+ */
+function withoutNullFields<T extends object>(row: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (value !== null && value !== undefined) out[key] = value;
+  }
+  return out as T;
+}
+
 async function buildRosterProject(
   record: RosterProjectRecord,
   scopeRegistry: RosterScopeRegistry,
@@ -694,6 +737,19 @@ async function buildRosterProject(
 ): Promise<SyncRosterProject> {
   const disk = readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
+  const recordKey = rosterRecordKey(record);
+  const sidecarFolderIdentity = fileIdentity(chatSessionsDir);
+  const memo = unbootedProjectMemo.get(record.projectId);
+  if (
+    memo
+    && !scopeRegistry.getIfBooted(record.projectId)
+    && memo.disk === disk
+    && memo.sidecarFolderIdentity === sidecarFolderIdentity
+    && memo.recordKey === recordKey
+    && Date.now() < memo.validUntilMs
+  ) {
+    return memo.project;
+  }
 
   // Path A overlay: only for projects already booted on the runtime. NEVER
   // boots a scope (getIfBooted is non-booting). When booted, listSessions()
@@ -865,7 +921,7 @@ async function buildRosterProject(
       ?? sidecar?.orchestrationParentSessionId
       ?? cliLineage?.orchestrationParentSessionId
       ?? null;
-    chats.push({
+    chats.push(withoutNullFields({
       id: row.id,
       laneId: row.lane_id,
       chatSessionId: row.chat_session_id,
@@ -897,12 +953,12 @@ async function buildRosterProject(
       ...(chatLog
         ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
         : {}),
-    });
+    }));
   }
 
   chats.sort((left, right) => (right.lastActivityAt ?? "").localeCompare(left.lastActivityAt ?? ""));
 
-  return {
+  const project: SyncRosterProject = {
     projectId: record.projectId,
     rootPath: record.rootPath,
     displayName: record.displayName,
@@ -914,6 +970,18 @@ async function buildRosterProject(
     lanes: visibleLanes.map((lane) => mapLane(lane, disk.prWaitingReasonByLaneId)),
     chats,
   };
+  if (booted) {
+    unbootedProjectMemo.delete(record.projectId);
+  } else {
+    unbootedProjectMemo.set(record.projectId, {
+      disk,
+      sidecarFolderIdentity,
+      recordKey,
+      validUntilMs: memoValidUntilMs(disk, Date.now()),
+      project,
+    });
+  }
+  return project;
 }
 
 // --- Cross-project "quick look" transcript resolver --------------------------

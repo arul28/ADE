@@ -135,8 +135,11 @@ func hubMergeFleetRosters(
             lanes: [],
             chats: []
           )
+        // Chats a paged roster has not loaded yet, from either side.
+        let unloaded = target.unloadedChatCount + remote.unloadedChatCount
         target.lanes.append(contentsOf: lanes)
         target.chats.append(contentsOf: chats)
+        target.chatTotal = unloaded > 0 ? target.chats.count + unloaded : nil
         merge.mergedRosters[focusedId] = hubRecountedRoster(target)
         continue
       }
@@ -147,8 +150,10 @@ func hubMergeFleetRosters(
       if let index = extraIndexByKey[key] {
         merge.projectLocations[merge.extraProjects[index].summary.id, default: []].append(location)
         var roster = merge.extraProjects[index].roster
+        let unloaded = roster.unloadedChatCount + remote.unloadedChatCount
         roster.lanes.append(contentsOf: lanes)
         roster.chats.append(contentsOf: chats)
+        roster.chatTotal = unloaded > 0 ? roster.chats.count + unloaded : nil
         merge.extraProjects[index].roster = hubRecountedRoster(roster)
         continue
       }
@@ -159,6 +164,7 @@ func hubMergeFleetRosters(
       roster.projectId = cardId
       roster.lanes = lanes
       roster.chats = chats
+      roster.chatTotal = remote.unloadedChatCount > 0 ? chats.count + remote.unloadedChatCount : nil
       extraIndexByKey[key] = merge.extraProjects.count
       merge.extraProjects.append((summary: summary, roster: hubRecountedRoster(roster)))
       merge.projectOwners[cardId] = location

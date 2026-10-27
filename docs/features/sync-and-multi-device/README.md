@@ -3728,6 +3728,7 @@ Envelopes are JSON with fields:
         "chat_history" | "chat_tool_result" |
         "roster_subscribe" | "roster_unsubscribe" |
         "roster_snapshot" | "roster_delta" |
+        "roster_chats_request" | "roster_chats" |
         "chat_launch_event" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |
@@ -3764,6 +3765,28 @@ it. A client that receives nothing there learns the same thing it always did —
 from the first command that fails with `host_unavailable`. The point of the
 field is that socket-up is not the same as a usable project host, so a client
 does not have to send a command to find out.
+
+#### Fast connects on slow links
+
+These parts of the connect are additive. Each one has a gate, so an old app on
+a new brain and a new app on an old brain both keep the old behavior.
+
+| Contract | Gate | What it saves |
+| --- | --- | --- |
+| Hello in the upgrade request (`X-ADE-Hello`, `v1.` + base64url, at most 12 KB) | Direct routes only; the host never reads it on a relay route. The client also sends the same hello as a frame, and a new host drops that copy by its request id. | One round trip before `hello_ok`. |
+| `hello.pipelined` (the first requests ride in the hello) | `hello_ok.features.pipelinedHello.accepted` says how many the host runs; the client sends the rest itself. | One round trip per first request. |
+| `commandRoutingDigest` / `actionGroups` | The hello's digest; capability `commandRoutingGroupsV1`. | The command list on a reconnect (`actionsUnchanged`), and about three quarters of it on a cold connect. |
+| `projectCatalogDigest` | The hello's digest. | The catalog on a reconnect (`projectCatalogUnchanged`). |
+| Roster head rows and `roster_chats_request` pages | Capability `rosterChatPagesV1`; `hello_ok.features.roster.chatPages`. | Older chats until a screen asks for them. |
+| Roster resume by seq (`roster_subscribe.sinceSeq`) | The same paired device; a seq that another live socket uses is never resumed. | A full roster snapshot on a reconnect. |
+| Changeset ack window (up to 8 batches, 1 MiB buffered) | Capability `changesetAckWindowV1`; it opens 3 s after hello and stays at one batch while a chat is busy. | Idle link time during a cold catch-up. |
+| Conditional reads (`conditional`, `ifNoneMatch`, `acceptDelta`, `omitNullFields`, `headRows`, `activeOnly`, `allowCachedStatus`) | Arguments; an old host ignores them and answers as before. | Lists that did not change, and null fields. |
+
+The host also answers a phone's first changeset batch at once (it holds the
+project row that the first screen waits for), then holds catch-up for the first
+seconds after hello, so the first chat page is not queued behind it. The phone
+measures its handshake (dial to `hello_ok`); at 700 ms or more it asks for a
+smaller first chat page and loads older events before the user scrolls to them.
 
 An integer version below the floor or above the current version is different
 from an additive unknown type. The host sends an uncompressed

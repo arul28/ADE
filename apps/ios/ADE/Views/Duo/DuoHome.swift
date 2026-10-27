@@ -433,6 +433,12 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+    // All and Done list finished chats from every project; a paged roster
+    // holds only the recent ones, so the rest load when one of them is picked.
+    .task(id: filter) {
+      guard filter == .all || filter == .done else { return }
+      await syncService.loadAllOlderRosterChats()
+    }
   }
 }
 
