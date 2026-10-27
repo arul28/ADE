@@ -1576,7 +1576,7 @@ measurement brain for F2 and the near-miss check.
 | F3 one `git rev-parse HEAD` through runGit, 200 runs (T3 #22759) | 2.7-3.0 ms | 6.9 ms (Xcode shim) | 3.0 ms (worst run 3.4; bare spawn here 2.6-3.2) | 4 ms |
 | F4 git processes, 1 + 4 overlapping `git status --full` (T3 #24478) | 46 | 35 | 22 | 30 |
 | F5 startup recovery read, 20 warm runs (T3 #22554) | 0.8 ms | 0.06 ms | 0.04-0.12 ms | 1 ms |
-| F2 longest database step on the event loop while a phone connects (T3 #23689) | 12.7 ms | 73 ms (runs 52-106) | 84 ms (runs 15-147) | 150 ms |
+| F2 longest database step on the event loop while a phone connects (T3 #23689) | 12.7 ms | 73 ms (runs 52-106) | 112 ms (runs 20-147) | 150 ms |
 | F2 a read beside the slowest read (T3 #24762) | 181-220 ms | <= 106 ms | <= 147 ms | 250 ms |
 
 F2's long step is the phone's sync export (`crsql_changes`), 75-147 ms per
