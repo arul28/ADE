@@ -25,7 +25,8 @@ import "./whatsNewFeature.css";
 type GifMedia = { kind?: "gif"; gif: string; still: string; width: number; height: number; alt: string };
 /** `src` is the picture; with `video`, it is the still shown under reduce motion. */
 type Shot = { src: string; alt: string; video?: string };
-type ImagesMedia = { kind: "images"; images: readonly Shot[]; width: number; height: number };
+/** `holdMs` sets how long each screenshot stays, for ones with more to read. */
+type ImagesMedia = { kind: "images"; images: readonly Shot[]; width: number; height: number; holdMs?: number };
 type PhonesMedia = { kind: "phones"; images: readonly Shot[]; width: number; height: number };
 
 export type WhatsNewFeatureProps = {
@@ -133,9 +134,9 @@ function Crossfade({ media }: { media: ImagesMedia }) {
     if (reduceMotion || paused || count < 2 || activeIsVideo) return undefined;
     const timer = window.setTimeout(() => {
       if (!document.hidden) next();
-    }, CROSSFADE_HOLD_MS);
+    }, media.holdMs ?? CROSSFADE_HOLD_MS);
     return () => window.clearTimeout(timer);
-  }, [activeIsVideo, count, index, next, paused, reduceMotion]);
+  }, [activeIsVideo, count, index, media.holdMs, next, paused, reduceMotion]);
 
   return (
     <div className="ade-wnf-crossfade" onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}>

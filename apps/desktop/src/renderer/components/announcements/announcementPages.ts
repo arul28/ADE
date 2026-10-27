@@ -33,6 +33,12 @@ export type AnnouncementPageDef = {
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "performance-wins",
+    added: "2026-10-28",
+    title: "Performance wins",
+    Page: lazy(() => import("./pages/PerformanceAnnouncement")),
+  },
+  {
     id: "side-chats",
     added: "2026-10-27",
     title: "Side chats",
