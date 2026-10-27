@@ -51,7 +51,10 @@ import {
   RECORDING_MAX_MS,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
-import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import {
+  resolveExecutableCandidatesFromKnownLocations,
+  resolveExecutableFromKnownLocations,
+} from "../ai/cliExecutableResolver";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 
@@ -121,14 +124,14 @@ function filterScriptArgs(ffmpegPath: string, scriptPath: string): string[] {
 }
 
 /**
- * ffmpeg and ffprobe already on this machine: the system's own first when it
- * can render a demo, then ADE's pinned copy if an earlier demo downloaded it.
+ * ffmpeg and ffprobe already on this machine: the first system ffmpeg that can
+ * render a demo, then ADE's pinned copy if an earlier demo downloaded it.
  * Null when neither is.
  */
 export function resolveFfmpegTools(): FfmpegTools | null {
-  const ffmpeg = resolveExecutableFromKnownLocations("ffmpeg");
+  const ffmpeg = resolveExecutableCandidatesFromKnownLocations("ffmpeg").find((candidate) => canRenderDemos(candidate.path));
   const ffprobe = resolveExecutableFromKnownLocations("ffprobe");
-  if (ffmpeg && ffprobe && canRenderDemos(ffmpeg.path)) return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
+  if (ffmpeg && ffprobe) return { ffmpegPath: ffmpeg.path, ffprobePath: ffprobe.path };
   const pinned = resolvePinnedTool(FFMPEG_TOOL);
   const pinnedProbe = pinned?.files.ffprobe;
   return pinned && pinnedProbe ? { ffmpegPath: pinned.entryPath, ffprobePath: pinnedProbe } : null;

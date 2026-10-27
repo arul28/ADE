@@ -8,8 +8,8 @@
  * them, and each kind is reported once per process: a brain whose helper keeps
  * dying is one event, not one per restart.
  *
- * Nothing here carries user content: kinds, error messages from the helper or
- * the package manager, package names and host facts only.
+ * Nothing here carries user content or terminal output: kinds, the helper's
+ * error messages, package names and host facts only.
  */
 
 import fs from "node:fs";
@@ -132,11 +132,12 @@ export function reportLinuxSetupOutcome(
   missingAfter: readonly string[] | null,
 ): void {
   const before = missingBefore.join(",");
+  // Not `result.message`: on a failed install it carries the package
+  // manager's output, and terminal output never goes to Sentry.
   const extra = {
     packageManager: linuxPackageManagerId() ?? "none",
     missingBefore: before,
     missingAfter: missingAfter?.join(",") ?? "unknown",
-    message: result.message.slice(0, 500),
   };
   if (!result.installed) {
     if (result.needsUser && result.command) {
