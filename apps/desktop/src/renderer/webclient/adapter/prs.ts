@@ -459,14 +459,9 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     setAssignees: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.setAssignees", pin, infra);
       if (!commands.hasAction("prs.setAssignees")) throw new Error("This machine's ADE cannot assign people yet. Update it to edit assignees.");
-      // A mutation never fabricates success: with no project open on the host
-      // the call resolves no fallback, so reject and let the card keep its draft.
-      const result = await commands.call<SetPrAssigneesResult>("prs.setAssignees", asRecord(args), {
-        fallback: () => {
-          throw new Error("Open a project on the connected ADE host to update assignees.");
-        },
-        idempotent: false,
-      });
+      // A mutation has no fallback: the host's own answer or a rejection, so
+      // the card keeps its draft when no project is open on that machine.
+      const result = await commands.call<SetPrAssigneesResult>("prs.setAssignees", asRecord(args), mutation);
       invalidatePrsReads();
       return result;
     },
