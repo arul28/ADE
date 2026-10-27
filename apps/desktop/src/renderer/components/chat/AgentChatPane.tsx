@@ -1116,8 +1116,21 @@ function sameCursorConfigValues(
   return leftKeys.every((key) => Object.is(left[key], right[key]));
 }
 
-function streamsLink(envelope: AgentChatEventEnvelope): boolean {
-  return envelope.event.type === "text" && envelope.event.text.includes("://");
+/** Whether streamed text adds a link, including one split across two fragments. */
+function streamsLink(
+  existing: readonly AgentChatEventEnvelope[],
+  queued: readonly AgentChatEventEnvelope[],
+): boolean {
+  let previous = existing[existing.length - 1]?.event;
+  for (const envelope of queued) {
+    const event = envelope.event;
+    if (event.type === "text") {
+      const tail = previous?.type === "text" ? previous.text.slice(-2) : "";
+      if ((tail + event.text).includes("://")) return true;
+    }
+    previous = event;
+  }
+  return false;
 }
 
 /**
@@ -10194,7 +10207,7 @@ export function AgentChatPane({
       if (quiet) {
         const kind = classifyLiveEventBatch(sessionEvents, sessionQueue);
         if (kind === "now") quiet = false;
-        else if (kind === "lagged" || sessionQueue.some(streamsLink)) quietNeedsCommit = true;
+        else if (kind === "lagged" || streamsLink(sessionEvents, sessionQueue)) quietNeedsCommit = true;
         if (quiet) runtimeStateBefore.set(sessionId, deriveRuntimeState(sessionEvents));
       }
       if (detachedHistorySessionsRef.current.has(sessionId)) {

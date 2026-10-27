@@ -36,6 +36,7 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { PrWatchPill } from "./PrWatchPill";
+import { useAppStore } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,6 +159,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
   const isRemote = scope.isRemote;
   const projectRoot = scope.rootPath;
+  // Scopes the cached PR list when there is no pin (the tab's own machine).
+  const prListBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   // Keep PR refresh identity stable across unrelated lane-list updates. The
   // array is replaced by status refreshes, which otherwise re-subscribes the
   // PR event pump even when this lane's identity is unchanged.
@@ -227,7 +230,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     try {
       let lanePrs: PrSummary[];
       if (typeof window.ade.prs.listAll === "function") {
-        const allPrs = await listPrsCached({ projectRoot, pin: runtimePinRef.current });
+        const allPrs = await listPrsCached({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
         lanePrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
       } else {
         // Older web-preview/test bridges only expose the original single-PR
@@ -277,7 +280,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // it — but a callback that reads machine A must not be reused as if it reads
     // machine B, and its identity is what re-runs the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneForPr, laneId, projectRoot, runtimePinKey, sessionId]);
+  }, [laneForPr, laneId, prListBindingKey, projectRoot, runtimePinKey, sessionId]);
 
   useEffect(() => {
     setDirtyCount(0);
@@ -300,11 +303,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (!isRemote) void refreshStatus();
       // The action may have opened or changed a PR: read the list again
       // rather than the cached copy.
-      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [isRemote, projectRoot, runtime.busyAction, refreshStatus, refreshPr]);
+  }, [isRemote, prListBindingKey, projectRoot, runtime.busyAction, refreshStatus, refreshPr]);
 
   // Backend reconcile-on-focus, in its OWN subscription keyed only on stable
   // deps (laneId/projectRoot via refreshPr) — NOT linkedPr, so the idle branch's
@@ -316,7 +319,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (event.type !== "pr-reconcile") return;
       if (event.state === "running") return;
       // A reconcile just healed backend state — re-read the linked PR.
-      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
       void refreshPr();
     }, runtimePinRef.current);
     return () => {
@@ -335,7 +338,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     return () => {
       window.removeEventListener("focus", request);
     };
-  }, [laneOnOtherMachine, projectRoot, runtimePinKey]);
+  }, [laneOnOtherMachine, prListBindingKey, projectRoot, runtimePinKey]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
@@ -344,13 +347,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       const current = linkedPrRef.current;
       if (event.type === "pr-notification") {
         if (event.laneId === laneId || event.prId === current?.id) {
-          invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
+          invalidatePrListCache({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
           void refreshPr();
         }
         return;
       }
       if (event.type !== "prs-updated") return;
-      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current });
+      invalidatePrListCache({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
       const eventIncludesLanePr = event.prs.some((pr) => (
         pr.laneId === laneId && (!sessionId || !prClaimedByOtherChat(pr, sessionId))
       ));
@@ -366,7 +369,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     return () => {
       unsubscribe();
     };
-  }, [laneId, refreshPr, runtimePinKey, sessionId]);
+  }, [laneId, prListBindingKey, refreshPr, runtimePinKey, sessionId]);
 
   const openPr = useCallback((pr: PrSummary) => {
     // The PRs tab resolves a PR id against the bound machine only, so a lane

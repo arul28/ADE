@@ -835,15 +835,23 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         ),
         projectNotesService: runtime.projectNotesService ?? null,
       }),
-    listSessions: (args?: unknown) => {
-      const record = asActionRecord(args);
-      const laneId = typeof record.laneId === "string" && record.laneId.trim()
-        ? record.laneId.trim()
+    // Object form `{ laneId?, ...options }`, or the desktop's positional
+    // `argsList [laneId?, options?]`.
+    listSessions: (args?: unknown, positionalOptions?: unknown) => {
+      const positional = typeof args === "string" || (args == null && positionalOptions != null);
+      const record = positional ? asActionRecord(positionalOptions) : asActionRecord(args);
+      const rawLaneId = positional ? args : record.laneId;
+      const laneId = typeof rawLaneId === "string" && rawLaneId.trim()
+        ? rawLaneId.trim()
         : undefined;
+      const sessionIds = Array.isArray(record.sessionIds)
+        ? record.sessionIds.filter((id): id is string => typeof id === "string")
+        : null;
       const options = {
         ...(typeof record.includeArchived === "boolean" ? { includeArchived: record.includeArchived } : {}),
         ...(typeof record.includeAutomation === "boolean" ? { includeAutomation: record.includeAutomation } : {}),
         ...(typeof record.includeIdentity === "boolean" ? { includeIdentity: record.includeIdentity } : {}),
+        ...(sessionIds ? { sessionIds } : {}),
       };
       return agentChatService.listSessions(
         laneId,

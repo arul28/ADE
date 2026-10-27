@@ -16239,6 +16239,8 @@ export function createAgentChatService(args: {
     turnBoundaryAligned?: boolean;
     /** Report re-admitted approvals in `pinnedEvents` instead of `events`. */
     separatePinnedEvents?: boolean;
+    /** Receives the window before approvals are re-admitted ahead of it. */
+    windowOut?: { events: readonly AgentChatEventEnvelope[] };
     transcriptHistory: Pick<
       TranscriptHistoryCacheEntry,
       "envelopes" | "truncated" | "startOffset" | "endOffset" | "envelopeStartOffsetByIdentity"
@@ -16287,6 +16289,7 @@ export function createAgentChatService(args: {
     // counting the session as blocked. Re-admitted in place, past both budgets
     // (or, for callers that asked, reported separately as `pinnedEvents`).
     const retained = retainUnresolvedApprovalRequests(parentVisibleMerged, budgeted);
+    if (args.windowOut) args.windowOut.events = budgeted;
     let windowed = retained;
     let pinnedEvents: AgentChatEventEnvelope[] | null = null;
     if (args.separatePinnedEvents) {
@@ -16411,6 +16414,7 @@ export function createAgentChatService(args: {
       options?.turnBoundaryAligned ? tailBytes * 2 : tailBytes,
       options?.signal,
     );
+    const window: { events: readonly AgentChatEventEnvelope[] } = { events: [] };
     const snapshot = buildChatEventHistorySnapshot({
       sessionId: trimmedId,
       maxEvents,
@@ -16418,6 +16422,7 @@ export function createAgentChatService(args: {
       responseMaxChars,
       turnBoundaryAligned: options?.turnBoundaryAligned === true,
       separatePinnedEvents: options?.separatePinnedEvents === true,
+      windowOut: window,
       transcriptHistory,
     });
     const historyGeneration = getChatLogState(trimmedId)?.historyGeneration;
@@ -16440,15 +16445,17 @@ export function createAgentChatService(args: {
     // The client holds everything up to `afterOffset`. Send the last event that
     // starts before it (the seam it joins on) and all that follows; when that
     // seam is not inside this window, the gap is too big and the full window
-    // goes out as usual.
-    let seam = -1;
-    for (let index = snapshot.events.length - 1; index >= 0; index -= 1) {
-      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(snapshot.events[index]!);
+    // goes out as usual. Only the window itself counts: an unresolved approval
+    // re-admitted ahead of it is older than the gap, not a seam.
+    let seamEvent: AgentChatEventEnvelope | null = null;
+    for (let index = window.events.length - 1; index >= 0; index -= 1) {
+      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(window.events[index]!);
       if (offset != null && offset < afterOffset) {
-        seam = index;
+        seamEvent = window.events[index]!;
         break;
       }
     }
+    const seam = seamEvent ? snapshot.events.indexOf(seamEvent) : -1;
     if (seam < 0) return withCursor;
     return {
       ...withCursor,

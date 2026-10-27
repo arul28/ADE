@@ -457,6 +457,8 @@ function reduceSubagentSummaryToPlainText(value: string): string | null {
     }
     line = plainInlineMarkdown(line).replace(/\s+/g, " ").trim();
     if (!line) continue;
+    // One long line stops at the budget too.
+    line = line.slice(0, SUBAGENT_SUMMARY_MAX_PLAIN_CHARS - produced);
     if (parts.length) parts.push(pendingSeparator ?? " ");
     parts.push(line);
     produced += line.length + 1;
