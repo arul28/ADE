@@ -1474,6 +1474,10 @@ describe("ptyService", () => {
       const previousPath = process.env.PATH;
       process.env.SHELL = "/bin/zsh";
       process.env.PATH = "/usr/bin";
+      // A failed shell PATH probe is remembered for 30 s, and earlier tests'
+      // probes of this shell failed; past that window this test probes afresh.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 60_000);
       mocks.execFileSync.mockImplementation((_file, args) => {
         const shellFlag = Array.isArray(args) ? args[0] : null;
         if (shellFlag === "-lc") return "__ADE_PATH_START__/login/bin:/usr/bin__ADE_PATH_END__";
@@ -1522,6 +1526,7 @@ describe("ptyService", () => {
         else process.env.SHELL = previousShell;
         if (previousPath == null) delete process.env.PATH;
         else process.env.PATH = previousPath;
+        vi.useRealTimers();
         mocks.execFileSync.mockImplementation(() => "");
       }
     });
@@ -7338,11 +7343,8 @@ describe("ptyService", () => {
       mockPty._emitter.emit("data", "final answer\n");
 
       expect(sessionService.get(sessionId)?.settledAt).toBe("2026-07-23T12:00:00.000Z");
-      expect(sessionService.touchSessionActivity).toHaveBeenLastCalledWith(
-        sessionId,
-        expect.any(String),
-        { clearSettled: false },
-      );
+      // Output that brings a new preview line records the session's activity
+      // in the same write, so the preview write carries the settle decision.
       expect(sessionService.setLastOutputPreview).toHaveBeenLastCalledWith(
         sessionId,
         "preview",
@@ -7371,11 +7373,8 @@ describe("ptyService", () => {
       mockPty._emitter.emit("data", "background job produced output\n");
 
       expect(sessionService.get(sessionId)?.settledAt).toBeNull();
-      expect(sessionService.touchSessionActivity).toHaveBeenLastCalledWith(
-        sessionId,
-        expect.any(String),
-        { clearSettled: true },
-      );
+      // Output that brings a new preview line records the session's activity
+      // in the same write, so the preview write carries the settle decision.
       expect(sessionService.setLastOutputPreview).toHaveBeenLastCalledWith(
         sessionId,
         "preview",
@@ -9570,8 +9569,14 @@ describe("ptyService", () => {
       vi.useFakeTimers();
       let scanCount = 0;
       mocks.execFile.mockImplementation((...args: unknown[]) => {
-        scanCount += 1;
         const callback = args.at(-1);
+        // Only the process scan answers; anything else (a background shell
+        // PATH probe) fails, as it would without a real shell.
+        if (args[0] !== "ps") {
+          if (typeof callback === "function") (callback as (error: Error) => void)(new Error("not a process scan"));
+          return { kill: vi.fn(), stdin: null };
+        }
+        scanCount += 1;
         if (typeof callback === "function") {
           (callback as (...callbackArgs: unknown[]) => void)(
             null,

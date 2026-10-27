@@ -665,6 +665,9 @@ function refreshShellPathInBackground(
           rememberProbe(shellPathCache, key, resolved);
           shellPathFailedAt.delete(key);
         } else if (entry) entry.at = Date.now();
+        // A shell that never answers keeps its retries in the background
+        // instead of earning a synchronous probe again after each window.
+        else if (shellPathFailedAt.has(key)) shellPathFailedAt.set(key, Date.now());
       },
     );
     // execFile cannot take `stdio`; an rc file that reads stdin must see EOF,

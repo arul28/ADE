@@ -202,7 +202,7 @@ describe("cliExecutableResolver", () => {
   });
 
   // Windows reads no login shell, so there is no probe to retry or reuse.
-  it.skipIf(process.platform === "win32")("retries a login-shell PATH probe that failed and reuses one that answered", () => {
+  it.skipIf(process.platform === "win32")("retries a login-shell PATH probe that failed in the background and reuses one that answered", async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-shell-probe-"));
     const answers = path.join(tempRoot, "shell-answers");
     const fakeShell = path.join(tempRoot, "fake-login-shell");
@@ -218,8 +218,11 @@ describe("cliExecutableResolver", () => {
     // A shell that fails (a timeout under load, a broken rc file) is not remembered...
     expect(probe()).not.toContain("/fake/login/bin");
     fs.writeFileSync(answers, "", "utf8");
-    // ...so the next agent env asks again and gets the login PATH.
-    expect(probe()).toContain("/fake/login/bin");
+    // ...and the next agent env does not wait on it again: it returns at once
+    // without the login PATH while a background probe retries...
+    expect(probe()).not.toContain("/fake/login/bin");
+    // ...and once that retry answers, agent envs get the login PATH.
+    await vi.waitFor(() => expect(probe()).toContain("/fake/login/bin"));
     // An answer is reused instead of spawning a shell per turn.
     fs.rmSync(answers);
     expect(probe()).toContain("/fake/login/bin");

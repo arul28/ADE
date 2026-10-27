@@ -7,12 +7,13 @@ import {
 } from "./laneBranchDrift";
 
 describe("parseWorktreeStatusPorcelainV2", () => {
-  it("reads the live HEAD branch from the header and reports a clean tree", () => {
+  it("reads the live HEAD branch, its commit and its upstream lag from the header and reports a clean tree", () => {
+    const oid = "0d1f9a3c0d1f9a3c0d1f9a3c0d1f9a3c0d1f9a3c";
     const stdout = [
-      "# branch.oid 0d1f9a3c",
+      `# branch.oid ${oid}`,
       "# branch.head hotfix-auth",
       "# branch.upstream origin/hotfix-auth",
-      "# branch.ab +0 -0",
+      "# branch.ab +2 -3",
       "",
     ].join("\n");
 
@@ -23,6 +24,8 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 0,
       untracked: 0,
       headBranchRef: "hotfix-auth",
+      upstreamBehind: 3,
+      headOid: oid,
     });
   });
 
@@ -42,6 +45,9 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 1,
       untracked: 1,
       headBranchRef: "ade/feature",
+      // An abbreviated oid is not a commit id, and no upstream means no lag.
+      upstreamBehind: null,
+      headOid: null,
     });
   });
 
@@ -55,6 +61,8 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 0,
       untracked: 0,
       headBranchRef: null,
+      upstreamBehind: null,
+      headOid: null,
     });
   });
 
@@ -66,6 +74,8 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 0,
       untracked: 0,
       headBranchRef: "main",
+      upstreamBehind: null,
+      headOid: null,
     });
     expect(parseWorktreeStatusPorcelainV2("? untracked.txt\n")).toEqual({
       dirty: true,
@@ -74,6 +84,8 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 0,
       untracked: 1,
       headBranchRef: null,
+      upstreamBehind: null,
+      headOid: null,
     });
     expect(parseWorktreeStatusPorcelainV2("")).toEqual({
       dirty: false,
@@ -82,6 +94,8 @@ describe("parseWorktreeStatusPorcelainV2", () => {
       unstaged: 0,
       untracked: 0,
       headBranchRef: null,
+      upstreamBehind: null,
+      headOid: null,
     });
   });
 
