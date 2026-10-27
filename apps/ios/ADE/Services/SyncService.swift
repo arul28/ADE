@@ -10686,7 +10686,7 @@ final class SyncService: ObservableObject {
         // Head rows only: keep what the database already has, and fetch the
         // full list shortly.
         sessions = try decodeHydrationPayload(
-          conditional["sessions"] ?? [Any](),
+          conditional["sessions"] ?? raw,
           as: [TerminalSessionSummary].self,
           domainLabel: "work session",
           decoder: decoder
@@ -10745,8 +10745,11 @@ final class SyncService: ObservableObject {
             }
           }
         } else {
+          // An object without a list is not an answer to this request: it
+          // fails to decode, as before, instead of reading as "no sessions",
+          // which would delete every row.
           sessions = try decodeHydrationPayload(
-            conditional["sessions"] ?? [Any](),
+            conditional["sessions"] ?? raw,
             as: [TerminalSessionSummary].self,
             domainLabel: "work session",
             decoder: decoder
@@ -11328,7 +11331,7 @@ final class SyncService: ObservableObject {
         prs = try decodeHydrationPayload(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         pullRequestListConditionalCache = (fullObject?["signature"] as? String).map { (key: cacheKey, signature: $0, prs: prs) }
       } else {
-        prs = try decodeHydrationPayload(conditional["prs"] ?? [Any](), as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        prs = try decodeHydrationPayload(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         if !activeOnly {
           pullRequestListConditionalCache = signature.map { (key: cacheKey, signature: $0, prs: prs) }
         }
