@@ -351,8 +351,9 @@ const gitOriginCache = new Map<string, GitOriginCacheEntry>();
  * The origin URL from the checkout's git config file, without starting git.
  * `undefined` whenever the file alone may not give git's answer: no readable
  * config, no origin URL in it (a global config can still name one), more than
- * one (git takes the last), includes (an `[include]` or `[includeIf]` can
- * replace it), or per-worktree config (`extensions.worktreeConfig`).
+ * one (git takes the last), a value git would decode (quotes, an inline
+ * comment, an escape), includes (an `[include]` or `[includeIf]` can replace
+ * it), or per-worktree config (`extensions.worktreeConfig`).
  */
 export function readGitOriginUrlWithoutGit(projectRoot: string): string | undefined {
   try {
@@ -361,7 +362,8 @@ export function readGitOriginUrlWithoutGit(projectRoot: string): string | undefi
     const text = fs.readFileSync(path.join(resolveGitConfigDirectory(gitDir), "config"), "utf8");
     if (/^\s*\[\s*include/im.test(text) || /^\s*worktreeConfig\s*=\s*true\b/im.test(text)) return undefined;
     const urls = originUrlLines(text);
-    return urls.length === 1 ? urls[0] : undefined;
+    // A quoted value, an inline comment or an escape needs git's own decoding.
+    return urls.length === 1 && !/["\\;#]/.test(urls[0]!) ? urls[0] : undefined;
   } catch {
     return undefined;
   }

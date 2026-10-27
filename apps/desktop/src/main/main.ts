@@ -209,6 +209,8 @@ import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
+  mergePathEntries,
   onShellPathRefreshed,
   primeShellPathCache,
   readSavedShellPaths,
@@ -690,7 +692,11 @@ function fixElectronShellPath(): void {
   apply();
   saveShellPaths(cacheFile);
   onShellPathRefreshed(() => {
+    // Directories added to PATH since launch (an ADE CLI bin dir, say) stay:
+    // the refreshed shell answer goes first, the current entries after it.
+    const current = getPathEnvValue(process.env);
     apply();
+    setPathEnvValue(process.env, mergePathEntries(getPathEnvValue(process.env), current));
     saveShellPaths(cacheFile);
   });
 }
