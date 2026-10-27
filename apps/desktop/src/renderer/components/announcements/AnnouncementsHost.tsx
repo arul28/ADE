@@ -93,7 +93,8 @@ export function AnnouncementsHost() {
     const openAll = () => {
       const version = bundledReleaseNotes.version;
       const digest = releaseNotesDigest(version);
-      setShowing({
+      // The after-update showing stays: replacing it would drop its onClose, and the next launch would show it again.
+      setShowing((current) => current?.onClose ? current : {
         pages: allAnnouncements(),
         notes: digest ? { digest, resumedChats: [], changelogUrl: null, githubReleaseUrl: null } : null,
       });

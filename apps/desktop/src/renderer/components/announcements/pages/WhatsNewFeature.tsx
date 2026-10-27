@@ -132,10 +132,19 @@ function Crossfade({ media }: { media: ImagesMedia }) {
   useEffect(() => {
     // A video moves on when it ends, not on the timer.
     if (reduceMotion || paused || count < 2 || activeIsVideo) return undefined;
+    // In the background, move on once ADE is visible again rather than stopping.
+    let onVisible: (() => void) | null = null;
     const timer = window.setTimeout(() => {
-      if (!document.hidden) next();
+      if (!document.hidden) return next();
+      onVisible = () => {
+        if (!document.hidden) next();
+      };
+      document.addEventListener("visibilitychange", onVisible);
     }, media.holdMs ?? CROSSFADE_HOLD_MS);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (onVisible) document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [activeIsVideo, count, index, media.holdMs, next, paused, reduceMotion]);
 
   return (
