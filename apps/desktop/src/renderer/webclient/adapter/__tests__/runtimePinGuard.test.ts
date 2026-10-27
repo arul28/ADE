@@ -268,7 +268,7 @@ describe("macDesktop namespace pin guard", () => {
     // synchronous guards.
     expect(() => macDesktop.screenshot({ laneId: "lane-1", caption: "the fix" }, foreignPin))
       .toThrow(/macDesktop\.screenshot.*remote:env-2:project-2/s);
-    expect(() => macDesktop.closeWindow({ laneId: "lane-1", windowId: "win-1" }, foreignPin))
+    expect(() => macDesktop.closeWindow({ laneId: "lane-1", windowId: 1 }, foreignPin))
       .toThrow(/macDesktop\.closeWindow/);
     expect(() => macDesktop.startRecording({ laneId: "lane-1", caption: "the fix" }, foreignPin))
       .toThrow(/macDesktop\.startRecording/);
