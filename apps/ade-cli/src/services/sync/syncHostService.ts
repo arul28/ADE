@@ -6316,7 +6316,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           return;
         }
-        fillChangesetAckWindow(peer, currentDbVersion, nowMs);
+        await fillChangesetAckWindow(peer, currentDbVersion, nowMs);
         return;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) {
@@ -6498,7 +6498,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
           peer.pendingChangesetBatch = pending;
           peer.changesetBatchesInFlight = [];
-          fillChangesetAckWindow(peer, currentDbVersion, nowMs);
+          await fillChangesetAckWindow(peer, currentDbVersion, nowMs);
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
           notePeerDeliveredWatermark(peer);
@@ -6520,7 +6520,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * version window with nothing to send stops the fill; the normal path
    * crosses it once the window has drained.
    */
-  function fillChangesetAckWindow(peer: PeerState, currentDbVersion: number, nowMs: number): void {
+  async function fillChangesetAckWindow(peer: PeerState, currentDbVersion: number, nowMs: number): Promise<void> {
     if (!peerAcceptsChangesetAckWindow(peer)) return;
     const mobilePeer = isMobileChangesetPeer(peer);
     // One export reads up to four batches' rows; what a batch leaves over is
@@ -6551,10 +6551,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         exportedThroughDbVersion = leftover.throughDbVersion;
       } else {
         const scanThroughDbVersion = Math.min(sendFrom + SYNC_EXPORT_VERSION_WINDOW, currentDbVersion);
-        const exported = args.db.sync.exportChangesSince(
+        // Off the event loop, like the pump's own export.
+        const exported = await (args.db.sync.exportChangesSinceOffThread ?? args.db.sync.exportChangesSince)(
           sendFrom,
           { maxRows: limits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
         );
+        // The window may have moved while the read ran (an ack, a resend, a
+        // reconnect, the socket gone): stop, and the next pump fills again.
+        const windowTail = peer.changesetBatchesInFlight.at(-1) ?? peer.pendingChangesetBatch;
+        if (
+          disposed
+          || peer.ws.readyState !== WebSocket.OPEN
+          || !peer.authenticated
+          || peer.pendingChangesetBatch !== head
+          || windowTail?.toDbVersion !== sendFrom
+        ) {
+          return;
+        }
         exportedThroughDbVersion = exported.length > 0
           ? Number(exported[exported.length - 1].db_version)
           : scanThroughDbVersion;
